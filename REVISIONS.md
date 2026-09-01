@@ -4,6 +4,100 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.68.0
+
+**Organisation knowledge has somewhere to live (RFC CQ).** Some of what a
+consolidator learns is not about the user — *"the checkout-api service requires two
+approvals"* is true for everyone in the tenant. Until now every fact went into one
+user's scope, so a colleague either re-learned it from their own conversations or
+never learned it at all, and there was no surface anywhere that would tell an
+operator this was happening.
+
+**Placement is operator config, not per-fact inference.** An entity type in the
+tenant ontology may declare which memory scope facts about that kind of thing belong
+in:
+
+```
+## service
+- `@memory_scope` tenant
+- `name` — what people call it
+```
+
+A fact reaches its scope through the subject entity it is already linked to. The
+alternative — asking a model per fact — would put a judgement in front of every
+write, thousands of independent chances to put a private sentence in front of the
+whole tenant, and it would land on the extractor, whose own prompt is documented as
+*"a mitigation, not a guarantee"*. A handful of declarations, authored once and
+versioned in a document, replaces all of that. It also costs nothing at write time:
+the type is already assigned.
+
+**Every uncertainty declines to move the fact**, and that asymmetry is the design
+rather than caution. Declining costs exactly what the system already costs — the fact
+stays in one user's scope. Moving one wrongly is not recoverable. So a placement is
+refused for an undeclared or unknown type, a draft ontology, no ontology at all, a
+subject that names the run's own user, a subject the store types inconsistently, an
+isolated member, and a scope the writing agent has not been granted — each with a
+reason an operator can act on.
+
+**Both halves of a fact move together, or neither does.** A fact is stored twice: the
+key/value row semantic recall searches, and a chunk mirror the graph walks. Split
+those across scopes and `recall` finds the fact in one place while `graph_recall`
+finds it in another, which is worse than never moving it. So the decision is made
+once per batch, before either write, by the writer that owns both — a new read-only
+`Memory op=placement`. A tenant placement consequently needs the tenant grant on
+*both* `memory_scopes` and `sql_scopes`, because the mirror is a Document write.
+
+**A user can say who they are.** The per-user profile document gained an Identity
+section — `@name` and `@alias` bullets — because nothing else can tell a fact about
+the user under their own name from a fact about a colleague: *"Ada prefers Go"* and
+*"Maria owns the release process"* are the same shape. With names declared, the
+user's own facts stay theirs whatever their type says. Undeclared, that gap remains
+exactly as it was, which the test suite asserts out loud rather than assuming away.
+
+**The identity documents now exist when a principal does**, at token mint and at boot
+for config-declared principals, instead of appearing on the first run that happened
+to reference them. A template that arrives after the moment it was needed is not a
+template. `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS=0` restores the old lazy-only
+behaviour.
+
+**Reads are unchanged, and now say so.** A memory read touches exactly one scope —
+it always did, but the `scope` description described *who* could reach the tenant
+keyspace and never that a separate call is required to read it, so an agent asked
+once, got nothing, and concluded the organisation knew nothing. Both `Memory` and
+`Document` now state the invariant and the remedy: one scope per call, two calls to
+consult two, merge by score.
+
+**Inert until an operator turns it on.** Nothing is declared out of the box, the
+consolidator's grants are untouched, and a deployment that edits nothing behaves
+exactly as it did in v1.67.0.
+
+### Also in this release
+
+**A sqlite upgrade blocker.** Any deployment whose `memory` table predated RFC CL
+(v1.65.0) could not start on v1.66+: `migrate` created three partial indexes ahead of
+the `ALTER`s adding the columns they name, and on an existing table
+`CREATE TABLE IF NOT EXISTS` is a no-op, so the index failed on a missing column and
+the store never opened. A fresh database gets those columns from `CREATE TABLE`, which
+is why every test passed — they all start from an empty file. Both halves are now
+tested: a legacy-shaped fixture, and a guard that reads the two statement lists and
+fails for any table.
+
+**Wikidata benchmark harnesses** for knowledge updates, ontology typing and
+cross-lingual recall, plus a bulk fact-corpus builder and importer.
+
+### Known state, stated plainly
+
+RFC CQ's own gate — whether a real store's entity typing is consistent enough to
+carry a scope decision — **has not been run on a real multi-user store**, and its
+preliminary reading on a small development scope *fails*: linkage was complete, but
+two of five subjects carried two types, and one of them would place a personal fact
+in the shared plane. That is a data-quality problem rather than a design one, and it
+is why placement declines an inconsistently typed subject instead of guessing. Until
+that measurement exists, treat a `@memory_scope` declaration as something to try on a
+store whose typing you have looked at.
+
+The adapters are unchanged in this release and remain at **1.67.0**.
+
 ## What's in v1.67.0
 
 **Per-user credential self-service (RFC CN).** A logged-in user can now store its
