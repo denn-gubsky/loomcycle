@@ -500,6 +500,7 @@ agents:
           placement_displace_failed: 0,
           placement_moved_keys: {}, // key -> target scope, for the displaced-twin retire
           placement_error: "",
+          placement_asked: {},      // type|subject already asked about, so batches don't re-ask
           entity_nodes: 0,          // distinct subjects given an entity chunk
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
@@ -1460,10 +1461,12 @@ agents:
       // stored ones silently moves every fact off that calibration and the
       // deduplication above quietly stops firing. A test asserts the two are
       // byte-identical on every write.
-      // resolvePlacements asks the server, ONCE for the whole batch, which scope each
-      // typed fact belongs in.
+      // resolvePlacements asks the server, once per BATCH, which scope each typed fact
+      // belongs in. A pass reads several chats and drains several queue batches, so this
+      // runs once per batch and not once per pass — the memo below is what stops it
+      // re-asking about a subject an earlier batch already resolved.
       //
-      // ONE CALL, and that is the design rather than an optimization. A fact is stored
+      // ONE CALL PER BATCH, and that is the design rather than an optimization. A fact is stored
       // twice — the k/v row recall searches and the chunk mirror the graph walks — and
       // both halves must land in the SAME scope or recall finds the fact in one place and
       // graph_recall in another. Deciding once, before either write, is what guarantees
@@ -1485,9 +1488,16 @@ agents:
           var k = f.type + "\u0000" + f.subject;
           if (seen[k]) { continue; }
           seen[k] = true;
+          // Already answered by an earlier batch in this pass. The answer cannot change
+          // mid-pass — it comes from the tenant ontology, not from the facts — so asking
+          // again would spend a call to be told the same thing.
+          if (st.placement_asked[k]) { continue; }
           items.push({ type: f.type, subject: f.subject });
         }
         if (!items.length) { return; }
+        for (var a = 0; a < items.length; a++) {
+          st.placement_asked[items[a].type + "\u0000" + items[a].subject] = true;
+        }
         try {
           // TWO conventions, and getting either wrong is silent. Memory is a META-TOOL:
           // it is namespaced by op (Memory.set, Memory.recall — never Memory({op:...}),
@@ -1496,6 +1506,10 @@ agents:
           // that has to be JSON.parse'd. Wrapping this one in JSON.parse stringifies the
           // object and fails, which reads as a server refusal.
           var res = Memory.placement({ scope: CONFIG.scope, items: items });
+          // A later batch succeeding clears an earlier batch's failure: otherwise the
+          // report claims placement was unavailable for the whole pass on the strength of
+          // one bad batch, which sends an operator looking for a fault that is gone.
+          st.placement_error = "";
           var rows = (res && res.placements) ? res.placements : [];
           for (var r = 0; r < rows.length; r++) {
             var row = rows[r];

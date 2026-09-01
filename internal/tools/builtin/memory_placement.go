@@ -31,7 +31,7 @@ const placementBatchMax = 200
 // was told, through the ordinary grant check, instead of the server silently redirecting a
 // write to a plane the caller was never granted. An operator reading `memory_scopes` still
 // sees the whole truth about what an agent can reach.
-func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScope, in memoryInput) (tools.Result, error) {
+func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScope, callerScopeID string, in memoryInput) (tools.Result, error) {
 	if len(in.Items) == 0 {
 		return errResult("placement: items is required — pass [{\"type\":\"service\",\"subject\":\"checkout-api\"}, …] " +
 			"for the facts you are about to write"), nil
@@ -85,7 +85,7 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 		// declaration would actually move.
 		subj := strings.ToLower(strings.TrimSpace(it.Subject))
 		if _, seen := subjectTypes[subj]; !seen && subj != "" {
-			subjectTypes[subj] = m.typesForSubject(ctx, it.Subject)
+			subjectTypes[subj] = m.typesForSubject(ctx, callerScope, callerScopeID, it.Subject)
 		}
 		d := memrank.ResolvePlacement(memrank.PlacementInput{
 			DeclaredType:  it.Type,
@@ -149,19 +149,21 @@ func (m *Memory) placementOntology(ctx context.Context) (terms []memrank.Ontolog
 // declaration is honoured on the type in front of it. That is the one place this subsystem
 // fails toward action rather than inaction, and it is bounded — a subject with no
 // recorded conflict is the normal case, and the caller's own grant still gates the write.
-func (m *Memory) typesForSubject(ctx context.Context, subject string) []string {
+func (m *Memory) typesForSubject(ctx context.Context, scope store.MemoryScope, scopeID, subject string) []string {
 	if m.SqlMem == nil || strings.TrimSpace(subject) == "" {
 		return nil
 	}
 	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
-	ident := tools.RunIdentity(ctx)
-	if ident.UserID == "" {
-		return nil
-	}
+	// THE CALLER'S OWN SCOPE, not a hardcoded user scope. The conflict this guards
+	// against is "the store already records this subject under a type that would place
+	// it somewhere else", and that is a question about the partition the caller reads.
+	// Hardcoding `user` made the guard silently unable to fire for an agent-scoped
+	// caller — it would query a partition that agent never writes to, find nothing, and
+	// report no conflict.
 	key := sqlmem.ScopeKey{
 		Tenant:  sqlScopeTenant(ctx),
-		Scope:   string(store.MemoryScopeUser),
-		ScopeID: ident.UserID,
+		Scope:   string(scope),
+		ScopeID: scopeID,
 	}
 	res, err := d.query(ctx, key,
 		`SELECT DISTINCT coalesce(c.type, '') FROM chunks c
