@@ -672,7 +672,52 @@ func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (c
 	if !res.IsError && isMutatingTokenOp(input) {
 		s.invalidateTokenCache(ctx)
 	}
+	// A successful CREATE is the moment a (tenant, subject) comes into existence, so it
+	// is where the identity Documents get provisioned — the templates a person fills in
+	// should be waiting when they arrive, not appear on whatever run first happens to
+	// reference them.
+	//
+	// Read off the RESPONSE, not the request: `subject` is optional on the wire and
+	// defaults to a derived per-token id, so the request does not always carry the
+	// subject that was actually created.
+	//
+	// Best-effort and after the fact — minting the token is the operation that must
+	// succeed, and this never affects its result.
+	if !res.IsError && isTokenCreateOp(input) {
+		if tenant, subject, ok := createdTokenPrincipal(res.Text); ok {
+			s.ProvisionIdentityDocs(ctx, tenant, subject)
+		}
+	}
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+}
+
+// isTokenCreateOp is narrower than isMutatingTokenOp: rotate and retire act on a
+// principal that already exists, so only create establishes one.
+func isTokenCreateOp(input json.RawMessage) bool {
+	var p struct {
+		Op string `json:"op"`
+	}
+	if err := json.Unmarshal(input, &p); err != nil {
+		return false // unknown shape → provision nothing (unlike cache invalidation,
+		// there is no safe-by-default action here, and the lazy path still covers it)
+	}
+	return p.Op == "create"
+}
+
+// createdTokenPrincipal reads the authoritative (tenant, subject) out of a create
+// response.
+func createdTokenPrincipal(body string) (tenant, subject string, ok bool) {
+	var r struct {
+		TenantID string `json:"tenant_id"`
+		Subject  string `json:"subject"`
+	}
+	if err := json.Unmarshal([]byte(body), &r); err != nil {
+		return "", "", false
+	}
+	if r.TenantID == "" {
+		return "", "", false
+	}
+	return r.TenantID, r.Subject, true
 }
 
 // isMutatingTokenOp reports whether an OperatorTokenDef input is a

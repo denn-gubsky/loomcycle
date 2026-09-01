@@ -2567,6 +2567,14 @@ func main() {
 		log.Printf("limits: seed failed (budgets start empty until next write): %v", err)
 	}
 
+	// Identity Documents for config-declared principals. They exist because an operator
+	// wrote them into the yaml, so they are established before anybody authenticates —
+	// which makes them the case lazy provisioning serves worst, since their templates
+	// should be waiting rather than appearing on some later run. Backgrounded: a hand-
+	// written principal list is small, but it is one store round-trip each and boot
+	// should not wait on a convenience. Best-effort inside.
+	go srv.ProvisionDeclaredPrincipalDocs(bgCtx)
+
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
 	// goroutine only matters for keeping the table small over the
