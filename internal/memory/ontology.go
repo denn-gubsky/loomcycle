@@ -82,6 +82,40 @@ type OntologyTerm struct {
 	// beneath, so subclassing a standard type means overriding it as a root chunk and
 	// nesting under your own copy (RFC BZ §10.1).
 	Parent string `json:"parent,omitempty"`
+	// MemoryScope is the memory partition that facts ABOUT this kind of thing belong
+	// in — "user" or "tenant" — as declared on this type, or "" when it declares
+	// nothing.
+	//
+	// WHY IT LIVES HERE. Organisation knowledge ("releases need two approvals") has
+	// nowhere good to live: written to one user's scope it is invisible to everyone
+	// else, and copied to each of them it has N places to be corrected. Deciding
+	// per-FACT means a model judgement in front of every write, thousands of chances
+	// to put a personal fact in front of the whole tenant. Deciding per-TYPE makes it
+	// operator config instead: a handful of declarations, authored once, versioned in
+	// the ontology document, and reviewable on one screen.
+	//
+	// EMPTY IS THE DEFAULT AND MEANS "DO NOT ROUTE". A type that declares nothing
+	// leaves its facts exactly where they are written today. Nothing is promoted
+	// because a type was left alone, so an ontology nobody edits behaves as it always
+	// did — and the same is true of the seed terms, which deliberately declare none.
+	MemoryScope string `json:"memory_scope,omitempty"`
+	// MemoryScopeInherited is the scope resolved from the nearest ancestor that
+	// declares one, or "" when no ancestor does.
+	//
+	// SEPARATE from MemoryScope for the same reason Inherited is separate from Fields:
+	// the operator panel has to be able to say which type actually declared it. A
+	// subclass showing an inherited scope as its own would make the panel claim a
+	// declaration nobody wrote. Consumers want EffectiveMemoryScope.
+	MemoryScopeInherited string `json:"memory_scope_inherited,omitempty"`
+	// MemoryScopeIssue is an operator-facing advisory when the declared value is not
+	// one this can route to.
+	//
+	// The type stays fully in force and its scope stays UNSET — an unusable value must
+	// never be guessed into a real one, because the wrong guess is "tenant" and its
+	// blast radius is every user. Advisory rather than fatal, matching the rest of this
+	// parser: an ontology that dropped a type over a typo'd directive would be worse
+	// than one that ignores the directive and says so.
+	MemoryScopeIssue string `json:"memory_scope_issue,omitempty"`
 }
 
 // BaseSeedOntology is the ontology every tenant starts with: POLE+O — person,
@@ -343,9 +377,41 @@ func ResolveInheritance(terms []OntologyTerm) []OntologyTerm {
 		memo[name] = out
 		return out
 	}
+	// Scope inherits by the same rule as fields — declared beats inherited, nearest
+	// ancestor wins — so an operator declares `organization → tenant` once and every
+	// kind of organization follows. Resolved into its own field rather than folded into
+	// MemoryScope so the panel can still name the type that declared it.
+	//
+	// An INVALID declaration does not block inheritance: the type's own scope is unset
+	// (with an advisory), so it falls through to its ancestor's, which is the same thing
+	// that happens when it declares nothing. Honouring a broken directive by routing
+	// nowhere would be a silent third behaviour.
+	scopeMemo := make(map[string]string, len(terms))
+	var resolveScope func(name string, seen map[string]bool) string
+	resolveScope = func(name string, seen map[string]bool) string {
+		if got, ok := scopeMemo[name]; ok {
+			return got
+		}
+		t, ok := byName[name]
+		if !ok || t.Parent == "" || seen[name] {
+			return ""
+		}
+		seen[name] = true
+		parent, ok := byName[t.Parent]
+		if !ok {
+			return ""
+		}
+		got := parent.MemoryScope
+		if got == "" {
+			got = resolveScope(t.Parent, seen)
+		}
+		scopeMemo[name] = got
+		return got
+	}
 	res := make([]OntologyTerm, 0, len(terms))
 	for _, t := range terms {
 		t.Inherited = resolve(t.Name, map[string]bool{})
+		t.MemoryScopeInherited = resolveScope(t.Name, map[string]bool{})
 		res = append(res, t)
 	}
 	return res
@@ -536,11 +602,106 @@ func ParseOntologyFields(body string) []string {
 		if !strings.HasPrefix(t, "- ") {
 			continue
 		}
-		if f := firstBackticked(t); f != "" {
+		// A reserved `@directive` is not a field. Without this skip, a type that
+		// declared its scope would grow a phantom field named "@memory_scope" — one
+		// the prompt would then instruct a model to fill in.
+		if f := firstBackticked(t); f != "" && !strings.HasPrefix(f, "@") {
 			out = append(out, f)
 		}
 	}
 	return out
+}
+
+// OntologyScopeDirective is the reserved bullet that declares a type's memory scope:
+//
+//	## service
+//	- `@memory_scope` tenant — everybody in the org depends on these
+//	- `name` — what people call it
+//
+// A BULLET rather than a prose line, so it lives inside the grammar the parser and the
+// operator already share, and one code path handles both the whole-document Markdown and
+// a single type's chunk body. The `@` sigil is what keeps it out of the field list: a
+// field is the first backticked token on a bullet, and `@`-prefixed tokens are reserved
+// for directives and skipped (see ParseOntologyFields). Without the sigil this
+// declaration would silently become a field named "memory_scope" on every type that used
+// it.
+const OntologyScopeDirective = "@memory_scope"
+
+// OntologyScopeValues are the scopes a type may declare.
+//
+// `user` and `tenant` only. `agent` is one agent's private keyspace, so it cannot express
+// "facts about this kind of thing belong to X"; `run` is dropped when the run ends. Both
+// would be silently useless here, and a narrow vocabulary is what lets an unrecognised
+// value be reported instead of half-honoured.
+func OntologyScopeValues() []string { return []string{"user", "tenant"} }
+
+// ParseOntologyScope reads the scope directive out of one type's body.
+//
+// Returns the declared scope and an advisory. They are mutually exclusive: a value this
+// cannot route to yields ("", advisory), never a guess. The LAST directive wins, matching
+// how a repeated field would behave, and a body with no directive yields ("", "").
+func ParseOntologyScope(body string) (scope, issue string) {
+	for _, line := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "- ") {
+			continue
+		}
+		if firstBackticked(t) != OntologyScopeDirective {
+			continue
+		}
+		raw := directiveValue(t)
+		if raw == "" {
+			scope, issue = "", "`"+OntologyScopeDirective+"` names no scope — write "+
+				"`- `"+OntologyScopeDirective+"` tenant` (or `user`)"
+			continue
+		}
+		valid := false
+		for _, v := range OntologyScopeValues() {
+			if raw == v {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			scope, issue = "", "`"+OntologyScopeDirective+"` says "+raw+", which is not a "+
+				"scope facts can be placed in (want "+joinComma(OntologyScopeValues())+
+				"); this type is in force but places nothing"
+			continue
+		}
+		scope, issue = raw, ""
+	}
+	return scope, issue
+}
+
+// directiveValue returns the first word after a directive's closing backtick.
+//
+// Prose after the value is the operator's own note and is ignored, exactly as it is on a
+// field bullet — "- `@memory_scope` tenant — everyone sees these" declares `tenant`.
+func directiveValue(line string) string {
+	i := strings.Index(line, "`")
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+1:]
+	j := strings.Index(rest, "`")
+	if j < 0 {
+		return ""
+	}
+	tail := strings.TrimSpace(rest[j+1:])
+	// An em-dash note may follow with no space before it.
+	if k := strings.IndexAny(tail, " \t—:"); k > 0 {
+		tail = tail[:k]
+	}
+	return strings.ToLower(strings.Trim(tail, "`.,;—- \t"))
+}
+
+// EffectiveMemoryScope is a term's scope as a consumer should see it: what it declared,
+// else what it inherits, else "" for "do not route".
+func EffectiveMemoryScope(t OntologyTerm) string {
+	if t.MemoryScope != "" {
+		return t.MemoryScope
+	}
+	return t.MemoryScopeInherited
 }
 
 // ParseOntologyMarkdown extracts terms from the ontology document's Markdown.
@@ -583,7 +744,18 @@ func ParseOntologyMarkdown(md string) []OntologyTerm {
 			// The document title, not a term.
 			flush()
 		case cur != nil && strings.HasPrefix(t, "- "):
-			if f := firstBackticked(t); f != "" {
+			f := firstBackticked(t)
+			switch {
+			case f == OntologyScopeDirective:
+				// Parsed off the single line rather than by re-scanning the body,
+				// because this walker never assembles one.
+				if sc, iss := ParseOntologyScope(t); iss != "" {
+					cur.MemoryScopeIssue = iss
+					cur.MemoryScope = ""
+				} else if sc != "" {
+					cur.MemoryScope, cur.MemoryScopeIssue = sc, ""
+				}
+			case f != "" && !strings.HasPrefix(f, "@"):
 				cur.Fields = append(cur.Fields, f)
 			}
 		}

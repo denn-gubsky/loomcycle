@@ -942,3 +942,77 @@ func TestProposeEntity_NeedsNoTenantGrant(t *testing.T) {
 		}
 	}
 }
+
+// TestOntologyTree_ReadsTheScopeDirectiveFromTheChunkBody covers the reader the LIVE
+// ontology actually goes through — one chunk per type — rather than the whole-document
+// Markdown form. A declaration parsed in only one of the two places would work in the
+// template and silently do nothing in production, which is the failure this asserts
+// against.
+func TestOntologyTree_ReadsTheScopeDirectiveFromTheChunkBody(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	path := ontologyDocFixture(t, d, ctx, strings.Join([]string{
+		"# Tenant Ontology",
+		"",
+		"## organization",
+		"",
+		"- `@memory_scope` tenant — everybody in the org depends on these",
+		"- `name` — what people call it",
+		"",
+		"### team",
+		"",
+		"- `lead` — accountable",
+		"",
+		"## preference",
+		"",
+		"- `@memory_scope` user",
+		"- `statement` — the preference itself",
+		"",
+		"## incident",
+		"",
+		"- `@memory_scope` nowhere",
+		"- `cause` — what was responsible",
+		"",
+	}, "\n"))
+
+	got, err := d.OntologyTermsFromTree(ctx, "user", path)
+	if err != nil {
+		t.Fatalf("OntologyTermsFromTree: %v", err)
+	}
+	byName := map[string]memrank.OntologyTerm{}
+	for _, tm := range memrank.ResolveInheritance(got.Terms) {
+		byName[tm.Name] = tm
+	}
+
+	if s := byName["organization"].MemoryScope; s != "tenant" {
+		t.Errorf("organization declared tenant, reader saw %q", s)
+	}
+	if s := byName["preference"].MemoryScope; s != "user" {
+		t.Errorf("preference declared user, reader saw %q", s)
+	}
+	// Inherited down the chunk hierarchy, so `organization → tenant` is declared once.
+	if s := memrank.EffectiveMemoryScope(byName["team"]); s != "tenant" {
+		t.Errorf("team should inherit tenant from organization, got %q", s)
+	}
+	if byName["team"].MemoryScope != "" {
+		t.Errorf("team declared nothing; its own MemoryScope must stay empty, got %q",
+			byName["team"].MemoryScope)
+	}
+	// An unusable value places NOTHING and says so, rather than being guessed into a
+	// real scope — the wrong guess is "tenant" and every user sees it.
+	inc := byName["incident"]
+	if inc.MemoryScope != "" {
+		t.Errorf("incident's bad directive resolved to %q", inc.MemoryScope)
+	}
+	if inc.MemoryScopeIssue == "" {
+		t.Error("incident's bad directive was ignored silently")
+	}
+
+	// And the directive never becomes a field the prompt tells a model to fill in.
+	for name, tm := range byName {
+		for _, f := range append(append([]string{}, tm.Fields...), tm.Inherited...) {
+			if strings.HasPrefix(f, "@") {
+				t.Errorf("%s carries the directive %q as a field", name, f)
+			}
+		}
+	}
+}
