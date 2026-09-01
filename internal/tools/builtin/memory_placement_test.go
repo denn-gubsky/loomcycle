@@ -189,3 +189,89 @@ func TestMemoryPlacement_NeverPlacesTheRunsOwnUser(t *testing.T) {
 		}
 	}
 }
+
+// authorUserProfile writes a user-root Document declaring the given identity bullets, at
+// the well-known path the reader looks at.
+func authorUserProfile(t *testing.T, m *Memory, ctx context.Context, identity string) {
+	t.Helper()
+	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
+	md := "# User Profile\n\n## Identity\n\n" + identity + "\n"
+	mj, _ := json.Marshal(md)
+	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"user","markdown":`+string(mj)+`}`)
+	if r.IsError {
+		t.Fatalf("import_md user profile: %s", r.Text)
+	}
+	id, _ := out["document_id"].(string)
+	pj, _ := json.Marshal(memrank.UserRootPath)
+	if _, r := docExec(t, d, ctx,
+		`{"op":"set_path","scope":"user","id":"`+id+`","path":`+string(pj)+`}`); r.IsError {
+		t.Fatalf("set_path user profile: %s", r.Text)
+	}
+}
+
+// TestMemoryPlacement_ADeclaredNameKeepsTheUsersOwnFactsInTheirScope closes, end to end,
+// the gap the placement resolver shipped with: a fact about the user under their own name
+// used to be placed like a fact about a colleague.
+func TestMemoryPlacement_ADeclaredNameKeepsTheUsersOwnFactsInTheirScope(t *testing.T) {
+	m, ctx := placementFixture(t, true)
+
+	// BEFORE the profile is filled in, the user's own name means nothing here.
+	got := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[{"type":"service","subject":"Ada Lovelace"}]}`)
+	if got[0]["moved"] != true {
+		t.Fatalf("precondition: with no profile the name should be treated like any other subject: %v", got[0])
+	}
+
+	authorUserProfile(t, m, ctx, "- `@name` Ada Lovelace\n- `@alias` Ada")
+
+	// AFTER: the user's own facts stay put, under either declared spelling.
+	got = placements(t, m, ctx, `{"op":"placement","scope":"user","items":[
+		{"type":"service","subject":"Ada Lovelace"},
+		{"type":"service","subject":"ada"},
+		{"type":"service","subject":"checkout-api"}]}`)
+	if got[0]["moved"] == true {
+		t.Errorf("the declared name was still placed outside the user's scope: %v", got[0])
+	}
+	if got[1]["moved"] == true {
+		t.Errorf("a declared alias was still placed outside the user's scope: %v", got[1])
+	}
+	// And a genuine third-party subject is still placed, or the profile would have turned
+	// the whole feature off.
+	if got[2]["moved"] != true || got[2]["scope"] != "tenant" {
+		t.Errorf("an unrelated subject should still be placed in tenant: %v", got[2])
+	}
+}
+
+// An unedited profile must declare nobody. This is the shipped-template guard again, but
+// through the real document and the real reader rather than the parser alone.
+func TestMemoryPlacement_AnUneditedProfileDeclaresNobody(t *testing.T) {
+	m, ctx := placementFixture(t, true)
+	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
+	mj, _ := json.Marshal(memrank.UserRootTemplate())
+	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"user","markdown":`+string(mj)+`}`)
+	if r.IsError {
+		t.Fatalf("import_md template: %s", r.Text)
+	}
+	id, _ := out["document_id"].(string)
+	pj, _ := json.Marshal(memrank.UserRootPath)
+	if _, r := docExec(t, d, ctx,
+		`{"op":"set_path","scope":"user","id":"`+id+`","path":`+string(pj)+`}`); r.IsError {
+		t.Fatalf("set_path: %s", r.Text)
+	}
+	if names := m.selfNames(ctx); len(names) != 0 {
+		t.Errorf("the shipped template, stored and read back, declared %v", names)
+	}
+}
+
+// The reader must not create the profile. Provisioning is a side effect a person then sees
+// and edits, and prompt rendering already owns it; a consolidation pass leaving an empty
+// document in someone's Path tree is litter that still declares no names.
+func TestMemoryPlacement_ReadingNamesDoesNotProvisionTheProfile(t *testing.T) {
+	m, ctx := placementFixture(t, true)
+	if names := m.selfNames(ctx); len(names) != 0 {
+		t.Fatalf("precondition: no profile exists yet, got %v", names)
+	}
+	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
+	if _, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","path":"`+memrank.UserRootPath+`"}`); !r.IsError {
+		t.Error("reading self names provisioned the user-root document; it must stay read-only")
+	}
+}

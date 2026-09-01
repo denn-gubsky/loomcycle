@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -59,6 +60,10 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 	}
 
 	effective := memrank.EffectiveOntology(terms, confirmed)
+	// Read ONCE per call. The names come from the user's own profile document, which the
+	// self guard needs to tell a fact about them from a fact about a colleague; a
+	// per-item read would repeat the same export for every fact in the pass.
+	selfNames := m.selfNames(ctx)
 	out := make([]map[string]any, 0, len(in.Items))
 	moved := 0
 	subjectTypes := map[string][]string{}
@@ -89,6 +94,7 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 			CallerScope:   string(callerScope),
 			UserID:        ident.UserID,
 			SubjectTypes:  subjectTypes[subj],
+			SelfNames:     selfNames,
 			Isolated:      ident.Isolated,
 			GrantedScopes: policy.AllowedScopes,
 		})
@@ -170,4 +176,44 @@ func (m *Memory) typesForSubject(ctx context.Context, subject string) []string {
 		}
 	}
 	return out
+}
+
+// selfNames reads the names the user declared for themselves in their user-root Document.
+//
+// READ-ONLY, and deliberately does NOT provision the document. Prompt rendering
+// provisions it on first reference, which is the right place for a side effect a person
+// then sees and edits; a consolidation pass creating an empty profile behind their back
+// would put a document nobody asked for in their Path tree and still declare no names.
+//
+// Best-effort in the direction of caution: no document, an unreadable one, or an unedited
+// one all yield no names, and no names means the guard falls back to catching literal
+// self-reference. It never yields a WRONG name, which is the only failure that would
+// matter — a wrong name refuses to place facts about a real person of that name.
+func (m *Memory) selfNames(ctx context.Context) []string {
+	if m.Store == nil || m.SqlMem == nil {
+		return nil
+	}
+	ident := tools.RunIdentity(ctx)
+	if ident.UserID == "" {
+		return nil
+	}
+	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
+	req, err := json.Marshal(map[string]any{
+		"op": "export_md", "scope": "user", "path": memrank.UserRootPath,
+		"include_metadata": false,
+	})
+	if err != nil {
+		return nil
+	}
+	res, execErr := d.Execute(ctx, req)
+	if execErr != nil || res.IsError {
+		return nil
+	}
+	var out struct {
+		Markdown string `json:"markdown"`
+	}
+	if json.Unmarshal([]byte(res.Text), &out) != nil {
+		return nil
+	}
+	return memrank.ParseSelfNames(out.Markdown)
 }

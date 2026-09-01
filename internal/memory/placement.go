@@ -46,6 +46,10 @@ type PlacementInput struct {
 	// Isolated is the run's server-derived isolation bit. An isolated member has no
 	// tenant plane at all.
 	Isolated bool
+	// SelfNames are the names the user declared for themselves in their user-root
+	// Document's Identity section. Empty is normal — most profiles are unedited — and
+	// means the self guard falls back to catching literal self-reference only.
+	SelfNames []string
 	// GrantedScopes is the calling agent's own memory_scopes.
 	//
 	// THIS IS THE ENABLE SWITCH, and deliberately not a separate flag. Placement writes
@@ -112,7 +116,7 @@ func ResolvePlacement(in PlacementInput) PlacementDecision {
 	// A fact about the person whose run this is belongs to them whatever their ontology
 	// says, because the cost of being wrong here is the one cost this design cannot
 	// accept.
-	if target != MemoryScopeUserName && IsSelfSubject(in.Subject, in.UserID) {
+	if target != MemoryScopeUserName && IsSelfSubject(in.Subject, in.UserID, in.SelfNames) {
 		return stay("the subject is the run's own user, which is never placed outside their scope")
 	}
 
@@ -206,17 +210,23 @@ func findTerm(terms []OntologyTerm, name string) (OntologyTerm, bool) {
 // IsSelfSubject reports whether a subject names the end-user of the run rather than some
 // third party.
 //
-// ⚠️ THIS GUARD IS INCOMPLETE AND CANNOT BE COMPLETED HERE. It catches the way the
-// extractor actually spells a self-reference — a live store has entities literally named
-// "user" carrying facts like "The user resides in Cluj-Napoca, Romania" — and the run's
-// own user id. It CANNOT catch a fact recorded about the same person under their own
-// name: "Denn prefers Go" is indistinguishable from "Maria owns the release process"
-// without knowing who Denn is, and this function is not told.
+// Three ways it can know, in order of how much they cover:
 //
-// So it narrows the exposure and does not close it. That is the argument for an operator
-// seeing a placement before it goes live, and it is why this returns a REFUSAL to move
-// rather than a licence to move whatever it does not recognise.
-func IsSelfSubject(subject, userID string) bool {
+//   - selfNames — what the user wrote in their user-root Document's Identity section.
+//     This is the one that closes the case the other two cannot: a fact recorded under
+//     the user's own name. "Ada prefers Go" and "Maria owns the release process" are
+//     the same shape, and only a declared name separates them.
+//   - the literal self-reference the extractor actually emits. A live store holds
+//     entities titled "user" carrying facts like "The user resides in Cluj-Napoca,
+//     Romania".
+//   - the run's own user id, which some writers use as the subject.
+//
+// ⚠️ STILL NOT COMPLETE, and the residue is now a KNOWN and LOCATABLE gap rather than a
+// structural one: a user who has not filled in their Identity section is in exactly the
+// position everybody was before — their name means nothing here. That is visible (the
+// profile is empty), fixable by the person it affects, and it fails toward refusing to
+// place rather than toward placing wrongly.
+func IsSelfSubject(subject, userID string, selfNames []string) bool {
 	s := strings.ToLower(strings.TrimSpace(subject))
 	s = strings.TrimPrefix(s, "the ")
 	if s == "" {
@@ -224,6 +234,12 @@ func IsSelfSubject(subject, userID string) bool {
 	}
 	for _, self := range []string{"user", "me", "i", "myself", "operator", "current user"} {
 		if s == self {
+			return true
+		}
+	}
+	for _, n := range selfNames {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n != "" && s == n {
 			return true
 		}
 	}
