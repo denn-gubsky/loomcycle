@@ -647,15 +647,15 @@ func TestAgentTool_ParallelSpawn_ParksParentOnPause(t *testing.T) {
 
 	a := &AgentTool{
 		SpawnLedger: true,
-		RunDetailed: func(_ context.Context, name, _, _ string) (string, string, error) {
+		RunDetailed: func(_ context.Context, name, _, _ string) (string, map[string]any, string, error) {
 			startedOnce.Do(func() { close(childStarted) })
 			<-childRelease // simulate a long child still running when the pause hits
-			return "child-out-" + name, "run_child_0", nil
+			return "child-out-" + name, nil, "run_child_0", nil
 		},
 	}
 	// Run is a thin wrapper so a.runChild prefers RunDetailed.
 	a.Run = func(ctx context.Context, name, prompt, defID string) (string, error) {
-		out, _, err := a.RunDetailed(ctx, name, prompt, defID)
+		out, _, _, err := a.RunDetailed(ctx, name, prompt, defID)
 		return out, err
 	}
 
@@ -727,12 +727,12 @@ func TestAgentTool_ParallelSpawn_NoWatcherNoLedgerWhenFlagOff(t *testing.T) {
 	gate := newFanoutFakeGate()
 	a := &AgentTool{
 		// SpawnLedger defaults false.
-		RunDetailed: func(_ context.Context, name, _, _ string) (string, string, error) {
-			return "out-" + name, "run_x", nil
+		RunDetailed: func(_ context.Context, name, _, _ string) (string, map[string]any, string, error) {
+			return "out-" + name, nil, "run_x", nil
 		},
 	}
 	a.Run = func(ctx context.Context, name, prompt, defID string) (string, error) {
-		out, _, err := a.RunDetailed(ctx, name, prompt, defID)
+		out, _, _, err := a.RunDetailed(ctx, name, prompt, defID)
 		return out, err
 	}
 	var emu sync.Mutex

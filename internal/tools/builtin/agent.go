@@ -42,7 +42,7 @@ type SubAgentRunner func(ctx context.Context, name string, prompt string, defID 
 // parent can re-find and re-collect its children. Additive: when RunDetailed
 // is nil, parallel_spawn falls back to Run (no run_id, no ledger) — existing
 // callers + tests are unaffected.
-type SubAgentRunnerDetailed func(ctx context.Context, name string, prompt string, defID string) (output string, runID string, err error)
+type SubAgentRunnerDetailed func(ctx context.Context, name string, prompt string, defID string) (output string, state map[string]any, runID string, err error)
 
 // OpenChildRunner starts a PERSISTENT interactive sub-run (RFC BK), runs its
 // first turn, parks it at awaiting_input, and returns the child's run id, the
@@ -216,12 +216,12 @@ type AgentTool struct {
 // runChild drives one sub-agent, preferring RunDetailed (surfaces the child
 // run_id for the spawn ledger) and falling back to Run. runID is "" on the
 // fallback path or when RunDetailed couldn't create a run.
-func (a *AgentTool) runChild(ctx context.Context, name, prompt, defID string) (output string, runID string, err error) {
+func (a *AgentTool) runChild(ctx context.Context, name, prompt, defID string) (output string, state map[string]any, runID string, err error) {
 	if a.RunDetailed != nil {
 		return a.RunDetailed(ctx, name, prompt, defID)
 	}
 	output, err = a.Run(ctx, name, prompt, defID)
-	return output, "", err
+	return output, nil, "", err
 }
 
 // agentInput is the JSON shape the model sends. The discriminator is
@@ -275,6 +275,10 @@ type ParallelSpawnResult struct {
 	Ok     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// State is a stateful child's final structured Σ (RFC CR D5), so a fan-out
+	// parent gets each child's structured result — not just its prose — in the
+	// envelope. Omitted for append/recap children.
+	State map[string]any `json:"state,omitempty"`
 	// RunID is the child's run row id (RFC X Phase 3), captured for the
 	// spawn ledger so a restored fan-out parent can re-find this child.
 	// Internal-only — omitted from the tool_result envelope the model sees.
@@ -455,14 +459,34 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	if !in.Compaction.IsZero() {
 		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
 	}
-	output, err := a.Run(subCtx, in.Name, in.Prompt, in.DefID)
+	output, state, _, err := a.runChild(subCtx, in.Name, in.Prompt, in.DefID)
 	if err != nil {
 		return tools.Result{IsError: true, Text: err.Error()}, nil
 	}
-	if output == "" {
+	if output == "" && len(state) == 0 {
 		return tools.Result{Text: fmt.Sprintf("(sub-agent %q completed with no final text)", in.Name)}, nil
 	}
-	return tools.Result{Text: output}, nil
+	// RFC CR D5: a stateful child hands its final Σ up as the structured result,
+	// folded into the tool_result text (tools.Result is text-only) so the parent
+	// gets the compact structured state, not just prose.
+	return tools.Result{Text: withSubAgentState(output, state)}, nil
+}
+
+// withSubAgentState appends a stateful sub-agent's final Σ (as pretty JSON) to
+// its text result, so the parent receives the structured hand-off (RFC CR D5).
+// No-op when the child produced no state (append/recap runs).
+func withSubAgentState(text string, state map[string]any) string {
+	if len(state) == 0 {
+		return text
+	}
+	sj, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return text
+	}
+	if strings.TrimSpace(text) == "" {
+		return "Final state:\n" + string(sj)
+	}
+	return text + "\n\nFinal state:\n" + string(sj)
 }
 
 // executeParallelSpawn fans out to N children concurrently. Returns
@@ -590,15 +614,15 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			if !sp.Compaction.IsZero() {
 				childCtx = tools.WithCompactionOverride(childCtx, sp.Compaction)
 			}
-			out, childRunID, err := a.runChild(childCtx, sp.Name, sp.Prompt, sp.DefID)
+			out, childState, childRunID, err := a.runChild(childCtx, sp.Name, sp.Prompt, sp.DefID)
 			var r ParallelSpawnResult
 			if err != nil {
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: err.Error(), RunID: childRunID}
 			} else {
-				if out == "" {
+				if out == "" && len(childState) == 0 {
 					out = fmt.Sprintf("(sub-agent %q completed with no final text)", sp.Name)
 				}
-				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out, RunID: childRunID}
+				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out, State: childState, RunID: childRunID}
 			}
 			results[i] = r
 			// Record this child's result on the parent's transcript so a
@@ -615,6 +639,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 						Ok:        r.Ok,
 						Output:    r.Output,
 						Error:     r.Error,
+						State:     r.State, // RFC CR D5: keep the child's Σ durable across a snapshot
 					},
 				})
 			}

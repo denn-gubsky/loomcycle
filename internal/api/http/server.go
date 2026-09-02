@@ -551,7 +551,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
 		// the same runSubAgent.
 		Run: func(ctx context.Context, name, prompt, defID string) (string, error) {
-			out, _, err := s.runSubAgent(ctx, name, prompt, defID)
+			out, _, _, err := s.runSubAgent(ctx, name, prompt, defID)
 			return out, err
 		},
 		RunDetailed: s.runSubAgent,
@@ -890,7 +890,10 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 	if td, ok := t.(*builtin.TeamDef); ok {
 		if td.Spawn == nil {
 			td.Spawn = func(ctx context.Context, name, prompt, defID string) (string, error) {
-				out, _, err := s.runSubAgent(ctx, name, prompt, defID)
+				// Team members thread results as strings today; a stateful member's
+				// Σ hand-off is a separate follow-on (teamrun is string-only
+				// end-to-end). Drop state here — the Agent-tool fan-out carries it.
+				out, _, _, err := s.runSubAgent(ctx, name, prompt, defID)
 				return out, err
 			}
 		}
@@ -5625,10 +5628,10 @@ func secretEnvValues(environ []string) map[string]string {
 // child's run row id (RFC X Phase 3) — "" when the run was never created (an
 // early resolution/provider error), otherwise the sub-run's id even on failure
 // so the parent's spawn ledger can re-find it. (Wired to AgentTool.Run.)
-func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, string, error) {
+func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, map[string]any, string, error) {
 	prep, err := s.prepareSubRun(ctx, name, prompt, defID, false, func(providers.Event) {})
 	if err != nil {
-		return "", "", err
+		return "", nil, "", err
 	}
 	defer prep.Slot.releaseCurrent() // registered first → runs LAST (matches original)
 	defer prep.cleanup()             // registered second → runs first
@@ -5640,14 +5643,16 @@ func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, de
 		// model sees the unwrapped error message. agent_id is the v0.4
 		// addressable handle, so include it too — the easiest hint for
 		// "GET /v1/agents/<this>" debugging.
-		return "", prep.RunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
+		return "", nil, prep.RunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
 			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
 	}
 	// Surface the sub agent_id to the parent agent's transcript by
 	// prefixing the tool_result text. Parent caller's model sees this
 	// and can echo it to the UI. Cheap; unblocks future "cancel only
-	// the sub" UX.
-	return formatSubAgentOutput(prep.AgentID, res.FinalText), prep.RunID, nil
+	// the sub" UX. res.State is the sub-agent's final structured Σ (RFC CR
+	// L2 stateful runs; nil otherwise) — the parent receives it as the
+	// structured hand-off instead of re-parsing prose (RFC CR D5).
+	return formatSubAgentOutput(prep.AgentID, res.FinalText), res.State, prep.RunID, nil
 }
 
 // subRunPrep bundles a fully-prepared sub-run ready to enter loop.Run. The
