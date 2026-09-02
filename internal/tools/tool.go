@@ -1010,6 +1010,29 @@ func WithContextPolicy(ctx context.Context, c *config.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyContextPolicy{}, c)
 }
 
+type ctxKeyExecState struct{}
+
+// ExecStateHolder holds the live structured execution state Σ of an L2 stateful
+// run (RFC CR `context.mode: stateful`). The loop re-points Sigma each step
+// before dispatching an action, so a stateful agent that names `Context` as its
+// action (op=state) reads the current state. A pointer holder (not the map
+// directly) so the loop can swap Σ wholesale each step without re-stamping ctx.
+type ExecStateHolder struct{ Sigma map[string]any }
+
+// WithExecutionState attaches the live-Σ holder to ctx. nil is a no-op.
+func WithExecutionState(ctx context.Context, h *ExecStateHolder) context.Context {
+	if h == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyExecState{}, h)
+}
+
+// ExecutionState returns the live-Σ holder, or nil when the run is not stateful.
+func ExecutionState(ctx context.Context) *ExecStateHolder {
+	h, _ := ctx.Value(ctxKeyExecState{}).(*ExecStateHolder)
+	return h
+}
+
 // ContextPolicy returns the inherited layered-context settings (sparse), or nil.
 func ContextPolicy(ctx context.Context) *config.Context {
 	c, _ := ctx.Value(ctxKeyContextPolicy{}).(*config.Context)

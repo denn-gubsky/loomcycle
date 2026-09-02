@@ -535,6 +535,15 @@ const (
 	// retained (non-destructive audit).
 	EventContextRecap EventType = "context_recap"
 
+	// EventContextState marks one step of an L2 structured-execution-state run
+	// (RFC CR `context.mode: stateful`): the model emitted a patch, the runtime
+	// merged it into the state object Σ, and (unless done) will execute the next
+	// action. Sibling of EventContextRecap — it carries the post-merge Σ so the
+	// transcript is a full audit of how the state evolved, and a client can render
+	// the live state. The reasoning is forwarded once here and then discarded (not
+	// fed to the next step).
+	EventContextState EventType = "context_state"
+
 	// EventLimit carries a per-scope token-budget crossing (RFC AW): a soft
 	// crossing (warn, run continues) or a hard crossing (a mid-run notice; the
 	// run still finishes, but the NEXT run for the scope is refused at
@@ -629,6 +638,10 @@ type Event struct {
 	// running reasoning-recap that replaces prior history in L1 recap mode, RFC
 	// CR). Nil otherwise.
 	ContextRecap *ContextRecapEventInfo `json:"context_recap,omitempty"`
+
+	// ContextState carries the structured payload on EventContextState (the
+	// post-merge state Σ + the applied patch, RFC CR L2). Nil otherwise.
+	ContextState *ContextStateEventInfo `json:"context_state,omitempty"`
 
 	// Limit carries the structured payload on EventLimit (a per-scope
 	// token-budget crossing, RFC AW). Nil on all other event types.
@@ -888,6 +901,20 @@ type ContextRecapEventInfo struct {
 	// Reasoning echoes the R-layer policy that produced this ("recap" | "drop").
 	// Informational; replay uses Recap directly.
 	Reasoning string `json:"reasoning,omitempty"`
+}
+
+// ContextStateEventInfo is the structured payload on EventContextState (RFC CR L2
+// structured execution state). State is the post-merge Σ; Patch is the merge-patch
+// the model emitted this step (a null value deleted a key). Iter is the 0-based
+// step index. Action names the tool the step will run next (empty when the run is
+// finishing). Reasoning is the model's discarded step reasoning (carried once for
+// audit, never fed forward).
+type ContextStateEventInfo struct {
+	State     map[string]any `json:"state"`
+	Patch     map[string]any `json:"patch,omitempty"`
+	Iter      int            `json:"iter"`
+	Action    string         `json:"action,omitempty"`
+	Reasoning string         `json:"reasoning,omitempty"`
 }
 
 // MemoryBankedInfo is the outcome of a compaction's memory flush. It is on the
