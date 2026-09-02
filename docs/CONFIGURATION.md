@@ -655,6 +655,33 @@ As with compaction, the **full transcript is always retained** — audit, replay
 
 > **Which one?** `append` (+ `compaction`) stays the default and is right for most runs. Reach for `mode: recap` on a **local / weak model doing long procedural work**, where a growing prompt measurably degrades answers — that is the regime where keeping recent observations verbatim while recapping old reasoning wins on both cost and quality. On a frontier model at short horizons the two are quality-equivalent, so the motivation there is cost alone.
 
+#### `mode: stateful` — structured execution state
+
+The strongest retention mode. Instead of a history (full, recapped, or otherwise), the model is fed only three things each step: the preamble, a **structured state object** it maintains, and the **latest observation**. It responds with a single `emit_state` call carrying a *patch* to the state and the *next action*:
+
+```yaml
+agents:
+  procedural-runner:
+    context:
+      mode: stateful
+      state_schema:              # optional — the shape the state (and every patch) must hold
+        type: object
+        additionalProperties: false
+        properties:
+          discovered: {type: array, items: {type: string}}
+          current_dir: {type: string}
+          done: {type: boolean}
+      on_invalid_patch: retry    # retry (default) | fail
+      max_patch_retries: 2
+```
+
+Each step the runtime: validates the patch against `state_schema` (a subset — object with typed properties + `additionalProperties`; `required` is not enforced per-step since the state accretes), merges it into the state with **JSON merge-patch** semantics (a `null` value deletes a key), records the new state on the transcript (a `context_state` event — a full audit of how the state evolved), then runs the named action to produce the next observation. The agent finishes by omitting the action (or `done: true`) and putting its answer in `final`. Because only the state + one observation is ever fed, the prompt stays **flat** and cost is linear in the horizon — the same O(T) property as recap, but the model carries an explicit, typed working memory instead of prose.
+
+- **Actions, not tool calls.** A stateful agent does not call its tools directly — it *names* one in `action: {tool, input}` and the runtime dispatches it. The agent's tool catalog + the state schema are described to it in the preamble. It can read its own state back mid-run by naming `Context` with `op: state`.
+- **Invalid patches** are rolled back and retried (the model is shown its rejected `emit_state` and the reason) up to `max_patch_retries`; `on_invalid_patch: fail` ends the run instead. `state_schema` is optional — omit it and patches are accepted unvalidated (useful before a schema is settled).
+- **When to use it:** long-horizon procedural work whose progress is a well-defined *state* (files discovered, hypotheses tested, a working directory) rather than a conversation. On loomcycle's benchmark it was the top arm at long horizon on a weak local model. It is **not** for open-ended conversation — the state must be a sufficient summary of the task, which a chat is not. It is opt-in per agent, like every other retention mode.
+- **Scope note:** stateful runs are autonomous; interactive steering, pause/park, and cross-instance resume of a mid-flight stateful run are not wired yet (a step re-derives cheaply from the state) — they compose on top later. The design rationale lives in the RFC in the doc store.
+
 ### Interactive local agents
 
 For a terminal you steer turn-by-turn:
