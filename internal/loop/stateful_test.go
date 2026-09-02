@@ -307,3 +307,78 @@ func TestRun_Stateful_ActionSeesLiveState(t *testing.T) {
 		t.Errorf("action saw Σ count = %v, want the live 5", saw["count"])
 	}
 }
+
+// The model can PROPOSE a state_schema (RFC CR model-proposed→adopted): it is
+// recorded on the transcript marker + returned in RunResult, but is INERT (does
+// not change validation this run). Surfaced only when it differs from the active
+// schema.
+func TestRun_Stateful_ProposeSchema(t *testing.T) {
+	prov := &statefulScriptProvider{scripts: []string{
+		`{"patch":{"count":1},"propose_schema":{"type":"object","properties":{"count":{"type":"integer"}}},"done":true,"final":"done"}`,
+	}}
+	var markerProposed map[string]any
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Dispatcher: tools.NewDispatcher(nil),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil), // no active schema
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventContextState && ev.ContextState.ProposedSchema != nil {
+				markerProposed = ev.ContextState.ProposedSchema
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ProposedSchema == nil {
+		t.Fatal("RunResult.ProposedSchema not set")
+	}
+	if _, ok := res.ProposedSchema["properties"]; !ok {
+		t.Errorf("proposed schema missing properties: %v", res.ProposedSchema)
+	}
+	if markerProposed == nil {
+		t.Error("the context_state marker did not carry the proposed schema (no transcript audit)")
+	}
+	// Inert: the proposal did NOT become the active schema (a wrong-typed patch
+	// would still have been accepted this run since no schema was active — proven
+	// by the run completing without a validation error, which it did).
+}
+
+// A proposal that merely restates the ALREADY-ADOPTED schema is suppressed (not
+// surfaced as noise).
+func TestRun_Stateful_ProposeSchema_DedupWhenSame(t *testing.T) {
+	active := map[string]any{"type": "object", "properties": map[string]any{"n": map[string]any{"type": "integer"}}}
+	prov := &statefulScriptProvider{scripts: []string{
+		`{"patch":{"n":1},"propose_schema":{"type":"object","properties":{"n":{"type":"integer"}}},"done":true,"final":"done"}`,
+	}}
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Dispatcher: tools.NewDispatcher(nil),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(active),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ProposedSchema != nil {
+		t.Errorf("a proposal identical to the active schema must be suppressed, got %v", res.ProposedSchema)
+	}
+}
+
+func TestSchemasDiffer(t *testing.T) {
+	s := func(j string) map[string]any {
+		var m map[string]any
+		_ = json.Unmarshal([]byte(j), &m)
+		return m
+	}
+	if schemasDiffer(s(`{"type":"object","properties":{"a":1}}`), s(`{"properties":{"a":1},"type":"object"}`)) {
+		t.Error("key order must not matter (json.Marshal sorts keys)")
+	}
+	if !schemasDiffer(s(`{"type":"object"}`), nil) {
+		t.Error("a non-empty proposal differs from a nil active schema")
+	}
+	if !schemasDiffer(s(`{"type":"object"}`), s(`{"type":"array"}`)) {
+		t.Error("different schemas must differ")
+	}
+}

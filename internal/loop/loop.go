@@ -773,6 +773,11 @@ type RunResult struct {
 	// State is the final structured execution state Σ of an L2 stateful run (RFC
 	// CR `context.mode: stateful`); nil for append/recap runs.
 	State map[string]any
+	// ProposedSchema is the LAST state_schema the model proposed during a stateful
+	// run (RFC CR model-proposed→operator-adopted), when it differs from the run's
+	// active schema. Inert — surfaced for an operator to review + adopt (by forking
+	// the agent def's context.state_schema). nil when nothing was proposed.
+	ProposedSchema map[string]any
 }
 
 // ErrTurnCancelled is the cancel cause the server fires on a run's armed per-turn

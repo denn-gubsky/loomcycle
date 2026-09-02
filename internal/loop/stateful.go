@@ -73,7 +73,8 @@ func emitStateToolSpec() providers.ToolSpec {
     "patch": {"type": "object", "description": "a JSON merge-patch applied to the state; a null value deletes a key"},
     "action": {"type": "object", "properties": {"tool": {"type": "string"}, "input": {"type": "object"}}, "description": "the next tool to run; omit to finish"},
     "done": {"type": "boolean", "description": "true when the task is complete"},
-    "final": {"type": "string", "description": "the final answer text, when done"}
+    "final": {"type": "string", "description": "the final answer text, when done"},
+    "propose_schema": {"type": "object", "description": "OPTIONAL: propose a JSON-Schema (object with typed properties) that this task's state should conform to, when no schema is set or a better one is apparent. It is recorded for an operator to review and adopt; it does NOT take effect this run."}
   },
   "required": ["patch"]
 }`),
@@ -81,11 +82,12 @@ func emitStateToolSpec() providers.ToolSpec {
 }
 
 type emitStateOut struct {
-	Reasoning string         `json:"reasoning"`
-	Patch     map[string]any `json:"patch"`
-	Action    *stateAction   `json:"action"`
-	Done      bool           `json:"done"`
-	Final     string         `json:"final"`
+	Reasoning     string         `json:"reasoning"`
+	Patch         map[string]any `json:"patch"`
+	Action        *stateAction   `json:"action"`
+	Done          bool           `json:"done"`
+	Final         string         `json:"final"`
+	ProposeSchema map[string]any `json:"propose_schema"`
 }
 
 type stateAction struct {
@@ -262,6 +264,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 
 	obs := initialObservation(initial)
 	var total providers.Usage
+	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
@@ -307,8 +310,18 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 
 		sigma = statepatch.Merge(sigma, es.Patch)
 		holder.Sigma = sigma
+
+		// Model-proposed schema (RFC CR): recorded for the operator to review +
+		// adopt (by forking the agent def's context.state_schema). INERT — it does
+		// not change validation this run. Only surfaced when it differs from the
+		// active schema, so an agent restating the adopted schema is not noise.
+		var proposed map[string]any
+		if len(es.ProposeSchema) > 0 && schemasDiffer(es.ProposeSchema, schema) {
+			proposed = es.ProposeSchema
+			lastProposed = es.ProposeSchema
+		}
 		emit(providers.Event{Type: providers.EventContextState,
-			ContextState: &providers.ContextStateEventInfo{State: sigma, Patch: es.Patch, Iter: iter, Action: actionName(es), Reasoning: es.Reasoning}})
+			ContextState: &providers.ContextStateEventInfo{State: sigma, Patch: es.Patch, Iter: iter, Action: actionName(es), Reasoning: es.Reasoning, ProposedSchema: proposed}})
 
 		// Terminal: done flag, or no action named.
 		if es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == "" {
@@ -318,7 +331,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			}
 			emit(providers.Event{Type: providers.EventText, Text: final})
 			emit(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &total})
-			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma}, nil
+			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 		}
 
 		// Execute the named action → next observation.
@@ -337,5 +350,17 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	}
 
 	emit(providers.Event{Type: providers.EventDone, StopReason: "max_iterations", Usage: &total})
-	return RunResult{StopReason: "max_iterations", Iterations: maxIter, Usage: total, State: sigma}, nil
+	return RunResult{StopReason: "max_iterations", Iterations: maxIter, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
+}
+
+// schemasDiffer reports whether two schema objects are not JSON-equal (a nil/empty
+// active schema differs from any non-empty proposal). Used to suppress a proposal
+// that merely restates the already-adopted schema.
+func schemasDiffer(a, b map[string]any) bool {
+	ab, err1 := json.Marshal(a)
+	bb, err2 := json.Marshal(b)
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return string(ab) != string(bb)
 }

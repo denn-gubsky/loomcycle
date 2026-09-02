@@ -923,6 +923,13 @@ type ContextStateEventInfo struct {
 	Iter      int            `json:"iter"`
 	Action    string         `json:"action,omitempty"`
 	Reasoning string         `json:"reasoning,omitempty"`
+	// ProposedSchema is a state_schema the model proposed this step (RFC CR L2
+	// model-proposed→operator-adopted flow). Recorded on the transcript for the
+	// operator to review; it is INERT — it does not change validation for this or
+	// any run until an operator adopts it (by forking the agent def's
+	// context.state_schema). Absent unless the model proposed one that differs
+	// from the run's active schema.
+	ProposedSchema map[string]any `json:"proposed_schema,omitempty"`
 }
 
 // MemoryBankedInfo is the outcome of a compaction's memory flush. It is on the
