@@ -517,6 +517,9 @@ agents:
           // canonicalType started contributing to it.
           type_lookup_failed: 0,
           type_lookup_error: "",
+          type_proposed: 0,         // unknown types filed as inert ontology candidates
+          type_fell_back: 0,        // subjects filed under the fallback type instead of being lost
+          proposed_names: {},       // name -> true, so one pass proposes a type once
           entity_nodes: 0,          // distinct subjects given an entity chunk
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
@@ -1701,6 +1704,57 @@ agents:
       // to guess.
       function entityKey(type, subject) { return type + ":" + slug(normalizeSubject(subject)); }
 
+      // ENTITY_FALLBACK_TYPE is where a subject goes when its proposed type cannot be used.
+      //
+      // MEASURED: on a real corpus the extractor invented `experience`, the tenant had not
+      // declared it, and upsert_chunk refused the write — so the fact landed in k/v with NO
+      // graph presence at all. The gate's own message is that an undeclared-type node
+      // "becomes a node nobody can find", but refusing produces no node, which loses the
+      // subject entirely. A generic-but-findable node keeps the subject reachable and keeps
+      // its facts together, which is what the entity tier is for.
+      //
+      // `object` because it is part of the compiled-in seed (POLE+O), so it is declared in
+      // every tenant that has not deliberately removed it.
+      var ENTITY_FALLBACK_TYPE = "object";
+
+      // proposeOntologyType files an unknown type as an INERT candidate.
+      //
+      // The type is not adopted and changes nothing for any run: propose_entity only ever
+      // writes a proposal, and resolving one is an operator action on a surface this agent
+      // cannot reach. So a type the extractor invented becomes something an operator can
+      // look at and accept, instead of a silently discarded write.
+      //
+      // ONCE PER PASS PER NAME, and best-effort: the op itself refuses a duplicate, a name
+      // already in force, and one an operator already rejected (a tombstone, so this cannot
+      // nag). A failure here never affects the fact.
+      // undeclaredTypeRefusal reports whether the LAST entity write failed because the
+      // tenant does not declare that type — as opposed to any other fault.
+      //
+      // Matched on the refusal's own words rather than a status code, because the tool
+      // returns prose. Narrow on purpose: a store fault must NOT be mistaken for an
+      // undeclared type, or a transient error would quietly re-type a subject.
+      function undeclaredTypeRefusal(st) {
+        return /is not an entity type this tenant declares/.test(String(st.entity_error || ""));
+      }
+
+      function proposeOntologyType(st, name) {
+        if (!name || st.proposed_names[name]) { return; }
+        st.proposed_names[name] = true;
+        try {
+          Document({
+            op: "propose_entity", name: name,
+            body: "Proposed by the memory consolidator: the extractor typed at least one " +
+                  "fact with this kind and the tenant does not declare it, so those facts " +
+                  "were filed under " + ENTITY_FALLBACK_TYPE + " instead. Accept it to give " +
+                  "them their own type, or reject it to keep the fallback."
+          });
+          st.type_proposed++;
+        } catch (e) {
+          // An already-proposed or already-rejected name lands here. Not worth a counter:
+          // the point of the tombstone is that re-filing is a no-op.
+        }
+      }
+
       // canonicalType returns the type this subject is ALREADY filed under, or the
       // extractor's proposal when the subject is new.
       //
@@ -1803,21 +1857,44 @@ agents:
       function mirrorEntity(st, key, fact, scope) {
         if (!fact.type || !fact.subject) { return; } // untyped fact: k/v only (by design)
         scope = scope || CONFIG.scope;
-        // A statement class is not an entity type. Counted rather than silently
-        // skipped: a pass that mirrored nothing because every type was rejected
-        // must not look like a pass with nothing to mirror.
-        if (ENTITY_TYPE_DENY[fact.type] === true) { st.entity_type_refused++; return; }
         var docID = entitiesDoc(st, scope);
         if (!docID) { return; }
 
+        // A statement class is not an entity type — "preference:user" reads as "the entity
+        // of type preference named user". It used to be DROPPED, which lost the subject; the
+        // subject itself ("user") was never the problem, only the kind. Filed under the
+        // fallback instead, so the facts stay reachable. NOT proposed as a candidate: these
+        // names are already declared, they are simply being misused as a kind.
+        var proposed = fact.type;
+        if (ENTITY_TYPE_DENY[proposed] === true) {
+          st.entity_type_refused++;
+          proposed = ENTITY_FALLBACK_TYPE;
+        }
+
         // The type this subject is ALREADY filed under wins over this call's guess, so one
         // subject is one node however many ways the extractor spells its kind.
-        var subjType = canonicalType(st, scope, fact.type, fact.subject);
+        var subjType = canonicalType(st, scope, proposed, fact.subject);
         var subjKey = entityKey(subjType, fact.subject);
         var isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
         var subjID = upsertEntityChunk(st, scope, docID, subjKey, {
           title: fact.subject, type: subjType, subject: fact.subject
         });
+        // UNDECLARED TYPE: the write was refused because the tenant does not declare this
+        // kind. File the kind as an inert candidate an operator can accept, then retry under
+        // the fallback — the key has to move with the type, since the type is part of a
+        // subject node's identity.
+        if (!subjID && subjType !== ENTITY_FALLBACK_TYPE && undeclaredTypeRefusal(st)) {
+          proposeOntologyType(st, subjType);
+          st.type_fell_back++;
+          // Remember the fallback for this subject so the rest of the pass agrees with it.
+          st.subject_types[scope + "\u0000" + slug(normalizeSubject(fact.subject))] = ENTITY_FALLBACK_TYPE;
+          subjType = ENTITY_FALLBACK_TYPE;
+          subjKey = entityKey(subjType, fact.subject);
+          isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
+          subjID = upsertEntityChunk(st, scope, docID, subjKey, {
+            title: fact.subject, type: subjType, subject: fact.subject
+          });
+        }
         if (!subjID) { return; }
         if (isNewSubject) { st.entity_nodes++; }
 
@@ -2463,6 +2540,13 @@ agents:
             ent += ", " + st.entity_failed + " graph write(s) failed";
             // The reason, because the transcript of an internal agent cannot be read back.
             if (st.entity_error) { ent += " (first: " + String(st.entity_error).slice(0, 220) + ")"; }
+          }
+          if (st.type_fell_back) {
+            ent += ", " + st.type_fell_back + " subject(s) filed under " + ENTITY_FALLBACK_TYPE +
+              " because the tenant declares no such type";
+          }
+          if (st.type_proposed) {
+            ent += ", " + st.type_proposed + " new type(s) proposed for an operator to accept";
           }
           if (st.type_lookup_failed) {
             ent += ", " + st.type_lookup_failed + " subject-type lookup(s) failed";

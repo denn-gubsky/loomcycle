@@ -7,6 +7,7 @@ import (
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,11 @@ type fakeToolset struct {
 	// failTypeLookup makes the canonical-type query error, so a lookup failure can be told
 	// apart from a chunk-write failure in the report.
 	failTypeLookup bool
+	// declaredTypes, when non-empty, makes upsert_chunk refuse an entity type outside the
+	// set with the REAL gate's wording — the refusal the fallback keys off.
+	declaredTypes map[string]bool
+	// proposedTypes records propose_entity calls: name -> true.
+	proposedTypes map[string]bool
 
 	// The entity half, filled by fakeDocument.
 	entitiesDocID string
@@ -158,6 +164,7 @@ func newFakeToolset() *fakeToolset {
 		chunkRows:      map[string]map[string]any{},
 		verdicts:       map[string]string{},
 		failEntityKeys: map[string]bool{},
+		proposedTypes:  map[string]bool{},
 		// Source of truth for this format: formatSubAgentOutput in
 		// internal/api/http/resume.go. Nothing links them — grep that name.
 		subAgentHeader: "[sub-agent agent_id=a_test000000000000]\n",
@@ -295,6 +302,14 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		if d.f.failEntityKeys[key] {
 			return tools.Result{IsError: true, Text: "upsert_chunk: write failed for " + key}, nil
 		}
+		// The ontology gate, in the real gate's own words — the fallback matches on them.
+		if len(d.f.declaredTypes) > 0 {
+			if typ, _ := in["type"].(string); typ != "" && !d.f.declaredTypes[typ] {
+				return tools.Result{IsError: true, Text: "upsert_chunk: " + strconv.Quote(typ) +
+					" is not an entity type this tenant declares, so an assertion typed with it " +
+					"becomes a node nobody can find. Declared: object, person"}, nil
+			}
+		}
 		id, existed := d.f.chunks[key]
 		if !existed {
 			id = fmt.Sprintf("chunk-%d", len(d.f.chunks)+1)
@@ -383,6 +398,13 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		old, _ := in["supersedes_id"].(string)
 		d.f.supersededChunks = append(d.f.supersededChunks, old+" by "+id)
 		return okResult(map[string]any{"ok": true})
+	case "propose_entity":
+		name, _ := in["name"].(string)
+		if d.f.proposedTypes[name] {
+			return tools.Result{IsError: true, Text: "propose_entity: " + name + " is already proposed"}, nil
+		}
+		d.f.proposedTypes[name] = true
+		return okResult(map[string]any{"proposed": name, "chunk_id": "prop-" + name})
 	case "query_chunks":
 		sql, _ := in["sql"].(string)
 		// The canonical-TYPE lookup: "... LIKE '%:<slug>' AND c.type <> 'fact'". Answers
@@ -4632,5 +4654,83 @@ func TestConsolidator_SeparatesATypeLookupFailureFromAWriteFailure(t *testing.T)
 	}
 	if strings.Contains(res.FinalText, "graph write(s) failed") {
 		t.Errorf("a lookup failure must NOT be counted as a write failure: %s", res.FinalText)
+	}
+}
+
+// ---- an undeclared type becomes a candidate, and the subject is kept ----------
+
+// TestConsolidator_UndeclaredTypeIsProposedAndTheSubjectFiledAsObject is the fix for a
+// measured loss. On a real corpus the extractor invented `experience`, the tenant had not
+// declared it, and upsert_chunk refused the write — so the fact landed in key/value with NO
+// graph presence at all. The gate's own message is that an undeclared-type node "becomes a
+// node nobody can find", but refusing produces no node, which loses the subject entirely.
+func TestConsolidator_UndeclaredTypeIsProposedAndTheSubjectFiledAsObject(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: dave went skydiving\nassistant: wow"
+	f.declaredTypes = map[string]bool{"object": true, "person": true, "fact": true}
+	f.factsJSON = `[{"text":"Dave went skydiving in June.","class":"fact","type":"experience","subject":"Dave"}]`
+
+	res := runConsolidator(t, f)
+
+	// The subject survives, under the fallback type and a key that MOVED with it — the type
+	// is part of a subject node's identity, so a stale key would split it.
+	if _, ok := f.chunks["object:dave"]; !ok {
+		t.Errorf("the subject was not filed under the fallback type; chunks: %v", f.chunks)
+	}
+	if _, ok := f.chunks["experience:dave"]; ok {
+		t.Errorf("a chunk was created under the refused type: %v", f.chunks)
+	}
+	// The unknown kind becomes something an operator can accept, rather than a lost write.
+	if !f.proposedTypes["experience"] {
+		t.Errorf("the undeclared type was not proposed as a candidate: %v", f.proposedTypes)
+	}
+	for _, want := range []string{"filed under object", "type(s) proposed"} {
+		if !strings.Contains(res.FinalText, want) {
+			t.Errorf("the report should say %q: %s", want, res.FinalText)
+		}
+	}
+}
+
+// A statement class misused as a kind is already DECLARED — proposing it would be
+// meaningless — but the subject is still not the problem, so it must not be dropped.
+func TestConsolidator_AStatementClassFallsBackWithoutBeingProposed(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I prefer rock\nassistant: ok"
+	f.declaredTypes = map[string]bool{"object": true, "person": true, "fact": true, "preference": true}
+	f.factsJSON = `[{"text":"The user prefers rock music.","class":"preference","type":"preference","subject":"user"}]`
+
+	runConsolidator(t, f)
+
+	if _, ok := f.chunks["object:user"]; !ok {
+		t.Errorf("a statement-class type should fall back, not drop the subject: %v", f.chunks)
+	}
+	if f.proposedTypes["preference"] {
+		t.Error("a declared statement class must NOT be proposed as a new entity type")
+	}
+}
+
+// A refusal that is NOT about an undeclared type must not trigger the fallback: re-typing a
+// subject on a transient store fault would move it for the wrong reason, and the type is
+// part of its identity.
+func TestConsolidator_AnUnrelatedWriteFailureDoesNotRetypeTheSubject(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: dave is an engineer\nassistant: ok"
+	f.declaredTypes = map[string]bool{"object": true, "person": true, "fact": true}
+	f.failEntityKeys["person:dave"] = true // a plain write failure, not a gate refusal
+	f.factsJSON = `[{"text":"Dave is an automotive engineer.","class":"fact","type":"person","subject":"Dave"}]`
+
+	res := runConsolidator(t, f)
+
+	if _, ok := f.chunks["object:dave"]; ok {
+		t.Errorf("a store fault re-typed the subject to the fallback: %v", f.chunks)
+	}
+	if len(f.proposedTypes) != 0 {
+		t.Errorf("nothing should be proposed for a non-gate failure: %v", f.proposedTypes)
+	}
+	if !strings.Contains(res.FinalText, "graph write(s) failed") {
+		t.Errorf("the failure should still be reported: %s", res.FinalText)
 	}
 }
