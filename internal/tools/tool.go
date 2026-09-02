@@ -996,6 +996,26 @@ func CompactionPolicy(ctx context.Context) *config.Compaction {
 	return c
 }
 
+type ctxKeyContextPolicy struct{}
+
+// WithContextPolicy attaches the run's RESOLVED-but-sparse layered-context
+// settings to ctx (per-run > parent-inherited > child def, defaults applied at
+// use-time; RFC CR). A sub-agent inherits this; the spawn path blends the child
+// def over it (parent-set fields win). Read by Context op=self to report the
+// active mode. nil/IsZero is a no-op.
+func WithContextPolicy(ctx context.Context, c *config.Context) context.Context {
+	if c.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyContextPolicy{}, c)
+}
+
+// ContextPolicy returns the inherited layered-context settings (sparse), or nil.
+func ContextPolicy(ctx context.Context) *config.Context {
+	c, _ := ctx.Value(ctxKeyContextPolicy{}).(*config.Context)
+	return c
+}
+
 type ctxKeyCompactionOverride struct{}
 
 // WithCompactionOverride carries a per-spawn compaction override (the Agent

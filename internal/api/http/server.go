@@ -2563,6 +2563,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// inherits the parent's effective policy (its def fills any gaps the parent
 	// left unset), overridable per-spawn by the Agent tool.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, in.Compaction))
+	// RFC CR: the resolved layered-context policy flows down the spawn tree the
+	// same way — a sub-agent inherits the parent's effective mode; its def fills
+	// gaps the parent left unset.
+	loopCtx = tools.WithContextPolicy(loopCtx, config.MergeContext(agentDef.Context, in.Context))
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
@@ -2631,6 +2635,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interactive:         in.Interactive,
 		Sampling:            config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
 		Compaction:          config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
+		Context:             config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field (RFC CR)
 		// RFC BL P3: nil unless the agent set compaction.memory_flush, so an
 		// unopted agent's compaction path is byte-identical.
 		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, effectiveUserID, in.Agent, runID, sessionID),
@@ -3615,6 +3620,11 @@ type runRequest struct {
 	// inherit). nil = inherit the agent's entirely.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
 
+	// Context is an optional per-RUN layered-context / retention override (RFC CR)
+	// — merged PER FIELD over the agent's own `context:` block (this wins; unset
+	// fields inherit). nil = inherit the agent's entirely.
+	Context *config.Context `json:"context,omitempty"`
+
 	// MaxContextTokens is an optional per-RUN context-WINDOW override (RFC CJ) —
 	// wins over the agent's own max_context_tokens when > 0, else inherits it
 	// (and 0 there falls through to the provider/driver default). Distinct from
@@ -4181,6 +4191,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
+	loopCtx = tools.WithContextPolicy(loopCtx, config.MergeContext(agentDef.Context, req.Context)) // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
@@ -4243,6 +4254,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Interactive:         req.Interactive,
 		Sampling:            config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
 		Compaction:          config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
+		Context:             config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field (RFC CR)
 		// RFC BL P3: nil unless the agent set compaction.memory_flush.
 		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, req.UserID, req.Agent, runID, sessionID),
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
@@ -4389,6 +4401,10 @@ type messagesRequest struct {
 	// Compaction: per-RUN context-compaction override for this continuation,
 	// merged per field over the agent's. Same semantics as runRequest.Compaction.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+
+	// Context: per-RUN layered-context override for this continuation, merged per
+	// field over the agent's. Same semantics as runRequest.Context (RFC CR).
+	Context *config.Context `json:"context,omitempty"`
 
 	// MaxContextTokens: per-RUN context-WINDOW override for this continuation
 	// turn (RFC CJ). Same semantics as runRequest.MaxContextTokens.
@@ -4771,6 +4787,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
+	loopCtx = tools.WithContextPolicy(loopCtx, config.MergeContext(agentDef.Context, body.Context)) // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
@@ -4830,6 +4847,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ArmTurnCancel:          s.armTurnCancelIf(body.Interactive, run.ID),                  // RFC BH: turn-cancellable when interactive
 		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
 		Compaction:             config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
+		Context:                config.MergeContext(agentDef.Context, body.Context),          // per-run wins per field (RFC CR)
 		ContextPlugins:         s.contextPlugins,                                             // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
@@ -5015,6 +5033,41 @@ func replayTranscript(events []store.Event) []providers.Message {
 					}
 				}
 				messages = loop.CompactionMessages(pinned, cc.Summary, tail)
+			}
+			asstText.Reset()
+			asstTools = nil
+			pendingToolResults = nil
+			asstReasoning = ""
+			asstReasoningSignature = ""
+		case "context_recap":
+			// L1 reasoning-recap (RFC CR): the span before the kept tail collapses
+			// to a running recap. RESET accumulated state and seed the same
+			// task + recap + kept-tail form the live loop swapped in, so a rebuild
+			// reconstructs the recapped fed history, not the full transcript. Events
+			// AFTER the marker replay normally on top. The full transcript is
+			// retained (non-destructive audit).
+			flushAssistant()
+			flushPendingTools()
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ContextRecap != nil {
+				cr := pe.ContextRecap
+				keepN := cr.KeepN
+				if keepN < 0 {
+					keepN = 0
+				}
+				if keepN > len(messages) {
+					keepN = len(messages)
+				}
+				tail := append([]providers.Message(nil), messages[len(messages)-keepN:]...)
+				pinned := ""
+				if cr.KeepFirst && len(messages) > 0 {
+					for _, c := range messages[0].Content {
+						if c.Type == "text" {
+							pinned += c.Text
+						}
+					}
+				}
+				messages = loop.RecapMessages(pinned, cr.Recap, tail)
 			}
 			asstText.Reset()
 			asstTools = nil
@@ -6013,6 +6066,12 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subCtx = tools.WithCompactionPolicy(subCtx, subCompaction)
+	// RFC CR: the layered-context policy inherits the same way — the parent's
+	// effective policy fills the gaps the child def leaves unset (parent-set fields
+	// win). No per-spawn override knob yet (P4). Stamped on subCtx so grandchildren
+	// inherit recursively, and passed to the sub-loop's RunOptions.
+	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	subCtx = tools.WithContextPolicy(subCtx, subContext)
 	// RFC AH §4 — the load-bearing spawn invariant: a child's volume set is
 	// the NARROW-ONLY intersection of (child-declared) ∩ (parent's active
 	// bindings). A sub-agent can never gain a volume its parent lacks, and
@@ -6111,6 +6170,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		// a breeder varies temperature by FORKING a def, then spawning it).
 		Sampling:               def.Sampling,
 		Compaction:             subCompaction,
+		Context:                subContext,       // RFC CR: inherited layered-context policy
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (sub-agents included; code-js exempt in the loop)
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,

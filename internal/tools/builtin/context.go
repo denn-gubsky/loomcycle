@@ -262,6 +262,15 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if cp := tools.CompactionPolicy(ctx); !cp.IsZero() {
 		out["compaction"] = cp
 	}
+	// context_policy: the resolved layered-context / retention settings in effect
+	// for this run (RFC CR) — mode (append|recap) + its knobs, inherited down the
+	// spawn tree. DISTINCT from `context` below, which reports how full the window
+	// is: this reports HOW the history is distilled. In recap mode an agent's older
+	// reasoning is folded into a running recap; op=compact triggers a recap rather
+	// than a compaction. Omitted when no context block is configured (append).
+	if cx := tools.ContextPolicy(ctx); !cx.IsZero() {
+		out["context_policy"] = cx
+	}
 	// context: how full the window is as of the last completed turn (used =
 	// input + cache tokens; max = the model's window, 0/absent when unknown e.g.
 	// Ollama). Paired with `compaction` above, this is what an agent needs to

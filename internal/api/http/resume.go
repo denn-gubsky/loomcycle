@@ -358,6 +358,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Interactive:         run.Interactive,
 		Sampling:            agentDef.Sampling,   // per-run override not snapshotted
 		Compaction:          agentDef.Compaction, // per-run override not snapshotted
+		Context:             agentDef.Context,    // per-run override not snapshotted (RFC CR)
 		// BankCompactedSpan is deliberately ABSENT (RFC BL P3). A resumed run
 		// replays a compaction that already happened, and its span was banked when
 		// it first ran — wiring it here would re-bank the same conversation on

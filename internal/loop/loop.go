@@ -188,6 +188,15 @@ type RunOptions struct {
 	// applied at use-time (see config.CompactionDefault*).
 	Compaction *config.Compaction
 
+	// Context carries the resolved per-agent layered-context / retention settings
+	// (already merged: per-run > parent-inherited > child def; RFC CR). When
+	// Mode=="recap" and the provider reports a context window, the loop distils the
+	// fed history by reasoning-recap at a top-of-iteration boundary once used/window
+	// crosses AutoRecapAtPct — replacing the append+compaction path for the run.
+	// nil / Mode=="append" = today's behavior. Defaults applied at use-time (see
+	// config.ContextDefault*).
+	Context *config.Context
+
 	// ContextPlugins is the runtime-wide context-transform chain (RFC Z / F43):
 	// fast, built-in transforms applied to a COPY of the outbound request each
 	// turn (e.g. secret redaction), in order. nil/empty = no chain. Built once
@@ -1306,6 +1315,167 @@ func bankDiscardedSpan(ctx context.Context, opts RunOptions, dropped []providers
 	return &providers.MemoryBankedInfo{PendingID: id, Messages: len(dropped)}
 }
 
+// --- RFC CR L1: reasoning-recap distillation ---
+//
+// Recap mode is a sibling of compaction on the retention spectrum. It reuses the
+// same boundary-snapping (CompactionSplit) and window safety cap so the kept tail
+// never orphans a tool_use/tool_result pair, but differs in two ways: the middle
+// span becomes a bounded RUNNING recap (folded incrementally into the prior recap
+// — O(1) per step, not a fresh proportional summary each time), and the recent
+// tool_use/tool_result pairs are kept VERBATIM rather than summarized. The store
+// side is untouched — the full transcript is always retained.
+
+// contextRecapMode reports whether the resolved context policy selects L1 recap.
+func contextRecapMode(cx *config.Context) bool {
+	return cx != nil && cx.Mode != nil && *cx.Mode == config.ContextModeRecap
+}
+
+// RecapMessages builds the replacement conversation for a recap distillation:
+//
+//	[user(pinnedTask)?] ++ [assistant("[Progress recap]…" + recap)?] ++ keptTail
+//
+// The task is a user turn ON ITS OWN (never fused with the recap), so it stays a
+// fixed size across distillations and the fed prompt stays FLAT — the O(T) property
+// the benchmark proved. The recap is a separate ASSISTANT turn (the agent's own
+// progress note): on the NEXT distillation it falls INTO the evicted span and is
+// folded forward by the recap call, so the recap accumulates correctly with no
+// separate running-state to thread or restore on resume. keptTail is snapped to a
+// clean user-turn boundary (CompactionSplit) so nothing orphans a tool cycle; when
+// there is something to distil it is non-empty and the sequence ends on a real turn.
+func RecapMessages(pinnedTask, recap string, keptTail []providers.Message) []providers.Message {
+	var out []providers.Message
+	if strings.TrimSpace(pinnedTask) != "" {
+		// The task is emitted RAW (no wrapping header). It is its own turn, so it
+		// reads as the original task without one — and, crucially, re-pinning it
+		// next cycle via messageText(messages[0]) then yields the SAME text, so the
+		// pinned turn stays a fixed size. A header would nest on every distillation.
+		out = append(out, providers.Message{Role: "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: pinnedTask}}})
+	}
+	if strings.TrimSpace(recap) != "" {
+		out = append(out, providers.Message{Role: "assistant",
+			Content: []providers.ContentBlock{{Type: "text",
+				Text: "[Progress recap — what I have done and concluded so far; established context for everything before the recent steps below:]\n\n" + recap}}})
+	}
+	return append(out, keptTail...)
+}
+
+// recapReasoningPrompt builds the system prompt for a RUNNING progress recap
+// bounded to maxChars. Unlike compactionPrompt (a proportional N% summary) it asks
+// for a fixed-size running note. The newly-evicted span it is fed already CONTAINS
+// the prior recap (as the assistant turn RecapMessages emitted last time), so the
+// call is incremental — it folds the small prior note plus the new steps into an
+// updated note, never re-reading the whole history. That, plus the flat pinned
+// task, is what keeps recap-mode cost O(T).
+func recapReasoningPrompt(maxChars int) string {
+	if maxChars <= 0 {
+		maxChars = config.ContextDefaultRecapMaxChars
+	}
+	return fmt.Sprintf("You maintain a running RECAP of an agent's progress on a task, carried forward as its working context. "+
+		"The input may include an earlier '[Progress recap …]' note plus the NEW steps taken since. Produce an UPDATED recap, at most %d characters, "+
+		"that folds the new steps into the old: preserve the goal, decisions, established facts and values, tool results that still "+
+		"matter, and the current state; drop verbose reasoning and superseded attempts. Write durable prose the agent can rely on to "+
+		"continue. Output ONLY the recap — no preamble.", maxChars)
+}
+
+// RecapReasoning makes ONE provider call to fold the newly-evicted span (which
+// already contains the prior recap turn) into an updated recap bounded near
+// maxChars. Reuses summarizeWith (NO tools offered → can't re-enter the loop).
+//
+// It is fed the whole evicted span (reasoning + tool_use/tool_result), not only
+// the assistant's prose: on a procedural task the progress IS in the tool results
+// (the counter values, the fetched facts), so recapping prose alone would lose
+// exactly what the next step needs. The recap OUTPUT is what replaces the verbose
+// reasoning — that is the "reasoning distillation".
+func RecapReasoning(ctx context.Context, provider providers.Provider, model string, evicted []providers.Message, maxChars int) (string, error) {
+	maxTok := 0
+	if maxChars > 0 {
+		maxTok = maxChars/4 + 64 // chars→tokens, generous so a compliant model finishes its sentence
+	}
+	return summarizeWith(ctx, provider, model, evicted, recapReasoningPrompt(maxChars), "Progress to recap:", maxTok)
+}
+
+// shouldAutoRecap mirrors shouldAutoCompact for recap mode: the mode is recap,
+// the provider reports a window, the previous turn's footprint crossed the
+// trigger percentage, and we didn't just distil (one-iteration debounce). Recap
+// mode is self-enabling — choosing the mode turns auto-recap on (no separate
+// Enabled flag, unlike compaction).
+func shouldAutoRecap(cx *config.Context, used, window, iter, lastIter int) bool {
+	if !contextRecapMode(cx) {
+		return false
+	}
+	if window <= 0 || used <= 0 || iter <= lastIter+1 {
+		return false
+	}
+	at := config.ContextDefaultAutoRecapAtPct
+	if cx.AutoRecapAtPct != nil {
+		at = *cx.AutoRecapAtPct
+	}
+	return used*100 >= window*at
+}
+
+// maybeRecap runs an INLINE recap distillation (RFC CR L1): fold the evicted span
+// into a fresh running recap, keep the last-N tail verbatim, and replace
+// `messages`. Returns the (possibly unchanged) slice and whether it distilled. A
+// failed recap call changes nothing (logged via emit). The first user turn (the
+// task) is always pinned — the preamble the paper under-counts. No running-state
+// is threaded: the prior recap lives in the evicted span (see RecapMessages) and
+// is folded forward by the recap call, so replay/resume rebuild identically.
+func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Message, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
+	cx := opts.Context
+	keepLastN := config.ContextDefaultKeepLastN
+	reasoning := config.ContextDefaultReasoning
+	maxChars := config.ContextDefaultRecapMaxChars
+	keepFirst := config.CompactionDefaultKeepFirst // pin the task verbatim, like compaction
+	model := opts.Model
+	if cx != nil {
+		if cx.KeepLastN != nil {
+			keepLastN = *cx.KeepLastN
+		}
+		if cx.Reasoning != nil {
+			reasoning = *cx.Reasoning
+		}
+		if cx.RecapMaxChars != nil {
+			maxChars = *cx.RecapMaxChars
+		}
+	}
+	if reasoning == "keep" {
+		return messages, false // no distillation in keep mode
+	}
+	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
+	if !ok {
+		return messages, false
+	}
+	if window > 0 {
+		cut = capKeptTailToWindow(messages, cut, window*compactionKeptTailBudgetPct/100)
+	}
+	newRecap := ""
+	if reasoning == "recap" {
+		r, err := RecapReasoning(ctx, opts.Provider, model, messages[firstIdx:cut], maxChars)
+		if err != nil || strings.TrimSpace(r) == "" {
+			if err != nil {
+				emit(providers.Event{Type: providers.EventError, Error: "context recap failed (" + trigger + "): " + err.Error()})
+			}
+			return messages, false
+		}
+		newRecap = strings.TrimSpace(r)
+	}
+	// reasoning=="drop": no recap call; the evicted span is dropped with no note.
+	before := estimateMessageTokens(messages)
+	pinned := ""
+	if firstIdx > 0 {
+		pinned = messageText(messages[0])
+	}
+	out := RecapMessages(pinned, newRecap, messages[cut:])
+	after := estimateMessageTokens(out)
+	emit(providers.Event{Type: providers.EventContextRecap,
+		ContextRecap: &providers.ContextRecapEventInfo{
+			Recap: newRecap, KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
+			BeforeTokens: before, AfterTokens: after, Trigger: trigger, Reasoning: reasoning}})
+	lcotel.RecordCompactionCtx(ctx, "recap:"+trigger, before, after)
+	return out, true
+}
+
 func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// An interactive run is operator-driven and Cancel-bounded: each operator
 	// turn (and each end_turn park awaiting input) consumes a loop iteration,
@@ -1429,6 +1599,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	ctx = tools.WithCompactRequest(ctx, &compactRequested)
 	var lastCtxTokens, lastWindow int
 	lastCompactIter := -2
+	// L1 recap (RFC CR) reuses lastCompactIter to debounce — the two distillation
+	// modes are mutually exclusive per run. No running-recap state is threaded: the
+	// prior recap rides the transcript (see RecapMessages), so replay/resume are
+	// byte-identical without restoring loop state.
+	recapMode := contextRecapMode(opts.Context)
 
 	var totalUsage providers.Usage
 	var finalText string
@@ -1586,18 +1761,32 @@ outerLoop:
 			}
 		}
 
-		// Auto / self-requested compaction — also a clean boundary (drainSteer
-		// ran; no tool cycle is mid-flight). Fires when the agent asked
-		// (Context op=compact) OR the PREVIOUS iteration's context footprint
-		// crossed the configured threshold. The loop summarizes inline and
-		// replaces the history; the smaller next request self-debounces the
-		// threshold. Applies to ALL runs (interactive + autonomous).
-		if selfReq := compactRequested.Swap(false); selfReq || shouldAutoCompact(opts.Compaction, lastCtxTokens, lastWindow, iter, lastCompactIter) {
+		// Auto / self-requested context distillation — also a clean boundary
+		// (drainSteer ran; no tool cycle is mid-flight). Fires when the agent asked
+		// (Context op=compact) OR the PREVIOUS iteration's footprint crossed the
+		// configured threshold. In recap mode (RFC CR L1) the loop recaps inline;
+		// otherwise it compacts (L0). The two are mutually exclusive per run —
+		// choosing recap bypasses the compaction auto-trigger. The smaller next
+		// request self-debounces. Applies to ALL runs (interactive + autonomous).
+		selfReq := compactRequested.Swap(false)
+		var distill bool
+		if recapMode {
+			distill = selfReq || shouldAutoRecap(opts.Context, lastCtxTokens, lastWindow, iter, lastCompactIter)
+		} else {
+			distill = selfReq || shouldAutoCompact(opts.Compaction, lastCtxTokens, lastWindow, iter, lastCompactIter)
+		}
+		if distill {
 			trigger := "auto"
 			if selfReq {
 				trigger = "self"
 			}
-			if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, emit, trigger); did {
+			if recapMode {
+				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastWindow, emit, trigger); did {
+					messages = newMsgs
+					lastCompactIter = iter
+					lastCtxTokens = estimateMessageTokens(messages)
+				}
+			} else if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, emit, trigger); did {
 				messages = newMsgs
 				lastCompactIter = iter
 				// Compaction shrank the history; refresh the footprint so op=self
