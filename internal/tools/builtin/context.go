@@ -122,7 +122,7 @@ const contextDescription = `Read-only runtime introspection. ` +
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","guide","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","capabilities"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","guide","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","state","capabilities"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
@@ -187,13 +187,35 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execTime(ctx)
 	case "compact":
 		return c.execCompact(ctx)
+	case "state":
+		return c.execState(ctx)
 	case "capabilities":
 		return c.execCapabilities(ctx)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, capabilities)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities)", in.Op)), nil
 	}
+}
+
+// ---- state ----
+
+// execState returns the CURRENT structured execution state Σ of an L2 stateful
+// run (RFC CR `context.mode: stateful`). A stateful agent doesn't call tools
+// directly — it names an action — so this is reachable when it names `Context`
+// (op=state) as its action, to read back what it has recorded so far. Returns an
+// empty state (not an error) on a stateful run that hasn't recorded anything yet,
+// and an error on a non-stateful run where there is no Σ.
+func (c *Context) execState(ctx context.Context) (tools.Result, error) {
+	h := tools.ExecutionState(ctx)
+	if h == nil {
+		return errResult("structured execution state is not available (this run is not in context.mode=stateful)"), nil
+	}
+	state := h.Sigma
+	if state == nil {
+		state = map[string]any{}
+	}
+	return okJSON(map[string]any{"state": state})
 }
 
 // ---- compact ----

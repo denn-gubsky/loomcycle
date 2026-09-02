@@ -346,7 +346,8 @@ func normalize(c *AgentContent) {
 	// row. An explicit mode:"append" is a non-nil *string and is preserved.
 	if c.Context != nil && c.Context.Mode == nil && c.Context.KeepLastN == nil &&
 		c.Context.Reasoning == nil && c.Context.RecapMaxChars == nil &&
-		c.Context.AutoRecapAtPct == nil {
+		c.Context.AutoRecapAtPct == nil && len(c.Context.StateSchema) == 0 &&
+		c.Context.OnInvalidPatch == nil && c.Context.MaxPatchRetries == nil {
 		c.Context = nil
 	}
 

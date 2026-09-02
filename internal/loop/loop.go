@@ -770,6 +770,9 @@ type RunResult struct {
 	FinalText  string // concatenated text from the last assistant turn
 	Iterations int
 	Usage      providers.Usage // sum across iterations
+	// State is the final structured execution state Σ of an L2 stateful run (RFC
+	// CR `context.mode: stateful`); nil for append/recap runs.
+	State map[string]any
 }
 
 // ErrTurnCancelled is the cancel cause the server fires on a run's armed per-turn
@@ -1590,6 +1593,14 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	}
 
 	emit(providers.Event{Type: providers.EventStarted})
+
+	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
+	// the model emits a patch + action each step. Branch here, after the preamble
+	// P (`system`) and the action-tool catalog are resolved, into the self-
+	// contained stateful loop. The append/recap machinery below does not apply.
+	if contextStatefulMode(opts.Context) {
+		return runStateful(ctx, opts, system, messages, toolSpecs, emit)
+	}
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
 	// sets (checked at the next iteration boundary), plus the previous iteration's

@@ -1428,11 +1428,14 @@ func signFromMergedDef(name string, def mergedDef) string {
 	// Context is content-identifying, same as Compaction (RFC CR).
 	if cx := def.Context; !cx.IsZero() {
 		c.Context = &agents.Context{
-			Mode:           cx.Mode,
-			KeepLastN:      cx.KeepLastN,
-			Reasoning:      cx.Reasoning,
-			RecapMaxChars:  cx.RecapMaxChars,
-			AutoRecapAtPct: cx.AutoRecapAtPct,
+			Mode:            cx.Mode,
+			KeepLastN:       cx.KeepLastN,
+			Reasoning:       cx.Reasoning,
+			RecapMaxChars:   cx.RecapMaxChars,
+			AutoRecapAtPct:  cx.AutoRecapAtPct,
+			StateSchema:     cx.StateSchema,
+			OnInvalidPatch:  cx.OnInvalidPatch,
+			MaxPatchRetries: cx.MaxPatchRetries,
 		}
 	}
 	return agents.Sign(c)
