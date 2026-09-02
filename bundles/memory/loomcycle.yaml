@@ -503,6 +503,20 @@ agents:
           placement_asked: {},      // type|subject already asked about, so batches don't re-ask
           subject_types: {},        // scope + slug -> the type this subject is ALREADY filed under
           type_stabilised: 0,       // times the extractor's guess was overridden by the existing type
+          // WHY a graph write failed, not just how many. The counter alone is unactionable:
+          // this agent is `internal: true`, so its runs are kept out of the run and history
+          // surfaces and its transcript CANNOT be read back — the pass report is the only
+          // channel it has. A live investigation stalled on exactly that: "2 graph write(s)
+          // failed" with the reason discarded, and no way to recover it afterwards.
+          //
+          // FIRST message only, and truncated. A per-failure list would put unbounded
+          // model-adjacent text in the report; the first one is what a person acts on.
+          entity_error: "",
+          // The type LOOKUP is a different failure from the chunk WRITE and must not share a
+          // counter. Conflating them is what made the live signal uninterpretable once
+          // canonicalType started contributing to it.
+          type_lookup_failed: 0,
+          type_lookup_error: "",
           entity_nodes: 0,          // distinct subjects given an entity chunk
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
@@ -1740,7 +1754,12 @@ agents:
         } catch (e) {
           // Best-effort: an unreadable store leaves the proposal in place, which is exactly
           // the behaviour before this existed. Never costs a fact.
-          st.entity_failed++;
+          //
+          // Counted SEPARATELY from a chunk write: a failed lookup means the type may drift,
+          // a failed write means the fact is missing from the graph entirely. One counter for
+          // both told an operator neither.
+          st.type_lookup_failed++;
+          if (!st.type_lookup_error) { st.type_lookup_error = errText(e); }
         }
         // MEMOISE THE TYPE ACTUALLY CHOSEN, not the lookup result. Caching "" for a subject
         // nobody has filed yet means the next fact about it in THIS pass falls back to its
@@ -1767,8 +1786,14 @@ agents:
           args.natural_key = naturalKey;
           var res = JSON.parse(Document(args));
           if (res && res.id) { st.entity_ids[memo] = res.id; return res.id; }
+          // Parsed but no id: a refusal that did not throw. It used to return "" silently
+          // and increment NOTHING, so a pass could lose every entity write and report a
+          // clean sheet.
+          st.entity_failed++;
+          if (!st.entity_error) { st.entity_error = "no id in reply: " + String(res && res.error ? res.error : "").slice(0, 200); }
         } catch (e) {
           st.entity_failed++;
+          if (!st.entity_error) { st.entity_error = errText(e); }
         }
         return "";
       }
@@ -2434,7 +2459,15 @@ agents:
         // call failed, and those need different fixes.
         if (st.entity_facts || st.entity_nodes || st.entity_failed || st.entity_type_refused) {
           var ent = "entities " + st.entity_facts + " fact(s) across " + st.entity_nodes + " subject(s)";
-          if (st.entity_failed) { ent += ", " + st.entity_failed + " graph write(s) failed"; }
+          if (st.entity_failed) {
+            ent += ", " + st.entity_failed + " graph write(s) failed";
+            // The reason, because the transcript of an internal agent cannot be read back.
+            if (st.entity_error) { ent += " (first: " + String(st.entity_error).slice(0, 220) + ")"; }
+          }
+          if (st.type_lookup_failed) {
+            ent += ", " + st.type_lookup_failed + " subject-type lookup(s) failed";
+            if (st.type_lookup_error) { ent += " (first: " + String(st.type_lookup_error).slice(0, 220) + ")"; }
+          }
           if (st.entity_type_refused) {
             ent += ", " + st.entity_type_refused + " refused (a statement class is not an entity type)";
           }
