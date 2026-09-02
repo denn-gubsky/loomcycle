@@ -60,6 +60,9 @@ type fakeToolset struct {
 	// failTypeLookup makes the canonical-type query error, so a lookup failure can be told
 	// apart from a chunk-write failure in the report.
 	failTypeLookup bool
+	// selfNames is what Context op=self reports as the owner's DECLARED names. Empty means
+	// nobody has declared who they are, which the extraction prompt must not paper over.
+	selfNames []string
 	// declaredTypes, when non-empty, makes upsert_chunk refuse an entity type outside the
 	// set with the REAL gate's wording — the refusal the fallback keys off.
 	declaredTypes map[string]bool
@@ -553,6 +556,11 @@ func (c *fakeContext) Execute(_ context.Context, raw json.RawMessage) (tools.Res
 	out := map[string]any{"vector_memory": map[string]any{"available": true}}
 	if c.f.bands != nil {
 		out["consolidation"] = c.f.bands
+	}
+	// op=self reports the owner's declared names when there are any. Absent, not empty,
+	// when nobody declared — the caller must be able to tell those apart.
+	if len(c.f.selfNames) > 0 {
+		out["self_names"] = c.f.selfNames
 	}
 	return okResult(out)
 }
@@ -4573,34 +4581,59 @@ func TestConsolidator_OneSubjectTypedTwoWaysInOnePassStillMakesOneNode(t *testin
 	}
 }
 
-// TestConsolidator_ExtractionPromptSaysWhoseMemoryItIs: the extractor sees one transcript
-// and cannot tell which store it is filling, so a fact about the store's own owner came
-// back subject-less in one call and named in the next. Since the subject is half an
-// entity's identity, that split one person across several nodes.
+// TestConsolidator_ExtractionPromptNamesTheDeclaredOwner is the fix for a rule that was
+// WORSE THAN NOTHING, proven on a live two-speaker corpus.
 //
-// Asserted on the PER-CALL prompt, not the system prompt: the system prompt has a measured
-// char ceiling and its digest gates the stored extraction baselines.
-func TestConsolidator_ExtractionPromptSaysWhoseMemoryItIs(t *testing.T) {
+// The prompt used to say "a fact about THEM takes the subject `user`" and never say who THEM
+// was. The model picked the more prominent speaker, so the owner's own facts were filed as a
+// third party's and the other speaker's as the owner's — the self-guard exactly INVERTED,
+// protecting the wrong person from placement and exposing the right one.
+func TestConsolidator_ExtractionPromptNamesTheDeclaredOwner(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
-	f.transcript = "user: I live in Cluj\nassistant: noted"
-	f.factsJSON = `[{"text":"The user resides in Cluj-Napoca.","class":"fact"}]`
+	f.transcript = "Dave: I fixed the carburettor\nCalvin: nice"
+	f.factsJSON = `[{"text":"Dave fixed a carburettor.","class":"fact"}]`
+	f.selfNames = []string{"Dave", "dave"}
 
 	runConsolidator(t, f)
 
-	spawn := lastCall(t, f, "Agent")
-	prompt, _ := spawn.Input["prompt"].(string)
-	if prompt == "" {
-		t.Fatal("no extraction prompt was sent")
+	prompt, _ := lastCall(t, f, "Agent").Input["prompt"].(string)
+	if !strings.Contains(prompt, "belongs to Dave") {
+		t.Errorf("the prompt must NAME the owner — an unnamed owner is what the model got "+
+			"wrong:\n%s", prompt)
 	}
-	for _, want := range []string{"belongs to ONE person", `subject "user"`, "same spelling"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("the extraction prompt must state %q so the owner's facts get one stable subject:\n%s", want, prompt)
-		}
+	if !strings.Contains(prompt, `subject "user"`) {
+		t.Errorf("the prompt must still say which subject the owner's facts take:\n%s", prompt)
 	}
-	// The rule goes BEFORE the transcript delimiters — it is ours, not the transcript's.
-	if strings.Index(prompt, "belongs to ONE person") > strings.Index(prompt, "BEGIN TRANSCRIPT") {
-		t.Error("the owner rule must precede the transcript, like the date line")
+	// The other declared spellings are offered, so the model recognises the owner however
+	// the transcript writes them.
+	if !strings.Contains(prompt, "also go by") {
+		t.Errorf("additional declared names should be offered:\n%s", prompt)
+	}
+}
+
+// TestConsolidator_ExtractionPromptClaimsNoOwnerWhenNoneIsDeclared: with nobody declared the
+// model CANNOT identify an owner from a transcript, and inviting it to try is what produced
+// the inversion. It is asked for consistent spelling and nothing more.
+func TestConsolidator_ExtractionPromptClaimsNoOwnerWhenNoneIsDeclared(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "Dave: I fixed the carburettor\nCalvin: nice"
+	f.factsJSON = `[{"text":"Dave fixed a carburettor.","class":"fact"}]`
+	// f.selfNames deliberately empty.
+
+	runConsolidator(t, f)
+
+	prompt, _ := lastCall(t, f, "Agent").Input["prompt"].(string)
+	if strings.Contains(prompt, "belongs to") {
+		t.Errorf("with nobody declared the prompt must not assert an owner:\n%s", prompt)
+	}
+	if strings.Contains(prompt, `subject "user"`) {
+		t.Errorf("without a name, telling the model to use `user` for \"them\" is the exact "+
+			"bug that inverted the self-guard:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "same spelling") {
+		t.Errorf("the spelling-consistency half still applies:\n%s", prompt)
 	}
 }
 
