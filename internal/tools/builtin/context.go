@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -343,6 +344,22 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// / authed-HTTP path — the case where an agent needs to identify its own
 	// credentials); omitted in open mode (no auth configured), where the flat
 	// tenant_id / user_id above are still the identity.
+	// WHO THE OWNER IS, by their own declaration. An agent that records facts about a
+	// person has to be able to tell a fact about the OWNER of this memory from a fact about
+	// somebody else in the same conversation — and it cannot, from a transcript alone.
+	//
+	// This was measured going wrong: an extraction prompt told the model that "a fact about
+	// THEM takes the subject `user`" without ever saying who THEM was, so on a two-speaker
+	// corpus it picked the more prominent speaker. The owner's facts were then filed as a
+	// third party's and the other speaker's as the owner's — the self-guard exactly
+	// inverted, which is worse than having no rule.
+	//
+	// The names come from the user's own profile document, so nothing here is inferred: an
+	// undeclared profile reports NOTHING rather than a guess, and a caller that gets nothing
+	// must not claim to know who the owner is.
+	if names := c.selfNames(ctx, ident); len(names) > 0 {
+		out["self_names"] = names
+	}
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
 		out["principal"] = map[string]any{
 			"tenant_id":    p.TenantID,
@@ -923,3 +940,39 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 }
 
 var _ tools.Tool = (*Context)(nil)
+
+// selfNames reads the names the end-user declared for themselves in their user-root
+// Document's Identity section.
+//
+// ONE PARSER, deliberately: memory.ParseSelfNames owns the rule that a declaration must be a
+// bullet at column 0, which is what stops the shipped template's own indented example from
+// naming every unedited profile after it. A second copy of that rule in another language is
+// a second chance to get it wrong.
+//
+// Best-effort and read-only. No store, no SQL Memory, no user on the run, no document, or an
+// unedited one all yield nothing — and nothing is the honest answer, since the alternative is
+// asserting an owner nobody declared.
+func (c *Context) selfNames(ctx context.Context, ident tools.RunIdentityValue) []string {
+	if c.Store == nil || c.SqlMem == nil || ident.UserID == "" {
+		return nil
+	}
+	d := &Document{Store: c.Store, SqlMem: c.SqlMem}
+	req, err := json.Marshal(map[string]any{
+		"op": "export_md", "scope": "user", "path": memrank.UserRootPath,
+		"include_metadata": false,
+	})
+	if err != nil {
+		return nil
+	}
+	res, execErr := d.Execute(ctx, req)
+	if execErr != nil || res.IsError {
+		return nil
+	}
+	var out struct {
+		Markdown string `json:"markdown"`
+	}
+	if json.Unmarshal([]byte(res.Text), &out) != nil {
+		return nil
+	}
+	return memrank.ParseSelfNames(out.Markdown)
+}
