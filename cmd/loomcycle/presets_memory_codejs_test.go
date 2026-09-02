@@ -56,6 +56,9 @@ type fakeToolset struct {
 	// is what a deployment without SQL Memory or with an unreadable ontology looks like.
 	placements     map[string]string
 	placementFails bool
+	// failTypeLookup makes the canonical-type query error, so a lookup failure can be told
+	// apart from a chunk-write failure in the report.
+	failTypeLookup bool
 
 	// The entity half, filled by fakeDocument.
 	entitiesDocID string
@@ -387,6 +390,9 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		// is visible to a later one. Keys are sorted for a deterministic winner (the real
 		// query orders by created_at; a Go map does not iterate in order).
 		if strings.Contains(sql, "SELECT c.type") && strings.Contains(sql, "LIKE '%:") {
+			if d.f.failTypeLookup {
+				return tools.Result{IsError: true, Text: "query_chunks: subject-type lookup unavailable"}, nil
+			}
 			suffix := sql[strings.Index(sql, "LIKE '%:")+len("LIKE '%"):]
 			if q := strings.Index(suffix, "'"); q >= 0 {
 				suffix = suffix[:q]
@@ -4573,5 +4579,58 @@ func TestConsolidator_ExtractionPromptSaysWhoseMemoryItIs(t *testing.T) {
 	// The rule goes BEFORE the transcript delimiters — it is ours, not the transcript's.
 	if strings.Index(prompt, "belongs to ONE person") > strings.Index(prompt, "BEGIN TRANSCRIPT") {
 		t.Error("the owner rule must precede the transcript, like the date line")
+	}
+}
+
+// TestConsolidator_ReportsWhyAGraphWriteFailed: the counter alone is unactionable. This
+// agent is `internal: true`, so its runs are kept out of the run and history surfaces and
+// its transcript cannot be read back — the pass report is the ONLY channel it has. A live
+// investigation stalled on exactly that: "2 graph write(s) failed" with the reason
+// discarded and no way to recover it after the fact.
+func TestConsolidator_ReportsWhyAGraphWriteFailed(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: dave likes rock\nassistant: ok"
+	f.factsJSON = `[{"text":"Dave listens to classic rock.","class":"preference","type":"person","subject":"Dave"}]`
+	// The entity write is refused; the k/v write is untouched.
+	f.failEntityKeys["person:dave"] = true
+
+	res := runConsolidator(t, f)
+
+	if !strings.Contains(res.FinalText, "graph write(s) failed") {
+		t.Fatalf("the failure was not reported at all: %s", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "first:") {
+		t.Errorf("the report counts the failure but not its REASON — which is all an operator "+
+			"has, since an internal agent's transcript cannot be read back: %s", res.FinalText)
+	}
+	// The reason has to be the store's own words, not a generic label.
+	if !strings.Contains(res.FinalText, "person:dave") {
+		t.Errorf("the reported reason should carry the underlying error text: %s", res.FinalText)
+	}
+	// And the fact itself still landed — a graph failure never costs a fact.
+	if !strings.Contains(res.FinalText, "facts written 1") {
+		t.Errorf("the k/v write should be unaffected: %s", res.FinalText)
+	}
+}
+
+// A failed subject-type LOOKUP is a different failure from a failed chunk WRITE and must not
+// share a counter: a bad lookup means the type may drift, a bad write means the fact is
+// missing from the graph entirely. Conflating them is what made the live signal
+// uninterpretable once canonicalType started contributing to it.
+func TestConsolidator_SeparatesATypeLookupFailureFromAWriteFailure(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: dave likes rock\nassistant: ok"
+	f.factsJSON = `[{"text":"Dave listens to classic rock.","class":"preference","type":"person","subject":"Dave"}]`
+	f.failTypeLookup = true
+
+	res := runConsolidator(t, f)
+
+	if !strings.Contains(res.FinalText, "subject-type lookup(s) failed") {
+		t.Errorf("a failed lookup must be reported on its own line: %s", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "graph write(s) failed") {
+		t.Errorf("a lookup failure must NOT be counted as a write failure: %s", res.FinalText)
 	}
 }
