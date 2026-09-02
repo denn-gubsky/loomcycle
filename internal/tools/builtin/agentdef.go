@@ -248,8 +248,10 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
 	}
-	if a.MaxDefinitionBytes > 0 && len(defJSON) > a.MaxDefinitionBytes {
-		return errResult(fmt.Sprintf("create: definition (%d bytes) exceeds max %d", len(defJSON), a.MaxDefinitionBytes)), nil
+	if n, err := definitionSizeForCap(def, defJSON); err != nil {
+		return errResult(fmt.Sprintf("create: measure: %s", err)), nil
+	} else if a.MaxDefinitionBytes > 0 && n > a.MaxDefinitionBytes {
+		return errResult(fmt.Sprintf("create: definition (%d bytes, excluding code_body) exceeds max %d", n, a.MaxDefinitionBytes)), nil
 	}
 	if a.MaxDescriptionBytes > 0 && len(in.Description) > a.MaxDescriptionBytes {
 		return errResult(fmt.Sprintf("create: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
@@ -451,8 +453,10 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: marshal: %s", err)), nil
 	}
-	if a.MaxDefinitionBytes > 0 && len(defJSON) > a.MaxDefinitionBytes {
-		return errResult(fmt.Sprintf("fork: definition (%d bytes) exceeds max %d", len(defJSON), a.MaxDefinitionBytes)), nil
+	if n, err := definitionSizeForCap(def, defJSON); err != nil {
+		return errResult(fmt.Sprintf("fork: measure: %s", err)), nil
+	} else if a.MaxDefinitionBytes > 0 && n > a.MaxDefinitionBytes {
+		return errResult(fmt.Sprintf("fork: definition (%d bytes, excluding code_body) exceeds max %d", n, a.MaxDefinitionBytes)), nil
 	}
 	if a.MaxDescriptionBytes > 0 && len(in.Description) > a.MaxDescriptionBytes {
 		return errResult(fmt.Sprintf("fork: description (%d bytes) exceeds max %d", len(in.Description), a.MaxDescriptionBytes)), nil
@@ -1452,6 +1456,30 @@ func signFromMergedDef(name string, def mergedDef) string {
 //   - PARSE: compile via the shared codejs.Validate so a syntax error
 //     is rejected at authorship — mirrors boot validateCodeAgents,
 //     using the provider's exact compile flags (single source of truth).
+//
+// definitionSizeForCap measures the definition JSON that MaxDefinitionBytes
+// governs — everything except the inline code body, which has its own dedicated
+// and deliberately larger cap (MaxCodeBytes, checked in validateInlineCode).
+//
+// Counting the body in both made the dedicated cap unreachable: the defaults are
+// 128 KiB for the whole definition and 256 KiB for code, so any body between the
+// two passed the cap written for it and was then refused by the smaller one. The
+// shipped memory/consolidator (~139 KB of code-js) sits in that dead zone, which
+// made it impossible to fork the agent to flip a single capability grant — the
+// error blamed the definition size for a body the overlay never touched.
+func definitionSizeForCap(def mergedDef, defJSON []byte) (int, error) {
+	if def.Code == "" {
+		return len(defJSON), nil
+	}
+	bare := def
+	bare.Code = ""
+	b, err := json.Marshal(bare)
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
 func (a *AgentDef) validateInlineCode(op string, def mergedDef) error {
 	if def.Code == "" {
 		return nil
