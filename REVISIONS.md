@@ -4,6 +4,70 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.69.0
+
+v1.68.0 shipped ontology-declared placement. A two-user run on a real corpus then
+showed it could not work: **every typed fact was being lost before it reached the
+graph.** This release is what that measurement found, and it is worth reading in
+that order — none of it was predicted from the code.
+
+**A subject keeps the type it is already filed under.** A subject node's natural key
+is `type + ":" + slug`, so the type is part of the identity. Each extraction call
+picked a type fresh, with no knowledge of how that subject was typed before, and
+nothing reconciled them. On a 142-claim benchmark store one person existed **five
+times** — `event`, `location`, `object`, `organization`, `person` — carrying 89 claims
+across five nodes, and **94% of all claims hung off a multiply-typed subject**. So
+*"what else do we know about her"*, the question the entity tier exists to answer,
+could reach at most a fifth of what was stored.
+
+The type a subject already has now wins over the current call's guess, for both the
+key and the field. **First write wins**, and that is the design rather than a
+tie-break: it is the only *stable* choice, because any rule that can change a
+subject's type later re-partitions every fact already filed under the old one. A
+wrong-but-stable type keeps one subject's facts together, which is what matters.
+Existing multiply-typed nodes are **not** migrated — this prevents new splits.
+
+**An undeclared type becomes a candidate instead of a lost write.** The extractor
+invents kinds the tenant has not declared — `experience`, on the corpus measured — and
+`upsert_chunk` refused those writes, so the fact landed in key/value with no graph
+presence at all. The gate's own message is that an undeclared-type node *"becomes a
+node nobody can find"*; refusing produces **no** node, which loses the subject
+entirely.
+
+Such a type is now filed as an **inert ontology candidate** and the subject written
+under `object`. The candidate changes nothing for any run until an operator accepts
+it, so an invented kind becomes something a person can adopt rather than a silent
+loss. A statement class misused as a kind — `preference:user` reads as *"the entity of
+type preference named user"* — also falls back rather than being dropped, but is not
+proposed: those names are already declared and are simply being misused. The key moves
+with the type, because the type is identity; and the retry is matched against the
+gate's own wording, so a store fault is never mistaken for an undeclared type.
+
+**A failing consolidation pass says why.** The consolidator counted its graph failures
+and discarded the reason — and there is no second place to look, because it is an
+`internal: true` agent whose runs are kept out of the run and history surfaces and
+whose transcript cannot be read back. The pass report is the only thing it ever gets to
+say. It now carries the first error text, and counts a failed subject-type **lookup**
+separately from a failed chunk **write**: one counter for both is what made a live
+signal uninterpretable.
+
+**Identity documents on every user-creation path.** v1.68.0 provisioned the user-root
+and tenant-root documents when a principal was established — for one of the three paths
+that establish one. The Web UI drives the other two, so users created there got no
+profile: no Identity section, no way to declare their own names, and placement cannot
+tell a fact about that person from a fact about a colleague without them.
+
+### Known state, stated plainly
+
+**RFC CQ's gate is still not satisfied.** On the only real corpus available, 1,136
+turns of input across two users produced **four facts**, with 35–39 malformed extractor
+replies dropped per pass. Placement cannot matter at that rate, and a
+typing-consistency number computed over a handful of subjects is not a result — that
+mistake has already been made once in this line and corrected. The yield question is
+what gates a real answer, and it is open.
+
+The adapters are unchanged and remain at **1.67.0**.
+
 ## What's in v1.68.0
 
 **Organisation knowledge has somewhere to live (RFC CQ).** Some of what a
