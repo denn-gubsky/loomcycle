@@ -72,8 +72,13 @@ type fakeToolset struct {
 	// The entity half, filled by fakeDocument.
 	entitiesDocID string
 	chunks        map[string]string // natural_key -> chunk id
-	chunkTypes    map[string]string // natural_key -> type
-	chunkSpans    map[string]string // natural_key -> source_quote (RFC CC)
+	// chunkScopes maps chunk id -> the scope it was written into. The double used to be
+	// scope-BLIND, which is why it could not see the placed-fact edge bug: the feature
+	// under test is entirely about which scope a write lands in, and the fake answered
+	// every scope identically. A double has to model the dimension the feature varies.
+	chunkScopes map[string]string
+	chunkTypes  map[string]string // natural_key -> type
+	chunkSpans  map[string]string // natural_key -> source_quote (RFC CC)
 	// chunkRows is what a READ of a chunk returns: id -> the fields upsert_chunk was
 	// given, plus any verdict since written. The backfill sweep reads facts back
 	// (list_facts to find them, get_chunk for the body the listing truncates), so the
@@ -162,6 +167,7 @@ func newFakeToolset() *fakeToolset {
 		bands:          map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
 		failSetKeys:    map[string]bool{},
 		chunks:         map[string]string{},
+		chunkScopes:    map[string]string{},
 		chunkTypes:     map[string]string{},
 		chunkSpans:     map[string]string{},
 		chunkRows:      map[string]map[string]any{},
@@ -317,6 +323,8 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		if !existed {
 			id = fmt.Sprintf("chunk-%d", len(d.f.chunks)+1)
 			d.f.chunks[key] = id
+			wscope, _ := in["scope"].(string)
+			d.f.chunkScopes[id] = wscope
 		}
 		if typ, ok := in["type"].(string); ok && typ != "" {
 			d.f.chunkTypes[key] = typ
@@ -394,6 +402,17 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		from, _ := in["from_id"].(string)
 		to, _ := in["to_id"].(string)
 		kind, _ := in["kind"].(string)
+		// A chunk is addressable only in the scope it was written into, so a link
+		// naming a scope neither endpoint lives in cannot resolve them. The live
+		// store fails exactly here, and the fake used to accept it — which is how a
+		// placed fact came to be stored with its edge silently dropped.
+		lscope, _ := in["scope"].(string)
+		for _, end := range []string{from, to} {
+			if got, ok := d.f.chunkScopes[end]; ok && got != lscope {
+				return tools.Result{IsError: true, Text: "link_chunks: chunk " + end +
+					" is in scope " + strconv.Quote(got) + ", not " + strconv.Quote(lscope)}, nil
+			}
+		}
 		d.f.edges = append(d.f.edges, from+"-"+kind+"->"+to)
 		return okResult(map[string]any{"ok": true})
 	case "supersede_chunk":
@@ -4353,6 +4372,39 @@ func TestConsolidator_PlacementRoutesBOTHHALVESToTheDeclaredScope(t *testing.T) 
 				t.Errorf("resolved the entities document in %q, want tenant", got)
 			}
 		}
+	}
+}
+
+// A placed fact must stay REACHABLE FROM ITS SUBJECT. The two nodes going to the
+// declared scope is not enough: the `about` edge that joins them has to be written
+// there too, and it was written in the caller's scope instead — so both nodes landed
+// in the tenant plane and the edge joining them was silently dropped, leaving the
+// facts stored but unreachable from the person they are about. That is the one
+// property the entity tier exists to provide, and the sibling test above passed
+// throughout because it never looked at the link.
+func TestConsolidator_APlacedFactIsLinkedToItsSubjectInThePlacedScope(t *testing.T) {
+	const fact = "The checkout-api service requires two approvals to release."
+	f := placementFixtureToolset(fact)
+	f.placements = map[string]string{"service\x00checkout-api": "tenant"}
+
+	rep := runConsolidator(t, f)
+
+	links := callsWithOp(f, "Document.link_chunks")
+	if len(links) == 0 {
+		t.Fatal("a typed, placed fact must be joined to its subject — no link_chunks call")
+	}
+	for _, c := range links {
+		if got, _ := c.Input["scope"].(string); got != "tenant" {
+			t.Errorf("the about-edge was written in %q while both endpoints are in tenant — "+
+				"the edge cannot resolve either node and the fact is orphaned: %v", got, c.Input)
+		}
+	}
+	if len(f.edges) != len(links) {
+		t.Errorf("%d link_chunks calls but %d edges recorded — a link was refused", len(links), len(f.edges))
+	}
+	// And the pass must not be reporting a silent failure.
+	if strings.Contains(rep.FinalText, "graph write(s) failed") {
+		t.Errorf("the pass reported a failed graph write for a placed fact: %s", rep.FinalText)
 	}
 }
 
