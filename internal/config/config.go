@@ -5734,6 +5734,28 @@ var validSqlScopes = map[string]bool{
 	"tenant": true, // shared-write across the tenant — see validMemoryScopes
 }
 
+// looksLikeAnOverrideOnly reports whether an agent declaration carries nothing
+// but capability grants — the shape of an operator overlay that was meant to
+// widen an existing agent, not to define a new one.
+func looksLikeAnOverrideOnly(a AgentDef) bool {
+	if a.Code != "" || strings.TrimSpace(a.SystemPrompt) != "" {
+		return false
+	}
+	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
+		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0
+}
+
+// sqlScopeNames renders validSqlScopes for an error message. Derived from the
+// set rather than restated, so the message cannot fall behind the enum.
+func sqlScopeNames() string {
+	names := make([]string, 0, len(validSqlScopes))
+	for k := range validSqlScopes {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 // validChannelScopes is the closed set of Channel tool scope names
 // accepted on a top-level `channels:` entry. agent + user mirror
 // Memory's vocabulary; global is the cross-tenant fan-out shape.
@@ -6340,6 +6362,17 @@ func validate(c *Config) error {
 			// Back-compat path: agents without either fall back
 			// to defaults.model — same as v0.5.x behaviour.
 			if c.Defaults.Model == "" {
+				// An agent that declares ONLY capability grants is almost
+				// never a new agent — it is an operator overlay meant to
+				// widen a bundled one, layered onto a stack that does not
+				// contain the bundle. Merging then produces this half-built
+				// agent, and the bare size/model complaint sends the reader
+				// looking at their overlay instead of at LOOMCYCLE_PRESETS.
+				if looksLikeAnOverrideOnly(agent) {
+					return fmt.Errorf("agent %q: no model, no tier, and no defaults.model — this declares only capability grants, "+
+						"so it reads as an override of an agent that no earlier config layer defines. Check that the bundle providing "+
+						"%q is in LOOMCYCLE_PRESETS / LOOMCYCLE_CONFIG_DIR, and that the layer carrying the override comes after it", name, name)
+				}
 				return fmt.Errorf("agent %q: no model, no tier, and no defaults.model", name)
 			}
 		}
@@ -6450,10 +6483,12 @@ func validate(c *Config) error {
 		}
 		// RFC AA SQL Memory: validate sql_scopes are known scope strings.
 		// Empty = no SQL access (default-deny, enforced at runtime, not here).
-		// Non-empty must be a subset of {agent, user, run}.
+		// Non-empty must be a subset of validSqlScopes. Keep the message
+		// generated FROM that set: it read "agent, user, run" long after
+		// `tenant` was added, so a correct config looked rejected.
 		for i, sc := range agent.SqlScopes {
 			if !validSqlScopes[sc] {
-				return fmt.Errorf("agent %q: sql_scopes[%d]: unknown scope %q (want one of: agent, user, run)", name, i, sc)
+				return fmt.Errorf("agent %q: sql_scopes[%d]: unknown scope %q (want one of: %s)", name, i, sc, sqlScopeNames())
 			}
 		}
 		// RFC AH Phase 1: a per-agent `volumes` binding must reference a

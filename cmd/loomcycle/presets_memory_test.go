@@ -92,8 +92,11 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 	if !extractor.Internal {
 		t.Error("memory/extractor must set internal: true — its sessions are the bulk of the self-consumption loop (one per chat read, every pass, each containing the chat it just extracted)")
 	}
-	// user = the fan-out target's scope; agent = the consolidator's own bookkeeping.
-	for _, want := range []string{"agent", "user"} {
+	// user = the fan-out target's scope; agent = the consolidator's own
+	// bookkeeping; tenant = the shared plane an ontology type may declare its
+	// facts belong in. Without tenant on BOTH grants, placement is unreachable
+	// in a stock deployment and an operator has to override the agent to try it.
+	for _, want := range []string{"agent", "user", "tenant"} {
 		if !containsString(agent.MemoryScopes, want) {
 			t.Errorf("memory_scopes should include %q; got %v", want, agent.MemoryScopes)
 		}
@@ -102,14 +105,24 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 	if !containsString(agent.HistoryScope, "user") {
 		t.Errorf("history_scope should include user (the narrowest scope that reads the target's chats); got %v", agent.HistoryScope)
 	}
-	// sql_scopes stays GONE even though the entity half writes chunk structure into
-	// SQL Memory. The Document tool issues its own trusted SQL and checks
-	// `sql_scopes` only for TENANT scope — agent and user are ungated — so the
-	// grant would buy nothing while handing an injected instruction the raw
-	// `Memory sql_exec` surface. Its absence is also what makes a tenant-scope
-	// Document write impossible here, whatever a transcript asks for.
-	if len(agent.SqlScopes) != 0 {
-		t.Errorf("memory/consolidator still grants sql_scopes=%v — the code body issues no SQL op, and an unused grant is the capability an injection reaches for", agent.SqlScopes)
+	// sql_scopes is tenant, and ONLY tenant. A placed fact is stored twice — a
+	// k/v row and a typed chunk — and this grant is what lets the chunk half
+	// reach the same scope as the k/v half: the Document tool issues its own
+	// trusted SQL and consults `sql_scopes` for TENANT alone, leaving agent and
+	// user ungated. Anything wider than tenant here is unused, and an unused
+	// grant is the capability an injection reaches for.
+	if strings.Join(agent.SqlScopes, ",") != "tenant" {
+		t.Errorf("sql_scopes should be exactly [tenant] (the chunk half of a placed fact, nothing wider); got %v", agent.SqlScopes)
+	}
+	// What BOUNDS that grant: a code-js body in which model output is data that
+	// gets written and never code that gets run. The grant also opens the raw
+	// `Memory sql_exec` surface, and this body reaching for it is the change
+	// that would turn a bounded widening into an unbounded one — so it must stay
+	// unexercised. If a SQL op is ever added here, re-argue the grant first.
+	for _, op := range []string{"sql_exec", "sql_query", "sql_schema"} {
+		if strings.Contains(agent.Code, op) {
+			t.Errorf("the consolidator body now issues %q — the tenant sql_scopes grant was argued on the body never touching the raw SQL surface", op)
+		}
 	}
 	// The procedure lives in the code body, so neither the old skill nor the old
 	// system prompt may survive as a second, drifting copy that nothing runs.
