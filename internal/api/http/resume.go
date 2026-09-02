@@ -685,7 +685,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 		switch {
 		case c != nil && c.result != nil:
 			// Completed before the snapshot — durable result in the ledger.
-			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error}
+			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error, State: c.result.State}
 		case c != nil && c.runID != "":
 			// Still running (parked) at snapshot → re-dispatched independently
 			// by ResumePausedRuns. Await it + read its result.

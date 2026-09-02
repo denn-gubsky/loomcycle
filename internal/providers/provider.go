@@ -860,6 +860,13 @@ type SpawnChildEventInfo struct {
 	Ok     bool   `json:"ok,omitempty"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// State is a stateful child's final Σ (RFC CR D5), captured in the ledger so a
+	// fan-out parent restored from a snapshot keeps each child's structured result,
+	// not just its prose. Set for a child that completed before the snapshot; a
+	// child re-dispatched across the snapshot returns its text only (its Σ is not
+	// re-scanned from the transcript — a residual gap in the experimental
+	// resume-fanout path).
+	State map[string]any `json:"state,omitempty"`
 }
 
 // ContextCompactionEventInfo is the structured payload on EventContextCompaction
