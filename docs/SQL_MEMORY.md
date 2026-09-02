@@ -69,7 +69,7 @@ storage:
 agents:
   research-bot:
     tools: [Memory, Read, Grep]
-    sql_scopes: [agent, run]      # closed enum {agent,user,run}; empty => every SQL op refuses
+    sql_scopes: [agent, run]      # closed enum {agent,user,run,tenant}; empty => every SQL op refuses
     sql_quota_bytes: 52428800     # optional per-agent override of the global quota
 ```
 
