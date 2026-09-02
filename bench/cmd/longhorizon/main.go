@@ -29,6 +29,7 @@ func main() {
 		bearer    = flag.String("bearer", os.Getenv("LONGHORIZON_BEARER"), "bearer token (default $LONGHORIZON_BEARER)")
 		model     = flag.String("model", "", "model to route to, e.g. qwen3.8:latest or claude-sonnet-4-6 (required)")
 		provider  = flag.String("provider", "", "loomcycle_provider to pin, e.g. ollama-local (empty = let the gateway resolve by model)")
+		task      = flag.String("task", "counter", "counter | marketing (P2a: competitor-table tracking)")
 		arm       = flag.String("arm", "all", "A0 | A1 | A2 | all")
 		horizon   = flag.Int("horizon", 50, "number of instructions T")
 		keys      = flag.Int("keys", 5, "number of counters")
@@ -60,15 +61,27 @@ func main() {
 	for _, a := range arms {
 		for i := 0; i < *seeds; i++ {
 			s := *seed + int64(i)
-			task := GenerateTask(s, *horizon, *keys, float64(*noisePct)/100, *drift)
-			strat := newStrategy(a, task, *keepLastN)
-			if strat == nil {
-				fmt.Fprintf(os.Stderr, "unknown arm %q\n", a)
-				os.Exit(2)
+			var r RunResult
+			switch *task {
+			case "marketing":
+				mt := GenerateMktTask(s, *horizon, *keys, float64(*noisePct)/100)
+				strat := newMktStrategy(a, mt, *keepLastN)
+				if strat == nil {
+					fmt.Fprintf(os.Stderr, "unknown arm %q\n", a)
+					os.Exit(2)
+				}
+				r = MktRunOnce(ctx, strat, mt, client)
+			default:
+				t := GenerateTask(s, *horizon, *keys, float64(*noisePct)/100, *drift)
+				strat := newStrategy(a, t, *keepLastN)
+				if strat == nil {
+					fmt.Fprintf(os.Stderr, "unknown arm %q\n", a)
+					os.Exit(2)
+				}
+				r = RunOnce(ctx, strat, t, client)
+				r.Drift = *drift
 			}
-			r := RunOnce(ctx, strat, task, client)
 			r.NoisePct = *noisePct
-			r.Drift = *drift
 			results = append(results, r)
 			if r.Err != "" {
 				fmt.Fprintf(os.Stderr, "%s seed=%d: ERROR %s\n", a, s, r.Err)
