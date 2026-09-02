@@ -201,13 +201,32 @@ agents:
     # surfaces (the chat listing, a second consolidator's scan), and a schedule
     # pointed at a differently-named agent would not exclude it at all.
     internal: true
-    memory_scopes: [agent, user]  # user = the fan-out target; agent = its own bookkeeping
-    # NO sql_scopes, deliberately, even though the entity half writes chunk
-    # STRUCTURE into SQL Memory. The Document tool issues its own trusted SQL and
-    # checks `sql_scopes` only for TENANT scope — agent and user are ungated — so
-    # granting it here would buy nothing and hand an injected instruction the raw
-    # `Memory sql_exec` surface. The absence is what keeps the consolidator unable
-    # to write the tenant-shared store at all, whatever a transcript asks for.
+    # user = the fan-out target; agent = its own bookkeeping; tenant = the shared
+    # plane a type may DECLARE its facts belong in (`@memory_scope` in the tenant's
+    # ontology document). A fact lands in tenant scope only when the ontology says
+    # so AND the subject survives every placement guard — a fact about the profile
+    # owner, or about a subject typed two different ways, stays with the user.
+    memory_scopes: [agent, user, tenant]
+    # tenant, and ONLY tenant. A fact is stored twice — a k/v row (what `recall`
+    # searches) and a typed chunk (what a graph walk reaches) — and the chunk half
+    # is what this gate governs: the Document tool issues its own trusted SQL and
+    # checks `sql_scopes` for TENANT scope alone, leaving agent/user ungated. So
+    # without this the two halves of a placed fact could not land in the same
+    # scope, and placement would be unreachable in a default deployment.
+    #
+    # This grant WAS deliberately absent, on the argument that an unused grant is
+    # the capability an injected instruction reaches for. That argument is written
+    # for a PROMPT-driven agent: it holds only where model output steers the
+    # control flow. This agent is `provider: code-js` — a deterministic body,
+    # shipped by the operator, in which model output is data that gets written and
+    # never code that gets run. `Memory sql_exec` is reachable only from the body,
+    # so the grant widens what THIS code can do, not what a transcript can talk it
+    # into. What actually bounds the tenant write is the server-side placement
+    # resolver, which fails closed on every uncertainty.
+    #
+    # It is also INERT on its own: no shipped ontology type declares a scope, so a
+    # default deployment places nothing until an operator declares one per tenant.
+    sql_scopes: [tenant]
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
     history_scope: [user]         # narrowest scope that can read the target user's chats
     # ⚠️ MUST STAY BELOW the LEASE_TTL_MS literal in the body below. A pass that

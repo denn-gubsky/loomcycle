@@ -49,9 +49,11 @@ Three things it will NOT do, so you can declare one safely:
 - It never places a fact whose subject is typed **inconsistently** — one thing recorded
   as two different types is a thing the store cannot identify, and it is left alone
   with a note rather than filed under a guess.
-- It does nothing at all until the agent that writes memory is granted the scope, on
-  **both** `memory_scopes` and `sql_scopes`. Declaring a scope is not the same as
-  opening one.
+- It does nothing at all unless the agent that writes memory is granted the scope, on
+  **both** `memory_scopes` and `sql_scopes` — a fact is stored twice, and both halves
+  have to be able to land in the same place. The bundled memory agents hold those
+  grants already, so on a stock deployment this declaration is the only switch; a
+  consolidator you configured yourself needs them added.
 
 ## project
 
