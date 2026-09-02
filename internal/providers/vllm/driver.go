@@ -87,7 +87,9 @@ func (d *Driver) SetKeyEnvName(name string) { d.inner.SetKeyEnvName(name) }
 // per-deployment truth (context window, vision, thinking) to the operator's
 // `capabilities:` override — applied last via capsPatch.
 func (d *Driver) Capabilities() providers.Capabilities {
-	return d.capsPatch.Apply(d.inner.Capabilities())
+	base := d.inner.Capabilities()
+	base.Local = true // RFC CR tier-routing: vLLM is a self-hosted backend
+	return d.capsPatch.Apply(base)
 }
 
 // Call delegates to the openai driver. Setting a provider override on ctx

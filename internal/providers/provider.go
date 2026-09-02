@@ -123,6 +123,14 @@ type Capabilities struct {
 	// silently believing the agent thought hard.
 	SupportsEffort bool
 
+	// Local signals that this provider is a self-hosted / local-inference backend
+	// (ollama-local, vllm, llamacpp) rather than a hosted frontier API. RFC CR
+	// tier-routing (`context.mode: auto`) reads it to pick the retention mode:
+	// local → reasoning-recap (L1, schema-free — safe for a weaker model), a
+	// frontier provider → structured state (L2, which needs reliable structured
+	// output). Purely a routing hint; false for every hosted/synthetic driver.
+	Local bool
+
 	// UnboundedIterations signals that this provider's loop turns are the
 	// internal tool-dispatch steps of ONE logical run (not model reasoning
 	// turns), so the loop's MaxIterations soft-cap does not apply — the run is

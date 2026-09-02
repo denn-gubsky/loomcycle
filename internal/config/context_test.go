@@ -56,7 +56,7 @@ func TestContext_Validate(t *testing.T) {
 			t.Errorf("case %d (%+v): expected a validation error", i, c)
 		}
 	}
-	for _, m := range []string{ContextModeAppend, ContextModeRecap, ContextModeStateful} {
+	for _, m := range []string{ContextModeAppend, ContextModeRecap, ContextModeStateful, ContextModeAuto} {
 		if err := (&Context{Mode: ptrS(m)}).Validate(); err != nil {
 			t.Errorf("mode %q should be valid: %v", m, err)
 		}

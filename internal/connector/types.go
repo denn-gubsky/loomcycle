@@ -109,6 +109,13 @@ type SpawnRunRequest struct {
 	// reaches the same per-run knob. Carried verbatim to runner.RunInput.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
 
+	// Context is an optional per-RUN layered-context / retention override (RFC CR)
+	// — merged PER FIELD over the agent's own `context:` block (this wins; unset
+	// fields inherit). nil = inherit the agent's entirely. Mirrors the HTTP
+	// /v1/runs `context` field so a LoomCycle-MCP spawn_run / fan-out child reaches
+	// the same per-run knob. Carried verbatim to runner.RunInput.
+	Context *config.Context `json:"context,omitempty"`
+
 	// MaxContextTokens is an optional per-RUN context-WINDOW override (RFC CJ) —
 	// wins over the agent's own max_context_tokens when > 0, else inherits it.
 	// Mirrors the HTTP /v1/runs `max_context_tokens` field so a gRPC / LoomCycle-
