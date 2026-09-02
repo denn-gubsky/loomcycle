@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -1742,8 +1743,11 @@ type Context struct {
 	//              evicted assistant REASONING with a running recap note. Choosing
 	//              recap turns auto-recap ON (no separate enable flag). When set,
 	//              recap takes precedence over the `compaction:` auto-trigger.
-	//   "stateful" is reserved for structured execution state (RFC CR L2) and is
-	//              NOT yet available; Validate rejects it for now.
+	//   "stateful" — L2 structured execution state: the loop feeds the model only
+	//              (preamble, the structured state Σ, the latest observation) and it
+	//              emits a state patch + the next action each step. Σ replaces the
+	//              growing history entirely. Needs `state_schema` (optional — a
+	//              patch is validated against it when present).
 	Mode *string `json:"mode,omitempty" yaml:"mode"`
 	// KeepLastN keeps the last N messages verbatim in recap mode, snapped to a
 	// clean user-turn boundary so a tool_use/tool_result pair is never split.
@@ -1763,28 +1767,46 @@ type Context struct {
 	// 50..95; default 80. Only consulted in recap mode when the provider reports a
 	// context window. Mirrors compaction.autocompact_at_pct.
 	AutoRecapAtPct *int `json:"autorecap_at_pct,omitempty" yaml:"autorecap_at_pct"`
+	// StateSchema is the JSON-Schema (a subset — object with typed properties +
+	// required) each Σ patch is validated against in stateful mode. yaml.v3 parses
+	// the nested object as map[string]any (string keys → JSON-marshalable), so it
+	// hashes deterministically. Optional: absent → patches are accepted unvalidated
+	// (permissive, so a stateful run can start before a schema is adopted). Only
+	// consulted in stateful mode.
+	StateSchema map[string]any `json:"state_schema,omitempty" yaml:"state_schema"`
+	// OnInvalidPatch is the stateful-mode policy when a patch fails schema
+	// validation: "retry" (default) re-prompts the model with the error up to
+	// MaxPatchRetries times; "fail" ends the run. Only consulted in stateful mode.
+	OnInvalidPatch *string `json:"on_invalid_patch,omitempty" yaml:"on_invalid_patch"`
+	// MaxPatchRetries bounds the rollback-retry loop on an invalid patch
+	// (on_invalid_patch=retry). Default 2. Only consulted in stateful mode.
+	MaxPatchRetries *int `json:"max_patch_retries,omitempty" yaml:"max_patch_retries"`
 }
 
 // Context mode values.
 const (
-	ContextModeAppend = "append"
-	ContextModeRecap  = "recap"
+	ContextModeAppend   = "append"
+	ContextModeRecap    = "recap"
+	ContextModeStateful = "stateful"
 )
 
 // Context defaults — applied at use-time when a field is unset (never baked into
 // the struct, so an unset field stays nil and the content hash stays byte-stable).
 const (
-	ContextDefaultKeepLastN      = 6
-	ContextDefaultReasoning      = "recap"
-	ContextDefaultRecapMaxChars  = 512
-	ContextDefaultAutoRecapAtPct = 80
+	ContextDefaultKeepLastN       = 6
+	ContextDefaultReasoning       = "recap"
+	ContextDefaultRecapMaxChars   = 512
+	ContextDefaultAutoRecapAtPct  = 80
+	ContextDefaultOnInvalidPatch  = "retry"
+	ContextDefaultMaxPatchRetries = 2
 )
 
 // IsZero reports whether no context field is set (collapse to nil → byte-stable
 // content hashes for agents that don't configure a context block).
 func (c *Context) IsZero() bool {
 	return c == nil || (c.Mode == nil && c.KeepLastN == nil && c.Reasoning == nil &&
-		c.RecapMaxChars == nil && c.AutoRecapAtPct == nil)
+		c.RecapMaxChars == nil && c.AutoRecapAtPct == nil &&
+		len(c.StateSchema) == 0 && c.OnInvalidPatch == nil && c.MaxPatchRetries == nil)
 }
 
 // Clone deep-copies (every field is a pointer) so a merge never aliases an input.
@@ -1812,6 +1834,33 @@ func (c *Context) Clone() *Context {
 	if c.AutoRecapAtPct != nil {
 		v := *c.AutoRecapAtPct
 		out.AutoRecapAtPct = &v
+	}
+	out.StateSchema = cloneAnyMap(c.StateSchema)
+	if c.OnInvalidPatch != nil {
+		v := *c.OnInvalidPatch
+		out.OnInvalidPatch = &v
+	}
+	if c.MaxPatchRetries != nil {
+		v := *c.MaxPatchRetries
+		out.MaxPatchRetries = &v
+	}
+	return out
+}
+
+// cloneAnyMap deep-copies a parsed JSON/YAML object via a JSON round-trip. Used
+// for the Context.StateSchema so a fork/merge never aliases the operator's map.
+// Returns nil for a nil/empty map (keeps IsZero + the content-hash collapse stable).
+func cloneAnyMap(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
 	}
 	return out
 }
@@ -1852,6 +1901,18 @@ func MergeContext(base, over *Context) *Context {
 		v := *over.AutoRecapAtPct
 		out.AutoRecapAtPct = &v
 	}
+	// StateSchema replaces wholesale (a schema override is not a per-key merge).
+	if len(over.StateSchema) > 0 {
+		out.StateSchema = cloneAnyMap(over.StateSchema)
+	}
+	if over.OnInvalidPatch != nil {
+		v := *over.OnInvalidPatch
+		out.OnInvalidPatch = &v
+	}
+	if over.MaxPatchRetries != nil {
+		v := *over.MaxPatchRetries
+		out.MaxPatchRetries = &v
+	}
 	return out
 }
 
@@ -1862,12 +1923,10 @@ func (c *Context) Validate() error {
 	}
 	if c.Mode != nil {
 		switch *c.Mode {
-		case ContextModeAppend, ContextModeRecap:
+		case ContextModeAppend, ContextModeRecap, ContextModeStateful:
 			// ok
-		case "stateful":
-			return fmt.Errorf("context.mode %q is not yet available", *c.Mode)
 		default:
-			return fmt.Errorf("context.mode %q invalid (want append|recap)", *c.Mode)
+			return fmt.Errorf("context.mode %q invalid (want append|recap|stateful)", *c.Mode)
 		}
 	}
 	if c.KeepLastN != nil && *c.KeepLastN < 0 {
@@ -1886,6 +1945,31 @@ func (c *Context) Validate() error {
 	}
 	if c.AutoRecapAtPct != nil && (*c.AutoRecapAtPct < 50 || *c.AutoRecapAtPct > 95) {
 		return fmt.Errorf("context.autorecap_at_pct %d out of range [50,95]", *c.AutoRecapAtPct)
+	}
+	if c.OnInvalidPatch != nil {
+		switch *c.OnInvalidPatch {
+		case "retry", "fail":
+			// ok
+		default:
+			return fmt.Errorf("context.on_invalid_patch %q invalid (want retry|fail)", *c.OnInvalidPatch)
+		}
+	}
+	if c.MaxPatchRetries != nil && *c.MaxPatchRetries < 0 {
+		return fmt.Errorf("context.max_patch_retries %d must be >= 0", *c.MaxPatchRetries)
+	}
+	// A state_schema, when given, must be a JSON-Schema object ("type":"object"
+	// with a properties map). The runtime validates patches against the subset the
+	// hand-rolled validator supports; a malformed schema is a config error, not a
+	// silent no-op. Only meaningful in stateful mode, but validated whenever set.
+	if len(c.StateSchema) > 0 {
+		if t, _ := c.StateSchema["type"].(string); t != "" && t != "object" {
+			return fmt.Errorf("context.state_schema type %q unsupported (top level must be object)", t)
+		}
+		if props, ok := c.StateSchema["properties"]; ok {
+			if _, ok := props.(map[string]any); !ok {
+				return fmt.Errorf("context.state_schema properties must be an object")
+			}
+		}
 	}
 	return nil
 }

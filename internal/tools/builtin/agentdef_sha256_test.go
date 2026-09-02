@@ -100,6 +100,9 @@ func TestAgentDefTool_ForkInteractiveConfigMovesHash(t *testing.T) {
 		// RFC CR: the context / retention block is behaviour-bearing (it changes how
 		// every run's history is distilled), so a fork setting it must move the hash.
 		"context": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","context":{"mode":"recap"}}}`,
+		// RFC CR L2: the state_schema map is content-identifying too — easy to drop
+		// from the hash since it's a map, not a scalar pointer.
+		"context_state_schema": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","context":{"mode":"stateful","state_schema":{"type":"object","properties":{"count":{"type":"integer"}}}}}}`,
 	}
 	for field, overlay := range cases {
 		res, _ := tool.Execute(ctx, json.RawMessage(overlay))

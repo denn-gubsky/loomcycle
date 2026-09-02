@@ -201,11 +201,14 @@ type Compaction struct {
 // content_sha256 — a fork that changes only a context field mints a distinct
 // hash. Pointers so an unset field omits.
 type Context struct {
-	Mode           *string `json:"mode,omitempty"`
-	KeepLastN      *int    `json:"keep_last_n,omitempty"`
-	Reasoning      *string `json:"reasoning,omitempty"`
-	RecapMaxChars  *int    `json:"recap_max_chars,omitempty"`
-	AutoRecapAtPct *int    `json:"autorecap_at_pct,omitempty"`
+	Mode            *string        `json:"mode,omitempty"`
+	KeepLastN       *int           `json:"keep_last_n,omitempty"`
+	Reasoning       *string        `json:"reasoning,omitempty"`
+	RecapMaxChars   *int           `json:"recap_max_chars,omitempty"`
+	AutoRecapAtPct  *int           `json:"autorecap_at_pct,omitempty"`
+	StateSchema     map[string]any `json:"state_schema,omitempty"`
+	OnInvalidPatch  *string        `json:"on_invalid_patch,omitempty"`
+	MaxPatchRetries *int           `json:"max_patch_retries,omitempty"`
 }
 
 // CoreBlock mirrors config.CoreBlock locally so the agents package stays

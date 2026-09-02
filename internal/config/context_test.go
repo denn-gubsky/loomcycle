@@ -40,23 +40,40 @@ func TestMergeContext_NilInputs(t *testing.T) {
 
 func TestContext_Validate(t *testing.T) {
 	bad := []*Context{
-		{Mode: ptrS("stateful")},       // reserved, not yet available
-		{Mode: ptrS("bogus")},          // unknown
-		{Reasoning: ptrS("summarize")}, // unknown R-policy
-		{KeepLastN: ptrI2(-1)},         // < 0
-		{RecapMaxChars: ptrI2(-1)},     // < 0
-		{AutoRecapAtPct: ptrI2(40)},    // < 50
-		{AutoRecapAtPct: ptrI2(99)},    // > 95
+		{Mode: ptrS("bogus")},                             // unknown
+		{Reasoning: ptrS("summarize")},                    // unknown R-policy
+		{KeepLastN: ptrI2(-1)},                            // < 0
+		{RecapMaxChars: ptrI2(-1)},                        // < 0
+		{AutoRecapAtPct: ptrI2(40)},                       // < 50
+		{AutoRecapAtPct: ptrI2(99)},                       // > 95
+		{OnInvalidPatch: ptrS("ignore")},                  // want retry|fail
+		{MaxPatchRetries: ptrI2(-1)},                      // < 0
+		{StateSchema: map[string]any{"type": "array"}},    // top level must be object
+		{StateSchema: map[string]any{"properties": "no"}}, // properties must be an object
 	}
 	for i, c := range bad {
 		if err := c.Validate(); err == nil {
 			t.Errorf("case %d (%+v): expected a validation error", i, c)
 		}
 	}
-	for _, m := range []string{ContextModeAppend, ContextModeRecap} {
+	for _, m := range []string{ContextModeAppend, ContextModeRecap, ContextModeStateful} {
 		if err := (&Context{Mode: ptrS(m)}).Validate(); err != nil {
 			t.Errorf("mode %q should be valid: %v", m, err)
 		}
+	}
+	// A well-formed stateful config validates.
+	okState := &Context{
+		Mode:            ptrS(ContextModeStateful),
+		OnInvalidPatch:  ptrS("fail"),
+		MaxPatchRetries: ptrI2(3),
+		StateSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"count": map[string]any{"type": "integer"}},
+			"required":   []any{"count"},
+		},
+	}
+	if err := okState.Validate(); err != nil {
+		t.Errorf("valid stateful context rejected: %v", err)
 	}
 	for _, r := range []string{"recap", "drop", "keep"} {
 		if err := (&Context{Reasoning: ptrS(r)}).Validate(); err != nil {
@@ -70,7 +87,8 @@ func TestContext_Validate(t *testing.T) {
 
 // nonZeroContext sets EVERY field to a non-zero, VALIDATION-PASSING value via
 // reflection, so a newly added field is populated without anyone remembering to
-// update this test. String enum fields get a valid member by name.
+// update this test. String enum fields get a valid member by name; the
+// state_schema map gets a valid minimal object schema.
 func nonZeroContext(t *testing.T) *Context {
 	t.Helper()
 	c := &Context{}
@@ -79,29 +97,49 @@ func nonZeroContext(t *testing.T) *Context {
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Field(i)
 		name := vt.Field(i).Name
-		if f.Kind() != reflect.Ptr {
-			t.Fatalf("Context.%s is not a pointer; this test assumes the all-pointer shape that makes unset distinguishable from zero", name)
-		}
-		elem := reflect.New(f.Type().Elem())
-		switch elem.Elem().Kind() {
-		case reflect.Int:
-			// In-range for autorecap_at_pct (50..95); fine for the others.
-			elem.Elem().SetInt(50)
-		case reflect.String:
-			switch name {
-			case "Mode":
-				elem.Elem().SetString(ContextModeRecap)
-			case "Reasoning":
-				elem.Elem().SetString("recap")
+		switch f.Kind() {
+		case reflect.Ptr:
+			elem := reflect.New(f.Type().Elem())
+			switch elem.Elem().Kind() {
+			case reflect.Int:
+				// In-range for autorecap_at_pct (50..95); fine for the others.
+				elem.Elem().SetInt(50)
+			case reflect.String:
+				switch name {
+				case "Mode":
+					elem.Elem().SetString(ContextModeStateful)
+				case "Reasoning":
+					elem.Elem().SetString("recap")
+				case "OnInvalidPatch":
+					elem.Elem().SetString("retry")
+				default:
+					elem.Elem().SetString("x")
+				}
 			default:
-				elem.Elem().SetString("x")
+				t.Fatalf("Context.%s has unhandled ptr kind %s — extend this helper", name, elem.Elem().Kind())
 			}
+			f.Set(elem)
+		case reflect.Map:
+			// state_schema — a valid minimal object schema.
+			f.Set(reflect.ValueOf(map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"x": map[string]any{"type": "string"}},
+			}))
 		default:
-			t.Fatalf("Context.%s has unhandled kind %s — extend this helper", name, elem.Elem().Kind())
+			t.Fatalf("Context.%s has unhandled kind %s — extend this helper", name, f.Kind())
 		}
-		f.Set(elem)
 	}
 	return c
+}
+
+// derefField returns a field's comparable value, dereferencing a pointer but
+// taking a map (or other reference) as-is — so the reflective drift tests below
+// handle the all-pointer fields AND the state_schema map uniformly.
+func derefField(v reflect.Value) any {
+	if v.Kind() == reflect.Ptr {
+		return v.Elem().Interface()
+	}
+	return v.Interface()
 }
 
 // TestContext_CloneAndMergeCoverEveryField guards sub-struct drift: mergeAgentDef
@@ -123,8 +161,8 @@ func TestContext_CloneAndMergeCoverEveryField(t *testing.T) {
 				t.Errorf("Clone() dropped Context.%s — a fork setting it loses the setting", name)
 				continue
 			}
-			if !reflect.DeepEqual(g.Elem().Interface(), w.Elem().Interface()) {
-				t.Errorf("Clone() Context.%s = %v, want %v", name, g.Elem(), w.Elem())
+			if !reflect.DeepEqual(derefField(g), derefField(w)) {
+				t.Errorf("Clone() Context.%s = %v, want %v", name, derefField(g), derefField(w))
 			}
 			if g.Pointer() == w.Pointer() {
 				t.Errorf("Clone() aliased Context.%s instead of copying it", name)
@@ -142,8 +180,8 @@ func TestContext_CloneAndMergeCoverEveryField(t *testing.T) {
 				t.Errorf("MergeContext() never overlays Context.%s — an override of it is SILENTLY DISCARDED", name)
 				continue
 			}
-			if !reflect.DeepEqual(g.Elem().Interface(), want.Field(i).Elem().Interface()) {
-				t.Errorf("MergeContext() Context.%s = %v, want %v", name, g.Elem(), want.Field(i).Elem())
+			if !reflect.DeepEqual(derefField(g), derefField(want.Field(i))) {
+				t.Errorf("MergeContext() Context.%s = %v, want %v", name, derefField(g), derefField(want.Field(i)))
 			}
 		}
 	})
