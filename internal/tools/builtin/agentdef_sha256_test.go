@@ -97,6 +97,9 @@ func TestAgentDefTool_ForkInteractiveConfigMovesHash(t *testing.T) {
 		// def is told), so a fork that flips it must mint a distinct content hash.
 		"inject_tool_guide":  `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","inject_tool_guide":true}}`,
 		"max_context_tokens": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","max_context_tokens":65536}}`,
+		// RFC CR: the context / retention block is behaviour-bearing (it changes how
+		// every run's history is distilled), so a fork setting it must move the hash.
+		"context": `{"op":"fork","name":"researcher","overlay":{"system_prompt":"v1","context":{"mode":"recap"}}}`,
 	}
 	for field, overlay := range cases {
 		res, _ := tool.Execute(ctx, json.RawMessage(overlay))

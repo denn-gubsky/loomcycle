@@ -525,6 +525,16 @@ const (
 	// full history. The full transcript is retained (non-destructive audit).
 	EventContextCompaction EventType = "context_compaction"
 
+	// EventContextRecap marks where a run's fed history was distilled by L1
+	// reasoning-recap (RFC CR `context.mode: recap`): the span before the kept
+	// tail is replaced by a running progress recap, and the recent tool_use/
+	// tool_result pairs are kept verbatim. Sibling of EventContextCompaction — the
+	// loop emits it (persisted + forwarded) when it recaps at an iteration
+	// boundary; replayTranscript RESETS to the recap form on replay so a resume
+	// rebuild reconstructs the identical fed history. The full transcript is
+	// retained (non-destructive audit).
+	EventContextRecap EventType = "context_recap"
+
 	// EventLimit carries a per-scope token-budget crossing (RFC AW): a soft
 	// crossing (warn, run continues) or a hard crossing (a mid-run notice; the
 	// run still finishes, but the NEXT run for the scope is refused at
@@ -614,6 +624,11 @@ type Event struct {
 	// ContextCompaction carries the structured payload on EventContextCompaction
 	// (the conversation summary that replaces prior history). Nil otherwise.
 	ContextCompaction *ContextCompactionEventInfo `json:"context_compaction,omitempty"`
+
+	// ContextRecap carries the structured payload on EventContextRecap (the
+	// running reasoning-recap that replaces prior history in L1 recap mode, RFC
+	// CR). Nil otherwise.
+	ContextRecap *ContextRecapEventInfo `json:"context_recap,omitempty"`
 
 	// Limit carries the structured payload on EventLimit (a per-scope
 	// token-budget crossing, RFC AW). Nil on all other event types.
@@ -849,6 +864,30 @@ type ContextCompactionEventInfo struct {
 	// in, which is the default. Additive and ignored by replay — banking already
 	// happened when the compaction first ran, so a rebuild must not repeat it.
 	MemoryBanked *MemoryBankedInfo `json:"memory_banked,omitempty"`
+}
+
+// ContextRecapEventInfo is the structured payload on EventContextRecap (RFC CR
+// L1 reasoning-recap). Recap is the running progress note that replaces the span
+// before the kept tail; Before/AfterTokens are the rough footprint before vs
+// after, for the operator-facing "context recapped (N→M)" line. replayTranscript
+// reads Recap + KeepN/KeepFirst to reconstruct the identical fed form.
+type ContextRecapEventInfo struct {
+	// Recap is the running progress recap that seeds the rebuilt history. On
+	// replay it is restored verbatim AND becomes the loop's running-recap state,
+	// so the NEXT recap folds into it (the cumulative O(1)-per-step property).
+	Recap        string `json:"recap"`
+	BeforeTokens int    `json:"before_tokens,omitempty"`
+	AfterTokens  int    `json:"after_tokens,omitempty"`
+	// KeepN / KeepFirst record how much recent history was kept verbatim and
+	// whether the first user turn (the task) was pinned — replayTranscript reads
+	// these to reconstruct the identical recapped form.
+	KeepN     int  `json:"keep_n,omitempty"`
+	KeepFirst bool `json:"keep_first,omitempty"`
+	// Trigger is "auto" | "self" — which path fired the recap. Metrics/UI only.
+	Trigger string `json:"trigger,omitempty"`
+	// Reasoning echoes the R-layer policy that produced this ("recap" | "drop").
+	// Informational; replay uses Recap directly.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // MemoryBankedInfo is the outcome of a compaction's memory flush. It is on the

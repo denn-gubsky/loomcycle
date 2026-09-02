@@ -111,6 +111,13 @@ type AgentContent struct {
 	// agent omits the key and hashes byte-identical to pre-feature rows. Tag
 	// "compaction" sorts between code_body and description.
 	Compaction *Compaction `json:"compaction,omitempty"`
+	// Context is the per-agent layered-context / retention block (mirrors
+	// config.Context; RFC CR). Content-identifying — a fork that only changes a
+	// context field (e.g. append→recap) mints a distinct content_sha256. Pointer
+	// + omitempty + normalize-collapse so an append-mode/no-context agent omits
+	// the key and hashes byte-identical to pre-feature rows. Tag "context" sorts
+	// between compaction and core_blocks.
+	Context *Context `json:"context,omitempty"`
 	// CoreBlocks is the RFC BL P1 core-memory-block attachment list. Content-
 	// identifying: a fork that changes an attached block's scope/limit/read-only
 	// (or adds/removes a block) mints a distinct content_sha256. omitempty +
@@ -333,6 +340,14 @@ func normalize(c *AgentContent) {
 		c.Compaction.AutoCompactAtPct == nil && c.Compaction.Model == nil &&
 		c.Compaction.MemoryFlush == nil {
 		c.Compaction = nil
+	}
+	// Same all-nil collapse for context (a substrate read of an append-mode/
+	// no-context def yields `"context":{}`) → hashes identically to a pre-feature
+	// row. An explicit mode:"append" is a non-nil *string and is preserved.
+	if c.Context != nil && c.Context.Mode == nil && c.Context.KeepLastN == nil &&
+		c.Context.Reasoning == nil && c.Context.RecapMaxChars == nil &&
+		c.Context.AutoRecapAtPct == nil {
+		c.Context = nil
 	}
 
 	// Trim + normalise the system_prompt to insulate the hash from
