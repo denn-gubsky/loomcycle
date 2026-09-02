@@ -631,6 +631,30 @@ Reading the outcome: the `context_compaction` transcript event gains a `memory_b
 
 Once consolidated, a fact records where it came from. `Memory op=get` with `include_provenance: true` returns `origin: compaction` plus the originating run/session and an `origin_available` flag — `false` once retention has deleted that chat. The fact itself is never pruned for having a dead origin; see [§ retention](#9b-multi-tenant-authentication-rfc-l) for the chat clocks.
 
+### `context:` — reasoning-recap retention (a lighter-weight alternative to compaction)
+
+Compaction summarizes the *whole* span it drops — including tool results — into one prose blob at a threshold. On a **long-horizon** run against a **weak or local** model that is exactly where quality suffers: a bloated append-only history poisons the model, and a lossy prose summary throws away the structured facts (which value, which file, which result) the next step needs. The `context:` block offers a different retention strategy tuned for that regime — it keeps the recent structured turns *verbatim* and distils only the older, verbose reasoning into a running note:
+
+```yaml
+agents:
+  long-runner:
+    context:
+      mode: recap          # "append" (default, unchanged) | "recap"
+      keep_last_n: 6        # recent tool_use/tool_result pairs kept VERBATIM
+      reasoning: recap      # recap (default) | drop | keep
+      recap_max_chars: 512  # bound on the running recap note
+      autorecap_at_pct: 80  # recap when used/window crosses this % (50..95)
+```
+
+In `mode: recap` the loop, at an iteration boundary once the footprint crosses `autorecap_at_pct`, rebuilds what it FEEDS the model as: the pinned task + a bounded **running progress recap** + the last `keep_last_n` `tool_use`/`tool_result` pairs verbatim. The recap folds forward incrementally each time (the prior recap is rolled into the next), so the fed prompt stays flat — cost grows with the horizon linearly, not quadratically. Choosing `recap` mode turns auto-recap on; it takes precedence over the `compaction:` auto-trigger (the two are mutually exclusive per run). `Context op=compact` (and the manual compact control) trigger a recap instead of a compaction while in this mode.
+
+- `reasoning: drop` — the cheapest policy: drop the evicted span with **no** recap call (keeps only the preamble + the last-N tail). No extra model round-trip.
+- `reasoning: keep` — a no-op control (distils nothing); useful only to A/B the recap's contribution.
+
+As with compaction, the **full transcript is always retained** — audit, replay, resume, and memory facts-extraction see the complete trajectory; only the fed window is distilled. The block is content-identifying (a fork that sets it mints a distinct hash), it is a per-run override on `POST /v1/runs` (`context`), and it flows down the spawn tree (a sub-agent inherits the parent's mode; its own def fills any gaps). An agent reads the resolved policy for its run via `Context op=self` (`context_policy`).
+
+> **Which one?** `append` (+ `compaction`) stays the default and is right for most runs. Reach for `mode: recap` on a **local / weak model doing long procedural work**, where a growing prompt measurably degrades answers — that is the regime where keeping recent observations verbatim while recapping old reasoning wins on both cost and quality. On a frontier model at short horizons the two are quality-equivalent, so the motivation there is cost alone.
+
 ### Interactive local agents
 
 For a terminal you steer turn-by-turn:
