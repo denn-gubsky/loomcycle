@@ -410,6 +410,9 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		NativePromptCache: false,
 		ParallelToolCalls: true, // model-dependent; we report the optimistic case
 		Streaming:         true,
+		// RFC CR tier-routing: an "ollama-local" registration is a self-hosted
+		// backend; the hosted "ollama" (ollama.com, Bearer) is not.
+		Local: d.providerID == "ollama-local",
 		// Static fallback only — the authoritative per-call window rides the
 		// usage event (resolveContext, which also puts it on the wire), and the
 		// loop prefers that. An operator pin is the exact window; otherwise this

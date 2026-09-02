@@ -34,6 +34,26 @@ func contextStatefulMode(cx *config.Context) bool {
 	return cx != nil && cx.Mode != nil && *cx.Mode == config.ContextModeStateful
 }
 
+// contextAutoMode reports whether the policy is tier-routed (mode: auto).
+func contextAutoMode(cx *config.Context) bool {
+	return cx != nil && cx.Mode != nil && *cx.Mode == config.ContextModeAuto
+}
+
+// resolveAutoContextMode turns mode:auto into a concrete mode (RFC CR tier-
+// routing): a local backend → recap (schema-free, safe for a weaker model), a
+// frontier API → stateful. An interactive run never resolves to stateful — that
+// loop has no steer/park — so it takes recap regardless of tier. Returns a CLONE
+// carrying the concrete mode so the shared agent def is never mutated.
+func resolveAutoContextMode(cx *config.Context, local, interactive bool) *config.Context {
+	mode := config.ContextModeStateful
+	if local || interactive {
+		mode = config.ContextModeRecap
+	}
+	out := cx.Clone()
+	out.Mode = &mode
+	return out
+}
+
 const emitStateToolName = "emit_state"
 
 // emitStateToolSpec is the ONLY tool a stateful step offers: the model must call

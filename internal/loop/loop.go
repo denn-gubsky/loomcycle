@@ -1594,6 +1594,16 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	emit(providers.Event{Type: providers.EventStarted})
 
+	// RFC CR tier-routing: `context.mode: auto` resolves to a concrete mode from
+	// the RESOLVED provider — a local backend → recap (schema-free, safe for a
+	// weaker model), a frontier API → stateful. An interactive run never resolves
+	// to stateful (that loop has no steer/park), so it takes recap. Resolved once
+	// here on a CLONE (never mutating the shared agent def); a mid-run provider
+	// fallback keeps the mode chosen at start.
+	if contextAutoMode(opts.Context) {
+		opts.Context = resolveAutoContextMode(opts.Context, opts.Provider.Capabilities().Local, opts.Interactive)
+	}
+
 	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
 	// the model emits a patch + action each step. Branch here, after the preamble
 	// P (`system`) and the action-tool catalog are resolved, into the self-

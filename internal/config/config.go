@@ -1788,6 +1788,11 @@ const (
 	ContextModeAppend   = "append"
 	ContextModeRecap    = "recap"
 	ContextModeStateful = "stateful"
+	// ContextModeAuto tier-routes at run start (RFC CR): the resolved provider
+	// picks the concrete mode — a local backend → recap, a frontier API →
+	// stateful. Opt-in (an agent with no context block stays append, byte-
+	// identical); an explicit recap/stateful still wins.
+	ContextModeAuto = "auto"
 )
 
 // Context defaults — applied at use-time when a field is unset (never baked into
@@ -1923,10 +1928,10 @@ func (c *Context) Validate() error {
 	}
 	if c.Mode != nil {
 		switch *c.Mode {
-		case ContextModeAppend, ContextModeRecap, ContextModeStateful:
+		case ContextModeAppend, ContextModeRecap, ContextModeStateful, ContextModeAuto:
 			// ok
 		default:
-			return fmt.Errorf("context.mode %q invalid (want append|recap|stateful)", *c.Mode)
+			return fmt.Errorf("context.mode %q invalid (want append|recap|stateful|auto)", *c.Mode)
 		}
 	}
 	if c.KeepLastN != nil && *c.KeepLastN < 0 {

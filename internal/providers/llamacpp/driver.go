@@ -76,7 +76,9 @@ func (d *Driver) SetKeyEnvName(name string) { d.inner.SetKeyEnvName(name) }
 // last via capsPatch. A single-model llama-server usually needs at least
 // max_context_tokens set to its `-c` value.
 func (d *Driver) Capabilities() providers.Capabilities {
-	return d.capsPatch.Apply(d.inner.Capabilities())
+	base := d.inner.Capabilities()
+	base.Local = true // RFC CR tier-routing: llama.cpp is a self-hosted backend
+	return d.capsPatch.Apply(base)
 }
 
 // Call delegates to the openai driver; the ctx provider override makes the
