@@ -682,6 +682,21 @@ Each step the runtime: validates the patch against `state_schema` (a subset — 
 - **When to use it:** long-horizon procedural work whose progress is a well-defined *state* (files discovered, hypotheses tested, a working directory) rather than a conversation. On loomcycle's benchmark it was the top arm at long horizon on a weak local model. It is **not** for open-ended conversation — the state must be a sufficient summary of the task, which a chat is not. It is opt-in per agent, like every other retention mode.
 - **Scope note:** stateful runs are autonomous; interactive steering, pause/park, and cross-instance resume of a mid-flight stateful run are not wired yet (a step re-derives cheaply from the state) — they compose on top later. The design rationale lives in the RFC in the doc store.
 
+#### `mode: auto` — let the resolved provider pick
+
+Rather than hand-picking recap vs stateful per deployment, set `mode: auto` and loomcycle resolves it at run start from the **provider the run actually landed on**:
+
+```yaml
+agents:
+  worker:
+    context:
+      mode: auto            # local backend → recap · frontier API → stateful
+```
+
+A **local** backend (`ollama-local`, `vllm`, `llamacpp`) resolves to **recap** — schema-free, safe for a weaker model; a **frontier** API resolves to **stateful** — which needs reliable structured output. An **interactive** run never resolves to stateful (that loop has no steering), so it takes recap regardless of tier. This is opt-in: an agent with no `context` block, or `mode: append`, is unchanged; an explicit `mode: recap` / `mode: stateful` always wins over `auto`. The mode is fixed at run start from the initially-resolved provider (a mid-run provider fallback keeps the chosen mode). So the same agent runs recap when it lands on your local Ollama and structured state when it lands on a frontier model, with one setting.
+
+The per-run `context` override is available on `POST /v1/runs` and on the MCP `spawn_run` (and fan-out `spawn_runs`); the per-agent block reaches every transport via the resolved def.
+
 ### Interactive local agents
 
 For a terminal you steer turn-by-turn:
