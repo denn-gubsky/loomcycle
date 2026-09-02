@@ -196,6 +196,18 @@ type Compaction struct {
 	MemoryFlush *bool `json:"memory_flush,omitempty"`
 }
 
+// Context mirrors config.Context locally (the agents package stays config-free).
+// json: tags mirror the persisted snake_case and are LOAD-BEARING for
+// content_sha256 — a fork that changes only a context field mints a distinct
+// hash. Pointers so an unset field omits.
+type Context struct {
+	Mode           *string `json:"mode,omitempty"`
+	KeepLastN      *int    `json:"keep_last_n,omitempty"`
+	Reasoning      *string `json:"reasoning,omitempty"`
+	RecapMaxChars  *int    `json:"recap_max_chars,omitempty"`
+	AutoRecapAtPct *int    `json:"autorecap_at_pct,omitempty"`
+}
+
 // CoreBlock mirrors config.CoreBlock locally so the agents package stays
 // config-free. json: tags mirror the persisted snake_case and are LOAD-BEARING
 // for content_sha256 (RFC BL P1 — a fork that changes a core block's

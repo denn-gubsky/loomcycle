@@ -1074,6 +1074,14 @@ type AgentDef struct {
 	// child def fills gaps), overridable per-spawn via the Agent tool.
 	Compaction *Compaction `yaml:"compaction,omitempty"`
 
+	// Context is the per-agent layered-context / retention block (yaml/JSON
+	// `context:`, RFC CR). Selects the feed-side distillation strategy —
+	// `mode: append` (default, byte-identical) or `mode: recap` (L1 reasoning
+	// distillation). nil = append. Inherited down the spawn tree (parent-set
+	// fields win; a child def fills gaps), overridable per-spawn via the Agent
+	// tool — the same precedence as Compaction.
+	Context *Context `yaml:"context,omitempty"`
+
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
 	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
@@ -1710,6 +1718,174 @@ func (c *Compaction) Validate() error {
 	}
 	if c.AutoCompactAtPct != nil && (*c.AutoCompactAtPct < 50 || *c.AutoCompactAtPct > 95) {
 		return fmt.Errorf("compaction.autocompact_at_pct %d out of range [50,95]", *c.AutoCompactAtPct)
+	}
+	return nil
+}
+
+// Context is the per-agent layered-context / retention block (the yaml/JSON
+// `context:` object, RFC CR). It selects the FEED-SIDE distillation strategy for
+// a run's growing history — how the model's per-step input is assembled from the
+// full (still-retained) transcript. The store side is untouched: the complete
+// transcript is always persisted for audit, replay, and facts-extraction; this
+// block changes only what is FED to the model.
+//
+// Every field is a pointer so "unset" (nil) is distinct from a meaningful value,
+// and so the per-field merge (parent/child/per-run/per-spawn) can tell "inherit"
+// from "explicitly set". nil = "append": today's behavior, byte-identical to
+// pre-feature (the separate `compaction:` block still governs L0 summarization).
+type Context struct {
+	// Mode selects the retention strategy:
+	//   "append" — the default. Full history is fed; the `compaction:` block may
+	//              still summarize at its threshold. Byte-identical to pre-feature.
+	//   "recap"  — L1 reasoning distillation: keep the re-derived preamble + the
+	//              last-N tool_use/tool_result pairs verbatim, and replace the
+	//              evicted assistant REASONING with a running recap note. Choosing
+	//              recap turns auto-recap ON (no separate enable flag). When set,
+	//              recap takes precedence over the `compaction:` auto-trigger.
+	//   "stateful" is reserved for structured execution state (RFC CR L2) and is
+	//              NOT yet available; Validate rejects it for now.
+	Mode *string `json:"mode,omitempty" yaml:"mode"`
+	// KeepLastN keeps the last N messages verbatim in recap mode, snapped to a
+	// clean user-turn boundary so a tool_use/tool_result pair is never split.
+	// Default 6. 0 = keep none. Mirrors compaction.keep_last_n.
+	KeepLastN *int `json:"keep_last_n,omitempty" yaml:"keep_last_n"`
+	// Reasoning is the R-layer policy in recap mode:
+	//   "recap" — the default: replace evicted assistant reasoning with a running
+	//             short recap ("what has been tried / concluded so far").
+	//   "drop"  — discard evicted reasoning with no recap (cheapest; no extra call).
+	//   "keep"  — leave evicted reasoning verbatim (recap is a no-op; the A/B
+	//             control that isolates the recap's contribution).
+	// Ignored in append mode.
+	Reasoning *string `json:"reasoning,omitempty" yaml:"reasoning"`
+	// RecapMaxChars bounds the running reasoning-recap note. Default 512.
+	RecapMaxChars *int `json:"recap_max_chars,omitempty" yaml:"recap_max_chars"`
+	// AutoRecapAtPct is the recap trigger: recap when used/window >= N%. Range
+	// 50..95; default 80. Only consulted in recap mode when the provider reports a
+	// context window. Mirrors compaction.autocompact_at_pct.
+	AutoRecapAtPct *int `json:"autorecap_at_pct,omitempty" yaml:"autorecap_at_pct"`
+}
+
+// Context mode values.
+const (
+	ContextModeAppend = "append"
+	ContextModeRecap  = "recap"
+)
+
+// Context defaults — applied at use-time when a field is unset (never baked into
+// the struct, so an unset field stays nil and the content hash stays byte-stable).
+const (
+	ContextDefaultKeepLastN      = 6
+	ContextDefaultReasoning      = "recap"
+	ContextDefaultRecapMaxChars  = 512
+	ContextDefaultAutoRecapAtPct = 80
+)
+
+// IsZero reports whether no context field is set (collapse to nil → byte-stable
+// content hashes for agents that don't configure a context block).
+func (c *Context) IsZero() bool {
+	return c == nil || (c.Mode == nil && c.KeepLastN == nil && c.Reasoning == nil &&
+		c.RecapMaxChars == nil && c.AutoRecapAtPct == nil)
+}
+
+// Clone deep-copies (every field is a pointer) so a merge never aliases an input.
+func (c *Context) Clone() *Context {
+	if c == nil {
+		return nil
+	}
+	out := &Context{}
+	if c.Mode != nil {
+		v := *c.Mode
+		out.Mode = &v
+	}
+	if c.KeepLastN != nil {
+		v := *c.KeepLastN
+		out.KeepLastN = &v
+	}
+	if c.Reasoning != nil {
+		v := *c.Reasoning
+		out.Reasoning = &v
+	}
+	if c.RecapMaxChars != nil {
+		v := *c.RecapMaxChars
+		out.RecapMaxChars = &v
+	}
+	if c.AutoRecapAtPct != nil {
+		v := *c.AutoRecapAtPct
+		out.AutoRecapAtPct = &v
+	}
+	return out
+}
+
+// MergeContext overlays `over` onto `base` PER FIELD — a field set in `over`
+// wins, an unset field keeps `base`'s value. Drives the AgentDef fork overlay,
+// the per-run override, AND the spawn precedence blend (a child fills the gaps
+// its parent left unset: MergeContext(childDef, parentSparse)). Returns nil only
+// when both inputs are empty; never aliases either input.
+func MergeContext(base, over *Context) *Context {
+	if base.IsZero() && over.IsZero() {
+		return nil
+	}
+	out := base.Clone()
+	if out == nil {
+		out = &Context{}
+	}
+	if over == nil {
+		return out
+	}
+	if over.Mode != nil {
+		v := *over.Mode
+		out.Mode = &v
+	}
+	if over.KeepLastN != nil {
+		v := *over.KeepLastN
+		out.KeepLastN = &v
+	}
+	if over.Reasoning != nil {
+		v := *over.Reasoning
+		out.Reasoning = &v
+	}
+	if over.RecapMaxChars != nil {
+		v := *over.RecapMaxChars
+		out.RecapMaxChars = &v
+	}
+	if over.AutoRecapAtPct != nil {
+		v := *over.AutoRecapAtPct
+		out.AutoRecapAtPct = &v
+	}
+	return out
+}
+
+// Validate checks per-field bounds. Returns a descriptive error naming the field.
+func (c *Context) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.Mode != nil {
+		switch *c.Mode {
+		case ContextModeAppend, ContextModeRecap:
+			// ok
+		case "stateful":
+			return fmt.Errorf("context.mode %q is not yet available", *c.Mode)
+		default:
+			return fmt.Errorf("context.mode %q invalid (want append|recap)", *c.Mode)
+		}
+	}
+	if c.KeepLastN != nil && *c.KeepLastN < 0 {
+		return fmt.Errorf("context.keep_last_n %d must be >= 0", *c.KeepLastN)
+	}
+	if c.Reasoning != nil {
+		switch *c.Reasoning {
+		case "recap", "drop", "keep":
+			// ok
+		default:
+			return fmt.Errorf("context.reasoning %q invalid (want recap|drop|keep)", *c.Reasoning)
+		}
+	}
+	if c.RecapMaxChars != nil && *c.RecapMaxChars < 0 {
+		return fmt.Errorf("context.recap_max_chars %d must be >= 0", *c.RecapMaxChars)
+	}
+	if c.AutoRecapAtPct != nil && (*c.AutoRecapAtPct < 50 || *c.AutoRecapAtPct > 95) {
+		return fmt.Errorf("context.autorecap_at_pct %d out of range [50,95]", *c.AutoRecapAtPct)
 	}
 	return nil
 }
@@ -5149,6 +5325,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if !override.Compaction.IsZero() {
 		out.Compaction = MergeCompaction(out.Compaction, override.Compaction)
 	}
+	if !override.Context.IsZero() {
+		out.Context = MergeContext(out.Context, override.Context)
+	}
 	if override.Providers != nil {
 		out.Providers = override.Providers
 	}
@@ -6082,6 +6261,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Compaction.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := agent.Context.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if hasTier && !validTierNames[agent.Tier] {

@@ -867,6 +867,10 @@ type mergedDef struct {
 	// Compaction: per-agent context-compaction settings. Same PER-FIELD overlay +
 	// content-identifying treatment as Sampling.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+	// Context: per-agent layered-context / retention block (RFC CR). Same
+	// PER-FIELD overlay + content-identifying treatment as Compaction; also
+	// inherited down the spawn tree.
+	Context *config.Context `json:"context,omitempty"`
 	// MaxIterations caps the loop at N provider calls before
 	// terminating with stop_reason="max_iterations". 0 = use the
 	// loop default (16). Set higher for discovery-style forks
@@ -1001,6 +1005,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// Compaction merges PER FIELD, same as Sampling.
 	if !ov.Compaction.IsZero() {
 		d.Compaction = config.MergeCompaction(d.Compaction, ov.Compaction)
+	}
+	// Context merges PER FIELD, same as Compaction.
+	if !ov.Context.IsZero() {
+		d.Context = config.MergeContext(d.Context, ov.Context)
 	}
 	if ov.MaxTokens != 0 {
 		d.MaxTokens = ov.MaxTokens
@@ -1226,6 +1234,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Effort:                s.Effort,
 		Sampling:              s.Sampling.Clone(),
 		Compaction:            s.Compaction.Clone(),
+		Context:               s.Context.Clone(),
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,
 		MaxIterations:         s.MaxIterations,
@@ -1414,6 +1423,16 @@ func signFromMergedDef(name string, def mergedDef) string {
 			AutoCompactAtPct: cp.AutoCompactAtPct,
 			Model:            cp.Model,
 			MemoryFlush:      cp.MemoryFlush,
+		}
+	}
+	// Context is content-identifying, same as Compaction (RFC CR).
+	if cx := def.Context; !cx.IsZero() {
+		c.Context = &agents.Context{
+			Mode:           cx.Mode,
+			KeepLastN:      cx.KeepLastN,
+			Reasoning:      cx.Reasoning,
+			RecapMaxChars:  cx.RecapMaxChars,
+			AutoRecapAtPct: cx.AutoRecapAtPct,
 		}
 	}
 	return agents.Sign(c)

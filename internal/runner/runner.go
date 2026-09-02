@@ -274,6 +274,11 @@ type RunInput struct {
 	// FIELD over the agent's own Compaction. nil = inherit the agent's entirely.
 	Compaction *config.Compaction
 
+	// Context is an optional per-RUN layered-context / retention override (RFC CR),
+	// merged PER FIELD over the agent's own Context. nil = inherit the agent's
+	// entirely.
+	Context *config.Context
+
 	// MaxContextTokens is an optional per-RUN context-WINDOW override (RFC CJ).
 	// > 0 wins over the agent's own max_context_tokens; 0 inherits it. The server
 	// resolves the merge (config.MergeMaxContextTokens) and passes the winner to
