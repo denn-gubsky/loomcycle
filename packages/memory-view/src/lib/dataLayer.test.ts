@@ -91,7 +91,10 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
   it("listScopeIDs passes the scope", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).listScopeIDs("user");
-    expect(s.listMemoryScopeIDs).toHaveBeenCalledWith("user");
+    // The focus object is forwarded on every browse method now; with no tenant
+    // set its field is undefined, which the client drops, so the request is
+    // byte-identical to before it existed.
+    expect(s.listMemoryScopeIDs).toHaveBeenCalledWith("user", { tenant: undefined });
   });
 
   it("listEntries passes scope + scope_id + the prefix/limit opts", async () => {
@@ -103,32 +106,78 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     expect(s.listMemoryEntries).toHaveBeenCalledWith("user", "alice", {
       prefix: "policy",
       limit: 200,
+      tenant: undefined,
     });
   });
 
-  it("listEntries forwards an omitted opts as undefined (client applies defaults)", async () => {
+  it("listEntries forwards an omitted opts as the focus alone (client applies defaults)", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).listEntries("user", "alice");
-    expect(s.listMemoryEntries).toHaveBeenCalledWith("user", "alice", undefined);
+    expect(s.listMemoryEntries).toHaveBeenCalledWith("user", "alice", { tenant: undefined });
+  });
+
+  it("binds a tenant focus onto every browse method", async () => {
+    // The focus is a property of the CONSOLE SESSION — which tenant's workspace
+    // the operator is looking at — so it binds when the layer is built rather
+    // than travelling through twenty call sites that never vary it.
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client, { tenant: "acme" });
+    await dl.listScopeIDs("user");
+    await dl.listEntries("user", "alice");
+    await dl.getEntry("user", "alice", "tone");
+    await dl.setEntry("user", "alice", "tone", { value: "warm" });
+    await dl.deleteEntry("user", "alice", "tone");
+    expect(s.listMemoryScopeIDs).toHaveBeenCalledWith("user", { tenant: "acme" });
+    expect(s.listMemoryEntries).toHaveBeenCalledWith("user", "alice", { tenant: "acme" });
+    expect(s.getMemoryEntry).toHaveBeenCalledWith("user", "alice", "tone", { tenant: "acme" });
+    expect(s.setMemoryEntry).toHaveBeenCalledWith("user", "alice", "tone", {
+      value: "warm",
+      tenant: "acme",
+    });
+    expect(s.deleteMemoryEntry).toHaveBeenCalledWith("user", "alice", "tone", { tenant: "acme" });
+  });
+
+  it("never sends a focus on listScopes", async () => {
+    // That route answers "what KINDS of scope exist" — a constant set, not any
+    // tenant's data. Sending a tenant would imply the answer varies by tenant.
+    const s = stubClient();
+    await dataLayerFromClient(s.client, { tenant: "acme" }).listScopes();
+    expect(s.listMemoryScopes).toHaveBeenCalledWith();
+  });
+
+  it("treats a blank focus as no focus", async () => {
+    // The topbar switcher is empty until an admin types a tenant, and empty there
+    // means "my own", not a tenant named "". Normalising here also stops the
+    // layer being rebuilt on every keystroke through useResolvedDataLayer's memo.
+    const s = stubClient();
+    await dataLayerFromClient(s.client, { tenant: "   " }).listScopeIDs("user");
+    expect(s.listMemoryScopeIDs).toHaveBeenCalledWith("user", { tenant: undefined });
   });
 
   it("getEntry passes scope + scope_id + key", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).getEntry("agent", "researcher", "note");
-    expect(s.getMemoryEntry).toHaveBeenCalledWith("agent", "researcher", "note");
+    expect(s.getMemoryEntry).toHaveBeenCalledWith("agent", "researcher", "note", {
+      tenant: undefined,
+    });
   });
 
   it("setEntry passes the identifier tuple + the SetMemoryEntryOptions", async () => {
     const s = stubClient();
     const input = { value: { a: 1 }, embed: true, ttl_seconds: 3600 };
     await dataLayerFromClient(s.client).setEntry("user", "alice", "company-policy", input);
-    expect(s.setMemoryEntry).toHaveBeenCalledWith("user", "alice", "company-policy", input);
+    expect(s.setMemoryEntry).toHaveBeenCalledWith("user", "alice", "company-policy", {
+      ...input,
+      tenant: undefined,
+    });
   });
 
   it("deleteEntry passes scope + scope_id + key", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).deleteEntry("user", "alice", "stale");
-    expect(s.deleteMemoryEntry).toHaveBeenCalledWith("user", "alice", "stale");
+    expect(s.deleteMemoryEntry).toHaveBeenCalledWith("user", "alice", "stale", {
+      tenant: undefined,
+    });
   });
 
   it("embedStats passes the scope", async () => {

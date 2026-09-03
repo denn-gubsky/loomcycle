@@ -85,3 +85,4 @@ export type { MemoryDataLayer, FactListOptions } from "./lib/dataLayer";
 // The shared data-source contract (connection | client | dataLayer), for hosts
 // typing their own wrappers.
 export type { MemoryDataSource } from "./components/MemoryViewRoot";
+export type { MemoryBrowseOptions } from "./lib/dataLayer";

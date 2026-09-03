@@ -76,6 +76,15 @@ export interface FactListOptions {
 // RFC AS browse-by-subject reach — a data-plane selector, never an authority
 // grant (the runtime re-authorizes the principal). search itself takes no
 // override: /v1/_memory/search resolves the caller's own subject.
+// MemoryBrowseOptions narrows WHICH workspace the console reads, as distinct from
+// what it reads. Today that is the tenant focus: a super-admin console can point
+// at one tenant, and the server ignores the value for any caller that cannot
+// widen its own scope, so passing it is safe from every principal.
+export interface MemoryBrowseOptions {
+  /** Super-admin tenant focus. Omitted or blank → the caller's own tenant. */
+  tenant?: string;
+}
+
 export interface MemoryDataLayer {
   // The kinds of scopes the server declares (agent, user, or operator yaml).
   listScopes(): Promise<MemoryScopesResponse>;
@@ -211,17 +220,31 @@ export interface MemoryDataLayer {
 // client owns URL construction + auth transport. `listEntries`'s response is the
 // client's (which omits embedding_metadata) — structurally assignable to the
 // package's wider shape, so no cast is needed.
-export function dataLayerFromClient(client: LoomcycleClient): MemoryDataLayer {
+//
+// BROWSE OPTIONS BIND AT CONSTRUCTION, not per call. A tenant focus is a property
+// of the console session — which tenant's workspace the operator is looking at —
+// so threading it through every method signature would put the same never-varying
+// value in twenty call sites inside the console. `listScopes` deliberately does
+// NOT take it: that route returns the constant set of scope KINDS, not any
+// tenant's data.
+export function dataLayerFromClient(
+  client: LoomcycleClient,
+  browse?: MemoryBrowseOptions,
+): MemoryDataLayer {
+  // Normalise once. An empty switcher means "my own tenant", not a tenant named
+  // "" — the client drops a blank focus too, but a layer that captured "" would
+  // still rebuild itself on every keystroke through the memo in MemoryViewRoot.
+  const tenant = browse?.tenant?.trim() || undefined;
   return {
     listScopes: () => client.listMemoryScopes(),
-    listScopeIDs: (scope) => client.listMemoryScopeIDs(scope),
+    listScopeIDs: (scope) => client.listMemoryScopeIDs(scope, { tenant }),
     listEntries: (scope, scopeId, opts) =>
-      client.listMemoryEntries(scope, scopeId, opts),
-    getEntry: (scope, scopeId, key) => client.getMemoryEntry(scope, scopeId, key),
+      client.listMemoryEntries(scope, scopeId, { ...opts, tenant }),
+    getEntry: (scope, scopeId, key) => client.getMemoryEntry(scope, scopeId, key, { tenant }),
     setEntry: (scope, scopeId, key, input) =>
-      client.setMemoryEntry(scope, scopeId, key, input),
+      client.setMemoryEntry(scope, scopeId, key, { ...input, tenant }),
     deleteEntry: (scope, scopeId, key) =>
-      client.deleteMemoryEntry(scope, scopeId, key),
+      client.deleteMemoryEntry(scope, scopeId, key, { tenant }),
     embedStats: (scope) => client.memoryEmbedStats(scope),
     reembed: (scope, scopeId, opts) => client.reembedMemory(scope, scopeId, opts),
     backfillEmbeddings: (scope, scopeId, opts) => client.backfillEmbeddings(scope, scopeId, opts),
@@ -362,9 +385,10 @@ export function useMemoryData(): MemoryDataLayer {
 export function dataLayerFromConnection(
   conn: ChangeFeedConnection,
   client: LoomcycleClient,
+  browse?: MemoryBrowseOptions,
 ): MemoryDataLayer {
   return {
-    ...dataLayerFromClient(client),
+    ...dataLayerFromClient(client, browse),
     streamChanges: (family, opts) => tailChanges(conn, family, opts),
   };
 }
