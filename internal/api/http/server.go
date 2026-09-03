@@ -2213,10 +2213,43 @@ func convertConfigCandidates(in map[string][]config.TierCandidate, models map[st
 // the default path stays byte-identical. Deliberately NOT called on the resume
 // path (a resumed run replays past distillations without harvesting).
 func (s *Server) recallIndexForRun(cx *config.Context) *recall.Index {
-	if cx == nil || cx.Recall == nil || !*cx.Recall || s.embedder == nil {
+	if !s.recallActive(cx) {
 		return nil
 	}
 	return recall.NewIndex(s.embedder, 0)
+}
+
+// recallActive reports whether recall-augmented distillation is active for a run:
+// the agent opted into context.recall AND an embedder is configured (without one
+// both the run-scoped index and the Recall tool's persistent fallback are inert).
+func (s *Server) recallActive(cx *config.Context) bool {
+	return cx != nil && cx.Recall != nil && *cx.Recall && s.embedder != nil
+}
+
+// grantRecallTool ensures the Recall builtin is in a run's toolset when the agent
+// enabled context.recall — so enabling recall "just works" without ALSO having to
+// list Recall in tools: (an empty tools: grants NO tools, and even a populated one
+// easily omits it). No-op when recall is inactive or Recall is already granted.
+//
+// This intentionally widens the per-agent tools allowlist, but not the trust
+// boundary: Recall is read-only over the run's OWN evicted spans and the agent's
+// OWN memory scope, so granting it on the operator's explicit context.recall opt-in
+// exposes no data the agent could not already reach.
+func (s *Server) grantRecallTool(allowed []tools.Tool, cx *config.Context) []tools.Tool {
+	if !s.recallActive(cx) {
+		return allowed
+	}
+	for _, t := range allowed {
+		if t.Name() == "Recall" {
+			return allowed
+		}
+	}
+	for _, t := range s.tools {
+		if t.Name() == "Recall" {
+			return append(allowed, t)
+		}
+	}
+	return allowed
 }
 
 func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
@@ -2366,6 +2399,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// isn't stamped yet, so for non-HTTP-principal spawn surfaces the ctx
 	// tenant is "" and the run would not see its OWN dynamic MCP tools.
 	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID, agentDef.Tools), agentDef.Tools, in.Tools)
+	// RFC CT: context.recall auto-grants the Recall tool so enabling recall works
+	// without also listing Recall in tools:.
+	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, in.Context))
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -3927,6 +3963,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// for an open-mode run. Consistent with the agent existence-check +
 	// resolveAgent on this path.
 	allowedTools := filterTools(s.candidateTools(r.Context(), req.TenantID, agentDef.Tools), agentDef.Tools, req.Tools)
+	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, req.Context)) // RFC CT
 	// Per-run host narrowing for HTTP/WebFetch/WebSearch. Behaviour
 	// depends on LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE — see NarrowHosts
 	// doc comment. In caller-authoritative mode we ALWAYS call so the
@@ -4603,6 +4640,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// the ctx tenant — the ownership gate above already proved the caller
 	// is entitled to this session.
 	allowedTools := filterTools(s.candidateTools(r.Context(), sess.TenantID, agentDef.Tools), agentDef.Tools, body.Tools)
+	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, body.Context)) // RFC CT
 	var hostPolicy tools.HostPolicyValue
 	if body.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -5961,6 +5999,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 	// renders this list. Safe to hoist: applyMemoryInjection rewrites only
 	// SystemPrompt, so def.Tools is the same value it was below.
 	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
+	subTools = s.grantRecallTool(subTools, def.Context) // RFC CT: recall-enabled sub-agent gets Recall
 	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
 	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
 	// up the parent's user/tenant blocks here (agent-scope never crosses).

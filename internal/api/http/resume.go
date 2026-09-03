@@ -111,6 +111,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// was a call-time input, never snapshotted — the operator's static floor
 	// (applied inside the tools) is what remains.
 	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, nil)
+	allowedTools = s.grantRecallTool(allowedTools, agentDef.Context) // RFC CT: keep Recall on a resumed recall run
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-derive the system prompt (skill bodies baked in) from the current
