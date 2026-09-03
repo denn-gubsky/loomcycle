@@ -234,9 +234,5 @@ func (s *Service) Inspect(ctx context.Context, tenant, subject string) (Inspecti
 // refuses an empty tenant and stores the default one as "default", while the k/v
 // plane keeps the raw "". Same rule as builtin.sqlScopeTenant and the erasure
 // service — getting it wrong here would count another tenant's documents.
-func sqlScopeTenant(tenant string) string {
-	if tenant != "" {
-		return tenant
-	}
-	return "default"
-}
+// sqlScopeTenant delegates to sqlmem.ScopeTenant, which owns this rule.
+func sqlScopeTenant(tenant string) string { return sqlmem.ScopeTenant(tenant) }

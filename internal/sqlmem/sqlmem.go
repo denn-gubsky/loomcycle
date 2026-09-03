@@ -241,6 +241,35 @@ const scopeKeySep = '\x1f'
 // through) cannot forge another tenant's prefix. That safety is an accident of
 // field order, not a design, and a fourth component or a reordering would spend
 // it silently.
+// ScopeTenant maps a runtime tenant id onto the tenant SQL Memory keys by.
+//
+// THIS IS THE ONLY CORRECT WAY to build a ScopeKey.Tenant from a runtime tenant,
+// and it lives here because it exists for THIS package's constraint: pgScopeNames
+// rejects an empty tenant (it has to — the empty string would derive a schema and
+// a LOGIN role shared by every single-tenant deployment), while the k/v Memory
+// plane and the Path tree key on the RAW tenant and leave the default one "".
+// Three planes, three keyings — see the tenant-keying seam.
+//
+// It was implemented FOUR TIMES across three packages (builtin, directory,
+// erasure), each with a comment naming a different one as the source of truth and
+// nothing asserting they agreed. They did agree, byte for byte, which is the only
+// reason this was a latent risk rather than a live bug. The failure mode if one
+// drifts is documented at the erasure call site and is not cosmetic: a DropScope
+// built from a raw "" tenant matches nothing, so a single-tenant deployment's
+// subject erasure leaves the subject's ENTIRE SQL Memory database — documents,
+// entity graph — in place while REPORTING SUCCESS.
+func ScopeTenant(tenant string) string {
+	if tenant != "" {
+		return tenant
+	}
+	return defaultTenantKey
+}
+
+// defaultTenantKey is what an empty runtime tenant becomes in a SQL Memory scope
+// key. Named rather than inlined so the three call sites cannot disagree by
+// typo, and so a change here is a change everywhere.
+const defaultTenantKey = "default"
+
 func (k ScopeKey) validate() error {
 	for _, part := range []struct{ name, val string }{
 		{"tenant", k.Tenant}, {"scope", k.Scope}, {"scope_id", k.ScopeID},
