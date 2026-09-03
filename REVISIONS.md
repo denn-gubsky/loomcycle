@@ -4,6 +4,131 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.71.0
+
+Two lines land together: the layered-context work reaches the multi-agent case, and
+ontology-declared memory placement becomes reachable at all.
+
+**A stateful sub-agent hands its state up, not its transcript (#1122).** When a fan-out
+parent spawns a stateful child, the parent now receives the child's final structured
+state Σ as the result rather than only its prose. A single spawn folds Σ into the
+child's `tool_result` as JSON; `parallel_spawn` carries it as a structured `state` field
+on each envelope entry; the spawn ledger captures it so a parent restored from a
+snapshot keeps a completed child's Σ. That turns N growing transcripts into N compact
+structured results — `O(T²)`-per-agent × N becomes N independent `O(T)`. Non-stateful
+children are unchanged, and the Team orchestrator is string-only end to end, so
+carrying Σ there is still a follow-on.
+
+**`context.mode: auto` routes by the model that actually resolved (#1120).** An
+operator sets `auto` once and the agent runs schema-free **recap** on a local backend
+and structured **stateful** on a frontier API, instead of hand-picking per deployment —
+because structured state needs reliable structured output and a weaker local model
+cannot be relied on for it. Providers gained a `Local` capability to make that a routing
+fact rather than a guess (`ollama-local`, vllm and llamacpp are local; the hosted
+`ollama` is not). The mode resolves once at run start on a clone of the context, so the
+shared agent def is never mutated; an interactive run never resolves to stateful, since
+that loop has no steer/park. An explicit mode still wins, and an agent with no context
+block stays `append` — byte-identical, so `auto` is opt-in. The same PR closed a
+transport gap: the per-run `context` override now flows through the connector and MCP
+`spawn_run`, matching `sampling` and `compaction`, which were already there.
+
+**A model may propose a state schema; only an operator adopts it (#1121).** A stateful
+agent can suggest the shape its task's state should hold via `emit_state`'s
+`propose_schema`. The proposal is inert — recorded on the transcript, returned on
+`RunResult.ProposedSchema`, surfaced only when it differs from the active schema — and
+changes validation for no run. Adoption reuses the versioned agent-def substrate: an
+operator forks the def with the schema in `context.state_schema` and promotes it. Same
+fail-safe as the ontology's propose→adopt, and no bespoke store for it.
+
+**Ontology-declared placement was unreachable, in every deployment (#1123).** v1.68.0
+shipped the mechanism and v1.70.0 fixed the extractor that was starving it, but nothing
+could place a fact: the shipped consolidator held `memory_scopes: [agent, user]` and no
+`sql_scopes` at all. A placed fact is stored **twice** — a k/v row, which `recall`
+searches, and a typed chunk, which a graph walk reaches — so `tenant` has to be on both
+grants or the two halves cannot land in the same scope. The bundle now grants them.
+
+The absence had been deliberate, on the argument that an unused grant is the capability
+an injected instruction reaches for. That argument is written for a *prompt-driven*
+agent, where model output steers control flow. The consolidator is `provider: code-js`:
+a deterministic body in which model output is data that gets written and never code that
+gets run. What bounds the tenant write is the placement resolver, which fails closed on
+every uncertainty — an unknown or inconsistently-typed subject, or a fact about the
+profile owner, stays with the user. The grant is also inert on its own: no shipped
+ontology type declares a scope, so nothing is placed until an operator declares one for
+a type, per tenant. Placement remains **off** by default.
+
+**Both ways to change a bundled agent's grants were broken, and finding out cost an
+instance (#1123).** A runtime `AgentDef fork` to flip one grant returned
+`fork: definition (139169 bytes) exceeds max 131072` — for a code body the overlay never
+touched. `MaxCodeBytes` (256 KiB) exists precisely so executable source is not judged by
+the whole-definition cap (128 KiB), but the definition check measured the JSON with the
+body inside it, so any body between the two passed the cap written for it and was
+refused by the smaller one. The consolidator's ~133 KB sits in that dead zone; the
+dedicated cap could never bind. It now measures the definition without the body, on
+create and fork alike, and the stored definition is unchanged.
+
+The config route merges correctly — a re-declared bundle agent keeps its body, provider,
+tools and gates — but layered onto a stack that does *not* contain the bundle, the same
+overlay is indistinguishable from a new agent, so validation refuses it with
+`no model, no tier, and no defaults.model`. Accurate, and it sends the reader to inspect
+the overlay they just wrote rather than their `LOOMCYCLE_PRESETS`; boot is fatal, so the
+wrong first guess costs a down instance. A declaration carrying nothing but capability
+grants now says so and names the layer stack to check. Two statements of the `sql_scopes`
+enum that listed `agent, user, run` long after `tenant` was added — one of them the
+validation error itself, so a *correct* config read as rejected — are fixed, and the
+message is now rendered from the set.
+
+### Known state, stated plainly
+
+**Whether declared placement is worth having is still unmeasured.** It is now reachable
+for the first time, which is the precondition, not the result. The baseline it has to
+beat was measured on a two-user corpus before placement could fire: **30 duplicated
+facts, 22%** of the store.
+
+**The `sql_scopes` grant is wider than this needs.** The gate consults a single list, so
+opening the Document tenant-chunk path opens the raw `Memory sql_exec` surface on the
+tenant keyspace with it; there is no narrower grant today. The consolidator body issues
+no SQL op, and a test now asserts it does not, so adding one means re-arguing the grant.
+
+**A failed fork can leave an orphan def row.** `AgentDefCreate` bootstraps a v1 row from
+static config before the cap check runs, and does not set the active pointer — so
+nothing serves it and resolution still falls through to static config. Do not `promote`
+such a row: it captured the pre-change definition.
+
+The adapters and protos are unchanged and remain at 1.67.0, so no `python-v` tag
+accompanies this release.
+
+## What's in v1.70.0
+
+*(This entry was reconstructed from the annotated tag, which is authoritative — the
+release was cut without a `REVISIONS.md` section.)*
+
+**The extractor is told who the owner is, or told nothing (#1118).** v1.68.1 gave the
+extraction prompt a rule worse than no rule, and a live two-speaker run proved it: it
+said *"a fact about THEM takes the subject `user`"* and never said who THEM was, because
+the declared Identity names live in the user-root document, which reaches
+`{{memory:user_info}}` and not the extractor. So the model guessed the more prominent
+speaker. In a scope whose profile declared Dave, it made `user` = Calvin — **inverting
+the self-guard**, protecting Calvin's facts as if they were the owner's while leaving
+Dave's, the actual owner's, placeable. Protecting the wrong person while exposing the
+right one is worse than doing neither. `Context op=self` now reports `self_names`,
+parsed server-side by the one function that owns the column-0 rule that stops the
+template's own indented example from naming every unedited profile after it. The names
+are **omitted**, not empty, when nobody declared any, so a caller can tell "nobody said"
+from "said nothing"; the prompt then asks only for consistent spelling rather than
+inviting the model to identify an owner it cannot know.
+
+**Layered execution context (#1117, #1119).** L1 reasoning-recap context retention and
+L2 structured execution state — the first two phases, with an RFC 7386 merge plus a
+minimal schema validator for the structured-state layer.
+
+**What the measurement found.** On the only real corpus available, the local extractor
+produced **zero** facts from 568 turns while a cloud model produced **74** from the same
+input — so the earlier "typing is inconsistent" finding had been measuring a model that
+was barely functioning, not a design defect. With a capable extractor the typing bars
+pass: 62/62 linkage, 0% of claims on a multiply-typed subject, repeat-subject
+consistency 1.00 against 0.00 before.
+
 ## What's in v1.69.0
 
 v1.68.0 shipped ontology-declared placement. A two-user run on a real corpus then
