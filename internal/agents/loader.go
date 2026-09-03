@@ -210,6 +210,7 @@ type Context struct {
 	OnInvalidPatch  *string        `json:"on_invalid_patch,omitempty"`
 	MaxPatchRetries *int           `json:"max_patch_retries,omitempty"`
 	Recall          *bool          `json:"recall,omitempty"`
+	HarvestToMemory *bool          `json:"harvest_to_memory,omitempty"`
 }
 
 // CoreBlock mirrors config.CoreBlock locally so the agents package stays

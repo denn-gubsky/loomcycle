@@ -1793,6 +1793,19 @@ type Context struct {
 	// every retention mode. Content-identifying — a fork that flips it mints a
 	// distinct hash.
 	Recall *bool `json:"recall,omitempty" yaml:"recall"`
+	// HarvestToMemory opts the run into persistent-memory harvest: as the context
+	// distillation (compaction / recap / stateful) evicts a span, that span is
+	// BANKED onto the consolidation queue so the memory consolidator extracts its
+	// durable facts into the agent's long-term memory later. It generalizes the
+	// L0-only compaction.memory_flush to every distillation mode, and needs the same
+	// prerequisite — the agent must have `user` in memory_scopes and the run must
+	// carry a user_id (the consolidator drains user scopes). It is DEFERRED, not
+	// inline: banking hands raw spans to the existing consolidator rather than
+	// extracting inline — a measurement (RFC CU Probe 2) showed per-span isolated
+	// extraction loses coreference-dependent facts a span named earlier, which the
+	// consolidator's whole/batched extraction retains. Off (nil/false) = today's
+	// behavior. Content-identifying — a fork that flips it mints a distinct hash.
+	HarvestToMemory *bool `json:"harvest_to_memory,omitempty" yaml:"harvest_to_memory"`
 }
 
 // Context mode values.
@@ -1824,7 +1837,7 @@ func (c *Context) IsZero() bool {
 	return c == nil || (c.Mode == nil && c.KeepLastN == nil && c.Reasoning == nil &&
 		c.RecapMaxChars == nil && c.AutoRecapAtPct == nil &&
 		len(c.StateSchema) == 0 && c.OnInvalidPatch == nil && c.MaxPatchRetries == nil &&
-		c.Recall == nil)
+		c.Recall == nil && c.HarvestToMemory == nil)
 }
 
 // Clone deep-copies (every field is a pointer) so a merge never aliases an input.
@@ -1865,6 +1878,10 @@ func (c *Context) Clone() *Context {
 	if c.Recall != nil {
 		v := *c.Recall
 		out.Recall = &v
+	}
+	if c.HarvestToMemory != nil {
+		v := *c.HarvestToMemory
+		out.HarvestToMemory = &v
 	}
 	return out
 }
@@ -1939,7 +1956,18 @@ func MergeContext(base, over *Context) *Context {
 		v := *over.Recall
 		out.Recall = &v
 	}
+	if over.HarvestToMemory != nil {
+		v := *over.HarvestToMemory
+		out.HarvestToMemory = &v
+	}
 	return out
+}
+
+// HarvestToMemoryEnabled reports whether the resolved context policy opts into
+// persistent-memory harvest (banking evicted spans for the consolidator). nil
+// context / unset field = off, so the default distillation path is unchanged.
+func HarvestToMemoryEnabled(c *Context) bool {
+	return c != nil && c.HarvestToMemory != nil && *c.HarvestToMemory
 }
 
 // Validate checks per-field bounds. Returns a descriptive error naming the field.
