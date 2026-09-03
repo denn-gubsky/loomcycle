@@ -450,6 +450,66 @@ Two scopes ship in v0.8.0:
 
 `scope_id` is **always** resolved server-side. The model picks the scope; loomcycle picks the scope_id. A model-supplied scope_id would let one user's agent run read another user's keys.
 
+### Ontology-declared placement (`@memory_scope`)
+
+Some of what a consolidator learns is not about the user. *"Releases need two
+approvals"*, *"staging is staging.acme.internal"* — true for everyone in the tenant, in
+no model's training data, and by default written into whichever user's scope happened to
+hear it. Every other user re-learns it from their own conversations, or never learns it.
+
+An entity **type** in the tenant's ontology document may declare which memory scope facts
+about that kind of thing belong in:
+
+```
+## service
+- `@memory_scope` tenant
+- `name` — what people call it
+```
+
+A claim reaches its scope through the subject it is already linked to:
+`claim --about--> subject entity → the entity's type → the type's declared scope`. Nothing
+extra is inferred at write time, and no model is asked a second question — the type the
+extractor already emits is the only input the routing needs. A subtype inherits the
+declaration, so declaring `organization` covers its kinds.
+
+**Two switches, and both are required.** The type must declare a scope, AND the agent
+that writes memory must be granted it on **both** `memory_scopes` and `sql_scopes` — a
+fact is stored twice (a k/v row, which `recall` searches, and a typed chunk, which a graph
+walk reaches) and both halves have to land in the same place. The bundled memory agents
+hold those grants; **no shipped type declares a scope**, so a stock deployment places
+nothing until you declare one.
+
+**It declines rather than guesses.** No type, an unknown type, a subject typed
+inconsistently across writes, an isolated member, or a missing grant all resolve to the
+caller's own scope with a reason. A fact is never placed on a coin-flip.
+
+#### What placement does NOT protect, and it is worth reading before declaring `person`
+
+The self-guard keeps a fact about the profile owner in the owner's own scope — but only
+for facts learned from **that owner's** conversations. It cannot stop another user from
+recording the same thing: to them the owner is a third party, so their copy is placed into
+the shared plane.
+
+Measured on a two-user corpus where each user was one speaker in the same conversations:
+the guard correctly kept each speaker's facts private in their own scope, and each user
+published the *other* speaker's identical facts tenant-wide. The result is that a fact can
+be simultaneously private-to-one-user and tenant-visible — leaving the owner's facts
+**more exposed than before placement was enabled**, which is precisely what the guard
+exists to prevent.
+
+This is not a bug to wait on: it is what per-scope decisions with no global view produce,
+and in any multi-party corpus the guard's promise is defeated by the counterparty. The
+operator control that actually works is the **declaration itself** — declare the
+impersonal types (`organization`, `project`, `service`) where the whole tenant genuinely
+should share the knowledge, and leave `person` undeclared unless you intend facts about
+everyone mentioned to be tenant-readable.
+
+**What the same measurement showed placement is good for**, so the trade is legible:
+sharing, not deduplication. Duplicate copies fell only ~23% (cross-user duplication was
+largely traded for tenant↔owner duplication), while the number of facts readable by both
+users went from zero to 94 — and typing grew more stable *across* users, because a shared
+subject node gives a subject one identity instead of one per scope.
+
 ### Per-agent yaml policy
 
 ```yaml
