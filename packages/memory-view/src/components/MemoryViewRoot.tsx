@@ -6,6 +6,7 @@ import {
   dataLayerFromClient,
   dataLayerFromConnection,
   type MemoryDataLayer,
+  type MemoryBrowseOptions,
 } from "../lib/dataLayer";
 
 // MemoryDataSource is the data-source contract for the public <MemoryView> root.
@@ -18,6 +19,10 @@ export interface MemoryDataSource {
   client?: LoomcycleClient;
   /** A fully custom data layer (e.g. a cookie-authed same-origin fetcher). */
   dataLayer?: MemoryDataLayer;
+  /** Which workspace to browse — today, a super-admin's tenant focus. Applies to
+   *  the `connection` and `client` paths; a host supplying its own `dataLayer`
+   *  has already decided, so it is ignored there. */
+  browse?: MemoryBrowseOptions;
 }
 
 // useResolvedDataLayer picks the data layer from the source props once per
@@ -25,16 +30,23 @@ export interface MemoryDataSource {
 // object) keeps an inline `connection={{...}}` from rebuilding the client every
 // render.
 export function useResolvedDataLayer(src: MemoryDataSource): MemoryDataLayer | null {
-  const { dataLayer, client, connection } = src;
+  const { dataLayer, client, connection, browse } = src;
+  // Depend on the tenant PRIMITIVE, not the browse object, so an inline
+  // browse={{...}} does not rebuild the layer every render — the same reason the
+  // connection is destructured field-by-field below. Rebuilding on a REAL change
+  // is the point: the layer captures the tenant, so switching must produce a new one.
+  const tenant = browse?.tenant;
   return useMemo<MemoryDataLayer | null>(() => {
     if (dataLayer) return dataLayer;
-    if (client) return dataLayerFromClient(client);
+    if (client) return dataLayerFromClient(client, { tenant });
     // The connection path gets the change-feed tail too — it is the only path
     // holding the base URL + fetch that SSE needs (see dataLayerFromConnection).
-    if (connection) return dataLayerFromConnection(connection, createLoomcycleClient(connection));
+    if (connection) {
+      return dataLayerFromConnection(connection, createLoomcycleClient(connection), { tenant });
+    }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataLayer, client, connection?.baseUrl, connection?.token, connection?.fetch]);
+  }, [dataLayer, client, connection?.baseUrl, connection?.token, connection?.fetch, tenant]);
 }
 
 // MemoryViewRoot renders the themeable `.loomcycle-memory-view` wrapper + provides

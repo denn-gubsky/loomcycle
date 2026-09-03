@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/memory-view",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Embeddable React memory browser for the loomcycle agentic runtime (RFC BV) \u2014 a themeable, standalone k/v Vector Memory console (with a fact viewer + unified semantic search).",
   "license": "Apache-2.0",
@@ -48,12 +48,12 @@
     "test:watch": "vitest"
   },
   "peerDependencies": {
-    "@loomcycle/client": "^1.55.0",
+    "@loomcycle/client": "^1.72.0",
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@loomcycle/client": "^1.55.0",
+    "@loomcycle/client": "^1.72.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

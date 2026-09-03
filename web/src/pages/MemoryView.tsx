@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { MemoryView } from "@loomcycle/memory-view";
+import { useFocusTenant } from "../components/Layout";
 import { consolidationRunHref } from "../lib/ontologyEditHref";
 import "@loomcycle/memory-view/styles.css";
 
@@ -27,9 +28,16 @@ const cookieFetch: typeof fetch = async (input, init) => {
 
 export default function MemoryViewPage() {
   const navigate = useNavigate();
+  // The topbar tenant focus, which every OTHER browse surface (Documents, Paths,
+  // Agents, Users) already consumes and this one did not. Without it a
+  // super-admin console could only ever read its own tenant's memory — usually
+  // the empty one — while that tenant's own operator saw its rows, so admin
+  // looked strictly less capable than the role it supersedes. Blank = own tenant.
+  const focusTenant = useFocusTenant();
   return (
     <MemoryView
       connection={{ baseUrl: "", fetch: cookieFetch }}
+      browse={{ tenant: focusTenant || undefined }}
       // Starting a consolidation pass is the HOST's business: the package cannot know
       // about /run, and an embedder does not have it. This stages the agent and prompt
       // in the terminal rather than starting anything — a click that spends tokens with
