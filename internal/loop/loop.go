@@ -1340,6 +1340,25 @@ func bankDiscardedSpan(ctx context.Context, opts RunOptions, dropped []providers
 	return &providers.MemoryBankedInfo{PendingID: id, Messages: len(dropped)}
 }
 
+// harvestToMemory banks an evicted span to the consolidation queue at a recap or
+// stateful distillation boundary when the agent set context.harvest_to_memory
+// (RFC CT P2) — extending the L0-only compaction banking to those modes so the
+// consolidator harvests their durable facts too. The compaction path already banks
+// via bankDiscardedSpan (its marker), so this covers only the other two modes.
+//
+// Never fatal, like all banking: a genuine failure (no store, misconfigured scope,
+// no user_id) surfaces as a non-fatal EventError so a misconfiguration is visible
+// rather than silently dropping every span; a span with nothing conversational to
+// bank (id == "") is a benign no-op and stays silent.
+func harvestToMemory(ctx context.Context, opts RunOptions, emit func(providers.Event), evicted []providers.Message) {
+	if !config.HarvestToMemoryEnabled(opts.Context) || opts.BankCompactedSpan == nil || len(evicted) == 0 {
+		return
+	}
+	if _, err := opts.BankCompactedSpan(ctx, evicted); err != nil {
+		emit(providers.Event{Type: providers.EventError, Error: "memory harvest: " + err.Error()})
+	}
+}
+
 // --- RFC CR L1: reasoning-recap distillation ---
 //
 // Recap mode is a sibling of compaction on the retention spectrum. It reuses the
@@ -1490,6 +1509,9 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	// Recall(query) can fetch it back — most valuable exactly here, where recap
 	// (or drop) loses the detail. nil-safe when recall is off.
 	opts.RecallIndex.Harvest(ctx, messages[firstIdx:cut])
+	// Persistent-memory harvest (RFC CT P2): bank the same evicted span for the
+	// consolidator when the agent opted in. No-op unless context.harvest_to_memory.
+	harvestToMemory(ctx, opts, emit, messages[firstIdx:cut])
 	before := estimateMessageTokens(messages)
 	pinned := ""
 	if firstIdx > 0 {

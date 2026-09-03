@@ -21,23 +21,27 @@ import (
 // anything. Banked and silently forgotten is worse than not banked, so this
 // refuses instead, by name.
 //
-// The callback is installed whenever `memory_flush` is set, even when it cannot
-// bank. Returning nil for a misconfigured agent would make the misconfiguration
-// invisible; an error in the compaction marker on every pass is noisy in exactly
-// the way an operator needs.
-func (s *Server) bankCompactedSpanFn(agentDef config.AgentDef, tenantID, userID, agentName, runID, sessionID string) func(context.Context, []providers.Message) (string, error) {
-	if agentDef.Compaction == nil || agentDef.Compaction.MemoryFlush == nil || !*agentDef.Compaction.MemoryFlush {
+// The callback is installed whenever `memory_flush` OR the context block's
+// `harvest_to_memory` (RFC CT P2) is set — the latter generalizes the L0-only
+// flush to every distillation mode (recap / stateful too), banking evicted spans
+// for the same consolidator. It is installed even when it cannot bank: returning
+// nil for a misconfigured agent would make the misconfiguration invisible; an error
+// in the distillation marker on every pass is noisy in exactly the way an operator
+// needs. `harvestToMemory` is the resolved (per-run > per-agent) context flag.
+func (s *Server) bankCompactedSpanFn(agentDef config.AgentDef, harvestToMemory bool, tenantID, userID, agentName, runID, sessionID string) func(context.Context, []providers.Message) (string, error) {
+	memoryFlush := agentDef.Compaction != nil && agentDef.Compaction.MemoryFlush != nil && *agentDef.Compaction.MemoryFlush
+	if !memoryFlush && !harvestToMemory {
 		return nil
 	}
 	return func(ctx context.Context, dropped []providers.Message) (string, error) {
 		if s.store == nil {
-			return "", fmt.Errorf("memory_flush: no persistent store on this instance")
+			return "", fmt.Errorf("memory harvest: no persistent store on this instance")
 		}
 		if !containsString(agentDef.MemoryScopes, "user") {
-			return "", fmt.Errorf("memory_flush is set but agent %q has no `user` in memory_scopes; consolidation only drains user scopes, so a banked span would never be consolidated", agentName)
+			return "", fmt.Errorf("memory harvest is enabled but agent %q has no `user` in memory_scopes; consolidation only drains user scopes, so a banked span would never be consolidated", agentName)
 		}
 		if userID == "" {
-			return "", fmt.Errorf("memory_flush is set but this run carries no user_id, so there is no user scope to bank into")
+			return "", fmt.Errorf("memory harvest is enabled but this run carries no user_id, so there is no user scope to bank into")
 		}
 		msgs := memrank.ConversationFromMessages(dropped)
 		return memrank.BankSpan(ctx, s.store, memrank.BankSpanRequest{
@@ -49,8 +53,9 @@ func (s *Server) bankCompactedSpanFn(agentDef config.AgentDef, tenantID, userID,
 			Messages:  msgs,
 			// Metadata rides into the payload the consolidator reads. `source`
 			// tells a pass (and an operator reading a queue row) that these turns
-			// were rescued from a compaction rather than volunteered by an agent.
-			Metadata: map[string]string{"source": "compaction", "agent": agentName},
+			// were rescued from a context distillation rather than volunteered by an
+			// agent (covers compaction, recap, and stateful alike).
+			Metadata: map[string]string{"source": "distillation", "agent": agentName},
 		})
 	}
 }

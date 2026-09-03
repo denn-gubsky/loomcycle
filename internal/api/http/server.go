@@ -2584,7 +2584,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
 	// same way — a sub-agent inherits the parent's effective mode; its def fills
 	// gaps the parent left unset.
-	loopCtx = tools.WithContextPolicy(loopCtx, config.MergeContext(agentDef.Context, in.Context))
+	mergedContext := config.MergeContext(agentDef.Context, in.Context) // per-run > per-agent (RFC CR); resolved once
+	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext)
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
@@ -2653,13 +2654,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interactive:         in.Interactive,
 		Sampling:            config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
 		Compaction:          config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
-		Context:             config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field (RFC CR)
+		Context:             mergedContext,                                              // per-run wins per field (RFC CR)
 		// Recall-augmented distillation: nil unless the agent set context.recall AND
 		// an embedder is configured, so an unopted run is byte-identical (RFC CT).
-		RecallIndex: s.recallIndexForRun(config.MergeContext(agentDef.Context, in.Context)),
-		// RFC BL P3: nil unless the agent set compaction.memory_flush, so an
-		// unopted agent's compaction path is byte-identical.
-		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, effectiveUserID, in.Agent, runID, sessionID),
+		RecallIndex: s.recallIndexForRun(mergedContext),
+		// RFC BL P3 + RFC CT P2: installed when compaction.memory_flush OR
+		// context.harvest_to_memory is set, else nil (unopted path byte-identical).
+		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(mergedContext), rid.TenantID, effectiveUserID, in.Agent, runID, sessionID),
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               in.UserTier,
 		FallbackPolicy:         fbPolicy,
@@ -4212,7 +4213,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
-	loopCtx = tools.WithContextPolicy(loopCtx, config.MergeContext(agentDef.Context, req.Context)) // RFC CR
+	mergedContext := config.MergeContext(agentDef.Context, req.Context) // per-run > per-agent (RFC CR); resolved once
+	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext)           // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
@@ -4275,12 +4277,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Interactive:         req.Interactive,
 		Sampling:            config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
 		Compaction:          config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
-		Context:             config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field (RFC CR)
+		Context:             mergedContext,                                               // per-run wins per field (RFC CR)
 		// Recall-augmented distillation: nil unless context.recall is set AND an
 		// embedder is configured, so an unopted run is byte-identical (RFC CT).
-		RecallIndex: s.recallIndexForRun(config.MergeContext(agentDef.Context, req.Context)),
-		// RFC BL P3: nil unless the agent set compaction.memory_flush.
-		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, req.UserID, req.Agent, runID, sessionID),
+		RecallIndex: s.recallIndexForRun(mergedContext),
+		// RFC BL P3 + RFC CT P2: installed when compaction.memory_flush OR
+		// context.harvest_to_memory is set, else nil (unopted path byte-identical).
+		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(mergedContext), rid.TenantID, req.UserID, req.Agent, runID, sessionID),
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               req.UserTier,
 		FallbackPolicy:         fbPolicy,
@@ -6994,7 +6997,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	//
 	// Best-effort exactly like the auto path: a compact must not fail because a
 	// queue write did.
-	if bank := s.bankCompactedSpanFn(agentDef, run.TenantID, run.UserID, run.Agent, runID, run.SessionID); bank != nil {
+	if bank := s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(agentDef.Context), run.TenantID, run.UserID, run.Agent, runID, run.SessionID); bank != nil {
 		if _, berr := bank(summCtx, msgs[firstIdx:cut]); berr != nil {
 			log.Printf("compact %s: memory_flush did not bank: %v", runID, berr)
 		}

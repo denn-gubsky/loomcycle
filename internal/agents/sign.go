@@ -348,7 +348,7 @@ func normalize(c *AgentContent) {
 		c.Context.Reasoning == nil && c.Context.RecapMaxChars == nil &&
 		c.Context.AutoRecapAtPct == nil && len(c.Context.StateSchema) == 0 &&
 		c.Context.OnInvalidPatch == nil && c.Context.MaxPatchRetries == nil &&
-		c.Context.Recall == nil {
+		c.Context.Recall == nil && c.Context.HarvestToMemory == nil {
 		c.Context = nil
 	}
 

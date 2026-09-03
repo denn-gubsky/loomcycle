@@ -433,6 +433,25 @@ func TestFromOverlay_ContextRecallIsContentIdentifying(t *testing.T) {
 	}
 }
 
+func TestFromOverlay_ContextHarvestToMemoryIsContentIdentifying(t *testing.T) {
+	// RFC CT P2: context.harvest_to_memory is content-identifying like every sibling
+	// context field — a fork that flips it mints a distinct hash — while an empty
+	// context still collapses to the bare hash.
+	bareHash := Sign(FromYAMLAgent(&Agent{Name: "x"}))
+
+	on, err := FromOverlay(json.RawMessage(`{"name":"x","context":{"harvest_to_memory":true}}`))
+	if err != nil {
+		t.Fatalf("FromOverlay(harvest_to_memory): %v", err)
+	}
+	if Sign(on) == bareHash {
+		t.Error("context.harvest_to_memory:true did not change the content hash — a fork must mint a distinct hash")
+	}
+	on2, _ := FromOverlay(json.RawMessage(`{"name":"x","context":{"harvest_to_memory":true}}`))
+	if Sign(on) != Sign(on2) {
+		t.Error("context.harvest_to_memory hash is not stable across identical reads")
+	}
+}
+
 func TestFromOverlay_ParsesValidJSON(t *testing.T) {
 	overlay := json.RawMessage(`{"name":"x","system_prompt":"hi","tools":["Read"]}`)
 	c, err := FromOverlay(overlay)
