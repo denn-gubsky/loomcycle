@@ -104,6 +104,9 @@ func nonZeroContext(t *testing.T) *Context {
 			case reflect.Int:
 				// In-range for autorecap_at_pct (50..95); fine for the others.
 				elem.Elem().SetInt(50)
+			case reflect.Bool:
+				// recall — a plain opt-in flag.
+				elem.Elem().SetBool(true)
 			case reflect.String:
 				switch name {
 				case "Mode":

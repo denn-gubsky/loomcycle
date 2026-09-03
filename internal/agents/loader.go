@@ -209,6 +209,7 @@ type Context struct {
 	StateSchema     map[string]any `json:"state_schema,omitempty"`
 	OnInvalidPatch  *string        `json:"on_invalid_patch,omitempty"`
 	MaxPatchRetries *int           `json:"max_patch_retries,omitempty"`
+	Recall          *bool          `json:"recall,omitempty"`
 }
 
 // CoreBlock mirrors config.CoreBlock locally so the agents package stays

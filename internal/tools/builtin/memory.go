@@ -1729,6 +1729,52 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	return okJSON(out)
 }
 
+// RecallFallback is the persistent-memory leg of the Recall tool's silent
+// fallback: a free-text recall over the agent's durable memory, so a single
+// Recall(query) transparently searches both the run-scoped index of evicted spans
+// and the facts the agent has actually learned. It searches the agent's permitted
+// scopes in the order user → agent → tenant (user first because that is where the
+// consolidator's cross-run facts and compaction-banked spans land), deduplicates
+// by (scope, text), and returns the union — the caller sorts and trims.
+//
+// It NEVER surfaces an error: the fallback must only ADD hits when it can. A
+// missing store/embedder, an agent with no memory_scopes, or a per-scope failure
+// all yield fewer (or zero) hits, never a failed Recall. A blank query or topK<=0
+// returns nil / uses a small default.
+func (m *Memory) RecallFallback(ctx context.Context, query string, topK int) []memrank.RecallFact {
+	if m == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	layer, ok := m.memoryLayer(ctx)
+	if !ok {
+		return nil
+	}
+	if topK <= 0 {
+		topK = 3
+	}
+	seen := map[string]bool{}
+	var out []memrank.RecallFact
+	for _, scope := range []string{"user", "agent", "tenant"} {
+		s, sid, err := m.resolveScope(ctx, scope)
+		if err != nil {
+			continue // scope not permitted / not resolvable on this run — skip silently
+		}
+		res, err := layer.Recall(ctx, s, sid, memrank.RecallQuery{Query: query, TopK: topK})
+		if err != nil {
+			continue
+		}
+		for _, f := range res.Facts {
+			key := string(s) + "|" + f.Memory
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // --- RFC BL P2 consolidation control ops ---
 //
 // Every op below is gated by BOTH resolveScope (the memory_scopes ACL, already

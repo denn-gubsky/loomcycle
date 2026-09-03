@@ -894,6 +894,16 @@ func main() {
 	}
 	allTools = append(allTools, memoryTool)
 
+	// Recall tool — the read side of recall-augmented distillation
+	// (context.recall). Searches the run-scoped index of spans the loop's
+	// distillation evicted, with a silent fallback to the agent's durable memory
+	// via the Memory tool (held by pointer, so its late-bound Backend is resolved
+	// at call time). Registered unconditionally like Memory: the run-scoped index
+	// is only built when an agent set context.recall, but the persistent-memory
+	// free-text search is useful for any agent that grants the tool.
+	recallTool := &builtin.Recall{Memory: memoryTool}
+	allTools = append(allTools, recallTool)
+
 	// Channel tool (v0.8.4) — persistent inter-agent message bus.
 	// One Bus instance per process so in-process subscribers waiting
 	// in long-poll mode get sub-millisecond notification. Same

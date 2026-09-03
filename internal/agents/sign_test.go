@@ -405,6 +405,34 @@ func TestFromOverlay_ChannelsConvergeWithWritePath(t *testing.T) {
 	}
 }
 
+func TestFromOverlay_ContextRecallIsContentIdentifying(t *testing.T) {
+	// The substrate read path (FromOverlay) hashes the context block; context.recall
+	// must be content-identifying (a fork that flips it mints a distinct hash) while
+	// an empty context still collapses to the bare hash — mirroring every sibling
+	// context field, so a recall fork is not silently deduped as identical content.
+	bareHash := Sign(FromYAMLAgent(&Agent{Name: "x"}))
+
+	empty, err := FromOverlay(json.RawMessage(`{"name":"x","context":{}}`))
+	if err != nil {
+		t.Fatalf("FromOverlay(empty context): %v", err)
+	}
+	if Sign(empty) != bareHash {
+		t.Error("persisted empty context did not collapse to the bare hash — backfill/verify would diverge from create")
+	}
+
+	on, err := FromOverlay(json.RawMessage(`{"name":"x","context":{"recall":true}}`))
+	if err != nil {
+		t.Fatalf("FromOverlay(recall): %v", err)
+	}
+	if Sign(on) == bareHash {
+		t.Error("context.recall:true did not change the content hash — a recall fork must mint a distinct hash")
+	}
+	on2, _ := FromOverlay(json.RawMessage(`{"name":"x","context":{"recall":true}}`))
+	if Sign(on) != Sign(on2) {
+		t.Error("context.recall hash is not stable across identical reads")
+	}
+}
+
 func TestFromOverlay_ParsesValidJSON(t *testing.T) {
 	overlay := json.RawMessage(`{"name":"x","system_prompt":"hi","tools":["Read"]}`)
 	c, err := FromOverlay(overlay)

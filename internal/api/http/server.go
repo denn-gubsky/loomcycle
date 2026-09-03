@@ -37,6 +37,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/recall"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -2204,6 +2205,20 @@ func convertConfigCandidates(in map[string][]config.TierCandidate, models map[st
 // the same change as gRPC's Run/Continue would touch ~500 LOC of
 // HTTP code in a PR whose primary purpose is gRPC streaming;
 // keeping them separate makes both PRs reviewable.
+// recallIndexForRun builds the run-scoped recall index (RFC CT) for a fresh run,
+// or nil to leave recall off. It is built only when the merged context policy sets
+// recall AND an embedder is configured: without an embedder the index cannot key
+// or query anything, so it degrades to a no-op rather than a half-wired feature.
+// nil flows into loop.RunOptions.RecallIndex, whose harvest/stamp are nil-safe, so
+// the default path stays byte-identical. Deliberately NOT called on the resume
+// path (a resumed run replays past distillations without harvesting).
+func (s *Server) recallIndexForRun(cx *config.Context) *recall.Index {
+	if cx == nil || cx.Recall == nil || !*cx.Recall || s.embedder == nil {
+		return nil
+	}
+	return recall.NewIndex(s.embedder, 0)
+}
+
 func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	// ---- Validation phase ----
 	if in.UserID != "" && !validIdent(in.UserID) {
@@ -2639,6 +2654,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Sampling:            config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
 		Compaction:          config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
 		Context:             config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field (RFC CR)
+		// Recall-augmented distillation: nil unless the agent set context.recall AND
+		// an embedder is configured, so an unopted run is byte-identical (RFC CT).
+		RecallIndex: s.recallIndexForRun(config.MergeContext(agentDef.Context, in.Context)),
 		// RFC BL P3: nil unless the agent set compaction.memory_flush, so an
 		// unopted agent's compaction path is byte-identical.
 		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, effectiveUserID, in.Agent, runID, sessionID),
@@ -4258,6 +4276,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Sampling:            config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
 		Compaction:          config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
 		Context:             config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field (RFC CR)
+		// Recall-augmented distillation: nil unless context.recall is set AND an
+		// embedder is configured, so an unopted run is byte-identical (RFC CT).
+		RecallIndex: s.recallIndexForRun(config.MergeContext(agentDef.Context, req.Context)),
 		// RFC BL P3: nil unless the agent set compaction.memory_flush.
 		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, rid.TenantID, req.UserID, req.Agent, runID, sessionID),
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)

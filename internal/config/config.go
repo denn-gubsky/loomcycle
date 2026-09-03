@@ -1781,6 +1781,18 @@ type Context struct {
 	// MaxPatchRetries bounds the rollback-retry loop on an invalid patch
 	// (on_invalid_patch=retry). Default 2. Only consulted in stateful mode.
 	MaxPatchRetries *int `json:"max_patch_retries,omitempty" yaml:"max_patch_retries"`
+	// Recall opts the run into recall-augmented distillation: every span the
+	// context distillation (compaction / recap / stateful) evicts is embedded into
+	// a run-scoped index, and the agent gains a `Recall` tool that fetches the most
+	// similar ORIGINAL spans by free-text query — with a silent fallback to the
+	// agent's durable memory. Distillation shrinks the fed context while GROWING a
+	// searchable index of what it dropped, so a needle buried past a distillation
+	// boundary stays reachable. Off (nil/false) = today's behavior, byte-identical.
+	// Needs an embedder (memory.embedder); a deployment without one degrades the
+	// run-index leg to a no-op (the persistent fallback still applies). Applies in
+	// every retention mode. Content-identifying — a fork that flips it mints a
+	// distinct hash.
+	Recall *bool `json:"recall,omitempty" yaml:"recall"`
 }
 
 // Context mode values.
@@ -1811,7 +1823,8 @@ const (
 func (c *Context) IsZero() bool {
 	return c == nil || (c.Mode == nil && c.KeepLastN == nil && c.Reasoning == nil &&
 		c.RecapMaxChars == nil && c.AutoRecapAtPct == nil &&
-		len(c.StateSchema) == 0 && c.OnInvalidPatch == nil && c.MaxPatchRetries == nil)
+		len(c.StateSchema) == 0 && c.OnInvalidPatch == nil && c.MaxPatchRetries == nil &&
+		c.Recall == nil)
 }
 
 // Clone deep-copies (every field is a pointer) so a merge never aliases an input.
@@ -1848,6 +1861,10 @@ func (c *Context) Clone() *Context {
 	if c.MaxPatchRetries != nil {
 		v := *c.MaxPatchRetries
 		out.MaxPatchRetries = &v
+	}
+	if c.Recall != nil {
+		v := *c.Recall
+		out.Recall = &v
 	}
 	return out
 }
@@ -1917,6 +1934,10 @@ func MergeContext(base, over *Context) *Context {
 	if over.MaxPatchRetries != nil {
 		v := *over.MaxPatchRetries
 		out.MaxPatchRetries = &v
+	}
+	if over.Recall != nil {
+		v := *over.Recall
+		out.Recall = &v
 	}
 	return out
 }
