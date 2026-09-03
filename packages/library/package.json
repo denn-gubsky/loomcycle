@@ -1,8 +1,8 @@
 {
   "name": "@loomcycle/library",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "Embeddable React Library component for the loomcycle agentic runtime — the Agents / Skills / MCP-Servers substrate browser (lineage, create/fork/promote/retire, Claude Code import) as a standalone, themeable package.",
+  "description": "Embeddable React Library component for the loomcycle agentic runtime \u2014 the Agents / Skills / MCP-Servers substrate browser (lineage, create/fork/promote/retire, Claude Code import) as a standalone, themeable package.",
   "license": "Apache-2.0",
   "author": "Dennis Gubsky",
   "repository": {
