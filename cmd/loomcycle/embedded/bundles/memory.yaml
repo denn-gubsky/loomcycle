@@ -1978,7 +1978,10 @@ agents:
         if (st.bands.judge) {
           if (fact.quote) {
             st.judge_candidates.push({
-              id: factID, text: fact.text, quote: fact.quote,
+              // The SCOPE travels too, for the same reason the edge needs it: a
+              // placed fact is not in CONFIG.scope, and a verdict written to the
+              // wrong scope finds nothing to mark.
+              id: factID, text: fact.text, quote: fact.quote, scope: scope,
               // The TYPE and SUBJECT travel together, because that pair is what a
               // mistyping verdict is about: `location` + `user` is the observed
               // failure, and neither half alone shows it.
@@ -1990,10 +1993,19 @@ agents:
         }
 
         try {
-          Document({ op: "link_chunks", scope: CONFIG.scope,
+          // `scope`, NOT CONFIG.scope. Every other write in this function already
+          // threads the placed scope; this one did not, so a fact the ontology sent
+          // to the tenant plane got its subject node and its fact node there and
+          // then tried to join them in the caller's scope, where neither exists.
+          // The two nodes were stored and the edge silently was not — leaving a
+          // placed fact unreachable from the person it is about, which is the whole
+          // reason the entity tier exists. Measured live: 3 facts placed, 3 edges
+          // lost, 0 inbound edges on the subject.
+          Document({ op: "link_chunks", scope: scope,
                      from_id: factID, to_id: subjID, kind: "about" });
         } catch (e) {
           st.entity_failed++; // the nodes exist; only the edge is missing
+          if (!st.entity_error) { st.entity_error = errText(e); }
         }
       }
 
@@ -2287,7 +2299,7 @@ agents:
         if (reason.length > CONFIG.max_fact_chars) { reason = reason.slice(0, CONFIG.max_fact_chars); }
 
         try {
-          Document({ op: "judge_fact", scope: CONFIG.scope,
+          Document({ op: "judge_fact", scope: batch[idx - 1].scope || CONFIG.scope,
                      id: batch[idx - 1].id, verdict: verdict, reason: reason });
         } catch (e) {
           st.judge_failed++;
@@ -2345,6 +2357,7 @@ agents:
                      id: newID, supersedes_id: oldID });
         } catch (e) {
           st.entity_failed++;
+          if (!st.entity_error) { st.entity_error = errText(e); }
         }
       }
 
