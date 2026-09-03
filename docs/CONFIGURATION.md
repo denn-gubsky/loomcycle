@@ -699,6 +699,28 @@ A **local** backend (`ollama-local`, `vllm`, `llamacpp`) resolves to **recap** �
 
 The per-run `context` override is available on `POST /v1/runs` and on the MCP `spawn_run` (and fan-out `spawn_runs`); the per-agent block reaches every transport via the resolved def.
 
+#### `recall` — fetch back a detail a distillation dropped
+
+Every retention mode above is **lossy**: compaction summarizes the span it drops, recap keeps only a running note, stateful feeds only the state + the latest observation. That is the point — it keeps a long run affordable — but it means a specific value mentioned early (a token, a file path, a number, a decision) can be gone from what the model sees by the time it needs it. Growing the fed context back is the thing these modes exist to avoid.
+
+`recall: true` closes that gap without regrowing the prompt. As a run distils, each evicted span is embedded into a small **run-scoped index**; the agent gains a `Recall` tool that takes a **free-text** question and returns the most similar *original* spans verbatim:
+
+```yaml
+agents:
+  long-runner:
+    context:
+      mode: recap
+      recall: true          # off by default; harvest evicted spans + grant the Recall tool
+```
+
+So distillation now *shrinks* the fed context while *growing* a searchable index of what it dropped — a needle buried past a distillation boundary stays reachable by asking for it. The query is free text (not an id or exact wording) on purpose: models query fluently in plain language but barely reproduce identifiers, which also makes the tool far likelier to actually be used. `Recall` also transparently searches the agent's **durable memory**, so a fact learned in an earlier session may surface through the same call — the model needn't know where a fact lives.
+
+Notes:
+- **Needs an embedder.** The index keys and queries on embeddings, so `memory.embedder` must be configured; without one the run-index degrades to a no-op (the durable-memory search still applies for any agent that grants the `Recall` tool).
+- **Works in every mode** (`append` + `compaction`, `recap`, `stateful`) — it hooks the same distillation boundary each uses.
+- **Off is byte-identical.** `recall` unset/false changes nothing; a resumed run does not re-index (it replays its past distillations).
+- Available per-agent and as a per-run `context.recall` override on the same surfaces as the rest of the block.
+
 ### Interactive local agents
 
 For a terminal you steer turn-by-turn:
