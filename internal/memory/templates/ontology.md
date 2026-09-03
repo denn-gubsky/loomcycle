@@ -44,8 +44,12 @@ A subtype inherits the declaration, so `organization → tenant` is written once
 
 Three things it will NOT do, so you can declare one safely:
 
-- It never places a fact about **you**. Add your names to the Identity section of your
-  own profile document and facts about you stay yours whatever their type says.
+- It never places a fact about **you** that was learned from *your own* conversations.
+  Add your names to the Identity section of your own profile document and those facts
+  stay yours whatever their type says. ⚠️ It cannot stop someone ELSE from recording the
+  same thing about you: to them you are a third party, and their copy is placed. If that
+  matters, declare the impersonal types (`organization`, `project`, `service`) and leave
+  `person` alone.
 - It never places a fact whose subject is typed **inconsistently** — one thing recorded
   as two different types is a thing the store cannot identify, and it is left alone
   with a note rather than filed under a guess.
