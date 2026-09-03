@@ -279,6 +279,73 @@ type SubstrateAgentDef struct {
 // ToConfigDef projects the substrate JSON shape onto config.AgentDef
 // for the runtime to consume. Pure data shuffling; no normalization
 // happens here (NormalizeAgentDef is called afterward by Agent).
+// SubstrateAgentDefFromConfig is the inverse of ToConfigDef: it lifts an
+// operator's static `agents:` entry into the substrate wire shape.
+//
+// It exists so the Library can hand the UI ONE shape for both static and
+// runtime-authored agents. That surface used to carry a hand-maintained third
+// mirror of this struct, which drifted to 19 of 46 fields — `sql_scopes`,
+// `history_scope`, `memory_consolidation`, `internal`, the *_def_scopes gates
+// and eighteen more were simply absent from the wire, so an operator inspecting
+// a static agent could not see half of what it was allowed to do. A converter
+// plus this struct means there is nothing left to drift.
+//
+// Three AgentDef fields are deliberately absent from SubstrateAgentDef and so
+// cannot be carried: SystemPromptFile (a load-time path; a runtime def has no
+// filesystem), DisableContext (load-time — it bakes into Tools before anything
+// resolves), and SkillDefScopes (a removed-field tombstone, RFC BA). The
+// round-trip test names each one.
+func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
+	return SubstrateAgentDef{
+		Provider:               def.Provider,
+		Model:                  def.Model,
+		Code:                   def.Code,
+		Tier:                   def.Tier,
+		Effort:                 def.Effort,
+		Sampling:               def.Sampling,
+		Compaction:             def.Compaction,
+		Context:                def.Context,
+		MaxTokens:              def.MaxTokens,
+		MaxContextTokens:       def.MaxContextTokens,
+		MaxIterations:          def.MaxIterations,
+		UnboundedIterations:    def.UnboundedIterations,
+		MaxConcurrentChildren:  def.MaxConcurrentChildren,
+		RunTimeoutSeconds:      def.RunTimeoutSeconds,
+		SystemPrompt:           def.SystemPrompt,
+		SystemPromptBase:       def.SystemPromptBase,
+		Tools:                  def.Tools,
+		Skills:                 def.Skills,
+		Providers:              def.Providers,
+		SearchProviders:        def.SearchProviders,
+		Models:                 def.Models,
+		MemoryScopes:           def.MemoryScopes,
+		MemoryQuotaBytes:       def.MemoryQuotaBytes,
+		SqlScopes:              def.SqlScopes,
+		SqlQuotaBytes:          def.SqlQuotaBytes,
+		HistoryScope:           def.HistoryScope,
+		Volumes:                def.Volumes,
+		MemoryBackend:          def.MemoryBackend,
+		CoreBlocks:             def.CoreBlocks,
+		InheritCoreBlocks:      def.InheritCoreBlocks,
+		MemoryInjectMaxTokens:  def.MemoryInjectMaxTokens,
+		InjectToolGuide:        def.InjectToolGuide,
+		MemoryProtocol:         def.MemoryProtocol,
+		Internal:               def.Internal,
+		MemoryConsolidation:    def.MemoryConsolidation,
+		MemoryIndexMaxBytes:    def.MemoryIndexMaxBytes,
+		MemoryRoots:            def.MemoryRoots,
+		RetryAttempts:          def.RetryAttempts,
+		Channels:               def.Channels,
+		EvaluationScopes:       def.EvaluationScopes,
+		Interruption:           def.Interruption,
+		AgentDefScopes:         def.AgentDefScopes,
+		ScheduleDefScopes:      def.ScheduleDefScopes,
+		A2AServerCardDefScopes: def.A2AServerCardDefScopes,
+		A2AAgentDefScopes:      def.A2AAgentDefScopes,
+		VolumeDefScopes:        def.VolumeDefScopes,
+	}
+}
+
 func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 	return config.AgentDef{
 		Provider:              s.Provider,
