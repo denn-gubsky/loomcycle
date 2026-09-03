@@ -323,6 +323,15 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		emit(providers.Event{Type: providers.EventContextState,
 			ContextState: &providers.ContextStateEventInfo{State: sigma, Patch: es.Patch, Iter: iter, Action: actionName(es), Reasoning: es.Reasoning, ProposedSchema: proposed}})
 
+		// Recall harvest (RFC CT): stateful is the most lossy mode — only Σ and the
+		// latest observation are fed, so each step's reasoning + observation are
+		// otherwise discarded. Embed them into the run-scoped index so a later
+		// Recall(query) can fetch the original detail back. nil-safe when recall off.
+		opts.RecallIndex.Harvest(ctx, []providers.Message{
+			{Role: "assistant", Reasoning: es.Reasoning,
+				Content: []providers.ContentBlock{{Type: "text", Text: obs}}},
+		})
+
 		// Terminal: done flag, or no action named.
 		if es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == "" {
 			final := es.Final

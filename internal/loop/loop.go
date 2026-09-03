@@ -23,6 +23,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/recall"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -196,6 +197,18 @@ type RunOptions struct {
 	// nil / Mode=="append" = today's behavior. Defaults applied at use-time (see
 	// config.ContextDefault*).
 	Context *config.Context
+
+	// RecallIndex is the run-scoped index recall-augmented distillation harvests
+	// into. When non-nil (the server builds it only when context.recall is set AND
+	// an embedder is configured), each distillation — compaction, recap, stateful
+	// — embeds the span it evicts into this index, and the loop stamps it on ctx so
+	// the Recall builtin can query it. nil = recall off (byte-identical to before).
+	//
+	// Deliberately NOT set on the resume path: a resumed run replays its past
+	// distillations through applyCompactSummary, which never harvests, so leaving
+	// this nil there avoids double-indexing. Like BankCompactedSpan, a callback-free
+	// handle the loop only ever reads.
+	RecallIndex *recall.Index
 
 	// ContextPlugins is the runtime-wide context-transform chain (RFC Z / F43):
 	// fast, built-in transforms applied to a COPY of the outbound request each
@@ -1295,6 +1308,10 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	// this is the last moment the discarded turns exist. Never fatal — see
 	// RunOptions.BankCompactedSpan.
 	info.MemoryBanked = bankDiscardedSpan(ctx, opts, messages[firstIdx:cut])
+	// Recall harvest: embed the span this compaction is dropping into the run-
+	// scoped index so a later Recall(query) can fetch it back. Same "last moment
+	// the discarded turns exist" rationale as banking; nil-safe when recall is off.
+	opts.RecallIndex.Harvest(ctx, messages[firstIdx:cut])
 	emit(providers.Event{Type: providers.EventContextCompaction, ContextCompaction: info})
 	lcotel.RecordCompactionCtx(ctx, trigger, before, after) // per-run-shape metric via OTEL span event
 	return out, true
@@ -1469,6 +1486,10 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 		newRecap = strings.TrimSpace(r)
 	}
 	// reasoning=="drop": no recap call; the evicted span is dropped with no note.
+	// Recall harvest: embed the evicted span before it is dropped, so a later
+	// Recall(query) can fetch it back — most valuable exactly here, where recap
+	// (or drop) loses the detail. nil-safe when recall is off.
+	opts.RecallIndex.Harvest(ctx, messages[firstIdx:cut])
 	before := estimateMessageTokens(messages)
 	pinned := ""
 	if firstIdx > 0 {
@@ -1608,6 +1629,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if contextAutoMode(opts.Context) {
 		opts.Context = resolveAutoContextMode(opts.Context, opts.Provider.Capabilities().Local, opts.Interactive)
 	}
+
+	// Recall-augmented distillation: stamp the run-scoped index on ctx (before the
+	// stateful branch, so both loop paths and their dispatched tools reach it via
+	// recall.FromContext). No-op when opts.RecallIndex is nil (recall off).
+	ctx = recall.NewContext(ctx, opts.RecallIndex)
 
 	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
 	// the model emits a patch + action each step. Branch here, after the preamble
