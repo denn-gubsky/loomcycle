@@ -4,6 +4,154 @@ Per-version release notes from v0.4.0 onward. The current and immediately previo
 
 For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.73.0
+
+**Recall over what distillation threw away (#1129, RFC CT P1).** Every context
+retention mode in this runtime discards work by design: a compaction drops the
+turns behind its cut, a recap keeps the reasoning and drops the rest, and a
+stateful step feeds forward `(Σ, O)` and discards how it got there. That is the
+point of them — but the dropped span is often exactly where the one value the
+model now needs was stated.
+
+An opt-in per-agent `context.recall` harvests each evicted span, at the last
+moment it exists, into a run-scoped embedded index, and gives the agent one
+`Recall(query)` tool to read it back. **Free text rather than identifiers**,
+because a model queries fluently in plain language and barely reproduces ids or
+its own exact prior wording — which also makes the tool far likelier to be
+invoked at all. It searches the run index, silently falls back to the agent's
+durable memory across its permitted scopes, merges by score, and returns the
+originals verbatim.
+
+Run-scoped and in-memory deliberately: the persistent vector store is per-scope
+and durable, so indexing every evicted turn there would pollute the agent's
+memory and add store writes to the distillation hot path. A harvest is never
+fatal, a nil embedder makes both halves a clean no-op, and the index is
+FIFO-capped. The resume path is deliberately **not** wired — a resumed run
+replays its past distillations without harvesting, so nothing double-indexes.
+
+Off by default: unopted runs and no-embedder deployments are byte-identical, and
+`recall` threads through the same content-identifying plumbing as the rest of the
+context block, so a fork that flips it mints a distinct `content_sha256` while
+every pre-feature agent row stays byte-stable.
+
+**The Memory console honours the tenant focus (#1130).** The last hop of the
+admin-focus fix below. The server had accepted `?tenant=` since v1.72.0 and
+`@loomcycle/client` 1.72.0 could send it, but the console was not asking, so a
+super-admin's Memory page could only read its own tenant — usually the empty one
+— while that tenant's operator saw its rows. Every other browse surface
+(Documents, Paths, Agents, Users) already consumed the topbar focus; Memory was
+the one that never did.
+
+The focus binds at data-layer **construction**, not per call. Which tenant's
+workspace an operator is looking at is a property of the console session, so
+threading it through `MemoryDataLayer` would have put the same never-varying
+value into twenty call sites and changed a 21-method interface to carry it. A
+`browse` option captured by `dataLayerFromClient` reaches every method without
+any of them knowing it exists. `listScopes` deliberately does not carry it: that
+route answers "what *kinds* of scope exist", a constant set, and sending a tenant
+would imply the answer varies by tenant.
+
+Verified on a live deployment before the tag, with two tenants holding 0 and 136
+rows: an admin naming none still gets 0 (the default is unmoved), an admin naming
+the tenant gets 136 (the capability is real), and a tenant operator naming
+*another* tenant gets its own 136 — the wire value ignored, not honoured and then
+checked.
+
+`@loomcycle/memory-view` is 0.5.0, with its `@loomcycle/client` peer raised to
+`^1.72.0` so a consumer resolving an older client gets a dependency error rather
+than a console that silently sends nothing. The TS adapter is unchanged at
+1.72.0 and the Python adapter at 1.67.0.
+
+## What's in v1.72.0
+
+Three fixes found by *using* the runtime rather than reading it. Each was an
+operator question the console answered wrongly, or not at all.
+
+**A super-admin may focus a tenant on the memory browse routes (#1127).** An
+admin was strictly **less** capable than a tenant operator here, which is
+backwards: `substrate:admin` satisfies every scope gate and then could not read
+the data the gate admits. The five memory browse handlers resolved the tenant
+from the bearer and took nothing from the URL, so a `substrate:tenant` token read
+its own tenant's memory while an admin saw only its own — usually empty — and had
+no parameter available to look elsewhere. From the console that reads as a
+permissions failure.
+
+The inconsistency was inside one file: the sibling maintenance routes on the same
+store — embed stats, reembed, backfill, purge — had accepted `?tenant=` via
+`principalTenantScope` all along. Only the reads and writes an operator actually
+browses with were pinned.
+
+Only an **explicit** focus widens. With no `?tenant=` the resolution is
+byte-identical to before, so this adds a capability rather than moving a default,
+and a non-admin's wire value is ignored rather than honoured-then-checked — no
+tenant can widen its own scope.
+
+Three helpers resolve a tenant and they disagree on the admin default. That
+disagreement is irreducible: a **list** read can mean "every tenant" while a
+single-tuple read must name exactly one. It is now written down once, naming all
+three and the invariant they share, with every cell of the table pinned by a
+test. What made it a defect was not the difference — it was that nothing
+asserted it, so the difference read as an accident, and on these routes it was.
+
+**The Library shows what an agent is allowed to reach (#1126).** An operator
+asking "what can this agent do?" got half an answer, and it cost real diagnosis
+time: while checking why memory placement was not working, the Library showed no
+`sql_scopes` at all, which reads as the grant being absent. The grant was
+present. Only the field was missing.
+
+Two independent gaps produced one symptom. The wire shape was a hand-maintained
+third mirror of the substrate agent shape — its own comment said mirroring was
+its purpose — and it had drifted to **19 of 46 fields**: `sql_scopes`,
+`history_scope`, `memory_consolidation`, `internal`, `sampling`, `compaction`,
+`context`, the five `*_def_scopes` authoring gates and eighteen more never
+reached the client. Rather than add the missing 27, the mirror is deleted: a
+converter makes the authoritative struct the wire shape, so there is no third
+thing left to fall behind. And the renderer showed no capability gate at all, not
+even `memory_scopes`, so even served none of it would have appeared — an agent
+granted the tenant plane looked identical to one confined to its own scope.
+
+The guard is two assertions because they catch different faults. **Coverage**
+populates every field and requires none left at zero, which catches the forgotten
+assignment. The **round trip** requires equality, which catches a field wired to
+the *wrong* source — `SqlScopes: def.MemoryScopes` leaves nothing zero and is
+still wrong. A round trip alone would also miss a symmetric omission, since a
+field dropped by both directions survives it untouched. Both faults were verified
+by injection rather than argued.
+
+**Tenant focus on the client's memory admin methods (#1128).**
+`@loomcycle/client` 1.72.0: the five memory browse methods take an optional
+`tenant`. `listMemoryScopes` deliberately does not. A blank focus is dropped
+rather than sent, because the Web UI's switcher is empty until an admin types one
+and empty there means "my own tenant", not a tenant named `""`.
+
+### Known state, stated plainly
+
+**This release closes a chain that began with ontology-declared memory
+placement.** v1.71.0 made placement reachable at all — the shipped consolidator
+had held no `sql_scopes`, so neither half of a placed fact could reach the tenant
+plane — and v1.71.1 fixed placed facts arriving **orphaned** from their subjects,
+because the `about` edge joining them was written in the caller's scope where
+neither endpoint existed. Neither has its own section here: patch releases carry
+their notes on the annotated tag.
+
+**Placement has now been measured.** On a two-user corpus, duplication fell from
+30 duplicate copies to 23 — cross-user duplication was eliminated and *replaced*
+by tenant↔owner duplication, so the honest figure is −23%, not elimination. The
+real payoff is sharing: **94 facts are readable by both users where 0 were
+before**. A second-order effect was unpredicted — cross-user type stability, with
+`subject types held stable` at 4 for the user who wrote first and **91** for the
+second, whose extractor kept proposing new types for subjects already on file in
+the shared plane.
+
+**The self-guard cannot protect what the counterparty also recorded.** Each user
+played one speaker in the corpus. The guard correctly kept a speaker's own facts
+in their scope, while the *other* user, for whom that speaker is a third party,
+published the same facts to the tenant plane. So placement left the owner's facts
+more exposed than baseline, which is precisely what the guard exists to prevent.
+Not a bug — the consequence of per-scope decisions with no global view. In any
+multi-party corpus the guard's promise is defeated by the other party, and the
+narrow declarations (`organization`, `project`, `service`) are the safer default.
+
 ## What's in v1.71.0
 
 Two lines land together: the layered-context work reaches the multi-agent case, and
