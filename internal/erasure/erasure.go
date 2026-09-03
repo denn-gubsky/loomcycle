@@ -134,12 +134,10 @@ const retainedUsageLedger = "retained by design: cost rows are accounting record
 // silently matches nothing, so a single-tenant deployment's erasure would leave
 // the subject's ENTIRE SQL Memory database — documents, entity graph — in place
 // while reporting success.
-func sqlScopeTenant(tenant string) string {
-	if tenant != "" {
-		return tenant
-	}
-	return "default"
-}
+// sqlScopeTenant delegates to sqlmem.ScopeTenant, which owns this rule.
+// Kept as a local shim so the many call sites below read unchanged; the
+// mapping itself is no longer duplicated here.
+func sqlScopeTenant(tenant string) string { return sqlmem.ScopeTenant(tenant) }
 
 // userSQLScopeExists reports whether the subject owns a user-scope SQL Memory
 // database IN THIS TENANT.

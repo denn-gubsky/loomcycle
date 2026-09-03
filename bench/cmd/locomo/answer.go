@@ -289,6 +289,30 @@ func AnswersByCategory(rs []AnswerResult) []AnswerStats {
 	return out
 }
 
+// factsDiverted reports how many written facts are reachable in the partition the
+// answerer recalls from, and whether the shortfall is large enough to invalidate a
+// grading run.
+//
+// Exported from the guard rather than inlined so the THRESHOLD is pinned by a test
+// against the real numbers from both a contaminated run and a healthy one — a
+// guard whose arithmetic only exists inside the function it protects is a guard
+// nobody can check.
+//
+// `doc.chunk:` rows are chunk BODIES, not recallable facts. Counting them is
+// precisely what made a diverted partition look populated: 16 rows present, ~7 of
+// them actual facts, and the empty-store check waved it through.
+func factsDiverted(factsWritten int, keys []string) (reachable int, diverted bool) {
+	for _, k := range keys {
+		if strings.HasPrefix(k, "memory/") {
+			reachable++
+		}
+	}
+	// Half is the tolerance: supersede/retire legitimately removes a few, but a
+	// diversion loses most or all of them (76 written, 7 reachable on the run this
+	// exists for).
+	return reachable, factsWritten > 0 && reachable*2 < factsWritten
+}
+
 // purgeLayer empties the memory-layer partition so the next conversation starts
 // from nothing. Keys are read back from the store rather than derived, because
 // the consolidator names the rows it writes (memory/fact/...), not this harness.
@@ -662,7 +686,7 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 		// "accuracy 0.0000" — a number about the plumbing wearing the costume of a
 		// result about memory. Failing here is the difference between a broken run
 		// and a false negative.
-		rows, err := rest.ListKeys(ctx, "user", userID, 5)
+		rows, err := rest.ListKeys(ctx, "user", userID, 2*facts+500)
 		if err != nil {
 			return fmt.Errorf("post-consolidation check: %w", err)
 		}
@@ -671,6 +695,31 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 				"recall would return nothing and the run would score 0 for a reason unrelated to memory. "+
 				"Check that the consolidator can reach its extractor model and that the target is not leased",
 				"user", userID, passes, sessions)
+		}
+
+		// AND refuse when the facts went somewhere the answerer cannot read.
+		//
+		// The empty check above is not enough, and a live run proved it: with an
+		// ontology declaring `@memory_scope: tenant` for the corpus's own entity
+		// types, the consolidator PLACED most facts into the tenant scope while the
+		// answerer — memory_scopes:[user] — recalls from user/<subject> only. The
+		// partition held a handful of rows, so the guard passed, and the run scored
+		// 0.0216 with 95% abstention: a number about the wrong partition wearing the
+		// costume of a result about consolidation. Three plausible mechanisms were
+		// then reasoned on top of it before anyone compared the counter to the store.
+		//
+		// So compare them. The pass report says how many facts it wrote; this counts
+		// how many are reachable where the answerer looks. A large shortfall means
+		// diversion, whatever the cause — placement, a mis-scoped consolidator, a
+		// fan-out target that is not this subject.
+		reachable, diverted := factsDiverted(facts, rows)
+		if diverted {
+			return fmt.Errorf("consolidation reported %d fact(s) written but only %d are reachable in %s/%s "+
+				"(the partition the answerer recalls from): the facts were written to a scope this run cannot read, "+
+				"so grading would measure the wrong partition. The usual cause is ontology-declared placement — "+
+				"check for a live `@memory_scope` declaration in the tenant's /memory/ontology document and remove it "+
+				"for benchmarking, then purge every scope and verify each is empty BY LISTING it",
+				facts, reachable, "user", userID)
 		}
 
 		qs := SampleQueries(conv.Queries, opts.sampleQuestions)

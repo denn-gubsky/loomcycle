@@ -854,12 +854,8 @@ func sqlScopeTenant(ctx context.Context) string {
 // default partition is stored as "default" while the k/v and dirent planes keep the
 // raw "". Both forms must go through here — a restated ""→"default" at a call site
 // is how the tenant axis drifts.
-func sqlScopeTenantValue(tenant string) string {
-	if tenant != "" {
-		return tenant
-	}
-	return "default"
-}
+// sqlScopeTenantValue delegates to sqlmem.ScopeTenant, which owns this rule.
+func sqlScopeTenantValue(tenant string) string { return sqlmem.ScopeTenant(tenant) }
 
 // currentSqlTxnID returns the explicit-transaction registry key for the current
 // run + scope, or "" when there is no run id on the context (then SQL ops
