@@ -145,6 +145,60 @@ func TestHandleMemory_TenantOperatorConfined(t *testing.T) {
 	}
 }
 
+// A super-admin was strictly LESS capable than a tenant operator here, which is
+// backwards: it satisfies every scope gate and then could not read the data the
+// gate admits. The browse handlers pinned the tenant to the principal's own and
+// took nothing from the URL, so an admin whose own tenant is empty saw an empty
+// console while that tenant's own operator saw its rows — and had no parameter
+// available to look. Its siblings on the same store (embed stats, reembed,
+// backfill, purge) had accepted ?tenant= all along.
+//
+// The confinement half of this is TestHandleMemory_TenantOperatorConfined, which
+// sends the same ?tenant= as a tenant operator and must keep seeing nothing: the
+// focus widens for admin only, and is ignored rather than honoured-then-checked.
+func TestHandleMemory_AdminMayFocusAnotherTenant(t *testing.T) {
+	s := memoryAdminFixture(t)
+	ctx := t.Context()
+	// Same address under two tenants, so a wrong resolution shows the wrong value
+	// rather than nothing.
+	if err := s.store.MemorySet(ctx, "acme", store.MemoryScopeUser, "carol", "voice", []byte(`"acme-voice"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.MemorySet(ctx, "other", store.MemoryScopeUser, "carol", "voice", []byte(`"other-voice"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	// A super-admin whose OWN tenant is "acme".
+	admin := func(r *http.Request) *http.Request {
+		return r.WithContext(auth.WithPrincipal(r.Context(), auth.Principal{
+			TenantID: "acme", Subject: "root", Scopes: []string{auth.ScopeAdmin},
+		}))
+	}
+	list := func(query string) string {
+		req := httptest.NewRequest("GET", "/v1/_memory/scopes/user/carol/keys"+query, nil)
+		req.SetPathValue("scope", "user")
+		req.SetPathValue("scope_id", "carol")
+		rec := httptest.NewRecorder()
+		s.handleListMemoryEntries(rec, admin(req))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	// With an explicit focus the admin reaches the other tenant.
+	if body := list("?tenant=other"); !strings.Contains(body, "other-voice") {
+		t.Errorf("admin could not focus tenant \"other\" — a super-admin cannot read data its own tenant operator can: %s", body)
+	}
+	// With NO focus it is byte-identical to the old behaviour: its own tenant.
+	body := list("")
+	if !strings.Contains(body, "acme-voice") {
+		t.Errorf("admin with no ?tenant= should see its OWN tenant: %s", body)
+	}
+	if strings.Contains(body, "other-voice") {
+		t.Errorf("admin with no ?tenant= must not silently widen — that would move a default, not add a capability: %s", body)
+	}
+}
+
 // TestHandleMemory_TenantScope: the tenant scope addresses a single tenant-wide
 // keyspace whose store scope_id is EMPTY (the tenant_id column partitions it, per
 // the Memory tool's resolveScope). The admin handlers therefore accept
