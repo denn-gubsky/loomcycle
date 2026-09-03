@@ -94,3 +94,75 @@ describe("deleteMemoryEntry", () => {
     expect(init.method).toBe("DELETE");
   });
 });
+
+// The super-admin tenant focus on the memory browse routes. A substrate:admin
+// token satisfies every scope gate and then, before v1.72.0, could not read the
+// data the gate admits: those five handlers resolved the tenant from the bearer
+// and took nothing from the URL, so an admin whose own tenant is empty saw an
+// empty console with no parameter available to look elsewhere.
+//
+// Sending it is safe from ANY principal: the server ignores the value for a
+// caller that cannot widen its own scope, rather than honouring-then-checking
+// it. Omitting it resolves to the caller's own tenant, which is what every one
+// of these calls did before, so the option adds a capability and moves no default.
+describe("memory admin tenant focus", () => {
+  it("omits ?tenant= entirely when no focus is given", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ scope: "user", scope_id: "alice", entries: [], truncated: false }),
+    ]);
+    await client.listMemoryEntries("user", "alice");
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("http://test-loomcycle:8787/v1/_memory/scopes/user/alice/keys");
+  });
+
+  it("sends ?tenant= on every browse method", async () => {
+    const cases: Array<[string, (c: ReturnType<typeof makeClient>["client"]) => Promise<unknown>, string]> = [
+      [
+        "listMemoryScopeIDs",
+        (c) => c.listMemoryScopeIDs("user", { tenant: "acme" }),
+        "http://test-loomcycle:8787/v1/_memory/scopes/user?tenant=acme",
+      ],
+      [
+        "listMemoryEntries",
+        (c) => c.listMemoryEntries("user", "alice", { tenant: "acme", prefix: "memory/" }),
+        "http://test-loomcycle:8787/v1/_memory/scopes/user/alice/keys?tenant=acme&prefix=memory%2F",
+      ],
+      [
+        "getMemoryEntry",
+        (c) => c.getMemoryEntry("user", "alice", "tone", { tenant: "acme" }),
+        "http://test-loomcycle:8787/v1/_memory/scopes/user/alice/keys/tone?tenant=acme",
+      ],
+      [
+        "setMemoryEntry",
+        (c) => c.setMemoryEntry("user", "alice", "tone", { value: "warm", tenant: "acme" }),
+        "http://test-loomcycle:8787/v1/_memory/scopes/user/alice/keys/tone?tenant=acme",
+      ],
+      [
+        "deleteMemoryEntry",
+        (c) => c.deleteMemoryEntry("user", "alice", "tone", { tenant: "acme" }),
+        "http://test-loomcycle:8787/v1/_memory/scopes/user/alice/keys/tone?tenant=acme",
+      ],
+    ];
+    for (const [name, call, want] of cases) {
+      const { client, fetchMock } = makeClient([
+        jsonResponse({ scope: "user", scope_id: "alice", entries: [], truncated: false, scope_ids: [], key: "tone", value: "warm" }),
+        noContentResponse(),
+      ]);
+      await call(client);
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(String(url), `${name} must carry the tenant focus`).toBe(want);
+    }
+  });
+
+  it("treats a blank focus as no focus", async () => {
+    // The Web UI's tenant switcher is empty until an admin types one, and "" there
+    // means "my own tenant" — not a tenant literally named "". Sending tenant=
+    // would be a different request, so it is dropped.
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ scope: "user", scope_id: "alice", entries: [], truncated: false }),
+    ]);
+    await client.listMemoryEntries("user", "alice", { tenant: "   " });
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toBe("http://test-loomcycle:8787/v1/_memory/scopes/user/alice/keys");
+  });
+});
