@@ -2010,6 +2010,10 @@ export interface SetMemoryEntryOptions {
   embed?: boolean;
   /** Optional TTL in seconds; <= 0 means "no expiry". */
   ttl_seconds?: number;
+  /** Super-admin tenant focus. Ignored server-side for a tenant-scoped
+   *  principal, so it can never widen a caller's own scope; omitted, the write
+   *  lands in the caller's own tenant. */
+  tenant?: string;
   signal?: AbortSignal;
 }
 

@@ -1045,6 +1045,19 @@ export class LoomcycleClient {
 
   // ---- Memory admin ----
 
+  /** memoryFocusQuery renders the super-admin tenant focus for the memory
+   *  browse routes.
+   *
+   *  Only a super-admin's focus widens; the server IGNORES the value for a
+   *  tenant-scoped principal rather than honouring-then-checking it, so sending
+   *  it is always safe and never escalates. Omitting it resolves to the
+   *  caller's own tenant, which is what every call did before this existed. */
+  private static memoryFocusQuery(tenant?: string): URLSearchParams {
+    const params = new URLSearchParams();
+    if (tenant && tenant.trim() !== "") params.set("tenant", tenant.trim());
+    return params;
+  }
+
   /** List the kinds of memory scopes the server knows about
    *  (agent, user — or whatever the operator yaml declares). */
   async listMemoryScopes(opts?: {
@@ -1057,11 +1070,12 @@ export class LoomcycleClient {
    *  a given scope. */
   async listMemoryScopeIDs(
     scope: string,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<MemoryScopeIDsResponse> {
+    const qs = LoomcycleClient.memoryFocusQuery(opts?.tenant).toString();
     return jsonFetch<MemoryScopeIDsResponse>(
       this.ctx,
-      `/v1/_memory/scopes/${encodeURIComponent(scope)}`,
+      `/v1/_memory/scopes/${encodeURIComponent(scope)}${qs ? "?" + qs : ""}`,
       opts,
     );
   }
@@ -1071,9 +1085,9 @@ export class LoomcycleClient {
   async listMemoryEntries(
     scope: string,
     scopeID: string,
-    opts?: { prefix?: string; limit?: number; signal?: AbortSignal },
+    opts?: { prefix?: string; limit?: number; tenant?: string; signal?: AbortSignal },
   ): Promise<MemoryEntriesResponse> {
-    const params = new URLSearchParams();
+    const params = LoomcycleClient.memoryFocusQuery(opts?.tenant);
     if (opts?.prefix) params.set("prefix", opts.prefix);
     // Guard against `limit: 0` (falsy but valid-looking) and negatives —
     // both would either send `limit=0` (server treats as default but the
@@ -1090,11 +1104,12 @@ export class LoomcycleClient {
     scope: string,
     scopeID: string,
     key: string,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<MemoryEntryResponse> {
+    const qs = LoomcycleClient.memoryFocusQuery(opts?.tenant).toString();
     return jsonFetch<MemoryEntryResponse>(
       this.ctx,
-      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}${qs ? "?" + qs : ""}`,
       opts,
     );
   }
@@ -2448,9 +2463,10 @@ export class LoomcycleClient {
     const body: Record<string, unknown> = { value: opts.value };
     if (opts.embed !== undefined) body.embed = opts.embed;
     if (opts.ttl_seconds !== undefined) body.ttl_seconds = opts.ttl_seconds;
+    const qs = LoomcycleClient.memoryFocusQuery(opts.tenant).toString();
     return putJSON<SetMemoryEntryResponse>(
       this.ctx,
-      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}${qs ? "?" + qs : ""}`,
       body,
       { signal: opts.signal },
     );
@@ -2463,11 +2479,12 @@ export class LoomcycleClient {
     scope: string,
     scopeID: string,
     key: string,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<void> {
+    const qs = LoomcycleClient.memoryFocusQuery(opts?.tenant).toString();
     return deleteRequest(
       this.ctx,
-      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}`,
+      `/v1/_memory/scopes/${encodeURIComponent(scope)}/${encodeURIComponent(scopeID)}/keys/${encodeURIComponent(key)}${qs ? "?" + qs : ""}`,
       opts,
     );
   }
