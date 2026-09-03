@@ -327,10 +327,14 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		// latest observation are fed, so each step's reasoning + observation are
 		// otherwise discarded. Embed them into the run-scoped index so a later
 		// Recall(query) can fetch the original detail back. nil-safe when recall off.
-		opts.RecallIndex.Harvest(ctx, []providers.Message{
+		stepSpan := []providers.Message{
 			{Role: "assistant", Reasoning: es.Reasoning,
 				Content: []providers.ContentBlock{{Type: "text", Text: obs}}},
-		})
+		}
+		opts.RecallIndex.Harvest(ctx, stepSpan)
+		// Persistent-memory harvest (RFC CT P2): bank the same evicted step for the
+		// consolidator when the agent opted in. No-op unless context.harvest_to_memory.
+		harvestToMemory(ctx, opts, emit, stepSpan)
 
 		// Terminal: done flag, or no action named.
 		if es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == "" {
