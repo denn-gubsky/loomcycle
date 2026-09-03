@@ -716,7 +716,8 @@ agents:
 So distillation now *shrinks* the fed context while *growing* a searchable index of what it dropped — a needle buried past a distillation boundary stays reachable by asking for it. The query is free text (not an id or exact wording) on purpose: models query fluently in plain language but barely reproduce identifiers, which also makes the tool far likelier to actually be used. `Recall` also transparently searches the agent's **durable memory**, so a fact learned in an earlier session may surface through the same call — the model needn't know where a fact lives.
 
 Notes:
-- **Needs an embedder.** The index keys and queries on embeddings, so `memory.embedder` must be configured; without one the run-index degrades to a no-op (the durable-memory search still applies for any agent that grants the `Recall` tool).
+- **The `Recall` tool is auto-granted.** Setting `recall: true` adds `Recall` to the run's toolset automatically — you do **not** also have to list it in `tools:`. (An agent's `tools:` allowlist is otherwise default-deny: an empty list grants *no* tools, so without this a recall agent would have the index but no way to query it.) Recall is read-only over the run's own evicted spans and the agent's own memory, so the auto-grant widens the allowlist but not the trust boundary. Needs an embedder (below); with `recall` off, nothing is granted.
+- **Needs an embedder.** The index keys and queries on embeddings, so `memory.embedder` must be configured; without one recall is inert — the index is not built and the tool is not granted.
 - **Works in every mode** (`append` + `compaction`, `recap`, `stateful`) — it hooks the same distillation boundary each uses.
 - **Off is byte-identical.** `recall` unset/false changes nothing; a resumed run does not re-index (it replays its past distillations).
 - Available per-agent and as a per-run `context.recall` override on the same surfaces as the rest of the block.
