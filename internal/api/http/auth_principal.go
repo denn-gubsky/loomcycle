@@ -475,6 +475,25 @@ func (s *Server) serverCapabilities() map[string]any {
 	}
 }
 
+// THREE HELPERS RESOLVE A TENANT, AND THEY DISAGREE ON PURPOSE.
+//
+// The disagreement is irreducible, so it is written down here once instead of
+// being rediscovered from three call sites:
+//
+//   - principalTenantScope — a LIST read, which can mean "every tenant". An
+//     admin naming none gets all=true and sees the whole deployment.
+//   - adminFocusedTenant — a SINGLE-TUPLE read or write, which must name exactly
+//     one tenant. "All" is not expressible, so an admin naming none keeps its
+//     own tenant, and only an explicit ?tenant= widens.
+//   - substrateBrowseCtxFn — the same single-tuple case for the Path/Document
+//     data plane, which additionally carries a subject (?scope_id=).
+//
+// What they must NEVER disagree on, and do not: a non-admin's wire value is
+// ignored rather than honoured-then-checked, so no tenant can widen its own
+// scope on any of the three. TestTenantResolution_AdminDefaultsAreDeliberate
+// pins every cell of that table, so a future change to one has to state whether
+// it meant to change the family.
+//
 // principalTenantScope resolves the tenant a list read should be scoped
 // to, mirroring applyPrincipal's posture (multi-tenant UI authz):
 //   - super-admin (substrate:admin) → (wireTenant, all = wireTenant=="") so the
@@ -515,6 +534,40 @@ func tenantFromCtx(ctx context.Context) string {
 		return p.TenantID
 	}
 	return tools.RunIdentity(ctx).TenantID
+}
+
+// adminFocusedTenant resolves the tenant for an operator console request that
+// addresses ONE tenant's data, honouring a super-admin's explicit `?tenant=`
+// focus and ignoring it for everyone else.
+//
+// It exists because admin was, on these surfaces, strictly LESS capable than a
+// tenant operator. The memory browse handlers pinned the tenant with
+// tenantFromCtx and took nothing from the URL, so a substrate:tenant token read
+// its own tenant's memory while a substrate:admin token — which satisfies every
+// scope gate — could only ever see its own, usually empty, tenant and had no way
+// to name another. The sibling maintenance routes on the same store (embed
+// stats, reembed, backfill, purge) had accepted `?tenant=` via
+// principalTenantScope all along, so the inconsistency was inside one file.
+//
+// Only an EXPLICIT focus widens: with no `?tenant=` this returns exactly what
+// tenantFromCtx returned, so every existing caller is byte-identical and the
+// change adds a capability rather than moving a default. A non-admin's wire
+// value is ignored, not honoured-then-checked, which is the same posture
+// principalTenantScope takes — a tenant cannot widen its own scope.
+func (s *Server) adminFocusedTenant(ctx context.Context, wireTenant string) string {
+	wireTenant = strings.TrimSpace(wireTenant)
+	if wireTenant == "" {
+		return tenantFromCtx(ctx)
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	// Open mode and legacy are is_admin-equivalent, matching principalTenantScope.
+	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return wireTenant
+	}
+	if wireTenant != p.TenantID {
+		log.Printf("auth: tenant_focus_ignored wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
+	}
+	return tenantFromCtx(ctx)
 }
 
 // tenantVisible reports whether the caller may read a row belonging to

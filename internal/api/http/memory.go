@@ -105,10 +105,12 @@ func (s *Server) handleListMemoryScopeIDs(w http.ResponseWriter, r *http.Request
 			"scope must be one of: agent, user, tenant")
 		return
 	}
-	// RFC BL: scope the admin browse to the authenticated principal's tenant
-	// (server-sourced via tenantFromCtx — never from the URL/body). Open mode /
-	// legacy resolve to "" so single-tenant deployments are unchanged.
-	rows, err := s.store.MemoryListScopeIDs(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope))
+	// The tenant is the authenticated principal's, except that a SUPER-ADMIN may
+	// focus another with `?tenant=` — adminFocusedTenant ignores the wire value for
+	// everyone else, so a tenant operator still cannot widen its own scope. Without
+	// the param this is exactly tenantFromCtx, so single-tenant deployments and
+	// every existing caller are unchanged.
+	rows, err := s.store.MemoryListScopeIDs(r.Context(), s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant")), store.MemoryScope(scope))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -151,9 +153,9 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	if limit > 1000 {
 		limit = 1000
 	}
-	// RFC BL: tenant from the authenticated principal (server-sourced), one
+	// Tenant from the authenticated principal, or a super-admin's `?tenant=` focus, one
 	// lookup reused by the entries list + the per-key embedding-metadata probe.
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant"))
 	// tenant scope reads the single tenant-wide keyspace (store scope_id ""); the
 	// path placeholder is dropped. agent/user keep their scope_id.
 	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
@@ -216,7 +218,7 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"scope_id and key are required")
 		return
 	}
-	entry, err := s.store.MemoryGet(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key)
+	entry, err := s.store.MemoryGet(r.Context(), s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant")), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -390,7 +392,7 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"invalid_at must be after valid_at — the interval is half-open [valid_at, invalid_at)")
 		return
 	}
-	if err := s.store.MemorySetTimed(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl, store.MemoryProvenance{}, times); err != nil {
+	if err := s.store.MemorySetTimed(r.Context(), s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant")), store.MemoryScope(scope), storeScopeID, key, body.Value, ttl, store.MemoryProvenance{}, times); err != nil {
 		if errors.Is(err, store.ErrMemoryQuotaExceeded) {
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "memory_quota_exceeded", err.Error())
 			return
@@ -440,7 +442,7 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 			"scope_id and key are required")
 		return
 	}
-	if _, err := s.store.MemoryDelete(r.Context(), tenantFromCtx(r.Context()), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
+	if _, err := s.store.MemoryDelete(r.Context(), s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant")), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
