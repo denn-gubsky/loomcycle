@@ -457,6 +457,29 @@ interface AgentDefBody {
   max_tokens?: number;
   max_iterations?: number;
   skills?: string[];
+  // Capability gates. `tools` says which tools an agent may call; these say what
+  // those tools may REACH, which is a different question and the one an operator
+  // is usually asking. They were absent from this renderer entirely — an agent
+  // granted the tenant plane looked identical to one confined to its own scope.
+  memory_scopes?: string[];
+  sql_scopes?: string[];
+  history_scope?: string[];
+  evaluation_scopes?: string[];
+  volumes?: string[];
+  agent_def_scopes?: string[];
+  schedule_def_scopes?: string[];
+  volume_def_scopes?: string[];
+  a2a_server_card_def_scopes?: string[];
+  a2a_agent_def_scopes?: string[];
+  internal?: boolean;
+  memory_consolidation?: boolean;
+  memory_protocol?: boolean;
+  inject_tool_guide?: boolean;
+  unbounded_iterations?: boolean;
+  max_context_tokens?: number;
+  memory_quota_bytes?: number;
+  sql_quota_bytes?: number;
+  run_timeout_seconds?: number;
 }
 
 function renderAgentDefinition(row: DefRow) {
@@ -501,6 +524,7 @@ function renderAgentDefinition(row: DefRow) {
           </div>
         </div>
       )}
+      <AgentGrants body={body} />
       <DefMetaRow
         items={[
           ["tier", body.tier],
@@ -509,9 +533,65 @@ function renderAgentDefinition(row: DefRow) {
           ["effort", body.effort],
           ["max_tokens", body.max_tokens?.toString()],
           ["max_iterations", body.max_iterations?.toString()],
+          ["max_context_tokens", body.max_context_tokens?.toString()],
+          ["run_timeout_seconds", body.run_timeout_seconds?.toString()],
+          ["memory_quota_bytes", body.memory_quota_bytes?.toString()],
+          ["sql_quota_bytes", body.sql_quota_bytes?.toString()],
         ]}
       />
     </div>
+  );
+}
+
+// AgentGrants answers "what is this agent allowed to reach?" — the question the
+// Library exists for and did not answer. Only non-empty gates render, so an
+// agent with none looks exactly as it did before.
+function AgentGrants({ body }: { body: AgentDefBody }) {
+  const scopeGates: Array<[string, string[] | undefined]> = [
+    ["memory_scopes", body.memory_scopes],
+    ["sql_scopes", body.sql_scopes],
+    ["history_scope", body.history_scope],
+    ["evaluation_scopes", body.evaluation_scopes],
+    ["volumes", body.volumes],
+    ["agent_def_scopes", body.agent_def_scopes],
+    ["schedule_def_scopes", body.schedule_def_scopes],
+    ["volume_def_scopes", body.volume_def_scopes],
+    ["a2a_server_card_def_scopes", body.a2a_server_card_def_scopes],
+    ["a2a_agent_def_scopes", body.a2a_agent_def_scopes],
+  ];
+  const flags: Array<[string, boolean | undefined]> = [
+    ["internal", body.internal],
+    ["memory_consolidation", body.memory_consolidation],
+    ["memory_protocol", body.memory_protocol],
+    ["inject_tool_guide", body.inject_tool_guide],
+    ["unbounded_iterations", body.unbounded_iterations],
+  ];
+  const shownGates = scopeGates.filter(([, v]) => v && v.length > 0);
+  const shownFlags = flags.filter(([, v]) => v === true);
+  if (shownGates.length === 0 && shownFlags.length === 0) return null;
+  return (
+    <>
+      {shownGates.map(([label, values]) => (
+        <div className="def-field" key={label}>
+          <span className="def-field-label">{label}</span>
+          <div className="def-pill-row">
+            {(values ?? []).map((v) => (
+              <span key={v} className="def-pill mono">{v}</span>
+            ))}
+          </div>
+        </div>
+      ))}
+      {shownFlags.length > 0 && (
+        <div className="def-field">
+          <span className="def-field-label">flags</span>
+          <div className="def-pill-row">
+            {shownFlags.map(([label]) => (
+              <span key={label} className="def-pill mono">{label}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

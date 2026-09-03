@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -308,59 +309,18 @@ func deriveSource(inStatic, inSubstrate bool) string {
 	}
 }
 
-// staticAgentDefJSON mirrors the substrate shape of mergedDef +
-// lookup.SubstrateAgentDef so the same renderer in the UI consumes
-// both static and substrate-derived definitions. config.AgentDef
-// carries yaml-only tags, which is why this shadow struct exists —
-// the same conceptual fix PR #184 applied for the substrate-read
-// path.
-type staticAgentDefJSON struct {
-	Provider              string                            `json:"provider,omitempty"`
-	Model                 string                            `json:"model,omitempty"`
-	Code                  string                            `json:"code_body,omitempty"` // RFC J inline code-js body
-	Tier                  string                            `json:"tier,omitempty"`
-	Effort                string                            `json:"effort,omitempty"`
-	MaxTokens             int                               `json:"max_tokens,omitempty"`
-	MaxIterations         int                               `json:"max_iterations,omitempty"`
-	MaxConcurrentChildren int                               `json:"max_concurrent_children,omitempty"`
-	SystemPrompt          string                            `json:"system_prompt,omitempty"`
-	SystemPromptBase      string                            `json:"system_prompt_base,omitempty"`
-	Tools                 []string                          `json:"tools,omitempty"`
-	Skills                []string                          `json:"skills,omitempty"`
-	Providers             []string                          `json:"providers,omitempty"`
-	SearchProviders       []string                          `json:"search_providers,omitempty"`
-	Models                map[string][]config.TierCandidate `json:"models,omitempty"`
-	MemoryScopes          []string                          `json:"memory_scopes,omitempty"`
-	MemoryQuotaBytes      int                               `json:"memory_quota_bytes,omitempty"`
-	MemoryBackend         string                            `json:"memory_backend,omitempty"`
-	// RFC AH per-agent filesystem volume bindings — the names this agent is
-	// confined to. Surfaced so the Volumes Web UI (Phase 4) can cross-reference
-	// which agents bind each volume (derived client-side from this list).
-	Volumes []string `json:"volumes,omitempty"`
-}
-
+// marshalStaticAgentDef renders an operator's static `agents:` entry in the
+// SAME wire shape as a runtime-authored one, so the UI has one renderer and
+// one contract for both.
+//
+// It used to marshal a hand-maintained shadow struct that had drifted to 19 of
+// the substrate shape's 46 fields: `sql_scopes`, `history_scope`,
+// `memory_consolidation`, `internal` and the rest were absent from the wire,
+// so the Library showed an operator half of what an agent was allowed to do —
+// and showed nothing at all for the grant that gates tenant-scoped writes.
+// Converting through lookup leaves no third shape to fall behind.
 func marshalStaticAgentDef(def config.AgentDef) json.RawMessage {
-	b, err := json.Marshal(staticAgentDefJSON{
-		Provider:              def.Provider,
-		Model:                 def.Model,
-		Code:                  def.Code,
-		Tier:                  def.Tier,
-		Effort:                def.Effort,
-		MaxTokens:             def.MaxTokens,
-		MaxIterations:         def.MaxIterations,
-		MaxConcurrentChildren: def.MaxConcurrentChildren,
-		SystemPrompt:          def.SystemPrompt,
-		SystemPromptBase:      def.SystemPromptBase,
-		Tools:                 def.Tools,
-		Skills:                def.Skills,
-		Providers:             def.Providers,
-		SearchProviders:       def.SearchProviders,
-		Models:                def.Models,
-		MemoryScopes:          def.MemoryScopes,
-		MemoryQuotaBytes:      def.MemoryQuotaBytes,
-		MemoryBackend:         def.MemoryBackend,
-		Volumes:               def.Volumes,
-	})
+	b, err := json.Marshal(lookup.SubstrateAgentDefFromConfig(def))
 	if err != nil {
 		return nil
 	}

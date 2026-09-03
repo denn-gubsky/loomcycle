@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 	"time"
 
@@ -567,4 +568,66 @@ func TestUnifiedLibrary_Skills_InlineCfgSurfaced(t *testing.T) {
 	if len(tenant) != 1 || tenant[0].Name != "semantic-chunking" {
 		t.Fatalf("tenant sees %+v, want [semantic-chunking]", tenant)
 	}
+}
+
+// TestUnifiedLibrary_Agents_StaticShowsEveryCapabilityGate is the operator's
+// question: "what is this agent allowed to do?" The Library is where that gets
+// answered, and for a static agent it was answering with half the truth — the
+// wire shape carried 19 of the substrate shape's 46 fields.
+//
+// `sql_scopes` is the one that cost real time: it gates every tenant-scoped
+// write, so an operator checking why placement was not working saw no
+// sql_scopes at all and read that as the grant being absent, when the grant was
+// present and only the field was missing.
+func TestUnifiedLibrary_Agents_StaticShowsEveryCapabilityGate(t *testing.T) {
+	srv, _, cleanup := libraryUnifiedFixture(t, map[string]config.AgentDef{
+		"consolidator": {
+			Provider:            "code-js",
+			Code:                `function run(){ return {}; }`,
+			Tools:               []string{"Memory", "Document"},
+			MemoryScopes:        []string{"agent", "user", "tenant"},
+			SqlScopes:           []string{"tenant"},
+			SqlQuotaBytes:       4096,
+			HistoryScope:        []string{"user"},
+			MemoryConsolidation: true,
+			Internal:            true,
+			EvaluationScopes:    []string{"user"},
+			AgentDefScopes:      []string{"any"},
+			MaxContextTokens:    131072,
+		},
+	}, nil)
+	defer cleanup()
+
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, authedRequest("GET", "/v1/_library/agents", nil))
+	entries := decodeLibraryEntries(t, rec)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(entries[0].StaticDefinition, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{
+		"sql_scopes", "sql_quota_bytes", "history_scope", "memory_consolidation",
+		"internal", "evaluation_scopes", "agent_def_scopes", "max_context_tokens",
+	} {
+		if _, ok := got[tag]; !ok {
+			t.Errorf("static_definition omits %q — an operator cannot see this capability in the Library: %v",
+				tag, keysOf(got))
+		}
+	}
+	if s, _ := got["sql_scopes"].([]any); len(s) != 1 || s[0] != "tenant" {
+		t.Errorf("sql_scopes = %v, want [tenant]", got["sql_scopes"])
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
