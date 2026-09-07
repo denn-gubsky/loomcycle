@@ -20,6 +20,11 @@ providers:
   # _*_TIMEOUT_MS. To move that off env and into YAML, uncomment and edit — these
   # OVERRIDE the env vars (and loomcycle.yaml overrides these in turn):
   #
+  # base_url here moves CHAT AND THE MEMORY EMBEDDER together: memory.embedder
+  # resolves its endpoint through this same entry, so a new Ollama host is one
+  # edit. Restate it under memory.embedder.base_url only to send embeddings
+  # somewhere else on purpose.
+  #
   # ollama-local:
   #   base_url: http://truenas.local:11434   # else OLLAMA_BASE_URL (default localhost)
   #   options:

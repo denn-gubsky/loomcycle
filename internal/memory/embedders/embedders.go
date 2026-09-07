@@ -20,13 +20,29 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 // Build turns cfg.Memory.Embedder into a constructed providers.Embedder,
-// sourcing the API key + base URL from the same env vars the chat-completion
-// drivers use. Returns (nil, nil) when no embedder is configured — the Memory
-// tool refuses vector ops with embedder_not_configured in that case.
+// resolving the endpoint + credential through the SAME path the chat-completion
+// drivers use (providerbuild.ProviderEndpoint). Returns (nil, nil) when no
+// embedder is configured — the Memory tool refuses vector ops with
+// embedder_not_configured in that case.
+//
+// base_url precedence, highest first:
+//
+//	memory.embedder.base_url  >  providers.<id>.base_url  >  the per-id env default
+//
+// The middle level is the fix for a real outage: the embedder used to read
+// cfg.Env.OllamaBaseURL ONLY, so an operator who repointed
+// `providers: ollama-local: base_url:` at a new Ollama host moved chat and left
+// the embedder on the env var. An embed failure warns rather than failing the
+// write (the row is kept, with embedded:false + embed_warning), so a caller that
+// does not read that field accumulates unembedded rows: memory stopped being
+// semantic (108 fact rows, ~0 embeddings) while every write still reported 200,
+// and the benchmark that surfaced it read as a bad extractor. YAML is now the
+// config home for both.
 //
 // Per-embedder yaml knobs (timeout_ms, batch_size) override the env-var
 // defaults when set; the env-var fallback gives operators a single-place
@@ -37,51 +53,62 @@ func Build(cfg *config.Config) (providers.Embedder, error) {
 		return nil, nil
 	}
 
-	// Reuse the chat-completion driver's auth + base URL. Embedders
-	// hit the same provider account, so a separate set of env vars
-	// would be operator friction without benefit.
-	//
-	// EXCEPTION: the `anthropic` embedder slot is a Voyage AI proxy
-	// (v0.10.2) — Anthropic has no native embeddings API and points
-	// users at Voyage. The operator yaml stays `provider: anthropic`
-	// for ergonomics, but the underlying auth is the separate
-	// VOYAGE_API_KEY env var routed to cfg.Env.VoyageAPIKey.
-	//
-	// Providers with no case here (`stub`) fall through with both empty:
-	// the driver's own default endpoint, keyless.
 	var apiKey, baseURL string
-	switch provider {
-	case "openai":
-		apiKey, baseURL = cfg.Env.OpenAIAPIKey, ""
-	case "gemini":
-		apiKey, baseURL = cfg.Env.GeminiAPIKey, cfg.Env.GeminiBaseURL
-	case "anthropic":
-		apiKey, baseURL = cfg.Env.VoyageAPIKey, ""
+
+	if provider == "anthropic" {
+		// EXCEPTION — the only provider that does NOT share its chat account.
+		// The `anthropic` embedder slot is a Voyage AI proxy (v0.10.2):
+		// Anthropic has no native embeddings API and points users at Voyage.
+		// The operator yaml stays `provider: anthropic` for ergonomics, but the
+		// service is a different vendor, so it must inherit NEITHER half of the
+		// `providers: anthropic:` entry — an Anthropic proxy base_url would
+		// receive Voyage requests, and ANTHROPIC_API_KEY would be sent to
+		// Voyage. Auth is the separate VOYAGE_API_KEY.
+		apiKey = cfg.Env.VoyageAPIKey
 		if apiKey == "" {
 			log.Printf("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
 		}
-	case "ollama-local":
-		// Inherits the SAME OLLAMA_BASE_URL the chat driver uses, so one
-		// setting serves both. "disabled" is the chat side's opt-out
-		// sentinel (providerEnabled), not an endpoint — treat it as unset
-		// so the embedder falls back to the driver default rather than
-		// trying to dial a host literally named "disabled". Keyless.
-		if cfg.Env.OllamaBaseURL != "disabled" {
-			baseURL = cfg.Env.OllamaBaseURL
+	} else {
+		// Every other embedder hits the same account and endpoint as its chat
+		// twin, so it resolves through the chat path's own resolver rather than
+		// a second copy of the switch that drifted from it once already.
+		var keyEnvName string
+		baseURL, apiKey, keyEnvName = providerbuild.ProviderEndpoint(cfg, provider)
+
+		// "disabled" is the chat side's opt-out sentinel (providerEnabled), not
+		// an endpoint — treat it as unset so the embedder falls back to the
+		// driver default rather than dialing a host literally named "disabled".
+		if baseURL == "disabled" {
+			baseURL = ""
 		}
-	case "ollama":
-		// Hosted ollama.com — same pair the chat provider reads.
-		apiKey, baseURL = cfg.Env.OllamaAPIKey, cfg.Env.OllamaCloudBaseURL
+
+		// The per-id env key stays the LAST resort, for a deployment that runs
+		// with no `providers:` block (LOOMCYCLE_NO_DEFAULT_PROVIDERS=1) and so
+		// declares no api_key_env. It cannot be dropped as dead code: the openai
+		// embedder accepts an empty key at construction and only fails later at
+		// 401, so losing this fallback would trade a working embedder for a
+		// runtime auth error rather than a startup one.
+		if apiKey == "" && keyEnvName == "" {
+			switch provider {
+			case "openai":
+				apiKey = cfg.Env.OpenAIAPIKey
+			case "gemini":
+				apiKey = cfg.Env.GeminiAPIKey
+			case "ollama":
+				apiKey = cfg.Env.OllamaAPIKey
+			}
+		}
 	}
 
-	// The operator's explicit yaml WINS over the per-provider defaults
-	// above — that is the whole point of the two knobs. base_url points
-	// any driver at a self-hosted endpoint (Ollama, vLLM, LocalAI, an
-	// OpenAI-compatible gateway); api_key_env re-points the credential
-	// at the operator's own env var, mirroring the `providers:` map
-	// convention (a NAME, resolved here; the value never appears in
-	// yaml). An empty-valued var is not a silent fallback to the host
-	// key: naming it is an explicit choice, so it wins either way.
+	// The embedder's OWN yaml block wins over everything resolved above —
+	// that is the whole point of the two knobs, and it is what lets the
+	// embedder diverge from its chat twin on purpose (a dedicated embedding
+	// host, or a different key on the same vendor). base_url points any driver
+	// at a self-hosted endpoint (Ollama, vLLM, LocalAI, an OpenAI-compatible
+	// gateway); api_key_env names the operator's own env var (a NAME, resolved
+	// here; the value never appears in yaml). An empty-valued var is not a
+	// silent fallback to the provider key: naming it is an explicit choice, so
+	// it wins either way.
 	if cfg.Memory.Embedder.BaseURL != "" {
 		baseURL = cfg.Memory.Embedder.BaseURL
 	}
