@@ -65,7 +65,7 @@ func Provider(cfg *config.Config, id string) (providers.Provider, error) {
 // KeyEnvName come from api_key_env (RFC AR per-tenant override). StreamOpts +
 // Options carry the per-provider timeouts and ollama num_ctx/num_gpu.
 func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) providers.DriverOptions {
-	baseURL := pc.BaseURL
+	baseURL := resolveBaseURL(id, pc, cfg)
 	stream := streamhttp.Options{
 		HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
 		IdleTimeout:   cfg.Env.ProviderIdleTimeout,
@@ -73,16 +73,10 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 	opts := map[string]any{}
 	switch id {
 	case "ollama": // hosted ollama.com
-		if baseURL == "" {
-			baseURL = cfg.Env.OllamaCloudBaseURL
-		}
 		if cfg.Env.OllamaNumCtx > 0 {
 			opts["num_ctx"] = cfg.Env.OllamaNumCtx
 		}
 	case "ollama-local":
-		if baseURL == "" {
-			baseURL = cfg.Env.OllamaBaseURL
-		}
 		// Local Ollama is slow on first-token (cold model load + large-context
 		// eval), so it gets its own, more generous timeout pair.
 		stream = streamhttp.Options{
@@ -94,14 +88,6 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		}
 		if cfg.Env.OllamaLocalNumGpu > 0 {
 			opts["num_gpu"] = cfg.Env.OllamaLocalNumGpu
-		}
-	case "deepseek":
-		if baseURL == "" {
-			baseURL = cfg.Env.DeepSeekBaseURL
-		}
-	case "gemini":
-		if baseURL == "" {
-			baseURL = cfg.Env.GeminiBaseURL
 		}
 	case "code-js":
 		// RFC BF P2a regression fix (b8d3f42d line): the code-js driver factory
@@ -196,4 +182,47 @@ func CapabilityPatch(o *config.CapabilityOverride) *providers.CapabilityPatch {
 		ParallelToolCalls: o.ParallelToolCalls,
 		MaxContextTokens:  o.MaxContextTokens,
 	}
+}
+
+// resolveBaseURL is the ONE place a provider id's endpoint is decided: the
+// operator's `providers:` entry wins, and the per-id env default fills in only
+// when that entry leaves base_url empty.
+//
+// It is a named function rather than inline switch arms because the memory
+// EMBEDDER resolves the same endpoint for the same provider account, and the two
+// copies drifted: the chat side preferred pc.BaseURL while the embedder read
+// cfg.Env.OllamaBaseURL ONLY. Observed live — chat reached a newly-installed
+// Ollama host through `providers: ollama-local: base_url:` while the embedder
+// stayed on the env var pointing at a name the container could not resolve, so
+// memory kept accepting writes and quietly stopped being semantic (108 fact
+// rows, ~0 embeddings; the benchmark that surfaced it read as a bad extractor).
+// Both callers now share this function.
+func resolveBaseURL(id string, pc config.ProviderConfig, cfg *config.Config) string {
+	if pc.BaseURL != "" {
+		return pc.BaseURL
+	}
+	switch id {
+	case "ollama": // hosted ollama.com
+		return cfg.Env.OllamaCloudBaseURL
+	case "ollama-local":
+		return cfg.Env.OllamaBaseURL
+	case "deepseek":
+		return cfg.Env.DeepSeekBaseURL
+	case "gemini":
+		return cfg.Env.GeminiBaseURL
+	}
+	return ""
+}
+
+// ProviderEndpoint resolves the base URL and credential for provider id with the
+// SAME precedence the chat drivers use, for a non-chat consumer that hits the
+// same provider account (today: the memory embedder).
+//
+// keyEnvName is returned alongside apiKey so a caller can report WHICH env var it
+// resolved without echoing the secret. An id absent from cfg.Providers is not an
+// error: it yields the zero ProviderConfig, so the per-id env defaults still
+// apply and a config with no `providers:` block behaves as it did before.
+func ProviderEndpoint(cfg *config.Config, id string) (baseURL, apiKey, keyEnvName string) {
+	pc := cfg.Providers[id]
+	return resolveBaseURL(id, pc, cfg), os.Getenv(pc.APIKeyEnv), pc.APIKeyEnv
 }

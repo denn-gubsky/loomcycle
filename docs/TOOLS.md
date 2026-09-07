@@ -607,12 +607,21 @@ memory:
   embedder:
     provider: ollama-local
     model: embeddinggemma:latest
-    # base_url inherits OLLAMA_BASE_URL; set it explicitly to override
+    # base_url inherits `providers: ollama-local: base_url:`;
+    # set it here only to point embeddings at a DIFFERENT host than chat
 ```
 
 - **You must pull an embedding model first — this is required, not optional.** A stock Ollama ships none, and every call 404s until you run `ollama pull embeddinggemma` (or `nomic-embed-text`, `qwen3-embedding`, …) on the Ollama host. The error names the model and the pull command.
 - `base_url` must be reachable **from inside the loomcycle container**. In a container `localhost` is the container itself, not the host running Ollama — use the host's LAN address or a compose service name. loomcycle logs the endpoint it defaulted to at boot for exactly this reason.
-- **Precedence:** explicit yaml `base_url` > `OLLAMA_BASE_URL` (the same var the chat provider reads, so one setting serves both) > `http://localhost:11434`. `OLLAMA_BASE_URL=disabled` is the chat side's opt-out marker and is treated as unset here.
+- **Precedence:** `memory.embedder.base_url` > `providers.ollama-local.base_url` > `OLLAMA_BASE_URL` > `http://localhost:11434`. The middle level is what makes YAML the config home: repointing `providers: ollama-local: base_url:` at a new Ollama host moves **chat and embeddings together**, so one setting serves both without restating it. Set `memory.embedder.base_url` only to make them diverge on purpose (a dedicated embedding host). `OLLAMA_BASE_URL=disabled` is the chat side's opt-out marker and is treated as unset here.
+- ⚠️ **An embed failure warns but does not fail the write.** By design: the k/v row is kept and the response carries `embedded: false` plus an `embed_warning` (the `Memory` tool logs it and returns the same field). So the corpus silently accumulates unembedded rows for any caller that ignores that field — `recall` stops matching and search 500s while every write still reports 200. **After changing the Ollama host, write one row with `?embed=true` and READ the response** — `embed_warning` names the endpoint AND the error, which is the whole diagnosis in one call:
+
+  ```
+  PUT /v1/_memory/scopes/user/<id>/keys/probe?embed=true
+  → {"embedded":false,"embed_warning":"ollama /api/embed: Post \"http://<host>:11434/api/embed\": dial tcp: lookup <host>: no such host"}
+  ```
+
+  A name the loomcycle **container** cannot resolve is the common one — Tailscale MagicDNS names do not resolve against Docker's embedded DNS (127.0.0.11), so prefer the tailnet IP or a compose service name. Corroborate with `GET /v1/_memory/embed_stats` (the row count must move after a successful embed) and note that a `POST /v1/_memory/backfill_embeddings?...&dry_run=false` reporting `failed` within milliseconds never dialled anything at all.
 - `provider: ollama` is the hosted ollama.com sibling: `OLLAMA_CLOUD_BASE_URL` + `OLLAMA_API_KEY`. Prefer `ollama-local` for a self-hosted box — the `-local` suffix is also how the consolidation dispatcher recognises a runtime on your own hardware and throttles fan-out accordingly.
 
 **Any OpenAI-compatible server.** `provider: openai` with a `base_url` reaches vLLM, LocalAI, Text Embeddings Inference, Infinity, an Azure OpenAI deployment, or Ollama's own OpenAI-compat layer — no new driver needed:
