@@ -569,7 +569,16 @@ func (s *Store) MemoryEmbedListByModel(ctx context.Context, tenantID string, sco
 		limit = 1000
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at
+		// The temporal columns are read even though the reembed endpoint — the
+		// only caller — needs just key+value: a read path that returns a
+		// MemoryEntry with these three unread hands back the ZERO instant,
+		// which is indistinguishable from the honest "undated" state. That is
+		// not a hypothetical confusion; the identical omission in MemoryList
+		// was used as an instrument a dozen times and produced four wrong
+		// conclusions. Populating them here keeps every MemoryEntry-returning
+		// projection safe to read as evidence.
+		`SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at,
+		        m.observed_at, m.valid_at, m.invalid_at
 		 FROM memory_embeddings me
 		 JOIN memory m
 		    ON me.tenant_id = m.tenant_id AND me.scope = m.scope AND me.scope_id = m.scope_id AND me.key = m.key
@@ -592,8 +601,12 @@ func (s *Store) MemoryEmbedListByModel(ctx context.Context, tenantID string, sco
 			valueBytes           []byte
 			expiresAt            *time.Time
 			createdAt, updatedAt time.Time
+			observedAt           *time.Time
+			validAt              *time.Time
+			invalidAt            *time.Time
 		)
-		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&key, &valueBytes, &expiresAt, &createdAt, &updatedAt,
+			&observedAt, &validAt, &invalidAt); err != nil {
 			return nil, fmt.Errorf("MemoryEmbedListByModel scan: %w", err)
 		}
 		e := store.MemoryEntry{
@@ -604,6 +617,17 @@ func (s *Store) MemoryEmbedListByModel(ctx context.Context, tenantID string, sco
 		}
 		if expiresAt != nil {
 			e.ExpiresAt = *expiresAt
+		}
+		// NULL leaves the field zero; mapping it onto Unix(0, 0) would stamp
+		// 1970 on every undated row.
+		if observedAt != nil {
+			e.ObservedAt = *observedAt
+		}
+		if validAt != nil {
+			e.ValidAt = *validAt
+		}
+		if invalidAt != nil {
+			e.InvalidAt = *invalidAt
 		}
 		out = append(out, e)
 	}

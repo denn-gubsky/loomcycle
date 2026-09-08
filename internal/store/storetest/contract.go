@@ -82,6 +82,7 @@ func Run(t *testing.T, factory Factory) {
 		// Postgres when a DSN is set.
 		{"MemoryChangesFeed", testMemoryChangesFeed},
 		{"MemoryListReturnsTemporalColumns", testMemoryListReturnsTemporalColumns},
+		{"MemoryGetReturnsTemporalColumns", testMemoryGetReturnsTemporalColumns},
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
 		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
@@ -208,6 +209,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedSearchReturnsVectors", testMemoryEmbedSearchReturnsVectors},
 		{"MemoryDeleteCascadesEmbedding", testMemoryDeleteCascadesEmbedding},
 		{"MemoryEmbedListByModelFiltersCurrent", testMemoryEmbedListByModelFiltersCurrent},
+		{"MemoryEmbedListByModelReturnsTemporalColumns", testMemoryEmbedListByModelReturnsTemporalColumns},
 		{"MemoryEmbedStatsReportsPerModelCount", testMemoryEmbedStatsReportsPerModelCount},
 		{"ChannelPublishSubscribeRoundTrip", testChannelPublishSubscribeRoundTrip},
 		{"ChannelSubscribeEmptyChannel", testChannelSubscribeEmptyChannel},
@@ -5205,6 +5207,73 @@ func testMemoryEmbedListByModelFiltersCurrent(t *testing.T, s store.Store) {
 		if r.Key == "new1" {
 			t.Errorf("ListByModel returned the current-model row %q", r.Key)
 		}
+	}
+}
+
+// testMemoryEmbedListByModelReturnsTemporalColumns — the reembed listing is a
+// MemoryEntry-returning read path, so it owes the same columns.
+//
+// No caller reads them today (the reembed endpoint needs key+value and writes
+// only to memory_embeddings), so this pins a projection rather than fixing an
+// observable bug. It is worth pinning anyway: the identical omission in
+// MemoryList was used as an INSTRUMENT a dozen times before anyone checked it
+// against the table, and it read as "undated" — plausible, and wrong. Any
+// MemoryEntry a backend hands back should be safe to read as evidence.
+func testMemoryEmbedListByModelReturnsTemporalColumns(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const scopeID = "temporal-reembed"
+	observed := time.Date(2023, 7, 7, 19, 56, 0, 0, time.UTC)
+	validAt := time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	// One dated row and one undated row, both on the OLD model so both come
+	// back from the "not on the current model" query.
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeAgent, scopeID, "dated",
+		json.RawMessage(`"x"`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: observed, ValidAt: validAt}); err != nil {
+		t.Fatalf("MemorySetTimed dated: %v", err)
+	}
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeAgent, scopeID, "undated",
+		json.RawMessage(`"x"`), 0, store.MemoryProvenance{}, store.MemoryTimes{}); err != nil {
+		t.Fatalf("MemorySetTimed undated: %v", err)
+	}
+	for _, k := range []string{"dated", "undated"} {
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, scopeID, k, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: k, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s: %v", k, err)
+		}
+	}
+
+	rows, err := s.MemoryEmbedListByModel(ctx, "", store.MemoryScopeAgent, scopeID,
+		"openai", "text-embedding-3-large", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]store.MemoryEntry{}
+	for _, r := range rows {
+		got[r.Key] = r
+	}
+	dated, ok := got["dated"]
+	if !ok {
+		t.Fatalf("dated row missing from reembed listing (%d rows)", len(rows))
+	}
+	if !dated.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("ObservedAt = %v, want %v", dated.ObservedAt.UTC(), observed)
+	}
+	if !dated.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("ValidAt = %v, want %v", dated.ValidAt.UTC(), validAt)
+	}
+	undated, ok := got["undated"]
+	if !ok {
+		t.Fatalf("undated row missing from reembed listing")
+	}
+	if !undated.ObservedAt.IsZero() || !undated.ValidAt.IsZero() || !undated.InvalidAt.IsZero() {
+		t.Errorf("undated row reports observed=%v valid=%v invalid=%v, want all ZERO",
+			undated.ObservedAt, undated.ValidAt, undated.InvalidAt)
 	}
 }
 
@@ -12061,6 +12130,62 @@ func testMemoryListReturnsTemporalColumns(t *testing.T, s store.Store) {
 	undated, ok := got["memory/fact/undated"]
 	if !ok {
 		t.Fatalf("undated row missing from listing")
+	}
+	if !undated.ObservedAt.IsZero() || !undated.ValidAt.IsZero() || !undated.InvalidAt.IsZero() {
+		t.Errorf("undated row reports observed=%v valid=%v invalid=%v, want all ZERO — mapping "+
+			"NULL onto Unix(0,0) would date every undated row to 1970, which is worse than "+
+			"reporting nothing", undated.ObservedAt, undated.ValidAt, undated.InvalidAt)
+	}
+}
+
+// testMemoryGetReturnsTemporalColumns — the single-key read must report the
+// times too.
+//
+// Same defect class as the listing above, one backend behind: sqlite's
+// MemoryGet has always selected the three columns, Postgres' never did. A
+// pure backend divergence, so the same key read through the two tiers
+// answered differently — and the Postgres answer ("undated") is the one that
+// looks plausible, because most rows genuinely are.
+//
+// Asserted the same way for the same reason: a non-zero round trip AND an
+// undated row, so a NULL-to-Unix(0,0) mapping cannot pass.
+func testMemoryGetReturnsTemporalColumns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "temporal-get"
+	observed := time.Date(2023, 7, 7, 19, 56, 0, 0, time.UTC)
+	validAt := time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)
+	invalidAt := time.Date(2023, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeUser, scopeID, "memory/fact/dated",
+		json.RawMessage(`{"text":"dated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: observed, ValidAt: validAt, InvalidAt: invalidAt}); err != nil {
+		t.Fatalf("MemorySetTimed dated: %v", err)
+	}
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeUser, scopeID, "memory/fact/undated",
+		json.RawMessage(`{"text":"undated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{}); err != nil {
+		t.Fatalf("MemorySetTimed undated: %v", err)
+	}
+
+	dated, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, scopeID, "memory/fact/dated")
+	if err != nil {
+		t.Fatalf("MemoryGet dated: %v", err)
+	}
+	if !dated.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("ObservedAt = %v, want %v — a point read that drops the column reports the "+
+			"row as undated, and zero is a meaningful value here so nothing downstream can tell",
+			dated.ObservedAt.UTC(), observed)
+	}
+	if !dated.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("ValidAt = %v, want %v", dated.ValidAt.UTC(), validAt)
+	}
+	if !dated.InvalidAt.UTC().Equal(invalidAt) {
+		t.Errorf("InvalidAt = %v, want %v", dated.InvalidAt.UTC(), invalidAt)
+	}
+
+	undated, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, scopeID, "memory/fact/undated")
+	if err != nil {
+		t.Fatalf("MemoryGet undated: %v", err)
 	}
 	if !undated.ObservedAt.IsZero() || !undated.ValidAt.IsZero() || !undated.InvalidAt.IsZero() {
 		t.Errorf("undated row reports observed=%v valid=%v invalid=%v, want all ZERO — mapping "+
