@@ -3749,7 +3749,18 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 	}
 	pattern := escapeLikePrefix(prefix) + "%"
 	rows, err := s.pool.Query(ctx,
-		`SELECT key, value::text, expires_at, created_at, updated_at
+		// observed_at / valid_at / invalid_at are SELECTED here, and their absence
+		// was a real defect rather than an omission with no consequence:
+		// MemoryEntry carries the three fields, so a listing that did not read
+		// them serialised the ZERO instant for every row — reporting "undated" for
+		// rows that were correctly dated in the table. Zero is a MEANINGFUL value
+		// on this column ("undated is the honest state for most rows"), so nothing
+		// downstream could tell the difference between absent and unread. It cost
+		// four wrong conclusions in one benchmarking session, including a written-up
+		// finding that the extractor never filled the fields, when the rows in
+		// Postgres carried real timestamps the whole time.
+		`SELECT key, value::text, expires_at, created_at, updated_at,
+		        observed_at, valid_at, invalid_at
 		 FROM memory
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key LIKE $4 ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > NOW())
@@ -3765,13 +3776,17 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 	var out []store.MemoryEntry
 	for rows.Next() {
 		var (
-			key       string
-			valueText []byte
-			expiresAt *time.Time
-			createdAt time.Time
-			updatedAt time.Time
+			key        string
+			valueText  []byte
+			expiresAt  *time.Time
+			createdAt  time.Time
+			updatedAt  time.Time
+			observedAt *time.Time
+			validAt    *time.Time
+			invalidAt  *time.Time
 		)
-		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt,
+			&observedAt, &validAt, &invalidAt); err != nil {
 			return nil, false, fmt.Errorf("memory list scan: %w", err)
 		}
 		entry := store.MemoryEntry{
@@ -3782,6 +3797,18 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		}
 		if expiresAt != nil {
 			entry.ExpiresAt = *expiresAt
+		}
+		// Scanned as pointers because the columns are NULLABLE and NULL is the
+		// undated case: a zero time.Time is what an undated row must present, so
+		// leaving the field untouched is exactly right.
+		if observedAt != nil {
+			entry.ObservedAt = *observedAt
+		}
+		if validAt != nil {
+			entry.ValidAt = *validAt
+		}
+		if invalidAt != nil {
+			entry.InvalidAt = *invalidAt
 		}
 		out = append(out, entry)
 	}

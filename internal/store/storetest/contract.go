@@ -81,6 +81,7 @@ func Run(t *testing.T, factory Factory) {
 		// (append / tenant-scoped since-cursor / prune). sqlite always;
 		// Postgres when a DSN is set.
 		{"MemoryChangesFeed", testMemoryChangesFeed},
+		{"MemoryListReturnsTemporalColumns", testMemoryListReturnsTemporalColumns},
 		{"CreateSessionUserIDRoundTrip", testCreateSessionUserIDRoundTrip},
 		{"CreateRunIdentityRoundTrip", testCreateRunIdentityRoundTrip},
 		{"CreateRunParentContextRoundTrip", testCreateRunParentContextRoundTrip},
@@ -11995,5 +11996,75 @@ func testMemoryCursorReleaseByOwner(t *testing.T, s store.Store) {
 		t.Fatal(err)
 	} else if ok {
 		t.Error("an empty-owner release freed a live lease")
+	}
+}
+
+// testMemoryListReturnsTemporalColumns — a listing must report the times the row
+// actually carries.
+//
+// WHY THIS IS A CONTRACT TEST AND NOT A BACKEND ONE. Both backends had the same
+// defect independently: MemoryList selected key/value/expires/created/updated and
+// nothing else, while MemoryEntry carries ObservedAt/ValidAt/InvalidAt. So every
+// listed row serialised the ZERO instant regardless of what was stored. Zero is a
+// MEANINGFUL value on these columns — "undated is the honest state for most rows"
+// — so no caller could distinguish "this row has no observed time" from "the query
+// forgot to ask". It went unnoticed through a whole benchmarking session and
+// produced four wrong conclusions, including a written-up finding that the
+// extractor never populated the fields while Postgres held real timestamps.
+//
+// The assertion is deliberately on a NON-ZERO round trip plus an undated row in
+// the same listing: reading the columns is only half the contract, and a fix that
+// mapped NULL onto Unix(0,0) — 1970, a wrong date — would pass a
+// non-zero-only test while corrupting every undated row.
+func testMemoryListReturnsTemporalColumns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "temporal-list"
+	observed := time.Date(2023, 7, 7, 19, 56, 0, 0, time.UTC)
+	validAt := time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)
+	invalidAt := time.Date(2023, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeUser, scopeID, "memory/fact/dated",
+		json.RawMessage(`{"text":"dated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: observed, ValidAt: validAt, InvalidAt: invalidAt}); err != nil {
+		t.Fatalf("MemorySetTimed dated: %v", err)
+	}
+	// An UNDATED row in the same listing — the other half of the contract.
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeUser, scopeID, "memory/fact/undated",
+		json.RawMessage(`{"text":"undated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{}); err != nil {
+		t.Fatalf("MemorySetTimed undated: %v", err)
+	}
+
+	entries, _, err := s.MemoryList(ctx, "", store.MemoryScopeUser, scopeID, "memory/", 100)
+	if err != nil {
+		t.Fatalf("MemoryList: %v", err)
+	}
+	got := map[string]store.MemoryEntry{}
+	for _, e := range entries {
+		got[e.Key] = e
+	}
+	dated, ok := got["memory/fact/dated"]
+	if !ok {
+		t.Fatalf("dated row missing from listing (%d entries)", len(entries))
+	}
+	if !dated.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("ObservedAt = %v, want %v — a listing that drops the column reports every "+
+			"row as undated, and zero is a meaningful value here so nothing downstream can tell",
+			dated.ObservedAt.UTC(), observed)
+	}
+	if !dated.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("ValidAt = %v, want %v", dated.ValidAt.UTC(), validAt)
+	}
+	if !dated.InvalidAt.UTC().Equal(invalidAt) {
+		t.Errorf("InvalidAt = %v, want %v", dated.InvalidAt.UTC(), invalidAt)
+	}
+	undated, ok := got["memory/fact/undated"]
+	if !ok {
+		t.Fatalf("undated row missing from listing")
+	}
+	if !undated.ObservedAt.IsZero() || !undated.ValidAt.IsZero() || !undated.InvalidAt.IsZero() {
+		t.Errorf("undated row reports observed=%v valid=%v invalid=%v, want all ZERO — mapping "+
+			"NULL onto Unix(0,0) would date every undated row to 1970, which is worse than "+
+			"reporting nothing", undated.ObservedAt, undated.ValidAt, undated.InvalidAt)
 	}
 }

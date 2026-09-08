@@ -4373,7 +4373,12 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 	nowNs := time.Now().UnixNano()
 	// Fetch limit+1 to detect truncation without a separate COUNT(*).
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, value, expires_at, created_at, updated_at
+		// observed_at / valid_at / invalid_at are SELECTED here — see the note on
+		// the postgres twin. Omitting them made a listing report the ZERO instant
+		// for correctly-dated rows, and zero is a meaningful value on this column
+		// ("undated"), so absent and unread were indistinguishable downstream.
+		`SELECT key, value, expires_at, created_at, updated_at,
+		        observed_at, valid_at, invalid_at
 		 FROM memory
 		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key LIKE ? ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > ?)
@@ -4389,13 +4394,17 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 	var out []store.MemoryEntry
 	for rows.Next() {
 		var (
-			key       string
-			valueText string
-			expiresAt sql.NullInt64
-			createdAt int64
-			updatedAt int64
+			key        string
+			valueText  string
+			expiresAt  sql.NullInt64
+			createdAt  int64
+			updatedAt  int64
+			observedAt sql.NullInt64
+			validAt    sql.NullInt64
+			invalidAt  sql.NullInt64
 		)
-		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt,
+			&observedAt, &validAt, &invalidAt); err != nil {
 			return nil, false, err
 		}
 		entry := store.MemoryEntry{
@@ -4406,6 +4415,18 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		}
 		if expiresAt.Valid {
 			entry.ExpiresAt = time.Unix(0, expiresAt.Int64)
+		}
+		// NULL is the undated case, and a zero time.Time is what undated must
+		// present — so an invalid Null* leaves the field alone rather than
+		// writing time.Unix(0,0), which is 1970 and would be a WRONG date.
+		if observedAt.Valid {
+			entry.ObservedAt = time.Unix(0, observedAt.Int64)
+		}
+		if validAt.Valid {
+			entry.ValidAt = time.Unix(0, validAt.Int64)
+		}
+		if invalidAt.Valid {
+			entry.InvalidAt = time.Unix(0, invalidAt.Int64)
 		}
 		out = append(out, entry)
 	}
