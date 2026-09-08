@@ -796,6 +796,7 @@ agents:
           // text the extractor actually saw, or a fact could be handed evidence from a
           // section that was never in front of the model.
           deriveSpans(facts, parts[i]);
+          stampObservedAt(facts, parts[i]);
           all = all.concat(facts);
           readable++;
         }
@@ -1182,6 +1183,7 @@ agents:
           // wrong one would date every fact in the batch to the same wrong day.
           var facts = extract(st, pendingText, "", "");
           deriveSpans(facts, pendingText);
+          stampObservedAt(facts, pendingText);
           // Unreadable is not empty: the call FAILED rather than answered, so stop
           // spending on this queue and leave the rest for the next pass. Retrying
           // inside one pass would multiply an outage by the call budget.
@@ -1478,6 +1480,107 @@ agents:
       // No match above the floor means NO span, which reads as unverified rather than
       // as refuted. A fact whose support cannot be located is exactly the fact a
       // verifier should be told nothing about.
+      // stampObservedAt fills `observed_at` from the TURN'S OWN TIMESTAMP, by
+      // PARSING it — no model call, no model cooperation.
+      //
+      // WHY THIS IS NOT A PROMPT PROBLEM. The prompt was changed to ask for
+      // `observed_at` and the extractor simply did not emit it: measured across
+      // three full runs, 0 of ~240 facts carried the field, while the very same
+      // change lifted the temporal slice from 2 to 8-10 correct answers purely by
+      // making the model keep dates in the fact PROSE. So asking works, partly, for
+      // the wrong reason — and the structured field stays empty however the request
+      // is worded. Asking an LLM to echo a date it was just handed is the wrong
+      // shape for the job. The timestamp is already machine-readable in the turn
+      // text, so the pass reads it directly: mechanism, not judgement, which is the
+      // same reason this consolidator is code-js rather than an LLM.
+      //
+      // ATTRIBUTION. A batch spans several turns with different timestamps, so a
+      // single date for the batch would file facts under a day they did not happen.
+      // deriveSpans has already matched each fact to its own source line, and that
+      // line carries the bracketed stamp — so the fact's own quote is the attribution
+      // path. Only when a fact has no usable quote does it fall back, and then ONLY
+      // if the whole text carries exactly ONE distinct timestamp; two candidates is
+      // an ambiguity, and the omit-when-unknown rule applies to the parser exactly as
+      // it applies to the model.
+      function stampObservedAt(facts, sourceText) {
+        if (!facts || !facts.length) { return facts; }
+        var all = collectStamps(sourceText);
+        var only = "";
+        for (var k = 0; k < all.length; k++) {
+          if (!only) { only = all[k]; }
+          else if (only !== all[k]) { only = ""; break; }
+        }
+        for (var i = 0; i < facts.length; i++) {
+          if (facts[i].observed_at) { continue; }   // the model DID emit one: leave it
+          var own = facts[i].quote ? collectStamps(facts[i].quote) : [];
+          if (own.length === 1) { facts[i].observed_at = own[0]; continue; }
+          if (own.length > 1) { continue; }         // ambiguous within one span
+          if (only) { facts[i].observed_at = only; }
+        }
+        return facts;
+      }
+
+      // collectStamps returns every bracketed timestamp in the text as an RFC3339
+      // instant, in order. Unparseable brackets are SKIPPED rather than guessed:
+      // half a timestamp coerced into a whole one is the wrong-date failure the
+      // field exists to avoid, and a wrong date is worse than no date because it
+      // hides the fact from the window it truly belongs in.
+      function collectStamps(text) {
+        var out = [];
+        if (typeof text !== "string" || !text) { return out; }
+        var re = /\[([^\]]{4,64})\]/g, m;
+        while ((m = re.exec(text)) !== null) {
+          var ts = parseStamp(m[1]);
+          if (ts) { out.push(ts); }
+        }
+        return out;
+      }
+
+      var MONTHS = {
+        january: "01", february: "02", march: "03", april: "04", may: "05",
+        june: "06", july: "07", august: "08", september: "09", october: "10",
+        november: "11", december: "12"
+      };
+
+      // parseStamp recognises the shapes real corpora actually use and refuses
+      // everything else. Deliberately NOT Date.parse: that accepts nearly anything
+      // and resolves ambiguity by guessing, which is the one behaviour this field
+      // must not have. Built as a string, so there is no local-timezone shift
+      // between the transcript and the stored instant.
+      function parseStamp(raw) {
+        var s = String(raw).replace(/\s+/g, " ").trim();
+        // 2023-07-07T19:56:00Z  /  2023-07-07 19:56[:00]
+        var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(s);
+        if (m) { return m[1] + "-" + m[2] + "-" + m[3] + "T" + m[4] + ":" + m[5] + ":" + (m[6] || "00") + "Z"; }
+        // 2023-07-07  (date only → midnight)
+        m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+        if (m) { return m[1] + "-" + m[2] + "-" + m[3] + "T00:00:00Z"; }
+        // 7:56 pm on 7 July, 2023   (the LoCoMo shape)
+        m = /^(\d{1,2}):(\d{2}) ?(am|pm) on (\d{1,2}) ([A-Za-z]+),? (\d{4})$/i.exec(s);
+        if (m) {
+          var mon = MONTHS[m[5].toLowerCase()];
+          if (!mon) { return ""; }
+          var h = parseInt(m[1], 10);
+          if (h < 1 || h > 12) { return ""; }
+          if (/pm/i.test(m[3]) && h !== 12) { h += 12; }
+          if (/am/i.test(m[3]) && h === 12) { h = 0; }
+          return m[6] + "-" + mon + "-" + pad2(m[4]) + "T" + pad2(String(h)) + ":" + m[2] + ":00Z";
+        }
+        // 7 July, 2023  (date only)
+        m = /^(\d{1,2}) ([A-Za-z]+),? (\d{4})$/.exec(s);
+        if (m) {
+          var mo = MONTHS[m[2].toLowerCase()];
+          if (!mo) { return ""; }
+          return m[3] + "-" + mo + "-" + pad2(m[1]) + "T00:00:00Z";
+        }
+        return "";
+      }
+
+      function pad2(v) {
+        var t = String(v);
+        return t.length === 1 ? "0" + t : t;
+      }
+
       function deriveSpans(facts, sourceText) {
         if (!facts || !facts.length || !sourceText) { return facts; }
         var sentences = splitSentences(sourceText);
