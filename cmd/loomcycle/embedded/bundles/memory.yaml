@@ -1000,29 +1000,43 @@ agents:
         // The date goes BEFORE the transcript and outside its delimiters: it is
         // ours, not the transcript's, and a date inside the data would be one more
         // thing a hostile transcript could try to restate.
-        // The temporal rule lives HERE, in the per-call prompt, and only when a date
-        // actually exists — NOT in the system prompt. Three reasons, all measured:
+        // The temporal rule lives HERE, in the per-call prompt, NOT in the system
+        // prompt. Two reasons, both still current:
         //
         //   1. The system prompt has a 2600-char ceiling that sits deliberately below
-        //      a 3,055-char prompt observed to come back EMPTY. This rule is ~1.2k;
+        //      a 3,055-char prompt observed to come back EMPTY. This rule is ~1.4k;
         //      adding it there would push the extractor past a known breaking point.
         //   2. The recorded extraction baselines are keyed by the SYSTEM prompt's
         //      digest, so editing it ungates every stored score until someone spends
-        //      a live eval re-measuring them. This costs nothing.
-        //   3. A chat with no date cannot use the rule, and half the calls have none
-        //      (the queued-batch path never does). Paying for it there would be tokens
-        //      spent to tell a model about a field it must not fill in.
-        var dateLine = "";
-        if (when) {
-          dateLine =
-            "This conversation took place on " + String(when) + ".\n" +
-            "If a fact is dated RELATIVE to that (\"yesterday\", \"last week\", \"since March\"), " +
-            "resolve it and add \"valid_at\" — plus \"invalid_at\" if it later stopped being " +
-            "true — as full RFC3339 instants (2023-10-03T00:00:00Z). A state still true " +
-            "gets valid_at and no invalid_at. OMIT BOTH when the text gives no such " +
-            "reference: most facts have none, and a guessed date files the fact under a " +
-            "day it did not happen.\n\n";
-        }
+        //      a live eval re-measuring them. Keeping the rule here costs nothing.
+        //
+        // ⚠️ A THIRD REASON USED TO GATE THIS ON `when` BEING PRESENT, AND IT WAS WRONG.
+        // It read: "a chat with no date cannot use the rule, and half the calls have
+        // none (the queued-batch path never does), so paying for it there would be
+        // tokens spent to tell a model about a field it must not fill in." The premise
+        // is false. `when` is the CONVERSATION-level date, and the queued path passes
+        // "" for it — but the turns themselves carry an absolute timestamp in the text
+        // (`[7:56 pm on 7 July, 2023] Dave: …`). So a date was available on exactly the
+        // path the rule was being withheld from, and the extractor was left staring at
+        // a timestamp with no instruction to date the fact. Measured consequence: 0 of
+        // 217 facts across four different extractor models carried ANY temporal field.
+        // The rule is now always emitted, and it names the in-text timestamp as a
+        // source. The omit-when-absent discipline is unchanged — it is what stops a
+        // guessed date, and it is doing the work the removed gate was credited with.
+        var dateLine =
+          "TIMES. Add \"observed_at\" — when the thing was SAID — as a full RFC3339 " +
+          "instant (2023-10-03T19:56:00Z). " +
+          (when
+            ? "This conversation took place on " + String(when) + "; use that unless a " +
+              "turn carries its own timestamp, which always wins over it.\n"
+            : "Read it from the turn's own leading timestamp, e.g. " +
+              "\"[7:56 pm on 7 July, 2023] Dave: …\".\n") +
+          "If a fact is additionally dated RELATIVE to when it was said (\"yesterday\", " +
+          "\"last week\", \"since March\"), resolve it and add \"valid_at\" — when it became " +
+          "true in the world — plus \"invalid_at\" if it later stopped being true. A state " +
+          "still true gets valid_at and no invalid_at.\n" +
+          "OMIT ANY of these you cannot read off the text. Most facts have no valid_at, " +
+          "and a guessed date files the fact under a day it did not happen.\n\n";
         // WHOSE memory this is — BY NAME, or not at all.
         //
         // ⚠️ THE EARLIER VERSION OF THIS WAS WORSE THAN NOTHING, and a live run proved it.
@@ -1101,8 +1115,13 @@ agents:
           var va = tsOrEmpty(f.valid_at), iva = tsOrEmpty(f.invalid_at);
           if (va && iva && iva <= va) { va = ""; iva = ""; st.interval_dropped++; }
           if (!va) { iva = ""; }
+          // observed_at is WHEN IT WAS SAID and is independent of the validity
+          // interval: a fact with no world-time still has an utterance time, which is
+          // what `Memory when=` narrows on. Validated by the same RFC3339-or-nothing
+          // rule and carried separately, so a dropped interval never takes it with it.
+          var oa = tsOrEmpty(f.observed_at);
           out.push({ text: text, cls: cls, type: typ, subject: subj, quote: "",
-                     valid_at: va, invalid_at: iva });
+                     observed_at: oa, valid_at: va, invalid_at: iva });
         }
         return out;
       }
@@ -1653,6 +1672,11 @@ agents:
           args.valid_at = fact.valid_at;
           if (fact.invalid_at) { args.invalid_at = fact.invalid_at; }
         }
+        // WHEN IT WAS SAID. Set independently of valid_at — `Memory set` has taken
+        // observed_at since the temporal tier shipped, and it is what a `when` window
+        // matches against, so a fact that carries only an utterance time is still
+        // findable by time. Omitted when the extractor could not read one.
+        if (fact.observed_at) { args.observed_at = fact.observed_at; }
         // A fact distilled from a QUEUED item relays that item's id so the server
         // resolves its origin + source ids from the pending row. We cannot author
         // origin ourselves — it is server-stamped precisely so an agent cannot
