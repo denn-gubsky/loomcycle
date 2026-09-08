@@ -1466,6 +1466,12 @@ export type PathToolInput = {
   recursive?: boolean;
   /** ls: only entries of this kind (document/volume_mount/memory_entry/directory). */
   kind_filter?: string;
+  /** ls: maximum entries to return (default 500, max 5000). A truncated listing
+   *  reports `truncated: true` and a `next_cursor`; pass that back as `cursor`. */
+  limit?: number;
+  /** ls: continue a truncated listing with the previous response's `next_cursor`.
+   *  Opaque — its encoding is not part of the contract, so do not construct one. */
+  cursor?: string;
   /** rm: also delete the backing resource (NOT supported in v1). */
   resource_too?: boolean;
   [extra: string]: unknown;

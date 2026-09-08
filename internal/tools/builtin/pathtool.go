@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,6 +50,8 @@ const pathInputSchema = `{
 		"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant."},
 		"recursive":     {"type": "boolean", "description": "ls: list all descendants. rm: required to remove a path that has descendants."},
 		"kind_filter":   {"type": "string", "description": "ls: only entries of this kind (document/volume_mount/memory_entry/directory)."},
+		"limit":         {"type": "integer", "minimum": 1, "description": "ls: maximum entries to return (default 500, max 5000). A truncated listing reports truncated:true and a next_cursor — pass that back as the cursor field to continue. Subject-homed facts make a directory as large as the tenant's entity count, so a listing has to be pageable rather than whole."},
+		"cursor":        {"type": "string", "description": "ls: continue a truncated listing — pass the next_cursor from the previous response. Opaque: its encoding is not part of the contract, so do not construct one."},
 		"resource_too":  {"type": "boolean", "description": "rm: also delete the backing resource. NOT supported in v1 (dirent-only removal)."}
 	},
 	"required": ["op"]
@@ -64,6 +67,8 @@ type pathInput struct {
 	Recursive   bool   `json:"recursive"`
 	KindFilter  string `json:"kind_filter"`
 	ResourceToo bool   `json:"resource_too"`
+	Limit       int    `json:"limit"`
+	Cursor      string `json:"cursor"`
 }
 
 func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
@@ -180,7 +185,11 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 			}
 			entries = append(entries, pathEntry{Name: r.Name, Kind: r.Kind, FullPath: r.ParentPath + r.Name, ResourceRef: r.ResourceRef})
 		}
-		return jsonResult(map[string]any{"path": canonical, "entries": entries})
+		// A recursive listing is flat, so FULL PATH is its identity — names repeat
+		// across directories. Sorting here is not cosmetic: it is what makes the
+		// cursor a stable position rather than a bet on the store's row order.
+		sort.Slice(entries, func(i, j int) bool { return entries[i].FullPath < entries[j].FullPath })
+		return lsPage(canonical, entries, in, func(e pathEntry) string { return e.FullPath })
 	}
 
 	// One-level ls. Directories are IMPLICIT (S3-style, RFC AL): a document at
@@ -230,7 +239,71 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return jsonResult(map[string]any{"path": canonical, "entries": entries})
+	return lsPage(canonical, entries, in, func(e pathEntry) string { return e.Name })
+}
+
+// lsDefaultLimit / lsMaxLimit bound a listing's RESPONSE.
+//
+// WHY A DEFAULT AT ALL, given it changes what an existing caller receives: a
+// subject-homed fact store makes a directory exactly as large as the tenant's
+// entity count, so `ls /facts` on a ten-thousand-subject tenant returned ten
+// thousand entries in one response. Postgres serves that; an agent's context
+// window does not. The truncation is REPORTED (truncated + next_cursor) rather
+// than silent, which is the difference between a bound and a lie.
+const (
+	lsDefaultLimit = 500
+	lsMaxLimit     = 5000
+)
+
+// lsPage applies the cursor and the limit to an ALREADY-SORTED slice, and reports
+// how to continue. keyOf names the ordering key — the same value the sort used, or
+// the cursor would point into a different order than the one it was issued from.
+//
+// The cursor is the last emitted key, base64url-encoded to keep it opaque: the
+// encoding is deliberately not part of the contract so it can become a composite
+// (or move into the store as a keyset predicate) without a wire change. It is a
+// POSITION, not an offset, so entries created before it do not shift the page.
+func lsPage(canonical string, entries []pathEntry, in pathInput, keyOf func(pathEntry) string) (tools.Result, error) {
+	if in.Cursor != "" {
+		after, err := decodeLsCursor(in.Cursor)
+		if err != nil {
+			return errResult("ls: " + err.Error()), nil
+		}
+		i := sort.Search(len(entries), func(i int) bool { return keyOf(entries[i]) > after })
+		entries = entries[i:]
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = lsDefaultLimit
+	}
+	if limit > lsMaxLimit {
+		limit = lsMaxLimit
+	}
+	out := map[string]any{"path": canonical}
+	if len(entries) > limit {
+		page := entries[:limit]
+		out["entries"] = page
+		out["truncated"] = true
+		out["next_cursor"] = encodeLsCursor(keyOf(page[len(page)-1]))
+		return jsonResult(out)
+	}
+	out["entries"] = entries
+	return jsonResult(out)
+}
+
+func encodeLsCursor(key string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(key))
+}
+
+func decodeLsCursor(cursor string) (string, error) {
+	b, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		// Named as the caller's mistake rather than echoed back: a hand-built
+		// cursor is the one way to get here, and the fix is to pass the
+		// next_cursor from the previous response verbatim.
+		return "", errors.New("cursor is not a value this tool issued — pass back the next_cursor from the previous response")
+	}
+	return string(b), nil
 }
 
 func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
