@@ -797,6 +797,7 @@ agents:
           // section that was never in front of the model.
           deriveSpans(facts, parts[i]);
           stampObservedAt(facts, parts[i]);
+          resolveValidAt(facts);
           all = all.concat(facts);
           readable++;
         }
@@ -1037,7 +1038,11 @@ agents:
           "true in the world — plus \"invalid_at\" if it later stopped being true. A state " +
           "still true gets valid_at and no invalid_at.\n" +
           "OMIT ANY of these you cannot read off the text. Most facts have no valid_at, " +
-          "and a guessed date files the fact under a day it did not happen.\n\n";
+          "and a guessed date files the fact under a day it did not happen.\n" +
+          "BUT IF YOU CANNOT WORK OUT THE DATE, KEEP THE WORDING THAT EXPRESSES IT " +
+          "(\"last week\", \"two days ago\", \"the week before\") INSIDE the fact sentence. " +
+          "A fact that says when in words can still be dated later; one with the time " +
+          "deleted cannot be dated by anything.\n\n";
         // WHOSE memory this is — BY NAME, or not at all.
         //
         // ⚠️ THE EARLIER VERSION OF THIS WAS WORSE THAN NOTHING, and a live run proved it.
@@ -1184,6 +1189,7 @@ agents:
           var facts = extract(st, pendingText, "", "");
           deriveSpans(facts, pendingText);
           stampObservedAt(facts, pendingText);
+          resolveValidAt(facts);
           // Unreadable is not empty: the call FAILED rather than answered, so stop
           // spending on this queue and leave the rest for the next pass. Retrying
           // inside one pass would multiply an outage by the call budget.
@@ -1545,6 +1551,97 @@ agents:
           if (ts) { out.push(ts); }
         }
         return out;
+      }
+
+      // resolveValidAt derives WHEN A FACT WAS TRUE from a relative phrase left in
+      // its own sentence, anchored on observed_at. A FALLBACK, not the primary path.
+      //
+      // WHY A FALLBACK. Measured on 86 facts from one conversation: the extractor
+      // resolves a time reference and fills valid_at on ~19%, and its resolutions are
+      // GOOD when it makes them — "in the week before 3 July" -> 26 June, "two days
+      // before 12 July" -> 10 July, checked against the source. The problem is the
+      // other 81%, where it DELETES the time instead: "Melanie bought figurines." was
+      // stamped one day before it was said, so the model had worked out "yesterday"
+      // and then dropped the word. The model is the better resolver and keeps that
+      // job; this catches what it drops.
+      //
+      // ⚠️ THE INPUT HAS TO EXIST FIRST. Before the prompt change above, only 2 of 86
+      // fact texts still carried a relative phrase, and ZERO carried one while lacking
+      // valid_at — a resolver alone would have had nothing to work on. That is why the
+      // prompt change and this function ship together, and why the measurement gate is
+      // the SIZE OF THE RESOLVABLE POPULATION first and the accuracy delta second.
+      function resolveValidAt(facts) {
+        if (!facts || !facts.length) { return facts; }
+        for (var i = 0; i < facts.length; i++) {
+          var f = facts[i];
+          if (f.valid_at) { continue; }        // the model resolved it: it wins
+          if (!f.observed_at) { continue; }    // no anchor to subtract from
+          // An absolute date already in the sentence means the model either resolved
+          // it or the date IS the claim. Either way, do not compute over the top.
+          if (/(january|february|march|april|may|june|july|august|september|october|november|december|\b(19|20)\d{2}\b)/i.test(f.text)) { continue; }
+          var off = relativeOffset(f.text);
+          if (!off) { continue; }
+          var iso = shiftInstant(f.observed_at, off);
+          if (iso) { f.valid_at = iso; }
+        }
+        return facts;
+      }
+
+      var WORDNUM = { one: 1, two: 2, three: 3, four: 4, five: 5,
+                      six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+      // relativeOffset reads ONE unambiguous BACKWARD time reference and returns it as
+      // {d, m, y}. Two different references in one sentence is an ambiguity and
+      // refuses — the omit-when-unknown rule, the same as everywhere else in this pass.
+      //
+      // Forward references ("next week") are deliberately NOT handled: a plan's world
+      // -time is when it will happen, which a transcript rarely pins down, and guessing
+      // it dates a fact to an event that may never occur.
+      function relativeOffset(text) {
+        var t = String(text).toLowerCase();
+        var hits = [];
+        var m = /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten) (day|week|month|year)s? (ago|before|earlier)\b/.exec(t);
+        if (m) {
+          var n = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : WORDNUM[m[1]];
+          if (n) { hits.push(unitOffset(m[2], n)); }
+        }
+        if (/\byesterday\b/.test(t) || /\bthe day before\b/.test(t) || /\blast night\b/.test(t)) {
+          hits.push({ d: 1, m: 0, y: 0 });
+        }
+        if (/\bthe week before\b/.test(t) || /\blast week\b/.test(t)) { hits.push({ d: 7, m: 0, y: 0 }); }
+        if (/\blast month\b/.test(t)) { hits.push({ d: 0, m: 1, y: 0 }); }
+        if (/\blast year\b/.test(t)) { hits.push({ d: 0, m: 0, y: 1 }); }
+        if (!hits.length) { return null; }
+        for (var k = 1; k < hits.length; k++) {
+          if (hits[k].d !== hits[0].d || hits[k].m !== hits[0].m || hits[k].y !== hits[0].y) {
+            return null;                      // two different references: refuse
+          }
+        }
+        return hits[0];
+      }
+
+      function unitOffset(unit, n) {
+        if (unit === "day") { return { d: n, m: 0, y: 0 }; }
+        if (unit === "week") { return { d: 7 * n, m: 0, y: 0 }; }
+        if (unit === "month") { return { d: 0, m: n, y: 0 }; }
+        return { d: 0, m: 0, y: n };
+      }
+
+      // shiftInstant subtracts an offset from an RFC3339 instant, in UTC.
+      //
+      // Date.UTC arithmetic rather than day counting, because months are not a fixed
+      // length: "last month" from 31 March is 28 February, while 30 days back is
+      // 1 March — a whole month wrong at exactly the boundary where the question is
+      // most likely to be asked.
+      function shiftInstant(iso, off) {
+        var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(String(iso));
+        if (!m) { return ""; }
+        var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+        if (off.y) { d.setUTCFullYear(d.getUTCFullYear() - off.y); }
+        if (off.m) { d.setUTCMonth(d.getUTCMonth() - off.m); }
+        if (off.d) { d.setUTCDate(d.getUTCDate() - off.d); }
+        return d.getUTCFullYear() + "-" + pad2(d.getUTCMonth() + 1) + "-" + pad2(d.getUTCDate()) +
+               "T" + pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + "Z";
       }
 
       var MONTHS = {
