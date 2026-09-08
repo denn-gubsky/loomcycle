@@ -57,6 +57,12 @@ func CategoryName(c int) string {
 	case CategoryAdversarial:
 		return "adversarial"
 	default:
+		// Chain to the LongMemEval range (101+) so a report does not have to know
+		// which dataset produced a result. Their numbering is deliberately
+		// disjoint from LoCoMo's 1-5.
+		if n := LMECategoryName(c); n != "" {
+			return n
+		}
 		return "category-" + strconv.Itoa(c)
 	}
 }
@@ -113,6 +119,13 @@ type Query struct {
 	// Answer is the gold answer, kept for the later answer-accuracy phase. Empty
 	// for the adversarial category.
 	Answer string
+	// Abstain marks a question whose gold behaviour is to REFUSE — the history
+	// does not contain the answer, so NOT_FOUND is CORRECT. Always false for
+	// LoCoMo, where every included category is answerable; set by the
+	// LongMemEval loader for its `_abs` instances. It inverts the verdict for
+	// an abstention, which is the one place the two datasets disagree about
+	// what a right answer looks like.
+	Abstain bool
 }
 
 // Conversation is one LoCoMo sample: its turns and its queries.

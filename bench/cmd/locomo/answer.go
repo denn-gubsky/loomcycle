@@ -570,9 +570,33 @@ func answerOne(ctx context.Context, mc *MCPClient, userID string, q Query, answe
 	// categories 1-4 (all answerable) it is a miss. Skipping the call saves a
 	// model round trip per abstention and removes a chance for the judge to
 	// mis-grade one.
+	//
+	// UNLESS the question is an abstention question, where refusing IS the right
+	// answer (LongMemEval `_abs`: the history does not contain the answer). This
+	// is the one place the two datasets disagree about what correct looks like,
+	// and getting it backwards would score correct refusals as failures while
+	// rewarding a system that confabulates — the inverse of what the slice
+	// measures. Still no judge call: the verdict is decided by the refusal
+	// itself, not by comparing text.
 	if res.NotFound {
+		if q.Abstain {
+			res.Verdict = VerdictCorrect
+			res.Why = "answerer abstained, and abstention is the gold behaviour"
+			return res
+		}
 		res.Verdict = VerdictWrong
 		res.Why = "answerer abstained (NOT_FOUND)"
+		return res
+	}
+	// The inverse: an abstention question that got an ANSWER is a confabulation,
+	// and it is decided here rather than by the judge. For an `_abs` instance the
+	// gold field is not a real answer, so handing the pair to a judge would ask it
+	// to compare a fabrication against a non-answer and call the result whatever it
+	// liked. The measurement wanted is simply "did the system refuse", so the
+	// refusal — or its absence — is the verdict.
+	if q.Abstain {
+		res.Verdict = VerdictWrong
+		res.Why = "answerer produced an answer where the history has none (confabulation)"
 		return res
 	}
 	prompt := fmt.Sprintf("Question: %s\nGold answer: %s\nModel answer: %s", q.Question, q.Answer, res.Answer)

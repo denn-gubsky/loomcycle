@@ -45,6 +45,7 @@ type options struct {
 	scope         string
 	topK          int
 	categories    []int
+	dataset       string
 	conversations int
 	concurrency   int
 	out           string
@@ -80,7 +81,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	var (
 		mode        = fs.String("mode", "convert", "convert | ingest | search | all | purge | answer")
-		data        = fs.String("data", "", "path to locomo10.json (required; not vendored — see README)")
+		data        = fs.String("data", "", "path to the dataset json (required; not vendored — see README)")
+		dataset     = fs.String("dataset", "locomo", "which corpus the -data file is: locomo | longmemeval")
 		instance    = fs.String("loomcycle", "http://127.0.0.1:8787", "base URL of the running loomcycle")
 		scope       = fs.String("scope", "agent", "memory scope to write/read (agent|user|tenant)")
 		topK        = fs.Int("top-k", 10, "retrieval depth metrics are computed at")
@@ -114,7 +116,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	opts := options{
-		mode: *mode, data: *data, instance: *instance, scope: *scope,
+		mode: *mode, data: *data, dataset: *dataset, instance: *instance, scope: *scope,
 		topK: *topK, categories: cats, conversations: *convLimit,
 		concurrency: *concurrency, out: *out, dryRun: *dryRun, noEmbed: *noEmbed,
 		unit: *unit, dated: *dated, onlyDated: *onlyDated, injectWhen: *injectWhen,
@@ -174,6 +176,24 @@ func run(args []string, stdout, stderr io.Writer) error {
 // the whole file — so the report has to say which population they describe or a
 // smoke run looks like it discarded far more than it did.
 func loadConversations(opts options) (convs []Conversation, defects *Defects, inFile int, err error) {
+	// LongMemEval enters as a second LOADER producing the same Conversation
+	// values, so nothing downstream — ingest, answerer, judge, aggregation, the
+	// paired joiner — has to know which corpus it is scoring. Its defect counts
+	// have a different shape (per-instance, not per-query), so they are reported
+	// on their own line rather than forced into Defects.
+	if strings.EqualFold(opts.dataset, "longmemeval") {
+		var d LMEDefects
+		convs, d, err = LoadLongMemEval(opts.data, 0)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		fmt.Fprintf(os.Stdout, "longmemeval: %s\n", d)
+		inFile = len(convs)
+		if opts.conversations > 0 && opts.conversations < len(convs) {
+			convs = convs[:opts.conversations]
+		}
+		return convs, &Defects{}, inFile, nil
+	}
 	convs, defects, err = Load(opts.data, opts.categories)
 	if err != nil {
 		return nil, nil, 0, err
@@ -226,7 +246,14 @@ func countQueries(cs []Conversation) int {
 func bearer() string {
 	// LOCOMO_BENCH_TENANT_TOKEN is accepted because it is what operators
 	// actually name the dedicated bench bearer when they mint one.
-	for _, env := range []string{"LOOMCYCLE_LOCOMO_TOKEN", "LOCOMO_BENCH_TENANT_TOKEN", "LOOMCYCLE_AUTH_TOKEN"} {
+	//
+	// LONGMEM_BENCH_TENANT_TOKEN comes FIRST so a LongMemEval run lands in its
+	// own tenant without the operator having to re-export the LoCoMo one. The
+	// two corpora must not share a tenant: LongMemEval instances SHARE haystack
+	// sessions, so a single memory plane would let one instance's question
+	// retrieve another's evidence — a hit the system never earned. Separate
+	// tenants also keep a LoCoMo baseline intact while a LongMemEval arm runs.
+	for _, env := range []string{"LONGMEM_BENCH_TENANT_TOKEN", "LOOMCYCLE_LOCOMO_TOKEN", "LOCOMO_BENCH_TENANT_TOKEN", "LOOMCYCLE_AUTH_TOKEN"} {
 		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
 			return v
 		}
