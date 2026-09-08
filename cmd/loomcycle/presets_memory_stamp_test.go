@@ -4,21 +4,26 @@ import (
 	"testing"
 )
 
-// RFC CW Probe 1b — observed_at is PARSED from the turn, not requested from the
-// model.
+// RFC CW Probe 1b — observed_at parsed from the turn as a FALLBACK.
 //
-// Probe 1 asked the extractor for `observed_at` and measured the answer across
-// three full runs: 0 of ~240 facts carried it. The same prompt change did lift
-// the temporal slice from 2 to 8-10 correct — but by making the model keep dates
-// in the fact PROSE, not by filling the field. So the field stays empty however
-// the request is worded, and the value of having it has never been collected.
+// ⚠️ Corrected 2026-09-08. These tests were written believing the extractor never
+// emits `observed_at` — an API listing reported 0 of ~240 facts carrying it. That
+// was a defect in the listing, which dropped the temporal columns in both
+// backends (#1144). Direct SQL afterwards showed the extractor fills the field on
+// 100% of facts, with real per-turn dates, without this parser at all.
 //
-// The timestamp is already machine-readable in the turn text, so the pass reads
-// it. Mechanism, not judgement.
+// What the parser is FOR, then: a weaker or non-compliant extractor. Extractor
+// tier was measured not to matter otherwise, so an operator may reasonably run a
+// small local model, and one that silently omits the field would leave every fact
+// undated with nothing to notice it. The tests below still describe the behaviour
+// correctly — they feed an extractor that emits no temporal field, which is
+// exactly the deployment this covers — only the premise about how COMMON that is
+// was wrong.
 
 // TestConsolidator_ObservedAtIsParsedFromTheTurnWithoutTheModel is the
-// regression. The extractor emits NO temporal field — exactly as the live model
-// behaves — and the fact must still land dated.
+// regression. The extractor emits NO temporal field — the non-compliant case this
+// parser exists for, NOT what the measured model does — and the fact must still
+// land dated.
 //
 // FAILS on the unfixed bundle: nothing parses the turn, so observed_at is absent.
 func TestConsolidator_ObservedAtIsParsedFromTheTurnWithoutTheModel(t *testing.T) {
