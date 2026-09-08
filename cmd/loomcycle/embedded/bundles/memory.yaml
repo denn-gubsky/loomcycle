@@ -1483,16 +1483,27 @@ agents:
       // stampObservedAt fills `observed_at` from the TURN'S OWN TIMESTAMP, by
       // PARSING it — no model call, no model cooperation.
       //
-      // WHY THIS IS NOT A PROMPT PROBLEM. The prompt was changed to ask for
-      // `observed_at` and the extractor simply did not emit it: measured across
-      // three full runs, 0 of ~240 facts carried the field, while the very same
-      // change lifted the temporal slice from 2 to 8-10 correct answers purely by
-      // making the model keep dates in the fact PROSE. So asking works, partly, for
-      // the wrong reason — and the structured field stays empty however the request
-      // is worded. Asking an LLM to echo a date it was just handed is the wrong
-      // shape for the job. The timestamp is already machine-readable in the turn
-      // text, so the pass reads it directly: mechanism, not judgement, which is the
-      // same reason this consolidator is code-js rather than an LLM.
+      // ⚠️ WHY THIS IS A FALLBACK AND NOT THE PRIMARY PATH — corrected 2026-09-08.
+      //
+      // This function was added on the belief that the extractor does not emit
+      // `observed_at`: an API listing reported 0 of ~240 facts carrying the field
+      // across three runs. THAT WAS A DEFECT IN THE LISTING, not a fact about the
+      // store — `MemoryList` dropped the temporal columns in both backends and
+      // serialised the zero instant for every row (#1144). Measured afterwards by
+      // direct SQL, the extractor fills `observed_at` on 100% of facts with real
+      // per-turn dates, entirely without this parser.
+      //
+      // So the prompt DOES work and this is not the mechanism that made Probe 1
+      // succeed. What it is: cover for a weaker or non-compliant extractor. The
+      // three-model comparison found that extractor tier does not otherwise matter
+      // (0.2245 / 0.2266 / 0.2665, no pairing significant), so an operator may
+      // reasonably run a small local model — and a model that silently omits the
+      // field would leave every fact undated with nothing to notice it. This keeps
+      // that deployment dated at no token cost.
+      //
+      // It is deliberately GAP-FILLING ONLY: a model-supplied value always wins,
+      // because the model read the sentence and may have resolved a relative date
+      // ("last month") that a timestamp parser cannot.
       //
       // ATTRIBUTION. A batch spans several turns with different timestamps, so a
       // single date for the batch would file facts under a day they did not happen.
