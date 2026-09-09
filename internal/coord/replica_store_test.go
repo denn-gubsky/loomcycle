@@ -128,10 +128,38 @@ func freshReplicasTable(t *testing.T, dsn string) *pgxpool.Pool {
 	return pool
 }
 
+// testReplicaID builds a unique, VALID replica id for a test fixture.
+//
+// The obvious idiom — prefix + time.Now().Format("150405.000") — embeds a '.',
+// which ValidateReplicaID rejects ([A-Za-z0-9][A-Za-z0-9_-]{0,63}). Six tests
+// were written that way and every one of them died in its backplane
+// constructor instead of asserting the thing it was about, while the fixtures
+// in the other coord tests were seeding `replicas` rows with an id production
+// would refuse to boot with.
+//
+// It sat on main because this family is INVISIBLE TO CI: the Go job runs
+// without LOOMCYCLE_TEST_PG_DSN, so every PG-gated coord test skips there and
+// nothing went red.
+//
+// The id is checked through ValidateReplicaID ITSELF rather than against a
+// copy of the pattern — if the production format ever narrows, each fixture
+// fails right here with a clear message instead of somewhere downstream.
+func testReplicaID(t *testing.T, prefix string) string {
+	t.Helper()
+	// Format then strip the separator: Go's fractional-second layout requires
+	// a '.' or ',' after the seconds, so the substitution is what keeps
+	// microsecond uniqueness AND a legal id.
+	id := prefix + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "-")
+	if err := ValidateReplicaID(id); err != nil {
+		t.Fatalf("test fixture built an invalid replica id: %v", err)
+	}
+	return id
+}
+
 func TestReplicaStore_UpsertListDelete(t *testing.T) {
 	pool := freshReplicasTable(t, pgDSNFromEnv(t))
 	store := NewReplicaStore(pool)
-	id := "test-rs-" + time.Now().Format("150405.000")
+	id := testReplicaID(t, "test-rs-")
 	ctx := context.Background()
 	if err := store.UpsertReplica(ctx, id, "host-a", "v0.12.0-test"); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -183,7 +211,7 @@ func TestReplicaStore_UpsertListDelete(t *testing.T) {
 func TestReplicaStore_UpsertUpdatesHeartbeat(t *testing.T) {
 	pool := freshReplicasTable(t, pgDSNFromEnv(t))
 	store := NewReplicaStore(pool)
-	id := "test-hb-" + time.Now().Format("150405.000")
+	id := testReplicaID(t, "test-hb-")
 	ctx := context.Background()
 	if err := store.UpsertReplica(ctx, id, "host-b", "v0.12.0-test"); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -223,7 +251,7 @@ func TestReplicaStore_UpsertUpdatesHeartbeat(t *testing.T) {
 func TestHeartbeat_RunExitsOnContextDone(t *testing.T) {
 	pool := freshReplicasTable(t, pgDSNFromEnv(t))
 	store := NewReplicaStore(pool)
-	id := "test-run-" + time.Now().Format("150405.000")
+	id := testReplicaID(t, "test-run-")
 	hb := NewHeartbeat(store, HeartbeatConfig{
 		ReplicaID:       id,
 		Hostname:        "host-c",

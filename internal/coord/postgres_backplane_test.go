@@ -52,14 +52,14 @@ func TestPostgresBackplane_PublishSubscribeRoundtrip(t *testing.T) {
 
 	// Two backplanes simulating two replicas sharing one Postgres.
 	bpA, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-A-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-A-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane A: %v", err)
 	}
 	defer bpA.Close()
 	bpB, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-B-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-B-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane B: %v", err)
@@ -108,7 +108,7 @@ func TestPostgresBackplane_SelfMessageFiltered(t *testing.T) {
 	}
 	defer pool.Close()
 	bp, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-self-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-self-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane: %v", err)
@@ -147,7 +147,7 @@ func TestPostgresBackplane_PayloadTooLarge(t *testing.T) {
 	}
 	defer pool.Close()
 	bp, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-large-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-large-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane: %v", err)
@@ -169,7 +169,7 @@ func TestPostgresBackplane_PublishAfterClose(t *testing.T) {
 	}
 	defer pool.Close()
 	bp, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-closed-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-closed-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane: %v", err)
@@ -191,7 +191,7 @@ func TestPostgresBackplane_InvalidTopic(t *testing.T) {
 	}
 	defer pool.Close()
 	bp, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-topic-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-topic-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane: %v", err)

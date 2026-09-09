@@ -75,7 +75,7 @@ func TestReplicasSweeper_ReapsStaleReplica(t *testing.T) {
 	pool := freshUserQuotasPool(t, pgDSNFromEnv(t))
 	sessionID := seedSession(t, pool)
 
-	replicaID := "test-rs-stale-" + time.Now().Format("150405.000000")
+	replicaID := testReplicaID(t, "test-rs-stale-")
 	userID := "u-" + time.Now().Format("150405.000000")
 	runID := "r-" + time.Now().Format("150405.000000")
 
@@ -126,7 +126,7 @@ func TestReplicasSweeper_ReapsStaleReplica(t *testing.T) {
 
 func TestReplicasSweeper_SkipsFreshReplica(t *testing.T) {
 	pool := freshUserQuotasPool(t, pgDSNFromEnv(t))
-	replicaID := "test-rs-fresh-" + time.Now().Format("150405.000000")
+	replicaID := testReplicaID(t, "test-rs-fresh-")
 	// Fresh heartbeat.
 	_, _ = pool.Exec(context.Background(), `
 		INSERT INTO replicas (id, hostname, started_at, last_heartbeat_at, version)
@@ -150,7 +150,7 @@ func TestReplicasSweeper_SkipsFreshReplica(t *testing.T) {
 func TestReplicasSweeper_GreatestZeroClampOnQuota(t *testing.T) {
 	pool := freshUserQuotasPool(t, pgDSNFromEnv(t))
 	sessionID := seedSession(t, pool)
-	replicaID := "test-rs-clamp-" + time.Now().Format("150405.000000")
+	replicaID := testReplicaID(t, "test-rs-clamp-")
 	userID := "u-" + time.Now().Format("150405.000000")
 	runID := "r-" + time.Now().Format("150405.000000")
 
