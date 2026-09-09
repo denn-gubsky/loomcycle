@@ -187,7 +187,15 @@ jobs:
       # Migrated with loomcycle's OWN migrator rather than a psql loop over
       # migrations/*.up.sql, so the ordering cannot drift from the real one and
       # schema_migrations is stamped as in production.
+      #
+      # !cancelled() so a red store contract does not SKIP this gate. That is
+      # not hypothetical: on this step's first CI run the store contract
+      # exhausted its 1800s budget and both coord steps were skipped, which
+      # would have silently restored the very blind spot they exist to close.
+      # The two surfaces share only the service container, so coord's result is
+      # independent and worth having even when the contract is red.
       - name: Provision the coordination-tier DB
+        if: ${{ !cancelled() }}
         env:
           PGPASSWORD: loomcycle
         run: |
@@ -203,6 +211,7 @@ jobs:
       # live replicas); a data race here is the bug class that matters, and the
       # suite is fast enough (~3s locally) to afford the detector.
       - name: Coordination tier (Postgres)
+        if: ${{ !cancelled() }}
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/coord_test?sslmode=disable
         run: go test -count=1 -race -timeout 600s ./internal/coord/...
