@@ -650,60 +650,83 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 			return err
 		}
 		fmt.Fprintf(stdout, "%s:\n", conv.ScopeID())
-		// FLUSH before purging, not after, and DISCARD rather than consolidate.
-		// purgeLayer removes k/v rows; it cannot reach the pending consolidation
-		// queue, so anything left queued from an earlier conversation (or an
-		// interrupted run) would otherwise be consolidated into THIS
-		// conversation's facts after the purge had already run, silently mixing
-		// two conversations in one partition.
+		// ANSWER-ONLY: grade what the store already holds.
 		//
-		// This used to call consolidateDrain — the same function that does the
-		// real work — for up to consolidatePasses passes. Leftovers only need to
-		// be GONE, and extracting from them cost the full extractor spend on data
-		// about to be thrown away: measured at ~70 minutes on one run before it
-		// reached its own conversation. A flush is drain + ack, no model calls.
-		if n, err := flushPendingQueue(ctx, mc, stdout); err != nil {
-			return fmt.Errorf("pre-ingest flush: %w", err)
-		} else if n > 0 {
-			fmt.Fprintf(stdout, "  flushed %d leftover queued item(s) without extracting\n", n)
-		}
-		if _, err := purgeLayer(ctx, rest, "user", userID, stdout); err != nil {
-			return err
-		}
-		// OPTIONALLY put the raw turns where the answerer can actually read them.
+		// A retrieval-side change has to be measured with the corpus FIXED.
+		// Rebuilding it per arm puts extraction non-determinism back into the
+		// comparison, and that noise is not small: two identical runs of one
+		// binary scored 10 and 8 on the temporal slice, balanced 6/8 discordant.
+		// An arm pair could then differ because their stores differ rather than
+		// because of the projection under test. With this on, the store is a
+		// constant and a repeat run isolates ANSWERER variance.
 		//
-		// WHY THIS EXISTS. The answerer is an in-band agent, so its scope_id is
-		// server-derived from the run identity: `memory_scopes: [user]` resolves to
-		// user/<subject> and `[agent]` would resolve to agent/<the agent's own
-		// name>. The retrieval corpus lives at agent/<conversation-id>, a scope_id
-		// no in-band agent can address — so no agent config can point the answerer
-		// at it. The only way to let it answer from conversation content is to write
-		// that content into the partition it already reads.
-		//
-		// This is also what makes the number comparable: the published systems
-		// answer from retrieved conversation turns, not from a distilled fact store.
-		// Measured without it, the answerer had 29 facts distilled from 419 turns,
-		// abstained on 72% of questions and scored 0.1389; with it, 0.7353.
-		if opts.seedTurns {
-			n, err := seedTurnRows(ctx, rest, userID, conv, opts, stdout)
-			if err != nil {
-				return fmt.Errorf("seed turns: %w", err)
+		// The empty-store guard below is deliberately NOT skipped — answering an
+		// empty store is exactly the vacuous run it exists to refuse.
+		// Declared out here because the guards below read them: in answer-only
+		// mode they stay 0, which the diversion guard already tolerates
+		// (factsDiverted requires factsWritten > 0) while the empty-store guard
+		// keys off the row count and so still applies.
+		var facts, passes, sessions int
+		if opts.answerOnly {
+			fmt.Fprintf(stdout, "  answer-only: grading the existing store (no purge/ingest/consolidate)\n")
+		} else {
+			// FLUSH before purging, not after, and DISCARD rather than consolidate.
+			// purgeLayer removes k/v rows; it cannot reach the pending consolidation
+			// queue, so anything left queued from an earlier conversation (or an
+			// interrupted run) would otherwise be consolidated into THIS
+			// conversation's facts after the purge had already run, silently mixing
+			// two conversations in one partition.
+			//
+			// This used to call consolidateDrain — the same function that does the
+			// real work — for up to consolidatePasses passes. Leftovers only need to
+			// be GONE, and extracting from them cost the full extractor spend on data
+			// about to be thrown away: measured at ~70 minutes on one run before it
+			// reached its own conversation. A flush is drain + ack, no model calls.
+			if n, err := flushPendingQueue(ctx, mc, stdout); err != nil {
+				return fmt.Errorf("pre-ingest flush: %w", err)
+			} else if n > 0 {
+				fmt.Fprintf(stdout, "  flushed %d leftover queued item(s) without extracting\n", n)
 			}
-			rep.SeededTurns += n
-		}
-		sessions, err := ingestLayer(ctx, mc, conv, stdout)
-		if err != nil {
-			return err
-		}
-		rep.Sessions += sessions
-		rep.Turns += len(conv.Turns)
+			if _, err := purgeLayer(ctx, rest, "user", userID, stdout); err != nil {
+				return err
+			}
+			// OPTIONALLY put the raw turns where the answerer can actually read them.
+			//
+			// WHY THIS EXISTS. The answerer is an in-band agent, so its scope_id is
+			// server-derived from the run identity: `memory_scopes: [user]` resolves to
+			// user/<subject> and `[agent]` would resolve to agent/<the agent's own
+			// name>. The retrieval corpus lives at agent/<conversation-id>, a scope_id
+			// no in-band agent can address — so no agent config can point the answerer
+			// at it. The only way to let it answer from conversation content is to write
+			// that content into the partition it already reads.
+			//
+			// This is also what makes the number comparable: the published systems
+			// answer from retrieved conversation turns, not from a distilled fact store.
+			// Measured without it, the answerer had 29 facts distilled from 419 turns,
+			// abstained on 72% of questions and scored 0.1389; with it, 0.7353.
+			if opts.seedTurns {
+				n, err := seedTurnRows(ctx, rest, userID, conv, opts, stdout)
+				if err != nil {
+					return fmt.Errorf("seed turns: %w", err)
+				}
+				rep.SeededTurns += n
+			}
+			ingested, err := ingestLayer(ctx, mc, conv, stdout)
+			if err != nil {
+				return err
+			}
+			sessions = ingested
+			rep.Sessions += sessions
+			rep.Turns += len(conv.Turns)
 
-		facts, passes, err := consolidateDrain(ctx, mc, userID, opts.consolidatePasses, stdout)
-		if err != nil {
-			return err
+			gotFacts, gotPasses, err := consolidateDrain(ctx, mc, userID, opts.consolidatePasses, stdout)
+			if err != nil {
+				return err
+			}
+			facts, passes = gotFacts, gotPasses
+			rep.FactsWritten += facts
+			fmt.Fprintf(stdout, "  consolidated in %d pass(es), %d facts written\n", passes, facts)
 		}
-		rep.FactsWritten += facts
-		fmt.Fprintf(stdout, "  consolidated in %d pass(es), %d facts written\n", passes, facts)
 
 		// REFUSE to grade an empty store. With no rows, every recall comes back
 		// empty, the answerer abstains on everything, and the report reads
