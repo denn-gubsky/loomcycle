@@ -2312,37 +2312,89 @@ func TestConsolidator_OversizedSingleMessageIsTruncatedAndSaidSo(t *testing.T) {
 	}
 }
 
-// TestConsolidator_PartCapBoundsTheExtractorCallsOneChatCanSpawn. Without a cap
-// a pathological transcript spawns an unbounded number of model calls inside one
-// pass, which is the same class of hazard the retirement cap exists for. When it
-// bites, the EARLIEST parts go: durable content accumulates at the end of a
-// conversation, which is the same reason the old truncation kept the tail.
+// TestConsolidator_ALongChatIsReadWHOLEAndThePassDefersOtherChats.
 //
-// Stopping at the cap in silence would be indistinguishable from a chat that
-// simply had less to say, so the report names the chat and the count.
-func TestConsolidator_PartCapBoundsTheExtractorCallsOneChatCanSpawn(t *testing.T) {
+// REPLACES a test that asserted the opposite, and the reason is a defect not a
+// preference. The per-chat cap bounded a pass by DISCARDING the earliest parts
+// of a long chat (parts.slice) and then advancing the watermark past it anyway,
+// so a chat over ~48k chars was permanently extracted from its tail alone and
+// the rest was gone with nothing left to notice. The old test pinned that: it
+// required exactly 4 extractor calls for a 6-part chat and failed if nothing had
+// been dropped.
+//
+// A pass still has to be bounded — an unbounded number of model calls inside one
+// pass is a real hazard. But the bound now falls on how many CHATS a pass
+// STARTS, never on how much of a chat it reads: a chat is the unit the watermark
+// tracks, so an unread chat leaves the mark behind it and the next pass takes it
+// whole. Wall clock is the thing to spend; data is not.
+func TestConsolidator_ALongChatIsReadWHOLEAndThePassDefersOtherChats(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
-	f.transcript = historyTranscript(60, 1000) // ~62k chars → ~6 parts, cap is 4
+	f.transcript = historyTranscript(60, 1000) // ~62k chars → ~6 parts
 	f.factsJSON = "[]"
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Agent"); n != 4 {
-		t.Errorf("extractor spawned %d times for one chat, want exactly 4 — the per-chat cap is the only bound on it; sequence %v", n, f.ops())
-	}
-	// The parts kept are the LAST ones: the final turn must be in there, the
-	// first must not.
 	parts := extractorParts(t, f)
 	joined := strings.Join(parts, "\n")
+	// BOTH ENDS must be present. The tail alone is what the old cap left, so
+	// asserting only turn59 would pass against the defect.
+	if !strings.Contains(joined, "turn00 ") {
+		t.Errorf("the BEGINNING of the chat never reached the extractor — a long chat is still "+
+			"being read from its tail only, which is the data loss this replaced (%d parts)", len(parts))
+	}
 	if !strings.Contains(joined, "turn59 ") {
-		t.Error("the cap dropped the END of the conversation — durable content accumulates there, so the tail is what must survive")
+		t.Errorf("the END of the chat never reached the extractor (%d parts)", len(parts))
 	}
-	if strings.Contains(joined, "turn00 ") {
-		t.Error("the cap did not actually drop anything; this scenario proves nothing")
+	if n := f.countOp("Agent"); n < 6 {
+		t.Errorf("extractor spawned %d times for a ~6-part chat, want every part extracted; "+
+			"sequence %v", n, f.ops())
 	}
-	if !strings.Contains(res.FinalText, "parts not extracted") || !strings.Contains(res.FinalText, "sess-a") {
-		t.Errorf("report = %q, want the cap and the chat named — stopping at the cap silently reads as a chat with less to say", res.FinalText)
+	if strings.Contains(res.FinalText, "parts not extracted") {
+		t.Errorf("report still speaks of discarded parts: %q", res.FinalText)
+	}
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("a fully-read chat must advance the watermark; sequence %v", f.ops())
+	}
+}
+
+// TestConsolidator_PassBudgetDefersWholeChatsRatherThanTrimmingOne.
+//
+// The other half of the contract above: the bound still exists. Several long
+// chats in one page must not all be started — the pass spends its part budget,
+// stops STARTING chats, and says so. What must never appear is a chat that was
+// read in part.
+func TestConsolidator_PassBudgetDefersWholeChatsRatherThanTrimmingOne(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = nil
+	f.transcripts = map[string]string{}
+	// 8 chats x ~6 parts = ~48 parts, comfortably over the 40-part pass budget.
+	for i := 0; i < 8; i++ {
+		sid := fmt.Sprintf("sess-%d", i)
+		f.sessions = append(f.sessions, scanRow(sid, "2026-07-01T10:00:00Z"))
+		f.transcripts[sid] = historyTranscript(60, 1000)
+	}
+	f.factsJSON = "[]"
+
+	res := runConsolidator(t, f)
+
+	if !strings.Contains(res.FinalText, "chats left for the next pass") {
+		t.Errorf("eight ~6-part chats did not exhaust the pass budget, so this scenario cannot "+
+			"show deferral: %q", res.FinalText)
+	}
+	if strings.Contains(res.FinalText, "parts not extracted") {
+		t.Errorf("the pass trimmed a chat instead of deferring one: %q", res.FinalText)
+	}
+	// A chat the pass started must appear in full: its OPENING part has to be
+	// among what the extractor saw. A chat not read at all is fine and expected —
+	// that is what deferral means.
+	joined := strings.Join(extractorParts(t, f), "\n")
+	if !strings.Contains(joined, "turn00 ") {
+		t.Errorf("no chat contributed its opening part; the pass read tails only: %q", res.FinalText)
+	}
+	// And the watermark must still move, or a full queue never drains.
+	if !f.has("Memory.cursor_advance") {
+		t.Errorf("a pass that fully read some chats must advance past them; sequence %v", f.ops())
 	}
 }
 

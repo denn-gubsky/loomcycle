@@ -148,7 +148,7 @@
 # THE COST IS MODEL CALLS. A 21,635-char transcript is now three or four
 # extractor runs instead of one, so a pass takes correspondingly longer in wall
 # clock. That matters to an operator running a tight cadence; see the
-# max_parts_per_chat note in the body for the worst-case arithmetic.
+# max_parts_per_pass note in the body for the worst-case arithmetic.
 #
 # Two fan-out caps are operator-tunable via env:
 #   LOOMCYCLE_MAX_CONSOLIDATION_TARGETS      (default 32) targets per tick
@@ -307,7 +307,7 @@ agents:
         // N=4..6 the short sliding window, with max_part_chars still a hard
         // ceiling above it.
         //
-        // ⚠️ IT INTERACTS WITH max_parts_per_chat, WHICH WILL SILENTLY EAT THE
+        // ⚠️ IT INTERACTS WITH max_parts_per_pass, WHICH BOUNDS A PASS'S TOTAL
         // SWEEP IF LEFT AT 4. A 22-turn chat at N=1 is 22 parts; the cap keeps the
         // LATEST 4 and discards eighteen messages, so the arm would measure a
         // truncated conversation while reporting a finer window. Raise both
@@ -327,11 +327,22 @@ agents:
         // The report names the chat and how many parts went unread.
         //
         // WALL CLOCK, which an operator on a tight cadence needs: the worst case
-        // is scan_limit × this = 40 extractor calls in one pass against a 1500 s
-        // budget, about 37 s per call. A deployment whose extractor is slower
-        // than that should lower scan_limit — the budget itself cannot rise
-        // much, since it has to stay under the lease TTL.
-        max_parts_per_chat: 4,
+        // is this many extractor calls in one pass against run_timeout_seconds.
+        //
+        // ⚠️ THIS USED TO BE A PER-CHAT CAP THAT DISCARDED DATA. A chat splitting
+        // past 4 parts had its EARLIEST parts dropped (parts.slice) and the
+        // watermark advanced past the chat anyway, so that content was gone for
+        // good — a long chat was silently extracted only from its tail. The
+        // budget is now per PASS and bounds how many CHATS a pass starts, never
+        // how much of a chat it reads: a chat is the unit the watermark tracks,
+        // so deferring a WHOLE unread chat costs nothing and the next pass takes
+        // it. Trading wall clock for silent data loss was the wrong way round.
+        //
+        // A single chat larger than the whole budget is still read IN FULL, for
+        // the same reason takePending always accepts its first item: otherwise an
+        // oversized chat is never extracted and never advanced past, wedging the
+        // watermark permanently.
+        max_parts_per_pass: 40,
         max_fact_chars: 400,
         // A span may run longer than the one-sentence fact it supports, but it must
         // not become a way to copy the transcript into the store. Over-long spans are
@@ -410,7 +421,7 @@ agents:
         // rather than acts — a candidate left for the next pass costs nothing at all.
         max_conflict_calls: 4,
         // Bounds the judge calls one pass can make, for the same wall-clock reason
-        // max_parts_per_chat bounds the extractor's. When it bites, the facts past
+        // max_parts_per_pass bounds the extractor's. When it bites, the facts past
         // the cap stay UNJUDGED and recallable, and the report says how many.
         max_judge_calls: 6,
         // How many of the most recent facts a BACKFILL scan looks at. Bounded because
@@ -519,7 +530,8 @@ agents:
           queued_stepped: 0,        // items examined ALONE that yielded nothing durable; left queued, stepped over
           extractions: 0,           // extractor calls, which is now PARTS and not chats
           split_chats: 0,           // chats that needed more than one extractor call
-          parts_capped: 0,          // parts dropped by the per-chat cap
+          parts_spent: 0,           // extractor parts this pass has committed to
+          chats_deferred: 0,        // chats left UNREAD for the next pass (budget spent)
           turns_truncated: 0,       // single messages larger than the whole budget
           seen: {},                 // session_id -> true; the re-read guard
           merge_refused_subject: 0, // above the band, but about a different subject
@@ -672,6 +684,13 @@ agents:
           var row = sessions[i];
           var sid = (row && typeof row.session_id === "string") ? row.session_id : "";
           if (!sid || st.seen[sid] === true) { continue; }
+          // Out of budget: leave this chat and the rest of the page UNREAD so the
+          // watermark stays behind them and the next pass takes them whole. This
+          // is the deferral that replaced discarding parts.
+          if (!hasPartBudget(st)) {
+            st.chats_deferred = sessions.length - i;
+            break;
+          }
           st.seen[sid] = true;
 
           var text = readTranscript(st, sid);
@@ -847,18 +866,23 @@ agents:
       // began mid-word.
       function chatParts(st, text, sid) {
         var parts = packParts(st, splitTurns(text), sid);
-        if (parts.length > CONFIG.max_parts_per_chat) {
-          var dropped = parts.length - CONFIG.max_parts_per_chat;
-          // Keep the LATEST parts: durable content accumulates at the end of a
-          // conversation. Said out loud, because stopping at the cap in silence
-          // is indistinguishable from a chat that simply had less to give.
-          parts = parts.slice(dropped);
-          st.parts_capped += dropped;
-          note(st, sid + ": split past the " + CONFIG.max_parts_per_chat +
-            "-part cap, its earliest " + dropped + " part(s) were not extracted");
-        }
+        // NO PER-CHAT CAP. Every part of a chat that this pass starts is
+        // extracted; the pass's budget is spent by not STARTING further chats
+        // (see hasPartBudget), which loses nothing because an unread chat leaves
+        // the watermark behind it and the next pass reads it whole.
         if (parts.length > 1) { st.split_chats++; }
+        st.parts_spent += parts.length;
         return parts;
+      }
+
+      // hasPartBudget reports whether the pass may START another chat.
+      //
+      // Checked BEFORE reading a chat, never in the middle of one: stopping
+      // mid-chat is what discarded data before. The first chat of a pass always
+      // proceeds however large it is, mirroring takePending's first-item rule —
+      // without that an oversized chat is never extracted and never passed over.
+      function hasPartBudget(st) {
+        return st.parts_spent === 0 || st.parts_spent < CONFIG.max_parts_per_pass;
       }
 
       // splitTurns cuts the transcript at message boundaries, keeping every byte
@@ -2899,9 +2923,12 @@ agents:
             " (cut on message boundaries, each part extracted, results merged; " +
             st.extractions + " extractor calls this pass)");
         }
-        if (st.parts_capped > 0) {
-          parts.push("parts not extracted " + st.parts_capped + " (per-chat cap of " + CONFIG.max_parts_per_chat +
-            " reached; the earliest parts of those chats were passed over)");
+        if (st.chats_deferred > 0) {
+          // DEFERRED, not dropped, and the wording has to say so: the previous
+          // message here reported parts that were gone for good.
+          parts.push("chats left for the next pass " + st.chats_deferred +
+            " (this pass spent its " + CONFIG.max_parts_per_pass +
+            "-part budget; the watermark stays behind them and they are read WHOLE next pass)");
         }
         if (st.turns_truncated > 0) {
           parts.push("oversized messages truncated " + st.turns_truncated +
