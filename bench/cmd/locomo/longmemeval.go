@@ -93,14 +93,25 @@ type lmeTurn struct {
 // lmeInstance is one of the 500 evaluation instances, per the dataset's
 // documented format.
 type lmeInstance struct {
-	QuestionID   string      `json:"question_id"`
-	QuestionType string      `json:"question_type"`
-	Question     string      `json:"question"`
-	Answer       string      `json:"answer"`
-	QuestionDate string      `json:"question_date"`
-	SessionIDs   []string    `json:"haystack_session_ids"`
-	Dates        []string    `json:"haystack_dates"`
-	Sessions     [][]lmeTurn `json:"haystack_sessions"`
+	QuestionID   string `json:"question_id"`
+	QuestionType string `json:"question_type"`
+	Question     string `json:"question"`
+	// Answer is json.RawMessage because the DATASET IS NOT UNIFORMLY TYPED: 468
+	// of the 500 oracle answers are strings and 32 are bare NUMBERS — "3" for
+	// "How many items of clothing do I need to pick up", and so on. Declaring it
+	// `string` made encoding/json reject the whole file with
+	// "cannot unmarshal number into Go struct field lmeInstance.answer", so the
+	// adapter could not read the corpus it was written for at all.
+	//
+	// This shipped that way because the loader's tests used hand-written
+	// fixtures, and every fixture answer was a string. A fixture that always
+	// cooperates cannot discover the shape the real data takes; the download is
+	// what found it.
+	Answer       json.RawMessage `json:"answer"`
+	QuestionDate string          `json:"question_date"`
+	SessionIDs   []string        `json:"haystack_session_ids"`
+	Dates        []string        `json:"haystack_dates"`
+	Sessions     [][]lmeTurn     `json:"haystack_sessions"`
 }
 
 // IsAbstention reports whether the gold behaviour is to REFUSE.
@@ -112,6 +123,26 @@ type lmeInstance struct {
 // correct refusals as failures and reward one that confabulates — the opposite
 // of what the abstention slice exists to measure.
 func (i lmeInstance) IsAbstention() bool { return strings.HasSuffix(i.QuestionID, "_abs") }
+
+// lmeAnswerString renders a gold answer as the text the judge compares against,
+// accepting either JSON shape the dataset uses.
+//
+// A quoted string unquotes; anything else (a number) is passed through as its
+// literal source text, which is exactly what "3" should be. Unparseable input
+// yields "" rather than an error: a gold answer that cannot be read makes the
+// instance ungradeable, and the loader's defect counters already report
+// instances it had to drop — failing the whole file over one malformed answer
+// would lose the other 499.
+func lmeAnswerString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return strings.TrimSpace(string(raw))
+}
 
 // LoadLongMemEval reads the dataset and converts each instance into one
 // Conversation, so the rest of the harness is unchanged.
@@ -199,7 +230,7 @@ func LoadLongMemEval(path string, limit int) ([]Conversation, LMEDefects, error)
 			Question: inst.Question,
 			Category: cat,
 			Expected: expected,
-			Answer:   inst.Answer,
+			Answer:   lmeAnswerString(inst.Answer),
 			Abstain:  abstention,
 		}}
 		out = append(out, conv)
