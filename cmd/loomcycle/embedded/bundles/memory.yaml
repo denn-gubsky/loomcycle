@@ -1768,6 +1768,18 @@ agents:
       function notProse(s) {
         var text = s.replace(/<[^>]*>/g, "").trim();
         if (text === "") { return true; }
+        // A QUESTION ASSERTS NOTHING, so it cannot be the span a claim is checked
+        // against. MEASURED on a live corpus: 6 of 76 attached spans were
+        // interrogatives — "What type of guitar?" standing as the evidence for a
+        // fact about someone's guitar, "How long have you been married?" for one
+        // about a marriage.
+        //
+        // A question is the WORST case for the overlap score rather than a marginal
+        // one: it repeats the claim's keywords exactly while affirming none of them,
+        // so it scores like a paraphrase. The punctuation rule below cannot catch it
+        // either — one "?" in twenty characters is 0.05, far under any sane density
+        // threshold. It has to be its own rule.
+        if (text.charAt(text.length - 1) === "?") { return true; }
         var punct = text.replace(/[^!-\/:-@\[-`{-~]/g, "").length;
         return punct / text.length > CONFIG.max_span_punctuation;
       }
