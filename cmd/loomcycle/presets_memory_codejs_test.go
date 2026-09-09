@@ -4819,3 +4819,56 @@ func TestConsolidator_AnUnrelatedWriteFailureDoesNotRetypeTheSubject(t *testing.
 		t.Errorf("the failure should still be reported: %s", res.FinalText)
 	}
 }
+
+// TestConsolidator_AQuestionIsNotEvidence — an interrogative cannot be the span a
+// claim is checked against.
+//
+// MEASURED on a live corpus before this existed: 6 of 76 attached spans were
+// questions. "How long have you been married?" stood as the evidence for a fact
+// about a marriage; "What type of guitar?" for one about a guitar.
+//
+// A question is the WORST case for Dice overlap rather than a marginal one. It
+// repeats the claim's keywords while affirming none of them, and because Dice
+// divides by both bag sizes, a six-token question outscores the long utterance
+// that actually says the thing. The numbers for this fixture: the question shares
+// {married} for 2*1/(4+2) = 0.333, the real answer shares {ten, years} for
+// 2*2/(4+10) = 0.286. The question WINS, which is why the declarative here is
+// deliberately long — shortening it makes the filter unnecessary and the test
+// vacuous.
+//
+// Shaped like the real rendering (### speaker on its own line): the "user: " prefix
+// form would hand the sentence a token the claim contains and let it win on a word
+// the fixture invented.
+func TestConsolidator_AQuestionIsNotEvidence(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\n" +
+		"We celebrated our tenth wedding anniversary in June, and honestly the ten " +
+		"years have gone by so fast that I can hardly believe it.\n\n" +
+		"### assistant\n\n" +
+		"How long have you been married?\n\n"
+	f.factsJSON = `[{"text":"Caroline has been married for ten years.",` +
+		`"class":"fact","type":"event","subject":"Caroline"}]`
+
+	runConsolidator(t, f)
+
+	// NO SPAN is an acceptable outcome and a wrong one is not, which is why this
+	// asserts the absence rather than requiring a replacement. A fact with no
+	// quote is the pre-existing state for anything under the overlap floor; a
+	// fact carrying a question makes the judge refuse a TRUE claim, which is the
+	// direction that loses data. Here the declarative is long enough to sit under
+	// the floor itself, so the filter's honest result is no evidence at all.
+	var span, key string
+	for k, v := range f.chunkSpans {
+		if strings.Contains(k, "fact") && v != "" {
+			span, key = v, k
+		}
+	}
+	if strings.HasSuffix(strings.TrimSpace(span), "?") {
+		t.Errorf("chunk %q was handed a QUESTION as its evidence: %q — an interrogative "+
+			"asserts nothing, so a judge shown it can only refuse a true fact", key, span)
+	}
+	if span != "" && !strings.Contains(f.transcript, span) {
+		t.Errorf("span %q is not in the transcript verbatim", span)
+	}
+}
