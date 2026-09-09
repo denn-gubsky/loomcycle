@@ -3655,19 +3655,30 @@ func (s *Store) MemoryProvenanceGet(ctx context.Context, tenantID string, scope 
 // sees a stale value, even if the sweeper is behind).
 func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
 	var (
-		valueText []byte
-		expiresAt *time.Time
-		createdAt time.Time
-		updatedAt time.Time
+		valueText  []byte
+		expiresAt  *time.Time
+		createdAt  time.Time
+		updatedAt  time.Time
+		observedAt *time.Time
+		validAt    *time.Time
+		invalidAt  *time.Time
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT value::text, expires_at, created_at, updated_at
+		// The three temporal columns are read here for the same reason
+		// MemoryList reads them: MemoryEntry carries the fields, so a
+		// projection that skips them hands back the ZERO instant, which is
+		// indistinguishable from the honest "undated" state most rows are in.
+		// sqlite's MemoryGet has always read them — this was a backend
+		// divergence, not a deliberate omission.
+		`SELECT value::text, expires_at, created_at, updated_at,
+		        observed_at, valid_at, invalid_at
 		 FROM memory
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4
 		   AND (expires_at IS NULL OR expires_at > NOW())
 		   AND superseded_at IS NULL`,
 		tenantID, string(scope), scopeID, key,
-	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt)
+	).Scan(&valueText, &expiresAt, &createdAt, &updatedAt,
+		&observedAt, &validAt, &invalidAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MemoryEntry{}, &store.ErrNotFound{Kind: "memory", ID: key}
 	}
@@ -3682,6 +3693,17 @@ func (s *Store) MemoryGet(ctx context.Context, tenantID string, scope store.Memo
 	}
 	if expiresAt != nil {
 		out.ExpiresAt = *expiresAt
+	}
+	// A NULL column leaves the field at its zero value. Mapping NULL onto
+	// Unix(0, 0) would stamp 1970 on every undated row.
+	if observedAt != nil {
+		out.ObservedAt = *observedAt
+	}
+	if validAt != nil {
+		out.ValidAt = *validAt
+	}
+	if invalidAt != nil {
+		out.InvalidAt = *invalidAt
 	}
 	return out, nil
 }
