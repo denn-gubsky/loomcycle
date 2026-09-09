@@ -293,13 +293,54 @@ agents:
         // facts are lost with nothing anywhere to notice, which is the failure
         // class this pipeline exists to remove.
         //
-        // 12,000 is derived from live evidence rather than picked round. On one
-        // pass a 21,635-char prompt came back empty while 15,684 and 15,599 both
-        // extracted cleanly, which brackets the small local model's real limit
-        // in (15.6k, 21.6k]. Two successes are not a distribution, so the budget
-        // backs off well under the lowest demonstrated one. Chars, not tokens,
-        // because chars are what this caller can measure — roughly 3k tokens.
+        // ⚠️ THE ORIGINAL RATIONALE FOR 12,000 WAS WRONG, and the correction
+        // matters because it was throttling extraction to 9% of the available
+        // context. It read: "a 21,635-char prompt came back empty while 15,684
+        // and 15,599 extracted cleanly, which brackets the small local model's
+        // real limit in (15.6k, 21.6k]". That bracket is not a model limit — it
+        // is the 16,384-char boundary of a 4,096-token context, the Ollama
+        // default when num_ctx is unset, and the model was being handed a
+        // SILENTLY TRUNCATED prompt.
+        //
+        // Measured directly on qwen3.8, and the smoking gun is prompt_eval_count
+        // going DOWN as the input grew:
+        //
+        //   12,000 chars @ num_ctx 4096   -> prompt_tok 2910, 23 facts
+        //   24,000 chars @ num_ctx 4096   -> prompt_tok 2050, ERROR REPLY  <-- truncated
+        //   24,000 chars @ num_ctx 32768  -> prompt_tok 5752, 27 facts
+        //
+        // SO WHY IS THE BUDGET STILL 12,000? Because the same measurement found
+        // an independent reason, and it is the opposite of a context limit:
+        // extractor yield per unit of text COLLAPSES as a part grows, since the
+        // model returns a roughly fixed-size fact list however much text it is
+        // given.
+        //
+        //   24,000 chars -> 27 facts  = 1.13 facts per 1k chars
+        //   48,000 chars -> 20 facts  = 0.42
+        //   62,090 chars -> 15 facts  = 0.24   (4.7x worse)
+        //
+        // A whole 62k-char conversation in one call yields ~15 facts where the
+        // same text in small parts yields hundreds. So this number is now a
+        // MEASURED YIELD TARGET rather than a guess at a capability ceiling, and
+        // raising it to fill a bigger context would REDUCE the facts extracted.
+        // Growing the context is still worth doing — it removes the truncation —
+        // but the part budget must not grow with it.
         max_part_chars: 12000,
+        // The extractor's context, in tokens, used to derive a hard CEILING on
+        // the part budget (see partBudget). Must match the max_context_tokens
+        // declared on the memory/extractor agent — a drift test enforces that,
+        // because a budget derived from a stale context number is exactly the
+        // silent truncation this exists to prevent.
+        extractor_context_tokens: 32768,
+        // Chars per token, deliberately LOW. Under-estimating tokens-per-char
+        // makes the derived ceiling SMALLER, which errs toward a part that fits.
+        // English prose runs ~4; 3.5 leaves headroom for punctuation-dense
+        // transcripts and for tokenisers that split names badly.
+        chars_per_token: 3.5,
+        // Share of the context reserved for everything that is not transcript:
+        // the system prompt, the temporal rule (~1.4k chars), the owner line, the
+        // rolling context, and the REPLY the model still has to generate.
+        context_reserve_pct: 40,
         // extract_window_turns is the extraction GRANULARITY knob. 0 keeps the
         // historical behaviour exactly — parts are packed to the character budget
         // alone, which for a normal chat means ONE call for the whole transcript.
@@ -915,6 +956,29 @@ agents:
         return String(line).indexOf("### ") === 0;
       }
 
+      // partBudget is the effective per-call char budget: the measured yield
+      // target, CLAMPED DOWN to whatever the extractor's context can actually
+      // hold.
+      //
+      // The clamp only ever binds DOWNWARD, and that direction is the whole
+      // point. A deployment whose extractor has a small context (an unset
+      // num_ctx is 4,096 tokens) would otherwise be handed 12,000-char parts
+      // that are silently truncated — the model sees less text when given more
+      // and answers with an error object, which the pipeline records as "the
+      // model found nothing durable here". That failure is invisible in every
+      // report; it looks like a quiet conversation.
+      //
+      // It deliberately does NOT scale the budget UP to fill a large context.
+      // Yield per unit of text collapses as a part grows (see max_part_chars),
+      // so filling a 32k-token window with one part would cut the facts
+      // extracted several-fold. Bigger context buys the ABSENCE OF TRUNCATION,
+      // not bigger parts.
+      function partBudget() {
+        var ctxChars = CONFIG.extractor_context_tokens * CONFIG.chars_per_token;
+        var usable = Math.floor(ctxChars * (100 - CONFIG.context_reserve_pct) / 100);
+        return usable < CONFIG.max_part_chars ? usable : CONFIG.max_part_chars;
+      }
+
       // packParts greedily fills parts up to the budget on turn boundaries.
       //
       // A SINGLE TURN LARGER THAN THE WHOLE BUDGET is the one place truncation
@@ -924,20 +988,21 @@ agents:
       // seeing thin facts from a fat chat needs to be told that is why.
       function packParts(st, turns, sid) {
         var parts = [], cur = "", curTurns = 0;
+        var budget = partBudget();
         // 0 disables the turn cap entirely, which is what keeps the default path
         // byte-identical to the character-budget packing that shipped.
         var windowTurns = CONFIG.extract_window_turns > 0 ? CONFIG.extract_window_turns : 0;
         for (var i = 0; i < turns.length; i++) {
           var turn = turns[i];
-          if (turn.length > CONFIG.max_part_chars) {
+          if (turn.length > budget) {
             if (cur) { parts.push(cur); cur = ""; curTurns = 0; }
-            parts.push(turn.slice(turn.length - CONFIG.max_part_chars));
+            parts.push(turn.slice(turn.length - budget));
             st.turns_truncated++;
             note(st, sid + ": one message was larger than a whole extractor call and was cut to its tail");
             continue;
           }
           var joined = cur ? cur + "\n" + turn : turn;
-          if (joined.length > CONFIG.max_part_chars) {
+          if (joined.length > budget) {
             parts.push(cur);
             cur = turn;
             curTurns = 1;
@@ -1320,7 +1385,7 @@ agents:
         var narrowed = false;
 
         while (queue.length && st.queued_calls < CONFIG.max_pending_calls) {
-          var taken = narrowed ? [queue[0]] : takePending(queue, CONFIG.max_part_chars);
+          var taken = narrowed ? [queue[0]] : takePending(queue, partBudget());
           st.queued_calls++;
           st.queued_items += taken.length;
 
@@ -3391,11 +3456,22 @@ agents:
     # (12,000 chars, roughly 3-4k tokens) plus the system prompt and the injected
     # ontology. 16K leaves better than 3x headroom over anything observed.
     #
-    # Do NOT raise max_part_chars to fill this: 12,000 is measured against the
-    # model, not the window — a 21,635-char prompt came back EMPTY while 15,684
-    # and 15,599 extracted cleanly. The window and the prompt budget bound
-    # different failures.
-    max_context_tokens: 16384
+    # Do NOT raise max_part_chars to fill this, and the reason is now MEASURED
+    # rather than assumed. The old note here said "12,000 is measured against
+    # the model, not the window — a 21,635-char prompt came back EMPTY". That
+    # bracket was a 4,096-token TRUNCATION, not a model limit (prompt_eval_count
+    # drops as the input grows; the consolidator's max_part_chars note carries
+    # the numbers). The budget stays at 12,000 for a different and stronger
+    # reason: extractor yield per unit of text collapses 4.7x between a
+    # 24k-char part and a 62k-char one, because the model returns a roughly
+    # fixed-size fact list however much text it is handed.
+    #
+    # 32,768 rather than 16,384 so the derived part-budget ceiling can never be
+    # the binding constraint on this hardware, and a part is never silently
+    # truncated. The window buys the ABSENCE OF TRUNCATION, not bigger parts.
+    # Must stay in step with the consolidator's extractor_context_tokens — a
+    # drift test enforces it.
+    max_context_tokens: 32768
     tier: middle
     effort: low
     # ⚠️ THIS PROMPT IS A MITIGATION, NOT A GUARANTEE. On the first live pass a

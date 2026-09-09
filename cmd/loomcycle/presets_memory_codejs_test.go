@@ -6,12 +6,14 @@ import (
 	"fmt"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -623,6 +625,13 @@ func runConsolidatorWindow(t *testing.T, f *fakeToolset, windowTurns int) loop.R
 			"extract_window_turns: "+strconv.Itoa(windowTurns)+",", 1)
 	}
 	agent.Code = body
+	return runConsolidatorBody(t, f, agent)
+}
+
+// runConsolidatorBody executes an already-prepared agent definition, so a test
+// can vary one CONFIG literal without restating the whole harness.
+func runConsolidatorBody(t *testing.T, f *fakeToolset, agent config.AgentDef) loop.RunResult {
+	t.Helper()
 
 	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
 	prov := codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: 30 * time.Second})
@@ -5171,5 +5180,130 @@ func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 		t.Errorf("per-message window made %d call(s) for a single 8-message item, want one per "+
 			"message — the window stops at the ITEM boundary, so the finest arm of a sweep "+
 			"measures per-session instead", narrowCalls)
+	}
+}
+
+// TestMemoryBundle_ExtractorContextMatchesTheDerivedPartBudget — the two
+// declarations of the extractor's context must not drift.
+//
+// The consolidator derives a hard ceiling on its per-call char budget from
+// extractor_context_tokens; the runtime gives the extractor the context declared
+// by max_context_tokens on the agent. Those are two places holding one fact, and
+// this RFC's own decisions call that out as a defect class — a budget derived
+// from a stale context number is exactly the silent truncation the derivation
+// exists to prevent.
+//
+// The failure it guards is invisible without a test: an over-large part is
+// truncated by the model, prompt_eval_count goes DOWN as the input grows, the
+// reply comes back unparseable, and the pipeline records "the model found
+// nothing durable here". That reads as a quiet conversation in every report.
+func TestMemoryBundle_ExtractorContextMatchesTheDerivedPartBudget(t *testing.T) {
+	cfg := memoryBundleConfig(t)
+	ex, ok := cfg.Agents["memory/extractor"]
+	if !ok {
+		t.Fatal("memory/extractor not registered")
+	}
+	cons, ok := cfg.Agents["memory/consolidator"]
+	if !ok {
+		t.Fatal("memory/consolidator not registered")
+	}
+	m := regexp.MustCompile(`extractor_context_tokens:\s*(\d+)`).FindStringSubmatch(cons.Code)
+	if m == nil {
+		t.Fatal("consolidator declares no extractor_context_tokens")
+	}
+	declared, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("unreadable extractor_context_tokens %q", m[1])
+	}
+	if ex.MaxContextTokens != declared {
+		t.Errorf("memory/extractor declares max_context_tokens=%d but the consolidator derives its "+
+			"part-budget ceiling from extractor_context_tokens=%d — one fact in two places, and a "+
+			"budget derived from the stale one is silently truncated at extraction time",
+			ex.MaxContextTokens, declared)
+	}
+	// And the budget must actually FIT: target + reserve inside the context.
+	pm := regexp.MustCompile(`max_part_chars:\s*(\d+)`).FindStringSubmatch(cons.Code)
+	if pm == nil {
+		t.Fatal("consolidator declares no max_part_chars")
+	}
+	partChars, _ := strconv.Atoi(pm[1])
+	cm := regexp.MustCompile(`chars_per_token:\s*([0-9.]+)`).FindStringSubmatch(cons.Code)
+	rm := regexp.MustCompile(`context_reserve_pct:\s*(\d+)`).FindStringSubmatch(cons.Code)
+	if cm == nil || rm == nil {
+		t.Fatal("consolidator declares no chars_per_token / context_reserve_pct")
+	}
+	cpt, _ := strconv.ParseFloat(cm[1], 64)
+	reserve, _ := strconv.Atoi(rm[1])
+	usable := int(float64(declared) * cpt * float64(100-reserve) / 100.0)
+	if partChars > usable {
+		t.Errorf("max_part_chars=%d exceeds what a %d-token context can hold after a %d%% reserve "+
+			"(%d chars) — parts would be truncated by the model, which is invisible in every report",
+			partChars, declared, reserve, usable)
+	}
+}
+
+// TestConsolidator_ASmallExtractorContextClampsThePartBudget — the derivation's
+// only job is to bind DOWNWARD.
+//
+// A deployment whose extractor context is small (an unset Ollama num_ctx is
+// 4,096 tokens) would otherwise be handed 12,000-char parts that the model
+// silently truncates. Measured on qwen3.8: at num_ctx 4096, growing the input
+// from 12,000 to 24,000 chars made prompt_eval_count DROP from 2,910 to 2,050 —
+// the model saw LESS text when given more — and it answered with an error
+// object, which the pipeline files as "nothing durable here".
+//
+// Asserted by shrinking the declared context and reading the resulting part
+// sizes, not by re-deriving the arithmetic in the test: recomputing the formula
+// here would pass even if the budget were never applied.
+func TestConsolidator_ASmallExtractorContextClampsThePartBudget(t *testing.T) {
+	sizes := func(t *testing.T, ctxTokens int) []int {
+		t.Helper()
+		f := newFakeToolset()
+		f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+		f.transcript = historyTranscript(60, 1000) // ~62k chars
+		f.factsJSON = "[]"
+
+		cfg := memoryBundleConfig(t)
+		agent := cfg.Agents["memory/consolidator"]
+		const shipped = "extractor_context_tokens: 32768,"
+		if strings.Count(agent.Code, shipped) != 1 {
+			t.Fatalf("expected one %q in the shipped body", shipped)
+		}
+		agent.Code = strings.Replace(agent.Code, shipped,
+			"extractor_context_tokens: "+strconv.Itoa(ctxTokens)+",", 1)
+		runConsolidatorBody(t, f, agent)
+
+		var out []int
+		for _, p := range extractorParts(t, f) {
+			out = append(out, len(p))
+		}
+		return out
+	}
+
+	big := sizes(t, 32768)
+	small := sizes(t, 4096)
+	if len(big) == 0 || len(small) == 0 {
+		t.Fatalf("no parts reached the extractor (big=%d small=%d)", len(big), len(small))
+	}
+	maxOf := func(xs []int) int {
+		m := 0
+		for _, x := range xs {
+			if x > m {
+				m = x
+			}
+		}
+		return m
+	}
+	if maxOf(small) >= maxOf(big) {
+		t.Errorf("a 4,096-token context produced parts up to %d chars against %d at 32,768 — the "+
+			"ceiling does not bind downward, so a small-context deployment is handed parts the "+
+			"model truncates silently", maxOf(small), maxOf(big))
+	}
+	// 4096 tokens x 3.5 chars x 60% usable = ~8.6k. Assert the OBSERVED part fits
+	// a 4,096-token window with room for the reply, rather than re-deriving it.
+	if maxOf(small) > 10000 {
+		t.Errorf("largest part at a 4,096-token context is %d chars — still more than that window "+
+			"can hold once the system prompt, temporal rule and reply are accounted for",
+			maxOf(small))
 	}
 }
