@@ -596,11 +596,33 @@ func okResult(v any) (tools.Result, error) {
 // the scripted toolset and returns the run result.
 func runConsolidator(t *testing.T, f *fakeToolset) loop.RunResult {
 	t.Helper()
+	return runConsolidatorWindow(t, f, 0)
+}
+
+// runConsolidatorWindow runs the pass with the extraction granularity knob set.
+//
+// The knob is patched in the CODE BODY rather than exposed as a test hook,
+// because the body is what ships: rewriting the literal proves the shipped
+// default is 0 (the replacement must match exactly, or the test fails loudly)
+// and exercises the same path an operator gets by editing the bundle.
+func runConsolidatorWindow(t *testing.T, f *fakeToolset, windowTurns int) loop.RunResult {
+	t.Helper()
 	cfg := memoryBundleConfig(t)
 	agent, ok := cfg.Agents["memory/consolidator"]
 	if !ok {
 		t.Fatalf("memory/consolidator not registered (agents: %v)", agentNames(cfg))
 	}
+	body := agent.Code
+	if windowTurns > 0 {
+		const shipped = "extract_window_turns: 0,"
+		if strings.Count(body, shipped) != 1 {
+			t.Fatalf("expected exactly one %q in the shipped body (found %d) — the default "+
+				"changed or the knob was renamed", shipped, strings.Count(body, shipped))
+		}
+		body = strings.Replace(body, shipped,
+			"extract_window_turns: "+strconv.Itoa(windowTurns)+",", 1)
+	}
+	agent.Code = body
 
 	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
 	prov := codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: 30 * time.Second})
@@ -4870,5 +4892,132 @@ func TestConsolidator_AQuestionIsNotEvidence(t *testing.T) {
 	}
 	if span != "" && !strings.Contains(f.transcript, span) {
 		t.Errorf("span %q is not in the transcript verbatim", span)
+	}
+}
+
+// extractorPrompts returns every prompt the pass handed the extractor, in order.
+func extractorPrompts(f *fakeToolset) []string {
+	var out []string
+	for _, c := range f.calls {
+		if c.Tool != "Agent" {
+			continue
+		}
+		if p, ok := c.Input["prompt"].(string); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// fourTurnChat is a transcript with four clean turn boundaries, so the number of
+// extractor calls is a direct read of the window size.
+const fourTurnChat = "### user\n\nI moved to Berlin in July for a new job.\n\n" +
+	"### assistant\n\nCongratulations on the move!\n\n" +
+	"### user\n\nShe helped me find the flat, actually.\n\n" +
+	"### assistant\n\nThat was kind of her.\n\n"
+
+// TestConsolidator_DefaultWindowIsOneCallPerChatAndCarriesNoContext pins the
+// shipped default, which is the control arm of the granularity sweep.
+//
+// Worth its own test because the knob's whole safety argument is that 0 leaves
+// behaviour untouched: one model call for the whole transcript and a prompt with
+// no rolling-context block. If the default ever drifts, every historical
+// extraction baseline silently stops being comparable.
+func TestConsolidator_DefaultWindowIsOneCallPerChatAndCarriesNoContext(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = fourTurnChat
+	f.factsJSON = `[{"text":"The user moved to Berlin in July.","class":"fact","type":"event","subject":"the user"}]`
+
+	runConsolidator(t, f)
+
+	prompts := extractorPrompts(f)
+	if len(prompts) != 1 {
+		t.Fatalf("default window made %d extractor calls for one chat, want 1 — the shipped "+
+			"default must pack the whole transcript into a single call", len(prompts))
+	}
+	if strings.Contains(prompts[0], "ALREADY RECORDED") {
+		t.Errorf("the single-call default carried a rolling-context block:\n%s", prompts[0])
+	}
+}
+
+// TestConsolidator_PerTurnWindowMakesOneCallPerTurn — the granularity knob has to
+// actually change granularity.
+//
+// Asserted on the CALL COUNT rather than on the fact count, because the two come
+// apart and only one of them is the knob working: a finer window could produce
+// the same facts (nothing gained) or fewer (extraction got worse), and both are
+// legitimate outcomes for the sweep to report. What must be true is that the
+// extractor saw the conversation in four pieces instead of one — that is the
+// independent variable, and the cost half of the gate reads directly off it.
+func TestConsolidator_PerTurnWindowMakesOneCallPerTurn(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = fourTurnChat
+	f.factsJSON = `[]`
+
+	runConsolidatorWindow(t, f, 1)
+
+	prompts := extractorPrompts(f)
+	if len(prompts) != 4 {
+		t.Fatalf("per-turn window made %d extractor calls for a 4-turn chat, want 4 "+
+			"(prompts=%d)", len(prompts), len(prompts))
+	}
+	// Each call must carry ITS OWN turn and not the whole transcript, or the
+	// window is nominal and every call still pays for the full conversation.
+	if !strings.Contains(prompts[0], "moved to Berlin") {
+		t.Errorf("first window is missing its own turn:\n%s", prompts[0])
+	}
+	if strings.Contains(prompts[0], "helped me find the flat") {
+		t.Errorf("first window carried a LATER turn — the split is not on turn boundaries:\n%s", prompts[0])
+	}
+}
+
+// TestConsolidator_LaterWindowsCarryTheEarlierFactsAsContext.
+//
+// A narrow window loses the antecedent: "She helped me find the flat" is
+// uninterpretable on its own, and dropping the conversation's earlier content is
+// exactly how per-message extraction gives up coreference. The context that
+// travels forward is the FACTS already extracted, not a prose summary of the
+// turns — a summary is another lossy distillation of the thing this pass exists
+// to preserve, and it would be the component most likely to strip the dates and
+// names extraction is trying to capture, at the cost of an extra model call per
+// window.
+func TestConsolidator_LaterWindowsCarryTheEarlierFactsAsContext(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = fourTurnChat
+	// The first window yields a fact naming Caroline; the later windows must be
+	// told about it. Routed by needle so only the FIRST call answers.
+	f.factsByNeedle = []needleReply{{
+		Needle: "moved to Berlin in July for a new job",
+		Reply:  `[{"text":"Caroline helped the user find a flat in Berlin.","class":"fact","type":"event","subject":"Caroline"}]`,
+	}}
+	f.factsJSON = `[]`
+
+	runConsolidatorWindow(t, f, 1)
+
+	prompts := extractorPrompts(f)
+	if len(prompts) < 2 {
+		t.Fatalf("expected several windows, got %d", len(prompts))
+	}
+	var carried bool
+	for _, p := range prompts[1:] {
+		if strings.Contains(p, "ALREADY RECORDED") && strings.Contains(p, "Caroline helped the user find a flat") {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Errorf("no later window was told what the earlier one already recorded — a narrow "+
+			"window without carried context cannot resolve \"she\".\nlast prompt:\n%s",
+			prompts[len(prompts)-1])
+	}
+	// The context is OURS, so it must sit outside the transcript delimiters where
+	// a hostile transcript cannot restate it as data.
+	for _, p := range prompts[1:] {
+		i, j := strings.Index(p, "ALREADY RECORDED"), strings.Index(p, "BEGIN TRANSCRIPT")
+		if i >= 0 && j >= 0 && i > j {
+			t.Errorf("rolling context was placed INSIDE the transcript delimiters:\n%s", p)
+		}
 	}
 }
