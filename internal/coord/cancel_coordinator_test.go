@@ -66,7 +66,7 @@ func TestCancelCoordinator_NotFound_ReturnsMiss(t *testing.T) {
 	dsn := pgDSNFromEnv(t)
 	pool := freshUserQuotasPool(t, dsn)
 	bp, err := NewPostgresBackplane(PostgresBackplaneConfig{
-		Pool: pool, DSN: dsn, ReplicaID: "test-cc-nf-" + time.Now().Format("150405.000"),
+		Pool: pool, DSN: dsn, ReplicaID: testReplicaID(t, "test-cc-nf-"),
 	})
 	if err != nil {
 		t.Fatalf("backplane: %v", err)
@@ -149,7 +149,7 @@ func TestCancelCoordinator_DeadOwner_MarksRunFailed(t *testing.T) {
 	rs := NewReplicaStore(pool)
 	// Seed a backdated heartbeat row for dead-replica so IsReplicaAlive
 	// returns false.
-	deadID := "dead-replica-" + time.Now().Format("150405.000")
+	deadID := testReplicaID(t, "dead-replica-")
 	stub.runs["a_dead"] = store.Run{ID: "r2", Status: store.RunRunning, ReplicaID: deadID}
 	_, _ = pool.Exec(context.Background(),
 		`INSERT INTO replicas (id, hostname, started_at, last_heartbeat_at, version)
@@ -195,7 +195,7 @@ func TestCancelCoordinator_Timeout_ReturnsOwnerUnreachable(t *testing.T) {
 	// Owner row: a fake replica with a fresh heartbeat (so the alive
 	// check passes and we proceed to broadcast). No subscriber will
 	// respond, so we hit timeout.
-	freshOwner := "fresh-fake-owner-" + time.Now().Format("150405.000")
+	freshOwner := testReplicaID(t, "fresh-fake-owner-")
 	_, _ = pool.Exec(context.Background(),
 		`INSERT INTO replicas (id, hostname, started_at, last_heartbeat_at, version)
 		 VALUES ($1, 'h', now(), now(), 'v')
