@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -97,5 +98,101 @@ func TestSweeper_MemExportIncludesChunkBodyRows(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("base memory survived export+prune: %d rows remain", len(entries))
+	}
+}
+
+// TestSweeper_MemExportCarriesTemporalColumns — the reclamation export must
+// carry a fact's dates, not just its text.
+//
+// Unlike the snapshot path, this one needed no fix: exportBaseMemory marshals
+// store.MemoryEntry straight out of MemoryList, so it inherited the three
+// columns when MemoryList started reading them. That makes the property
+// INCIDENTAL in the same way the chunk-body coverage above is incidental — it
+// holds because of a decision made in a different file. An export is the last
+// copy of an agent's memory before the rows are pruned, so a silently undated
+// export is unrecoverable; this test is what turns a future regression in the
+// projection into a red build instead of a quiet loss.
+func TestSweeper_MemExportCarriesTemporalColumns(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	sm := newTestSqlMem(t)
+
+	seedRetiredAgent(t, st, "acme", "dead", 1)
+	seedAgentSQLScope(t, sm, "acme", "dead")
+	seedAgentDirent(t, st, "acme", "dead")
+
+	observed := time.Date(2023, 7, 7, 19, 56, 0, 0, time.UTC)
+	body, _ := json.Marshal(map[string]string{"body": "Dave moved to Berlin in July 2023."})
+	if err := st.MemorySetTimed(ctx, "", store.MemoryScopeAgent, "dead",
+		"doc.chunk:9f2c1b7e4a", json.RawMessage(body), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: observed}); err != nil {
+		t.Fatalf("seed dated chunk body row: %v", err)
+	}
+
+	sw := New(st, Config{MemMode: "export+prune", ExportDir: dir, SQLMem: sm, Logger: quietLogger, Now: futureHour})
+	if _, err := sw.sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+
+	var blob string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, _ error) error {
+		if d == nil || d.IsDir() || filepath.Base(filepath.Dir(p)) != "agent-memory" {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err == nil {
+			blob = string(b)
+		}
+		return nil
+	})
+	if blob == "" {
+		t.Fatalf("no agent-memory export file was written under %s", dir)
+	}
+	// Asserted on the parsed INSTANT, not on a literal string: the export
+	// marshals time.Time in the host's local zone (e.g. "+03:00"), so a
+	// string match on a "Z" form passes or fails by machine timezone rather
+	// than by whether the date survived.
+	var exported []struct {
+		Key        string    `json:"key"`
+		ObservedAt time.Time `json:"observed_at"`
+	}
+	if err := json.Unmarshal([]byte(blob), &exported); err != nil {
+		t.Fatalf("unmarshal export: %v\n\n%s", err, blob)
+	}
+	var found bool
+	for _, e := range exported {
+		if e.Key != "doc.chunk:9f2c1b7e4a" {
+			continue
+		}
+		found = true
+		if !e.ObservedAt.UTC().Equal(observed) {
+			t.Errorf("exported observed_at = %v, want %v.\n\nAn export is the LAST copy of "+
+				"these rows before the prune deletes them, so a date missing here is gone for "+
+				"good. The field rides along only because exportBaseMemory marshals "+
+				"store.MemoryEntry from MemoryList — if that projection stops reading the "+
+				"column, this is where it costs data.\n\nexport:\n%s",
+				e.ObservedAt.UTC(), observed, blob)
+		}
+	}
+	if !found {
+		t.Fatalf("the seeded row is not in the export:\n%s", blob)
+	}
+
+	// PRE-EXISTING WART, recorded here rather than fixed: `omitempty` on a
+	// time.Time does nothing (encoding/json does not treat a zero struct as
+	// empty), so an UNDATED row exports as "valid_at": "0001-01-01T00:00:00Z"
+	// — a wrong date where the honest answer is no date, in the one file an
+	// operator reads after the rows are gone. Fixing it means pointer fields
+	// on store.MemoryEntry, which changes every API response that marshals
+	// it, so it wants its own change. The snapshot archive type does use
+	// *time.Time + omitempty and correctly omits the key.
+	if !strings.Contains(blob, `"valid_at": "0001-01-01T00:00:00Z"`) {
+		t.Log("note: the year-1 serialisation of an undated valid_at is gone — if that was " +
+			"deliberate, drop this assertion and the comment above it")
 	}
 }

@@ -3535,7 +3535,10 @@ func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCP
 func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
 	now := time.Now().UnixNano()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, value, expires_at, created_at, updated_at
+		// See the Postgres sibling: omitting the temporal columns here writes
+		// an archive that has permanently undated every fact.
+		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, value, expires_at, created_at, updated_at,
+		        observed_at, valid_at, invalid_at
 		 FROM memory
 		 WHERE expires_at IS NULL OR expires_at > ?
 		 ORDER BY scope ASC, scope_id ASC, key ASC`, now)
@@ -3546,16 +3549,20 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 	var out []store.MemorySnapshotEntry
 	for rows.Next() {
 		var (
-			e         store.MemorySnapshotEntry
-			scopeStr  string
-			value     string
-			expiresNs sql.NullInt64
-			createdNs int64
-			updatedNs int64
+			e          store.MemorySnapshotEntry
+			scopeStr   string
+			value      string
+			expiresNs  sql.NullInt64
+			createdNs  int64
+			updatedNs  int64
+			observedNs sql.NullInt64
+			validNs    sql.NullInt64
+			invalidNs  sql.NullInt64
 		)
 		if err := rows.Scan(
 			&e.TenantID, &scopeStr, &e.ScopeID, &e.Key, &value,
 			&expiresNs, &createdNs, &updatedNs,
+			&observedNs, &validNs, &invalidNs,
 		); err != nil {
 			return nil, fmt.Errorf("scan memory: %w", err)
 		}
@@ -3566,6 +3573,16 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 		}
 		e.CreatedAt = time.Unix(0, createdNs)
 		e.UpdatedAt = time.Unix(0, updatedNs)
+		// NULL leaves the field zero — undated. Never time.Unix(0, 0) = 1970.
+		if observedNs.Valid {
+			e.ObservedAt = time.Unix(0, observedNs.Int64)
+		}
+		if validNs.Valid {
+			e.ValidAt = time.Unix(0, validNs.Int64)
+		}
+		if invalidNs.Valid {
+			e.InvalidAt = time.Unix(0, invalidNs.Int64)
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -4027,8 +4044,8 @@ func (s *Store) SnapshotRestoreMCPServerDefActive(ctx context.Context, e store.M
 }
 
 // SnapshotRestoreMemory implements store.Store. Preserves CreatedAt /
-// UpdatedAt / ExpiresAt / Value. INSERT OR IGNORE on (scope, scope_id,
-// key) PK → idempotent.
+// UpdatedAt / ExpiresAt / Value and the bi-temporal ObservedAt / ValidAt /
+// InvalidAt. INSERT OR IGNORE on (scope, scope_id, key) PK → idempotent.
 func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapshotEntry) (bool, error) {
 	if e.Scope == "" || e.Key == "" {
 		return false, fmt.Errorf("snapshot restore memory: scope and key required")
@@ -4045,10 +4062,20 @@ func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapsho
 	if !e.ExpiresAt.IsZero() {
 		expiresNs = e.ExpiresAt.UnixNano()
 	}
+	// A zero instant restores as NULL, not as 1970: an undated row must come
+	// back undated. `any` left nil binds SQL NULL.
+	nsOrNil := func(t time.Time) any {
+		if t.IsZero() {
+			return nil
+		}
+		return t.UnixNano()
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
+		                              observed_at, valid_at, invalid_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.TenantID, string(e.Scope), e.ScopeID, e.Key, string(e.Value), expiresNs, createdNs, updatedNs,
+		nsOrNil(e.ObservedAt), nsOrNil(e.ValidAt), nsOrNil(e.InvalidAt),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore memory: %w", err)

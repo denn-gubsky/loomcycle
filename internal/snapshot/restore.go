@@ -374,6 +374,18 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			if e.ExpiresAt != nil {
 				expires = *e.ExpiresAt
 			}
+			// A snapshot written before these fields existed decodes them as
+			// nil, which leaves the zero instant — undated, the honest answer.
+			var observed, validAt, invalidAt time.Time
+			if e.ObservedAt != nil {
+				observed = *e.ObservedAt
+			}
+			if e.ValidAt != nil {
+				validAt = *e.ValidAt
+			}
+			if e.InvalidAt != nil {
+				invalidAt = *e.InvalidAt
+			}
 			entry := store.MemorySnapshotEntry{
 				// RFC BL: restore into the row's tenant partition. An older
 				// snapshot with no tenant_id decodes e.TenantID as "" (the
@@ -382,11 +394,14 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				Scope:    store.MemoryScope(e.Scope),
 				ScopeID:  e.ScopeID,
 				MemoryEntry: store.MemoryEntry{
-					Key:       e.Key,
-					Value:     e.Value,
-					ExpiresAt: expires,
-					CreatedAt: e.CreatedAt,
-					UpdatedAt: e.UpdatedAt,
+					Key:        e.Key,
+					Value:      e.Value,
+					ExpiresAt:  expires,
+					CreatedAt:  e.CreatedAt,
+					UpdatedAt:  e.UpdatedAt,
+					ObservedAt: observed,
+					ValidAt:    validAt,
+					InvalidAt:  invalidAt,
 				},
 			}
 			inserted, err := s.SnapshotRestoreMemory(ctx, entry)
