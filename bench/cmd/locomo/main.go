@@ -73,7 +73,15 @@ type options struct {
 	sampleQuestions   int
 	consolidatePasses int
 	seedTurns         bool
-	runTimeout        time.Duration
+	// answerOnly grades the store AS IT STANDS: no flush, purge, seed, ingest
+	// or consolidation. It exists because a RETRIEVAL-side change must be
+	// measured with the store held constant — rebuilding it per arm reintroduces
+	// extraction non-determinism, which on the temporal slice is large enough to
+	// manufacture a significant result by itself (two identical runs scored 10
+	// and 8). With the corpus fixed, the only variable left is the projection
+	// under test, and a repeat run measures ANSWERER variance alone.
+	answerOnly bool
+	runTimeout time.Duration
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -102,6 +110,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		judge       = fs.String("judge", "locomo/judge", "agent that grades an answer against gold (answer axis)")
 		sampleQ     = fs.Int("sample-questions", 0, "answer axis: grade only N questions, stratified by category (0 = all)")
 		consPasses  = fs.Int("consolidate-passes", 12, "answer axis: max consolidation passes per conversation (0 = skip consolidation entirely)")
+		answerOnly  = fs.Bool("answer-only", false, "answer axis: grade the EXISTING store — skip flush/purge/seed/ingest/consolidate. For measuring a retrieval-side change with the corpus held constant; the empty-store guard still applies")
 		seedTurns   = fs.Bool("seed-turns", false, "answer axis: also write one embedded row per TURN into the partition the answerer reads, so it answers from conversation content rather than only from distilled facts (this is what the published systems do)")
 		runTimeout  = fs.Duration("run-timeout", 10*time.Minute, "answer axis: per-run timeout (agent runs are slower than REST calls)")
 	)
@@ -123,6 +132,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		allowSharedTenant: *allowShared, timeout: *timeout,
 		answerer: *answerer, judge: *judge, sampleQuestions: *sampleQ,
 		consolidatePasses: *consPasses, runTimeout: *runTimeout, seedTurns: *seedTurns,
+		answerOnly: *answerOnly,
 	}
 	if opts.concurrency < 1 {
 		opts.concurrency = 1
