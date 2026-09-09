@@ -5021,3 +5021,54 @@ func TestConsolidator_LaterWindowsCarryTheEarlierFactsAsContext(t *testing.T) {
 		}
 	}
 }
+
+// TestConsolidator_QueuedPathHonoursTheExtractionWindow — the granularity knob
+// must reach the path `Memory op=add` actually takes.
+//
+// MEASURED, and it is why this test exists: a sweep of the whole-chat and
+// 5-turn windows on a 419-turn corpus produced BYTE-IDENTICAL extractor input
+// (34,710 tokens across 10 calls) in both arms. Every pass reported "chats read
+// 0" — all the work came off the pending queue, which called the extractor
+// directly and never reached the chat splitter where the window lived. The knob
+// was real, the arms were configurationally identical, and the run measured
+// nothing.
+//
+// Asserted on the CALL COUNT, like its chat-path sibling: what must be true is
+// that the extractor saw the queue in N-item batches rather than one.
+func TestConsolidator_QueuedPathHonoursTheExtractionWindow(t *testing.T) {
+	newFixture := func() *fakeToolset {
+		f := newFakeToolset()
+		// No chats to read — exactly the shape the benchmark and `Memory op=add`
+		// produce, and the shape that hid the gap.
+		f.sessions = nil
+		f.pending = []map[string]any{}
+		for i := 0; i < 6; i++ {
+			f.pending = append(f.pending, map[string]any{
+				"id": fmt.Sprintf("q%d", i),
+				"payload": map[string]any{"messages": []map[string]any{
+					{"role": "user", "content": fmt.Sprintf("Queued turn %d: I visited city number %d in July.", i, i)},
+				}},
+			})
+		}
+		f.factsJSON = `[]`
+		return f
+	}
+
+	wide := newFixture()
+	runConsolidator(t, wide)
+	wideCalls := len(extractorPrompts(wide))
+
+	narrow := newFixture()
+	runConsolidatorWindow(t, narrow, 1)
+	narrowCalls := len(extractorPrompts(narrow))
+
+	if wideCalls == 0 || narrowCalls == 0 {
+		t.Fatalf("the queue was never extracted (wide=%d narrow=%d) — the fixture does not "+
+			"exercise the pending path", wideCalls, narrowCalls)
+	}
+	if narrowCalls <= wideCalls {
+		t.Errorf("per-item window made %d extractor call(s) against the default's %d — the "+
+			"window does not reach the queued path, so an arm set on it measures nothing",
+			narrowCalls, wideCalls)
+	}
+}

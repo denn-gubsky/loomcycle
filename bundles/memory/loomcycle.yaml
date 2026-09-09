@@ -1053,6 +1053,12 @@ agents:
       // Capped, because a long chat's accumulated facts would otherwise grow the
       // prompt window by window until the call that matters is mostly history.
       function rollingContext(priorFacts) {
+        // GATED ON THE WINDOW, so window=0 is byte-identical to what shipped.
+        // The context exists BECAUSE a narrow window loses the antecedent; with
+        // the whole source in one call there is nothing to carry forward. Leaving
+        // it ungated would have quietly changed the control arm of the sweep and
+        // conflated two variables — window and context — in one comparison.
+        if (CONFIG.extract_window_turns <= 0) { return ""; }
         if (!priorFacts || !priorFacts.length) { return ""; }
         var lines = [], start = priorFacts.length > CONFIG.max_context_facts
           ? priorFacts.length - CONFIG.max_context_facts : 0;
@@ -1243,6 +1249,9 @@ agents:
         if (!pending.length) { return []; }
         var acked = [];
         var queue = pending;
+        // Facts this pass has already pulled off the queue, carried into later
+        // batches as context. Reset per pass, not per batch.
+        if (!st.batch_facts) { st.batch_facts = []; }
         // narrowed: the previous call came back empty, so the next takes the head
         // ALONE to find out whether that one item is the problem.
         var narrowed = false;
@@ -1260,7 +1269,10 @@ agents:
           // No reference date: a batch spans MANY queued items with different
           // arrival times, so there is no single "today" to resolve against and a
           // wrong one would date every fact in the batch to the same wrong day.
-          var facts = extract(st, pendingText, "", "");
+          // The batch carries the rolling context too: a narrow queue window has
+          // the same coreference problem a narrow chat window does, and `acked`
+          // is not the right carrier — what the earlier batches YIELDED is.
+          var facts = extract(st, pendingText, "", "", st.batch_facts);
           deriveSpans(facts, pendingText);
           stampObservedAt(facts, pendingText);
           resolveValidAt(facts);
@@ -1300,6 +1312,9 @@ agents:
           // are only acked after a successful write, and re-draining costs nothing.
           if (!applyFacts(st, facts, "", attributeTo)) { break; }
 
+          for (var i = 0; i < facts.length && st.batch_facts.length < CONFIG.max_context_facts * 4; i++) {
+            st.batch_facts.push(facts[i]);
+          }
           for (var i = 0; i < taken.length; i++) {
             if (taken[i] && typeof taken[i].id === "string") { acked.push(taken[i].id); }
           }
@@ -1315,11 +1330,25 @@ agents:
       // budget. The first item always goes in however large it is — otherwise a
       // single oversized queued item would wedge the queue permanently, never
       // taken and never acked.
+      //
+      // THE GRANULARITY KNOB APPLIES HERE TOO, and it is not a nicety: this is the
+      // path `Memory op=add` takes. A pass that reports "chats read 0" did all its
+      // extraction through this function, so a window implemented only in the chat
+      // splitter is INERT for every enqueued turn — measured, on a 419-turn corpus
+      // where the whole-chat and 5-turn arms produced byte-identical extractor
+      // input (34,710 tokens, 10 calls) because neither ever reached the splitter.
+      //
+      // A queued item is one enqueued payload, so capping the batch at N items is
+      // the queue's equivalent of closing a part after N turns.
       function takePending(pending, budget) {
         var taken = [], used = 0;
+        var windowTurns = CONFIG.extract_window_turns > 0 ? CONFIG.extract_window_turns : 0;
         for (var i = 0; i < pending.length; i++) {
           var size = renderPending([pending[i]]).length;
           if (taken.length && used + size > budget) { break; }
+          // The item cap closes the batch even when the budget has room, exactly
+          // as the turn cap closes a part.
+          if (windowTurns > 0 && taken.length >= windowTurns) { break; }
           taken.push(pending[i]);
           used += size + 1;
         }
