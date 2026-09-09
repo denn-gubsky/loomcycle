@@ -431,6 +431,20 @@ func captureMemory(ctx context.Context, s store.Store, out *MemorySection) error
 			t := r.ExpiresAt
 			entry.ExpiresAt = &t
 		}
+		// Zero stays nil rather than becoming a pointer to the zero instant:
+		// undated must serialise as an absent field, not as year 1.
+		if !r.ObservedAt.IsZero() {
+			t := r.ObservedAt
+			entry.ObservedAt = &t
+		}
+		if !r.ValidAt.IsZero() {
+			t := r.ValidAt
+			entry.ValidAt = &t
+		}
+		if !r.InvalidAt.IsZero() {
+			t := r.InvalidAt
+			entry.InvalidAt = &t
+		}
 		out.Entries = append(out.Entries, entry)
 	}
 	return nil

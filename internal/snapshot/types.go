@@ -280,15 +280,34 @@ type MemoryEntry struct {
 	// single-tenant snapshot stays byte-identical to a pre-RFC-BL one, and a
 	// snapshot written before the column existed decodes to "" (the legacy
 	// tenant) on restore — the graceful cross-version path.
-	TenantID  string                   `json:"tenant_id,omitempty"`
-	Scope     string                   `json:"scope"`
-	ScopeID   string                   `json:"scope_id"`
-	Key       string                   `json:"key"`
-	Value     json.RawMessage          `json:"value"`
-	ExpiresAt *time.Time               `json:"expires_at,omitempty"`
-	CreatedAt time.Time                `json:"created_at"`
-	UpdatedAt time.Time                `json:"updated_at"`
-	Embedding *MemoryEmbeddingSnapshot `json:"embedding"` // explicit null when nil; see memory_embedding.go
+	TenantID  string          `json:"tenant_id,omitempty"`
+	Scope     string          `json:"scope"`
+	ScopeID   string          `json:"scope_id"`
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	// The bi-temporal columns: when the remembered thing was SAID
+	// (ObservedAt) and when it became / stopped being true in the world
+	// (ValidAt / InvalidAt). Carried so a snapshot round trip does not
+	// silently undate every fact — before these existed here, capture read
+	// them from nothing and restore inserted nothing, so a restored corpus
+	// answered "undated" for rows that were correctly dated at the source.
+	//
+	// Pointers with omitempty, matching ExpiresAt and following the
+	// tenant_id/embedding precedent: an undated row adds no bytes (a
+	// single-tenant undated snapshot stays byte-identical to a pre-change
+	// one), and a snapshot written before the fields existed decodes them as
+	// nil → the zero instant → undated, which is the honest answer. Deliberately
+	// NOT a section-version bump: bumping would make an older reader reject
+	// the whole memory section with ErrSnapshotVersionTooNew, trading a
+	// graceful degrade (older reader drops the unknown fields, exactly as it
+	// does today) for a hard restore failure.
+	ObservedAt *time.Time               `json:"observed_at,omitempty"`
+	ValidAt    *time.Time               `json:"valid_at,omitempty"`
+	InvalidAt  *time.Time               `json:"invalid_at,omitempty"`
+	Embedding  *MemoryEmbeddingSnapshot `json:"embedding"` // explicit null when nil; see memory_embedding.go
 }
 
 // ChannelsSection wraps channels config + messages + cursors. Channel

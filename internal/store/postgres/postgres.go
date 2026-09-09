@@ -2339,7 +2339,13 @@ func (s *Store) SnapshotReadMCPServerDefActive(ctx context.Context) ([]store.MCP
 func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotEntry, error) {
 	now := time.Now().UTC()
 	rows, err := s.pool.Query(ctx,
-		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, value::text, expires_at, created_at, updated_at
+		// The three temporal columns are part of the row's content, so a
+		// capture that omits them writes an archive that silently undates
+		// every fact — and a restore from it cannot recover what was never
+		// written. Losing them here is worse than a misreporting projection:
+		// it is permanent.
+		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, value::text, expires_at, created_at, updated_at,
+		        observed_at, valid_at, invalid_at
 		 FROM memory
 		 WHERE expires_at IS NULL OR expires_at > $1
 		 ORDER BY scope ASC, scope_id ASC, key ASC`, now)
@@ -2350,18 +2356,32 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 	var out []store.MemorySnapshotEntry
 	for rows.Next() {
 		var (
-			e         store.MemorySnapshotEntry
-			scopeStr  string
-			value     string
-			expiresAt *time.Time
+			e          store.MemorySnapshotEntry
+			scopeStr   string
+			value      string
+			expiresAt  *time.Time
+			observedAt *time.Time
+			validAt    *time.Time
+			invalidAt  *time.Time
 		)
-		if err := rows.Scan(&e.TenantID, &scopeStr, &e.ScopeID, &e.Key, &value, &expiresAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.TenantID, &scopeStr, &e.ScopeID, &e.Key, &value, &expiresAt, &e.CreatedAt, &e.UpdatedAt,
+			&observedAt, &validAt, &invalidAt); err != nil {
 			return nil, fmt.Errorf("scan memory: %w", err)
 		}
 		e.Scope = store.MemoryScope(scopeStr)
 		e.Value = json.RawMessage(value)
 		if expiresAt != nil {
 			e.ExpiresAt = *expiresAt
+		}
+		// NULL leaves the field zero — undated. Never Unix(0, 0), which is 1970.
+		if observedAt != nil {
+			e.ObservedAt = *observedAt
+		}
+		if validAt != nil {
+			e.ValidAt = *validAt
+		}
+		if invalidAt != nil {
+			e.InvalidAt = *invalidAt
 		}
 		out = append(out, e)
 	}
@@ -2820,12 +2840,22 @@ func (s *Store) SnapshotRestoreMemory(ctx context.Context, e store.MemorySnapsho
 		t := e.ExpiresAt
 		expiresAt = &t
 	}
+	// A zero instant restores as NULL, not as year 1: an undated row must come
+	// back undated, and writing the zero time would date it to 0001-01-01.
+	nilIfZero := func(t time.Time) *time.Time {
+		if t.IsZero() {
+			return nil
+		}
+		return &t
+	}
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		`INSERT INTO memory(tenant_id, scope, scope_id, key, value, expires_at, created_at, updated_at,
+		                    observed_at, valid_at, invalid_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)
 		 ON CONFLICT (tenant_id, scope, scope_id, key) DO NOTHING`,
 		e.TenantID, string(e.Scope), e.ScopeID, e.Key, string(e.Value),
 		expiresAt, createdAt, updatedAt,
+		nilIfZero(e.ObservedAt), nilIfZero(e.ValidAt), nilIfZero(e.InvalidAt),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore memory: %w", err)

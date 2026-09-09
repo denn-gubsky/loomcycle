@@ -1015,3 +1015,160 @@ func TestRestore_LegacySnapshotWithoutChecksumStillRestores(t *testing.T) {
 		t.Errorf("AgentDefsRestored = %d, want 1", res.AgentDefsRestored)
 	}
 }
+
+// TestSnapshotRestore_MemoryTemporalSurvivesRoundTrip — a fact's dates must
+// survive capture → JSON → restore onto a different instance.
+//
+// This is the end-to-end form of the store-contract round trip, and it is the
+// one that matches how the loss actually happened: an operator snapshots one
+// instance and restores onto another. Before the fix, every leg dropped the
+// three columns, so the destination held a corpus in which nothing was dated —
+// and because zero means "undated", which is the honest state for most rows,
+// nothing about the restored store looked wrong.
+func TestSnapshotRestore_MemoryTemporalSurvivesRoundTrip(t *testing.T) {
+	src, cleanupSrc := newTestStore(t)
+	defer cleanupSrc()
+	ctx := context.Background()
+
+	observed := mustParseTime(t, "2023-07-07T19:56:00Z")
+	validAt := mustParseTime(t, "2023-06-01T00:00:00Z")
+	invalidAt := mustParseTime(t, "2023-08-01T00:00:00Z")
+
+	if err := src.MemorySetTimed(ctx, "", store.MemoryScopeUser, "u1", "memory/fact/dated",
+		json.RawMessage(`{"text":"dated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: observed, ValidAt: validAt, InvalidAt: invalidAt}); err != nil {
+		t.Fatalf("MemorySetTimed dated: %v", err)
+	}
+	if err := src.MemorySetTimed(ctx, "", store.MemoryScopeUser, "u1", "memory/fact/undated",
+		json.RawMessage(`{"text":"undated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{}); err != nil {
+		t.Fatalf("MemorySetTimed undated: %v", err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	// The archive itself must carry the dates, and must OMIT them for the
+	// undated row — the omitempty half of the contract, which is what keeps an
+	// undated snapshot byte-identical to a pre-change one.
+	var env Envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	byKey := map[string]MemoryEntry{}
+	for _, e := range env.Sections.Memory.Entries {
+		byKey[e.Key] = e
+	}
+	dated, ok := byKey["memory/fact/dated"]
+	if !ok {
+		t.Fatalf("dated row missing from the archive (%d entries)", len(env.Sections.Memory.Entries))
+	}
+	if dated.ObservedAt == nil || !dated.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("archive observed_at = %v, want %v", dated.ObservedAt, observed)
+	}
+	if dated.ValidAt == nil || !dated.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("archive valid_at = %v, want %v", dated.ValidAt, validAt)
+	}
+	if dated.InvalidAt == nil || !dated.InvalidAt.UTC().Equal(invalidAt) {
+		t.Errorf("archive invalid_at = %v, want %v", dated.InvalidAt, invalidAt)
+	}
+	undated, ok := byKey["memory/fact/undated"]
+	if !ok {
+		t.Fatalf("undated row missing from the archive")
+	}
+	if undated.ObservedAt != nil || undated.ValidAt != nil || undated.InvalidAt != nil {
+		t.Errorf("archive dated an UNDATED row: observed=%v valid=%v invalid=%v, want all absent",
+			undated.ObservedAt, undated.ValidAt, undated.InvalidAt)
+	}
+	if strings.Contains(string(raw), `"observed_at":"0001-01-01`) {
+		t.Error("archive serialised the ZERO instant as an observed_at — undated must be an " +
+			"absent field, not year 1")
+	}
+
+	// Restore onto a fresh instance and read the dates back.
+	dst, cleanupDst := newTestStore(t)
+	defer cleanupDst()
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.MemoryGet(ctx, "", store.MemoryScopeUser, "u1", "memory/fact/dated")
+	if err != nil {
+		t.Fatalf("MemoryGet on the restored store: %v", err)
+	}
+	if !got.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("restored ObservedAt = %v, want %v", got.ObservedAt.UTC(), observed)
+	}
+	if !got.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("restored ValidAt = %v, want %v", got.ValidAt.UTC(), validAt)
+	}
+	if !got.InvalidAt.UTC().Equal(invalidAt) {
+		t.Errorf("restored InvalidAt = %v, want %v", got.InvalidAt.UTC(), invalidAt)
+	}
+	gotUndated, err := dst.MemoryGet(ctx, "", store.MemoryScopeUser, "u1", "memory/fact/undated")
+	if err != nil {
+		t.Fatalf("MemoryGet undated on the restored store: %v", err)
+	}
+	if !gotUndated.ObservedAt.IsZero() || !gotUndated.ValidAt.IsZero() || !gotUndated.InvalidAt.IsZero() {
+		t.Errorf("restored undated row reports observed=%v valid=%v invalid=%v, want all ZERO",
+			gotUndated.ObservedAt, gotUndated.ValidAt, gotUndated.InvalidAt)
+	}
+}
+
+// TestSnapshotRestore_MemoryWithoutTemporalFieldsRestoresUndated — an archive
+// written BEFORE the temporal fields existed must still restore.
+//
+// The fields were added without a section-version bump precisely so this keeps
+// working: a bump would make an older reader reject the memory section outright
+// (ErrSnapshotVersionTooNew), so the cross-version path is carried by
+// omitempty + the nil→zero decode instead. This test is that path — the JSON
+// below is a v1.0 memory section with no observed_at/valid_at/invalid_at keys,
+// and the row must come back undated rather than failing or landing on year 1.
+func TestSnapshotRestore_MemoryWithoutTemporalFieldsRestoresUndated(t *testing.T) {
+	dst, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	raw := []byte(`{
+	  "schema_version": 1,
+	  "created_at": "2023-01-01T00:00:00Z",
+	  "sections": {
+	    "memory": {
+	      "version": "1.0",
+	      "entries": [
+	        {
+	          "scope": "user",
+	          "scope_id": "legacy",
+	          "key": "memory/fact/old",
+	          "value": {"text":"from an older loomcycle"},
+	          "created_at": "2023-01-01T00:00:00Z",
+	          "updated_at": "2023-01-01T00:00:00Z",
+	          "embedding": null
+	        }
+	      ]
+	    }
+	  }
+	}`)
+
+	res, err := Restore(ctx, dst, raw, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("Restore of a pre-temporal archive: %v", err)
+	}
+	if res.MemoryRestored != 1 {
+		t.Fatalf("MemoryRestored = %d, want 1 (warnings: %v)", res.MemoryRestored, res.Warnings)
+	}
+	got, err := dst.MemoryGet(ctx, "", store.MemoryScopeUser, "legacy", "memory/fact/old")
+	if err != nil {
+		t.Fatalf("MemoryGet: %v", err)
+	}
+	if !got.ObservedAt.IsZero() || !got.ValidAt.IsZero() || !got.InvalidAt.IsZero() {
+		t.Errorf("a pre-temporal archive restored to observed=%v valid=%v invalid=%v, want all "+
+			"ZERO — absent must decode to undated, never to a fabricated date",
+			got.ObservedAt, got.ValidAt, got.InvalidAt)
+	}
+	if !got.CreatedAt.UTC().Equal(mustParseTime(t, "2023-01-01T00:00:00Z")) {
+		t.Errorf("CreatedAt = %v, want the archive's value", got.CreatedAt.UTC())
+	}
+}

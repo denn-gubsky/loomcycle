@@ -141,6 +141,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotReadMemoryEmpty", testSnapshotReadMemoryEmpty},
 		{"SnapshotReadMemoryFiltersExpired", testSnapshotReadMemoryFiltersExpired},
 		{"SnapshotReadMemoryOrdered", testSnapshotReadMemoryOrdered},
+		{"SnapshotMemoryTemporalRoundTrip", testSnapshotMemoryTemporalRoundTrip},
 		{"SnapshotReadChannelMessagesEmpty", testSnapshotReadChannelMessagesEmpty},
 		{"SnapshotReadChannelCursorsEmpty", testSnapshotReadChannelCursorsEmpty},
 		{"SnapshotReadEvaluationsEmpty", testSnapshotReadEvaluationsEmpty},
@@ -12191,5 +12192,115 @@ func testMemoryGetReturnsTemporalColumns(t *testing.T, s store.Store) {
 		t.Errorf("undated row reports observed=%v valid=%v invalid=%v, want all ZERO — mapping "+
 			"NULL onto Unix(0,0) would date every undated row to 1970, which is worse than "+
 			"reporting nothing", undated.ObservedAt, undated.ValidAt, undated.InvalidAt)
+	}
+}
+
+// testSnapshotMemoryTemporalRoundTrip — a snapshot capture-then-restore must
+// preserve the times a row carries.
+//
+// WHY THIS ONE MATTERS MORE THAN THE READ PROJECTIONS. The misreporting bug in
+// MemoryList/MemoryGet was recoverable: the columns were still in the table, so
+// fixing the query recovered the truth. Here BOTH legs dropped them —
+// SnapshotReadMemory did not select them and SnapshotRestoreMemory did not
+// insert them — so a snapshot silently undated the whole corpus and a restore
+// from that archive could not recover what was never written. Permanent loss,
+// and invisible, because "undated" is the plausible state for most rows.
+//
+// Exercises both legs in one test: read the seeded rows out through the capture
+// projection, then restore them under a FRESH scope_id (the restore is
+// idempotent on the PK, so restoring onto the seeds would no-op and prove
+// nothing) and read them back. An undated row rides along throughout: a fix
+// that wrote the zero instant instead of NULL would date every undated row to
+// year 1 (or 1970 on the nanosecond tiers) and still pass a dated-only test.
+func testSnapshotMemoryTemporalRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const srcScopeID = "snap-temporal-src"
+	const dstScopeID = "snap-temporal-dst"
+	observed := time.Date(2023, 7, 7, 19, 56, 0, 0, time.UTC)
+	validAt := time.Date(2023, 6, 1, 0, 0, 0, 0, time.UTC)
+	invalidAt := time.Date(2023, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeUser, srcScopeID, "dated",
+		json.RawMessage(`{"text":"dated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{ObservedAt: observed, ValidAt: validAt, InvalidAt: invalidAt}); err != nil {
+		t.Fatalf("MemorySetTimed dated: %v", err)
+	}
+	if err := s.MemorySetTimed(ctx, "", store.MemoryScopeUser, srcScopeID, "undated",
+		json.RawMessage(`{"text":"undated"}`), 0, store.MemoryProvenance{},
+		store.MemoryTimes{}); err != nil {
+		t.Fatalf("MemorySetTimed undated: %v", err)
+	}
+
+	// --- capture leg ---
+	rows, err := s.SnapshotReadMemory(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadMemory: %v", err)
+	}
+	captured := map[string]store.MemorySnapshotEntry{}
+	for _, r := range rows {
+		if r.ScopeID == srcScopeID {
+			captured[r.Key] = r
+		}
+	}
+	dated, ok := captured["dated"]
+	if !ok {
+		t.Fatalf("dated row missing from capture (%d rows total)", len(rows))
+	}
+	if !dated.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("captured ObservedAt = %v, want %v — a capture that drops the column writes "+
+			"an archive in which every fact is undated, and a restore cannot recover what was "+
+			"never written", dated.ObservedAt.UTC(), observed)
+	}
+	if !dated.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("captured ValidAt = %v, want %v", dated.ValidAt.UTC(), validAt)
+	}
+	if !dated.InvalidAt.UTC().Equal(invalidAt) {
+		t.Errorf("captured InvalidAt = %v, want %v", dated.InvalidAt.UTC(), invalidAt)
+	}
+	capturedUndated, ok := captured["undated"]
+	if !ok {
+		t.Fatalf("undated row missing from capture")
+	}
+	if !capturedUndated.ObservedAt.IsZero() || !capturedUndated.ValidAt.IsZero() || !capturedUndated.InvalidAt.IsZero() {
+		t.Errorf("captured undated row reports observed=%v valid=%v invalid=%v, want all ZERO",
+			capturedUndated.ObservedAt, capturedUndated.ValidAt, capturedUndated.InvalidAt)
+	}
+
+	// --- restore leg, into a fresh scope so the PK conflict cannot mask it ---
+	for _, key := range []string{"dated", "undated"} {
+		e := captured[key]
+		e.ScopeID = dstScopeID
+		inserted, err := s.SnapshotRestoreMemory(ctx, e)
+		if err != nil {
+			t.Fatalf("SnapshotRestoreMemory %s: %v", key, err)
+		}
+		if !inserted {
+			t.Fatalf("SnapshotRestoreMemory %s reported no insert into a fresh scope", key)
+		}
+	}
+
+	restored, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, dstScopeID, "dated")
+	if err != nil {
+		t.Fatalf("MemoryGet restored dated: %v", err)
+	}
+	if !restored.ObservedAt.UTC().Equal(observed) {
+		t.Errorf("restored ObservedAt = %v, want %v — the restore INSERT dropped the column, "+
+			"so the archive's dates died at the write leg", restored.ObservedAt.UTC(), observed)
+	}
+	if !restored.ValidAt.UTC().Equal(validAt) {
+		t.Errorf("restored ValidAt = %v, want %v", restored.ValidAt.UTC(), validAt)
+	}
+	if !restored.InvalidAt.UTC().Equal(invalidAt) {
+		t.Errorf("restored InvalidAt = %v, want %v", restored.InvalidAt.UTC(), invalidAt)
+	}
+
+	restoredUndated, err := s.MemoryGet(ctx, "", store.MemoryScopeUser, dstScopeID, "undated")
+	if err != nil {
+		t.Fatalf("MemoryGet restored undated: %v", err)
+	}
+	if !restoredUndated.ObservedAt.IsZero() || !restoredUndated.ValidAt.IsZero() || !restoredUndated.InvalidAt.IsZero() {
+		t.Errorf("restored undated row reports observed=%v valid=%v invalid=%v, want all ZERO — "+
+			"binding the zero instant instead of NULL dates every undated row to year 1",
+			restoredUndated.ObservedAt, restoredUndated.ValidAt, restoredUndated.InvalidAt)
 	}
 }
