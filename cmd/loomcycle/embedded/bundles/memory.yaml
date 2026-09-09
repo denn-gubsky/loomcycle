@@ -1269,6 +1269,45 @@ agents:
       // left queued while the pass moves on to what is behind it. The blockage is
       // gone, nothing is lost, and the cost of a permanently unreadable item settles
       // at one call per pass instead of every call forever.
+      // extractPending runs the queued batch through the extractor, split into
+      // windows when the granularity knob is set.
+      //
+      // Acking stays per ITEM and happens only after every window of the batch is
+      // extracted, so a partially-extracted batch never acks — the items come
+      // back next pass rather than disappearing.
+      function extractPending(st, pendingText) {
+        var windowTurns = CONFIG.extract_window_turns > 0 ? CONFIG.extract_window_turns : 0;
+        if (windowTurns <= 0) {
+          // Unchanged: one call for the whole batch, post-processed against that
+          // same text. The three calls live HERE rather than at the call site so
+          // the windowed branch can run them against the window the model
+          // actually saw — attaching a span from text that was never in front of
+          // it is the failure the chat path already guards against.
+          var one = extract(st, pendingText, "", "", null);
+          if (one === null) { return null; }
+          deriveSpans(one, pendingText);
+          stampObservedAt(one, pendingText);
+          resolveValidAt(one);
+          return one;
+        }
+        var windows = packParts(st, splitTurns(pendingText), "queue");
+        if (!windows.length) { return []; }
+        var all = [];
+        for (var w = 0; w < windows.length; w++) {
+          var got = extract(st, windows[w], "", "", st.batch_facts.concat(all));
+          // An unreadable window fails the BATCH, matching the single-call
+          // behaviour it replaces: the caller leaves the items unacked and stops
+          // spending on this queue, so nothing is lost and an outage is not
+          // multiplied by the window count.
+          if (got === null) { return null; }
+          deriveSpans(got, windows[w]);
+          stampObservedAt(got, windows[w]);
+          resolveValidAt(got);
+          all = all.concat(got);
+        }
+        return all;
+      }
+
       function consolidatePending(st, pending) {
         if (!pending.length) { return []; }
         var acked = [];
@@ -1293,13 +1332,20 @@ agents:
           // No reference date: a batch spans MANY queued items with different
           // arrival times, so there is no single "today" to resolve against and a
           // wrong one would date every fact in the batch to the same wrong day.
-          // The batch carries the rolling context too: a narrow queue window has
-          // the same coreference problem a narrow chat window does, and `acked`
-          // is not the right carrier — what the earlier batches YIELDED is.
-          var facts = extract(st, pendingText, "", "", st.batch_facts);
-          deriveSpans(facts, pendingText);
-          stampObservedAt(facts, pendingText);
-          resolveValidAt(facts);
+          // WINDOW THE RENDERED BATCH BY MESSAGE, not just by queued item.
+          //
+          // takePending caps how many ITEMS a batch holds, and that alone leaves
+          // the granularity floor at one enqueued payload — which is a whole
+          // SESSION for anything that writes a conversation in one call. On a
+          // 19-session corpus the finest achievable window was therefore ~22
+          // messages, and a "per message" arm silently measured per-session
+          // instead.
+          //
+          // renderPending emits one "role: content" line per message and
+          // splitTurns treats every line as a boundary when no "### " markers are
+          // present, so the CHAT path's splitter applies here unchanged. One
+          // mechanism, both paths.
+          var facts = extractPending(st, pendingText);
           // Unreadable is not empty: the call FAILED rather than answered, so stop
           // spending on this queue and leave the rest for the next pass. Retrying
           // inside one pass would multiply an outage by the call budget.

@@ -5124,3 +5124,52 @@ func TestConsolidator_QueuedPathHonoursTheExtractionWindow(t *testing.T) {
 			narrowCalls, wideCalls)
 	}
 }
+
+// TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem.
+//
+// Capping how many ITEMS a batch holds leaves the granularity floor at one
+// enqueued payload — and a payload is a whole SESSION for anything that writes a
+// conversation in one call. Measured consequence on a 19-session corpus: the
+// finest reachable window was ~22 messages, so a "per message" arm silently
+// measured per-session and the sweep's finest point did not exist.
+//
+// ONE item holding MANY messages is therefore the fixture: at window=1 it must
+// produce one call per message, not one call for the item.
+func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
+	msgs := []map[string]any{}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, map[string]any{
+			"role":    "user",
+			"content": fmt.Sprintf("Message %d: in July I visited city number %d.", i, i),
+		})
+	}
+	newFixture := func() *fakeToolset {
+		f := newFakeToolset()
+		f.sessions = nil
+		// ONE queued item carrying EIGHT messages — the shape a whole-session
+		// write produces, and the shape the item cap alone cannot split.
+		f.pending = []map[string]any{{
+			"id":      "q0",
+			"payload": map[string]any{"messages": msgs},
+		}}
+		f.factsJSON = `[]`
+		return f
+	}
+
+	wide := newFixture()
+	runConsolidator(t, wide)
+	wideCalls := len(extractorPrompts(wide))
+
+	narrow := newFixture()
+	runConsolidatorWindow(t, narrow, 1)
+	narrowCalls := len(extractorPrompts(narrow))
+
+	if wideCalls != 1 {
+		t.Fatalf("default made %d calls for one queued item, want 1", wideCalls)
+	}
+	if narrowCalls < 4 {
+		t.Errorf("per-message window made %d call(s) for a single 8-message item, want one per "+
+			"message — the window stops at the ITEM boundary, so the finest arm of a sweep "+
+			"measures per-session instead", narrowCalls)
+	}
+}
