@@ -88,23 +88,65 @@ func TestDocument_RefCharsetExcludesTheDelimitersAndVarSigil(t *testing.T) {
 	}
 }
 
-func TestDocument_CapTruncatesWithAVisibleMarker(t *testing.T) {
-	big := strings.Repeat("x", MaxDocumentBytes+5000)
-	out := docExpand("{{document:/big}}", map[DocRef]string{{Path: "/big"}: big})
-
-	if len(out) > MaxDocumentBytes+len(documentTruncationMarker)+128 {
-		t.Errorf("body not capped: %d bytes", len(out))
+// A document that does not fit is never CUT. The caller renders an outline
+// instead, and this is the reason: a visible truncation marker helps a human
+// reading the resolved prompt, but the model still answers confidently from
+// half a spec — and to it, a half-spec is indistinguishable from a complete
+// one. Fits is the threshold that decision turns on.
+func TestFits_IsAThresholdNotATruncationPoint(t *testing.T) {
+	if !Fits(strings.Repeat("x", MaxDocumentBytes)) {
+		t.Error("a body exactly at the limit should fit")
 	}
-	if !strings.Contains(out, "truncated at 16 KB") {
-		t.Error("truncation must be VISIBLE — a silently halved document reads as a reasoning failure, not a missing input")
+	if Fits(strings.Repeat("x", MaxDocumentBytes+1)) {
+		t.Error("a body over the limit must not fit")
 	}
 }
 
-func TestDocument_CapCutsOnARuneBoundary(t *testing.T) {
-	body := strings.Repeat("é", MaxDocumentBytes) // 2 bytes each → well over the cap
-	out := docExpand("{{document:/uni}}", map[DocRef]string{{Path: "/uni"}: body})
-	if strings.Contains(out, "�") {
-		t.Error("cap split a multi-byte rune into mojibake")
+// The outline is what an agent receives instead of a truncated body. It must be
+// a MAP: what the document is, where it is, and what is in it — plus the exact
+// selector that would inline any one part.
+func TestOutlineFor_IsAMapWithTheSelectorToNarrowTo(t *testing.T) {
+	out := OutlineFor(DocRef{Path: "/specs/launch"}, "Launch plan", []string{"Goals", "Risks", "Timeline"})
+
+	for _, want := range []string{"Launch plan", "/specs/launch", "Goals", "Risks", "Timeline"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("outline missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "{{document:/specs/launch#<section>}}") {
+		t.Errorf("outline must name the selector that narrows the ref:\n%s", out)
+	}
+	if !strings.Contains(out, "NOT included") {
+		t.Errorf("the outline must SAY the full text is absent, or the agent reads it as the document:\n%s", out)
+	}
+}
+
+func TestOutlineFor_SectionlessDocumentStillSaysWhatItIs(t *testing.T) {
+	out := OutlineFor(DocRef{Path: "/notes/flat"}, "Flat note", nil)
+	if !strings.Contains(out, "/notes/flat") || !strings.Contains(out, "no sections") {
+		t.Errorf("outline = %q", out)
+	}
+}
+
+// A chunk id addresses one chunk directly — the most precise form, and the one
+// that makes inlining a whole document unnecessary in the common case.
+func TestDocument_AChunkIDIsARefWithNoPath(t *testing.T) {
+	refs := ReferencesDocRefs("{{document:5b025c6853f5bdbcb033d081113a5b74}}")
+	if len(refs) != 1 {
+		t.Fatalf("refs = %+v", refs)
+	}
+	if !refs[0].IsID() {
+		t.Error("a ref with no leading slash must be treated as an id, not a path")
+	}
+	if refs[0].Heading != "" {
+		t.Errorf("heading = %q, want none", refs[0].Heading)
+	}
+}
+
+func TestDocument_APathIsNotAnID(t *testing.T) {
+	refs := ReferencesDocRefs("{{document:/specs/launch}}")
+	if len(refs) != 1 || refs[0].IsID() {
+		t.Errorf("refs = %+v, want a path ref", refs)
 	}
 }
 
