@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -194,5 +195,89 @@ func TestSweeper_MemExportCarriesTemporalColumns(t *testing.T) {
 	if !strings.Contains(blob, `"valid_at": "0001-01-01T00:00:00Z"`) {
 		t.Log("note: the year-1 serialisation of an undated valid_at is gone — if that was " +
 			"deliberate, drop this assertion and the comment above it")
+	}
+}
+
+// TestSweeper_SQLMemExportCoversChunkMemoryMeta is the CX-2 gate that RFC CV's
+// P2 is not allowed to land without: the reclamation export must carry a fact's
+// PROVENANCE, not only its text.
+//
+// The chunk-body test above pins the k/v half — the sentence a fact says. This
+// pins the other half: chunk_memory_meta is where the natural key, the source
+// span, the session/run/event pointer and the bi-temporal instants live. An
+// export carrying the text but not the meta produces a restored fact that
+// asserts something with no way to say where it came from, which is precisely
+// what the fact->source relation exists to prevent.
+//
+// ⚠️ THE COVERAGE IS INCIDENTAL, which is the whole reason to pin it. The scope
+// dump enumerates EVERY table it finds (sqlite_master / information_schema)
+// rather than naming the ones it wants, so chunk_memory_meta rides along because
+// nothing excludes it. Adding a table allowlist — an obvious optimisation for a
+// large scope — would silently drop provenance from every export, and P2 makes
+// the chunk plane the ONLY home for it. This test is what makes that a red build
+// instead of a data-loss incident, exactly as the chunk-body test is.
+func TestSweeper_SQLMemExportCoversChunkMemoryMeta(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	sm := newTestSqlMem(t)
+
+	seedRetiredAgent(t, st, "acme", "dead", 1)
+	seedAgentSQLScope(t, sm, "acme", "dead")
+	seedAgentDirent(t, st, "acme", "dead")
+
+	// A fact's provenance row, shaped like the one the consolidator writes: the
+	// natural key that joins it to the k/v body, the verbatim source span, the
+	// session/event pointer, and the observed instant.
+	key := sqlmem.ScopeKey{Tenant: "acme", Scope: "agent", ScopeID: "dead"}
+	const ddl = `CREATE TABLE chunk_memory_meta (
+		chunk_id TEXT PRIMARY KEY, natural_key TEXT, source_quote TEXT,
+		session_id TEXT, run_id TEXT, event_seq INTEGER, observed_at INTEGER)`
+	if _, err := sm.Exec(ctx, key, ddl, nil, 0); err != nil {
+		t.Fatalf("seed meta table: %v", err)
+	}
+	const ins = `INSERT INTO chunk_memory_meta
+		(chunk_id, natural_key, source_quote, session_id, run_id, event_seq, observed_at)
+		VALUES ('c1','memory/fact/dave-berlin','Dave: I moved to Berlin last month.','sess-a','r-1',7,1688756160000000000)`
+	if _, err := sm.Exec(ctx, key, ins, nil, 0); err != nil {
+		t.Fatalf("seed meta row: %v", err)
+	}
+
+	sw := New(st, Config{MemMode: "export+prune", ExportDir: dir, SQLMem: sm, Logger: quietLogger, Now: futureHour})
+	if _, err := sw.sweepOnce(ctx); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+
+	var blob string
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, _ error) error {
+		if d == nil || d.IsDir() || filepath.Base(filepath.Dir(p)) != "sqlmem" {
+			return nil
+		}
+		if b, err := os.ReadFile(p); err == nil {
+			blob = string(b)
+		}
+		return nil
+	})
+	if blob == "" {
+		t.Fatalf("no sqlmem export file was written under %s", dir)
+	}
+	// Asserted on the CONTENT an operator would need back, not on a table name:
+	// a dump listing the table with zero rows would pass a name-only check while
+	// losing every span.
+	for _, want := range []string{
+		"chunk_memory_meta",
+		"memory/fact/dave-berlin",
+		"Dave: I moved to Berlin last month.",
+		"sess-a",
+	} {
+		if !strings.Contains(blob, want) {
+			t.Errorf("the sqlmem export is missing %q — a restored fact would assert something "+
+				"with no way to say where it came from, and after P2 the chunk plane is its ONLY "+
+				"home.\n\nexport:\n%s", want, blob[:min(1200, len(blob))])
+		}
 	}
 }
