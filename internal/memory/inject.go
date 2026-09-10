@@ -141,7 +141,7 @@ var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
 // the operator had placed it in the prompt. Substitution output is never
 // rescanned within one ReplaceAllStringFunc, which closes that cross-family
 // injection path by construction.
-var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern)
+var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern)
 
 // References reports whether s contains any {{memory:...}} placeholder
 // (escaped or not). A cheap gate so the caller can skip the whole injection
@@ -196,6 +196,10 @@ type ExpandInput struct {
 	Sections map[Variant]string
 	// ToolResults holds the rendered body for each {{tool:Tool.op}}.
 	ToolResults map[ToolRef]string
+	// Documents holds the rendered body for each {{document:REF}}. Bodies are
+	// read under the RUN'S OWN authority by the caller, so this family adds
+	// reach without adding authority.
+	Documents map[DocRef]string
 	// MaxTokens caps the TOTAL injected memory content (chars/4). <= 0 disables.
 	MaxTokens int
 	// ToolMaxTokens caps the TOTAL injected tool-result content (chars/4).
@@ -248,6 +252,14 @@ func Expand(prompt string, in ExpandInput) string {
 		// unambiguous.
 		sub := placeholderRe.FindStringSubmatch(match)
 		if sub == nil {
+			// Not the memory family. The remaining two are disjoint, so a match
+			// belongs to whichever recognises it. Document bodies draw on the
+			// MEMORY budget rather than the tool budget: like a memory section
+			// they are accumulated content an operator placed, whereas the tool
+			// budget exists for the fixed runtime-knowledge blocks.
+			if documentPlaceholderRe.MatchString(match) {
+				return expandDocumentPlaceholder(match, in.Documents, &remaining)
+			}
 			return expandToolPlaceholder(match, in.ToolResults, &toolRemaining)
 		}
 		if sub[1] == `\` {

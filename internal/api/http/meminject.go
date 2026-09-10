@@ -88,12 +88,13 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	suppressRoots := agentDef.MemoryRoots == "suppress"
 	wantUserInfo := meminject.ReferencesVariant(promptSrc, meminject.VariantUserInfo)
 	toolRefs := meminject.ReferencesToolRefs(promptSrc)
+	docRefs := meminject.ReferencesDocRefs(promptSrc)
 
 	// Fast path: no core blocks, no placeholder of either family, no protocol, no
 	// forced provisioning → return byte-identical with no store reads and no tool
 	// dispatch. Keeps every non-memory agent exactly as before.
 	if len(blocks) == 0 && !meminject.References(promptSrc) && len(toolRefs) == 0 &&
-		!agentDef.MemoryProtocol && !forceRoots {
+		len(docRefs) == 0 && !agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
 
@@ -157,6 +158,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	out.SystemPrompt = meminject.Expand(promptSrc, meminject.ExpandInput{
 		Sections:      sections,
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
+		Documents:     s.renderDocuments(ctx, mi, docRefs),
 		MaxTokens:     maxTokens,
 		ToolMaxTokens: toolInjectMaxTokens,
 	})
@@ -420,6 +422,98 @@ func (s *Server) provisionUserRootDoc(ctx context.Context, mi memInject) {
 
 // readUserRootMarkdown exports the user-root Document to clean Markdown for
 // injection. Best-effort: no store / no SQL Memory / no such document → "".
+// renderDocuments resolves each {{document:REF}} to its markdown.
+//
+// Read UNDER THE RUN'S OWN AUTHORITY: the Document tool is dispatched on the
+// same ctx every other renderer here uses, so the substrate applies the same
+// scope fold the agent's own Document tool would. A ref naming a document this
+// run cannot read renders NOTHING — the family adds reach, not authority.
+//
+// A miss of any kind (absent, unreadable, empty, malformed) renders to nothing
+// rather than erroring. Prompt assembly runs at every run-entry, sub-agent
+// spawn and resume, and a run must not fail because a document moved.
+func (s *Server) renderDocuments(ctx context.Context, mi memInject, refs []meminject.DocRef) map[meminject.DocRef]string {
+	if len(refs) == 0 || s.store == nil || s.sqlMem == nil {
+		return nil
+	}
+	dctx := s.docToolCtx(ctx, mi)
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	out := make(map[meminject.DocRef]string, len(refs))
+	for _, ref := range refs {
+		if body := exportDocumentMarkdown(dctx, doc, ref); body != "" {
+			out[ref] = body
+		}
+	}
+	return out
+}
+
+// exportDocumentMarkdown reads one ref. A heading selects a single section of
+// the exported markdown, so `{{document:/specs/launch#Risks}}` inlines one part
+// of a document too large to inline whole.
+func exportDocumentMarkdown(ctx context.Context, doc *builtin.Document, ref meminject.DocRef) string {
+	req, err := json.Marshal(map[string]any{
+		"op": "export_md", "scope": "user", "path": ref.Path, "include_metadata": false,
+	})
+	if err != nil {
+		return ""
+	}
+	res, _ := doc.Execute(ctx, req)
+	if res.IsError {
+		return ""
+	}
+	var payload struct {
+		Markdown string `json:"markdown"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &payload); err != nil {
+		return ""
+	}
+	md := strings.TrimSpace(payload.Markdown)
+	if ref.Heading == "" {
+		return md
+	}
+	return sectionByHeading(md, ref.Heading)
+}
+
+// sectionByHeading returns the markdown section under the ATX heading whose text
+// matches name (case-insensitive), up to the next heading of the same or higher
+// level. Returns "" when no heading matches — which renders nothing, the same as
+// any other miss.
+func sectionByHeading(md, name string) string {
+	lines := strings.Split(md, "\n")
+	start, level := -1, 0
+	for i, ln := range lines {
+		lv, title, ok := atxHeading(ln)
+		if !ok {
+			continue
+		}
+		if start == -1 && strings.EqualFold(title, name) {
+			start, level = i, lv
+			continue
+		}
+		if start != -1 && lv <= level {
+			return strings.TrimSpace(strings.Join(lines[start:i], "\n"))
+		}
+	}
+	if start == -1 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(lines[start:], "\n"))
+}
+
+// atxHeading parses an ATX markdown heading line ("## Title"), returning its
+// level and title.
+func atxHeading(line string) (int, string, bool) {
+	t := strings.TrimSpace(line)
+	lv := 0
+	for lv < len(t) && t[lv] == '#' {
+		lv++
+	}
+	if lv == 0 || lv > 6 || lv >= len(t) || t[lv] != ' ' {
+		return 0, "", false
+	}
+	return lv, strings.TrimSpace(t[lv:]), true
+}
+
 func (s *Server) readUserRootMarkdown(ctx context.Context, mi memInject) string {
 	if s.store == nil || s.sqlMem == nil || mi.UserID == "" {
 		return ""
