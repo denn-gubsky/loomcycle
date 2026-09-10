@@ -308,7 +308,7 @@ const memoryInputSchema = `{
     "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}},
     "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}, "additionalProperties": false},
     "from_pending":  {"type": "string", "description": "set-only: the id of a pending item you drained, so this fact records what produced it. Pass the id and the server fills in the origin and source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds. Prefer this over filling source_session_id / source_run_id by hand when the fact came from a drained item."},
-    "include_source": {"type": "boolean", "description": "recall-only: include the verbatim source span each fact was distilled from, when one was recorded (default TRUE). The span carries the original wording and its own leading timestamp, so a fact whose summary dropped \"last week\" is still datable through it. Pass false for a smaller payload."},
+    "include_source": {"type": "boolean", "description": "recall-only: include the verbatim source span each fact was distilled from, plus source_run_id — the run it came from, which History can resolve to the whole conversation (default TRUE). The span carries the original wording and its own leading timestamp, so a fact whose summary dropped \"last week\" is still datable through it; the run id is where to go when one sentence is not enough. Pass false for a smaller payload."},
     "include_provenance": {"type": "boolean", "description": "get-only: also return where the fact came from, and whether that origin is still readable (origin_available). A false origin_available means the chat has since been deleted — the fact is still valid, you just cannot go re-read its source."}
   },
   "required": ["op","scope"],
@@ -1694,7 +1694,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	//
 	// The span is already capped at write time (the consolidator's
 	// max_quote_chars), so this adds roughly one sentence per hit.
-	var spans map[string]string
+	var spans map[string]FactSource
 	if in.IncludeSource == nil || *in.IncludeSource {
 		ids := make([]string, 0, len(res.Facts))
 		for _, f := range res.Facts {
@@ -1713,8 +1713,18 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		// turn's own leading timestamp and whatever relative phrasing distillation
 		// dropped, which is exactly what a "when did X happen" question needs and a
 		// summarised sentence cannot supply.
-		if sp := spans[f.ID]; sp != "" {
-			mem["source"] = sp
+		if sp, ok := spans[f.ID]; ok {
+			if sp.Span != "" {
+				mem["source"] = sp.Span
+			}
+			// AND THE POINTER, so the relation is followable and not just quotable.
+			// The span is one sentence by design; a reader who needs the turns around
+			// it has nowhere to go without this. History resolves it, under the same
+			// tenant/scope gate as any other read — the id is a coordinate, not an
+			// authorisation.
+			if sp.RunID != "" {
+				mem["source_run_id"] = sp.RunID
+			}
 		}
 		// Omitted when the backend could not classify the row — see RecallFact.Kind.
 		// An absent kind means "unknown", which is why this is not defaulted.

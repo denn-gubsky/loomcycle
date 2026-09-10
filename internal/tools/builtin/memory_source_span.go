@@ -42,8 +42,27 @@ const maxSourceSpanLookup = 64
 // Returns nil on any failure. A missing span must degrade to "no span" rather than
 // failing the recall: the distilled fact is still a valid answer, and an error here
 // would trade a working retrieval for a provenance nicety.
+// FactSource is what a recalled fact can say about where it came from: the
+// verbatim span, and a POINTER an operator or agent can follow to the whole
+// conversation.
+//
+// The span alone answers "what was said"; the pointer answers "where is the
+// rest of it", and those are different questions. A span is one sentence by
+// design (capped at write time), so without the pointer a reader who needs
+// surrounding context has nowhere to go.
+//
+// RunID rather than a session id, and that is measured: across 1,096
+// fact-provenance rows on a live store, run_id was 100% populated and
+// session_id 0% — the queue enqueues with the ingesting run's id and there is no
+// session-id helper on the tools context. runs.session_id is one hop away for a
+// caller that needs the session.
+type FactSource struct {
+	Span  string
+	RunID string
+}
+
 func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
-	scope store.MemoryScope, scopeID string, factIDs []string) map[string]string {
+	scope store.MemoryScope, scopeID string, factIDs []string) map[string]FactSource {
 	if sm == nil || len(factIDs) == 0 {
 		return nil
 	}
@@ -68,23 +87,29 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	if len(keys) == 0 {
 		return nil
 	}
-	stmt := `SELECT natural_key, source_quote FROM chunk_memory_meta ` +
-		`WHERE source_quote IS NOT NULL AND source_quote <> '' AND natural_key IN (` +
+	// A row with a pointer but no span is still worth returning: the reference is
+	// followable even when the span was never derived, which is the common shape
+	// before a verification pass runs. The old query required a non-empty span
+	// and so hid those rows entirely.
+	stmt := `SELECT natural_key, coalesce(source_quote, ''), coalesce(run_id, '') FROM chunk_memory_meta ` +
+		`WHERE natural_key IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
 	res, err := sm.Query(ctx, key, sm.Rebind(stmt), keys)
 	if err != nil || res == nil {
 		return nil
 	}
-	out := make(map[string]string, len(res.Rows))
+	out := make(map[string]FactSource, len(res.Rows))
 	for _, row := range res.Rows {
-		if len(row) < 2 {
+		if len(row) < 3 {
 			continue
 		}
-		nk, span := asStr(row[0]), asStr(row[1])
-		if nk == "" || span == "" {
+		nk, span, runID := asStr(row[0]), asStr(row[1]), asStr(row[2])
+		// A row with neither a span nor a pointer says nothing, so it is dropped;
+		// either one alone is still useful and is kept.
+		if nk == "" || (span == "" && runID == "") {
 			continue
 		}
-		out[nk] = span
+		out[nk] = FactSource{Span: span, RunID: runID}
 	}
 	return out
 }

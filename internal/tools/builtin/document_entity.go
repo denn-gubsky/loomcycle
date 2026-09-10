@@ -352,6 +352,15 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.ClaimsOnly {
 		where = append(where, identityNodeExclusion)
 	}
+	// THE INVERSE DIRECTION. The SELECT below already returns m.run_id, so a
+	// caller could read provenance off every fact and filter client-side; making
+	// it a WHERE is what turns "where did this come from" into a two-way
+	// relation rather than a field you can only inspect after fetching
+	// everything.
+	if in.SourceRunID != "" {
+		where = append(where, "m.run_id = ?")
+		args = append(args, in.SourceRunID)
+	}
 	if in.DocumentID != "" {
 		where = append(where, "c.document_id = ?")
 		args = append(args, in.DocumentID)

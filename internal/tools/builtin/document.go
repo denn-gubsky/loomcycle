@@ -190,11 +190,16 @@ type docInput struct {
 	// Opt-in rather than the default because list_facts' contract is "chunks that carry
 	// entity metadata", and the document-federation reconcile depends on that breadth —
 	// narrowing it silently would stop syncing subject nodes. See identityNodeExclusion.
-	ClaimsOnly bool   `json:"claims_only"`
-	Verdict    string `json:"verdict"`
-	Reason     string `json:"reason"`
-	Position   *int   `json:"position"`
-	Revision   *int   `json:"revision"`
+	ClaimsOnly bool `json:"claims_only"`
+	// SourceRunID answers the INVERSE of "where did this fact come from": what
+	// did we learn from this conversation. The forward direction is the pointer
+	// recall returns; without the inverse an operator holding a transcript has no
+	// way to ask what it produced, which is half the relation missing.
+	SourceRunID string `json:"source_run_id,omitempty"`
+	Verdict     string `json:"verdict"`
+	Reason      string `json:"reason"`
+	Position    *int   `json:"position"`
+	Revision    *int   `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
