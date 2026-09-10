@@ -51,6 +51,7 @@ func rowToBareDescriptor(row store.ChannelRow) connector.ChannelDescriptor {
 		Period:      row.Period,
 		DefaultTTL:  row.DefaultTTL,
 		MaxMessages: row.MaxMessages,
+		Hold:        row.Hold,
 		Source:      "runtime",
 	}
 }
@@ -129,6 +130,7 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 		MaxMessages: req.MaxMessages,
 		Publisher:   req.Publisher,
 		Period:      req.Period,
+		Hold:        req.Hold,
 		CreatedAt:   time.Now().UTC(),
 	}
 	if err := s.store.ChannelsCreate(ctx, row); err != nil {
@@ -172,6 +174,7 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 		DefaultTTL:  req.DefaultTTL,
 		MaxMessages: req.MaxMessages,
 		Semantic:    req.Semantic,
+		Hold:        req.Hold,
 	}
 	if err := s.store.ChannelsUpdate(ctx, tenantFromCtx(ctx), name, patch); err != nil {
 		var notFound *store.ErrNotFound

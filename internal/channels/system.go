@@ -52,6 +52,21 @@ type StorePublisher struct {
 	Store     store.Store
 	Bus       *Bus       // nil disables in-process notification
 	Scheduler *Scheduler // nil disables deferred-publish wake-up scheduling
+
+	// HoldFn reports whether a channel is declared `hold:` — stored but not
+	// delivered until released (RFC CY).
+	//
+	// The CHECK LIVES HERE, not at the call sites, and that is the point: a
+	// hold is a promise that nothing reaches a subscriber, and a promise
+	// enforced at five call sites is a promise the sixth one breaks. Every
+	// internal publisher — heartbeats, webhook relay, interrupts, the admin
+	// endpoint — goes through this one method, so wiring the resolver once
+	// holds all of them.
+	//
+	// Injected rather than resolved here because the channel definition
+	// plane (static yaml merged with the runtime substrate, tenant-scoped)
+	// lives in the server. nil = nothing is held.
+	HoldFn func(ctx context.Context, channel string) bool
 }
 
 // SystemPublisherUserID is the audit-trail sentinel for internal Go
@@ -82,6 +97,19 @@ func (p *StorePublisher) Publish(ctx context.Context, channel, tenantID string, 
 		deferred = true
 	}
 
+	// A held channel overrides any deliver_at: the message waits for a
+	// release, not for a clock. Callers that already resolved the def pass
+	// the reserved instant as deliverAt (the store.IsChannelHeld arm);
+	// everyone else is caught by HoldFn.
+	held := store.IsChannelHeld(deliverAt)
+	if !held && p.HoldFn != nil {
+		held = p.HoldFn(ctx, channel)
+	}
+	if held {
+		visibleAt = store.ChannelHeldVisibleAt()
+		deferred = false
+	}
+
 	msg := store.ChannelMessage{
 		Channel:           channel,
 		TenantID:          tenantID,
@@ -103,10 +131,15 @@ func (p *StorePublisher) Publish(ctx context.Context, channel, tenantID string, 
 
 	// Wake subscribers. Deferred publishes go through the scheduler
 	// (wakes at visible_at); immediate publishes notify the bus
-	// directly (same path as the agent tool's execPublish).
-	if deferred && p.Scheduler != nil {
+	// directly (same path as the agent tool's execPublish). A HELD
+	// message wakes nobody — that is what holding means, and arming a
+	// timer for the reserved instant would be a timer for the year 2200.
+	switch {
+	case held:
+		// no notification, no timer
+	case deferred && p.Scheduler != nil:
 		p.Scheduler.Schedule(channel, id, visibleAt)
-	} else if p.Bus != nil {
+	case p.Bus != nil:
 		p.Bus.Notify(channel)
 	}
 

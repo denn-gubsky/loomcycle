@@ -20,7 +20,7 @@ import (
 func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, created_at
+		       default_ttl, max_messages, publisher, period, hold, created_at
 		FROM channels
 		ORDER BY tenant_id, name
 	`)
@@ -35,7 +35,7 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 		if err := rows.Scan(
 			&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 			&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-			&createdNano,
+			&r.Hold, &createdNano,
 		); err != nil {
 			return nil, fmt.Errorf("channels list scan: %w", err)
 		}
@@ -55,13 +55,13 @@ func (s *Store) ChannelGet(ctx context.Context, tenantID, name string) (store.Ch
 	var createdNano int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, created_at
+		       default_ttl, max_messages, publisher, period, hold, created_at
 		FROM channels
 		WHERE tenant_id = ? AND name = ?
 	`, tenantID, name).Scan(
 		&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-		&createdNano,
+		&r.Hold, &createdNano,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
@@ -84,12 +84,12 @@ func (s *Store) ChannelsCreate(ctx context.Context, row store.ChannelRow) error 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels (
 			name, description, scope, semantic,
-			default_ttl, max_messages, publisher, period, created_at, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			default_ttl, max_messages, publisher, period, hold, created_at, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		row.Name, row.Description, row.Scope, row.Semantic,
 		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period,
-		row.CreatedAt.UnixNano(), row.TenantID,
+		row.Hold, row.CreatedAt.UnixNano(), row.TenantID,
 	)
 	if err != nil {
 		// modernc.org/sqlite surfaces UNIQUE-constraint failures
@@ -128,6 +128,10 @@ func (s *Store) ChannelsUpdate(ctx context.Context, tenantID, name string, patch
 	if patch.Semantic != nil {
 		sets = append(sets, "semantic = ?")
 		args = append(args, *patch.Semantic)
+	}
+	if patch.Hold != nil {
+		sets = append(sets, "hold = ?")
+		args = append(args, *patch.Hold)
 	}
 	if len(sets) == 0 {
 		// Nothing to update — verify existence and return.

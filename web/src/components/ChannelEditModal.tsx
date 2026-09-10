@@ -44,6 +44,7 @@ export default function ChannelEditModal({
   const [maxMessages, setMaxMessages] = useState<string>(
     existing?.max_messages !== undefined ? String(existing.max_messages) : "0",
   );
+  const [hold, setHold] = useState<boolean>(existing?.hold ?? false);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -62,6 +63,7 @@ export default function ChannelEditModal({
           semantic,
           default_ttl: ttl,
           max_messages: max,
+          hold,
         };
         saved = await createChannel(req);
       } else {
@@ -71,6 +73,7 @@ export default function ChannelEditModal({
           default_ttl: ttl,
           max_messages: max,
           semantic,
+          hold,
         };
         saved = await updateChannel(existing.name, patch);
       }
@@ -157,6 +160,21 @@ export default function ChannelEditModal({
               />
             </label>
           </div>
+
+          <label className="library-modal-field">
+            <span>
+              <input
+                type="checkbox"
+                checked={hold}
+                onChange={(e) => setHold(e.target.checked)}
+              />{" "}
+              Hold (breakpoint)
+            </span>
+            <small>
+              Publishes are stored but never delivered until you release
+              them — one at a time from the channel page.
+            </small>
+          </label>
         </div>
 
         {err && <div className="error-banner">{err}</div>}

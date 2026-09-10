@@ -229,6 +229,10 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
 		{"ChannelStatsEmptyOnNoMessages", testChannelStatsEmptyOnNoMessages},
 		{"ChannelGetPointLookup", testChannelGetPointLookup},
+		// RFC CY hold breakpoint
+		{"ChannelHoldRoundTripsOnTheDefinition", testChannelHoldRoundTripsOnTheDefinition},
+		{"ChannelReleaseHandsOverOldestFirst", testChannelReleaseHandsOverOldestFirst},
+		{"ChannelReleaseSkipsExpiredHeld", testChannelReleaseSkipsExpiredHeld},
 		// v0.8.6 deferred publish (PR 1)
 		{"ChannelDeferredHiddenUntilVisible", testChannelDeferredHiddenUntilVisible},
 		{"ChannelDeferredDeliversAfterProgressedCursor", testChannelDeferredDeliversAfterProgressedCursor},
@@ -5882,6 +5886,156 @@ func testChannelGetPointLookup(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Errorf("ChannelGet(missing): got %v (%T), want *store.ErrNotFound", err, err)
+	}
+}
+
+// testChannelHoldRoundTripsOnTheDefinition pins hold as a persisted channel
+// attribute: settable at create, readable back, and patchable both ways. A
+// definition field that does not survive the round-trip is a setting the
+// operator believes they made.
+func testChannelHoldRoundTripsOnTheDefinition(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{
+		Name: "ch-hold", Scope: "global", Semantic: "queue", Hold: true,
+	}); err != nil {
+		t.Fatalf("ChannelsCreate: %v", err)
+	}
+	got, err := s.ChannelGet(ctx, "", "ch-hold")
+	if err != nil {
+		t.Fatalf("ChannelGet: %v", err)
+	}
+	if !got.Hold {
+		t.Errorf("hold did not survive create: %+v", got)
+	}
+	rows, err := s.ChannelsList(ctx)
+	if err != nil {
+		t.Fatalf("ChannelsList: %v", err)
+	}
+	var listed bool
+	for _, r := range rows {
+		if r.Name == "ch-hold" {
+			listed = r.Hold
+		}
+	}
+	if !listed {
+		t.Errorf("hold missing from the listing")
+	}
+
+	off := false
+	if err := s.ChannelsUpdate(ctx, "", "ch-hold", store.ChannelPatch{Hold: &off}); err != nil {
+		t.Fatalf("ChannelsUpdate(hold=false): %v", err)
+	}
+	got, err = s.ChannelGet(ctx, "", "ch-hold")
+	if err != nil {
+		t.Fatalf("ChannelGet after patch: %v", err)
+	}
+	if got.Hold {
+		t.Errorf("patch did not clear hold: %+v", got)
+	}
+	// A patch that does not mention hold must leave it alone (the nil-means-
+	// unchanged contract every other field on ChannelPatch keeps).
+	on := true
+	if err := s.ChannelsUpdate(ctx, "", "ch-hold", store.ChannelPatch{Hold: &on}); err != nil {
+		t.Fatalf("ChannelsUpdate(hold=true): %v", err)
+	}
+	desc := "unrelated"
+	if err := s.ChannelsUpdate(ctx, "", "ch-hold", store.ChannelPatch{Description: &desc}); err != nil {
+		t.Fatalf("ChannelsUpdate(description): %v", err)
+	}
+	got, _ = s.ChannelGet(ctx, "", "ch-hold")
+	if !got.Hold {
+		t.Errorf("an unrelated patch cleared hold: %+v", got)
+	}
+}
+
+// testChannelReleaseHandsOverOldestFirst pins the release contract: a message
+// stored at the reserved held instant is invisible to a read, becomes visible
+// in publish order as it is released, and the report says how many are left.
+func testChannelReleaseHandsOverOldestFirst(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, body := range []string{`"A"`, `"B"`, `"C"`} {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+			Channel: "ch-rel", Scope: store.MemoryScopeAgent, ScopeID: "x",
+			Payload:   json.RawMessage(body),
+			VisibleAt: store.ChannelHeldVisibleAt(),
+		}, 0); err != nil {
+			t.Fatalf("publish held: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "ch-rel", store.MemoryScopeAgent, "x", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("held messages delivered: got %d, want 0", len(msgs))
+	}
+
+	released, stillHeld, err := s.ChannelRelease(ctx, "", "ch-rel", store.MemoryScopeAgent, "x", 2)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 2 {
+		t.Fatalf("released %d, want 2", len(released))
+	}
+	if stillHeld != 1 {
+		t.Errorf("still held = %d, want 1", stillHeld)
+	}
+	msgs, _, err = s.ChannelSubscribe(ctx, "", "ch-rel", store.MemoryScopeAgent, "x", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe after release: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("after releasing 2, delivered %d", len(msgs))
+	}
+	if string(msgs[0].Payload) != `"A"` || string(msgs[1].Payload) != `"B"` {
+		t.Errorf("released out of publish order: %s, %s", msgs[0].Payload, msgs[1].Payload)
+	}
+
+	// Releasing more than remain releases what there is.
+	released, stillHeld, err = s.ChannelRelease(ctx, "", "ch-rel", store.MemoryScopeAgent, "x", 10)
+	if err != nil {
+		t.Fatalf("release rest: %v", err)
+	}
+	if len(released) != 1 || stillHeld != 0 {
+		t.Errorf("drain released %d leaving %d, want 1 leaving 0", len(released), stillHeld)
+	}
+	// And a release with nothing held is a no-op, not an error.
+	released, stillHeld, err = s.ChannelRelease(ctx, "", "ch-rel", store.MemoryScopeAgent, "x", 1)
+	if err != nil {
+		t.Fatalf("release on drained queue: %v", err)
+	}
+	if len(released) != 0 || stillHeld != 0 {
+		t.Errorf("release on a drained queue reported %d/%d, want 0/0", len(released), stillHeld)
+	}
+}
+
+// testChannelReleaseSkipsExpiredHeld pins the TTL floor: a held message that
+// outlived its TTL is never released and never counted as held, so a hold is
+// not a way to keep a message past the retention its publisher declared.
+func testChannelReleaseSkipsExpiredHeld(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "ch-rel-exp", Scope: store.MemoryScopeAgent, ScopeID: "x",
+		Payload:   json.RawMessage(`"gone"`),
+		VisibleAt: store.ChannelHeldVisibleAt(),
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}, 0); err != nil {
+		t.Fatalf("publish expired-held: %v", err)
+	}
+	released, stillHeld, err := s.ChannelRelease(ctx, "", "ch-rel-exp", store.MemoryScopeAgent, "x", 10)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 0 || stillHeld != 0 {
+		t.Errorf("expired held message released/counted: %d/%d, want 0/0", len(released), stillHeld)
+	}
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "ch-rel-exp", store.MemoryScopeAgent, "x", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expired held message delivered: %d", len(msgs))
 	}
 }
 

@@ -23,7 +23,7 @@ import (
 func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, created_at
+		       default_ttl, max_messages, publisher, period, hold, created_at
 		FROM channels
 		ORDER BY tenant_id, name
 	`)
@@ -38,7 +38,7 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 		if err := rows.Scan(
 			&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 			&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-			&createdAt,
+			&r.Hold, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("channels list scan: %w", err)
 		}
@@ -58,13 +58,13 @@ func (s *Store) ChannelGet(ctx context.Context, tenantID, name string) (store.Ch
 	var createdAt time.Time
 	err := s.pool.QueryRow(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, created_at
+		       default_ttl, max_messages, publisher, period, hold, created_at
 		FROM channels
 		WHERE tenant_id = $1 AND name = $2
 	`, tenantID, name).Scan(
 		&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-		&createdAt,
+		&r.Hold, &createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
@@ -87,11 +87,11 @@ func (s *Store) ChannelsCreate(ctx context.Context, row store.ChannelRow) error 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO channels (
 			name, description, scope, semantic,
-			default_ttl, max_messages, publisher, period, created_at, tenant_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			default_ttl, max_messages, publisher, period, hold, created_at, tenant_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`,
 		row.Name, row.Description, row.Scope, row.Semantic,
-		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period, createdAt, row.TenantID,
+		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period, row.Hold, createdAt, row.TenantID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -129,6 +129,11 @@ func (s *Store) ChannelsUpdate(ctx context.Context, tenantID, name string, patch
 	if patch.Semantic != nil {
 		sets = append(sets, fmt.Sprintf("semantic = $%d", idx))
 		args = append(args, *patch.Semantic)
+		idx++
+	}
+	if patch.Hold != nil {
+		sets = append(sets, fmt.Sprintf("hold = $%d", idx))
+		args = append(args, *patch.Hold)
 		idx++
 	}
 	if len(sets) == 0 {

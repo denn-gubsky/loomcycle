@@ -47,6 +47,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			Period:      ch.Period,
 			DefaultTTL:  ch.DefaultTTL,
 			MaxMessages: ch.MaxMessages,
+			Hold:        ch.Hold,
 			Source:      "yaml",
 		}
 		if st, ok := statsByName[name]; ok {
@@ -87,6 +88,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			Period:      r.Period,
 			DefaultTTL:  r.DefaultTTL,
 			MaxMessages: r.MaxMessages,
+			Hold:        r.Hold,
 			Source:      "runtime",
 		}
 		if st, ok := statsByName[r.Name]; ok {

@@ -1,0 +1,14 @@
+-- 0075_channels_hold.up.sql — RFC CY: the hold breakpoint.
+--
+-- A held channel STORES a publish without delivering or notifying; a release
+-- hands the oldest N messages to subscribers. The flag lives on the channel
+-- definition (not the message) because holding is a property of the wire, not
+-- of one payload: an operator single-stepping a wave holds the channel, runs
+-- the workflow, and releases one message at a time.
+--
+-- Held MESSAGES are marked in channel_messages by a reserved visible_at
+-- instant (store.ChannelHeldVisibleAt), which needs no column of its own —
+-- every read already filters visible_at <= now.
+--
+-- Default FALSE: every existing channel keeps delivering exactly as before.
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS hold BOOLEAN NOT NULL DEFAULT FALSE;

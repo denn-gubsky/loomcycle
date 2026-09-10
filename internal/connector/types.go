@@ -471,6 +471,7 @@ type ChannelDescriptor struct {
 	Period          string `json:"period,omitempty"`
 	DefaultTTL      int    `json:"default_ttl,omitempty"`
 	MaxMessages     int    `json:"max_messages,omitempty"`
+	Hold            bool   `json:"hold,omitempty"` // stores without delivering until released
 	MessageCount    int64  `json:"message_count"`
 	OldestVisibleAt string `json:"oldest_visible_at,omitempty"` // RFC3339; empty when count=0
 	NewestVisibleAt string `json:"newest_visible_at,omitempty"`
@@ -510,6 +511,10 @@ type ChannelPublishResult struct {
 	Channel   string `json:"channel"`
 	CreatedAt string `json:"created_at"`           // RFC3339Nano
 	VisibleAt string `json:"visible_at,omitempty"` // RFC3339Nano; omitted when not deferred
+	// Held reports that the channel is declared hold: — the message is
+	// stored but was NOT delivered and woke no subscriber. Said out loud
+	// because a msg_id with no further word reads as "delivered".
+	Held bool `json:"held,omitempty"`
 }
 
 // ChannelSubscribeRequest is the input to Connector.SubscribeChannel.
@@ -664,6 +669,7 @@ type ChannelCreateRequest struct {
 	MaxMessages int    `json:"max_messages,omitempty"` // bounded queue; 0 = unbounded
 	Publisher   string `json:"publisher,omitempty"`    // free-form attribution; not enforced
 	Period      string `json:"period,omitempty"`       // free-form retention hint; not enforced
+	Hold        bool   `json:"hold,omitempty"`         // store publishes without delivering until released
 }
 
 // ChannelUpdateRequest is the input to Connector.UpdateChannel. Nil
@@ -674,6 +680,26 @@ type ChannelUpdateRequest struct {
 	DefaultTTL  *int    `json:"default_ttl,omitempty"`
 	MaxMessages *int    `json:"max_messages,omitempty"`
 	Semantic    *string `json:"semantic,omitempty"`
+	Hold        *bool   `json:"hold,omitempty"`
+}
+
+// ChannelReleaseRequest is the input to Connector.ReleaseChannel — hand the
+// oldest Count held messages on a hold: channel to its subscribers. Count 0
+// means 1: a release is a single step unless the caller says otherwise.
+type ChannelReleaseRequest struct {
+	Channel string `json:"channel"`
+	Scope   string `json:"scope,omitempty"`
+	ScopeID string `json:"scope_id,omitempty"`
+	Count   int    `json:"count,omitempty"`
+}
+
+// ChannelReleaseResult reports what a release handed over and what is left.
+// Released is [] (never null) so a consumer can index it unconditionally.
+type ChannelReleaseResult struct {
+	Channel       string   `json:"channel"`
+	Released      []string `json:"released"`
+	ReleasedCount int      `json:"released_count"`
+	StillHeld     int      `json:"still_held"`
 }
 
 // ChannelPurgeResult is the output of Connector.PurgeChannel — the

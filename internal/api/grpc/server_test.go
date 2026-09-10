@@ -937,6 +937,9 @@ func (m *mockConnector) DeleteChannel(context.Context, string) error {
 func (m *mockConnector) PurgeChannel(context.Context, string) (connector.ChannelPurgeResult, error) {
 	return connector.ChannelPurgeResult{}, nil
 }
+func (m *mockConnector) ReleaseChannel(context.Context, connector.ChannelReleaseRequest) (connector.ChannelReleaseResult, error) {
+	return connector.ChannelReleaseResult{}, nil
+}
 func (m *mockConnector) Config(context.Context) ([]byte, error) {
 	return nil, errors.New("not implemented")
 }

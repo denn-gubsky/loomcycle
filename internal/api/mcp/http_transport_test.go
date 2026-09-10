@@ -234,6 +234,9 @@ func (m *httpMockConnector) DeleteChannel(context.Context, string) error {
 func (m *httpMockConnector) PurgeChannel(context.Context, string) (connector.ChannelPurgeResult, error) {
 	return connector.ChannelPurgeResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) ReleaseChannel(context.Context, connector.ChannelReleaseRequest) (connector.ChannelReleaseResult, error) {
+	return connector.ChannelReleaseResult{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) Config(context.Context) ([]byte, error) {
 	return nil, errors.New("not implemented")
 }
