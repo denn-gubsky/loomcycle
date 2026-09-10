@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -226,6 +227,44 @@ func TestChannelHold_RuntimeDeclaredChannelHoldsAndReleases(t *testing.T) {
 		t.Fatalf("release: status %d (%s)", rec.Code, rec.Body.String())
 	}
 	if n := peekCount(t, srv, "wave-in"); n != 1 {
+		t.Errorf("after release, %d readable, want 1", n)
+	}
+}
+
+// An INTERNAL publisher — one that never resolves a channel definition, the
+// shape heartbeats, interrupts and the webhook relay use — is held too. This
+// is the HoldFn seam: the hold is enforced inside StorePublisher, so a caller
+// that knows nothing about the definition cannot walk past the breakpoint.
+//
+// Without this the hold would only be as good as the call sites that remember
+// to ask, which is the failure mode the seam exists to prevent.
+func TestChannelHold_InternalPublisherIsHeldWithoutResolvingTheDef(t *testing.T) {
+	srv, _, cleanup := channelHoldFixture(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if _, err := srv.systemPublisher.PublishNow(ctx, "gate", "", store.MemoryScopeGlobal, "",
+		json.RawMessage(`{"beat":1}`), channels.SystemPublisherUserID, 0, 0); err != nil {
+		t.Fatalf("internal publish: %v", err)
+	}
+	if n := peekCount(t, srv, "gate"); n != 0 {
+		t.Errorf("an internal publish walked past the hold: %d delivered, want 0", n)
+	}
+
+	// Control: the same internal publish on a channel with no hold arrives.
+	if _, err := srv.systemPublisher.PublishNow(ctx, "open", "", store.MemoryScopeGlobal, "",
+		json.RawMessage(`{"beat":1}`), channels.SystemPublisherUserID, 0, 0); err != nil {
+		t.Fatalf("control publish: %v", err)
+	}
+	if n := peekCount(t, srv, "open"); n != 1 {
+		t.Errorf("control channel delivered %d, want 1", n)
+	}
+
+	// And the held one is released like any other.
+	if rec := postJSON(t, srv, "/v1/_channels/gate/release", ""); rec.Code != http.StatusOK {
+		t.Fatalf("release: status %d (%s)", rec.Code, rec.Body.String())
+	}
+	if n := peekCount(t, srv, "gate"); n != 1 {
 		t.Errorf("after release, %d readable, want 1", n)
 	}
 }
