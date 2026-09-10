@@ -772,9 +772,40 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := json.Unmarshal(overlay, &ov); err != nil {
 			return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
 		}
+		if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
+}
+
+// validateOverlayNamedScopes applies the operator-yaml rule for
+// `named:<pattern>` grants to the SUBSTRATE write path, where one agent
+// authors another's def.
+//
+// The two planes have to agree. Operator yaml refuses a bare `named:**` (it
+// grants every name at that depth) and a pattern the matcher can never match;
+// without the same check here, an operator who learned the rule from a boot
+// error finds the runtime path quietly keeping a different one.
+//
+// It checks only what the CALLER supplied, never what a parent def already
+// carried: refusing on an inherited value would brick forking a def that
+// predates this rule, and this validates authoring, not history. Scope strings
+// that are not `named:` are left alone — widening validation to the whole
+// closed set would start refusing typos that today round-trip harmlessly as
+// default-deny, which is a separate decision from this one.
+func validateOverlayNamedScopes(scopes []string) error {
+	for _, sc := range scopes {
+		pat, ok := strings.CutPrefix(sc, "named:")
+		if !ok {
+			continue
+		}
+		if err := config.ValidateNamedScopePattern(pat); err != nil {
+			return fmt.Errorf("agent_def_scopes: %w", err)
+		}
+	}
+	return nil
 }
 
 // resolveToolsRoot returns the operator-blessed Tools

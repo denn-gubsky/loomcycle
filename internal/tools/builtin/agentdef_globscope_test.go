@@ -82,3 +82,33 @@ func TestCheckScopeForName_NoScopesStillDefaultDeny(t *testing.T) {
 func agentDefPolicy(scopes ...string) tools.AgentDefPolicyValue {
 	return tools.AgentDefPolicyValue{Scopes: scopes}
 }
+
+// The substrate write path applies the SAME named-pattern rule as operator
+// yaml. Without this, an operator who learned the rule from a boot error would
+// find the runtime plane quietly keeping a different one — and the bare
+// wildcard the yaml refuses would be one AgentDef create away.
+func TestAgentDefTool_OverlayNamedScopeValidation(t *testing.T) {
+	refused := []string{
+		"named:*",           // grants every name — say `any` instead
+		"named:**",          //
+		"named:sdlc/**/rev", // ** must be last
+		"named:sdlc*",       // a wildcard is a whole segment
+	}
+	for _, sc := range refused {
+		if err := validateOverlayNamedScopes([]string{sc}); err == nil {
+			t.Errorf("overlay scope %q accepted on the substrate path; yaml refuses it", sc)
+		}
+	}
+	accepted := []string{"named:coder", "named:sdlc/*", "named:sdlc/**", "self", "descendants", "any"}
+	for _, sc := range accepted {
+		if err := validateOverlayNamedScopes([]string{sc}); err != nil {
+			t.Errorf("overlay scope %q refused: %v", sc, err)
+		}
+	}
+	// An unknown non-`named:` string is NOT this function's business — it is
+	// default-deny at the gate, and refusing it here would be a separate
+	// behaviour change that could break defs already in the wild.
+	if err := validateOverlayNamedScopes([]string{"typo-scope"}); err != nil {
+		t.Errorf("a non-named scope should pass through untouched, got %v", err)
+	}
+}
