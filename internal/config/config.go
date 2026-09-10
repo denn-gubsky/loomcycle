@@ -2250,8 +2250,29 @@ type AgentChannelACL struct {
 //
 // See rfcs/scheduled-agent-runs.md and `Context.help scheduled-runs`.
 type ScheduledRun struct {
+	// Delivery is WHAT a tick does. "" / "run" (the default) invokes the
+	// agent, which is every schedule that existed before this field. "channel"
+	// publishes to Channel and starts NO run — a cadence signal, symmetric
+	// with the `delivery: channel` a Webhook already has.
+	//
+	// Why a tick without a run: a workflow driven off a channel needs a clock,
+	// and today reaching a channel on a cron means burning an agent run whose
+	// only job is to publish. That costs a model call and a run row for a
+	// message the scheduler could write itself.
+	//
+	// A channel tick carries the schedule name, the fire time, and this def's
+	// Metadata as its payload — Metadata being the operator-authored non-secret
+	// structured data already on the def, and the only thing there is to say
+	// when no agent ran.
+	Delivery string `yaml:"delivery"`
+
+	// Channel is the publish target for delivery=channel. Required there,
+	// forbidden otherwise. Resolved at the channel's DECLARED scope, the same
+	// as an on_complete channel.publish hook.
+	Channel string `yaml:"channel"`
+
 	// Agent is the agent name to invoke. Must resolve via lookup.Agent
-	// (static cfg.Agents or substrate). Required.
+	// (static cfg.Agents or substrate). Required for delivery=run.
 	Agent string `yaml:"agent"`
 
 	// Prompt is the input segments. Operators typically use
@@ -6040,6 +6061,46 @@ func sqlMemConfigWarnings(name string, a AgentDef, sqlMemEnabled bool) []string 
 	return nil
 }
 
+// validateScheduleDelivery checks a schedule's delivery target (RFC CY),
+// mirroring validateStaticWebhook below: a mismatched target means the
+// schedule can never do anything useful, and failing loud at boot beats a
+// per-fire error nobody reads.
+//
+// delivery=channel FORBIDS the run-shaped fields rather than ignoring them. A
+// prompt that is never sent or an on_complete that never fires — there being
+// no run to complete — is a setting the operator believes they made, which is
+// the failure this codebase has paid for before.
+func validateScheduleDelivery(name string, sr ScheduledRun) error {
+	switch sr.Delivery {
+	case "", "run":
+		if sr.Agent == "" {
+			return fmt.Errorf("scheduled_runs.%s: agent is required (delivery=run)", name)
+		}
+		if sr.Channel != "" {
+			return fmt.Errorf("scheduled_runs.%s: delivery=run forbids `channel` (set delivery: channel to publish instead of running)", name)
+		}
+	case "channel":
+		if sr.Channel == "" {
+			return fmt.Errorf("scheduled_runs.%s: delivery=channel requires `channel`", name)
+		}
+		if sr.Agent != "" {
+			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids `agent` (a channel tick starts no run)", name)
+		}
+		if len(sr.Prompt) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids `prompt` (nothing reads it — put the tick's content in `metadata`)", name)
+		}
+		if len(sr.OnComplete) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids `on_complete` (there is no run to complete — the publish IS the delivery)", name)
+		}
+		if len(sr.RequiredCredentials) > 0 || len(sr.UserCredentialsFromEnv) > 0 {
+			return fmt.Errorf("scheduled_runs.%s: delivery=channel forbids credentials (they exist to authorize a run, and no run fires)", name)
+		}
+	default:
+		return fmt.Errorf("scheduled_runs.%s: unknown delivery %q (want run or channel)", name, sr.Delivery)
+	}
+	return nil
+}
+
 // validateStaticWebhook checks a static `webhooks:` entry's delivery target +
 // auth.kind at config-load (F24). A mismatched delivery target (spawn with no
 // agent, channel with no channel) means the webhook can NEVER fire — failing
@@ -6720,11 +6781,13 @@ func validate(c *Config) error {
 		if name == "" {
 			return fmt.Errorf("scheduled_runs: empty schedule name")
 		}
-		if sr.Agent == "" {
-			return fmt.Errorf("scheduled_runs.%s: agent is required", name)
+		if err := validateScheduleDelivery(name, sr); err != nil {
+			return err
 		}
-		if _, ok := c.Agents[sr.Agent]; !ok {
-			return fmt.Errorf("scheduled_runs.%s: agent %q not declared in cfg.Agents (substrate-only agents are resolved at runtime; declare a yaml stub if you want compile-time validation)", name, sr.Agent)
+		if sr.Agent != "" {
+			if _, ok := c.Agents[sr.Agent]; !ok {
+				return fmt.Errorf("scheduled_runs.%s: agent %q not declared in cfg.Agents (substrate-only agents are resolved at runtime; declare a yaml stub if you want compile-time validation)", name, sr.Agent)
+			}
 		}
 		// Mutual exclusion: standalone-schedule vs template-with-tier-defaults.
 		if sr.Schedule != "" && len(sr.UserTierSchedules) > 0 {

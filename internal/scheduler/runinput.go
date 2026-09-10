@@ -23,6 +23,10 @@ import (
 // would require a new shared package; the duplication is small
 // enough that locking it with the drift test is cheaper.
 type scheduleDef struct {
+	// Delivery / Channel are the RFC CY tick target: "" / "run" invokes the
+	// agent, "channel" publishes and starts no run.
+	Delivery               string              `json:"delivery,omitempty"`
+	Channel                string              `json:"channel,omitempty"`
 	Agent                  string              `json:"agent,omitempty"`
 	Prompt                 []schedulePromptSeg `json:"prompt,omitempty"`
 	Schedule               string              `json:"schedule,omitempty"`
@@ -80,8 +84,20 @@ func unmarshalDef(body []byte) (scheduleDef, error) {
 	if err := json.Unmarshal(body, &def); err != nil {
 		return scheduleDef{}, fmt.Errorf("decode schedule definition: %w", err)
 	}
-	if def.Agent == "" {
-		return def, fmt.Errorf("schedule definition missing required `agent` field")
+	// RFC CY: a channel tick has no agent BY DESIGN — the requirement is
+	// per-delivery, not universal. Keeping the check here (rather than
+	// dropping it) means a run-delivery def with no agent still fails at
+	// decode, where the sweeper records it as a def problem instead of
+	// discovering it inside the runner.
+	switch def.Delivery {
+	case "channel":
+		if def.Channel == "" {
+			return def, fmt.Errorf("schedule definition has delivery=channel but no `channel` field")
+		}
+	default:
+		if def.Agent == "" {
+			return def, fmt.Errorf("schedule definition missing required `agent` field")
+		}
 	}
 	return def, nil
 }

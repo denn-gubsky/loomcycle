@@ -2,7 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -340,6 +342,14 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		return
 	}
 
+	// RFC CY: a channel tick is a fire with no run. Everything downstream of
+	// here — RunInput, the runner, the fire timeout, on_complete — presumes an
+	// agent, so the branch is taken before any of it is built.
+	if def.Delivery == "channel" {
+		s.fireChannelDelivery(ctx, row, def, now)
+		return
+	}
+
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
 
 	// Cap the per-fire run time. The runner's ctx-cancellation cascades
@@ -418,6 +428,77 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	if status == "completed" {
 		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
 	}
+}
+
+// fireChannelDelivery is the RFC CY tick that publishes instead of running.
+//
+// WHY IT EXISTS. A workflow driven off a channel needs a clock. Reaching a
+// channel on a cron used to mean burning an agent run whose only job was to
+// publish — a model call, a run row, and a provider bill for a message the
+// scheduler can write itself. This is the symmetric twin of the
+// `delivery: channel` a Webhook already has: one is an external event landing
+// on a channel, this one is time landing on a channel.
+//
+// The message carries what there is to say when no agent ran: which schedule
+// fired, when, and the def's operator-authored metadata as the payload. A
+// downstream reader keys off schedule_name the same way it keys off an
+// on_complete hook's.
+//
+// Bookkeeping is the SAME as a run fire — next_run_at advances, max_fires
+// counts, a failure is recorded as failed — because from the schedule's side a
+// tick is a fire whatever it delivered. A publish failure counts too: the tick
+// happened, and a channel that is undeclared or unreachable will fail the same
+// way next time, so hiding it from the cap would let a broken schedule run
+// forever.
+func (s *Scheduler) fireChannelDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
+	status := "completed"
+	errStr := ""
+	if err := s.publishTick(ctx, row.Name, def, now); err != nil {
+		status = "failed"
+		errStr = err.Error()
+		s.logf("scheduler: schedule %q channel delivery to %q failed: %v", row.Name, def.Channel, err)
+	}
+	_, done := s.recordFireOutcome(ctx, row, def, now, fireOutcome{
+		Status:      status,
+		Err:         errStr,
+		CountAsFire: true,
+	})
+	done()
+}
+
+// publishTick writes one cadence message to the def's channel, at the
+// channel's DECLARED scope (the same resolution an on_complete channel.publish
+// hook uses, so a global channel's tick is visible to a global reader instead
+// of buried under a user scope).
+func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def scheduleDef, now time.Time) error {
+	if def.Channel == "" {
+		return fmt.Errorf("delivery=channel missing `channel`")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"schedule_name": scheduleName,
+		"fired_at":      now.UTC().Format(time.RFC3339Nano),
+		"delivery":      "channel",
+		"payload":       def.Metadata,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal tick: %w", err)
+	}
+	scope, scopeID, err := s.resolvePublishScope(ctx, def.Channel, def.UserID, def.Agent)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.store.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: def.Channel,
+		// RFC N: the owning tenant comes from the def, never from anywhere a
+		// caller could influence.
+		TenantID:          def.TenantID,
+		Scope:             scope,
+		ScopeID:           scopeID,
+		Payload:           payload,
+		PublishedAt:       now,
+		PublishedByUserID: def.UserID,
+	}, 0)
+	return err
 }
 
 // fireOutcome is what one fire produced, whatever kind of fire it was. It
