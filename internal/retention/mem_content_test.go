@@ -27,13 +27,41 @@ func (f *fakePruner) PruneRetiredChunks(_ context.Context, key sqlmem.ScopeKey, 
 }
 
 // fakeSQLMem lists a fixed scope set.
-type fakeSQLMem struct{ scopes []sqlmem.ScopeKey }
+type fakeSQLMem struct {
+	scopes []sqlmem.ScopeKey
+	// execs records every statement the sweeper ran, so a test can assert on the
+	// archival span snapshot without a live SQL Memory.
+	execs   []fakeExec
+	execErr error
+	// affected is what Exec reports as RowsAffected.
+	affected int64
+	// onExec runs inside Exec, so a test can observe the world AT THE MOMENT the
+	// snapshot writes — which is how the snapshot-before-delete ordering is
+	// asserted rather than assumed.
+	onExec func()
+}
+
+type fakeExec struct {
+	Key       sqlmem.ScopeKey
+	Statement string
+	Args      []any
+}
 
 func (f *fakeSQLMem) ListScopes(context.Context) ([]sqlmem.ScopeKey, error) { return f.scopes, nil }
 func (f *fakeSQLMem) ExportScope(context.Context, sqlmem.ScopeKey) (*sqlmem.ScopeDump, error) {
 	return &sqlmem.ScopeDump{}, nil
 }
 func (f *fakeSQLMem) DropScope(context.Context, sqlmem.ScopeKey) (bool, error) { return false, nil }
+func (f *fakeSQLMem) Exec(_ context.Context, key sqlmem.ScopeKey, stmt string, args []any, _ int) (*sqlmem.ExecResult, error) {
+	f.execs = append(f.execs, fakeExec{Key: key, Statement: stmt, Args: args})
+	if f.onExec != nil {
+		f.onExec()
+	}
+	if f.execErr != nil {
+		return nil, f.execErr
+	}
+	return &sqlmem.ExecResult{RowsAffected: f.affected}, nil
+}
 
 // TestMemContent_OffByDefault: every destructive retention family is opt-in, and
 // this one deletes content out of LIVE scopes rather than reclaiming dead ones — so
