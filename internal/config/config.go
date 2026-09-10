@@ -5889,10 +5889,18 @@ func validateAgentDefScope(sc string) error {
 	case "self", "descendants", "any":
 		return nil
 	}
-	if strings.HasPrefix(sc, "named:") {
-		ref := strings.TrimPrefix(sc, "named:")
+	if ref, ok := strings.CutPrefix(sc, "named:"); ok {
 		if ref == "" {
 			return fmt.Errorf("agent_def_scopes: \"named:\" requires a non-empty name (e.g. \"named:coder\")")
+		}
+		// A BARE wildcard matches every name at that depth, which is so close to
+		// `any` that writing it is almost certainly a mistake rather than an
+		// intent — and an operator who does mean "everything" should say `any`,
+		// where it reads as the grant it is. Refused rather than warned: a log
+		// line at config load is not seen by the person editing the yaml.
+		if ref == "*" || ref == "**" {
+			return fmt.Errorf("agent_def_scopes: %q grants every agent name — write \"any\" if that is the intent, "+
+				"or scope the pattern (e.g. \"named:sdlc/**\")", sc)
 		}
 		return nil
 	}
