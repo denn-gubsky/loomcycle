@@ -72,6 +72,12 @@ build-ui:
 	# install its deps (packages/memory-view/node_modules is gitignored) before
 	# the web build.
 	cd packages/memory-view && npm ci --silent
+	# @loomcycle/def-fields is consumed from SOURCE the same way — install its
+	# deps (packages/def-fields/node_modules is gitignored) before the web build.
+	# Missing this failed the v1.76.0 release: CI's web-ui job installs each
+	# package itself and stayed green, while the goreleaser job runs THIS target
+	# and could not resolve the package's react types.
+	cd packages/def-fields && npm ci --silent
 	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 
