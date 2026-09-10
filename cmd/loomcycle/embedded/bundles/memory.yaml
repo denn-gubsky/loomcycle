@@ -1534,7 +1534,25 @@ agents:
             for (var j = 0; j < p.messages.length; j++) {
               var m = p.messages[j];
               if (m && typeof m.content === "string") {
-                parts.push(String(m.role || "user") + ": " + m.content);
+                // "### <role>" ON ITS OWN LINE, matching History's conversation
+                // renderer, because splitTurns keys on that marker.
+                //
+                // ⚠️ IT USED TO BE "<role>: <content>" ON ONE LINE, AND THAT MADE
+                // EVERY WINDOW WRONG FOR MULTI-LINE CONTENT. splitTurns falls back
+                // to treating EVERY LINE as a turn boundary when it finds no
+                // marker, so a message containing newlines counted as many turns.
+                // Measured on LongMemEval: 238 messages rendered to 2,710 lines
+                // (11.4x), one message carried 75 embedded newlines, and a median
+                // instance showed 212 "turns" for ~18 real ones. A nominal
+                // 3-MESSAGE window therefore split at ~3 LINES — a quarter of a
+                // message — and produced 100 extractor calls per instance instead
+                // of ~6, splitting mid-message so a fact could be handed a span
+                // that stops mid-sentence.
+                //
+                // It also silently disabled min_turns_to_window: 212 counted
+                // "turns" never falls under a 20-turn floor, so the short-source
+                // guard could not fire on the very corpus it was written for.
+                parts.push("### " + String(m.role || "user") + "\n\n" + m.content);
               }
             }
           } else if (p) {

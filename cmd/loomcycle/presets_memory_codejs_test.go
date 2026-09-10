@@ -5347,3 +5347,56 @@ func TestConsolidator_AShortSourceIsExtractedWholeDespiteTheWindow(t *testing.T)
 			"is indistinguishable from a window that did not fire", res.FinalText)
 	}
 }
+
+// TestConsolidator_MultiLineMessagesCountAsONETurn — the window must measure
+// messages, not lines.
+//
+// splitTurns falls back to treating EVERY LINE as a turn boundary when it finds
+// no "### " marker, so a rendered batch of "role: content" lines counted a
+// message's embedded newlines as extra turns. Measured on LongMemEval: 238
+// messages rendered to 2,710 lines (11.4x), one message carried 75 newlines, and
+// a median instance presented 212 "turns" for ~18 real ones.
+//
+// Two things broke silently. A nominal 3-MESSAGE window split at ~3 LINES —
+// a quarter of a message — producing 100 extractor calls per instance instead of
+// ~6 and handing facts spans that stop mid-sentence. And min_turns_to_window
+// could never fire, because 212 counted turns never falls under a 20-turn floor,
+// so the short-source guard was inert on exactly the corpus it was written for.
+//
+// This is the check that catches it in one number: calls must track MESSAGES.
+func TestConsolidator_MultiLineMessagesCountAsONETurn(t *testing.T) {
+	// The fixture must STRADDLE the short-source floor under the two counting
+	// rules, or it proves nothing: 8 messages x 4 lines = 32 LINES (above the
+	// 20-turn floor, so line-counting windows it into ~11 pieces) but 8 MESSAGES
+	// (below the floor, so message-counting sends one call). An earlier version
+	// used 6x3=18 lines, which is under the floor either way — it passed against
+	// the defect.
+	msgs := []map[string]any{}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, map[string]any{
+			"role": "user",
+			"content": fmt.Sprintf("Line one of message %d.\nLine two continues it.\n"+
+				"Line three adds detail.\nLine four ends it.", i),
+		})
+	}
+	f := newFakeToolset()
+	f.sessions = nil
+	f.pending = []map[string]any{{"id": "q0", "payload": map[string]any{"messages": msgs}}}
+	f.factsJSON = `[]`
+
+	runConsolidatorWindow(t, f, 3)
+
+	prompts := extractorPrompts(f)
+	if len(prompts) != 1 {
+		t.Errorf("eight 4-line messages produced %d extractor call(s) at a 3-MESSAGE window; want 1 "+
+			"(eight messages is under the short-source floor, though 32 lines is not). Counting "+
+			"lines instead of messages both over-splits and disables the floor", len(prompts))
+	}
+	// And each message must arrive whole: a span cannot come from half a message.
+	joined := strings.Join(prompts, "\n")
+	if !strings.Contains(joined, "Line one of message 0.\nLine two continues it.\n"+
+		"Line three adds detail.\nLine four ends it.") {
+		t.Errorf("a message was split across windows — a fact derived here could be handed a span "+
+			"that stops mid-sentence:\n%s", joined[:min(400, len(joined))])
+	}
+}
