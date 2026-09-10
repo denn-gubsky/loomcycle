@@ -6,12 +6,14 @@ import (
 	"fmt"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -623,6 +625,13 @@ func runConsolidatorWindow(t *testing.T, f *fakeToolset, windowTurns int) loop.R
 			"extract_window_turns: "+strconv.Itoa(windowTurns)+",", 1)
 	}
 	agent.Code = body
+	return runConsolidatorBody(t, f, agent)
+}
+
+// runConsolidatorBody executes an already-prepared agent definition, so a test
+// can vary one CONFIG literal without restating the whole harness.
+func runConsolidatorBody(t *testing.T, f *fakeToolset, agent config.AgentDef) loop.RunResult {
+	t.Helper()
 
 	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
 	prov := codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: 30 * time.Second})
@@ -5137,7 +5146,9 @@ func TestConsolidator_QueuedPathHonoursTheExtractionWindow(t *testing.T) {
 // produce one call per message, not one call for the item.
 func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 	msgs := []map[string]any{}
-	for i := 0; i < 8; i++ {
+	// 24 messages: ABOVE min_turns_to_window, so this fixture tests the window
+	// rather than the short-source guard. At 8 it silently tested the guard.
+	for i := 0; i < 24; i++ {
 		msgs = append(msgs, map[string]any{
 			"role":    "user",
 			"content": fmt.Sprintf("Message %d: in July I visited city number %d.", i, i),
@@ -5168,8 +5179,224 @@ func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 		t.Fatalf("default made %d calls for one queued item, want 1", wideCalls)
 	}
 	if narrowCalls < 4 {
-		t.Errorf("per-message window made %d call(s) for a single 8-message item, want one per "+
+		t.Errorf("per-message window made %d call(s) for a single 24-message item, want one per "+
 			"message — the window stops at the ITEM boundary, so the finest arm of a sweep "+
 			"measures per-session instead", narrowCalls)
+	}
+}
+
+// TestMemoryBundle_ExtractorContextMatchesTheDerivedPartBudget — the two
+// declarations of the extractor's context must not drift.
+//
+// The consolidator derives a hard ceiling on its per-call char budget from
+// extractor_context_tokens; the runtime gives the extractor the context declared
+// by max_context_tokens on the agent. Those are two places holding one fact, and
+// this RFC's own decisions call that out as a defect class — a budget derived
+// from a stale context number is exactly the silent truncation the derivation
+// exists to prevent.
+//
+// The failure it guards is invisible without a test: an over-large part is
+// truncated by the model, prompt_eval_count goes DOWN as the input grows, the
+// reply comes back unparseable, and the pipeline records "the model found
+// nothing durable here". That reads as a quiet conversation in every report.
+func TestMemoryBundle_ExtractorContextMatchesTheDerivedPartBudget(t *testing.T) {
+	cfg := memoryBundleConfig(t)
+	ex, ok := cfg.Agents["memory/extractor"]
+	if !ok {
+		t.Fatal("memory/extractor not registered")
+	}
+	cons, ok := cfg.Agents["memory/consolidator"]
+	if !ok {
+		t.Fatal("memory/consolidator not registered")
+	}
+	m := regexp.MustCompile(`extractor_context_tokens:\s*(\d+)`).FindStringSubmatch(cons.Code)
+	if m == nil {
+		t.Fatal("consolidator declares no extractor_context_tokens")
+	}
+	declared, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("unreadable extractor_context_tokens %q", m[1])
+	}
+	if ex.MaxContextTokens != declared {
+		t.Errorf("memory/extractor declares max_context_tokens=%d but the consolidator derives its "+
+			"part-budget ceiling from extractor_context_tokens=%d — one fact in two places, and a "+
+			"budget derived from the stale one is silently truncated at extraction time",
+			ex.MaxContextTokens, declared)
+	}
+	// And the budget must actually FIT: target + reserve inside the context.
+	pm := regexp.MustCompile(`max_part_chars:\s*(\d+)`).FindStringSubmatch(cons.Code)
+	if pm == nil {
+		t.Fatal("consolidator declares no max_part_chars")
+	}
+	partChars, _ := strconv.Atoi(pm[1])
+	cm := regexp.MustCompile(`chars_per_token:\s*([0-9.]+)`).FindStringSubmatch(cons.Code)
+	rm := regexp.MustCompile(`context_reserve_pct:\s*(\d+)`).FindStringSubmatch(cons.Code)
+	if cm == nil || rm == nil {
+		t.Fatal("consolidator declares no chars_per_token / context_reserve_pct")
+	}
+	cpt, _ := strconv.ParseFloat(cm[1], 64)
+	reserve, _ := strconv.Atoi(rm[1])
+	usable := int(float64(declared) * cpt * float64(100-reserve) / 100.0)
+	if partChars > usable {
+		t.Errorf("max_part_chars=%d exceeds what a %d-token context can hold after a %d%% reserve "+
+			"(%d chars) — parts would be truncated by the model, which is invisible in every report",
+			partChars, declared, reserve, usable)
+	}
+}
+
+// TestConsolidator_ASmallExtractorContextClampsThePartBudget — the derivation's
+// only job is to bind DOWNWARD.
+//
+// A deployment whose extractor context is small (an unset Ollama num_ctx is
+// 4,096 tokens) would otherwise be handed 12,000-char parts that the model
+// silently truncates. Measured on qwen3.8: at num_ctx 4096, growing the input
+// from 12,000 to 24,000 chars made prompt_eval_count DROP from 2,910 to 2,050 —
+// the model saw LESS text when given more — and it answered with an error
+// object, which the pipeline files as "nothing durable here".
+//
+// Asserted by shrinking the declared context and reading the resulting part
+// sizes, not by re-deriving the arithmetic in the test: recomputing the formula
+// here would pass even if the budget were never applied.
+func TestConsolidator_ASmallExtractorContextClampsThePartBudget(t *testing.T) {
+	sizes := func(t *testing.T, ctxTokens int) []int {
+		t.Helper()
+		f := newFakeToolset()
+		f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+		f.transcript = historyTranscript(60, 1000) // ~62k chars
+		f.factsJSON = "[]"
+
+		cfg := memoryBundleConfig(t)
+		agent := cfg.Agents["memory/consolidator"]
+		const shipped = "extractor_context_tokens: 32768,"
+		if strings.Count(agent.Code, shipped) != 1 {
+			t.Fatalf("expected one %q in the shipped body", shipped)
+		}
+		agent.Code = strings.Replace(agent.Code, shipped,
+			"extractor_context_tokens: "+strconv.Itoa(ctxTokens)+",", 1)
+		runConsolidatorBody(t, f, agent)
+
+		var out []int
+		for _, p := range extractorParts(t, f) {
+			out = append(out, len(p))
+		}
+		return out
+	}
+
+	big := sizes(t, 32768)
+	small := sizes(t, 4096)
+	if len(big) == 0 || len(small) == 0 {
+		t.Fatalf("no parts reached the extractor (big=%d small=%d)", len(big), len(small))
+	}
+	maxOf := func(xs []int) int {
+		m := 0
+		for _, x := range xs {
+			if x > m {
+				m = x
+			}
+		}
+		return m
+	}
+	if maxOf(small) >= maxOf(big) {
+		t.Errorf("a 4,096-token context produced parts up to %d chars against %d at 32,768 — the "+
+			"ceiling does not bind downward, so a small-context deployment is handed parts the "+
+			"model truncates silently", maxOf(small), maxOf(big))
+	}
+	// 4096 tokens x 3.5 chars x 60% usable = ~8.6k. Assert the OBSERVED part fits
+	// a 4,096-token window with room for the reply, rather than re-deriving it.
+	if maxOf(small) > 10000 {
+		t.Errorf("largest part at a 4,096-token context is %d chars — still more than that window "+
+			"can hold once the system prompt, temporal rule and reply are accounted for",
+			maxOf(small))
+	}
+}
+
+// TestConsolidator_AShortSourceIsExtractedWholeDespiteTheWindow.
+//
+// Windowing a short source fragments it below the size at which the extractor
+// finds anything, and the consequence is a STALL rather than a low yield: each
+// piece returns [], the queued item is stepped over and never acked, and the
+// pass makes no progress. Measured on LongMemEval, whose instances are ~12
+// turns: at a 3-turn window, 37 of 72 instances produced zero facts across 8
+// passes and the run could not be graded at all.
+//
+// It is also the mechanism behind the single-session-preference slice going
+// 0.30 -> 0.00 under a window: a preference is expressed across a short
+// conversation, so fragmenting it leaves no piece that carries the preference.
+func TestConsolidator_AShortSourceIsExtractedWholeDespiteTheWindow(t *testing.T) {
+	msgs := []map[string]any{}
+	for i := 0; i < 10; i++ { // WELL under min_turns_to_window
+		msgs = append(msgs, map[string]any{
+			"role":    "user",
+			"content": fmt.Sprintf("Short chat line %d about the weather.", i),
+		})
+	}
+	f := newFakeToolset()
+	f.sessions = nil
+	f.pending = []map[string]any{{"id": "q0", "payload": map[string]any{"messages": msgs}}}
+	f.factsJSON = `[]`
+
+	res := runConsolidatorWindow(t, f, 1)
+
+	if n := len(extractorPrompts(f)); n != 1 {
+		t.Errorf("a 10-message source was split into %d extractor call(s) despite being far below "+
+			"the windowing threshold — each piece is too thin to carry a fact, so the item stalls "+
+			"unacked instead of yielding less", n)
+	}
+	if !strings.Contains(res.FinalText, "too short to window") {
+		t.Errorf("the report does not say the source was extracted whole: %q — a silent fallback "+
+			"is indistinguishable from a window that did not fire", res.FinalText)
+	}
+}
+
+// TestConsolidator_MultiLineMessagesCountAsONETurn — the window must measure
+// messages, not lines.
+//
+// splitTurns falls back to treating EVERY LINE as a turn boundary when it finds
+// no "### " marker, so a rendered batch of "role: content" lines counted a
+// message's embedded newlines as extra turns. Measured on LongMemEval: 238
+// messages rendered to 2,710 lines (11.4x), one message carried 75 newlines, and
+// a median instance presented 212 "turns" for ~18 real ones.
+//
+// Two things broke silently. A nominal 3-MESSAGE window split at ~3 LINES —
+// a quarter of a message — producing 100 extractor calls per instance instead of
+// ~6 and handing facts spans that stop mid-sentence. And min_turns_to_window
+// could never fire, because 212 counted turns never falls under a 20-turn floor,
+// so the short-source guard was inert on exactly the corpus it was written for.
+//
+// This is the check that catches it in one number: calls must track MESSAGES.
+func TestConsolidator_MultiLineMessagesCountAsONETurn(t *testing.T) {
+	// The fixture must STRADDLE the short-source floor under the two counting
+	// rules, or it proves nothing: 8 messages x 4 lines = 32 LINES (above the
+	// 20-turn floor, so line-counting windows it into ~11 pieces) but 8 MESSAGES
+	// (below the floor, so message-counting sends one call). An earlier version
+	// used 6x3=18 lines, which is under the floor either way — it passed against
+	// the defect.
+	msgs := []map[string]any{}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs, map[string]any{
+			"role": "user",
+			"content": fmt.Sprintf("Line one of message %d.\nLine two continues it.\n"+
+				"Line three adds detail.\nLine four ends it.", i),
+		})
+	}
+	f := newFakeToolset()
+	f.sessions = nil
+	f.pending = []map[string]any{{"id": "q0", "payload": map[string]any{"messages": msgs}}}
+	f.factsJSON = `[]`
+
+	runConsolidatorWindow(t, f, 3)
+
+	prompts := extractorPrompts(f)
+	if len(prompts) != 1 {
+		t.Errorf("eight 4-line messages produced %d extractor call(s) at a 3-MESSAGE window; want 1 "+
+			"(eight messages is under the short-source floor, though 32 lines is not). Counting "+
+			"lines instead of messages both over-splits and disables the floor", len(prompts))
+	}
+	// And each message must arrive whole: a span cannot come from half a message.
+	joined := strings.Join(prompts, "\n")
+	if !strings.Contains(joined, "Line one of message 0.\nLine two continues it.\n"+
+		"Line three adds detail.\nLine four ends it.") {
+		t.Errorf("a message was split across windows — a fact derived here could be handed a span "+
+			"that stops mid-sentence:\n%s", joined[:min(400, len(joined))])
 	}
 }
