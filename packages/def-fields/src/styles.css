@@ -1,0 +1,390 @@
+/* @loomcycle/def-fields styles. Everything is scoped under the component's
+   `.loomcycle-def-fields` root so it can't leak into — or be clobbered by — the
+   host app. The palette lives on the root as CSS variables; light mode activates
+   when the root (via the `theme` prop) OR any ancestor carries
+   data-theme="light", so an app that themes <html> gets themed fields for free.
+   Override any --var on `.loomcycle-def-fields` to restyle.
+
+   Same posture as @loomcycle/memory-view: the class names here are the
+   package's own (`lc-df-*`), not the Web UI's globals, so a host that embeds
+   <FoldedFieldList> MUST `import "@loomcycle/def-fields/styles.css"`.
+
+   Token names mirror the loomcycle Web UI aliases (--bg/--fg/--accent/… plus
+   --lc-text-*/--lc-font-mono) and are defined here for both themes, so the
+   package is self-contained — no external tokens.css. */
+
+.loomcycle-def-fields {
+  /* dark palette (default) */
+  --bg: #0f1115;
+  --bg-soft: #161922;
+  --bg-soft-2: #1d2230;
+  --bg-input: #0f1115;
+
+  --fg: #e6e6e6;
+  --fg-soft: #9aa0ad;
+  --fg-muted: #888888;
+
+  --border: #2a2e3a;
+  --accent: #56c596;
+  --err: #ff5d68;
+
+  --lc-font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace,
+    "SF Mono", Menlo, Consolas, monospace;
+  --mono: var(--lc-font-mono);
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+
+  --lc-text-xs: 12px;
+  --lc-text-sm: 13px;
+  --lc-text-base: 14px;
+
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--lc-text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Light mode: the root opts in via the `theme` prop, or inherits a light
+   ancestor (e.g. an app that sets data-theme on <html>). */
+.loomcycle-def-fields[data-theme="light"],
+[data-theme="light"] .loomcycle-def-fields {
+  --bg: #f5f6f8;
+  --bg-soft: #ffffff;
+  --bg-soft-2: #eef0f4;
+  --bg-input: #ffffff;
+
+  --fg: #1c1e22;
+  --fg-soft: #5b6272;
+  --fg-muted: #7c828f;
+
+  --border: #d8dce4;
+  --accent: #1f8a5f;
+  --err: #c62828;
+
+  color-scheme: light;
+}
+
+/* ---------- toolbar ---------- */
+
+.loomcycle-def-fields .lc-df-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.loomcycle-def-fields .lc-df-search {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.loomcycle-def-fields .lc-df-toggle,
+.loomcycle-def-fields .lc-df-bool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+  cursor: pointer;
+  user-select: none;
+}
+
+.loomcycle-def-fields .lc-df-toggle input,
+.loomcycle-def-fields .lc-df-bool input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.loomcycle-def-fields .lc-df-empty {
+  margin: 4px 0;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-muted);
+}
+
+/* ---------- groups ---------- */
+
+.loomcycle-def-fields .lc-df-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.loomcycle-def-fields .lc-df-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: var(--bg-soft-2);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.loomcycle-def-fields .lc-df-group-head:hover { background: var(--border); }
+
+.loomcycle-def-fields .lc-df-caret {
+  width: 12px;
+  color: var(--fg-soft);
+  flex: 0 0 auto;
+}
+
+.loomcycle-def-fields .lc-df-group-name { flex: 1 1 auto; min-width: 0; }
+
+.loomcycle-def-fields .lc-df-group-count {
+  font-weight: 400;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+}
+
+/* The "n set" badge is the whole point of a folded surface: it says which
+   closed groups this def actually overrides, so nothing hides. */
+.loomcycle-def-fields .lc-df-group-set {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  font-size: var(--lc-text-xs);
+  font-weight: 600;
+}
+
+.loomcycle-def-fields .lc-df-group-body {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 10px 10px;
+}
+
+.loomcycle-def-fields .lc-df-group-hint {
+  margin: 6px 0 2px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+
+.loomcycle-def-fields .lc-df-more {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: var(--lc-text-xs);
+  cursor: pointer;
+}
+
+.loomcycle-def-fields .lc-df-more:hover { color: var(--fg); border-color: var(--fg-muted); }
+
+/* ---------- rows ---------- */
+
+.loomcycle-def-fields .lc-df-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.loomcycle-def-fields .lc-df-group-body > .lc-df-row:first-of-type { border-top: 0; }
+
+/* A row carrying an explicit value is marked on the left edge, so scanning a
+   long group answers "what does this def override" without reading values. */
+.loomcycle-def-fields .lc-df-row-set {
+  box-shadow: inset 2px 0 0 var(--accent);
+  padding-left: 8px;
+}
+
+.loomcycle-def-fields .lc-df-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.loomcycle-def-fields .lc-df-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--lc-text-sm);
+  font-weight: 600;
+}
+
+/* The overlay key is shown next to every label on purpose: it's what the yaml,
+   the API and the docs call this parameter, and an operator who read a doc must
+   be able to find the control by that name. */
+.loomcycle-def-fields .lc-df-key {
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+  font-weight: 400;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.loomcycle-def-fields .lc-df-reset,
+.loomcycle-def-fields .lc-df-row-btn {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: var(--lc-text-xs);
+  cursor: pointer;
+}
+
+.loomcycle-def-fields .lc-df-reset:hover,
+.loomcycle-def-fields .lc-df-row-btn:hover { color: var(--fg); border-color: var(--fg-muted); }
+
+.loomcycle-def-fields .lc-df-reset:disabled,
+.loomcycle-def-fields .lc-df-row-btn:disabled { opacity: 0.5; cursor: default; }
+
+.loomcycle-def-fields .lc-df-inherited {
+  flex: 0 0 auto;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.loomcycle-def-fields .lc-df-hint {
+  margin: 0;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+
+.loomcycle-def-fields .lc-df-control { min-width: 0; }
+
+/* ---------- controls ---------- */
+
+.loomcycle-def-fields .lc-df-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--lc-text-sm);
+}
+
+.loomcycle-def-fields .lc-df-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.loomcycle-def-fields .lc-df-input:disabled { opacity: 0.6; }
+
+.loomcycle-def-fields .lc-df-int { max-width: 160px; }
+
+.loomcycle-def-fields .lc-df-textarea {
+  font-family: var(--mono);
+  resize: vertical;
+  min-height: 60px;
+}
+
+.loomcycle-def-fields .lc-df-invalid { border-color: var(--err); }
+
+.loomcycle-def-fields .lc-df-error {
+  margin: 3px 0 0;
+  font-size: var(--lc-text-xs);
+  color: var(--err);
+}
+
+/* string-list: chips + an add box */
+
+.loomcycle-def-fields .lc-df-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.loomcycle-def-fields .lc-df-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft-2);
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.loomcycle-def-fields .lc-df-chip-x {
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.loomcycle-def-fields .lc-df-chip-x:hover { color: var(--err); }
+
+.loomcycle-def-fields .lc-df-chip-add { flex: 1 1 120px; min-width: 90px; width: auto; }
+
+/* kv + object-array */
+
+.loomcycle-def-fields .lc-df-kv,
+.loomcycle-def-fields .lc-df-objarray {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.loomcycle-def-fields .lc-df-kv-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.loomcycle-def-fields .lc-df-kv-key { flex: 0 1 35%; }
+.loomcycle-def-fields .lc-df-kv-val { flex: 1 1 auto; }
+
+.loomcycle-def-fields .lc-df-add { align-self: flex-start; }
+
+.loomcycle-def-fields .lc-df-objarray-item,
+.loomcycle-def-fields .lc-df-nested {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  padding: 2px 8px 6px;
+}
+
+.loomcycle-def-fields .lc-df-objarray-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 5px;
+}
+
+.loomcycle-def-fields .lc-df-objarray-idx {
+  font-family: var(--mono);
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+}
+
+/* A nested row's own left-edge marker would stack with its parent's; the parent
+   box already says the object is set. */
+.loomcycle-def-fields .lc-df-nested .lc-df-row-set,
+.loomcycle-def-fields .lc-df-objarray-item .lc-df-row-set {
+  box-shadow: none;
+  padding-left: 0;
+}

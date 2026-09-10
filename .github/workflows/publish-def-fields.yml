@@ -1,0 +1,90 @@
+name: Publish @loomcycle/def-fields to npm
+
+# The @loomcycle/def-fields React components (the declarative field registry +
+# the folded/accordion primitive editor) are versioned INDEPENDENTLY of the Go
+# binary and of the other packages — the loomcycle Web UI and the loomboard
+# canvas each pin their own — so the package publishes on its
+# OWN tag namespace `def-fields-v*` (e.g. `def-fields-v0.1.0`) — mirroring
+# @loomcycle/memory-view's `memory-view-v*` and @loomcycle/library's
+# `library-v*`, NOT the binary's `v*`.
+#
+# Safety: the workflow HARD-FAILS if packages/def-fields/package.json's version
+# doesn't match the tag (a dedicated tag should always match — a mismatch is a
+# mistake, surfaced loudly, npm untouched).
+#
+# Auth: an npm automation token in the `NPM_TOKEN` repo secret. setup-node writes
+# it into ~/.npmrc (via NODE_AUTH_TOKEN below), so `npm publish` authenticates as
+# that token's account. This is the token path chosen for the FIRST publish of
+# this brand-new scoped package (OIDC Trusted Publishing can't bootstrap a package
+# that doesn't exist yet). Once @loomcycle/def-fields exists on npm, the operator
+# MAY switch to OIDC Trusted Publishing (register the publisher on the package's
+# Access tab, drop the secret, add `id-token: write` + `--provenance`) — see the
+# @loomcycle/client publish-ts-adapter.yml workflow for that shape.
+#
+# Inputs reaching `run` steps are limited to GITHUB_REF_NAME (a git tag — git
+# rejects metacharacters in ref names) and constants; the tag is routed through
+# `env:` per the GitHub workflow-injection guidance.
+on:
+  push:
+    tags:
+      - "def-fields-v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish @loomcycle/def-fields
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: packages/def-fields/package-lock.json
+
+      - name: Verify package version matches tag
+        working-directory: packages/def-fields
+        # Strip the `def-fields-v` prefix — npm versions don't carry it. A
+        # dedicated tag should always match the package version; a mismatch is a
+        # mistake.
+        env:
+          TAG_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          TAG_VER="${TAG_REF#def-fields-v}"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::packages/def-fields/package.json version ($PKG_VER) does not match tag ($TAG_VER). Bump the package.json to $TAG_VER and re-tag, or fix the tag."
+            exit 1
+          fi
+          echo "::notice::Publishing @loomcycle/def-fields@$PKG_VER (tag $TAG_REF)"
+
+      - name: Install
+        working-directory: packages/def-fields
+        run: npm ci
+
+      - name: Build
+        working-directory: packages/def-fields
+        run: npm run build:lib
+
+      - name: Test
+        working-directory: packages/def-fields
+        run: npm test
+
+      - name: Publish
+        working-directory: packages/def-fields
+        # --access public for the scoped package. prepack rebuilds dist from a
+        # clean tree, so the published tarball is fresh regardless. NODE_AUTH_TOKEN
+        # is the NPM_TOKEN secret setup-node wired into ~/.npmrc. (--provenance is
+        # omitted: it requires OIDC/id-token, not token auth; add it if/when this
+        # switches to Trusted Publishing.)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
