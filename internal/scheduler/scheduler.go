@@ -401,7 +401,46 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		}
 	}
 
-	// Advance next_run_at + record outcome atomically (single UPDATE).
+	recordCtx, done := s.recordFireOutcome(ctx, row, def, now, fireOutcome{
+		RunID:       registeredRunID,
+		Status:      status,
+		Err:         errStr,
+		CountAsFire: countAsFire,
+	})
+	defer done()
+
+	// Dispatch hooks only on success — RFC E says on_complete fires on
+	// "successful runs." Failed/skipped runs don't notify. Use recordCtx (the
+	// survival ctx) not the parent: a run that completes just as shutdown
+	// begins still recorded its result above, so its on_complete hooks
+	// (channel publish / memory set / mcp.call) must fire too rather than be
+	// dropped on a cancelled parent ctx.
+	if status == "completed" {
+		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
+	}
+}
+
+// fireOutcome is what one fire produced, whatever kind of fire it was. It
+// exists so the bookkeeping below is written once: every fire has to advance
+// next_run_at and count against max_fires, and a fire that skips either one
+// re-presents on the next tick or never retires.
+type fireOutcome struct {
+	RunID       string
+	Status      string
+	Err         string
+	CountAsFire bool
+}
+
+// recordFireOutcome advances next_run_at, records the result, and applies the
+// max_fires lifetime cap.
+//
+// Returns the ctx it used plus a cleanup func. The ctx is a SURVIVAL ctx when
+// the parent is already cancelled (mid-shutdown): without it the store write
+// fails silently, next_run_at stays in the past, and the schedule re-fires
+// immediately on the next startup. Callers with follow-on work — on_complete
+// hooks — dispatch on the same ctx for the same reason, and must call the
+// cleanup func when they are done with it.
+func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, out fireOutcome) (context.Context, func()) {
 	next, nextErr := s.computeNext(def, now)
 	if nextErr != nil {
 		// Without a valid next_run_at, the sweeper would re-fire this
@@ -410,29 +449,26 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
 		next = now.Add(1 * time.Hour)
 	}
-	// Use a survival ctx for RecordResult when the parent is already
-	// cancelled (e.g. mid-shutdown). Without this, the store write
-	// fails silently, next_run_at stays in the past, and the schedule
-	// re-fires immediately on the next startup. Bounded 5s timeout
-	// prevents the survival path from hanging shutdown indefinitely.
 	recordCtx := ctx
+	done := func() {}
 	if ctx.Err() != nil {
 		var cancel context.CancelFunc
+		// Bounded 5s so the survival path can't hang shutdown.
 		recordCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		done = cancel
 	}
 	if err := s.store.ScheduleRunStateRecordResult(recordCtx, store.ScheduleRunResult{
 		DefID:      row.DefID,
-		LastRunID:  registeredRunID,
-		LastStatus: status,
-		LastError:  errStr,
+		LastRunID:  out.RunID,
+		LastStatus: out.Status,
+		LastError:  out.Err,
 		LastRunAt:  now,
 		NextRunAt:  next,
 		// RFC S / F36: this IS a fire (any status counts toward the cap, so
 		// a wedged/always-failing schedule still retires). The disabled-skip
 		// advance (advanceOnly) leaves this false; F38 leaves it false for an
-		// unresolved-agent config error (see countAsFire above).
-		CountAsFire: countAsFire,
+		// unresolved-agent config error.
+		CountAsFire: out.CountAsFire,
 	}); err != nil {
 		s.logf("scheduler: record result for %q: %v", row.Name, err)
 	}
@@ -455,16 +491,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 			}
 		}
 	}
-
-	// Dispatch hooks only on success — RFC E says on_complete fires on
-	// "successful runs." Failed/skipped runs don't notify. Use recordCtx (the
-	// survival ctx) not the parent: a run that completes just as shutdown
-	// begins still recorded its result above, so its on_complete hooks
-	// (channel publish / memory set / mcp.call) must fire too rather than be
-	// dropped on a cancelled parent ctx.
-	if status == "completed" {
-		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
-	}
+	return recordCtx, done
 }
 
 // advanceOnly is the disabled-schedule path: bump next_run_at without
