@@ -768,10 +768,22 @@ func (d *Document) migrateDocumentFacets(ctx context.Context, key sqlmem.ScopeKe
 // this table's writer defaulted it to now: three quarters of those instants were
 // write timestamps wearing world-time's column.
 //
-// access_count / last_accessed_at come along now rather than later because
-// access_count feeds the recall ranker's frequency term. They have no writer in
-// the chunk plane yet; the columns exist so that when a fact's home moves there
-// is somewhere for them to land, and ranking does not silently change.
+// access_count / last_accessed_at are here and are NOT the mechanism they were
+// added for. The reasoning that put them here was that access_count feeds the
+// recall ranker's frequency term and would have nowhere to live once a fact's home
+// moved. That premise was wrong, and checking it is what showed why: the counter is
+// maintained per (tenant, scope, scope_id, KEY) on the k/v row itself, and the row
+// a collapsed fact lives in is its `doc.chunk:<hex>` BODY row — a k/v row, which
+// already has these columns and which the access tracker already bumps for any
+// returned hit, key-agnostically. So the telemetry follows the fact for free.
+//
+// They are left in place rather than dropped because a DROP COLUMN migration on
+// every provisioned scope is a worse trade than two nullable unused columns, and
+// this comment is the record so the next reader does not build on them. The real
+// requirement they were standing in for belongs to the collapse: when the k/v fact
+// row is deleted its accumulated access_count must be COPIED onto the body row, or
+// every existing fact's frequency term silently resets to zero — measured at 696
+// accesses across 84 facts on one corpus against 0 on their bodies.
 //
 // ALTER on every scope, new and old alike, and NOT declared in docSchemaDDL — a
 // CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so the DDL alone

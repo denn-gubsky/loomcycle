@@ -2956,6 +2956,98 @@ func TestConsolidator_MirrorsTypedFactsIntoAGraph(t *testing.T) {
 	}
 }
 
+// TestConsolidator_TheTwoPlanesAgreeOnEveryTemporalField is the DRIFT GATE for
+// the dual-write window (RFC CV P2c).
+//
+// A fact is written twice today — a k/v row and a chunk — and the collapse deletes
+// the k/v row. Anything the k/v write carries and the chunk write does not is
+// therefore data that disappears at the collapse, silently, with no error and no
+// failing test. That is not hypothetical: the temporal fields were exactly this
+// gap. The k/v write carried observed_at/valid_at/invalid_at and the mirror carried
+// none, so 103 of 103 facts had an utterance time in one plane and no column for it
+// in the other, and nothing noticed until the planes were compared by hand.
+//
+// So this asserts FIELD BY FIELD that the chunk write carries what the k/v write
+// carries, and it fails when someone adds a field to one plane and forgets the
+// other. It deliberately does NOT compare `class`: the two planes both have a
+// column of that name and they mean different things — the k/v one is the statement
+// class (preference | decision | …) and the sidecar's is the retention class
+// (derived | evidential) — so asserting parity there would be asserting a
+// coincidence of naming.
+func TestConsolidator_TheTwoPlanesAgreeOnEveryTemporalField(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nI moved to Berlin last week."
+	// Every temporal field populated at once, so a plane that drops one is visible.
+	f.factsJSON = "```json\n" + `[
+		{"text":"Denn lives in Berlin.","class":"fact","type":"person","subject":"Denn",
+		 "observed_at":"2023-07-07T19:56:00Z","valid_at":"2023-06-30T00:00:00Z",
+		 "invalid_at":"2024-01-01T00:00:00Z"}
+	]` + "\n```"
+
+	runConsolidator(t, f)
+
+	sets := callsWithOp(f, "Memory.set")
+	upserts := callsWithOp(f, "Document.upsert_chunk")
+	if len(sets) != 1 {
+		t.Fatalf("k/v writes = %d, want 1; ops=%v", len(sets), f.ops())
+	}
+	// The subject node is also an upsert; the FACT chunk is the one carrying a body.
+	var factArgs map[string]any
+	for _, c := range upserts {
+		if _, ok := c.Input["body"]; ok {
+			factArgs = c.Input
+		}
+	}
+	if factArgs == nil {
+		t.Fatalf("no fact chunk written; upserts=%d ops=%v", len(upserts), f.ops())
+	}
+	kv := sets[0].Input
+
+	// nanosOf mirrors the bundle's own RFC3339 → unix-nanos conversion, so the
+	// comparison is of INSTANTS rather than of spellings: the two planes
+	// deliberately store the same moment in different units.
+	nanosOf := func(v any) int64 {
+		s, _ := v.(string)
+		ts, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return 0
+		}
+		return ts.UnixNano()
+	}
+	for _, field := range []string{"observed_at", "valid_at", "invalid_at"} {
+		want, inKV := kv[field]
+		if !inKV {
+			t.Errorf("the k/v write carried no %s — the fixture no longer exercises this field", field)
+			continue
+		}
+		got, inChunk := factArgs[field]
+		if !inChunk {
+			t.Errorf("%s reaches the k/v plane but NOT the chunk plane — it would be lost at the collapse", field)
+			continue
+		}
+		gotN := int64(0)
+		switch v := got.(type) {
+		case float64:
+			gotN = int64(v)
+		case int64:
+			gotN = v
+		}
+		if gotN != nanosOf(want) {
+			t.Errorf("%s: chunk plane has %d, k/v plane has %v (%d nanos) — the planes disagree on the instant",
+				field, gotN, want, nanosOf(want))
+		}
+	}
+
+	// And the claim itself, which is the one field whose loss would be obvious but
+	// whose absence from this list would make the test look complete when it was not.
+	body, _ := factArgs["body"].(string)
+	value, _ := kv["value"].(string)
+	if body != value {
+		t.Errorf("the chunk body %q is not the stored value %q", body, value)
+	}
+}
+
 // TestConsolidator_AFactWithNoSubjectStillGetsItsChunk. A fact naming no single thing
 // used to be mirrored NOWHERE — measured at 249 of 1,225 facts, 20.3% — which is
 // affordable only while the k/v row is the fact's home. It gets its own chunk now, so
