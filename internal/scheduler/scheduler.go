@@ -145,14 +145,27 @@ type Scheduler struct {
 	inFlight sync.Map
 }
 
-// ChannelScopeResolver returns the declared scope ("global" | "user" |
-// "agent") of a channel by name. ok=false when the channel is declared
-// nowhere (static yaml + runtime substrate). Injected so the on_complete:
-// channel.publish hook publishes at the channel's declared scope instead of
-// blindly under the run's user scope (F37 / RFC T). Satisfied by
+// DeclaredChannel is what the scheduler needs to know about a channel it is
+// about to write to: where the message goes, and how long it may stay.
+//
+// Retention is here because a scheduler write is a CADENCE write. A tick every
+// minute that carries neither a TTL nor a bounded-queue cap accumulates half a
+// million rows a year on a channel the operator did declare limits for — the
+// limits simply never reached the writer.
+type DeclaredChannel struct {
+	Scope       string // "global" | "user" | "agent"
+	DefaultTTL  int    // seconds; 0 = no TTL
+	MaxMessages int    // 0 = unbounded
+}
+
+// ChannelScopeResolver returns the DECLARED shape of a channel by name.
+// ok=false when the channel is declared nowhere (static yaml + runtime
+// substrate). Injected so a scheduler publish lands at the channel's declared
+// scope instead of blindly under the run's user scope (F37 / RFC T), and
+// honours the channel's declared retention. Satisfied by
 // (*http.Server).ResolveChannelScope; nil leaves the legacy user-scope
 // behavior untouched.
-type ChannelScopeResolver func(ctx context.Context, channel string) (scope string, ok bool)
+type ChannelScopeResolver func(ctx context.Context, channel string) (DeclaredChannel, bool)
 
 // SetChannelScope wires the channel-scope resolver. Must be called before
 // Start (the sweeper reads chScope when dispatching on_complete hooks). A
@@ -333,20 +346,25 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		return
 	}
 
+	// RFC CY: a channel tick is a fire with no run. Everything below — the
+	// consolidation fan-out, RunInput, the runner, the fire timeout,
+	// on_complete — presumes an agent, so delivery is decided FIRST.
+	//
+	// Order matters against the fan-out check in particular: that one keys off
+	// a metadata flag, and on a channel tick `metadata` is opaque payload
+	// rather than configuration. Deciding delivery first is what makes that
+	// sentence true.
+	if def.Delivery == "channel" {
+		s.fireChannelDelivery(ctx, row, def, now)
+		return
+	}
+
 	// RFC BL P2: a consolidation schedule dispatches one run per memory TARGET
 	// with new work rather than one blanket run — the pass operates on exactly
 	// one target, so "consolidate everything" is N runs. See consolidator.go;
 	// it does its own result bookkeeping.
 	if isConsolidationFanout(def) {
 		s.fireConsolidationFanout(ctx, row, def, now)
-		return
-	}
-
-	// RFC CY: a channel tick is a fire with no run. Everything downstream of
-	// here — RunInput, the runner, the fire timeout, on_complete — presumes an
-	// agent, so the branch is taken before any of it is built.
-	if def.Delivery == "channel" {
-		s.fireChannelDelivery(ctx, row, def, now)
 		return
 	}
 
@@ -483,21 +501,25 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	if err != nil {
 		return fmt.Errorf("marshal tick: %w", err)
 	}
-	scope, scopeID, err := s.resolvePublishScope(ctx, def.Channel, def.UserID, def.Agent)
+	target, err := s.resolvePublishTarget(ctx, def.Channel, def.UserID, def.Agent)
 	if err != nil {
 		return err
 	}
-	_, _, err = s.store.ChannelPublish(ctx, store.ChannelMessage{
+	msg := store.ChannelMessage{
 		Channel: def.Channel,
 		// RFC N: the owning tenant comes from the def, never from anywhere a
 		// caller could influence.
 		TenantID:          def.TenantID,
-		Scope:             scope,
-		ScopeID:           scopeID,
+		Scope:             target.Scope,
+		ScopeID:           target.ScopeID,
 		Payload:           payload,
 		PublishedAt:       now,
 		PublishedByUserID: def.UserID,
-	}, 0)
+	}
+	if target.DefaultTTL > 0 {
+		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
+	}
+	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
 	return err
 }
 

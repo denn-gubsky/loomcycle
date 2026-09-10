@@ -94,10 +94,17 @@ func unmarshalDef(body []byte) (scheduleDef, error) {
 		if def.Channel == "" {
 			return def, fmt.Errorf("schedule definition has delivery=channel but no `channel` field")
 		}
-	default:
+	case "", "run":
 		if def.Agent == "" {
 			return def, fmt.Errorf("schedule definition missing required `agent` field")
 		}
+	default:
+		// Both write paths refuse an unknown delivery, so a row carrying one
+		// should not exist. Refusing it HERE anyway is the fail-closed
+		// direction: with a default-run fallthrough, a delivery this sweeper
+		// does not understand would quietly fire the agent — the loudest
+		// possible action taken because of a value nobody could interpret.
+		return def, fmt.Errorf("schedule definition has unknown delivery %q (want run or channel)", def.Delivery)
 	}
 	return def, nil
 }

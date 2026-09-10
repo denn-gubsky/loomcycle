@@ -23,7 +23,7 @@ func TestScheduler_ChannelDeliveryPublishesWithoutARun(t *testing.T) {
 	}
 	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
 	// Declare the channel at global scope, the way the server's resolver does.
-	sched.SetChannelScope(func(context.Context, string) (string, bool) { return "global", true })
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
 
 	fireT(t, sched)
 
@@ -84,7 +84,7 @@ func TestScheduler_ChannelDeliveryUndeclaredChannelIsARecordedFailure(t *testing
 		Enabled:  &enabled,
 	}
 	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (string, bool) { return "", false })
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{}, false })
 
 	fireT(t, sched)
 
@@ -118,7 +118,7 @@ func TestScheduler_ChannelDeliveryRetiresAtMaxFires(t *testing.T) {
 		MaxFires: 1,
 	}
 	sched, _, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (string, bool) { return "global", true })
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
 
 	fireT(t, sched)
 
@@ -142,7 +142,7 @@ func TestScheduler_ChannelDeliveryRespectsDisabled(t *testing.T) {
 		Enabled:  &disabled,
 	}
 	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (string, bool) { return "global", true })
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
 
 	fireT(t, sched)
 
@@ -152,5 +152,63 @@ func TestScheduler_ChannelDeliveryRespectsDisabled(t *testing.T) {
 	}
 	if len(msgs) != 0 {
 		t.Errorf("a disabled schedule published %d ticks, want 0", len(msgs))
+	}
+}
+
+// A cadence writer must honour the channel's declared retention. A tick every
+// minute with neither a TTL nor a bounded-queue cap is half a million rows a
+// year on a channel whose operator DID set limits — they just never reached
+// the writer.
+func TestScheduler_ChannelDeliveryHonoursDeclaredRetention(t *testing.T) {
+	enabled := true
+	def := scheduleDef{
+		Delivery: "channel",
+		Channel:  "wave-in",
+		Schedule: "0 * * * *",
+		Enabled:  &enabled,
+	}
+	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global", DefaultTTL: 3600, MaxMessages: 5}, true
+	})
+
+	fireT(t, sched)
+
+	msgs, _, err := st.ChannelSubscribe(context.Background(), "", "wave-in", store.MemoryScopeGlobal, "", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("published %d, want 1", len(msgs))
+	}
+	if msgs[0].ExpiresAt.IsZero() {
+		t.Errorf("the tick carries no expiry — the channel's default_ttl never reached the writer")
+	}
+}
+
+// An unknown delivery is refused at decode rather than falling through to the
+// run path: firing an agent because of a value nobody could interpret is the
+// loudest possible wrong answer.
+func TestScheduler_UnknownDeliveryDoesNotFallThroughToARun(t *testing.T) {
+	enabled := true
+	def := scheduleDef{
+		Delivery: "smoke-signal",
+		Agent:    "researcher",
+		Schedule: "0 * * * *",
+		Enabled:  &enabled,
+	}
+	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+
+	fireT(t, sched)
+
+	if got := len(fr.Calls()); got != 0 {
+		t.Errorf("an unknown delivery fired the agent %d time(s)", got)
+	}
+	state, err := st.ScheduleRunStateGet(context.Background(), defID)
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	if state.LastStatus != "decode_def" {
+		t.Errorf("last_status = %q, want decode_def", state.LastStatus)
 	}
 }
