@@ -143,6 +143,18 @@ var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
 // injection path by construction.
 var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern)
 
+// combinedWithVarsRe is combinedPlaceholderRe plus the ${var.*} family. It is a
+// SEPARATE regex, used only when the caller supplies Values, so a prompt with no
+// workflow variables compiles and matches exactly what it did before — no
+// behaviour rides on a map being empty.
+//
+// Adding variables as an ALTERNATIVE rather than an earlier pass is the point.
+// One ReplaceAllStringFunc never rescans its own output, so a substituted
+// variable cannot become a placeholder and a placeholder body cannot become a
+// variable. Ordering stops existing, and with it the injection path that
+// ordering created.
+var combinedWithVarsRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + varPlaceholderPattern)
+
 // References reports whether s contains any {{memory:...}} placeholder
 // (escaped or not). A cheap gate so the caller can skip the whole injection
 // path — including store reads — for a prompt that references no memory.
@@ -202,6 +214,12 @@ type ExpandInput struct {
 	Documents map[DocRef]string
 	// MaxTokens caps the TOTAL injected memory content (chars/4). <= 0 disables.
 	MaxTokens int
+	// Values resolves ${var.*} / ${now.*} / ${team.*} in the SAME pass as the
+	// placeholder families. Keys carry no ${}: "var.pr", "now.date",
+	// "team.state". NIL for every non-team run, which is what keeps an ordinary
+	// agent prompt byte-identical — a nil map means the variable family is not
+	// even in the regex.
+	Values map[string]string
 	// ToolMaxTokens caps the TOTAL injected tool-result content (chars/4).
 	// <= 0 disables.
 	//
@@ -236,6 +254,16 @@ type ExpandInput struct {
 // The base prompt text is never counted against either budget — only injected
 // content is.
 func Expand(prompt string, in ExpandInput) string {
+	out, _ := ExpandWithRefusals(prompt, in)
+	return out
+}
+
+// ExpandWithRefusals is Expand, additionally reporting the variables dropped for
+// carrying placeholder delimiters. A refusal is a SECURITY event — something
+// bound a value that tried to synthesise a placeholder — so the caller logs it
+// rather than swallowing it, and never logs the value itself.
+func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
+	var refused []string
 	remaining := -1 // -1 = unlimited
 	if in.MaxTokens > 0 {
 		remaining = in.MaxTokens * 4
@@ -246,7 +274,17 @@ func Expand(prompt string, in ExpandInput) string {
 	}
 	sawCoreBlocks := false
 
-	out := combinedPlaceholderRe.ReplaceAllStringFunc(prompt, func(match string) string {
+	re := combinedPlaceholderRe
+	if in.Values != nil {
+		re = combinedWithVarsRe
+	}
+	out := re.ReplaceAllStringFunc(prompt, func(match string) string {
+		// The variable family is checked FIRST and is disjoint from the three
+		// placeholder families (it opens with `${`, they open with `{{`), so the
+		// order of these checks is a readability choice, not a semantic one.
+		if in.Values != nil && strings.HasPrefix(match, "${") {
+			return expandVarPlaceholder(match, in.Values, &refused)
+		}
 		// Which family matched: the memory pattern is tried first and only
 		// matches a full {{memory:...}} placeholder, so a non-nil result is
 		// unambiguous.
@@ -302,7 +340,7 @@ func Expand(prompt string, in ExpandInput) string {
 			}
 		}
 	}
-	return out
+	return out, refused
 }
 
 // MemoryProtocol returns the runtime-authored memory-usage protocol block for an

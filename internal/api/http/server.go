@@ -905,7 +905,7 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				// Team members thread results as strings today; a stateful member's
 				// Σ hand-off is a separate follow-on (teamrun is string-only
 				// end-to-end). Drop state here — the Agent-tool fan-out carries it.
-				out, _, _, err := s.runSubAgent(ctx, name, p.System, p.Input, defID)
+				out, _, _, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID, p.Values)
 				return out, err
 			}
 		}
@@ -5706,7 +5706,14 @@ func secretEnvValues(environ []string) map[string]string {
 // SystemPrompt). It never replaces the agent's prompt, so an agent's identity
 // cannot be overridden by whoever spawns it.
 func (s *Server) runSubAgent(ctx context.Context, name string, systemExtra string, prompt string, defID string) (string, map[string]any, string, error) {
-	prep, err := s.prepareSubRun(ctx, name, systemExtra, prompt, defID, false, func(providers.Event) {})
+	return s.runSubAgentWithValues(ctx, name, systemExtra, prompt, defID, nil)
+}
+
+// values resolves ${var.*} / ${now.*} / ${team.*} in the caller's segments, in
+// the SAME pass as the {{...}} families. Non-nil only for a team state — see
+// teamrun.Prompt.Values for why the map travels instead of finished text.
+func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, prompt, defID string, values map[string]string) (string, map[string]any, string, error) {
+	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, func(providers.Event) {}, values)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -5817,6 +5824,10 @@ func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop
 }
 
 func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
+	return s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, interactive, fwd, nil)
+}
+
+func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values map[string]string) (*subRunPrep, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -6076,6 +6087,13 @@ func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, d
 		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
 		InitialInput: prompt, Tools: subTools,
 	})
+	// The CALLER's segments are expanded too, with the same families and the
+	// same single pass. Until this, a {{document:...}} in a team node's prompt
+	// was inert — it reached the model as literal text — so the workflow
+	// bindings the team design is built on did not resolve at all.
+	systemExtra, prompt = s.expandCallerSegments(ctx, memInject{
+		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
+	}, values, systemExtra, prompt)
 	segs := composeSubRunSegments(def.SystemPrompt, systemExtra, prompt)
 
 	// Inherit the parent's caller-authoritative host policy. Without
