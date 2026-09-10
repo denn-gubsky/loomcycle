@@ -3222,11 +3222,21 @@ const (
 // documentKeyPrefix is passed rather than hardcoded: the namespace belongs to the
 // Document tool, and storage should not know its spelling.
 func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
-	if documentKeyPrefix != "" && strings.HasPrefix(key, documentKeyPrefix) {
-		return MemoryRowDocument
-	}
+	// PROVENANCE IS TESTED FIRST, and the order is the whole fix. The key prefix
+	// says "this row is a chunk body"; it does not say what KIND of thing the chunk
+	// is. Facts and document prose are both chunk bodies, so a prefix-first test
+	// classified every fact that had a chunk as a document — which is why
+	// `sources=documents` returned facts.
+	//
+	// origin is the right discriminator because it is server-stamped and
+	// unforgeable: it is deliberately absent from the `Memory set` input schema
+	// precisely because it names the writer. A distilled fact carries one; prose an
+	// author typed does not.
 	if strings.TrimSpace(origin) != "" {
 		return MemoryRowFact
+	}
+	if documentKeyPrefix != "" && strings.HasPrefix(key, documentKeyPrefix) {
+		return MemoryRowDocument
 	}
 	return MemoryRowNote
 }

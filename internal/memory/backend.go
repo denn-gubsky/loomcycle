@@ -210,6 +210,12 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 		if f.KeyPrefix == "" {
 			f.KeyPrefix = DocumentChunkKeyPrefix
 		}
+		// AND provenance-free. The prefix alone selects every chunk body, facts
+		// included, so "documents" used to return distilled facts — and the label
+		// agreed with the filter only because both were wrong in the same way. A
+		// fact's body row now carries an origin, so excluding provenance is what
+		// makes this selector mean prose.
+		f.Provenance = store.ProvenanceAbsent
 	case memory && !docs:
 		f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
 		if facts && !notes {

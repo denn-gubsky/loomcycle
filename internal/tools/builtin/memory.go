@@ -1501,9 +1501,15 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 
 	// Collect the document hits' chunk ids up front so their readable labels
 	// resolve in ONE batched query instead of one per row.
+	// Collected by KEY SHAPE, not by class. A readable label is a property of
+	// being a chunk body — the label lives on the chunk — and has nothing to do
+	// with whether that chunk is prose or a distilled fact. Keying this on
+	// MemoryRowDocument meant a fact whose home is a chunk came back addressed only
+	// by its opaque `doc.chunk:<hex>` key, which is the very thing ChunkLabelsFor
+	// exists to prevent.
 	var docChunkIDs []string
 	for _, r := range res.Entries {
-		if memrank.Class(r) == store.MemoryRowDocument {
+		if strings.HasPrefix(r.Key, memrank.DocumentChunkKeyPrefix) {
 			docChunkIDs = append(docChunkIDs, strings.TrimPrefix(r.Key, memrank.DocumentChunkKeyPrefix))
 		}
 	}

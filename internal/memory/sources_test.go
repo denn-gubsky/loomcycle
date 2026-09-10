@@ -29,9 +29,13 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 		},
 
 		{
-			name: "documents restricts to it",
+			name: "documents restricts to prose — the namespace AND no provenance",
 			q:    SearchQuery{Sources: []Source{SourceDocuments}},
-			want: store.MemorySearchFilter{KeyPrefix: DocumentChunkKeyPrefix},
+			want: store.MemorySearchFilter{KeyPrefix: DocumentChunkKeyPrefix, Provenance: store.ProvenanceAbsent},
+			comment: "the prefix alone selects every chunk body, facts included, so " +
+				"asking for documents used to return distilled facts; a fact's body " +
+				"row carries an origin, so excluding provenance is what makes this " +
+				"selector mean prose",
 		},
 		{
 			name: "all three is the same as neither",
@@ -74,7 +78,7 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 		{
 			name: "an explicit prefix WINS over documents-only",
 			q:    SearchQuery{Prefix: "doc.chunk:abc", Sources: []Source{SourceDocuments}},
-			want: store.MemorySearchFilter{KeyPrefix: "doc.chunk:abc"},
+			want: store.MemorySearchFilter{KeyPrefix: "doc.chunk:abc", Provenance: store.ProvenanceAbsent},
 			comment: "narrowing to one chunk must not be widened back to the whole " +
 				"namespace by the selector",
 		},
@@ -155,7 +159,13 @@ func TestClass_LabelsRowsFromTheirOwnColumns(t *testing.T) {
 		want        store.MemoryRowClass
 	}{
 		{"doc.chunk:abc", "", store.MemoryRowDocument},
-		{"doc.chunk:abc", "consolidator", store.MemoryRowDocument}, // namespace wins
+		// PROVENANCE wins, not the namespace. The prefix says "this row is a chunk
+		// body"; it does not say what kind of thing the chunk holds, and facts and
+		// prose are both chunk bodies. Namespace-first therefore labelled every
+		// chunk-homed fact a document — which is why `sources=documents` returned
+		// facts — and the filter agreed with the label only because both were wrong
+		// in the same way. A body row carries an origin iff a distiller wrote it.
+		{"doc.chunk:abc", "consolidator", store.MemoryRowFact},
 		{"memory/fact/x", "consolidator", store.MemoryRowFact},
 		{"memory/fact/x", "", store.MemoryRowNote}, // no writer stamped
 		{"scratch/todo", "", store.MemoryRowNote},

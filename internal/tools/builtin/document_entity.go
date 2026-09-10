@@ -68,6 +68,14 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		return errResult("upsert_chunk: lookup: " + err.Error()), nil
 	}
 
+	// upsert_chunk IS the fact-tier write op — every write through it gets a
+	// sidecar row — so it is the right place to decide that this chunk's body row
+	// carries provenance. Set once, before either branch, because a fact reaches
+	// the k/v plane through create_chunk when it is new and through the entity body
+	// writer when it already exists; stamping only one of those would leave the
+	// discriminator depending on whether a fact had been seen before.
+	in.bodyOrigin = originForEntityWrite(ctx)
+
 	if existing == "" {
 		// Delegate the INSERT to create_chunk rather than writing a second insert
 		// path. It owns the parent/position/document-exists validation, and a
@@ -155,7 +163,10 @@ func (d *Document) updateChunkForUpsert(ctx context.Context, key sqlmem.ScopeKey
 				fields = cur.Fields
 			}
 		}
-		return d.writeBody(ctx, mscope, key, chunkID, "", body, fields)
+		// The SAME origin the sidecar records, so the body row carries the one
+		// signal that distinguishes a fact from prose. Without it a collapsed fact
+		// — whose body row becomes its only home — reads as a document.
+		return d.writeBodyAs(ctx, mscope, key, chunkID, "", body, fields, in.bodyOrigin)
 	}
 	return nil
 }
