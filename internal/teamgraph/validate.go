@@ -1,9 +1,14 @@
 package teamgraph
 
 import (
+	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 )
 
 // Validate checks a TeamDef definition graph for the invariants RFC AP requires
@@ -22,6 +27,12 @@ import (
 //   - every state is reachable from `entry`;
 //   - max_iterations ≥ 0 (0 = use the default). Cycle termination is guaranteed
 //     because the per-state cap applies to every state.
+//
+// varNameRe is the variable-name charset, the same [a-zA-Z0-9_-]{1,64} the
+// credentials validator enforces and the expander matches — so a name that
+// validates here is a name the expander can actually resolve.
+var varNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 func Validate(d Definition) error {
 	if strings.TrimSpace(d.Entry) == "" {
 		return fmt.Errorf("team definition: `entry` is required")
@@ -136,6 +147,23 @@ func validateHandler(stateID string, h Handler) error {
 		if err := validateWait(stateID, h.Wait); err != nil {
 			return err
 		}
+	case HandlerVars:
+		if len(h.Set) == 0 {
+			return fmt.Errorf("team definition: state %q vars handler requires a non-empty `set`", stateID)
+		}
+		if h.Agent != "" || len(h.Agents) != 0 || h.Consolidator != "" {
+			return fmt.Errorf("team definition: state %q vars handler must not set agent/agents/consolidator", stateID)
+		}
+		if err := validateSet(stateID, h.Set); err != nil {
+			return err
+		}
+	case HandlerInput:
+		if h.Agent != "" || len(h.Agents) != 0 || h.Consolidator != "" {
+			return fmt.Errorf("team definition: state %q input handler must not set agent/agents/consolidator", stateID)
+		}
+		if len(h.Schema) > 0 && !json.Valid(h.Schema) {
+			return fmt.Errorf("team definition: state %q input handler `schema` is not valid JSON", stateID)
+		}
 	case HandlerTerminal:
 		if h.Agent != "" || len(h.Agents) != 0 || h.Consolidator != "" {
 			return fmt.Errorf("team definition: state %q terminal handler must not set agent/agents/consolidator", stateID)
@@ -143,12 +171,75 @@ func validateHandler(stateID string, h Handler) error {
 	case "":
 		return fmt.Errorf("team definition: state %q handler is missing a `kind`", stateID)
 	default:
-		return fmt.Errorf("team definition: state %q has unknown handler kind %q (want agent|parallel|consolidator|terminal)", stateID, h.Kind)
+		return fmt.Errorf("team definition: state %q has unknown handler kind %q (want agent|parallel|consolidator|terminal|vars|input)", stateID, h.Kind)
+	}
+	if h.Kind != HandlerVars && len(h.Set) > 0 {
+		return fmt.Errorf("team definition: state %q sets `set` but is kind %q — assignment belongs on a `vars` state, where it is visible", stateID, h.Kind)
+	}
+	if h.Kind != HandlerInput && len(h.Schema) > 0 {
+		return fmt.Errorf("team definition: state %q sets `schema` but is kind %q (input only)", stateID, h.Kind)
+	}
+	if err := validateCapture(stateID, h.Capture); err != nil {
+		return err
 	}
 	if h.TimeoutMS < 0 {
 		return fmt.Errorf("team definition: state %q handler timeout_ms must be >= 0", stateID)
 	}
 	return nil
+}
+
+// secretNamespaces are the ${…} namespaces a `vars` state may never bind from.
+//
+// ${run.credentials.*} and ${run.user_bearer} are FAIL-CLOSED by design:
+// unresolved, they drop the whole header rather than emit a placeholder. A vars
+// state that could copy one into ${var.x} would convert a fail-closed secret
+// into a fail-open plaintext string — and that string is then a legitimate
+// Memory key, a prompt fragment, and a value in every transcript, snapshot and
+// prompt-cache entry downstream.
+//
+// Secrets keep their own namespace and their own posture. Variables are
+// non-secret BY CONSTRUCTION, which is what lets the expander substitute an
+// unresolved one to empty instead of dropping its container.
+var secretNamespaces = []string{"${run.credentials.", "${run.user_bearer"}
+
+func validateSet(stateID string, set map[string]string) error {
+	for _, name := range sortedKeys(set) {
+		if !varNameRe.MatchString(name) {
+			return fmt.Errorf("team definition: state %q set key %q must match [a-zA-Z0-9_-]{1,64}", stateID, name)
+		}
+		for _, ns := range secretNamespaces {
+			if strings.Contains(set[name], ns) {
+				return fmt.Errorf("team definition: state %q set %q reads the credentials namespace — "+
+					"variables are non-secret by construction; a secret copied into one becomes a plaintext "+
+					"value in every transcript, snapshot and prompt-cache entry downstream", stateID, name)
+			}
+		}
+	}
+	return nil
+}
+
+func validateCapture(stateID string, capture map[string]string) error {
+	for _, name := range sortedKeys(capture) {
+		if !varNameRe.MatchString(name) {
+			return fmt.Errorf("team definition: state %q capture key %q must match [a-zA-Z0-9_-]{1,64}", stateID, name)
+		}
+		if _, err := jsonpath.Parse(capture[name]); err != nil {
+			return fmt.Errorf("team definition: state %q capture %q: %w", stateID, name, err)
+		}
+	}
+	return nil
+}
+
+// sortedKeys makes a map-driven validation report DETERMINISTIC: without it the
+// error an operator sees for a definition with two bad entries depends on Go's
+// map iteration order and changes between runs.
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func validateWait(stateID, wait string) error {

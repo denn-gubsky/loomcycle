@@ -42,10 +42,10 @@ func TestRunHandler_OneAgentTwoStatesGetTheirOwnSystemPrompts(t *testing.T) {
 		SystemPrompt: "You are a style reviewer.",
 	}}
 
-	if _, err := r.RunHandler(context.Background(), sec, "the diff"); err != nil {
+	if _, err := r.RunHandler(context.Background(), sec, &Task{Input: "the diff"}); err != nil {
 		t.Fatalf("sec: %v", err)
 	}
-	if _, err := r.RunHandler(context.Background(), style, "the diff"); err != nil {
+	if _, err := r.RunHandler(context.Background(), style, &Task{Input: "the diff"}); err != nil {
 		t.Fatalf("style: %v", err)
 	}
 
@@ -61,14 +61,14 @@ func TestRunHandler_OneAgentTwoStatesGetTheirOwnSystemPrompts(t *testing.T) {
 
 func TestNodePrompt_InputTemplateReplacesTheThreadedInput(t *testing.T) {
 	h := teamgraph.Handler{Kind: teamgraph.HandlerAgent, InputTemplate: "Summarise the release notes."}
-	if got := nodePrompt(h, "previous state output"); got.Input != "Summarise the release notes." {
+	if got := mustPrompt(t, h, "previous state output"); got.Input != "Summarise the release notes." {
 		t.Errorf("input = %q, want the template", got.Input)
 	}
 }
 
 func TestNodePrompt_EmptyTemplateFallsBackToTheThreadedInput(t *testing.T) {
 	h := teamgraph.Handler{Kind: teamgraph.HandlerAgent}
-	if got := nodePrompt(h, "previous state output"); got.Input != "previous state output" {
+	if got := mustPrompt(t, h, "previous state output"); got.Input != "previous state output" {
 		t.Errorf("input = %q, want the threaded input", got.Input)
 	}
 }
@@ -95,7 +95,7 @@ func TestRunHandler_ParallelMembersShareTheNodesPrompt(t *testing.T) {
 		SystemPrompt:  "Review only what you are qualified to review.",
 		InputTemplate: "Look at PR 42.",
 	}}
-	if _, err := r.RunHandler(context.Background(), st, "threaded"); err != nil {
+	if _, err := r.RunHandler(context.Background(), st, &Task{Input: "threaded"}); err != nil {
 		t.Fatalf("RunHandler: %v", err)
 	}
 
@@ -129,7 +129,7 @@ func TestRunHandler_ConsolidatorDoesNotInheritTheNodesSystemPrompt(t *testing.T)
 		Kind: teamgraph.HandlerAgent, Agent: "reviewer", Consolidator: "judge",
 		SystemPrompt: "You are a security reviewer.",
 	}}
-	if _, err := r.RunHandler(context.Background(), st, "the diff"); err != nil {
+	if _, err := r.RunHandler(context.Background(), st, &Task{Input: "the diff"}); err != nil {
 		t.Fatalf("RunHandler: %v", err)
 	}
 
@@ -153,10 +153,22 @@ func TestRunHandler_StandaloneConsolidatorStateUsesItsOwnSystemPrompt(t *testing
 		Kind: teamgraph.HandlerConsolidator, Agent: "judge",
 		SystemPrompt: "Weigh the reviews and decide.",
 	}}
-	if _, err := r.RunHandler(context.Background(), st, "the reviews"); err != nil {
+	if _, err := r.RunHandler(context.Background(), st, &Task{Input: "the reviews"}); err != nil {
 		t.Fatalf("RunHandler: %v", err)
 	}
 	if got["judge"].System != st.Handler.SystemPrompt {
 		t.Errorf("standalone consolidator system = %q, want the node's", got["judge"].System)
 	}
+}
+
+// mustPrompt composes a node's prompt with an empty environment and fails on any
+// refused variable — these cases carry none, so a refusal would be a surprise
+// worth surfacing rather than silently dropping.
+func mustPrompt(t *testing.T, h teamgraph.Handler, threaded string) Prompt {
+	t.Helper()
+	p, refused := nodePrompt(h, threaded, Env{})
+	if len(refused) != 0 {
+		t.Fatalf("unexpected refused variables: %v", refused)
+	}
+	return p
 }
