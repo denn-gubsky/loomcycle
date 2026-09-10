@@ -12091,6 +12091,59 @@ func testMemorySearchFilterExcludesPrefix(t *testing.T, s store.Store) {
 			}
 		}
 	}
+
+	// ExcludeDocumentPrefix drops the document CLASS rather than the namespace, which
+	// is what "everything except prose" has to mean once facts are homed in chunks.
+	// The distinguishing row is a chunk body WITH provenance: excluding the namespace
+	// would drop it, and this must keep it.
+	if err := s.MemorySetProvenance(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:factbody", v, 0,
+		store.MemoryProvenance{Origin: "consolidator"}); err != nil {
+		t.Fatalf("MemorySetProvenance chunk-homed fact: %v", err)
+	}
+	if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, "doc.chunk:factbody", store.MemoryEmbedding{
+		Provider: "test", Model: "m", Dimension: 4,
+		Vector: floats32(1, 0, 0, 0), EmbedText: "distilled", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("MemoryEmbedSet chunk-homed fact: %v", err)
+	}
+
+	notProse, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{ExcludeDocumentPrefix: "doc.chunk:"}, q, 10)
+	if err != nil {
+		t.Fatalf("exclude document class: %v", err)
+	}
+	var sawFactBody, sawProse bool
+	for _, r := range notProse {
+		if r.Key == "doc.chunk:factbody" {
+			sawFactBody = true
+		}
+		if strings.HasPrefix(r.Key, "doc.chunk:") && r.Origin == "" {
+			sawProse = true
+		}
+	}
+	if !sawFactBody {
+		t.Errorf("ExcludeDocumentPrefix dropped a chunk body that HAS provenance (%v) — it "+
+			"must exclude the class, not the namespace, or a collapsed fact becomes "+
+			"unreachable by the recall default", keysOf(notProse))
+	}
+	if sawProse {
+		t.Errorf("ExcludeDocumentPrefix returned un-stamped chunk prose (%v) — the whole "+
+			"point of the field is that prose stays out", keysOf(notProse))
+	}
+
+	// Same on the lexical leg, for the RRF reason above.
+	if s.SupportsFullText() {
+		lex, err := s.MemoryFullTextSearch(ctx, "", store.MemoryScopeUser, sid,
+			store.MemorySearchFilter{ExcludeDocumentPrefix: "doc.chunk:"}, "distilled", 10)
+		if err != nil {
+			t.Fatalf("fulltext exclude document class: %v", err)
+		}
+		for _, r := range lex {
+			if strings.HasPrefix(r.Key, "doc.chunk:") && r.Origin == "" {
+				t.Errorf("the full-text leg ignored ExcludeDocumentPrefix and returned prose %s", r.Key)
+			}
+		}
+	}
 }
 
 func testMemoryEmbedListMissing(t *testing.T, s store.Store) {

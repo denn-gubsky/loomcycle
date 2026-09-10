@@ -45,15 +45,14 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 				"(exclude AND require the same prefix), which would return nothing",
 		},
 		{
-			name: "facts only requires provenance",
+			name: "facts are wherever provenance is, in EITHER namespace",
 			q:    SearchQuery{Sources: []Source{SourceFacts}},
-			want: store.MemorySearchFilter{
-				ExcludeKeyPrefix: DocumentChunkKeyPrefix,
-				Provenance:       store.ProvenanceRequired,
-			},
+			want: store.MemorySearchFilter{Provenance: store.ProvenanceRequired},
 			comment: "origin is server-stamped, so it is the unforgeable discriminator " +
 				"(RFC BW §9 Q1) — class is model-supplied and would let an agent promote " +
-				"its own note to a fact",
+				"its own note to a fact. No namespace constraint: excluding the chunk " +
+				"prefix was right only while a fact's home was its own k/v row and the " +
+				"chunk body was a duplicate, and it would now hide a chunk-homed fact",
 		},
 		{
 			name: "notes only excludes provenance",
@@ -64,16 +63,18 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 			},
 		},
 		{
-			name: "facts+notes is memory with no provenance constraint",
+			name: "facts+notes excludes the document CLASS, not the namespace",
 			q:    SearchQuery{Sources: []Source{SourceFacts, SourceNotes}},
-			want: store.MemorySearchFilter{ExcludeKeyPrefix: DocumentChunkKeyPrefix},
-			comment: "the recall default: everything the agent remembers, documents " +
-				"excluded",
+			want: store.MemorySearchFilter{ExcludeDocumentPrefix: DocumentChunkKeyPrefix},
+			comment: "the recall default: everything the agent remembers, prose " +
+				"excluded. Excluding the namespace no longer expresses that, because " +
+				"the facts half now lives inside it — so what is ruled out is the " +
+				"class (a chunk body with no provenance) rather than the prefix",
 		},
 		{
 			name: "an explicit prefix survives a source selector",
 			q:    SearchQuery{Prefix: "proj/", Sources: []Source{SourceFacts, SourceNotes}},
-			want: store.MemorySearchFilter{KeyPrefix: "proj/", ExcludeKeyPrefix: DocumentChunkKeyPrefix},
+			want: store.MemorySearchFilter{KeyPrefix: "proj/", ExcludeDocumentPrefix: DocumentChunkKeyPrefix},
 		},
 		{
 			name: "an explicit prefix WINS over documents-only",

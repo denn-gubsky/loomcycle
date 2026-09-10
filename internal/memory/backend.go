@@ -216,13 +216,25 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 		// fact's body row now carries an origin, so excluding provenance is what
 		// makes this selector mean prose.
 		f.Provenance = store.ProvenanceAbsent
-	case memory && !docs:
+	case facts && !notes:
+		// FACTS ARE WHEREVER PROVENANCE IS, with no namespace constraint. This used
+		// to exclude the chunk namespace, which was right only while a fact's home
+		// was its own k/v row and the chunk body was a duplicate of it. A fact homed
+		// in a chunk lives at that prefix, so the exclusion would now hide exactly
+		// what was asked for.
+		f.Provenance = store.ProvenanceRequired
+	case notes && !facts:
+		// A note is what an agent wrote down ITSELF: no provenance, and not a chunk
+		// body. Both halves are load-bearing — prose has no provenance either, so
+		// provenance alone would return document text as notes.
 		f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
-		if facts && !notes {
-			f.Provenance = store.ProvenanceRequired
-		} else if notes && !facts {
-			f.Provenance = store.ProvenanceAbsent
-		}
+		f.Provenance = store.ProvenanceAbsent
+	case memory && !docs:
+		// facts + notes — everything EXCEPT prose, and the default for recall.
+		// No longer expressible by excluding the chunk namespace, because the facts
+		// half now lives inside it; this excludes the document CLASS, which is the
+		// only thing being ruled out.
+		f.ExcludeDocumentPrefix = DocumentChunkKeyPrefix
 	}
 	// docs && facts && notes → everything; the zero filter already says that.
 	return f, nil

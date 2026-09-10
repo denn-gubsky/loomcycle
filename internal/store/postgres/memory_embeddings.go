@@ -315,6 +315,13 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
+	// The document CLASS, not the namespace: a chunk body with no provenance. A
+	// fact homed in a chunk shares the prefix, so excluding the prefix outright
+	// would exclude the facts this query is for.
+	if filter.ExcludeDocumentPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
+		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND coalesce(m.origin, '') = '')"
+	}
 	prefixCondition += provenanceCondition(filter.Provenance)
 	var observedCond string
 	observedCond, args = observedCondition(filter, args)
@@ -439,6 +446,10 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	if filter.ExcludeKeyPrefix != "" {
 		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
+	if filter.ExcludeDocumentPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
+		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND coalesce(m.origin, '') = '')"
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)
 	var observedCond string
