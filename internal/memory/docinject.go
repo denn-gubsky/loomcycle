@@ -18,14 +18,31 @@
 // wrote and a reader wants — so addressing one gives the agent something
 // complete and small, rather than a wall of text it must search.
 //
-// AND NOTHING IS EVER TRUNCATED. An earlier version cut an oversized body at
-// 16 KB with a marker. That was wrong: a visible marker helps a human reading
-// the resolved prompt, but the MODEL still answers confidently from half a
-// spec, and a half-spec is indistinguishable from a complete one to it. When a
-// document does not fit, this family inlines a REFERENCE instead — the
-// document's title, path, and its section outline — so the agent gets an
-// accurate map and the operator sees exactly which selector to narrow to. A
-// correct map beats an arbitrary first-16-KB slice.
+// THE RULE: INLINE WHAT IS PRECISE, DIRECT THE AGENT TO WHAT IS NOT.
+//
+//	a section or a chunk  → INLINED, complete
+//	a whole document      → an INSTRUCTION to read it with the Document tool
+//
+// A precise ref names something bounded that the operator chose deliberately,
+// so it is resolved content the agent cannot decline to read — the binding
+// Decision 5 asks for. A whole document is unbounded, and every way of forcing
+// it into a prompt is worse than pointing at it:
+//
+//   - truncating it hands the model half a spec, which it cannot distinguish
+//     from a complete one and will answer from confidently;
+//   - outlining it spends prompt on a table of contents the agent must then act
+//     on anyway;
+//   - inlining it whole is a size gamble that fails on exactly the documents
+//     worth referencing.
+//
+// So a whole-document ref renders an instruction naming the tool and the path.
+// It is deliberately ADVISORY where the precise forms are not — an agent may
+// decline to read it, which is the honest cost of a reference it can act on
+// lazily and against the LIVE document rather than an assembly-time snapshot.
+//
+// A useful consequence: a whole-document ref does NO store read at prompt
+// assembly, so it cannot fail, cannot slow assembly, and needs no scope
+// resolution at a point in the run lifecycle where policies are not yet stamped.
 //
 // The safety argument is NARROWER than the {{tool:...}} family's, deliberately.
 // A document ref is a pure READ of the substrate's own Document store, resolved
@@ -60,6 +77,10 @@ type DocRef struct {
 // by Path-tree location. Ids carry no leading slash.
 func (r DocRef) IsID() bool { return !strings.HasPrefix(r.Path, "/") }
 
+// IsWholeDocument reports a ref that names a document by path with no section
+// selector — the one form that renders an INSTRUCTION rather than content.
+func (r DocRef) IsWholeDocument() bool { return !r.IsID() && r.Heading == "" }
+
 // String renders the ref in placeholder form, for error messages.
 func (r DocRef) String() string {
 	if r.Heading != "" {
@@ -86,15 +107,19 @@ const documentPlaceholderPattern = `(\\?)\{\{\s*document\s*:\s*([A-Za-z0-9_./#: 
 
 var documentPlaceholderRe = regexp.MustCompile(`(?i)` + documentPlaceholderPattern)
 
-// MaxDocumentBytes is the size ONE {{document:...}} body may inline: 16 KB
-// (~4K tokens). A chunk or a section fits comfortably; a full spec generally
-// does not.
+// ReadInstruction is what a whole-document ref renders: a directive naming the
+// tool and the exact path, so the agent can fetch it when the task needs it.
 //
-// It is a FIT THRESHOLD, not a truncation point. A body over it is not cut —
-// the caller renders an outline instead (see OutlineFor). Per-placeholder, and
-// still counted against the shared memory budget: this bounds what ONE ref may
-// contribute, the budget bounds the total.
-const MaxDocumentBytes = 16 * 1024
+// It names the op and the path verbatim rather than describing them, because
+// the failure mode of a vague instruction is a model that guesses an argument
+// and gets a refusal it then reasons about instead of the document.
+func ReadInstruction(ref DocRef) string {
+	return "<document-ref path=\"" + ref.Path + "\">\n" +
+		"This document is NOT included here. Read it when the task needs it, with the Document tool:\n" +
+		"    Document op=export_md path=" + ref.Path + "\n" +
+		"Reference one section instead to have it inlined for you: {{document:" + ref.Path + "#<section>}}\n" +
+		"</document-ref>"
+}
 
 // ParseDocRef canonicalises a raw ref token. It reports ok=false for a ref with
 // no path, which boot validation surfaces rather than leaving literal.
@@ -165,6 +190,12 @@ func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining
 	if !ok {
 		return ""
 	}
+	// A whole document renders an instruction and reads NOTHING — so this form
+	// works identically whether or not the document exists, is readable, or the
+	// store is even wired.
+	if ref.IsWholeDocument() {
+		return ReadInstruction(ref)
+	}
 	body := strings.TrimSpace(bodies[ref])
 	if body == "" {
 		return ""
@@ -174,38 +205,6 @@ func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining
 		return ""
 	}
 	return frameDocument(ref, body)
-}
-
-// Fits reports whether a body may be inlined whole. The caller renders an
-// outline for anything larger rather than cutting it.
-func Fits(body string) bool { return len(body) <= MaxDocumentBytes }
-
-// OutlineFor renders the REFERENCE a document gets when its full text does not
-// fit: what it is, where it is, and what sections it contains.
-//
-// This is what the agent receives INSTEAD of a truncated body, and it is
-// strictly more useful. A cut document is a confident half-answer; an outline is
-// an accurate map, and it names the exact selector that would inline any one
-// part — so an operator reading the resolved prompt can see what to narrow the
-// ref to, and an agent that holds the Document tool can fetch precisely.
-func OutlineFor(ref DocRef, title string, sections []string) string {
-	var b strings.Builder
-	b.WriteString("This document is too large to inline. Its outline follows; the full text was NOT included.\n\n")
-	if title != "" {
-		b.WriteString("title: " + title + "\n")
-	}
-	b.WriteString("ref: " + ref.String() + "\n")
-	if len(sections) == 0 {
-		b.WriteString("\n(no sections)\n")
-		return b.String()
-	}
-	b.WriteString("\nsections:\n")
-	for _, s := range sections {
-		b.WriteString("  - " + s + "\n")
-	}
-	b.WriteString("\nTo inline one section instead of the whole document, reference it as " +
-		"{{document:" + ref.Path + "#<section>}}.\n")
-	return b.String()
 }
 
 // frameDocument wraps a body in a DATA frame naming its source. The frame is
