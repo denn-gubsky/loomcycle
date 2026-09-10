@@ -440,6 +440,11 @@ func (s *Server) renderDocuments(ctx context.Context, mi memInject, refs []memin
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	out := make(map[meminject.DocRef]string, len(refs))
 	for _, ref := range refs {
+		if ref.IsWholeDocument() {
+			// Renders an instruction, not content — no read, so it is not
+			// resolved here at all.
+			continue
+		}
 		if body := resolveDocRef(dctx, doc, ref); body != "" {
 			out[ref] = body
 		}
@@ -466,20 +471,14 @@ func resolveDocRef(ctx context.Context, doc *builtin.Document, ref meminject.Doc
 		}
 		// Not a chunk id — fall through and try it as a document id.
 	}
-	md, title := exportDocument(ctx, doc, ref)
+	md, _ := exportDocument(ctx, doc, ref)
 	if md == "" {
 		return ""
 	}
-	if ref.Heading != "" {
-		// A named section is inlined COMPLETE, whatever its size: the operator
-		// asked for exactly this part, and cutting the thing they narrowed to
-		// would defeat narrowing.
-		return sectionByHeading(md, ref.Heading)
-	}
-	if meminject.Fits(md) {
-		return md
-	}
-	return meminject.OutlineFor(ref, title, headingsOf(md))
+	// A named section is inlined COMPLETE, whatever its size: the operator asked
+	// for exactly this part, and cutting the thing they narrowed to would defeat
+	// narrowing. The shared memory budget is still the backstop for the total.
+	return sectionByHeading(md, ref.Heading)
 }
 
 // readChunkByID inlines one chunk. ok=false when the id names no chunk, so the
@@ -536,9 +535,6 @@ func exportDocument(ctx context.Context, doc *builtin.Document, ref meminject.Do
 	return strings.TrimSpace(payload.Markdown), payload.Title
 }
 
-// headingsOf lists a markdown document's section titles, in order, for the
-// outline. Duplicates are kept: two sections may share a title, and the outline
-// should say so rather than hide one.
 func headingsOf(md string) []string {
 	var out []string
 	for _, ln := range strings.Split(md, "\n") {
