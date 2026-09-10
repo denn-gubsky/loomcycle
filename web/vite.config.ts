@@ -26,6 +26,15 @@ const explorerStyles = path.resolve(webRoot, "../packages/explorer/src/styles.cs
 // precede the bare-package key.
 const memoryViewSrc = path.resolve(webRoot, "../packages/memory-view/src/index.ts");
 const memoryViewStyles = path.resolve(webRoot, "../packages/memory-view/src/styles.css");
+// @loomcycle/def-fields — consumed from SOURCE the same way. Like memory-view
+// its classes are scoped (`.loomcycle-def-fields` / `lc-df-*`), so the web
+// wrapper DOES import the package's styles.css (see LibraryView.tsx). NOTE that
+// @loomcycle/library ALSO depends on it (as a peer, resolved from npm for its
+// standalone build); this alias makes the SPA compile a single copy from source
+// rather than bundling library's node_modules copy alongside. Same
+// styles-key-first ordering rationale as above.
+const defFieldsSrc = path.resolve(webRoot, "../packages/def-fields/src/index.ts");
+const defFieldsStyles = path.resolve(webRoot, "../packages/def-fields/src/styles.css");
 
 // loomcycle UI build configuration.
 //
@@ -51,6 +60,8 @@ export default defineConfig({
       "@loomcycle/explorer": explorerSrc,
       "@loomcycle/memory-view/styles.css": memoryViewStyles,
       "@loomcycle/memory-view": memoryViewSrc,
+      "@loomcycle/def-fields/styles.css": defFieldsStyles,
+      "@loomcycle/def-fields": defFieldsSrc,
     },
     // We consume @loomcycle/library from SOURCE, which imports `react` /
     // `react-dom` (and the JSX runtime). Because the package has its OWN

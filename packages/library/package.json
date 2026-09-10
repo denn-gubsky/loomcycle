@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/library",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Embeddable React Library component for the loomcycle agentic runtime \u2014 the Agents / Skills / MCP-Servers substrate browser (lineage, create/fork/promote/retire, Claude Code import) as a standalone, themeable package.",
   "license": "Apache-2.0",
@@ -48,6 +48,7 @@
   },
   "peerDependencies": {
     "@loomcycle/client": "^1.7.0",
+    "@loomcycle/def-fields": "^0.1.0",
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0"
   },
@@ -56,6 +57,7 @@
   },
   "devDependencies": {
     "@loomcycle/client": "^1.7.0",
+    "@loomcycle/def-fields": "^0.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

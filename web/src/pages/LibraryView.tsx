@@ -1,5 +1,10 @@
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Library, type LibraryTab } from "@loomcycle/library";
+// The agent editor's "All parameters" surface is @loomcycle/def-fields, whose
+// classes are SCOPED under .loomcycle-def-fields rather than emitted as web
+// globals — so unlike @loomcycle/library's sheet (see below) this one must be
+// imported, exactly as MemoryView imports @loomcycle/memory-view's.
+import "@loomcycle/def-fields/styles.css";
 import { usePrincipal } from "../components/Layout";
 
 // LibraryView is a thin wrapper around the standalone <Library> component from

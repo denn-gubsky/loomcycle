@@ -318,17 +318,42 @@
   border-radius: 4px;
   color: var(--fg);
 }
-.loomcycle-library .library-advanced-overlay {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* Form / All-parameters switch above the agent fields. */
+.loomcycle-library .library-surface-switch {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   border-top: 1px dashed var(--border);
   padding-top: 10px;
 }
-.loomcycle-library .library-advanced-format {
-  display: flex;
-  gap: 16px;
+.loomcycle-library .library-surface-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.loomcycle-library .library-surface-tabs button {
+  padding: 3px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-soft, var(--fg));
+  font: inherit;
   font-size: 12px;
+  cursor: pointer;
+}
+.loomcycle-library .library-surface-tabs button + button {
+  border-left: 1px solid var(--border);
+}
+.loomcycle-library .library-surface-tabs button.active {
+  background: var(--bg-soft-2, var(--border));
+  color: var(--fg);
+  font-weight: 600;
+}
+.loomcycle-library .library-surface-tabs button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .loomcycle-library .library-models-warning code {
   font-family: var(--mono);
