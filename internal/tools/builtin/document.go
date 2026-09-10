@@ -109,7 +109,8 @@ const documentInputSchema = `{
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
-		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Defaults to now. Distinct from when it was recorded."},
+		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Omit when unknown — an undated fact is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded."},
+		"observed_at": {"type": "integer", "description": "When the thing was SAID or written (unix nanos), as distinct from when it became true. \"Yesterday I met them in Boston\", said on the 4th, is observed_at the 4th and valid_at the 3rd. Omit when unknown."},
 		"invalid_at": {"type": "integer", "description": "When the fact STOPPED being true in the world (unix nanos). Leave unset for something still true."},
 		"class":      {"type": "string", "enum": ["derived","evidential"], "description": "derived = distilled from something else (the default). evidential = source material, exempt from age-based pruning. list_facts: filter to facts of this class."},
 		"confidence": {"type": "number", "description": "0..1, how sure you are of this fact."},
@@ -230,8 +231,14 @@ type docInput struct {
 	SupersedesID string `json:"supersedes_id"`
 	// Pointers so "unset" is distinguishable from zero — valid_at=0 is a real
 	// instant (the unix epoch), not a missing value.
-	ValidAt    *int64   `json:"valid_at"`
-	InvalidAt  *int64   `json:"invalid_at"`
+	ValidAt   *int64 `json:"valid_at"`
+	InvalidAt *int64 `json:"invalid_at"`
+	// ObservedAt is WHEN THE THING WAS SAID, which is a different timeline from
+	// when it was true. The k/v memory plane has carried it since RFC CL and the
+	// chunk plane had no column for it at all — so a fact mirrored into the graph
+	// silently lost the one temporal field that is actually populated (measured
+	// 103/103 on a real corpus, against 27/103 for valid_at).
+	ObservedAt *int64   `json:"observed_at"`
 	Confidence *float64 `json:"confidence"`
 	// Class is 'derived' | 'evidential' — the retention-exemption signal.
 	Class string `json:"class"`
@@ -642,6 +649,9 @@ func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error 
 	if err := d.migrateAssetDescription(ctx, key); err != nil {
 		return err
 	}
+	if err := d.migrateFactObservation(ctx, key); err != nil {
+		return err
+	}
 	if err := d.migrateEdgeAuto(ctx, key); err != nil {
 		return err
 	}
@@ -743,6 +753,48 @@ func (d *Document) migrateDocumentFacets(ctx context.Context, key sqlmem.ScopeKe
 	}
 	return d.exec(ctx, key,
 		`UPDATE documents SET status = (SELECT status FROM chunks WHERE chunks.id = documents.root_chunk_id) WHERE status IS NULL`)
+}
+
+// migrateFactObservation adds chunk_memory_meta.observed_at, access_count and
+// last_accessed_at to a scope provisioned before the chunk plane had to carry
+// them.
+//
+// MEASURED, and it is why this exists: on one real corpus every one of 103 facts
+// carried observed_at in the k/v memory row and the chunk sidecar had NO COLUMN
+// FOR IT. observed_at is not a spare field — it is the predicate `when` narrows
+// on (RFC CL) and the only temporal value that is fully populated, so mirroring a
+// fact into the graph dropped the one date it actually had. valid_at, by
+// contrast, was 100% populated in the chunk plane and 26% in the k/v one, because
+// this table's writer defaulted it to now: three quarters of those instants were
+// write timestamps wearing world-time's column.
+//
+// access_count / last_accessed_at come along now rather than later because
+// access_count feeds the recall ranker's frequency term. They have no writer in
+// the chunk plane yet; the columns exist so that when a fact's home moves there
+// is somewhere for them to land, and ranking does not silently change.
+//
+// ALTER on every scope, new and old alike, and NOT declared in docSchemaDDL — a
+// CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so the DDL alone
+// would reach only fresh scopes. Same shape as migrateAssetDescription: a
+// leading-SELECT fast path, then per-column probes so a crash between two ALTERs
+// does not become a duplicate-column error on the next run.
+func (d *Document) migrateFactObservation(ctx context.Context, key sqlmem.ScopeKey) error {
+	// Fast path: all three present → nothing to do (the common case).
+	if _, err := d.query(ctx, key, `SELECT observed_at, access_count, last_accessed_at FROM chunk_memory_meta WHERE 1=0`); err == nil {
+		return nil
+	}
+	for _, col := range []string{"observed_at", "access_count", "last_accessed_at"} {
+		if d.tableHasColumn(ctx, key, "chunk_memory_meta", col) {
+			continue
+		}
+		// BIGINT and NULLABLE for all three. Nullable matters: a zero access_count
+		// is a real count and a zero instant is 1970, so "never set" has to stay
+		// distinguishable from "set to nothing" — the same argument int64Arg makes.
+		if err := d.exec(ctx, key, `ALTER TABLE chunk_memory_meta ADD COLUMN `+col+` BIGINT`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateAssetDescription adds chunk_assets.description + described_at (RFC BU

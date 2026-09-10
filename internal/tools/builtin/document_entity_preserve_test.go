@@ -84,10 +84,14 @@ func TestUpsert_ReObservationKeepsTheFirstBeliefTime(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	docID := newEntityDoc(t, d, ctx)
 
-	id := upsert(t, d, ctx, docID, "rotation", "rotation", "Weekly, on Mondays.", "")
+	// valid_at is supplied EXPLICITLY. It used to arrive by default — the writer
+	// stamped `now` — so this test preserved a fabricated instant and would have
+	// passed with nil on both sides once that default went away. A caller-asserted
+	// world-time is the only kind whose preservation means anything.
+	id := upsertAt(t, d, ctx, docID, "rotation", "rotation", "Weekly, on Mondays.", "", 1688759760000000000)
 	first := metaOf(t, d, ctx, id)
 	if first.CreatedAt == nil || first.ValidAt == nil {
-		t.Fatalf("fixture: a fresh row should carry both start-timestamps, got %+v", first)
+		t.Fatalf("fixture: created_at is stamped and valid_at was supplied, got %+v", first)
 	}
 
 	upsert(t, d, ctx, docID, "rotation", "", "Weekly, on Mondays at 10:00 UTC.", "")
@@ -240,8 +244,17 @@ func TestUpsert_CreateIsUnchanged(t *testing.T) {
 	if got.Class != "derived" {
 		t.Errorf("a fresh row defaults to derived, got %q", got.Class)
 	}
-	if got.ValidAt == nil || got.CreatedAt == nil {
-		t.Errorf("a fresh row stamps both start-timestamps, got %+v", got)
+	// created_at IS stamped — the system always knows when it began believing
+	// something. valid_at is NOT: world-time is not write-time, and a fresh row
+	// whose caller named no instant is UNDATED. It used to default to `now`, which
+	// made three quarters of a measured corpus claim a world-time nobody supplied,
+	// indistinguishable from one that was asserted. An undated fact still answers
+	// as_of (`valid_at IS NULL OR valid_at <= ?`), so nothing is lost by saying so.
+	if got.CreatedAt == nil {
+		t.Errorf("a fresh row stamps created_at, got %+v", got)
+	}
+	if got.ValidAt != nil {
+		t.Errorf("a fresh row invented valid_at=%d — a write timestamp is not a world time", *got.ValidAt)
 	}
 	if got.InvalidAt != nil || got.ExpiredAt != nil {
 		t.Errorf("a fresh row is not retired, got invalid_at=%d expired_at=%d",
@@ -273,6 +286,34 @@ func newEntityDoc(t *testing.T, d *Document, ctx context.Context) string {
 
 // upsert returns the chunk id. A blank title is omitted entirely, which is how a
 // re-observation that only carries a body reaches the tool.
+// upsertAt is upsert with an explicit world-time. Separate rather than a variadic
+// so every existing caller keeps reading as "no valid_at supplied", which is now a
+// meaningful statement about the row rather than a gap the writer fills in.
+func upsertAt(t *testing.T, d *Document, ctx context.Context, docID, key, title, body, class string, validAt int64) string {
+	t.Helper()
+	in := map[string]any{
+		"op": "upsert_chunk", "scope": "user", "document_id": docID,
+		"natural_key": key, "body": body, "valid_at": validAt,
+	}
+	if title != "" {
+		in["title"] = title
+	}
+	if class != "" {
+		in["class"] = class
+	}
+	res, err := d.Execute(ctx, entityJSON(in))
+	if err != nil || res.IsError {
+		t.Fatalf("upsert_chunk %q: %v %s", key, err, res.Text)
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out.ID
+}
+
 func upsert(t *testing.T, d *Document, ctx context.Context, docID, key, title, body, class string) string {
 	t.Helper()
 	in := map[string]any{

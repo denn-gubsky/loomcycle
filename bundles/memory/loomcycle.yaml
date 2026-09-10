@@ -2461,6 +2461,31 @@ agents:
       // "I do not know", so all three have to read the same way.
       function nonEmpty(v) { return typeof v === "string" && v.trim() !== ""; }
 
+      // nanosOfStamp turns one of this bundle's RFC3339 strings into the unix-nanos
+      // integer the Document tool takes. The two planes spell the same instant
+      // differently — `Memory set` takes RFC3339, `upsert_chunk` takes nanos — so a
+      // fact crossing into the chunk plane has to be converted rather than dropped,
+      // which is what used to happen.
+      //
+      // Date.parse IS used here, and that does not contradict parseStamp's refusal to
+      // use it: parseStamp reads UNTRUSTED transcript text, where Date.parse's habit
+      // of guessing at ambiguity is the defect. Here the input has already passed
+      // tsOrEmpty's strict RFC3339 test, so there is nothing left to guess — the
+      // offset is explicit in the string.
+      //
+      // Exactness: a double holds integers exactly only to 2^53, and 2023 in nanos is
+      // ~1.7e18, so representable values there are multiples of 256. Every stamp this
+      // bundle produces is second-granularity, hence a multiple of 1e9 = 2^9·1953125,
+      // hence a multiple of 512 — so the conversion is exact for the values it
+      // actually sees. Sub-microsecond precision would not be, and none is available
+      // from a transcript anyway.
+      function nanosOfStamp(s) {
+        if (typeof s !== "string" || s === "") { return null; }
+        var ms = Date.parse(s);
+        if (isNaN(ms)) { return null; }
+        return ms * 1000000;
+      }
+
       // mirrorEntity writes the fact node and — when the fact actually names something
       // — a subject node plus the edge between them. Called after the k/v write has
       // already succeeded.
@@ -2555,6 +2580,22 @@ agents:
         // claim — there is nothing about "Denn" for a quote to support, and attaching
         // one there would make the evidence look like it backed the wrong thing.
         if (fact.quote) { factArgs.source_quote = fact.quote; }
+        // THE TEMPORAL FIELDS TRAVEL WITH THE FACT. They used not to: the k/v write
+        // above carried observed_at/valid_at/invalid_at and this one carried none, so
+        // the mirrored fact arrived undated and the sidecar's own writer stamped
+        // valid_at = now. Measured on a real corpus: 103/103 facts had observed_at in
+        // the k/v plane, 0 could have it in the chunk plane, and 117 of 120 sidecar
+        // rows held a valid_at that was really a write time. Once the chunk is the
+        // fact's only home that is not a cosmetic gap — it is the whole temporal
+        // tier, and `when` narrows on observed_at.
+        var oaN = nanosOfStamp(fact.observed_at);
+        if (oaN !== null) { factArgs.observed_at = oaN; }
+        var vaN = nanosOfStamp(fact.valid_at);
+        if (vaN !== null) {
+          factArgs.valid_at = vaN;
+          var ivaN = nanosOfStamp(fact.invalid_at);
+          if (ivaN !== null) { factArgs.invalid_at = ivaN; }
+        }
         var factID = upsertEntityChunk(st, scope, docID, key, factArgs);
         if (!factID) { return; }
         st.entity_facts++;

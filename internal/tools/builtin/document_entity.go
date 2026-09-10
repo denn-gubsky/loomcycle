@@ -191,12 +191,22 @@ type chunkMetaRow struct {
 	// the caller. NULL on a verdict recorded before the column existed, which reads as
 	// unknown rather than as either party.
 	JudgedBy string
+	// ObservedAt is WHEN THE CLAIM WAS SAID — a third timeline, independent of both
+	// pairs above. A fact can be undated in the world (no valid_at) and still have a
+	// precise utterance time, which is what `when` narrows on; conflating the two
+	// loses the only date most facts actually carry.
+	ObservedAt *int64
+	// AccessCount / LastAccessedAt are RETRIEVAL telemetry, not content: access_count
+	// feeds the recall ranker's frequency term. Nil means never recorded, which is a
+	// different state from a count of zero.
+	AccessCount    *int64
+	LastAccessedAt *int64
 }
 
 // readChunkMeta returns the chunk's sidecar row, or found=false when it has none.
 func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (row chunkMetaRow, found bool, err error) {
 	res, err := d.query(ctx, key,
-		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, ''), judged_at, coalesce(judge_reason, ''), coalesce(judged_by, '')
+		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, ''), judged_at, coalesce(judge_reason, ''), coalesce(judged_by, ''), observed_at, access_count, last_accessed_at
 		   FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID)
 	if err != nil || len(res.Rows) == 0 {
 		return chunkMetaRow{}, false, err
@@ -209,6 +219,8 @@ func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunk
 		SessionID: asStr(r[7]), RunID: asStr(r[8]), EventSeq: asInt64Ptr(r[9]),
 		NaturalKey: asStr(r[10]), SourceQuote: asStr(r[11]), Subject: asStr(r[12]),
 		JudgedAt: asInt64Ptr(r[13]), JudgeReason: asStr(r[14]), JudgedBy: asStr(r[15]),
+		ObservedAt:  asInt64Ptr(r[16]),
+		AccessCount: asInt64Ptr(r[17]), LastAccessedAt: asInt64Ptr(r[18]),
 	}, true, nil
 }
 
@@ -229,6 +241,12 @@ func chunkMetaToJSON(m chunkMetaRow) map[string]any {
 	}
 	if m.InvalidAt != nil {
 		out["invalid_at"] = *m.InvalidAt
+	}
+	// observed_at is emitted beside the two intervals because it answers a
+	// different question from either: not when the claim was true, but when it was
+	// made. A reader that only sees valid_at cannot date an undated fact at all.
+	if m.ObservedAt != nil {
+		out["observed_at"] = *m.ObservedAt
 	}
 	if m.CreatedAt != nil {
 		out["created_at"] = *m.CreatedAt
@@ -486,13 +504,31 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 		return err
 	}
 
-	// valid_at — caller, else what was already believed, else now.
-	validAt := now
+	// valid_at — caller, else what was already believed, else UNSET.
+	//
+	// It used to default to `now`, and that was a fabrication: world-time is not
+	// write-time, and on a measured corpus 117 of 120 sidecar rows carried a
+	// valid_at that was simply when the row was written, while the same facts were
+	// honestly undated in the k/v plane. An instant nobody asserted is worse than
+	// no instant, because a reader cannot tell it from one that was.
+	//
+	// Leaving it NULL is safe by construction, not by luck: the as-of predicate is
+	// already `(m.valid_at IS NULL OR m.valid_at <= ?)`, so an undated fact still
+	// answers "what was true then" — it is only excluded from a window it never
+	// claimed to be in.
+	var validAt *int64
 	if hadPrev && prev.ValidAt != nil {
-		validAt = *prev.ValidAt
+		validAt = prev.ValidAt
 	}
 	if in.ValidAt != nil {
-		validAt = *in.ValidAt
+		validAt = in.ValidAt
+	}
+	// observed_at — caller, else preserved. Preserved for the same reason as the
+	// provenance triple: an operator rewording a fact is not withdrawing the claim
+	// about when it was said.
+	observedAt := prev.ObservedAt
+	if in.ObservedAt != nil {
+		observedAt = in.ObservedAt
 	}
 	// invalid_at — caller, else preserved. Preserving is what keeps a retirement
 	// retired across a re-observation.
@@ -558,16 +594,21 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 	}
 	return d.exec(ctx, key,
 		`INSERT INTO chunk_memory_meta
-		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		chunkID, validAt, invalidAt, createdAt, expiredAt, class,
+		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by, observed_at, access_count, last_accessed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		chunkID, int64Arg(validAt), invalidAt, createdAt, expiredAt, class,
 		originForEntityWrite(ctx), confidence,
 		// session_id has no writer yet: it is not on the run ctx, only the run id is.
 		// Preserved rather than nulled so the consolidation path — which CAN fill it
 		// when it relays a drained pending row — does not lose it to the next upsert.
 		nullIfEmpty(prev.SessionID), nullIfEmpty(runID), int64Arg(prev.EventSeq),
 		nullIfEmpty(naturalKey), nullIfEmpty(sourceQuote), nullIfEmpty(subject),
-		judgedAt, nullIfEmpty(judgeReason), nullIfEmpty(judgedBy))
+		judgedAt, nullIfEmpty(judgeReason), nullIfEmpty(judgedBy),
+		int64Arg(observedAt),
+		// PRESERVED, never stamped here. Nothing in the chunk plane counts a read
+		// yet — the k/v row still owns retrieval telemetry — so an upsert must not
+		// reset a count it cannot produce.
+		int64Arg(prev.AccessCount), int64Arg(prev.LastAccessedAt))
 }
 
 // int64Arg / float64Arg turn a nullable read back into a bind arg that round-trips
