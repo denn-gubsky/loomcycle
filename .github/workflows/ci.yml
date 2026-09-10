@@ -333,6 +333,19 @@ jobs:
       - name: Test @loomcycle/memory-view
         working-directory: packages/memory-view
         run: npm run typecheck && npm test
+      # @loomcycle/def-fields is consumed from SOURCE via a Vite alias the same
+      # way — install its deps before the web steps
+      # (packages/def-fields/node_modules is gitignored → absent on checkout).
+      - name: Install @loomcycle/def-fields deps
+        working-directory: packages/def-fields
+        run: npm ci
+      # The registry's own tests include the drift guard that pins
+      # AGENTDEF_OVERLAY_KEYS to builtin.mergedDef's json tags — so adding an
+      # overlay parameter in Go without exposing it in the editor fails HERE,
+      # which is the whole reason the registry exists.
+      - name: Test @loomcycle/def-fields
+        working-directory: packages/def-fields
+        run: npm run typecheck && npm test
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test
