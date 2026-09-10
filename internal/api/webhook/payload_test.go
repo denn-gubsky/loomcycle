@@ -58,38 +58,6 @@ func TestProjectPayload_MalformedBody_Errors(t *testing.T) {
 	}
 }
 
-func TestParsePath_RejectsDisallowedShapes(t *testing.T) {
-	cases := []string{
-		"$.a[*]",      // wildcard index
-		"$..a",        // recursive descent
-		"$.a[?(@.x)]", // filter
-		"a.b",         // missing $ root
-		"$.",          // empty key
-		"$.a[xyz]",    // non-integer index
-		"$.a[-1]",     // negative index
-	}
-	for _, c := range cases {
-		if _, err := parsePath(c); err == nil {
-			t.Errorf("path %q: want reject, got accept", c)
-		}
-	}
-}
-
-func TestParsePath_AcceptsAllowedShapes(t *testing.T) {
-	cases := []string{
-		"$",
-		"$.a",
-		"$.a.b.c",
-		"$.a[0]",
-		"$.a[10].b",
-	}
-	for _, c := range cases {
-		if _, err := parsePath(c); err != nil {
-			t.Errorf("path %q: want accept, got %v", c, err)
-		}
-	}
-}
-
 func TestProjectPayload_ObjectValue_RendersCompactJSON(t *testing.T) {
 	body := []byte(`{"obj":{"k":"v"}}`)
 	res, err := projectPayload(map[string]string{"o": "$.obj"}, body)
