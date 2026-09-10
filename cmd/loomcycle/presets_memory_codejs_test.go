@@ -2956,10 +2956,16 @@ func TestConsolidator_MirrorsTypedFactsIntoAGraph(t *testing.T) {
 	}
 }
 
-// TestConsolidator_UntypedFactsStayKeyValueOnly: the entity pair is optional, and a
-// fact naming no single thing must not be forced into the graph. Inventing a subject
-// to make one fit is how two different things end up merged onto one node.
-func TestConsolidator_UntypedFactsStayKeyValueOnly(t *testing.T) {
+// TestConsolidator_AFactWithNoSubjectStillGetsItsChunk. A fact naming no single thing
+// used to be mirrored NOWHERE — measured at 249 of 1,225 facts, 20.3% — which is
+// affordable only while the k/v row is the fact's home. It gets its own chunk now, so
+// that a fifth of the corpus does not vanish when the chunk becomes the only home.
+//
+// The half of the old rule that still stands is that no subject is INVENTED for it:
+// this asserts no placeholder node and no edge, because a shared placeholder would
+// collect every unattributed fact onto one hub and a traversal would then report them
+// all as related — which is worse than having no edge to follow.
+func TestConsolidator_AFactWithNoSubjectStillGetsItsChunk(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "user: hi\nassistant: hello"
@@ -2968,13 +2974,56 @@ func TestConsolidator_UntypedFactsStayKeyValueOnly(t *testing.T) {
 		{"text":"Releases are never cut on a Friday.","class":"constraint"}
 	]` + "\n```"
 
-	runConsolidator(t, f)
+	res := runConsolidator(t, f)
 
 	if n := f.countOp("Memory.set"); n != 2 {
-		t.Errorf("k/v writes = %d, want 2 — an untyped fact is still a fact", n)
+		t.Errorf("k/v writes = %d, want 2 — a subjectless fact is still a fact", n)
 	}
-	if n := f.countOp("Document.upsert_chunk"); n != 0 {
-		t.Errorf("wrote %d chunks for untyped facts, want 0; keys=%v", n, f.chunks)
+	// One chunk per fact, keyed on the k/v key: the fact node needs no subject.
+	for _, key := range []string{
+		"memory/decision/team-ships-tuesdays",
+		"memory/constraint/releases-never-cut-friday",
+	} {
+		if _, ok := f.chunks[key]; !ok {
+			t.Errorf("fact %q got no chunk — it would be lost by a collapse; keys=%v", key, f.chunks)
+		}
+	}
+	if n := len(f.chunks); n != 2 {
+		t.Errorf("wrote %d chunks, want exactly 2 (one per fact, no subject node); keys=%v", n, f.chunks)
+	}
+	if n := len(callsWithOp(f, "Document.link_chunks")); n != 0 {
+		t.Errorf("drew %d edge(s) for facts naming no subject, want 0 — there is nothing to point at", n)
+	}
+	// The gap has to be visible: silent, it reads as a graph that covers the corpus.
+	if !strings.Contains(res.FinalText, "2 fact(s) chunked with no subject named") {
+		t.Errorf("the unattributed count must be reported, not defaulted silently; got %q", res.FinalText)
+	}
+}
+
+// TestConsolidator_ASubjectWithNoTypeIsFiledUnderTheFallbackType. A missing type is a
+// different problem from a missing subject: the thing WAS named, only its kind is
+// unknown, so it still becomes one findable node (two subjects never collide, since the
+// name is part of the key). ENTITY_FALLBACK_TYPE already existed for an unusable type;
+// an absent one is the same case.
+func TestConsolidator_ASubjectWithNoTypeIsFiledUnderTheFallbackType(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: hi\nassistant: hello"
+	f.factsJSON = "```json\n" + `[
+		{"text":"Denn prefers Go for backend services.","class":"preference","subject":"Denn"},
+		{"text":"Ada owns the ledger service.","class":"fact","subject":"Ada"}
+	]` + "\n```"
+
+	runConsolidator(t, f)
+
+	// Two named things, so two distinct nodes — not one merged placeholder.
+	for _, key := range []string{"object:denn", "object:ada"} {
+		if _, ok := f.chunks[key]; !ok {
+			t.Errorf("subject %q got no node; keys=%v", key, f.chunks)
+		}
+	}
+	if n := len(callsWithOp(f, "Document.link_chunks")); n != 2 {
+		t.Errorf("edges = %d, want 2 — a named subject is reachable even with no type given", n)
 	}
 }
 
@@ -3001,6 +3050,11 @@ func TestConsolidator_AGraphFailureNeverCostsAFact(t *testing.T) {
 	}
 	if !strings.Contains(res.FinalText, "graph write(s) failed") {
 		t.Errorf("a silent graph failure is the worst outcome — it must be reported; got %q", res.FinalText)
+	}
+	// The same property, now that the chunk is becoming the fact's home: a refused
+	// SUBJECT node must degrade to "no edge", never to "no fact chunk".
+	if _, ok := f.chunks["memory/preference/denn-prefers-go-backend-services"]; !ok {
+		t.Errorf("the subject node was refused and the fact lost its chunk too; keys=%v", f.chunks)
 	}
 }
 
