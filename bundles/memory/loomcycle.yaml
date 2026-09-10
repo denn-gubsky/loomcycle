@@ -309,22 +309,29 @@ agents:
         //   24,000 chars @ num_ctx 4096   -> prompt_tok 2050, ERROR REPLY  <-- truncated
         //   24,000 chars @ num_ctx 32768  -> prompt_tok 5752, 27 facts
         //
-        // SO WHY IS THE BUDGET STILL 12,000? Because the same measurement found
-        // an independent reason, and it is the opposite of a context limit:
-        // extractor yield per unit of text COLLAPSES as a part grows, since the
-        // model returns a roughly fixed-size fact list however much text it is
-        // given.
+        // SO WHY IS THE BUDGET STILL 12,000? Honestly: because nothing has
+        // established a better value, and a number with no evidence behind it
+        // should not be moved on a hunch.
         //
-        //   24,000 chars -> 27 facts  = 1.13 facts per 1k chars
-        //   48,000 chars -> 20 facts  = 0.42
-        //   62,090 chars -> 15 facts  = 0.24   (4.7x worse)
+        // ⚠️ AN EARLIER VERSION OF THIS COMMENT CLAIMED A MEASURED YIELD CURVE —
+        // "24,000 chars -> 27 facts, 48,000 -> 20, 62,090 -> 15, a 4.7x
+        // collapse". THAT WAS NOISE. Those were single calls per size, and the
+        // per-call fact count turns out to vary enormously on identical input:
+        // repeated probes gave 27/31/35/40 facts at 24,000 chars and 15/20/42 at
+        // 48,000. A 2.8x spread on one input size swamps any trend across sizes,
+        // so one sample per cell cannot support a curve, and the curve that was
+        // read into it did not exist.
         //
-        // A whole 62k-char conversation in one call yields ~15 facts where the
-        // same text in small parts yields hundreds. So this number is now a
-        // MEASURED YIELD TARGET rather than a guess at a capability ceiling, and
-        // raising it to fill a bigger context would REDUCE the facts extracted.
-        // Growing the context is still worth doing — it removes the truncation —
-        // but the part budget must not grow with it.
+        // WHAT IS ACTUALLY ESTABLISHED, and it is the reason this budget exists
+        // at all: at a SMALL context the prompt is silently truncated (see
+        // above — prompt_eval_count DROPS as the input grows), which is a
+        // deterministic, mechanistic signature rather than a noisy count. The
+        // budget must therefore stay under what the context can hold, which is
+        // what partBudget() enforces.
+        //
+        // WHAT IS NOT ESTABLISHED: whether a larger part yields proportionally
+        // more facts. Settling it needs several calls per size, not one, and
+        // until then this number is a conservative default and not a finding.
         max_part_chars: 12000,
         // The extractor's context, in tokens, used to derive a hard CEILING on
         // the part budget (see partBudget). Must match the max_context_tokens
@@ -3493,9 +3500,11 @@ agents:
     # bracket was a 4,096-token TRUNCATION, not a model limit (prompt_eval_count
     # drops as the input grows; the consolidator's max_part_chars note carries
     # the numbers). The budget stays at 12,000 for a different and stronger
-    # reason: extractor yield per unit of text collapses 4.7x between a
-    # 24k-char part and a 62k-char one, because the model returns a roughly
-    # fixed-size fact list however much text it is handed.
+    # reason: the part budget must stay under what the context can hold, or the
+    # prompt is silently truncated. (An earlier note here claimed a measured
+    # "4.7x yield collapse" between a 24k and a 62k part — that was one sample
+    # per size of a quantity that varies 2.8x on identical input, and it has
+    # been retracted; see the consolidator's max_part_chars note.)
     #
     # 32,768 rather than 16,384 so the derived part-budget ceiling can never be
     # the binding constraint on this hardware, and a part is never silently
