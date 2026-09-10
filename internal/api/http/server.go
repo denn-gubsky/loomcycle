@@ -48,6 +48,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
@@ -552,10 +553,16 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
 		// the same runSubAgent.
 		Run: func(ctx context.Context, name, prompt, defID string) (string, error) {
-			out, _, _, err := s.runSubAgent(ctx, name, prompt, defID)
+			out, _, _, err := s.runSubAgent(ctx, name, "", prompt, defID)
 			return out, err
 		},
-		RunDetailed: s.runSubAgent,
+		// A closure rather than a bare method value: runSubAgent gained a
+		// systemExtra param that only a TEAM STATE supplies, and the Agent tool's
+		// SubAgentRunnerDetailed deliberately has no way to set it — a spawning
+		// agent must not be able to prepend text to its child's system prompt.
+		RunDetailed: func(ctx context.Context, name, prompt, defID string) (string, map[string]any, string, error) {
+			return s.runSubAgent(ctx, name, "", prompt, defID)
+		},
 		// RFC BK resident sub-agents: open/send/poll/cancel/close drive a
 		// persistent interactive child (the interactive fork of runSubAgent).
 		OpenChild:   s.openResidentChild,
@@ -890,11 +897,15 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 	//
 	if td, ok := t.(*builtin.TeamDef); ok {
 		if td.Spawn == nil {
-			td.Spawn = func(ctx context.Context, name, prompt, defID string) (string, error) {
+			td.Spawn = func(ctx context.Context, name string, p teamrun.Prompt, defID string) (string, error) {
+				// p.System is the STATE's role, appended to the agent's own system
+				// prompt rather than replacing it (see runSubAgent's systemExtra).
+				// This is what makes a fan-out of N roles one AgentDef and N states.
+				//
 				// Team members thread results as strings today; a stateful member's
 				// Σ hand-off is a separate follow-on (teamrun is string-only
 				// end-to-end). Drop state here — the Agent-tool fan-out carries it.
-				out, _, _, err := s.runSubAgent(ctx, name, prompt, defID)
+				out, _, _, err := s.runSubAgent(ctx, name, p.System, p.Input, defID)
 				return out, err
 			}
 		}
@@ -5690,8 +5701,12 @@ func secretEnvValues(environ []string) map[string]string {
 // child's run row id (RFC X Phase 3) — "" when the run was never created (an
 // early resolution/provider error), otherwise the sub-run's id even on failure
 // so the parent's spawn ledger can re-find it. (Wired to AgentTool.Run.)
-func (s *Server) runSubAgent(ctx context.Context, name string, prompt string, defID string) (string, map[string]any, string, error) {
-	prep, err := s.prepareSubRun(ctx, name, prompt, defID, false, func(providers.Event) {})
+// systemExtra is an EXTRA system segment appended after the agent's own system
+// prompt (empty for every caller but a team state — see teamgraph.Handler.
+// SystemPrompt). It never replaces the agent's prompt, so an agent's identity
+// cannot be overridden by whoever spawns it.
+func (s *Server) runSubAgent(ctx context.Context, name string, systemExtra string, prompt string, defID string) (string, map[string]any, string, error) {
+	prep, err := s.prepareSubRun(ctx, name, systemExtra, prompt, defID, false, func(providers.Event) {})
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -5747,7 +5762,61 @@ type subRunPrep struct {
 // interactive=true means: pass a nil provider slot to fallbackForRun (a parked
 // resident child, like a top-level interactive run, must not swap/hold the
 // provider gate across turns) — everything else is identical.
-func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
+// composeSubRunSegments builds a sub-run's input segments: the agent's own
+// system_prompt (with cache_control), then an optional caller-supplied system
+// segment, then the prompt as the first user message. Mirrors the shape of
+// /v1/runs.
+//
+// systemExtra APPENDS rather than replaces. A team state uses it to say what
+// this node's agent is doing HERE while the AgentDef keeps saying what it IS,
+// which is what lets one AgentDef serve N differently-roled states without a
+// clone per role — and it means a spawning caller can never override the
+// identity of the agent it spawns.
+//
+// The extra segment is deliberately NOT Cacheable. The agent's base prompt
+// above keeps its cache_control, so N states sharing an agent still hit ONE
+// cached prefix; marking this varying segment cacheable would move the cache
+// breakpoint past per-node text and defeat that. The prompt-cache saving is the
+// second half of the argument for not cloning an agent per role, so it is a
+// property worth pinning rather than a detail.
+//
+// Both system segments are trusted-text: each is operator-authored, the
+// AgentDef's prompt and the team definition's alike. Interpolating untrusted
+// content INTO either is a separate concern handled where that content enters,
+// not here.
+//
+// Pure, so the segment shape is unit-testable without a server.
+func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop.PromptSegment {
+	var segs []loop.PromptSegment
+	if agentSystemPrompt != "" {
+		segs = append(segs, loop.PromptSegment{
+			Role: "system",
+			Content: []loop.PromptContentBlock{{
+				Type:      "trusted-text",
+				Text:      agentSystemPrompt,
+				Cacheable: true,
+			}},
+		})
+	}
+	if systemExtra != "" {
+		segs = append(segs, loop.PromptSegment{
+			Role: "system",
+			Content: []loop.PromptContentBlock{{
+				Type: "trusted-text",
+				Text: systemExtra,
+			}},
+		})
+	}
+	return append(segs, loop.PromptSegment{
+		Role: "user",
+		Content: []loop.PromptContentBlock{{
+			Type: "trusted-text",
+			Text: prompt,
+		}},
+	})
+}
+
+func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -6007,27 +6076,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, prompt, defID string, 
 		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
 		InitialInput: prompt, Tools: subTools,
 	})
-	// Build segments: agent's system_prompt (with cache_control) + the
-	// caller-supplied prompt as the first user message. Mirrors the
-	// shape of /v1/runs.
-	var segs []loop.PromptSegment
-	if def.SystemPrompt != "" {
-		segs = append(segs, loop.PromptSegment{
-			Role: "system",
-			Content: []loop.PromptContentBlock{{
-				Type:      "trusted-text",
-				Text:      def.SystemPrompt,
-				Cacheable: true,
-			}},
-		})
-	}
-	segs = append(segs, loop.PromptSegment{
-		Role: "user",
-		Content: []loop.PromptContentBlock{{
-			Type: "trusted-text",
-			Text: prompt,
-		}},
-	})
+	segs := composeSubRunSegments(def.SystemPrompt, systemExtra, prompt)
 
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static

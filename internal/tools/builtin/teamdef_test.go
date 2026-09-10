@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -59,7 +60,9 @@ func TestTeamDefTool_Run_LinearTeam(t *testing.T) {
 	defer done()
 
 	var spawned []string
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		input := p.Input
+
 		spawned = append(spawned, agent)
 		return agent + "(" + input + ")", nil
 	}
@@ -103,7 +106,8 @@ func TestTeamDefTool_Run_AdmitRefusalAbortsBeforeSpawn(t *testing.T) {
 	defer done()
 
 	spawnCalled := false
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+
 		spawnCalled = true
 		return "ok", nil
 	}
@@ -140,7 +144,8 @@ func TestTeamDefTool_Run_AdmittedCtxFlowsToSpawn(t *testing.T) {
 		return context.WithValue(c, admitMarkerKey{}, "admitted"), nil
 	}
 	sawMarker := false
-	tool.Spawn = func(c context.Context, agent, input, defID string) (string, error) {
+	tool.Spawn = func(c context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+
 		if c.Value(admitMarkerKey{}) == "admitted" {
 			sawMarker = true
 		}
@@ -178,7 +183,9 @@ func TestTeamDefTool_Run_NotConfigured(t *testing.T) {
 func TestTeamDefTool_Run_IterationCap(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return "ok", nil
+	}
 
 	// a ⇄ b ping-pong on success (no terminal reachable) → the walk never
 	// converges and the per-state cap must fire.
@@ -210,7 +217,9 @@ func TestTeamDefTool_Run_IterationCap(t *testing.T) {
 func TestTeamDefTool_Run_UnknownTeam(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return "", nil
+	}
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"ghost","input":"x"}`))
 	if !res.IsError || !strings.Contains(res.Text, "not found") {
 		t.Fatalf("unknown team should be not-found; got %q (isErr=%v)", res.Text, res.IsError)
@@ -222,7 +231,8 @@ func TestTeamDefTool_Run_ParallelFanOutConsolidates(t *testing.T) {
 	defer done()
 	// x/y fan out concurrently; the consolidator c reads their results and
 	// selects the success edge via the signal convention.
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+
 		if agent == "c" {
 			return "signal: success", nil
 		}
@@ -608,7 +618,9 @@ const pingPongTeam = `{
 func TestTeamDefTool_Run_BoardPersistsStatusAcrossTransitions(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return agent + "!", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return agent + "!", nil
+	}
 	board := &fakeBoard{exists: true}
 	tool.Board = board
 	createTeam(t, tool, ctx, "board-linear", linearBoardTeam)
@@ -636,7 +648,8 @@ func TestTeamDefTool_Run_BoardResumesFromPersistedState(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
 	var spawned []string
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) {
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+
 		spawned = append(spawned, agent)
 		return agent + "!", nil
 	}
@@ -669,7 +682,9 @@ func TestTeamDefTool_Run_BoardResumesFromPersistedState(t *testing.T) {
 func TestTeamDefTool_Run_InterruptOnCapContinuesThenAborts(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return "ok", nil
+	}
 	asked := 0
 	tool.AskHuman = func(_ context.Context, _ string) (string, error) {
 		asked++
@@ -704,7 +719,9 @@ func TestTeamDefTool_Run_InterruptOnCapContinuesThenAborts(t *testing.T) {
 func TestTeamDefTool_Run_InterruptOnCapReroutesToTerminal(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return "ok", nil
+	}
 	tool.AskHuman = func(_ context.Context, _ string) (string, error) { return "reroute:done", nil }
 	createTeam(t, tool, ctx, "intr-reroute", `{
 	  "entry":"a","max_iterations":2,
@@ -743,7 +760,9 @@ func TestTeamDefTool_Run_InterruptOnCapReroutesToTerminal(t *testing.T) {
 func TestTeamDefTool_Run_DefaultPathIgnoresBoardAndInterrupt(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return "ok", nil
+	}
 	board := &fakeBoard{exists: true}
 	tool.Board = board
 	asked := 0
@@ -780,7 +799,9 @@ func TestTeamDefTool_Run_DefaultPathIgnoresBoardAndInterrupt(t *testing.T) {
 func TestTeamDefTool_Run_BoardChunkIDWithoutBoardWiredErrors(t *testing.T) {
 	tool, ctx, done := teamDefFixture(t)
 	defer done()
-	tool.Spawn = func(_ context.Context, agent, input, defID string) (string, error) { return "ok", nil }
+	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		return "ok", nil
+	}
 	// tool.Board left nil.
 	createTeam(t, tool, ctx, "board-missing", linearBoardTeam)
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"board-missing","input":"x","board_chunk_id":"c1"}`))

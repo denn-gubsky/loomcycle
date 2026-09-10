@@ -55,9 +55,15 @@ type Definition struct {
 	States        []State      `json:"states"`
 	Transitions   []Transition `json:"transitions"`
 	// Colors is presentation only (unsaturated state fills, saturated transition
-	// edges). It is EXCLUDED from the content hash (see internal/agents/teamsign)
-	// so recolouring a workflow doesn't fork its identity.
+	// edges). It is EXCLUDED from the content hash (see sign.go) so recolouring a
+	// workflow doesn't fork its identity.
 	Colors *Colors `json:"colors,omitempty"`
+	// Layout is presentation only: where a canvas draws each node. EXCLUDED from
+	// the content hash for exactly Colors' reason — dragging a node to tidy a
+	// diagram must not mint a new version, or the version history stops meaning
+	// anything. Exclusion is by omission: teamContent in sign.go is a whitelist,
+	// so a field is out of the hash unless it is listed there.
+	Layout *Layout `json:"layout,omitempty"`
 }
 
 // State is one node: an id + the handler that runs when a task is in it.
@@ -79,9 +85,41 @@ type Handler struct {
 	// picks the outgoing transition. REQUIRED for kind=parallel; OPTIONAL for
 	// kind=agent ("re-evaluate after one agent").
 	Consolidator string `json:"consolidator,omitempty"`
-	// InputTemplate / TimeoutMS — optional per-handler run config.
+	// SystemPrompt is this NODE's role, APPENDED to the agent's own system
+	// prompt as a second system segment rather than replacing it: the AgentDef
+	// says what the agent IS, the node says what it is doing here.
+	//
+	// It is why a fan-out of N reviewers is ONE AgentDef and N states. Cloning an
+	// agent per node would fork a def per role, and — because the agent's base
+	// prompt is sent with cache_control — would also lose prompt caching across
+	// nodes that share an agent. The composed segments keep the base cacheable
+	// and add this one uncached, so N nodes still hit one cached prefix.
+	//
+	// Content-identifying: Handler rides States, which teamContent hashes, so
+	// editing a node's role forks the definition. Existing defs omit the field
+	// and hash byte-identically (omitempty).
+	SystemPrompt string `json:"system_prompt,omitempty"`
+	// InputTemplate is this node's user prompt. When set it REPLACES the input
+	// threaded from the previous state; when empty the threaded input is used.
+	// Declared by RFC AP and read for the first time here.
 	InputTemplate string `json:"input_template,omitempty"`
 	TimeoutMS     int    `json:"timeout_ms,omitempty"`
+}
+
+// Layout is the optional canvas geometry: where each node sits. Presentation
+// only, and excluded from the content hash (see Definition.Layout).
+type Layout struct {
+	// Nodes maps a state id to its position. A state with no entry is
+	// auto-placed by the client.
+	Nodes map[string]NodePos `json:"nodes,omitempty"`
+}
+
+// NodePos is one node's canvas position (and optional size).
+type NodePos struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w,omitempty"`
+	H int `json:"h,omitempty"`
 }
 
 // Transition is one edge: from-state → to-state, gated by an `on` label.

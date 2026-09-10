@@ -257,7 +257,9 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	// The child must SURVIVE this tool call returning → detach its ctx from the
 	// parent request's cancellation (keep values) before prepareSubRun wraps it
 	// in its own cancel scope (fired by close / idle-reap / parent teardown).
-	prep, err := s.prepareSubRun(context.WithoutCancel(ctx), name, prompt, defID, true, fwd)
+	// No extra system segment: a resident sub-agent is opened by the Agent tool,
+	// not by a team state, so only the AgentDef's own prompt applies.
+	prep, err := s.prepareSubRun(context.WithoutCancel(ctx), name, "", prompt, defID, true, fwd)
 	if err != nil {
 		return "", "", "", err
 	}

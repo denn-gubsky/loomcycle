@@ -7,10 +7,19 @@ import (
 )
 
 // teamContent is the closed set of content-identifying fields hashed into a
-// TeamDef's content_sha256. The COLOR scheme (presentation) and identity/tenant
-// (operational) are deliberately EXCLUDED — mirroring how `skills:` and
-// tenant_id are excluded from AgentDef's hash — so two tenants forking the same
-// workflow share a hash and recolouring never changes a def's identity.
+// TeamDef's content_sha256. It is a WHITELIST: a Definition field is out of the
+// hash unless it is listed here, which is what keeps presentation out for free.
+// Excluded deliberately: the COLOR scheme and the canvas LAYOUT (presentation —
+// recolouring or dragging a node must not fork a def's identity) and
+// identity/tenant (operational), mirroring how `skills:` and tenant_id are
+// excluded from AgentDef's hash, so two tenants forking the same workflow share
+// a hash.
+//
+// Handler fields ride States and ARE hashed — including SystemPrompt and
+// InputTemplate, so editing a node's role or its prompt forks the definition,
+// which is the intended behaviour. Both carry omitempty, so a definition that
+// omits them marshals byte-identically to one written before they existed and
+// every recorded content_sha256 stays valid.
 //
 // DO NOT reorder these fields: json.Marshal emits them in declaration order and
 // the resulting bytes are the hash input, so reordering would break every

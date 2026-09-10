@@ -11,11 +11,37 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
-// SpawnFunc runs one named agent with an input prompt and returns its final text
-// output. It mirrors builtin.SubAgentRunner exactly, so the orchestrator reuses
-// the existing sub-agent machinery (tenant/identity inheritance, the recursion
-// depth cap, the cancel registry) rather than re-implementing run dispatch.
-type SpawnFunc func(ctx context.Context, agent, input, defID string) (string, error)
+// Prompt is what a state hands its agent: the node's own role plus the text to
+// work on. It replaces the bare `input string` SpawnFunc used to take, which
+// could not carry a per-node system prompt at all.
+//
+// WHY A STRUCT AND NOT []loop.PromptSegment: this package's contract is that it
+// is a pure graph-walker with no runtime dependencies — importing internal/loop
+// takes teamrun from 2 internal dependencies to 21, for a type whose only use
+// here is "a system string and a user string". The server closure that
+// implements SpawnFunc already lives where the loop types are and composes the
+// segments there. If a team node ever needs multimodal input, adding a field
+// here is additive and breaks nobody.
+type Prompt struct {
+	// System is the NODE's role. The server APPENDS it to the agent's own system
+	// prompt as a second system segment rather than replacing it — see
+	// teamgraph.Handler.SystemPrompt for why that is what makes one AgentDef
+	// serve N differently-roled states.
+	System string
+	// Input is the user segment: the node's InputTemplate when it has one, else
+	// the output threaded from the previous state.
+	Input string
+}
+
+// SpawnFunc runs one named agent with a prompt and returns its final text
+// output. It mirrors builtin.SubAgentRunner, so the orchestrator reuses the
+// existing sub-agent machinery (tenant/identity inheritance, the recursion depth
+// cap, the cancel registry) rather than re-implementing run dispatch.
+//
+// The Prompt parameter replaced a bare `input string`. Widening rather than
+// adding a sibling was deliberate: it breaks every implementor at compile time,
+// and none should be silently missed.
+type SpawnFunc func(ctx context.Context, agent string, p Prompt, defID string) (string, error)
 
 // maxParallelConcurrency bounds how many of a parallel state's agents run at
 // once. It mirrors builtin.DefaultMaxConcurrentChildren (4): high enough to
@@ -53,7 +79,7 @@ type agentRunner struct {
 func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input string) (Outcome, error) {
 	switch st.Handler.Kind {
 	case teamgraph.HandlerAgent:
-		out, err := r.spawn(ctx, st.Handler.Agent, input, "")
+		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input), "")
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -88,8 +114,9 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input 
 		// A standalone judging state: run the agent on the threaded input; its
 		// output selects the edge. Unlike a Consolidator that follows a fan-out,
 		// it reads the raw work product (not a results envelope) — it judges the
-		// previous state's output directly.
-		out, err := r.spawn(ctx, st.Handler.Agent, input, "")
+		// previous state's output directly. This state IS the consolidator, so
+		// the node's own system prompt applies to it.
+		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input), "")
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -99,6 +126,23 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input 
 		// terminal is handled by the walk; anything else is a validation gap.
 		return Outcome{}, fmt.Errorf("unexpected handler kind %q", st.Handler.Kind)
 	}
+}
+
+// nodePrompt composes what a state hands its agent: the node's system prompt,
+// and its InputTemplate when set — otherwise the input threaded from the
+// previous state.
+//
+// A template REPLACES the threaded input rather than being prepended to it. That
+// is the RFC AP field's declared meaning, and it keeps the rule simple: a state
+// either works on what it was handed, or it states its own task. Referring to
+// the threaded input from inside a template needs the variable expander, which
+// is the next phase; until then a template is used verbatim.
+func nodePrompt(h teamgraph.Handler, threaded string) Prompt {
+	in := threaded
+	if h.InputTemplate != "" {
+		in = h.InputTemplate
+	}
+	return Prompt{System: h.SystemPrompt, Input: in}
 }
 
 // runParallel fans a parallel state's agents out concurrently with bounded
@@ -118,6 +162,10 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input 
 // so wait:all awaits every agent as documented.
 func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input string) ([]agentResult, error) {
 	agents := st.Handler.Agents
+	// One node, one role: every member of a fan-out shares this state's system
+	// prompt and input. States whose members need DIFFERENT roles are separate
+	// `agent` states, which is the shape per-node prompts exist to make cheap.
+	prompt := nodePrompt(st.Handler, input)
 	n := len(agents)
 	need, err := requiredSuccesses(st.Handler.Wait, n)
 	if err != nil {
@@ -147,7 +195,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: runCtx.Err().Error()}
 				return
 			}
-			out, spawnErr := r.spawn(runCtx, name, input, "")
+			out, spawnErr := r.spawn(runCtx, name, prompt, "")
 			if spawnErr != nil {
 				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: spawnErr.Error()}
 				return
@@ -182,8 +230,11 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 
 // runConsolidator runs the consolidator agent on the results envelope and maps
 // its output to an Outcome via the signal convention.
+// The consolidator is a DIFFERENT agent from the state's own, so the node's
+// system prompt (which describes that agent's role) is deliberately not applied
+// to it; it receives only the envelope.
 func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelope string) (Outcome, error) {
-	out, err := r.spawn(ctx, consolidator, envelope, "")
+	out, err := r.spawn(ctx, consolidator, Prompt{Input: envelope}, "")
 	if err != nil {
 		return Outcome{}, err
 	}
