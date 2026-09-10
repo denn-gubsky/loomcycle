@@ -6530,6 +6530,16 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: {{tool:%s}} in system prompt is not an allowlisted read-only tool call (allowed: %s)",
 				name, unknown[0], strings.Join(meminject.AllToolRefs(), ", "))
 		}
+		// Same posture for a document ref: the placeholder pattern matches
+		// loosely on purpose, so a ref with no path is REFUSED loudly here rather
+		// than left silently literal in a prompt the operator believes is wired.
+		// Whether the document EXISTS is deliberately not checked — it can be
+		// created, moved or removed after config load, so a boot-time check would
+		// be a false guarantee; a missing document renders nothing at run time.
+		if bad := meminject.MalformedDocRefs(agent.SystemPrompt); len(bad) > 0 {
+			return fmt.Errorf("agent %q: {{document:%s}} in system prompt is not a usable reference "+
+				"(want a path or id, optionally #heading — e.g. {{document:/specs/launch#Risks}})", name, bad[0])
+		}
 		// RFC AA SQL Memory: validate sql_scopes are known scope strings.
 		// Empty = no SQL access (default-deny, enforced at runtime, not here).
 		// Non-empty must be a subset of validSqlScopes. Keep the message
