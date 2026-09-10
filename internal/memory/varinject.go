@@ -38,6 +38,11 @@ import (
 // The FALLBACK charset excludes `{` and `}`: operator-authored text that cannot
 // introduce a placeholder delimiter either, so the guarantee holds on both
 // halves of the token.
+// varTokenPattern is varPlaceholderPattern without capture groups, for
+// embedding inside another family's argument (see documentPlaceholderPattern).
+// Kept beside it so the two can never describe different tokens.
+const varTokenPattern = `\$\{(?:var|now|team)\.[a-zA-Z0-9_-]{1,64}(?::-[^{}]*)?\}`
+
 const varPlaceholderPattern = `\$\{((?:var|now|team)\.[a-zA-Z0-9_-]{1,64})(?::-([^{}]*?))?\}`
 
 var varPlaceholderRe = regexp.MustCompile(varPlaceholderPattern)

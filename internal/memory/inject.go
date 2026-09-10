@@ -296,7 +296,7 @@ func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
 			// they are accumulated content an operator placed, whereas the tool
 			// budget exists for the fixed runtime-knowledge blocks.
 			if documentPlaceholderRe.MatchString(match) {
-				return expandDocumentPlaceholder(match, in.Documents, &remaining)
+				return expandDocumentPlaceholder(match, in.Documents, &remaining, in.Values, &refused)
 			}
 			return expandToolPlaceholder(match, in.ToolResults, &toolRemaining)
 		}
