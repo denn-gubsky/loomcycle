@@ -16,7 +16,8 @@ type fakeRunner struct {
 	calls    []string // state ids run, in order
 }
 
-func (f *fakeRunner) RunHandler(_ context.Context, st teamgraph.State, input string) (Outcome, error) {
+func (f *fakeRunner) RunHandler(_ context.Context, st teamgraph.State, task *Task) (Outcome, error) {
+	input := task.Input
 	f.calls = append(f.calls, st.ID)
 	if err := f.errs[st.ID]; err != nil {
 		return Outcome{}, err

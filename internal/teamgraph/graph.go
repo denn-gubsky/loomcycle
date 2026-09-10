@@ -31,6 +31,8 @@ const (
 	HandlerParallel     = "parallel"     // fan out N agents + a consolidator
 	HandlerConsolidator = "consolidator" // a standalone consolidator-agent state
 	HandlerTerminal     = "terminal"     // an end state; no agent, no outbound edges required
+	HandlerVars         = "vars"         // binds ${var.*} from literals, tokens and captures
+	HandlerInput        = "input"        // the start form: a typed schema the client renders
 )
 
 // Transition kinds — the `on` label prefix. success is bare; pushback and
@@ -104,6 +106,27 @@ type Handler struct {
 	// Declared by RFC AP and read for the first time here.
 	InputTemplate string `json:"input_template,omitempty"`
 	TimeoutMS     int    `json:"timeout_ms,omitempty"`
+	// Set — kind=vars ONLY: variable name → a value that may itself contain
+	// ${…} tokens, resolved when the state runs. This is the one place a
+	// workflow assigns a variable, and it is its OWN node kind rather than a
+	// block on an agent handler because a canvas exists to make the process
+	// legible: an invisible assignment riding something that looks like an agent
+	// is exactly what it should prevent.
+	//
+	// Values are refused at validation if they reference the credentials
+	// namespace — variables are non-secret BY CONSTRUCTION. See validateSet.
+	Set map[string]string `json:"set,omitempty"`
+	// Capture — any handler that produces output: variable name → a
+	// strict-subset JSONPath applied to that output when it is JSON. The
+	// consolidator envelope is already JSON, so this works on day one.
+	// A path that does not resolve binds nothing; it is not an error, mirroring
+	// the webhook projector's posture toward an external document.
+	Capture map[string]string `json:"capture,omitempty"`
+	// Schema — kind=input ONLY: the JSON Schema a client renders as the run
+	// form. The runtime does not interpret it; it is carried in the definition
+	// so a team is self-describing and a headless caller sees the same contract
+	// the canvas does.
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 // Layout is the optional canvas geometry: where each node sits. Presentation

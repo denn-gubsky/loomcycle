@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
@@ -74,41 +77,72 @@ func NewAgentRunner(spawn SpawnFunc) Runner {
 
 type agentRunner struct {
 	spawn SpawnFunc
+	// now is injectable so a test can pin ${now.*}. nil = time.Now.
+	now func() time.Time
 }
 
-func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input string) (Outcome, error) {
+func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
+	input := task.Input
+	env := r.envFor(st, task)
+
 	switch st.Handler.Kind {
+	case teamgraph.HandlerVars:
+		// A vars state assigns and threads its input through unchanged: it is a
+		// step in the process, not a transform of the work product.
+		for name, tmpl := range st.Handler.Set {
+			v, refused := Expand(tmpl, env)
+			r.noteRefused(st.ID, name, refused)
+			task.SetVar(name, v)
+		}
+		return Outcome{Output: input}, nil
+
+	case teamgraph.HandlerInput:
+		// The start form. Its schema is a contract for the CLIENT (and for a
+		// headless caller reading the definition); the runtime does not
+		// interpret it, so the state threads the caller's input through.
+		return r.captured(st, task, Outcome{Output: input})
+
 	case teamgraph.HandlerAgent:
-		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input), "")
+		p, refused := nodePrompt(st.Handler, input, env)
+		r.noteRefused(st.ID, "prompt", refused)
+		out, err := r.spawn(ctx, st.Handler.Agent, p, "")
 		if err != nil {
 			return Outcome{}, err
 		}
 		if st.Handler.Consolidator == "" {
 			// No consolidator → a single-agent state advances on success.
-			return Outcome{Output: out}, nil
+			return r.captured(st, task, Outcome{Output: out})
 		}
 		// A consolidator re-evaluates the single agent's output and selects the
 		// edge (success to advance, pushback to loop back for rework). It reads
 		// the SAME {results:[…]} envelope a parallel fan-out produces, so one
 		// consolidator agent works uniformly after one agent or after N.
-		env, err := resultsEnvelope([]agentResult{{Index: 0, Agent: st.Handler.Agent, Ok: true, Output: out}})
+		envelope, err := resultsEnvelope([]agentResult{{Index: 0, Agent: st.Handler.Agent, Ok: true, Output: out}})
 		if err != nil {
 			return Outcome{}, err
 		}
-		return r.runConsolidator(ctx, st.Handler.Consolidator, env)
+		oc, err := r.runConsolidator(ctx, st.Handler.Consolidator, envelope)
+		if err != nil {
+			return Outcome{}, err
+		}
+		return r.captured(st, task, oc)
 
 	case teamgraph.HandlerParallel:
-		results, err := r.runParallel(ctx, st, input)
+		results, err := r.runParallel(ctx, st, input, env)
 		if err != nil {
 			return Outcome{}, err
 		}
 		// Validate guarantees a parallel handler has a consolidator; it reads the
 		// fan-out results and selects the edge.
-		env, err := resultsEnvelope(results)
+		envelope, err := resultsEnvelope(results)
 		if err != nil {
 			return Outcome{}, err
 		}
-		return r.runConsolidator(ctx, st.Handler.Consolidator, env)
+		oc, err := r.runConsolidator(ctx, st.Handler.Consolidator, envelope)
+		if err != nil {
+			return Outcome{}, err
+		}
+		return r.captured(st, task, oc)
 
 	case teamgraph.HandlerConsolidator:
 		// A standalone judging state: run the agent on the threaded input; its
@@ -116,11 +150,13 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input 
 		// it reads the raw work product (not a results envelope) — it judges the
 		// previous state's output directly. This state IS the consolidator, so
 		// the node's own system prompt applies to it.
-		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input), "")
+		p, refused := nodePrompt(st.Handler, input, env)
+		r.noteRefused(st.ID, "prompt", refused)
+		out, err := r.spawn(ctx, st.Handler.Agent, p, "")
 		if err != nil {
 			return Outcome{}, err
 		}
-		return parseConsolidatorOutcome(out), nil
+		return r.captured(st, task, parseConsolidatorOutcome(out))
 
 	default:
 		// terminal is handled by the walk; anything else is a validation gap.
@@ -137,12 +173,80 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, input 
 // either works on what it was handed, or it states its own task. Referring to
 // the threaded input from inside a template needs the variable expander, which
 // is the next phase; until then a template is used verbatim.
-func nodePrompt(h teamgraph.Handler, threaded string) Prompt {
+// Pure, like the expander it wraps: it REPORTS refused variables rather than
+// logging them, so the caller owns the side effect and the function stays
+// testable without capturing output.
+func nodePrompt(h teamgraph.Handler, threaded string, env Env) (Prompt, []string) {
 	in := threaded
 	if h.InputTemplate != "" {
 		in = h.InputTemplate
 	}
-	return Prompt{System: h.SystemPrompt, Input: in}
+	sys, sysRefused := Expand(h.SystemPrompt, env)
+	inp, inRefused := Expand(in, env)
+	return Prompt{System: sys, Input: inp}, append(sysRefused, inRefused...)
+}
+
+// envFor snapshots what the expander may read for one state's turn. Now is read
+// ONCE per state so every ${now.*} in a state's prompts and assignments agrees
+// — two tokens in one template resolving a millisecond apart would be a
+// genuinely confusing bug to chase.
+func (r *agentRunner) envFor(st teamgraph.State, task *Task) Env {
+	now := r.now
+	if now == nil {
+		now = time.Now
+	}
+	return Env{
+		Vars:      task.Vars,
+		Now:       now(),
+		State:     st.ID,
+		Iteration: task.IterationCounts[st.ID],
+	}
+}
+
+// captured applies a handler's `capture` paths to its output and records the
+// results on the task.
+//
+// A path that does not resolve binds NOTHING and is not an error — the same
+// posture the webhook projector takes toward an external document, and for the
+// same reason: an agent's output is not a schema, so a workflow that hard-failed
+// whenever a model phrased its JSON differently would be unusable. The variable
+// simply stays unset, and an unset variable expands to empty.
+func (r *agentRunner) captured(st teamgraph.State, task *Task, oc Outcome) (Outcome, error) {
+	if len(st.Handler.Capture) == 0 {
+		return oc, nil
+	}
+	var doc interface{}
+	if err := json.Unmarshal([]byte(oc.Output), &doc); err != nil {
+		// Not JSON — nothing to project. Deliberately not an error.
+		return oc, nil
+	}
+	for name, path := range st.Handler.Capture {
+		segs, err := jsonpath.Parse(path)
+		if err != nil {
+			// Validate already rejected malformed paths at create/fork; a def
+			// that got here with one is data the store accepted, so honour it
+			// by skipping rather than aborting a walk mid-flight.
+			continue
+		}
+		v, ok := jsonpath.Eval(doc, segs)
+		if !ok {
+			continue
+		}
+		task.SetVar(name, jsonpath.Stringify(v))
+	}
+	return oc, nil
+}
+
+// noteRefused surfaces a variable dropped for carrying placeholder delimiters.
+// It is a security event, not a formatting quirk — something bound a value that
+// tried to synthesise a {{…}} placeholder — so it is logged rather than
+// swallowed, WITHOUT the value, which is the untrusted part.
+func (r *agentRunner) noteRefused(stateID, field string, refused []string) {
+	if len(refused) == 0 {
+		return
+	}
+	log.Printf("teamrun: state %q %s: refused variable(s) %v — value contained {{ or }}; "+
+		"a variable may not introduce a prompt placeholder", stateID, field, refused)
 }
 
 // runParallel fans a parallel state's agents out concurrently with bounded
@@ -160,12 +264,13 @@ func nodePrompt(h teamgraph.Handler, threaded string) Prompt {
 //
 // Only the "enough successes" threshold cancels siblings — a failure never does,
 // so wait:all awaits every agent as documented.
-func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input string) ([]agentResult, error) {
+func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input string, env Env) ([]agentResult, error) {
 	agents := st.Handler.Agents
 	// One node, one role: every member of a fan-out shares this state's system
 	// prompt and input. States whose members need DIFFERENT roles are separate
 	// `agent` states, which is the shape per-node prompts exist to make cheap.
-	prompt := nodePrompt(st.Handler, input)
+	prompt, refused := nodePrompt(st.Handler, input, env)
+	r.noteRefused(st.ID, "prompt", refused)
 	n := len(agents)
 	need, err := requiredSuccesses(st.Handler.Wait, n)
 	if err != nil {

@@ -28,8 +28,13 @@ import (
 // Runner executes one non-terminal state's handler and reports the outcome. The
 // production runner spawns the state's AgentDef(s) via the connector; a test
 // runner returns canned outcomes. A returned error aborts the walk.
+// The Task rather than a bare input string: a handler needs to READ the walk's
+// variables (to expand its prompts) and WRITE them (a `vars` state's assignments,
+// any state's captures), and Task is already documented as the mutable walk
+// position. Passing it keeps that data flow explicit — the alternative, threading
+// variables through ctx, hides it.
 type Runner interface {
-	RunHandler(ctx context.Context, state teamgraph.State, input string) (Outcome, error)
+	RunHandler(ctx context.Context, state teamgraph.State, task *Task) (Outcome, error)
 }
 
 // Outcome is what a handler produced: the text output (which becomes the next
@@ -48,6 +53,19 @@ type Task struct {
 	State           string
 	Input           string
 	IterationCounts map[string]int
+	// Vars carries the workflow's ${var.*} values across states. A flat string
+	// map on purpose — see Expand for why this is not a typed variable bus.
+	// Nil until a state assigns or captures one; use SetVar rather than writing
+	// it directly so the lazy init lives in one place.
+	Vars map[string]string
+}
+
+// SetVar records a variable on the task, allocating the map on first use.
+func (t *Task) SetVar(name, value string) {
+	if t.Vars == nil {
+		t.Vars = map[string]string{}
+	}
+	t.Vars[name] = value
 }
 
 // StepRecord is one executed state, for the caller's trace/audit.
@@ -207,7 +225,7 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 			}
 		}
 
-		out, err := r.RunHandler(ctx, st, task.Input)
+		out, err := r.RunHandler(ctx, st, task)
 		if err != nil {
 			return trace, fmt.Errorf("teamrun: state %q handler: %w", st.ID, err)
 		}
