@@ -1,32 +1,37 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { load as yamlLoad } from "js-yaml";
+import {
+  FoldedFieldList,
+  agentDefRegistry,
+  type DefValue,
+} from "@loomcycle/def-fields";
 import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
 
 // LibraryEditModal — Library admin UI.
 //
 // Hybrid form for create / fork on the three substrate flavors. The
-// common, high-value overlay fields render as structured inputs. The
-// v0.10.4 JSON catch-all for the WHOLE agent overlay was removed in
-// v0.11.6 because operators hit two real pain points:
+// common, high-value overlay fields render as structured inputs.
 //
-//   1. Raw newlines inside the agent's `system_prompt` produced
-//      invalid JSON and surfaced as a confusing "JSON parse error"
-//      on submit.
-//   2. A single missing comma anywhere in the JSON body sunk the
-//      whole submit, with no per-field validation.
+// An agent has TWO switchable edit surfaces over the same overlay:
 //
-// The AgentDef overlay keeps growing (sampling, channels, interruption,
-// the *_def_scopes family, …) and dedicated controls can't keep pace
-// with every field. So a SCOPED advanced editor is back (agents only):
-// a collapsible JSON/YAML textarea that holds ONLY keys not covered by
-// a structured control, shallow-merged over the structured overlay at
-// submit. The two old pain points don't apply: `system_prompt` stays in
-// its own textarea (no newlines-in-JSON), and an EMPTY advanced box
-// never blocks submit (a malformed NON-empty box does, with an inline
-// error). This deliberately differs from the removed whole-overlay
-// catch-all — the structured fields remain authoritative for the common
-// case; the box is the escape hatch for the long tail.
+//   Form — the curated layout below. Unchanged; still the default, and
+//          still where most operators do most of their editing.
+//   List — every AgentDef parameter, one row each, under collapsible
+//          groups (@loomcycle/def-fields). Driven by a declarative
+//          registry, so each parameter carries a typed control, its
+//          bounds and an always-visible hint.
+//
+// The List replaced the raw JSON/YAML overlay box that used to be the
+// only way to reach the ~27 parameters with no dedicated control. That
+// box was unusable in practice: no validation until submit, no bounds,
+// no explanation of what any key meant, and one missing comma sank the
+// whole save. Its two predecessors failed the same way. The registry is
+// the structural fix — a parameter is one entry, not a textarea.
+//
+// The ACTIVE surface is authoritative and switching pushes state into
+// the other one first (see showList / showForm), so an edit made in one
+// is never silently dropped by the other. allowed_hosts remains absent
+// from both — it is a caller-authoritative trust boundary, set per-run.
 //
 // On submit, calls createDef() or forkDef() depending on `mode`. On
 // refusal (substrate returns 422), the thrown jsonFetch error contains
@@ -215,28 +220,17 @@ export default function LibraryEditModal({
     pickSamplingStop(forkSource?.definition).join(", "),
   );
 
-  // --- Advanced overlay (agents only). A free-form JSON/YAML object
-  // for overlay keys without a dedicated control (channels, interruption,
-  // evaluation_scopes, memory_backend, compaction, retry_attempts,
-  // unbounded_iterations, the *_def_scopes family, …). PRE-FILLED on
-  // fork/edit with the source's current advanced keys (values), so a saved
-  // overlay is visible AND editable when the editor is reopened — it used to
-  // start empty and surface saved values only as a key-name hint, which read
-  // as "the overlay was never saved". Opens expanded when there's content.
-  const initialAdvancedText = useMemo(
-    () => initialAdvancedOverlayText(forkSource?.definition),
-    [forkSource],
-  );
-  const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedText !== "");
-  const [advancedFormat, setAdvancedFormat] = useState<"json" | "yaml">("json");
-  const [advancedText, setAdvancedText] = useState(initialAdvancedText);
-  const [advancedErr, setAdvancedErr] = useState<string | null>(null);
-  // Keys present on the fork source that no structured control maps. They're
-  // pre-filled into the box above; the hint names them (and notes the
-  // remove-falls-back-to-inherited subtlety of the substrate's additive merge).
-  const inheritedUnknownKeys = useMemo(
-    () => unknownSourceKeys(forkSource?.definition),
-    [forkSource],
+  // --- The List surface (agents only): the whole overlay, one row per
+  // parameter. Seeded from the source def so a fork opens showing what it
+  // actually inherits, and so a saved overlay round-trips visibly.
+  //
+  // Unlike the raw box this replaced, the List is not a place for "the keys
+  // the form missed" — it covers EVERY parameter, the form's included. The
+  // two surfaces edit one overlay; which one is authoritative is whichever is
+  // on screen.
+  const [surface, setSurface] = useState<"form" | "list">("form");
+  const [listOverlay, setListOverlay] = useState<DefValue>(() =>
+    sourceOverlay(forkSource?.definition),
   );
 
   // --- Skill-flavor specific
@@ -327,6 +321,14 @@ export default function LibraryEditModal({
         return `An entry named "${name.trim()}" already exists. Use Edit (fork) on its row instead.`;
       }
     }
+    // The list surface edits the overlay directly, so its values are checked
+    // against the overlay rather than the form's hooks — which are stale while
+    // the list is up. The form branch below is unchanged: it validates the raw
+    // INPUT text, which catches things the overlay cannot represent (a typed
+    // negative that buildOverlay would silently drop).
+    if (kind === "agent" && surface === "list") {
+      return validateAgentOverlay(listOverlay);
+    }
     if (kind === "agent") {
       // Number inputs already refuse non-numeric via type="number";
       // explicit re-check here catches the "Number(undefined) is NaN"
@@ -399,6 +401,70 @@ export default function LibraryEditModal({
       }
     }
     return null;
+  };
+
+  // formOverlay is the overlay the FORM currently describes: the list's value
+  // with every form-owned key REPLACED by what the form holds.
+  //
+  // Replacing rather than merging is the load-bearing part. buildOverlay omits
+  // an empty field (empty = inherit), so a plain `{...listOverlay,
+  // ...buildOverlay()}` would leave a key the operator just CLEARED in the form
+  // still set from the list — the clear would silently not take. Dropping the
+  // form's keys first makes the form's own "absent = inherit" semantics the
+  // whole truth for the fields it owns.
+  const formOverlay = (): DefValue => {
+    const next: DefValue = { ...listOverlay };
+    for (const key of FORM_OWNED_AGENT_KEYS) delete next[key];
+    return { ...next, ...buildOverlay() };
+  };
+
+  // hydrateFormFrom pushes an overlay back into the form's hooks. Every
+  // expression here is the same one the corresponding useState initialiser
+  // uses, because the overlay and a def row are the same shape — so a
+  // round-trip through the list lands the form exactly where reopening the
+  // editor on that def would.
+  const hydrateFormFrom = (ov: DefValue) => {
+    setDescription(pickString(ov, "description"));
+    setProvider(pickString(ov, "provider"));
+    setModel(pickString(ov, "model"));
+    setTier(pickString(ov, "tier"));
+    setEffort(pickString(ov, "effort"));
+    setSystemPrompt(pickString(ov, "system_prompt"));
+    setCodeBody(pickString(ov, "code_body"));
+    setTools(pickStringArray(ov, "tools").join(", "));
+    setAgentSkills(pickStringArray(ov, "skills").join(", "));
+    setAgentProviders(pickStringArray(ov, "providers").join(", "));
+    setMaxTokens(pickNumberAsString(ov, "max_tokens"));
+    setMaxContextTokens(pickNumberAsString(ov, "max_context_tokens"));
+    setMaxIterations(pickNumberAsString(ov, "max_iterations"));
+    setInternal(pickBool(ov, "internal"));
+    setMemoryQuotaBytes(pickNumberAsString(ov, "memory_quota_bytes"));
+    setMaxConcurrentChildren(pickNumberAsString(ov, "max_concurrent_children"));
+    const scopes = pickStringArray(ov, "memory_scopes");
+    setMemoryScopes({ agent: scopes.includes("agent"), user: scopes.includes("user") });
+    setModelsByTier(pickModelsByTier(ov));
+    setSampTemperature(pickNestedNumberAsString(ov, "sampling", "temperature"));
+    setSampTopP(pickNestedNumberAsString(ov, "sampling", "top_p"));
+    setSampTopK(pickNestedNumberAsString(ov, "sampling", "top_k"));
+    setSampFrequencyPenalty(pickNestedNumberAsString(ov, "sampling", "frequency_penalty"));
+    setSampPresencePenalty(pickNestedNumberAsString(ov, "sampling", "presence_penalty"));
+    setSampSeed(pickNestedNumberAsString(ov, "sampling", "seed"));
+    setSampStop(pickSamplingStop(ov).join(", "));
+  };
+
+  // Both guard on already being there. Without it, clicking the ACTIVE tab
+  // pushes the other (stale) surface's state over the one being edited — type
+  // in the form, click "Form", and the edits are replaced by the list's copy.
+  const showList = () => {
+    if (surface === "list") return;
+    setListOverlay(formOverlay());
+    setSurface("list");
+  };
+
+  const showForm = () => {
+    if (surface === "form") return;
+    hydrateFormFrom(listOverlay);
+    setSurface("form");
   };
 
   const buildOverlay = (): Record<string, unknown> => {
@@ -539,28 +605,26 @@ export default function LibraryEditModal({
       setSubmitErr(localErr);
       return;
     }
-    // Advanced overlay (agents only): parse-on-submit. An EMPTY box never
-    // blocks; a non-empty box that won't parse blocks with an inline
-    // error. Parsed keys shallow-merge OVER the structured overlay
-    // (advanced wins per-key) — the collision warning in the UI tells
-    // the operator which structured fields they're shadowing.
-    let advancedOv: Record<string, unknown> = {};
-    if (kind === "agent" && advancedText.trim()) {
-      const { obj, err } = parseAdvancedOverlay(advancedText, advancedFormat);
-      if (err || !obj) {
-        setAdvancedErr(err ?? "advanced overlay must be a JSON/YAML object");
-        setAdvancedOpen(true);
-        setSubmitErr("Fix the advanced overlay before saving.");
-        return;
-      }
-      advancedOv = obj;
-    }
-    setAdvancedErr(null);
     setSubmitErr(null);
     setSubmitting(true);
     try {
       const substrateKind = kindToSubstrate(kind);
-      const overlay = { ...buildOverlay(), ...advancedOv };
+      // The surface on screen is what the operator means. In list mode the
+      // form's hooks may be stale (they are only re-hydrated on switching
+      // back), so taking buildOverlay() there would resurrect values the
+      // operator cleared in the list.
+      //
+      // `description` is the exception: it lives in the identity row above
+      // BOTH surfaces and is omitted from the list, so its input is applied
+      // last either way.
+      let overlay: Record<string, unknown>;
+      if (kind !== "agent") {
+        overlay = buildOverlay();
+      } else {
+        overlay = surface === "list" ? { ...listOverlay } : formOverlay();
+        if (description.trim()) overlay.description = description.trim();
+        else delete overlay.description;
+      }
       let row: DefRow;
       if (mode === "create" || mode === "clone") {
         // Clone is a create under a new name — the operator bearer path, so it
@@ -637,6 +701,38 @@ export default function LibraryEditModal({
         </div>
 
         {kind === "agent" && (
+          <div className="library-form-row library-surface-switch">
+            <div className="library-surface-tabs" role="tablist" aria-label="Edit surface">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={surface === "form"}
+                className={surface === "form" ? "active" : ""}
+                onClick={showForm}
+                disabled={submitting}
+              >
+                Form
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={surface === "list"}
+                className={surface === "list" ? "active" : ""}
+                onClick={showList}
+                disabled={submitting}
+              >
+                All parameters
+              </button>
+            </div>
+            <span className="library-modal-field-hint">
+              {surface === "form"
+                ? "The common fields. Switch for every parameter this agent has."
+                : `Every parameter, ${agentDefRegistry.fields.length - 1} of them, with a hint each. Empty = inherited.`}
+            </span>
+          </div>
+        )}
+
+        {kind === "agent" && surface === "form" && (
           <AgentFields
             provider={provider}
             setProvider={setProvider}
@@ -691,21 +787,19 @@ export default function LibraryEditModal({
           />
         )}
 
-        {kind === "agent" && (
-          <AgentAdvancedOverlay
-            open={advancedOpen}
-            setOpen={setAdvancedOpen}
-            format={advancedFormat}
-            setFormat={setAdvancedFormat}
-            text={advancedText}
-            setText={(v) => {
-              setAdvancedText(v);
-              if (advancedErr) setAdvancedErr(null);
-            }}
-            err={advancedErr}
-            inheritedUnknownKeys={inheritedUnknownKeys}
-            submitting={submitting}
-          />
+        {kind === "agent" && surface === "list" && (
+          <div className="library-form-row">
+            <FoldedFieldList
+              registry={agentDefRegistry}
+              value={listOverlay}
+              onChange={setListOverlay}
+              disabled={submitting}
+              // description is rendered in the identity row above, on both
+              // surfaces — a second control for it here would be two inputs
+              // racing for one key.
+              omitKeys={DESCRIPTION_OMIT}
+            />
+          </div>
         )}
 
         {kind === "skill" && (
@@ -1287,105 +1381,6 @@ function AgentFields(props: AgentFieldsProps) {
   );
 }
 
-// AgentAdvancedOverlay — the scoped escape hatch for overlay keys that
-// have no dedicated control. JSON or YAML; parsed on submit by the
-// parent (parseAdvancedOverlay). Empty = no-op (never blocks); a
-// non-empty malformed body blocks with the inline `err`.
-function AgentAdvancedOverlay(props: {
-  open: boolean;
-  setOpen: (v: boolean) => void;
-  format: "json" | "yaml";
-  setFormat: (v: "json" | "yaml") => void;
-  text: string;
-  setText: (v: string) => void;
-  err: string | null;
-  inheritedUnknownKeys: string[];
-  submitting: boolean;
-}) {
-  // Live, non-blocking collision detection: which structured-control keys
-  // would the advanced body shadow? Parsed best-effort for display only.
-  const collisions = useMemo(() => {
-    if (!props.text.trim()) return [];
-    const { obj } = parseAdvancedOverlay(props.text, props.format);
-    if (!obj) return [];
-    return Object.keys(obj).filter((k) => STRUCTURED_AGENT_KEYS.has(k));
-  }, [props.text, props.format]);
-
-  return (
-    <div className="library-form-row library-advanced-overlay">
-      <button
-        type="button"
-        className="library-schema-hint-toggle"
-        onClick={() => props.setOpen(!props.open)}
-        disabled={props.submitting}
-      >
-        {props.open ? "▾" : "▸"} advanced (raw overlay) — channels,
-        interruption, *_def_scopes, …
-      </button>
-      {props.open && (
-        <>
-          {props.inheritedUnknownKeys.length > 0 && (
-            <div className="library-modal-field-hint">
-              pre-filled from the source: <code>{props.inheritedUnknownKeys.join(", ")}</code>.
-              Edit a value to change it; a key you delete falls back to the
-              source's value (the substrate merge is additive — it can't unset).
-            </div>
-          )}
-          <div className="library-advanced-format">
-            <label>
-              <input
-                type="radio"
-                name="adv-format"
-                checked={props.format === "json"}
-                onChange={() => props.setFormat("json")}
-                disabled={props.submitting}
-              />{" "}
-              JSON
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="adv-format"
-                checked={props.format === "yaml"}
-                onChange={() => props.setFormat("yaml")}
-                disabled={props.submitting}
-              />{" "}
-              YAML
-            </label>
-          </div>
-          <textarea
-            className="library-prompt-textarea mono"
-            value={props.text}
-            onChange={(e) => props.setText(e.target.value)}
-            disabled={props.submitting}
-            rows={8}
-            spellCheck={false}
-            placeholder={
-              props.format === "json"
-                ? '{\n  "interruption": { "enabled": true },\n  "retry_attempts": 3\n}'
-                : "interruption:\n  enabled: true\nretry_attempts: 3"
-            }
-          />
-          <div className="library-modal-field-hint">
-            Keys not covered by the fields above. Merged over them
-            (advanced wins). allowed_hosts is intentionally NOT settable
-            here — it's a caller-authoritative trust boundary, set per-run.
-          </div>
-          {collisions.length > 0 && (
-            <div className="library-models-warning">
-              ⚠ overrides structured field
-              {collisions.length === 1 ? "" : "s"}:{" "}
-              <code>{collisions.join(", ")}</code> — the value(s) above are
-              ignored for these.
-            </div>
-          )}
-          {props.err && <div className="modal-err">{props.err}</div>}
-        </>
-      )}
-    </div>
-  );
-}
-
 function SkillFields(props: {
   tools: string;
   setTools: (v: string) => void;
@@ -1736,10 +1731,19 @@ function pickCustomTierNames(def: unknown): string[] {
   return out;
 }
 
-// Overlay keys owned by a dedicated structured control. The advanced
-// overlay warns when it shadows one of these, and unknownSourceKeys()
-// excludes them from the "inherited" hint.
-const STRUCTURED_AGENT_KEYS = new Set<string>([
+// The overlay keys the FORM surface owns — exactly what buildOverlay() emits
+// for an agent, and exactly what hydrateFormFrom() reads back.
+//
+// It is load-bearing rather than documentary: switching Form → List DELETES
+// these keys before merging the form's values in, so a field the operator
+// CLEARED in the form actually clears instead of surviving from the list. A key
+// missing here would therefore be silently un-clearable.
+//
+// `max_context_tokens` and `internal` were absent from the set this replaces,
+// which drove the wrong shadow-warning on the old raw-overlay box. The
+// registry test pins every entry against @loomcycle/def-fields, so the set
+// cannot drift out of the list's coverage again.
+export const FORM_OWNED_AGENT_KEYS: readonly string[] = [
   "description",
   "provider",
   "model",
@@ -1751,13 +1755,55 @@ const STRUCTURED_AGENT_KEYS = new Set<string>([
   "skills",
   "providers",
   "max_tokens",
+  "max_context_tokens",
   "max_iterations",
+  "internal",
   "memory_quota_bytes",
   "max_concurrent_children",
   "memory_scopes",
   "models",
   "sampling",
-]);
+];
+
+// Frozen module constant so the prop identity is stable across renders — an
+// inline array would rebuild the list's omit set on every keystroke.
+const DESCRIPTION_OMIT: readonly string[] = ["description"];
+
+// sourceOverlay lifts a def row into the sparse overlay the List edits: every
+// key the source carries except the server-set / derived ones. Unlike the
+// per-key subtraction the raw overlay box used, it keeps the FORM's keys too —
+// both surfaces edit one overlay, so the list must open showing what the def
+// actually has, including the fields the form also renders.
+export function sourceOverlay(def: unknown): DefValue {
+  const out: DefValue = {};
+  if (!def || typeof def !== "object") return out;
+  for (const [key, value] of Object.entries(def as Record<string, unknown>)) {
+    if (NON_OVERLAY_KEYS.has(key)) continue;
+    if (value === undefined || value === null) continue;
+    if (isEmptyBlock(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+// isEmptyBlock reports a nested block that carries no setting — `channels: {}`,
+// `interruption: {}`, `sampling: {}`. A static agent's serialized definition
+// materialises these whether or not the operator wrote them, so keeping them
+// would count as "set" on the group badge, auto-open a group nobody configured,
+// and — worse — write the empty block into a fork's overlay on save.
+//
+// Deliberately objects ONLY. An empty ARRAY is a real setting the substrate
+// distinguishes: `tools: []` grants zero tools, which is emphatically not the
+// same as inheriting the parent's. Empty scalars stay too — 0 / false / "" are
+// values, which is the whole point of the sparse overlay.
+function isEmptyBlock(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).length === 0
+  );
+}
 
 // Server-set / immutable / derived keys that are NOT operator overlay
 // fields — excluded from the "inherited unknown keys" hint so we don't
@@ -1802,39 +1848,38 @@ function pickSamplingStop(def: unknown): string[] {
   return stop.filter((x): x is string => typeof x === "string");
 }
 
-// unknownSourceKeys returns the source definition's keys that no
-// structured control maps and that aren't server-set — i.e. overlay
-// fields the operator set via the advanced box (channels, interruption,
-// retry_attempts, *_def_scopes, …). The substrate's per-field merge
-// carries them forward unchanged on a fork, so we only hint at them.
-function unknownSourceKeys(def: unknown): string[] {
-  if (!def || typeof def !== "object") return [];
-  const out: string[] = [];
-  for (const key of Object.keys(def as Record<string, unknown>)) {
-    if (STRUCTURED_AGENT_KEYS.has(key) || NON_OVERLAY_KEYS.has(key)) continue;
-    out.push(key);
+// validateAgentOverlay range-checks an agent overlay coming off the LIST
+// surface. It reuses the same rules as the form's checks so the two surfaces
+// refuse the same values; the list's controls carry min/max, but a browser's
+// number input is an affordance, not a guard — a pasted value reaches state.
+function validateAgentOverlay(ov: DefValue): string | null {
+  const ints: string[] = [
+    "max_tokens",
+    "max_context_tokens",
+    "max_iterations",
+    "memory_quota_bytes",
+    "max_concurrent_children",
+  ];
+  for (const key of ints) {
+    const raw = pickNumberAsString(ov, key);
+    if (raw.trim() === "") continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+      return `${key} must be a non-negative integer (got "${raw}").`;
+    }
   }
-  return out;
-}
-
-// unknownSourceOverlay returns the {key: value} object for the source's
-// advanced-overlay keys (the unknownSourceKeys set) — used to pre-fill the
-// advanced box so a saved overlay round-trips visibly in the editor.
-function unknownSourceOverlay(def: unknown): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  if (!def || typeof def !== "object") return out;
-  const d = def as Record<string, unknown>;
-  for (const key of unknownSourceKeys(def)) {
-    out[key] = d[key];
+  if (pickString(ov, "provider") === "code-js" && !pickString(ov, "code_body").trim()) {
+    return "code_body is required for a code-js agent.";
   }
-  return out;
-}
-
-// initialAdvancedOverlayText pretty-prints unknownSourceOverlay as JSON for the
-// advanced box's initial value; "" when the source has no such keys.
-function initialAdvancedOverlayText(def: unknown): string {
-  const ov = unknownSourceOverlay(def);
-  return Object.keys(ov).length > 0 ? JSON.stringify(ov, null, 2) : "";
+  return validateSampling({
+    temperature: pickNestedNumberAsString(ov, "sampling", "temperature"),
+    top_p: pickNestedNumberAsString(ov, "sampling", "top_p"),
+    top_k: pickNestedNumberAsString(ov, "sampling", "top_k"),
+    frequency_penalty: pickNestedNumberAsString(ov, "sampling", "frequency_penalty"),
+    presence_penalty: pickNestedNumberAsString(ov, "sampling", "presence_penalty"),
+    seed: pickNestedNumberAsString(ov, "sampling", "seed"),
+    stop: pickSamplingStop(ov).join(", "),
+  });
 }
 
 // validateSampling mirrors config.Sampling.Validate() for per-field
@@ -1887,28 +1932,6 @@ function validateSampling(v: {
       ? "stop accepts at most 8 sequences."
       : null)
   );
-}
-
-// parseAdvancedOverlay parses the advanced box as JSON or YAML and
-// requires a plain object (not array / null / scalar). Used both by the
-// submit path (the merge) and the live collision-detection display.
-function parseAdvancedOverlay(
-  text: string,
-  format: "json" | "yaml",
-): { obj: Record<string, unknown> | null; err: string | null } {
-  let parsed: unknown;
-  try {
-    parsed = format === "json" ? JSON.parse(text) : yamlLoad(text);
-  } catch (e) {
-    return { obj: null, err: e instanceof Error ? e.message : String(e) };
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {
-      obj: null,
-      err: `advanced overlay must be a ${format.toUpperCase()} object, not an array or scalar`,
-    };
-  }
-  return { obj: parsed as Record<string, unknown>, err: null };
 }
 
 // parseCommaList splits a comma-separated string into trimmed,

@@ -1782,17 +1782,42 @@ textarea::placeholder {
   border-radius: 4px;
   color: var(--fg);
 }
-.library-advanced-overlay {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* Form / All-parameters switch above the agent fields. */
+.library-surface-switch {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   border-top: 1px dashed var(--border, #444);
   padding-top: 10px;
 }
-.library-advanced-format {
-  display: flex;
-  gap: 16px;
+.library-surface-tabs {
+  display: inline-flex;
+  border: 1px solid var(--border, #444);
+  border-radius: 5px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.library-surface-tabs button {
+  padding: 3px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-soft, var(--fg));
+  font: inherit;
   font-size: 12px;
+  cursor: pointer;
+}
+.library-surface-tabs button + button {
+  border-left: 1px solid var(--border, #444);
+}
+.library-surface-tabs button.active {
+  background: var(--bg-soft-2, var(--border));
+  color: var(--fg);
+  font-weight: 600;
+}
+.library-surface-tabs button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .library-models-warning code {
   font-family: var(--mono);
