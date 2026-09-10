@@ -878,6 +878,13 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	if ov.Colors != nil {
 		base.Colors = ov.Colors
 	}
+	// Layout is how a canvas persists node positions, so a missing case here is
+	// not a cosmetic gap: the fork succeeds and every position is silently gone.
+	// Presentation, like Colors — and like Colors it is excluded from the content
+	// hash, so a layout-only fork keeps the parent's identity.
+	if ov.Layout != nil {
+		base.Layout = ov.Layout
+	}
 }
 
 func (t *TeamDef) checkSizeCaps(defJSON []byte, description string) error {

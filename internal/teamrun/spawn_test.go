@@ -12,7 +12,9 @@ import (
 // under mu, then delegates to fn. calls/inputs are safe to read after Walk
 // returns (Walk joins all goroutines before returning).
 func recordingSpawn(mu *sync.Mutex, calls *[]string, inputs map[string]string, fn func(ctx context.Context, agent, input string) (string, error)) SpawnFunc {
-	return func(ctx context.Context, agent, input, defID string) (string, error) {
+	return func(ctx context.Context, agent string, p Prompt, defID string) (string, error) {
+		input := p.Input
+
 		mu.Lock()
 		*calls = append(*calls, agent)
 		if inputs != nil {
@@ -29,7 +31,9 @@ func TestAgentRunner_WalksLinearTeamViaSpawn(t *testing.T) {
 	// Fake spawn: echoes which agent ran + the input, so we can assert the
 	// output threads state to state.
 	var spawned []string
-	spawn := func(_ context.Context, agent, input, defID string) (string, error) {
+	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+		input := p.Input
+
 		spawned = append(spawned, agent)
 		return fmt.Sprintf("%s(%s)", agent, input), nil
 	}
@@ -53,7 +57,8 @@ func TestAgentRunner_WalksLinearTeamViaSpawn(t *testing.T) {
 
 func TestAgentRunner_SpawnErrorStopsWalk(t *testing.T) {
 	d := mustParse(t, linearJSON)
-	spawn := func(_ context.Context, agent, input, defID string) (string, error) {
+	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+
 		if agent == "agent-b" {
 			return "", fmt.Errorf("boom")
 		}
@@ -204,7 +209,8 @@ func TestAgentRunner_ParallelWaitAtLeastCancelsOnceThresholdMet(t *testing.T) {
 func TestAgentRunner_ParallelWaitAllAgentErrorAborts(t *testing.T) {
 	d := mustParse(t, parallelJSON)
 	consolidatorCalled := false
-	spawn := func(_ context.Context, agent, input, defID string) (string, error) {
+	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+
 		switch agent {
 		case "a":
 			return "A-out", nil
@@ -286,7 +292,8 @@ func TestAgentRunner_PushbackCycleHitsIterationCap(t *testing.T) {
 	// A judge that ALWAYS pushes back never converges; the per-state cap must
 	// bound the loop rather than spin forever.
 	d := mustParse(t, pushbackJSON) // max_iterations:3
-	spawn := func(_ context.Context, agent, input, defID string) (string, error) {
+	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+
 		switch agent {
 		case "coder":
 			return "code", nil
