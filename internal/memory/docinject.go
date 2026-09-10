@@ -92,18 +92,30 @@ func (r DocRef) String() string {
 // documentPlaceholderPattern matches an OPTIONAL leading backslash (the escape)
 // followed by {{document:REF}}.
 //
-// The ref charset is deliberately RESTRICTIVE — path characters, plus `#` for
-// the heading selector — and notably excludes `{`, `}` and `$`. That is not
-// tidiness:
+// The ref is a sequence of PATH CHARACTERS or COMPLETE ${...} tokens, and
+// nothing else. Bare `{` and `}` are excluded, which makes the grammar
+// unambiguous and safe at the same time:
 //
-//   - excluding `{` and `}` means a ref can never contain a nested placeholder,
-//     so the single-pass guarantee cannot be undermined from inside an argument;
-//   - excluding `$` means a ref cannot carry a ${var.*} token today. When a later
-//     phase makes team-node prompts expandable, variables inside a ref must be
-//     resolved INSIDE the matched argument rather than by a pre-pass over the
-//     template — widening this charset without doing that would reintroduce
-//     exactly the injection path the single-pass discipline closes.
-const documentPlaceholderPattern = `(\\?)\{\{\s*document\s*:\s*([A-Za-z0-9_./#: @+-]{1,512}?)\s*\}\}`
+//   - a ref can never contain a nested {{...}}, because `{` is not a unit, so
+//     the single-pass guarantee cannot be undermined from inside an argument;
+//   - `{{document:/a}} text {{document:/b}}` still parses as TWO refs, because
+//     `}` cannot be consumed by the argument and therefore terminates it;
+//   - `{{document:/specs/${var.pr}}}` parses as ONE ref whose argument is
+//     `/specs/${var.pr}`, because a whole variable token IS a unit. A plain
+//     non-greedy charset could not express this — it would stop at
+//     `/specs/${var.pr` and leave a stray brace behind.
+//
+// Variables inside the argument are resolved INSIDE the matched placeholder as
+// part of resolving it (see expandDocumentPlaceholder), never by a pass over the
+// template. That is why widening this charset is safe NOW when it was not
+// before: a resolved value lands in a ref that is used as a PATH, and is never
+// re-read as template text.
+//
+// The repetition is `+` rather than a counted bound because RE2 rejects a
+// counted repeat wrapping an inner one (the product blows its automaton
+// budget). That costs nothing: RE2 is linear-time with no backtracking, and the
+// length bound lives in ParseDocRef where it can produce a real message.
+const documentPlaceholderPattern = `(\\?)\{\{\s*document\s*:\s*((?:[A-Za-z0-9_./#: @+-]|` + varTokenPattern + `)+)\s*\}\}`
 
 var documentPlaceholderRe = regexp.MustCompile(`(?i)` + documentPlaceholderPattern)
 
@@ -121,9 +133,17 @@ func ReadInstruction(ref DocRef) string {
 		"</document-ref>"
 }
 
+// MaxRefBytes bounds one ref. A path is short by nature; a long one means a
+// variable interpolated something that is not a path, and refusing it is a
+// clearer outcome than issuing the read.
+const MaxRefBytes = 512
+
 // ParseDocRef canonicalises a raw ref token. It reports ok=false for a ref with
 // no path, which boot validation surfaces rather than leaving literal.
 func ParseDocRef(raw string) (DocRef, bool) {
+	if len(raw) > MaxRefBytes {
+		return DocRef{}, false
+	}
 	path, heading, _ := strings.Cut(strings.TrimSpace(raw), "#")
 	path = strings.TrimSpace(path)
 	heading = strings.TrimSpace(heading)
@@ -178,7 +198,7 @@ func MalformedDocRefs(s string) []string {
 // renders to NOTHING rather than erroring: prompt assembly runs at every
 // run-entry, sub-agent spawn and resume, and a run must not fail because a
 // document moved. The same posture the {{tool:...}} family takes.
-func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining *int) string {
+func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining *int, values map[string]string, refused *[]string) string {
 	sub := documentPlaceholderRe.FindStringSubmatch(match)
 	if sub == nil {
 		return match
@@ -186,7 +206,18 @@ func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining
 	if sub[1] == `\` {
 		return match[1:] // escaped → literal, backslash stripped
 	}
-	ref, ok := ParseDocRef(sub[2])
+	// Resolve the argument's variables HERE, inside the matched placeholder,
+	// rather than in a pass over the template. A value therefore lands in a ref
+	// that is used as a PATH — it is never re-read as template text, so it
+	// cannot introduce a placeholder for anything to expand. Trust rule 5b's
+	// first mitigation, at the only place it can actually be applied.
+	arg := sub[2]
+	if values != nil {
+		arg = varPlaceholderRe.ReplaceAllStringFunc(arg, func(m string) string {
+			return expandVarPlaceholder(m, values, refused)
+		})
+	}
+	ref, ok := ParseDocRef(arg)
 	if !ok {
 		return ""
 	}
