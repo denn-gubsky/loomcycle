@@ -16,12 +16,13 @@ export const AGENTDEF_EXCLUDED: Record<string, string> = {
     "derived — the pre-skill-bake snapshot of system_prompt, written by the server, never operator input",
   system_prompt_file:
     "load-time only — reads a file off the operator's disk at config load, so a runtime def cannot honour it",
-  // These two are operator-settable in yaml but do NOT round-trip the substrate
-  // overlay yet (absent from both the write shape and the read adapter), so a
-  // control here would silently drop on save. Removed from this list by the
-  // backend round-trip fix.
-  disable_context: "pending backend round-trip support",
-  skill_def_scopes: "pending backend round-trip support",
+  // The next two are settable in operator yaml but are PERMANENTLY outside the
+  // overlay, not pending work. internal/lookup/agent.go names both carve-outs
+  // and a round-trip test pins them.
+  disable_context:
+    "load-time only — it suppresses the default-add of the Context tool during config load, baking into Tools before anything resolves; a runtime def has no auto-add to opt out of, so a control here would do nothing",
+  skill_def_scopes:
+    "removed-field tombstone (RFC BA) — skill authoring is governed by the skills: pattern allowlist, and the yaml key survives only so config load can reject a stale one with a migration error",
 };
 
 const scopeList = (label: string, key: string, hint: string): FieldSpec => ({
