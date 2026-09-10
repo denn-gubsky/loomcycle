@@ -440,38 +440,113 @@ func (s *Server) renderDocuments(ctx context.Context, mi memInject, refs []memin
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	out := make(map[meminject.DocRef]string, len(refs))
 	for _, ref := range refs {
-		if body := exportDocumentMarkdown(dctx, doc, ref); body != "" {
+		if body := resolveDocRef(dctx, doc, ref); body != "" {
 			out[ref] = body
 		}
 	}
 	return out
 }
 
-// exportDocumentMarkdown reads one ref. A heading selects a single section of
-// the exported markdown, so `{{document:/specs/launch#Risks}}` inlines one part
-// of a document too large to inline whole.
-func exportDocumentMarkdown(ctx context.Context, doc *builtin.Document, ref meminject.DocRef) string {
-	req, err := json.Marshal(map[string]any{
-		"op": "export_md", "scope": "user", "path": ref.Path, "include_metadata": false,
-	})
-	if err != nil {
+// resolveDocRef reads one ref, in the three forms the family addresses:
+//
+//	/path            a document — inlined whole IF it fits, else its outline
+//	/path#Section    one section, inlined complete
+//	<chunk-id>       one chunk, inlined complete
+//
+// NOTHING IS EVER TRUNCATED. A precise ref yields a complete unit; an imprecise
+// one that does not fit yields a REFERENCE (title, ref, section list) rather
+// than a cut body. A visible truncation marker helps a human reading the
+// resolved prompt, but the model still answers confidently from half a spec —
+// and a half-spec is indistinguishable from a complete one to it. An outline is
+// an accurate map instead of a confident half-answer.
+func resolveDocRef(ctx context.Context, doc *builtin.Document, ref meminject.DocRef) string {
+	if ref.IsID() {
+		if body, ok := readChunkByID(ctx, doc, ref.Path); ok {
+			return body
+		}
+		// Not a chunk id — fall through and try it as a document id.
+	}
+	md, title := exportDocument(ctx, doc, ref)
+	if md == "" {
 		return ""
+	}
+	if ref.Heading != "" {
+		// A named section is inlined COMPLETE, whatever its size: the operator
+		// asked for exactly this part, and cutting the thing they narrowed to
+		// would defeat narrowing.
+		return sectionByHeading(md, ref.Heading)
+	}
+	if meminject.Fits(md) {
+		return md
+	}
+	return meminject.OutlineFor(ref, title, headingsOf(md))
+}
+
+// readChunkByID inlines one chunk. ok=false when the id names no chunk, so the
+// caller can try the same token as a document id.
+func readChunkByID(ctx context.Context, doc *builtin.Document, id string) (string, bool) {
+	req, err := json.Marshal(map[string]any{"op": "get_chunk", "scope": "user", "id": id})
+	if err != nil {
+		return "", false
 	}
 	res, _ := doc.Execute(ctx, req)
 	if res.IsError {
-		return ""
+		return "", false
+	}
+	var payload struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &payload); err != nil {
+		return "", false
+	}
+	body := strings.TrimSpace(payload.Body)
+	if body == "" {
+		return "", false
+	}
+	if payload.Title != "" {
+		body = "## " + payload.Title + "\n\n" + body
+	}
+	return body, true
+}
+
+// exportDocument renders a document to markdown, addressed by path or id.
+func exportDocument(ctx context.Context, doc *builtin.Document, ref meminject.DocRef) (md, title string) {
+	arg := map[string]any{"op": "export_md", "scope": "user", "include_metadata": false}
+	if ref.IsID() {
+		arg["id"] = ref.Path
+	} else {
+		arg["path"] = ref.Path
+	}
+	req, err := json.Marshal(arg)
+	if err != nil {
+		return "", ""
+	}
+	res, _ := doc.Execute(ctx, req)
+	if res.IsError {
+		return "", ""
 	}
 	var payload struct {
 		Markdown string `json:"markdown"`
+		Title    string `json:"title"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &payload); err != nil {
-		return ""
+		return "", ""
 	}
-	md := strings.TrimSpace(payload.Markdown)
-	if ref.Heading == "" {
-		return md
+	return strings.TrimSpace(payload.Markdown), payload.Title
+}
+
+// headingsOf lists a markdown document's section titles, in order, for the
+// outline. Duplicates are kept: two sections may share a title, and the outline
+// should say so rather than hide one.
+func headingsOf(md string) []string {
+	var out []string
+	for _, ln := range strings.Split(md, "\n") {
+		if _, title, ok := atxHeading(ln); ok {
+			out = append(out, title)
+		}
 	}
-	return sectionByHeading(md, ref.Heading)
+	return out
 }
 
 // sectionByHeading returns the markdown section under the ATX heading whose text

@@ -7,6 +7,26 @@
 // on something the runtime could have inlined. A binding is resolved content in
 // the prompt, so the agent receives the document and cannot decline to read it.
 //
+// WHAT A REF ADDRESSES. Three forms, in increasing precision:
+//
+//	{{document:/specs/launch}}          a document
+//	{{document:/specs/launch#Risks}}    ONE section of it
+//	{{document:<chunk-id>}}             ONE chunk, by id
+//
+// The precise forms exist because inlining a whole document is usually the wrong
+// answer. A Document is CHUNKED by design, and a chunk is the unit an author
+// wrote and a reader wants — so addressing one gives the agent something
+// complete and small, rather than a wall of text it must search.
+//
+// AND NOTHING IS EVER TRUNCATED. An earlier version cut an oversized body at
+// 16 KB with a marker. That was wrong: a visible marker helps a human reading
+// the resolved prompt, but the MODEL still answers confidently from half a
+// spec, and a half-spec is indistinguishable from a complete one to it. When a
+// document does not fit, this family inlines a REFERENCE instead — the
+// document's title, path, and its section outline — so the agent gets an
+// accurate map and the operator sees exactly which selector to narrow to. A
+// correct map beats an arbitrary first-16-KB slice.
+//
 // The safety argument is NARROWER than the {{tool:...}} family's, deliberately.
 // A document ref is a pure READ of the substrate's own Document store, resolved
 // UNDER THE RUN'S OWN AUTHORITY: the same scope fold the agent's Document tool
@@ -26,14 +46,19 @@ import (
 	"strings"
 )
 
-// DocRef identifies one document a system prompt asks to have inlined.
+// DocRef identifies what a system prompt asks to have inlined.
 type DocRef struct {
-	// Path is the Path-tree location or document id, e.g. "/specs/launch".
+	// Path is a Path-tree location ("/specs/launch") when it starts with "/",
+	// and otherwise a chunk or document id.
 	Path string
-	// Heading, when set, selects ONE chunk of the document by its title —
+	// Heading, when set, selects ONE section by its title —
 	// `{{document:/specs/launch#Risks}}`. Empty means the whole document.
 	Heading string
 }
+
+// IsID reports whether the ref addresses a chunk or document by id rather than
+// by Path-tree location. Ids carry no leading slash.
+func (r DocRef) IsID() bool { return !strings.HasPrefix(r.Path, "/") }
 
 // String renders the ref in placeholder form, for error messages.
 func (r DocRef) String() string {
@@ -61,18 +86,15 @@ const documentPlaceholderPattern = `(\\?)\{\{\s*document\s*:\s*([A-Za-z0-9_./#: 
 
 var documentPlaceholderRe = regexp.MustCompile(`(?i)` + documentPlaceholderPattern)
 
-// MaxDocumentBytes caps ONE {{document:...}} body at 16 KB (~4K tokens). A
-// document section or a large chunk fits whole; a full spec truncates.
+// MaxDocumentBytes is the size ONE {{document:...}} body may inline: 16 KB
+// (~4K tokens). A chunk or a section fits comfortably; a full spec generally
+// does not.
 //
-// Per-placeholder, and counted against the shared memory budget as well: the
-// cap bounds how much ONE ref can contribute, the budget bounds the total.
+// It is a FIT THRESHOLD, not a truncation point. A body over it is not cut —
+// the caller renders an outline instead (see OutlineFor). Per-placeholder, and
+// still counted against the shared memory budget: this bounds what ONE ref may
+// contribute, the budget bounds the total.
 const MaxDocumentBytes = 16 * 1024
-
-// documentTruncationMarker is appended when a body is cut. Truncating SILENTLY
-// is the failure this avoids: a placeholder that quietly renders half a
-// document is a debugging nightmare, because the agent's answer looks like a
-// reasoning failure rather than a missing input.
-const documentTruncationMarker = "\n\n[… truncated at 16 KB — reference a heading (`{{document:/path#Section}}`) to inline a smaller part]"
 
 // ParseDocRef canonicalises a raw ref token. It reports ok=false for a ref with
 // no path, which boot validation surfaces rather than leaving literal.
@@ -147,7 +169,6 @@ func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining
 	if body == "" {
 		return ""
 	}
-	body = capDocumentBody(body)
 	body = takeBudget(remaining, body)
 	if body == "" {
 		return ""
@@ -155,22 +176,37 @@ func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining
 	return frameDocument(ref, body)
 }
 
-// capDocumentBody applies the per-placeholder cap with a VISIBLE marker. It cuts
-// on a rune boundary so a multi-byte character is never split into mojibake.
-func capDocumentBody(body string) string {
-	if len(body) <= MaxDocumentBytes {
-		return body
-	}
-	cut := body[:MaxDocumentBytes]
-	for len(cut) > 0 && !isRuneStart(body[len(cut)]) {
-		cut = cut[:len(cut)-1]
-	}
-	return strings.TrimRight(cut, "\n") + documentTruncationMarker
-}
+// Fits reports whether a body may be inlined whole. The caller renders an
+// outline for anything larger rather than cutting it.
+func Fits(body string) bool { return len(body) <= MaxDocumentBytes }
 
-// isRuneStart reports whether b begins a UTF-8 rune (i.e. is not a continuation
-// byte). Stdlib's utf8.RuneStart, inlined to keep this file import-light.
-func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
+// OutlineFor renders the REFERENCE a document gets when its full text does not
+// fit: what it is, where it is, and what sections it contains.
+//
+// This is what the agent receives INSTEAD of a truncated body, and it is
+// strictly more useful. A cut document is a confident half-answer; an outline is
+// an accurate map, and it names the exact selector that would inline any one
+// part — so an operator reading the resolved prompt can see what to narrow the
+// ref to, and an agent that holds the Document tool can fetch precisely.
+func OutlineFor(ref DocRef, title string, sections []string) string {
+	var b strings.Builder
+	b.WriteString("This document is too large to inline. Its outline follows; the full text was NOT included.\n\n")
+	if title != "" {
+		b.WriteString("title: " + title + "\n")
+	}
+	b.WriteString("ref: " + ref.String() + "\n")
+	if len(sections) == 0 {
+		b.WriteString("\n(no sections)\n")
+		return b.String()
+	}
+	b.WriteString("\nsections:\n")
+	for _, s := range sections {
+		b.WriteString("  - " + s + "\n")
+	}
+	b.WriteString("\nTo inline one section instead of the whole document, reference it as " +
+		"{{document:" + ref.Path + "#<section>}}.\n")
+	return b.String()
+}
 
 // frameDocument wraps a body in a DATA frame naming its source. The frame is
 // what tells the model this is REFERENCE MATERIAL rather than instruction —
