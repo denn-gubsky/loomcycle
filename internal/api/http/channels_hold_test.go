@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // channelHoldFixture is channelCRUDFixture with one held channel and one
@@ -266,5 +267,96 @@ func TestChannelHold_InternalPublisherIsHeldWithoutResolvingTheDef(t *testing.T)
 	}
 	if n := peekCount(t, srv, "gate"); n != 1 {
 		t.Errorf("after release, %d readable, want 1", n)
+	}
+}
+
+// The wire cap and the in-band tool cap are the same number. Two caps that
+// drift mean the same release is accepted on one surface and refused on the
+// other, which an operator discovers by having it work in the terminal and
+// fail from an agent.
+func TestChannelRelease_WireAndToolCapsAgree(t *testing.T) {
+	if maxChannelReleaseCount != builtin.MaxReleaseCountForDrift {
+		t.Errorf("wire cap %d != tool cap %d", maxChannelReleaseCount, builtin.MaxReleaseCountForDrift)
+	}
+}
+
+// Over-cap is refused rather than silently clamped: a caller asking to release
+// a million is asking for something the hold was there to prevent, and
+// quietly doing a thousand of them is not the answer they wanted.
+func TestChannelHold_ReleaseOverCapIsRefused(t *testing.T) {
+	srv, _, cleanup := channelHoldFixture(t)
+	defer cleanup()
+	rec := postJSON(t, srv, "/v1/_channels/gate/release", `{"count":100000}`)
+	if rec.Code == http.StatusOK {
+		t.Errorf("an over-cap release succeeded: %s", rec.Body.String())
+	}
+}
+
+// ChannelHeld resolves yaml first (operator-global, so every tenant sees it)
+// and then the runtime row IN THE CALLER'S TENANT. Pinned because it decides
+// what an internal publisher sees: one whose ctx carries no tenant — the
+// inbound webhook relay is the live example — honours a yaml-declared hold but
+// cannot see another tenant's runtime-declared one.
+func TestChannelHeld_YamlIsTenantWideRuntimeRowIsNot(t *testing.T) {
+	srv, st, cleanup := channelHoldFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// yaml: visible with no tenant on the ctx.
+	if !srv.ChannelHeld(ctx, "gate") {
+		t.Errorf("a yaml-declared hold was not seen without a tenant on the ctx")
+	}
+	// runtime row owned by another tenant: not visible.
+	if err := st.ChannelsCreate(ctx, store.ChannelRow{
+		Name: "t1-only", TenantID: "t1", Scope: "global", Semantic: "queue", Hold: true,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if srv.ChannelHeld(ctx, "t1-only") {
+		t.Errorf("another tenant's runtime hold leaked into a tenant-less ctx")
+	}
+	// runtime row in the shared tenant: visible.
+	if err := st.ChannelsCreate(ctx, store.ChannelRow{
+		Name: "shared", TenantID: "", Scope: "global", Semantic: "queue", Hold: true,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !srv.ChannelHeld(ctx, "shared") {
+		t.Errorf("a shared-tenant runtime hold was not seen")
+	}
+}
+
+// The channel listing must not print the reserved held instant as a delivery
+// time: "newest_visible_at: 2200-01-01" reads as a bug, not as "this channel
+// is holding". The `hold` flag is what says that.
+func TestChannelHold_ListingHidesTheReservedInstant(t *testing.T) {
+	srv, _, cleanup := channelHoldFixture(t)
+	defer cleanup()
+
+	if rec := postJSON(t, srv, "/v1/_channels/gate/publish", `{"payload":{"n":1}}`); rec.Code != http.StatusOK {
+		t.Fatalf("publish: status %d (%s)", rec.Code, rec.Body.String())
+	}
+	resp, err := srv.ListChannels(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var gate *connector.ChannelDescriptor
+	for i := range resp.Channels {
+		if resp.Channels[i].Name == "gate" {
+			gate = &resp.Channels[i]
+		}
+	}
+	if gate == nil {
+		t.Fatalf("gate missing from the listing")
+	}
+	if !gate.Hold {
+		t.Errorf("the listing does not report the channel as held: %+v", gate)
+	}
+	if gate.MessageCount != 1 {
+		t.Errorf("message_count = %d, want 1 — a held message is still stored", gate.MessageCount)
+	}
+	if gate.OldestVisibleAt != "" || gate.NewestVisibleAt != "" {
+		t.Errorf("the reserved held instant leaked into the listing: oldest=%q newest=%q",
+			gate.OldestVisibleAt, gate.NewestVisibleAt)
 	}
 }

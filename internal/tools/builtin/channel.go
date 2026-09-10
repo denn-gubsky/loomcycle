@@ -451,6 +451,11 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 // was there to prevent, and the bound keeps one call's transaction small.
 const maxReleaseCount = 1000
 
+// MaxReleaseCountForDrift exports the cap for the wire-surface drift test in
+// internal/api/http — the two caps are one rule, and a test is the only thing
+// that keeps them one.
+const MaxReleaseCountForDrift = maxReleaseCount
+
 // execRelease hands the oldest `count` HELD messages on a channel to its
 // subscribers (RFC CY). Default 1: a release is a single step unless the
 // caller says otherwise.

@@ -27,8 +27,10 @@ import (
 const channelFanCap = 32
 
 // maxChannelReleaseCount bounds one release — the wire twin of the in-band
-// tool's maxReleaseCount, kept in step by the drift test in
-// connector_impl_channels_test.go.
+// tool's builtin.maxReleaseCount. Kept in step by
+// TestChannelRelease_WireAndToolCapsAgree in channels_hold_test.go: two caps
+// that drift mean the same request is accepted on one surface and refused on
+// the other.
 const maxChannelReleaseCount = 1000
 
 // resolveChannelScope maps the wire-string `scope` to the store enum
