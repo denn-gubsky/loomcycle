@@ -359,6 +359,23 @@ agents:
         // inside run_timeout_seconds (1500) which must stay under lease_ttl_ms
         // (1800000) or another worker re-claims the queue.
         extract_window_turns: 0,
+        // Windowing FRAGMENTS a small source below the size at which the
+        // extractor finds anything, so it is applied only to a source with at
+        // least this many turns.
+        //
+        // MEASURED, and it is why a LongMemEval arm could not be graded at all.
+        // Those instances are ~12 turns; at a 3-turn window each piece was a
+        // couple of lines of small talk, the extractor answered [] every time,
+        // and the item was stepped over and left queued — 8 passes, 0 facts, and
+        // 37 of 72 instances empty, which tripped the harness's own
+        // most-of-the-corpus guard. The LoCoMo batches that windowing HELPS are
+        // ~70 turns, so the two cases separate cleanly on source length.
+        //
+        // This is also the mechanism behind the single-session-preference slice
+        // collapsing from 0.30 to 0.00 under a window: a preference is expressed
+        // across a short conversation, and fragmenting it leaves no piece that
+        // carries the preference.
+        min_turns_to_window: 20,
         // How many prior facts ride along as rolling context (see rollingContext).
         max_context_facts: 12,
         // Bounds the extractor calls one pathological chat can spawn. When it
@@ -572,6 +589,7 @@ agents:
           extractions: 0,           // extractor calls, which is now PARTS and not chats
           split_chats: 0,           // chats that needed more than one extractor call
           parts_spent: 0,           // extractor parts this pass has committed to
+          windows_skipped_short: 0, // sources extracted whole because they were too short to window
           chats_deferred: 0,        // chats left UNREAD for the next pass (budget spent)
           turns_truncated: 0,       // single messages larger than the whole budget
           seen: {},                 // session_id -> true; the re-read guard
@@ -1342,6 +1360,14 @@ agents:
       // back next pass rather than disappearing.
       function extractPending(st, pendingText) {
         var windowTurns = CONFIG.extract_window_turns > 0 ? CONFIG.extract_window_turns : 0;
+        // A SHORT SOURCE IS EXTRACTED WHOLE however the window is set. Splitting
+        // it produces pieces too thin to carry a fact, the extractor returns []
+        // for each, and the queued item is stepped over and never acked — which
+        // is a stall, not a low yield.
+        if (windowTurns > 0 && splitTurns(pendingText).length < CONFIG.min_turns_to_window) {
+          st.windows_skipped_short++;
+          windowTurns = 0;
+        }
         if (windowTurns <= 0) {
           // Unchanged: one call for the whole batch, post-processed against that
           // same text. The three calls live HERE rather than at the call site so
@@ -3033,6 +3059,11 @@ agents:
           parts.push("chats split for extraction " + st.split_chats +
             " (cut on message boundaries, each part extracted, results merged; " +
             st.extractions + " extractor calls this pass)");
+        }
+        if (st.windows_skipped_short > 0) {
+          parts.push("sources extracted whole (too short to window) " + st.windows_skipped_short +
+            " (under " + CONFIG.min_turns_to_window + " turns; splitting one leaves no piece " +
+            "carrying a fact and the item stalls unacked)");
         }
         if (st.chats_deferred > 0) {
           // DEFERRED, not dropped, and the wording has to say so: the previous

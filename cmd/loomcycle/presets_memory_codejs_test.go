@@ -5146,7 +5146,9 @@ func TestConsolidator_QueuedPathHonoursTheExtractionWindow(t *testing.T) {
 // produce one call per message, not one call for the item.
 func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 	msgs := []map[string]any{}
-	for i := 0; i < 8; i++ {
+	// 24 messages: ABOVE min_turns_to_window, so this fixture tests the window
+	// rather than the short-source guard. At 8 it silently tested the guard.
+	for i := 0; i < 24; i++ {
 		msgs = append(msgs, map[string]any{
 			"role":    "user",
 			"content": fmt.Sprintf("Message %d: in July I visited city number %d.", i, i),
@@ -5177,7 +5179,7 @@ func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 		t.Fatalf("default made %d calls for one queued item, want 1", wideCalls)
 	}
 	if narrowCalls < 4 {
-		t.Errorf("per-message window made %d call(s) for a single 8-message item, want one per "+
+		t.Errorf("per-message window made %d call(s) for a single 24-message item, want one per "+
 			"message — the window stops at the ITEM boundary, so the finest arm of a sweep "+
 			"measures per-session instead", narrowCalls)
 	}
@@ -5305,5 +5307,43 @@ func TestConsolidator_ASmallExtractorContextClampsThePartBudget(t *testing.T) {
 		t.Errorf("largest part at a 4,096-token context is %d chars — still more than that window "+
 			"can hold once the system prompt, temporal rule and reply are accounted for",
 			maxOf(small))
+	}
+}
+
+// TestConsolidator_AShortSourceIsExtractedWholeDespiteTheWindow.
+//
+// Windowing a short source fragments it below the size at which the extractor
+// finds anything, and the consequence is a STALL rather than a low yield: each
+// piece returns [], the queued item is stepped over and never acked, and the
+// pass makes no progress. Measured on LongMemEval, whose instances are ~12
+// turns: at a 3-turn window, 37 of 72 instances produced zero facts across 8
+// passes and the run could not be graded at all.
+//
+// It is also the mechanism behind the single-session-preference slice going
+// 0.30 -> 0.00 under a window: a preference is expressed across a short
+// conversation, so fragmenting it leaves no piece that carries the preference.
+func TestConsolidator_AShortSourceIsExtractedWholeDespiteTheWindow(t *testing.T) {
+	msgs := []map[string]any{}
+	for i := 0; i < 10; i++ { // WELL under min_turns_to_window
+		msgs = append(msgs, map[string]any{
+			"role":    "user",
+			"content": fmt.Sprintf("Short chat line %d about the weather.", i),
+		})
+	}
+	f := newFakeToolset()
+	f.sessions = nil
+	f.pending = []map[string]any{{"id": "q0", "payload": map[string]any{"messages": msgs}}}
+	f.factsJSON = `[]`
+
+	res := runConsolidatorWindow(t, f, 1)
+
+	if n := len(extractorPrompts(f)); n != 1 {
+		t.Errorf("a 10-message source was split into %d extractor call(s) despite being far below "+
+			"the windowing threshold — each piece is too thin to carry a fact, so the item stalls "+
+			"unacked instead of yielding less", n)
+	}
+	if !strings.Contains(res.FinalText, "too short to window") {
+		t.Errorf("the report does not say the source was extracted whole: %q — a silent fallback "+
+			"is indistinguishable from a window that did not fire", res.FinalText)
 	}
 }
