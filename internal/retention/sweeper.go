@@ -76,6 +76,11 @@ type SQLMemory interface {
 	ExportScope(ctx context.Context, key sqlmem.ScopeKey) (*sqlmem.ScopeDump, error)
 	// DropScope drops one durable scope. removed reports whether it existed.
 	DropScope(ctx context.Context, key sqlmem.ScopeKey) (bool, error)
+	// Exec runs one statement in a scope. Used by the archival span snapshot to
+	// fill a fact's empty source_quote before its source session is deleted —
+	// the one write this sweeper makes rather than a delete, and the reason it
+	// is a write at all is that the alternative is losing the evidence.
+	Exec(ctx context.Context, key sqlmem.ScopeKey, statement string, args []any, quotaOverride int) (*sqlmem.ExecResult, error)
 }
 
 // Config carries the sweeper's tuning knobs. Zero/missing values fall back to
@@ -747,6 +752,16 @@ func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match
 			pruned++
 			continue
 		}
+		// SNAPSHOT BEFORE ARCHIVE. A fact's reference to this session's turns is
+		// about to dangle, so the span is copied onto the fact first. Ordered this
+		// way deliberately: a crash here leaves a live source and a fact that can
+		// be snapshotted again next tick, where the other order leaves a fact with
+		// neither the reference nor the span.
+		//
+		// Never fatal to the delete. The session is aged out either way, and a
+		// snapshot that could not run is a fact with coarser provenance — not a
+		// reason to keep every aged chat forever.
+		s.snapshotSpansBeforeArchive(ctx, sid)
 		if err := s.store.DeleteSessionCascade(ctx, sid); err != nil {
 			s.logf("retention: delete chat session %s failed: %v", sid, err)
 			continue

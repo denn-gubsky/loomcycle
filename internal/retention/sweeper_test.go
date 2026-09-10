@@ -962,6 +962,9 @@ type errSQLMem struct {
 }
 
 func (e *errSQLMem) ListScopes(context.Context) ([]sqlmem.ScopeKey, error) { return e.scopes, nil }
+func (e *errSQLMem) Exec(context.Context, sqlmem.ScopeKey, string, []any, int) (*sqlmem.ExecResult, error) {
+	return &sqlmem.ExecResult{}, nil
+}
 func (e *errSQLMem) ExportScope(context.Context, sqlmem.ScopeKey) (*sqlmem.ScopeDump, error) {
 	return nil, errExportBoom
 }
