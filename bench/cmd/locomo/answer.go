@@ -738,10 +738,32 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 			return fmt.Errorf("post-consolidation check: %w", err)
 		}
 		if len(rows) == 0 {
-			return fmt.Errorf("consolidation left %s/%s empty after %d pass(es) over %d sessions: every "+
-				"recall would return nothing and the run would score 0 for a reason unrelated to memory. "+
-				"Check that the consolidator can reach its extractor model and that the target is not leased",
-				"user", userID, passes, sessions)
+			// ONE barren conversation is not a broken pipeline, and on a
+			// many-instance corpus it is expected. This guard was written for
+			// LoCoMo, where a run is one or two large conversations and an empty
+			// store can only mean the plumbing failed. LongMemEval is 72 small
+			// instances and some genuinely hold nothing durable — the abstention
+			// instances are built that way on purpose, their history deliberately
+			// lacking the answer. Measured: a 72-instance baseline died at
+			// instance 18 of 72 after 17 consecutive instances yielded 8..29
+			// facts each. Aborting there threw away a run that was working.
+			//
+			// So the check moves from per-instance-fatal to per-instance-SKIP
+			// plus a RUN-LEVEL threshold, which is what actually distinguishes
+			// the two cases: a plumbing failure starves EVERY instance, while a
+			// barren conversation starves one. The threshold still fails loudly,
+			// just on the evidence that can tell them apart.
+			rep.EmptyInstances++
+			fmt.Fprintf(stdout, "  SKIPPED: consolidation produced no rows for this conversation "+
+				"(%d of %d so far); not graded\n", rep.EmptyInstances, len(all)+1)
+			if rep.EmptyInstances > 1 && rep.EmptyInstances*2 > len(convs) {
+				return fmt.Errorf("consolidation left %s/%s empty for %d of %d conversation(s): that is "+
+					"most of the corpus, so this is the pipeline and not the data. Every recall would "+
+					"return nothing and the run would score 0 for a reason unrelated to memory. Check "+
+					"that the consolidator can reach its extractor model and that the target is not leased",
+					"user", userID, rep.EmptyInstances, len(convs))
+			}
+			continue
 		}
 
 		// AND refuse when the facts went somewhere the answerer cannot read.

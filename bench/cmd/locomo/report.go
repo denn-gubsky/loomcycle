@@ -143,6 +143,11 @@ type AnswerReport struct {
 	Turns         int    `json:"turns_ingested"`
 	Sessions      int    `json:"sessions_ingested"`
 	FactsWritten  int    `json:"facts_written"`
+	// EmptyInstances counts conversations whose consolidation produced no rows
+	// and were therefore not graded. Reported rather than silent: a baseline
+	// with a handful of barren instances is a different claim from one where
+	// every instance yielded facts, and the reader has to be able to tell.
+	EmptyInstances int `json:"empty_instances,omitempty"`
 	// SeededTurns counts turn rows written straight into the answerer's own
 	// partition (-seed-turns). It is the difference between "answered from
 	// distilled facts" and "answered from conversation content", so a report
