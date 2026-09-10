@@ -73,13 +73,26 @@ type ExtractedFact struct {
 	Subject string `json:"subject,omitempty"`
 }
 
-// HasEntity reports whether the fact carries a COMPLETE entity pair. Half a pair
-// is not a partial identity: a type with no subject names nothing and a subject
-// with no type cannot be placed in the ontology, and the consolidator clears
-// either alone for that reason. Counting a half as typed would overstate the
-// instrument.
+// HasEntity reports whether the fact carries a COMPLETE entity pair — both halves,
+// which is what lets the fact be placed in the ontology by its declared type.
+//
+// The two halves are no longer equally consequential, so HasSubject is reported
+// beside it. The consolidator used to clear either half when the other was missing
+// and mirror only a complete pair; it now keeps a lone SUBJECT and falls the type
+// back, because the subject is the half with no substitute. So the pair rate is the
+// ontology-placement rate, while HasSubject is the GRAPH-REACHABILITY rate — the
+// fraction of facts that get a subject node and an edge at all. Reporting only the
+// pair would show a prompt change as flat when it had actually moved reachability.
 func (f ExtractedFact) HasEntity() bool {
 	return strings.TrimSpace(f.Type) != "" && strings.TrimSpace(f.Subject) != ""
+}
+
+// HasSubject reports whether the fact names the thing it is about, whether or not it
+// also named a kind. This is the half that decides whether the fact is reachable by
+// traversal: a subject with no type still becomes one findable node under the
+// fallback type, while a fact with no subject gets its chunk and no edge.
+func (f ExtractedFact) HasSubject() bool {
+	return strings.TrimSpace(f.Subject) != ""
 }
 
 // CaseResult is one case's outcome.
@@ -165,6 +178,11 @@ type AbilityScore struct {
 	// the fixture set rather than the model.
 	TypedFacts   int `json:"typed_facts"`
 	EmittedFacts int `json:"emitted_facts"`
+	// SubjectedFacts is the same measurement one half further out: facts naming a
+	// subject, with or without a kind. Since the consolidator falls an absent type
+	// back and mirrors on the subject alone, this — not the pair — is the number
+	// that tracks how much of the corpus is reachable in the graph.
+	SubjectedFacts int `json:"subjected_facts"`
 }
 
 // TypedRate is the fraction of emitted facts carrying a complete entity pair, or
@@ -175,6 +193,15 @@ func (a AbilityScore) TypedRate() float64 {
 		return -1
 	}
 	return float64(a.TypedFacts) / float64(a.EmittedFacts)
+}
+
+// SubjectRate is the fraction of emitted facts naming a subject, with the same
+// -1-for-nothing-emitted convention as TypedRate.
+func (a AbilityScore) SubjectRate() float64 {
+	if a.EmittedFacts == 0 {
+		return -1
+	}
+	return float64(a.SubjectedFacts) / float64(a.EmittedFacts)
 }
 
 // ExtractionReport is the whole run.
@@ -537,16 +564,18 @@ func ParseExtractorReply(raw string) ([]ExtractedFact, int, error) {
 			continue
 		}
 		// The entity pair, mirroring production's validateFacts exactly: both
-		// lowercased/trimmed, and CLEARED unless both are present. Half a pair is
-		// not a partial identity, and the harness must model the same rule the
-		// consolidator applies or it would score facts the pipeline will not treat
-		// as typed.
+		// lowercased/trimmed, and the TYPE cleared when no subject was named. The
+		// harness has to model the rule the consolidator applies or it scores facts
+		// the pipeline treats differently — and the rule is no longer symmetric. A
+		// lone SUBJECT survives, because the consolidator falls the absent type back
+		// and still mirrors the fact onto a subject node; a lone TYPE does not,
+		// because there is nothing for it to name.
 		typ, _ := r["type"].(string)
 		subj, _ := r["subject"].(string)
 		typ = strings.ToLower(strings.TrimSpace(typ))
 		subj = strings.TrimSpace(subj)
-		if typ == "" || subj == "" {
-			typ, subj = "", ""
+		if subj == "" {
+			typ = ""
 		}
 		out = append(out, ExtractedFact{Text: text, Class: class, Type: typ, Subject: subj})
 	}
@@ -582,17 +611,27 @@ func scoreCase(res *CaseResult, cs ExtractionCase, facts []ExtractedFact) {
 
 	// Forbidden material.
 	for _, f := range cs.Forbid {
-		// An invented entity pair is not a marker in the text, so it is matched on
-		// the PAIR rather than on the sentence. Any typed fact violates it: the
-		// fixture's claim is that this transcript supports no entity identity at
-		// all, and a subject invented to satisfy the schema is what merges a
-		// statement onto the wrong node.
+		// An invented entity is not a marker in the text, so it is matched on the
+		// EMITTED SUBJECT rather than on the sentence. The fixture's claim is that
+		// this transcript supports no entity identity at all, and a subject invented
+		// to satisfy the schema is what merges a statement onto the wrong node.
+		//
+		// Matched on the SUBJECT ALONE, not on the complete pair. The consolidator
+		// now falls an absent type back and mirrors on the subject, so a lone
+		// invented subject builds `object:<slug>` and corrupts identity exactly as a
+		// full pair would — while a pair-only check would score it clean. That gap
+		// would be worst precisely where it matters: the prompt asks for a subject
+		// on every fact it can, so under-typing is the likely shape of an invention.
 		if f.Kind == ForbiddenInventedEntity {
 			for _, fact := range facts {
-				if fact.HasEntity() {
+				if fact.HasSubject() {
+					filed := fact.Subject
+					if fact.Type != "" {
+						filed = fact.Type + ":" + fact.Subject
+					}
 					res.Violations = append(res.Violations, fmt.Sprintf(
-						"%s fixture: %q typed as %s:%s — %s",
-						f.Kind, truncate(fact.Text, 60), fact.Type, fact.Subject, f.Why))
+						"%s fixture: %q typed as %s — %s",
+						f.Kind, truncate(fact.Text, 60), filed, f.Why))
 					break
 				}
 			}
@@ -711,6 +750,9 @@ func scoreAbilities(cases []CaseResult) []AbilityScore {
 				s.EmittedFacts++
 				if f.HasEntity() {
 					s.TypedFacts++
+				}
+				if f.HasSubject() {
+					s.SubjectedFacts++
 				}
 			}
 			if r.Passed() {
