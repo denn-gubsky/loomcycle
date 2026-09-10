@@ -30,10 +30,25 @@ type Prompt struct {
 	// prompt as a second system segment rather than replacing it — see
 	// teamgraph.Handler.SystemPrompt for why that is what makes one AgentDef
 	// serve N differently-roled states.
+	//
+	// RAW: it still carries its ${...} tokens and {{...}} placeholders. Both are
+	// resolved at prompt assembly, in ONE pass, from Values below.
 	System string
 	// Input is the user segment: the node's InputTemplate when it has one, else
-	// the output threaded from the previous state.
+	// the output threaded from the previous state. RAW, like System.
 	Input string
+	// Values resolves this state's ${var.*} / ${now.*} / ${team.*}, keyed
+	// without the ${}: "var.pr", "now.date", "team.state".
+	//
+	// WHY THE MAP TRAVELS INSTEAD OF THE SUBSTITUTED TEXT. Expanding here and
+	// shipping finished strings is a PRE-PASS: a variable bound from an
+	// attacker-influenceable source could plant a `{{` that prompt assembly
+	// would then read as an operator-authored placeholder and resolve under the
+	// runtime's own authority. Carrying the values instead lets the two families
+	// be alternatives of a single pass, where no substitution is ever rescanned.
+	// The cost is that this map crosses the spawn boundary; the benefit is that
+	// the guarantee stops depending on which expander runs first.
+	Values map[string]string
 }
 
 // SpawnFunc runs one named agent with a prompt and returns its final text
@@ -103,9 +118,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		return r.captured(st, task, Outcome{Output: input})
 
 	case teamgraph.HandlerAgent:
-		p, refused := nodePrompt(st.Handler, input, env)
-		r.noteRefused(st.ID, "prompt", refused)
-		out, err := r.spawn(ctx, st.Handler.Agent, p, "")
+		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input, env), "")
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -150,9 +163,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		// it reads the raw work product (not a results envelope) — it judges the
 		// previous state's output directly. This state IS the consolidator, so
 		// the node's own system prompt applies to it.
-		p, refused := nodePrompt(st.Handler, input, env)
-		r.noteRefused(st.ID, "prompt", refused)
-		out, err := r.spawn(ctx, st.Handler.Agent, p, "")
+		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input, env), "")
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -173,17 +184,16 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 // either works on what it was handed, or it states its own task. Referring to
 // the threaded input from inside a template needs the variable expander, which
 // is the next phase; until then a template is used verbatim.
-// Pure, like the expander it wraps: it REPORTS refused variables rather than
-// logging them, so the caller owns the side effect and the function stays
-// testable without capturing output.
-func nodePrompt(h teamgraph.Handler, threaded string, env Env) (Prompt, []string) {
+// nodePrompt composes what a state hands its agent. It does NOT substitute:
+// the templates travel raw and the values travel beside them, so prompt
+// assembly can resolve variables and placeholders in one pass. Substituting
+// here would be the pre-pass this design exists to remove (see Prompt.Values).
+func nodePrompt(h teamgraph.Handler, threaded string, env Env) Prompt {
 	in := threaded
 	if h.InputTemplate != "" {
 		in = h.InputTemplate
 	}
-	sys, sysRefused := Expand(h.SystemPrompt, env)
-	inp, inRefused := Expand(in, env)
-	return Prompt{System: sys, Input: inp}, append(sysRefused, inRefused...)
+	return Prompt{System: h.SystemPrompt, Input: in, Values: env.Values()}
 }
 
 // envFor snapshots what the expander may read for one state's turn. Now is read
@@ -269,8 +279,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 	// One node, one role: every member of a fan-out shares this state's system
 	// prompt and input. States whose members need DIFFERENT roles are separate
 	// `agent` states, which is the shape per-node prompts exist to make cheap.
-	prompt, refused := nodePrompt(st.Handler, input, env)
-	r.noteRefused(st.ID, "prompt", refused)
+	prompt := nodePrompt(st.Handler, input, env)
 	n := len(agents)
 	need, err := requiredSuccesses(st.Handler.Wait, n)
 	if err != nil {

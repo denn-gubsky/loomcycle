@@ -166,9 +166,5 @@ func TestRunHandler_StandaloneConsolidatorStateUsesItsOwnSystemPrompt(t *testing
 // worth surfacing rather than silently dropping.
 func mustPrompt(t *testing.T, h teamgraph.Handler, threaded string) Prompt {
 	t.Helper()
-	p, refused := nodePrompt(h, threaded, Env{})
-	if len(refused) != 0 {
-		t.Fatalf("unexpected refused variables: %v", refused)
-	}
-	return p
+	return nodePrompt(h, threaded, Env{})
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -715,4 +716,61 @@ func firstUserText(segs []loop.PromptSegment) string {
 		}
 	}
 	return ""
+}
+
+// expandCallerSegments resolves the placeholder families and ${...} variables in
+// a CALLER-supplied system segment and user prompt — today, a team state's
+// per-node prompt and input template.
+//
+// WHY IT EXISTS. applyMemoryInjection expands the AgentDef's own system prompt
+// and nothing else, so until this a {{document:...}} written into a team node's
+// prompt was inert: it reached the model as literal text. The workflow bindings
+// the team design is built on did not resolve at all.
+//
+// Both strings are expanded in ONE call each, through the same single-pass
+// expander, with values supplied rather than pre-substituted — so a variable
+// cannot introduce a placeholder and a placeholder body cannot introduce a
+// variable. Refs are collected from BOTH strings and their bodies rendered once,
+// so a document referenced by the system prompt and the input costs one read.
+//
+// Returns the inputs unchanged when there is nothing to do, which is every
+// non-team run: no caller segment, no values, no refs.
+func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values map[string]string, system, user string) (string, string) {
+	if system == "" && user == "" {
+		return system, user
+	}
+	combined := system + "\n" + user
+	docRefs := meminject.ReferencesDocRefs(combined)
+	toolRefs := meminject.ReferencesToolRefs(combined)
+	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 && !meminject.References(combined) {
+		return system, user
+	}
+
+	in := meminject.ExpandInput{
+		Values:        values,
+		Documents:     s.renderDocuments(ctx, mi, docRefs),
+		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
+		MaxTokens:     config.DefaultMemoryInjectMaxTokens,
+		ToolMaxTokens: toolInjectMaxTokens,
+	}
+	// Deliberately NO Sections: the {{memory:...}} variants render an agent's
+	// own accumulated memory, which belongs to the AgentDef's prompt. A caller
+	// segment naming one renders nothing rather than injecting a different
+	// agent's material into a prompt the agent did not author.
+	outSystem, sysRefused := meminject.ExpandWithRefusals(system, in)
+	outUser, userRefused := meminject.ExpandWithRefusals(user, in)
+	noteRefusedValues(mi.AgentName, append(sysRefused, userRefused...))
+	return outSystem, outUser
+}
+
+// noteRefusedValues surfaces variables dropped for carrying placeholder
+// delimiters. A security event, not a formatting quirk — something bound a value
+// that tried to synthesise a placeholder — so it is logged, WITHOUT the value,
+// which is the untrusted part.
+func noteRefusedValues(agent string, refused []string) {
+	if len(refused) == 0 {
+		return
+	}
+	log.Printf("prompt: agent %q: refused variable(s) %v — value contained {{ or }}; "+
+		"a variable may not introduce a prompt placeholder", agent, refused)
 }

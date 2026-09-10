@@ -52,6 +52,26 @@ type Env struct {
 	Iteration int
 }
 
+// Values flattens the environment into the map prompt assembly resolves from,
+// keyed WITHOUT the ${}: "var.pr", "now.date", "team.state".
+//
+// The built-in tokens are computed HERE, not at the expansion site, because
+// only the walk knows them — and because ${now.*} must be stable across one
+// state's templates (Env.Now is read once per state, so two tokens in one
+// prompt cannot disagree by a millisecond).
+func (e Env) Values() map[string]string {
+	out := make(map[string]string, len(e.Vars)+5)
+	for k, v := range e.Vars {
+		out["var."+k] = v
+	}
+	out["now.iso8601"] = e.Now.UTC().Format(time.RFC3339)
+	out["now.unix"] = strconv.FormatInt(e.Now.Unix(), 10)
+	out["now.date"] = e.Now.UTC().Format("2006-01-02")
+	out["team.state"] = e.State
+	out["team.iteration"] = strconv.Itoa(e.Iteration)
+	return out
+}
+
 // Expand substitutes ${var.*} and the built-in ${now.*} / ${team.*} tokens in s.
 //
 // NON-SECRET POSTURE: an unresolved bare token substitutes to EMPTY and the
