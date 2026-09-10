@@ -1185,7 +1185,11 @@ func TestRunExtraction_ReportsTheEntityPairRate(t *testing.T) {
 	corpus := ExtractionFixture()
 	replies := perfectReplies()
 	// Type the two facts that genuinely name a person, leave the rest bare.
-	replies["stated-preference"] = `[{"text":"Prefers tabs over spaces for editor indentation.","class":"preference","type":"person","subject":"the user"}]`
+	// Two facts: one carrying a complete pair, one naming its subject and NOT its
+	// kind, so the pair rate and the subject rate separate. A fixture where every
+	// subject arrived with a type would pass whether the subject count existed or not.
+	replies["stated-preference"] = `[{"text":"Prefers tabs over spaces for editor indentation.","class":"preference","type":"person","subject":"the user"},` +
+		`{"text":"Works on the loomcycle runtime.","class":"fact","subject":"the user"}]`
 
 	rep, err := RunExtraction(context.Background(), &byCaseCaller{replies: replies, corpus: corpus}, ExtractionInput{
 		Corpus: corpus, SystemPrompt: "x", Provider: "test", Model: "test-model",
@@ -1210,6 +1214,19 @@ func TestRunExtraction_ReportsTheEntityPairRate(t *testing.T) {
 		t.Errorf("typed rate = %v, want strictly between 0 and 1 for a mixed corpus", got)
 	}
 
+	// A LONE SUBJECT counts toward reachability but not toward the pair. This is the
+	// case the pair rate alone cannot see: the consolidator falls an absent type back
+	// and still mirrors the fact onto a subject node, so a prompt that wins subjects
+	// without kinds moves the graph while `typed` sits still.
+	if extraction.SubjectedFacts != extraction.TypedFacts+1 {
+		t.Errorf("subjected facts = %d, want %d (the pair, plus the one naming a subject and no kind)",
+			extraction.SubjectedFacts, extraction.TypedFacts+1)
+	}
+	if extraction.SubjectRate() <= extraction.TypedRate() {
+		t.Errorf("subject rate %v must exceed the pair rate %v when a fact names a subject and no type",
+			extraction.SubjectRate(), extraction.TypedRate())
+	}
+
 	// Abstention emits nothing, so its rate must be n/a (-1) rather than 0.00 — a
 	// zero would read as "the model refused to type", which is the opposite
 	// diagnosis from "there was nothing to type".
@@ -1217,6 +1234,45 @@ func TestRunExtraction_ReportsTheEntityPairRate(t *testing.T) {
 		if s.Ability == AbilityAbstention && s.TypedRate() != -1 {
 			t.Errorf("abstention typed rate = %v, want -1 (n/a): it emitted %d facts", s.TypedRate(), s.EmittedFacts)
 		}
+		if s.Ability == AbilityAbstention && s.SubjectRate() != -1 {
+			t.Errorf("abstention subject rate = %v, want -1 (n/a): it emitted %d facts", s.SubjectRate(), s.EmittedFacts)
+		}
+	}
+}
+
+// TestRunExtraction_AnInventedSubjectAloneIsStillAViolation closes the gap that
+// opened when a lone subject became mirrorable. The consolidator falls an absent
+// type back to the fallback and builds `object:<slug>` from the subject, so an
+// invention with no type corrupts identity exactly as a complete pair does — but a
+// check written against the PAIR scores it clean.
+//
+// It is the likely shape of the failure, not a corner: the prompt asks for a
+// subject on every fact that has one and explicitly permits omitting the kind, so a
+// model that invents to fill the schema will tend to invent the half it was told it
+// could supply alone.
+func TestRunExtraction_AnInventedSubjectAloneIsStillAViolation(t *testing.T) {
+	corpus := ExtractionFixture()
+	replies := perfectReplies()
+	// No "ops team" appears in this transcript, and no type is claimed either.
+	replies["durable-but-nobodys"] = `[{"text":"Releases never go out on a Friday.","class":"constraint","subject":"ops team"}]`
+
+	rep, err := RunExtraction(context.Background(), &byCaseCaller{replies: replies, corpus: corpus}, ExtractionInput{
+		Corpus: corpus, SystemPrompt: "x", Provider: "test", Model: "test-model",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var found string
+	for _, c := range rep.Cases {
+		if c.Name == "durable-but-nobodys" && len(c.Violations) > 0 {
+			found = c.Violations[0]
+		}
+	}
+	if found == "" {
+		t.Fatal("an invented subject with no type must still be a violation — it builds object:ops-team and merges the fact onto that node")
+	}
+	if !strings.Contains(found, "ops team") {
+		t.Errorf("the violation should name the invented subject; got %q", found)
 	}
 }
 

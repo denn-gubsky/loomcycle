@@ -265,8 +265,8 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 	}
 
 	fmt.Fprintf(w, "\nper-ability\n")
-	fmt.Fprintf(w, "  %-12s %6s %9s %11s %8s %6s %7s\n",
-		"ability", "cases", "recall", "violations", "clean", "typed", "errors")
+	fmt.Fprintf(w, "  %-12s %6s %9s %11s %8s %6s %6s %7s\n",
+		"ability", "cases", "recall", "violations", "clean", "typed", "subj", "errors")
 	for _, s := range r.Abilities {
 		recall := "     n/a"
 		if s.Recall >= 0 {
@@ -287,9 +287,18 @@ func printExtractionReport(w io.Writer, r eval.ExtractionReport, base *eval.Base
 		if tr := s.TypedRate(); tr >= 0 {
 			typed = fmt.Sprintf("%6.2f", tr)
 		}
+		// subj = the SUBJECT rate, which is the reachability number: the consolidator
+		// mirrors on a subject alone and falls an absent type back, so `typed` can sit
+		// flat while this moves. Read them as a pair — typed under subj is the model
+		// naming things without naming their kind, which costs ontology placement and
+		// nothing else.
+		subjected := "   n/a"
+		if sr := s.SubjectRate(); sr >= 0 {
+			subjected = fmt.Sprintf("%6.2f", sr)
+		}
 		answered := s.Cases - s.Errors
-		fmt.Fprintf(w, "  %-12s %6d %9s %11d %5d/%d %s %s%s\n",
-			s.Ability, s.Cases, recall, s.Violations, s.CleanCases, answered, typed, errs, delta)
+		fmt.Fprintf(w, "  %-12s %6d %9s %11d %5d/%d %s %s %s%s\n",
+			s.Ability, s.Cases, recall, s.Violations, s.CleanCases, answered, typed, subjected, errs, delta)
 	}
 	fmt.Fprintf(w, "\n  total violations     %d\n", r.TotalViolations)
 

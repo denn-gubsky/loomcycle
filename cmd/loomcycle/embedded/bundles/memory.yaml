@@ -679,6 +679,8 @@ agents:
           // Next pass will try again; within a pass, once is enough.
           judge_attempted: {},
           entity_failed: 0,         // entity writes that failed (k/v still landed)
+          fact_no_subject: 0,       // facts chunked with no subject node (extractor named none)
+          type_absent: 0,           // subjects filed under the fallback because no type was given
           entity_type_refused: 0,   // typed facts whose type was a statement class
           watermark: null,          // the LAST scan row actually consolidated, by reference
           advanced: null,
@@ -1302,12 +1304,19 @@ agents:
           if (TRANSIENT_ID.test(text)) { st.transient++; continue; }
           // type/subject are the entity half and are OPTIONAL — a fact that names
           // no single thing is still a fact worth keeping, so a missing pair is
-          // carried as "" rather than dropping the row. They travel TOGETHER: one
-          // without the other cannot form an entity identity, and half a pair is
-          // more likely a model slip than a partial truth, so both are cleared.
+          // carried as "" rather than dropping the row.
+          //
+          // They no longer travel TOGETHER, because the two halves are not equally
+          // recoverable. A SUBJECT with no type still forms an identity:
+          // ENTITY_FALLBACK_TYPE supplies the kind, `object:denn` is one findable
+          // node, and two subjects still slug to two keys — so clearing the subject
+          // discarded the half with NO substitute in order to protect the half that
+          // already had a default. A TYPE with no subject is genuinely unusable:
+          // there is nothing to name a node after, and the orphan kind would reach
+          // the judge's mistyping check, which needs the pair to mean anything.
           var typ = (typeof f.type === "string") ? f.type.trim().toLowerCase() : "";
           var subj = (typeof f.subject === "string") ? f.subject.trim() : "";
-          if (!typ || !subj) { typ = ""; subj = ""; }
+          if (!subj) { typ = ""; }
           // The validity interval is OPTIONAL and validated shallowly: an
           // unparseable or reversed interval is dropped while the FACT is kept,
           // because a good fact with a bad date is still a good fact, and
@@ -2447,51 +2456,94 @@ agents:
         return "";
       }
 
-      // mirrorEntity writes the subject node, the fact node and the edge between
-      // them. Called after the k/v write has already succeeded.
+      // nonEmpty reports a USABLE string field — present, a string, and not merely
+      // whitespace. The extractor omits a key, sends null, and sends "" for the same
+      // "I do not know", so all three have to read the same way.
+      function nonEmpty(v) { return typeof v === "string" && v.trim() !== ""; }
+
+      // mirrorEntity writes the fact node and — when the fact actually names something
+      // — a subject node plus the edge between them. Called after the k/v write has
+      // already succeeded.
+      //
+      // EVERY FACT GETS A CHUNK. This used to return early unless the extractor supplied
+      // BOTH a type and a subject, which left the fact in k/v with no graph presence at
+      // all: MEASURED at 249 of 1,225 facts, 20.3%, on a real pass. That was affordable
+      // while the k/v row was the fact's home. It stops being affordable the moment the
+      // chunk becomes the ONLY home, because then a fifth of every corpus vanishes.
+      //
+      // The two halves of that old guard are NOT the same problem, and collapsing them
+      // into one condition is what made the gap so wide:
+      //
+      //   A missing TYPE is a naming problem. The subject is a real thing that WAS
+      //   named; only its kind is unknown. ENTITY_FALLBACK_TYPE already exists for
+      //   exactly this case ("the proposed type cannot be used") and an absent type is a
+      //   special case of it. `object:denn` is one findable node about one real thing,
+      //   and two different subjects still slug to two different keys.
+      //
+      //   A missing SUBJECT is not. There is no thing to make a node for, and inventing
+      //   one is precisely how two different things end up merged onto a single node. A
+      //   shared placeholder would be worse than no edge: it would collect every
+      //   unattributed fact onto one hub, and a traversal would then report the team's
+      //   shipping cadence and the Friday release rule as related. So the fact node is
+      //   written, and the subject node and edge are skipped — the fact keeps its home,
+      //   the graph stays honest, and st.fact_no_subject counts the gap so it reads as
+      //   work still to do instead of a silent default.
       function mirrorEntity(st, key, fact, scope) {
-        if (!fact.type || !fact.subject) { return; } // untyped fact: k/v only (by design)
         scope = scope || CONFIG.scope;
         var docID = entitiesDoc(st, scope);
         if (!docID) { return; }
 
-        // A statement class is not an entity type — "preference:user" reads as "the entity
-        // of type preference named user". It used to be DROPPED, which lost the subject; the
-        // subject itself ("user") was never the problem, only the kind. Filed under the
-        // fallback instead, so the facts stay reachable. NOT proposed as a candidate: these
-        // names are already declared, they are simply being misused as a kind.
-        var proposed = fact.type;
-        if (ENTITY_TYPE_DENY[proposed] === true) {
-          st.entity_type_refused++;
-          proposed = ENTITY_FALLBACK_TYPE;
-        }
+        var subjID = "";
+        if (nonEmpty(fact.subject)) {
+          // A statement class is not an entity type — "preference:user" reads as "the entity
+          // of type preference named user". It used to be DROPPED, which lost the subject; the
+          // subject itself ("user") was never the problem, only the kind. Filed under the
+          // fallback instead, so the facts stay reachable. NOT proposed as a candidate: these
+          // names are already declared, they are simply being misused as a kind.
+          var proposed = fact.type;
+          // An ABSENT type is the same problem as an unusable one: the subject was named,
+          // its kind was not. Filed under the fallback so the subject still gets its node,
+          // rather than the missing kind costing the fact its place in the graph.
+          if (!nonEmpty(proposed)) {
+            st.type_absent++;
+            proposed = ENTITY_FALLBACK_TYPE;
+          } else if (ENTITY_TYPE_DENY[proposed] === true) {
+            st.entity_type_refused++;
+            proposed = ENTITY_FALLBACK_TYPE;
+          }
 
-        // The type this subject is ALREADY filed under wins over this call's guess, so one
-        // subject is one node however many ways the extractor spells its kind.
-        var subjType = canonicalType(st, scope, proposed, fact.subject);
-        var subjKey = entityKey(subjType, fact.subject);
-        var isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
-        var subjID = upsertEntityChunk(st, scope, docID, subjKey, {
-          title: fact.subject, type: subjType, subject: fact.subject
-        });
-        // UNDECLARED TYPE: the write was refused because the tenant does not declare this
-        // kind. File the kind as an inert candidate an operator can accept, then retry under
-        // the fallback — the key has to move with the type, since the type is part of a
-        // subject node's identity.
-        if (!subjID && subjType !== ENTITY_FALLBACK_TYPE && undeclaredTypeRefusal(st)) {
-          proposeOntologyType(st, subjType);
-          st.type_fell_back++;
-          // Remember the fallback for this subject so the rest of the pass agrees with it.
-          st.subject_types[scope + "\u0000" + slug(normalizeSubject(fact.subject))] = ENTITY_FALLBACK_TYPE;
-          subjType = ENTITY_FALLBACK_TYPE;
-          subjKey = entityKey(subjType, fact.subject);
-          isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
+          // The type this subject is ALREADY filed under wins over this call's guess, so one
+          // subject is one node however many ways the extractor spells its kind.
+          var subjType = canonicalType(st, scope, proposed, fact.subject);
+          var subjKey = entityKey(subjType, fact.subject);
+          var isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
           subjID = upsertEntityChunk(st, scope, docID, subjKey, {
             title: fact.subject, type: subjType, subject: fact.subject
           });
+          // UNDECLARED TYPE: the write was refused because the tenant does not declare this
+          // kind. File the kind as an inert candidate an operator can accept, then retry under
+          // the fallback — the key has to move with the type, since the type is part of a
+          // subject node's identity.
+          if (!subjID && subjType !== ENTITY_FALLBACK_TYPE && undeclaredTypeRefusal(st)) {
+            proposeOntologyType(st, subjType);
+            st.type_fell_back++;
+            // Remember the fallback for this subject so the rest of the pass agrees with it.
+            st.subject_types[scope + "\u0000" + slug(normalizeSubject(fact.subject))] = ENTITY_FALLBACK_TYPE;
+            subjType = ENTITY_FALLBACK_TYPE;
+            subjKey = entityKey(subjType, fact.subject);
+            isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
+            subjID = upsertEntityChunk(st, scope, docID, subjKey, {
+              title: fact.subject, type: subjType, subject: fact.subject
+            });
+          }
+          // A REFUSED subject write no longer costs the fact its chunk either. The
+          // existing safety property is that a graph failure degrades to "no edge" and
+          // never to "no fact"; once the chunk is the fact's home, that property has to
+          // cover the chunk and not just the k/v row.
+          if (subjID && isNewSubject) { st.entity_nodes++; }
+        } else {
+          st.fact_no_subject++;
         }
-        if (!subjID) { return; }
-        if (isNewSubject) { st.entity_nodes++; }
 
         // The fact node carries the sentence; its title is the sentence too,
         // trimmed, because a chunk with no title is unreadable in the Path browser.
@@ -2528,20 +2580,24 @@ agents:
           }
         }
 
-        try {
-          // `scope`, NOT CONFIG.scope. Every other write in this function already
-          // threads the placed scope; this one did not, so a fact the ontology sent
-          // to the tenant plane got its subject node and its fact node there and
-          // then tried to join them in the caller's scope, where neither exists.
-          // The two nodes were stored and the edge silently was not — leaving a
-          // placed fact unreachable from the person it is about, which is the whole
-          // reason the entity tier exists. Measured live: 3 facts placed, 3 edges
-          // lost, 0 inbound edges on the subject.
-          Document({ op: "link_chunks", scope: scope,
-                     from_id: factID, to_id: subjID, kind: "about" });
-        } catch (e) {
-          st.entity_failed++; // the nodes exist; only the edge is missing
-          if (!st.entity_error) { st.entity_error = errText(e); }
+        // No subject node means there is nothing to point an edge at. The fact is
+        // already stored; it is simply not reachable by traversal.
+        if (subjID) {
+          try {
+            // `scope`, NOT CONFIG.scope. Every other write in this function already
+            // threads the placed scope; this one did not, so a fact the ontology sent
+            // to the tenant plane got its subject node and its fact node there and
+            // then tried to join them in the caller's scope, where neither exists.
+            // The two nodes were stored and the edge silently was not — leaving a
+            // placed fact unreachable from the person it is about, which is the whole
+            // reason the entity tier exists. Measured live: 3 facts placed, 3 edges
+            // lost, 0 inbound edges on the subject.
+            Document({ op: "link_chunks", scope: scope,
+                       from_id: factID, to_id: subjID, kind: "about" });
+          } catch (e) {
+            st.entity_failed++; // the nodes exist; only the edge is missing
+            if (!st.entity_error) { st.entity_error = errText(e); }
+          }
         }
       }
 
@@ -3150,7 +3206,7 @@ agents:
         // The entity half, reported even when zero: a pass that mirrored nothing
         // because no fact was typed looks identical to one where every Document
         // call failed, and those need different fixes.
-        if (st.entity_facts || st.entity_nodes || st.entity_failed || st.entity_type_refused) {
+        if (st.entity_facts || st.entity_nodes || st.entity_failed || st.entity_type_refused || st.fact_no_subject) {
           var ent = "entities " + st.entity_facts + " fact(s) across " + st.entity_nodes + " subject(s)";
           if (st.entity_failed) {
             ent += ", " + st.entity_failed + " graph write(s) failed";
@@ -3163,6 +3219,16 @@ agents:
           }
           if (st.type_proposed) {
             ent += ", " + st.type_proposed + " new type(s) proposed for an operator to accept";
+          }
+          // Reported because it is a YIELD gap, not an error: these facts are stored and
+          // searchable, they are just not reachable by traversal. Left silent it looks
+          // like the graph covers the corpus when it covers only part of it.
+          if (st.fact_no_subject) {
+            ent += ", " + st.fact_no_subject + " fact(s) chunked with no subject named";
+          }
+          if (st.type_absent) {
+            ent += ", " + st.type_absent + " subject(s) filed under " + ENTITY_FALLBACK_TYPE +
+              " because no type was given";
           }
           if (st.type_lookup_failed) {
             ent += ", " + st.type_lookup_failed + " subject-type lookup(s) failed";
