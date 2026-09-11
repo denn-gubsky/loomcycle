@@ -200,3 +200,58 @@ func TestEnvFor_NowIsStableWithinAState(t *testing.T) {
 		t.Errorf("two ${now.unix} in one state disagreed: %q vs %q", task.Vars["a"], task.Vars["b"])
 	}
 }
+
+// The same assertion as TestVarsState_BoundValueTravelsToALaterStatesPrompt,
+// but through WALK rather than two direct RunHandler calls.
+//
+// Why both: the unit version proves the handler carries a variable between
+// invocations; this one proves the WALK hands every state the same *Task. If a
+// future edit made the walk copy or rebuild the task per state — an easy thing
+// to do while adding per-state bookkeeping — the unit test would still pass and
+// every variable would silently stop crossing a state boundary, which is the
+// whole point of the primitive.
+func TestWalk_VarsBoundInOneStateReachALaterStatesPrompt(t *testing.T) {
+	var got Prompt
+	r := varsRunner(func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+		got = p
+		return "reviewed", nil
+	})
+
+	review := agentState("reviewer")
+	review.ID = "review"
+	review.Handler.InputTemplate = "Review PR ${var.pr}."
+
+	d := teamgraph.Definition{
+		Entry: "stamp",
+		States: []teamgraph.State{
+			varsState(map[string]string{"pr": "42"}),
+			review,
+			{ID: "done", Handler: teamgraph.Handler{Kind: teamgraph.HandlerTerminal}},
+		},
+		Transitions: []teamgraph.Transition{
+			{From: "stamp", To: "review", On: teamgraph.OnSuccess},
+			{From: "review", To: "done", On: teamgraph.OnSuccess},
+		},
+	}
+	if err := teamgraph.Validate(d); err != nil {
+		t.Fatalf("the fixture graph must be valid: %v", err)
+	}
+
+	task := &Task{Input: "start", State: "stamp"}
+	trace, err := Walk(context.Background(), d, task, r)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(trace) != 2 {
+		t.Fatalf("trace = %d steps, want 2 (stamp, review)", len(trace))
+	}
+	if got.Values["var.pr"] != "42" {
+		t.Errorf("values[var.pr] = %q, want 42 — the variable did not cross the state boundary", got.Values["var.pr"])
+	}
+	if got.Input != "Review PR ${var.pr}." {
+		t.Errorf("input = %q, want the RAW template (expansion happens at prompt assembly)", got.Input)
+	}
+	if task.Vars["pr"] != "42" {
+		t.Errorf("task.Vars[pr] = %q after the walk, want 42", task.Vars["pr"])
+	}
+}
