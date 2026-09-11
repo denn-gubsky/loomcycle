@@ -210,14 +210,8 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	if !ok {
 		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q is not declared in operator config (channels: block)", name)
 	}
-	var allowed []string
-	switch side {
-	case "publish":
-		allowed = policy.Publish
-	case "subscribe":
-		allowed = policy.Subscribe
-	}
-	if !channelAllowed(name, allowed) {
+	all, allowed := policy.GrantsFor(side)
+	if !all && !channelAllowed(name, allowed) {
 		if len(allowed) == 0 {
 			return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: this agent has no %s allowlist — add `channels.%s: [%s]` to the agent yaml", side, side, name)
 		}
@@ -1188,10 +1182,21 @@ func (c *Channel) execPeek(ctx context.Context, policy tools.ChannelPolicyValue,
 }
 
 func (c *Channel) execListChannels(policy tools.ChannelPolicyValue) (tools.Result, error) {
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"publish":   policy.Publish,
 		"subscribe": policy.Subscribe,
-	})
+	}
+	// Reported only when set, so a per-agent policy's response shape is
+	// unchanged. An unrestricted plane would otherwise report two empty lists
+	// and read as "no access" — the same confusion the discriminator exists to
+	// end, one layer up.
+	if policy.AllPublish {
+		out["publish_unrestricted"] = true
+	}
+	if policy.AllSubscribe {
+		out["subscribe_unrestricted"] = true
+	}
+	return okJSON(out)
 }
 
 // truncateForEvent caps payload-preview strings at the configured

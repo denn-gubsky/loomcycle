@@ -70,9 +70,13 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		AllowedScopes: []string{"agent", "user", "global"},
 		Consolidation: true,
 	})
+	// Channel: unrestricted, said with the discriminator rather than a "*" in
+	// the allowlist. The matcher supports an exact name and a trailing "/*"
+	// prefix only, so the old []string{"*"} matched NO channel and this plane
+	// silently held no channel authority at all.
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"*"},
-		Subscribe: []string{"*"},
+		AllPublish:   true,
+		AllSubscribe: true,
 	})
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
 		Scopes:   []string{"any"},

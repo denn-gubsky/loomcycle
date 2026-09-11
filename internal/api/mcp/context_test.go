@@ -7,6 +7,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // TestOperatorCtx_AttachesAllRequiredPolicies pins the load-bearing
@@ -53,13 +54,21 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 		}
 	}
 
-	// ChannelPolicy: empty Publish/Subscribe ⇒ all channel ops fail.
+	// ChannelPolicy: this plane holds every channel, so assert that it ALLOWS
+	// one — not merely that the allowlist is non-empty.
+	//
+	// The weaker assertion is what let the bug live: the plane declared
+	// Publish: []string{"*"} intending "everything", the list was non-empty so
+	// this passed, and the matcher (exact name or a trailing "/*" prefix, and
+	// nothing else) never matched a real channel — so the plane silently held
+	// NO channel authority at all.
 	cp := tools.ChannelPolicy(ctx)
-	if len(cp.Publish) == 0 {
-		t.Errorf("ChannelPolicy.Publish empty; publish ops would fail")
-	}
-	if len(cp.Subscribe) == 0 {
-		t.Errorf("ChannelPolicy.Subscribe empty; subscribe/peek/ack would fail")
+	for _, side := range []string{"publish", "subscribe"} {
+		all, list := cp.GrantsFor(side)
+		if !all && !builtin.ChannelAllowed("any-channel-name", list) {
+			t.Errorf("ChannelPolicy grants no %s on an arbitrary channel (all=%v list=%v); %s ops would fail",
+				side, all, list, side)
+		}
 	}
 
 	// AgentDefPolicy: empty Scopes ⇒ every mutation op fails.

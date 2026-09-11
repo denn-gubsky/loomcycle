@@ -1071,15 +1071,18 @@ func checkTeamChannelAuthority(ctx context.Context, def teamgraph.Definition) er
 	}
 	pol := tools.ChannelPolicy(ctx)
 	for _, side := range []struct {
-		name    string
-		want    []string
-		granted []string
+		name string
+		want []string
 	}{
-		{"publish", def.Channels.Publish, pol.Publish},
-		{"subscribe", def.Channels.Subscribe, pol.Subscribe},
+		{"publish", def.Channels.Publish},
+		{"subscribe", def.Channels.Subscribe},
 	} {
+		all, granted := pol.GrantsFor(side.name)
+		if all {
+			continue // the plane holds every channel; there is nothing to narrow from
+		}
 		for _, ch := range side.want {
-			if !channelAllowed(ch, side.granted) {
+			if !channelAllowed(ch, granted) {
 				return fmt.Errorf("channels.%s: %q is not in the authoring principal's own %s allowlist — "+
 					"a team ACL may only narrow what its author holds, never widen it", side.name, ch, side.name)
 			}
