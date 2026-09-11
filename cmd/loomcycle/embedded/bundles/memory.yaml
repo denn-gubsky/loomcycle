@@ -2436,7 +2436,20 @@ agents:
         // a scope-blind memo would hand back a user-scope chunk id for a tenant write and
         // silently attach the edge to the wrong document.
         var memo = scope + "\u0000" + naturalKey;
-        if (st.entity_ids[memo]) { return st.entity_ids[memo]; }
+        // THE MEMO SKIPS A REPEAT WRITE, SO IT MUST NOT SKIP A CHANGED ONE.
+        //
+        // It exists for the SUBJECT node, which recurs across every fact about the same
+        // thing and carries only an identity — re-writing it says nothing new. A FACT
+        // node carries a body, and a body can change within a single pass: the merge
+        // path rewrites a neighbour in place under its own key, which is the mechanism
+        // that collapses duplicates.
+        //
+        // MEASURED on a real corpus: of 4 facts merged in a pass, 3 ended with different
+        // TEXT in the two planes — the k/v row held the merged wording and the chunk
+        // still held the original, revision 1, never rewritten. Harmless only while the
+        // k/v row is the fact's home. Once the chunk is the only home, every merge is
+        // silently discarded and the duplicates it exists to collapse come back.
+        if (st.entity_ids[memo] && !nonEmpty(args.body)) { return st.entity_ids[memo]; }
         try {
           args.op = "upsert_chunk";
           args.scope = scope;
