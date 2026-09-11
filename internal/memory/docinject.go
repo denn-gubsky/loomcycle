@@ -119,6 +119,23 @@ const documentPlaceholderPattern = `(\\?)\{\{\s*document\s*:\s*((?:[A-Za-z0-9_./
 
 var documentPlaceholderRe = regexp.MustCompile(`(?i)` + documentPlaceholderPattern)
 
+// docRefCharsetRe pins a RESOLVED ref to the same charset the pattern enforces
+// on operator-written text.
+//
+// The pattern's charset is a guarantee about what a ref can contain — no
+// quotes, no angle brackets, no newlines — and the frames below are built on
+// it: `<document-ref path="...">` and `<document src="...">` are safe to
+// assemble by concatenation ONLY because a ref cannot carry the characters that
+// would close them. A variable resolved INTO the argument was never checked
+// against that charset, so the guarantee held for the half of the ref an
+// operator wrote and not for the half an untrusted source supplied.
+//
+// That is a live path: variables bind from attacker-influenceable sources, and
+// a value like `/a"><injected>…` escaped the frame and landed in the SYSTEM
+// prompt as markup shaped like a directive. Re-checking after substitution
+// costs one anchored match and restores the property the frames assume.
+var docRefCharsetRe = regexp.MustCompile(`^[A-Za-z0-9_./#: @+-]+$`)
+
 // ReadInstruction is what a whole-document ref renders: a directive naming the
 // tool and the exact path, so the agent can fetch it when the task needs it.
 //
@@ -216,6 +233,14 @@ func expandDocumentPlaceholder(match string, bodies map[DocRef]string, remaining
 		arg = varPlaceholderRe.ReplaceAllStringFunc(arg, func(m string) string {
 			return expandVarPlaceholder(m, values, refused)
 		})
+		// A resolved ref must still BE a ref. Without this the charset the
+		// pattern enforces on operator text would not hold for a value an
+		// untrusted source supplied, and the frames below — which are
+		// concatenated, not escaped — would be closable from inside.
+		if !docRefCharsetRe.MatchString(arg) {
+			*refused = append(*refused, "document:"+sub[2])
+			return ""
+		}
 	}
 	ref, ok := ParseDocRef(arg)
 	if !ok {

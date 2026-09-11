@@ -771,6 +771,7 @@ func noteRefusedValues(agent string, refused []string) {
 	if len(refused) == 0 {
 		return
 	}
-	log.Printf("prompt: agent %q: refused variable(s) %v — value contained {{ or }}; "+
-		"a variable may not introduce a prompt placeholder", agent, refused)
+	log.Printf("prompt: agent %q: refused %v — a resolved value contained {{ or }}, or left a document ref "+
+		"outside the ref charset; a variable may not introduce a prompt placeholder nor escape a ref frame",
+		agent, refused)
 }
