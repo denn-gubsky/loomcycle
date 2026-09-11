@@ -581,9 +581,11 @@ Operators declare run templates under the yaml `scheduled_runs:` map (`config.Sc
 
 The `ScheduleDef` built-in (`internal/tools/builtin/scheduledef.go`) is a 7-op tool — the five core ops `create` / `fork` / `get` / `list` / `retire` plus `add_hook` / `remove_hook` (each hook edit persists a new lineage version). Static yaml entries remain immutable ground truth; the tool authors *new* names only.
 
+A schedule's **delivery** decides what a tick does. The default (`delivery: run`, or the field omitted) invokes the agent, which is every schedule that existed before RFC CY. `delivery: channel` publishes a cadence message to `channel:` and starts **no run** — the time-side twin of the `delivery: channel` a `webhooks:` entry already has, and the way a channel-driven workflow gets a clock without burning a model call on an agent whose only job is to publish. The tick carries `{schedule_name, fired_at, delivery, payload}`, where the payload is the def's operator-authored `metadata:`, and lands at the channel's **declared** scope. A channel tick is a fire like any other — `next_run_at` advances, `max_fires` counts, a publish failure is recorded as `failed` — and the run-shaped fields (`agent`, `prompt`, `on_complete`, credentials) are **refused** on it at config-load and at substrate write, because a prompt nothing sends is a setting the operator believes they made.
+
 A fired schedule's `on_complete` hooks deliver results through one of three kinds (`internal/scheduler/dispatch.go`): `channel.publish`, `memory.set`, or `mcp.call`. Schedules resolve MCP-tool bearers via `user_credentials_from_env` against the operator's `EnvAllowlist` — the same RFC F credential mechanism, not a parallel one. Persisted in the `schedule_defs` table (migration `0029`).
 
-References: `internal/scheduler/scheduler.go` (sweeper, `tick`, `fireOne`), `internal/scheduler/dispatch.go` (`on_complete` kinds), `internal/tools/builtin/scheduledef.go`, `internal/config/config.go` (`ScheduledRun`).
+References: `internal/scheduler/scheduler.go` (sweeper, `tick`, `fireOne`, `fireChannelDelivery`), `internal/scheduler/dispatch.go` (`on_complete` kinds), `internal/tools/builtin/scheduledef.go`, `internal/config/config.go` (`ScheduledRun`).
 
 ## Multi-replica HA (v0.12.0→v0.12.6)
 

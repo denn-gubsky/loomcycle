@@ -184,6 +184,11 @@ func TestSchedule_NormalizesTimezone(t *testing.T) {
 // once that ships in the follow-up tool PR.
 func TestSchedule_DriftDetection(t *testing.T) {
 	want := map[string]bool{
+		// RFC CY: the tick target. "" / "run" invokes the agent (every
+		// schedule that existed before); "channel" publishes to `channel`
+		// and starts no run. Both mirror onto config.ScheduledRun.
+		"delivery":                  true,
+		"channel":                   true,
 		"agent":                     true,
 		"prompt":                    true,
 		"schedule":                  true,

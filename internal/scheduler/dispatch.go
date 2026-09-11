@@ -68,32 +68,37 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	scope, scopeID, err := s.resolvePublishScope(ctx, h.Channel, userID, agentName)
+	target, err := s.resolvePublishTarget(ctx, h.Channel, userID, agentName)
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	msg := store.ChannelMessage{
 		Channel: h.Channel,
 		// RFC N: the owning tenant comes from the schedule def (def.TenantID),
 		// threaded down from dispatchHooks — never from the hook payload.
 		TenantID:          tenantID,
-		Scope:             scope,
-		ScopeID:           scopeID,
+		Scope:             target.Scope,
+		ScopeID:           target.ScopeID,
 		Payload:           payload,
-		PublishedAt:       time.Now(),
+		PublishedAt:       now,
 		PublishedByUserID: userID,
 	}
-	// maxMessages = 0 means use the store's default cap. The scheduler
-	// doesn't manage per-channel sizing — that's an operator concern
-	// configured via cfg.Channels.<name>.max_messages, which the
-	// channel publish path itself doesn't know about. v1.1 will surface
-	// a sweeper-side cap if operators report unbounded growth.
-	_, _, err = s.store.ChannelPublish(ctx, msg, 0)
+	// The channel's DECLARED retention applies. This used to pass 0/0 with a
+	// note that per-channel sizing was an operator concern the publish path
+	// could not see — it can see it now that the resolver carries it, and
+	// "the operator configured a cap that never reached the writer" is not a
+	// division of concerns, it is a leak.
+	if target.DefaultTTL > 0 {
+		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
+	}
+	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
 	return err
 }
 
-// resolvePublishScope returns the (scope, scopeID) an on_complete:
-// channel.publish hook should write under.
+// resolvePublishTarget returns where a scheduler channel write lands — the
+// (scope, scopeID) an on_complete: channel.publish hook or an RFC CY channel
+// tick should write under, plus the channel's declared retention.
 //
 // With a resolver wired (the normal path), it honors the channel's DECLARED
 // scope (F37 / RFC T): a `scope: global` channel publishes at global/"" so a
@@ -106,33 +111,49 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 // With no resolver (nil — small embeds / tests that don't wire one), it
 // falls back to the legacy behavior: user scope when the schedule has a
 // user_id, else global.
-func (s *Scheduler) resolvePublishScope(ctx context.Context, channel, userID, agentName string) (store.MemoryScope, string, error) {
+func (s *Scheduler) resolvePublishTarget(ctx context.Context, channel, userID, agentName string) (publishTarget, error) {
 	if s.chScope == nil {
 		if userID != "" {
-			return store.MemoryScopeUser, userID, nil
+			return publishTarget{Scope: store.MemoryScopeUser, ScopeID: userID}, nil
 		}
-		return store.MemoryScopeGlobal, "", nil
+		return publishTarget{Scope: store.MemoryScopeGlobal}, nil
 	}
 	declared, ok := s.chScope(ctx, channel)
 	if !ok {
-		return "", "", fmt.Errorf("channel.publish: channel %q is not declared (static yaml or runtime substrate)", channel)
+		return publishTarget{}, fmt.Errorf("channel.publish: channel %q is not declared (static yaml or runtime substrate)", channel)
 	}
-	switch declared {
+	out := publishTarget{DefaultTTL: declared.DefaultTTL, MaxMessages: declared.MaxMessages}
+	switch declared.Scope {
 	case "global":
-		return store.MemoryScopeGlobal, "", nil
+		out.Scope = store.MemoryScopeGlobal
 	case "user":
 		if userID == "" {
-			return "", "", fmt.Errorf("channel.publish: channel %q has scope=user but schedule has no user_id", channel)
+			return publishTarget{}, fmt.Errorf("channel.publish: channel %q has scope=user but schedule has no user_id", channel)
 		}
-		return store.MemoryScopeUser, userID, nil
+		out.Scope, out.ScopeID = store.MemoryScopeUser, userID
 	case "agent":
 		if agentName == "" {
-			return "", "", fmt.Errorf("channel.publish: channel %q has scope=agent but schedule has no agent", channel)
+			return publishTarget{}, fmt.Errorf("channel.publish: channel %q has scope=agent but schedule has no agent", channel)
 		}
-		return store.MemoryScopeAgent, agentName, nil
+		out.Scope, out.ScopeID = store.MemoryScopeAgent, agentName
 	default:
-		return "", "", fmt.Errorf("channel.publish: channel %q has unknown scope %q", channel, declared)
+		return publishTarget{}, fmt.Errorf("channel.publish: channel %q has unknown scope %q", channel, declared.Scope)
 	}
+	return out, nil
+}
+
+// publishTarget is where one scheduler channel write lands and how long it may
+// stay — the resolved form of the channel's declaration.
+//
+// Retention travels WITH the address because the two are answered by the same
+// lookup and forgetting the second half is invisible: the write succeeds, the
+// operator's declared `default_ttl` and `max_messages` simply never apply, and
+// the table grows at cron cadence until someone goes looking.
+type publishTarget struct {
+	Scope       store.MemoryScope
+	ScopeID     string
+	DefaultTTL  int
+	MaxMessages int
 }
 
 func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID, tenantID string, h scheduleHook) error {

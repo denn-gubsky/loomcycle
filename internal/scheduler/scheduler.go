@@ -2,7 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -143,14 +145,27 @@ type Scheduler struct {
 	inFlight sync.Map
 }
 
-// ChannelScopeResolver returns the declared scope ("global" | "user" |
-// "agent") of a channel by name. ok=false when the channel is declared
-// nowhere (static yaml + runtime substrate). Injected so the on_complete:
-// channel.publish hook publishes at the channel's declared scope instead of
-// blindly under the run's user scope (F37 / RFC T). Satisfied by
+// DeclaredChannel is what the scheduler needs to know about a channel it is
+// about to write to: where the message goes, and how long it may stay.
+//
+// Retention is here because a scheduler write is a CADENCE write. A tick every
+// minute that carries neither a TTL nor a bounded-queue cap accumulates half a
+// million rows a year on a channel the operator did declare limits for — the
+// limits simply never reached the writer.
+type DeclaredChannel struct {
+	Scope       string // "global" | "user" | "agent"
+	DefaultTTL  int    // seconds; 0 = no TTL
+	MaxMessages int    // 0 = unbounded
+}
+
+// ChannelScopeResolver returns the DECLARED shape of a channel by name.
+// ok=false when the channel is declared nowhere (static yaml + runtime
+// substrate). Injected so a scheduler publish lands at the channel's declared
+// scope instead of blindly under the run's user scope (F37 / RFC T), and
+// honours the channel's declared retention. Satisfied by
 // (*http.Server).ResolveChannelScope; nil leaves the legacy user-scope
 // behavior untouched.
-type ChannelScopeResolver func(ctx context.Context, channel string) (scope string, ok bool)
+type ChannelScopeResolver func(ctx context.Context, channel string) (DeclaredChannel, bool)
 
 // SetChannelScope wires the channel-scope resolver. Must be called before
 // Start (the sweeper reads chScope when dispatching on_complete hooks). A
@@ -331,6 +346,19 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		return
 	}
 
+	// RFC CY: a channel tick is a fire with no run. Everything below — the
+	// consolidation fan-out, RunInput, the runner, the fire timeout,
+	// on_complete — presumes an agent, so delivery is decided FIRST.
+	//
+	// Order matters against the fan-out check in particular: that one keys off
+	// a metadata flag, and on a channel tick `metadata` is opaque payload
+	// rather than configuration. Deciding delivery first is what makes that
+	// sentence true.
+	if def.Delivery == "channel" {
+		s.fireChannelDelivery(ctx, row, def, now)
+		return
+	}
+
 	// RFC BL P2: a consolidation schedule dispatches one run per memory TARGET
 	// with new work rather than one blanket run — the pass operates on exactly
 	// one target, so "consolidate everything" is N runs. See consolidator.go;
@@ -401,7 +429,121 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		}
 	}
 
-	// Advance next_run_at + record outcome atomically (single UPDATE).
+	recordCtx, done := s.recordFireOutcome(ctx, row, def, now, fireOutcome{
+		RunID:       registeredRunID,
+		Status:      status,
+		Err:         errStr,
+		CountAsFire: countAsFire,
+	})
+	defer done()
+
+	// Dispatch hooks only on success — RFC E says on_complete fires on
+	// "successful runs." Failed/skipped runs don't notify. Use recordCtx (the
+	// survival ctx) not the parent: a run that completes just as shutdown
+	// begins still recorded its result above, so its on_complete hooks
+	// (channel publish / memory set / mcp.call) must fire too rather than be
+	// dropped on a cancelled parent ctx.
+	if status == "completed" {
+		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
+	}
+}
+
+// fireChannelDelivery is the RFC CY tick that publishes instead of running.
+//
+// WHY IT EXISTS. A workflow driven off a channel needs a clock. Reaching a
+// channel on a cron used to mean burning an agent run whose only job was to
+// publish — a model call, a run row, and a provider bill for a message the
+// scheduler can write itself. This is the symmetric twin of the
+// `delivery: channel` a Webhook already has: one is an external event landing
+// on a channel, this one is time landing on a channel.
+//
+// The message carries what there is to say when no agent ran: which schedule
+// fired, when, and the def's operator-authored metadata as the payload. A
+// downstream reader keys off schedule_name the same way it keys off an
+// on_complete hook's.
+//
+// Bookkeeping is the SAME as a run fire — next_run_at advances, max_fires
+// counts, a failure is recorded as failed — because from the schedule's side a
+// tick is a fire whatever it delivered. A publish failure counts too: the tick
+// happened, and a channel that is undeclared or unreachable will fail the same
+// way next time, so hiding it from the cap would let a broken schedule run
+// forever.
+func (s *Scheduler) fireChannelDelivery(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
+	status := "completed"
+	errStr := ""
+	if err := s.publishTick(ctx, row.Name, def, now); err != nil {
+		status = "failed"
+		errStr = err.Error()
+		s.logf("scheduler: schedule %q channel delivery to %q failed: %v", row.Name, def.Channel, err)
+	}
+	_, done := s.recordFireOutcome(ctx, row, def, now, fireOutcome{
+		Status:      status,
+		Err:         errStr,
+		CountAsFire: true,
+	})
+	done()
+}
+
+// publishTick writes one cadence message to the def's channel, at the
+// channel's DECLARED scope (the same resolution an on_complete channel.publish
+// hook uses, so a global channel's tick is visible to a global reader instead
+// of buried under a user scope).
+func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def scheduleDef, now time.Time) error {
+	if def.Channel == "" {
+		return fmt.Errorf("delivery=channel missing `channel`")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"schedule_name": scheduleName,
+		"fired_at":      now.UTC().Format(time.RFC3339Nano),
+		"delivery":      "channel",
+		"payload":       def.Metadata,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal tick: %w", err)
+	}
+	target, err := s.resolvePublishTarget(ctx, def.Channel, def.UserID, def.Agent)
+	if err != nil {
+		return err
+	}
+	msg := store.ChannelMessage{
+		Channel: def.Channel,
+		// RFC N: the owning tenant comes from the def, never from anywhere a
+		// caller could influence.
+		TenantID:          def.TenantID,
+		Scope:             target.Scope,
+		ScopeID:           target.ScopeID,
+		Payload:           payload,
+		PublishedAt:       now,
+		PublishedByUserID: def.UserID,
+	}
+	if target.DefaultTTL > 0 {
+		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
+	}
+	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
+	return err
+}
+
+// fireOutcome is what one fire produced, whatever kind of fire it was. It
+// exists so the bookkeeping below is written once: every fire has to advance
+// next_run_at and count against max_fires, and a fire that skips either one
+// re-presents on the next tick or never retires.
+type fireOutcome struct {
+	RunID       string
+	Status      string
+	Err         string
+	CountAsFire bool
+}
+
+// recordFireOutcome advances next_run_at, records the result, and applies the
+// max_fires lifetime cap.
+//
+// Returns the ctx it used plus a cleanup func. The ctx is a SURVIVAL ctx when
+// the parent is already cancelled (mid-shutdown): without it the store write
+// fails silently, next_run_at stays in the past, and the schedule re-fires
+// immediately on the next startup. Callers with follow-on work — on_complete
+// hooks — dispatch on the same ctx for the same reason, and must call the
+// cleanup func when they are done with it.
+func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, out fireOutcome) (context.Context, func()) {
 	next, nextErr := s.computeNext(def, now)
 	if nextErr != nil {
 		// Without a valid next_run_at, the sweeper would re-fire this
@@ -410,29 +552,26 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, nextErr)
 		next = now.Add(1 * time.Hour)
 	}
-	// Use a survival ctx for RecordResult when the parent is already
-	// cancelled (e.g. mid-shutdown). Without this, the store write
-	// fails silently, next_run_at stays in the past, and the schedule
-	// re-fires immediately on the next startup. Bounded 5s timeout
-	// prevents the survival path from hanging shutdown indefinitely.
 	recordCtx := ctx
+	done := func() {}
 	if ctx.Err() != nil {
 		var cancel context.CancelFunc
+		// Bounded 5s so the survival path can't hang shutdown.
 		recordCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		done = cancel
 	}
 	if err := s.store.ScheduleRunStateRecordResult(recordCtx, store.ScheduleRunResult{
 		DefID:      row.DefID,
-		LastRunID:  registeredRunID,
-		LastStatus: status,
-		LastError:  errStr,
+		LastRunID:  out.RunID,
+		LastStatus: out.Status,
+		LastError:  out.Err,
 		LastRunAt:  now,
 		NextRunAt:  next,
 		// RFC S / F36: this IS a fire (any status counts toward the cap, so
 		// a wedged/always-failing schedule still retires). The disabled-skip
 		// advance (advanceOnly) leaves this false; F38 leaves it false for an
-		// unresolved-agent config error (see countAsFire above).
-		CountAsFire: countAsFire,
+		// unresolved-agent config error.
+		CountAsFire: out.CountAsFire,
 	}); err != nil {
 		s.logf("scheduler: record result for %q: %v", row.Name, err)
 	}
@@ -455,16 +594,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 			}
 		}
 	}
-
-	// Dispatch hooks only on success — RFC E says on_complete fires on
-	// "successful runs." Failed/skipped runs don't notify. Use recordCtx (the
-	// survival ctx) not the parent: a run that completes just as shutdown
-	// begins still recorded its result above, so its on_complete hooks
-	// (channel publish / memory set / mcp.call) must fire too rather than be
-	// dropped on a cancelled parent ctx.
-	if status == "completed" {
-		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
-	}
+	return recordCtx, done
 }
 
 // advanceOnly is the disabled-schedule path: bump next_run_at without

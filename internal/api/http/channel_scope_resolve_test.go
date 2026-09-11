@@ -54,10 +54,10 @@ func TestResolveChannelScope_StaticRuntimeAndPrecedence(t *testing.T) {
 		{"undeclared", "", false},
 	}
 	for _, tc := range cases {
-		gotScope, gotOK := srv.ResolveChannelScope(ctx, tc.channel)
-		if gotScope != tc.wantScope || gotOK != tc.wantOK {
+		gotDef, gotOK := srv.ResolveChannelScope(ctx, tc.channel)
+		if gotDef.Scope != tc.wantScope || gotOK != tc.wantOK {
 			t.Errorf("ResolveChannelScope(%q) = (%q, %v), want (%q, %v)",
-				tc.channel, gotScope, gotOK, tc.wantScope, tc.wantOK)
+				tc.channel, gotDef.Scope, gotOK, tc.wantScope, tc.wantOK)
 		}
 	}
 }

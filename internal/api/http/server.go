@@ -2090,22 +2090,21 @@ func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.Agen
 	}
 }
 
-// ResolveChannelScope returns the declared scope ("global" | "user" |
-// "agent") of a channel by name, consulting static yaml + runtime substrate
-// (the same merge the Channel tool uses). ok=false when the channel is
-// declared nowhere.
+// ResolveChannelScope returns the DECLARED channel def by name, consulting
+// static yaml + runtime substrate (the same merge the Channel tool uses).
+// ok=false when the channel is declared nowhere.
 //
-// Injected into the scheduler so its on_complete: channel.publish hook lands
-// at the channel's DECLARED scope — a hook publishing to a scope:global
-// channel writes under global, not under the run's user scope where a global
-// reader (admin peek, Channel.await/subscribe resolving global) can't see it
-// (F37 / RFC T).
-func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (string, bool) {
+// Injected into the scheduler so a scheduler publish lands at the channel's
+// DECLARED scope — a hook publishing to a scope:global channel writes under
+// global, not under the run's user scope where a global reader (admin peek,
+// Channel.await/subscribe resolving global) can't see it (F37 / RFC T) — and
+// so it honours the channel's declared default_ttl / max_messages, which a
+// cadence writer needs and previously never received. main.go adapts the def
+// to the scheduler's own DeclaredChannel — the two packages share a wiring
+// point, not a type.
+func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (tools.ChannelDef, bool) {
 	def, ok := s.mergedChannelDefs(ctx, true)[channel]
-	if !ok {
-		return "", false
-	}
-	return def.Scope, true
+	return def, ok
 }
 
 // ChannelHeld reports whether a channel is declared `hold:` (RFC CY) —

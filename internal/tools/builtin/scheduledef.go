@@ -84,7 +84,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork (agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent) or channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -884,8 +884,37 @@ func computeInitialNextRunAt(def mergedScheduleDef, now time.Time) time.Time {
 // runtime-supplied overlays that would otherwise produce broken
 // schedule rows the sweeper can't fire.
 func validateScheduleDef(def mergedScheduleDef) error {
-	if def.Agent == "" {
-		return fmt.Errorf("agent: required")
+	// RFC CY delivery target. Same rule as the yaml validator
+	// (config.validateScheduleDelivery): the run-shaped fields are REFUSED on
+	// a channel tick rather than ignored, because a prompt that is never sent
+	// or an on_complete that never fires is a setting the author believes they
+	// made.
+	switch def.Delivery {
+	case "", "run":
+		if def.Agent == "" {
+			return fmt.Errorf("agent: required")
+		}
+		if def.Channel != "" {
+			return fmt.Errorf("delivery=run forbids channel (set delivery: channel to publish instead of running)")
+		}
+	case "channel":
+		if def.Channel == "" {
+			return fmt.Errorf("delivery=channel requires channel")
+		}
+		if def.Agent != "" {
+			return fmt.Errorf("delivery=channel forbids agent (a channel tick starts no run)")
+		}
+		if len(def.Prompt) > 0 {
+			return fmt.Errorf("delivery=channel forbids prompt (nothing reads it — put the tick's content in metadata)")
+		}
+		if len(def.OnComplete) > 0 {
+			return fmt.Errorf("delivery=channel forbids on_complete (there is no run to complete — the publish IS the delivery)")
+		}
+		if len(def.RequiredCredentials) > 0 || len(def.UserCredentials) > 0 || len(def.UserCredentialsFromEnv) > 0 {
+			return fmt.Errorf("delivery=channel forbids credentials (they exist to authorize a run, and no run fires)")
+		}
+	default:
+		return fmt.Errorf("unknown delivery %q (want run or channel)", def.Delivery)
 	}
 	if def.Schedule != "" && len(def.UserTierSchedules) > 0 {
 		return fmt.Errorf("cannot set both schedule and user_tier_schedules (pick one)")
@@ -978,6 +1007,10 @@ func scheduleRowResponseMap(row store.ScheduleDefRow) map[string]any {
 // counterpart to RFC F's RunInput.UserCredentials at the wire). The
 // scheduler reads this when building RunInput from the schedule row.
 type mergedScheduleDef struct {
+	// Delivery / Channel are the RFC CY tick target: "" / "run" invokes the
+	// agent, "channel" publishes to Channel and starts no run.
+	Delivery            string                    `json:"delivery,omitempty"`
+	Channel             string                    `json:"channel,omitempty"`
 	Agent               string                    `json:"agent,omitempty"`
 	Prompt              []mergedSchedulePromptSeg `json:"prompt,omitempty"`
 	Schedule            string                    `json:"schedule,omitempty"`
@@ -1130,11 +1163,19 @@ func (d *mergedScheduleDef) applyOverlay(ov mergedScheduleDef) {
 	if ov.TenantID != "" {
 		d.TenantID = ov.TenantID
 	}
+	if ov.Delivery != "" {
+		d.Delivery = ov.Delivery
+	}
+	if ov.Channel != "" {
+		d.Channel = ov.Channel
+	}
 }
 
 func staticToMergedScheduleDef(sr config.ScheduledRun) mergedScheduleDef {
 	enabled := sr.Enabled
 	out := mergedScheduleDef{
+		Delivery:               sr.Delivery,
+		Channel:                sr.Channel,
 		Agent:                  sr.Agent,
 		Schedule:               sr.Schedule,
 		UserTierSchedules:      sr.UserTierSchedules,

@@ -86,6 +86,10 @@ func resolveScheduleSubstrate(ctx context.Context, s ScheduleStore, tenantID, na
 // in the builtin package pins the field set so a future field added
 // to either side without the matching addition here fails CI.
 type SubstrateScheduleDef struct {
+	// Delivery / Channel are the RFC CY tick target: "" / "run" invokes the
+	// agent, "channel" publishes to Channel and starts no run.
+	Delivery            string                   `json:"delivery,omitempty"`
+	Channel             string                   `json:"channel,omitempty"`
 	Agent               string                   `json:"agent,omitempty"`
 	Prompt              []SubstratePromptSegment `json:"prompt,omitempty"`
 	Schedule            string                   `json:"schedule,omitempty"`
@@ -168,6 +172,8 @@ func (s SubstrateScheduleDef) ToConfigDef() config.ScheduledRun {
 		enabled = *s.Enabled
 	}
 	out := config.ScheduledRun{
+		Delivery:               s.Delivery,
+		Channel:                s.Channel,
 		Agent:                  s.Agent,
 		Schedule:               s.Schedule,
 		UserTierSchedules:      s.UserTierSchedules,

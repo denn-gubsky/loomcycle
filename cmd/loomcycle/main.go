@@ -2933,7 +2933,20 @@ func main() {
 		// Resolve on_complete: channel.publish to the channel's DECLARED scope
 		// (F37 / RFC T) so a hook on a scope:global channel lands at global,
 		// not under the run's user scope. Must be set before Start.
-		sched.SetChannelScope(srv.ResolveChannelScope)
+		// Adapt the server's channel def to the scheduler's DeclaredChannel:
+		// the two packages meet here rather than importing each other for the
+		// sake of one struct.
+		sched.SetChannelScope(func(ctx context.Context, name string) (scheduler.DeclaredChannel, bool) {
+			def, ok := srv.ResolveChannelScope(ctx, name)
+			if !ok {
+				return scheduler.DeclaredChannel{}, false
+			}
+			return scheduler.DeclaredChannel{
+				Scope:       def.Scope,
+				DefaultTTL:  def.DefaultTTL,
+				MaxMessages: def.MaxMessages,
+			}, true
+		})
 		// RFC BL P2 consolidation fan-out: the provider resolver decides
 		// parallel-vs-serial dispatch (a local model runtime is serialized), and
 		// the advisory lock makes exactly one replica per tick enumerate the
