@@ -59,6 +59,15 @@ const maxSourceSpanLookup = 64
 type FactSource struct {
 	Span  string
 	RunID string
+	// SessionID is the CHAT the fact was distilled from, and it is what makes the
+	// pointer followable: History window takes it plus the span and returns the turn
+	// the fact came from with its neighbours.
+	//
+	// It was 0% populated when this file was written, which is why the first slice
+	// projected the span alone. It is populated now — the entity writer takes
+	// source_session_id from the consolidator and from the drained pending row — so
+	// the reach-through the plan asked for has data behind it at last.
+	SessionID string
 }
 
 func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
@@ -91,7 +100,7 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	// followable even when the span was never derived, which is the common shape
 	// before a verification pass runs. The old query required a non-empty span
 	// and so hid those rows entirely.
-	stmt := `SELECT natural_key, coalesce(source_quote, ''), coalesce(run_id, '') FROM chunk_memory_meta ` +
+	stmt := `SELECT natural_key, coalesce(source_quote, ''), coalesce(run_id, ''), coalesce(session_id, '') FROM chunk_memory_meta ` +
 		`WHERE natural_key IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
 	res, err := sm.Query(ctx, key, sm.Rebind(stmt), keys)
@@ -100,16 +109,16 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	}
 	out := make(map[string]FactSource, len(res.Rows))
 	for _, row := range res.Rows {
-		if len(row) < 3 {
+		if len(row) < 4 {
 			continue
 		}
-		nk, span, runID := asStr(row[0]), asStr(row[1]), asStr(row[2])
+		nk, span, runID, sessionID := asStr(row[0]), asStr(row[1]), asStr(row[2]), asStr(row[3])
 		// A row with neither a span nor a pointer says nothing, so it is dropped;
-		// either one alone is still useful and is kept.
-		if nk == "" || (span == "" && runID == "") {
+		// any one of them alone is still useful and is kept.
+		if nk == "" || (span == "" && runID == "" && sessionID == "") {
 			continue
 		}
-		out[nk] = FactSource{Span: span, RunID: runID}
+		out[nk] = FactSource{Span: span, RunID: runID, SessionID: sessionID}
 	}
 	return out
 }

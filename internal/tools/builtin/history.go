@@ -85,6 +85,9 @@ func (h *History) Description() string {
 		"recap (refresh the chat's stored one-or-two-sentence summary — idempotent, safe on a live/parked chat), " +
 		"resume (return a handle for continuing the chat in a new run), " +
 		"related (find chats similar in meaning to a given chat (session_id) or a free-text query — needs an embedder). " +
+		"window (the conversation AROUND the turn a stored fact came from: pass the fact's session_id and its " +
+		"source span as quote, and get that turn plus a few neighbours instead of the whole chat — use it when a " +
+		"recalled fact is too summarised to answer the question and you need the original wording). " +
 		"scope selects whose chats: self = this agent's, user = this end-user's, tenant = this tenant's, " +
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
@@ -98,9 +101,9 @@ func (h *History) Description() string {
 const historyInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume","related"]},
+		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume","related","window"]},
 		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self. The owner id is resolved server-side from the run identity, never the wire."},
-		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume: the chat (session) id to target. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
+		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume/window: the chat (session) id to target — for window, the session recall reported on the fact. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
 		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled)."},
 		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity."},
 		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity."},
@@ -116,6 +119,8 @@ const historyInputSchema = `{
 		"title":           {"type": "string", "description": "rename: the new title."},
 		"description":     {"type": "string", "description": "annotate: the new description."},
 		"tags":            {"type": "array", "items": {"type": "string"}, "description": "annotate: the new tag set (replaces the existing set)."},
+		"quote":           {"type": "string", "description": "window: the fact's source span — the verbatim text it was distilled from, which recall returns as its source field. It is what anchors the fact to a turn, so the window is the conversation AROUND the thing the fact was derived from rather than the start of the chat."},
+		"context":         {"type": "integer", "description": "window: how many turns either side of the match to return (default 2, max 10). A distilled fact loses the specifics its own turn's neighbours carry — a bare date, a pronoun — which is what these recover."},
 		"pinned":          {"type": "boolean", "description": "pin: true pins (default), false unpins."},
 		"archived":        {"type": "boolean", "description": "archive: true archives (default), false unarchives."}
 	},
@@ -137,6 +142,8 @@ type historyInput struct {
 	PinnedOnly      bool   `json:"pinned_only"`
 	IncludeArchived bool   `json:"include_archived"`
 	IncludeInternal bool   `json:"include_internal"`
+	Quote           string `json:"quote"`
+	Context         *int   `json:"context"`
 	Limit           int    `json:"limit"`
 	Offset          int    `json:"offset"`
 	Format          string `json:"format"`
@@ -187,8 +194,10 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return h.resume(ctx, scope, in)
 	case "related":
 		return h.related(ctx, scope, in)
+	case "window":
+		return h.window(ctx, scope, in)
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume, related)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume, related, window)", in.Op)), nil
 	}
 }
 
@@ -898,12 +907,40 @@ type conversationBlock struct {
 // looking for durable facts wants all of them — the summary would be a lossy
 // paraphrase of content still sitting right there.
 func renderConversationMarkdown(events []store.Event) string {
-	var b, asst strings.Builder
+	var b strings.Builder
+	for _, t := range conversationTurns(events) {
+		fmt.Fprintf(&b, "### %s\n\n%s\n\n", t.Speaker, t.Text)
+	}
+	return b.String()
+}
+
+// conversationTurn is one speaker's turn, as the conversation rendering sees it.
+type conversationTurn struct {
+	Speaker string `json:"speaker"`
+	Text    string `json:"text"`
+	// Seq is the transcript sequence the turn STARTS at — enough to order turns
+	// and to say where in the chat a match sits, without pretending to a
+	// per-turn identity the event log does not carry.
+	Seq int64 `json:"seq"`
+}
+
+// conversationTurns segments a transcript into speaker turns.
+//
+// SHARED WITH THE RENDERER ON PURPOSE, not duplicated. A distilled fact's source
+// span was quoted out of the conversation rendering, so a window that segmented
+// turns even slightly differently would fail to find spans that are really there —
+// and the failure would look like "no source recorded" rather than like a bug.
+// One segmentation, two consumers.
+func conversationTurns(events []store.Event) []conversationTurn {
+	var out []conversationTurn
+	var asst strings.Builder
+	asstSeq := int64(0)
 	flushAssistant := func() {
 		if text := strings.TrimSpace(asst.String()); text != "" {
-			fmt.Fprintf(&b, "### assistant\n\n%s\n\n", text)
+			out = append(out, conversationTurn{Speaker: "assistant", Text: text, Seq: asstSeq})
 		}
 		asst.Reset()
+		asstSeq = 0
 	}
 	for _, ev := range events {
 		switch ev.Type {
@@ -912,13 +949,16 @@ func renderConversationMarkdown(events []store.Event) string {
 			// operator steer (which the runner persists in this same shape).
 			flushAssistant()
 			if text := userTurnText(ev.Payload); text != "" {
-				fmt.Fprintf(&b, "### user\n\n%s\n\n", text)
+				out = append(out, conversationTurn{Speaker: "user", Text: text, Seq: ev.Seq})
 			}
 		case "text":
 			// Assistant text is persisted one row PER STREAMED DELTA, so these
 			// accumulate into a single turn instead of becoming a section each.
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
+				if asst.Len() == 0 {
+					asstSeq = ev.Seq
+				}
 				asst.WriteString(pe.Text)
 			}
 		case "done":
@@ -933,7 +973,7 @@ func renderConversationMarkdown(events []store.Event) string {
 		}
 	}
 	flushAssistant()
-	return b.String()
+	return out
 }
 
 // userTurnText pulls the human's own words out of a persisted `user_input`

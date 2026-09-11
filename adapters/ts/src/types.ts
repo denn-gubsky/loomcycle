@@ -1795,12 +1795,26 @@ export type HistoryToolInput = {
     | "pin"
     | "archive"
     | "recap"
-    | "resume";
+    | "resume"
+    // `related` predates this union's last update and was missing from it; `window`
+    // is new. The wire passthrough carries any `op` verbatim, so the union is for
+    // type-completeness rather than enforcement — which is exactly why it drifts.
+    | "related"
+    | "window";
   /** Whose chats: self = this caller's agent; user = this end-user's; tenant =
    *  this tenant's; global = all tenants (admin only). Default self. */
   scope?: "self" | "user" | "tenant" | "global";
-  /** get/rename/annotate/pin/archive/recap/resume: the chat (session) id. */
+  /** get/rename/annotate/pin/archive/recap/resume/window: the chat (session) id.
+   *  For `window`, the session a recalled fact reported as its source. */
   session_id?: string;
+  /** window: the fact's source span — the verbatim text it was distilled from,
+   *  which recall returns as `source`. It anchors the window to the turn the fact
+   *  came from, rather than the start of the chat. */
+  quote?: string;
+  /** window: how many turns either side of the match to return (default 2, max
+   *  10). A distilled fact loses what its turn's neighbours carry — a bare date, a
+   *  pronoun — which is what these recover. */
+  context?: number;
   /** list/search: filter by derived chat status (running/completed/failed/cancelled). */
   status?: string;
   /** list/search: RFC3339 lower bound on last activity. */

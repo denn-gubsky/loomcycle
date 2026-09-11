@@ -93,3 +93,42 @@ func TestChunkLabelsFor_ToleratesAChunkWithNoSidecar(t *testing.T) {
 		}
 	}
 }
+
+// TestSourceSpansFor_CarriesTheSessionSoThePointerIsFollowable (RFC CV P1).
+//
+// The span answers "what was said"; the SESSION answers "where is the rest of it",
+// and only the second is followable. `History op=window` takes the pair and hands back
+// the turn the fact was distilled from with its neighbours — which is what the
+// answerer needs when the distilled sentence dropped the specific being asked for.
+//
+// This was 0% populated when the span lookup was first written, so it deliberately
+// projected the span alone; the entity writer fills it now, from the consolidator and
+// from the drained pending row. The plan's reach-through finally has data behind it,
+// and a regression here would silently take it away again — the recall still answers,
+// just with nowhere to go.
+func TestSourceSpansFor_CarriesTheSessionSoThePointerIsFollowable(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	doc := newEntityDoc(t, d, ctx)
+
+	if _, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+doc+`",
+		"natural_key":"memory/fact/release-moved","title":"The release moved",
+		"body":"The release moved.","type":"fact",
+		"source_quote":"we moved the release to the 14th because Maria is out",
+		"source_session_id":"s_the_chat"}`); r.IsError {
+		t.Fatalf("upsert_chunk: %s", r.Text)
+	}
+
+	got := SourceSpansFor(ctx, d.SqlMem, "tnt", store.MemoryScopeUser, "u1",
+		[]string{"memory/fact/release-moved"})
+	src, ok := got["memory/fact/release-moved"]
+	if !ok {
+		t.Fatal("the fact reported no source at all")
+	}
+	if !strings.Contains(src.Span, "the 14th") {
+		t.Errorf("span = %q, want the verbatim wording the fact was derived from", src.Span)
+	}
+	if src.SessionID != "s_the_chat" {
+		t.Errorf("session = %q, want s_the_chat — without it the span is quotable but not "+
+			"followable, and the surrounding turns are unreachable", src.SessionID)
+	}
+}
