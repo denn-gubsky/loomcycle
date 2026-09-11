@@ -217,12 +217,13 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 		// makes this selector mean prose.
 		f.Provenance = store.ProvenanceAbsent
 	case facts && !notes:
-		// FACTS ARE WHEREVER PROVENANCE IS, with no namespace constraint. This used
-		// to exclude the chunk namespace, which was right only while a fact's home
-		// was its own k/v row and the chunk body was a duplicate of it. A fact homed
-		// in a chunk lives at that prefix, so the exclusion would now hide exactly
-		// what was asked for.
 		f.Provenance = store.ProvenanceRequired
+		if !FactsAreChunkHomed {
+			// Still dual-written: the SAME fact exists as its k/v row and as its
+			// chunk body, and since both carry an origin, provenance alone matches
+			// both. Excluding the chunk namespace picks exactly one of the pair.
+			f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
+		}
 	case notes && !facts:
 		// A note is what an agent wrote down ITSELF: no provenance, and not a chunk
 		// body. Both halves are load-bearing — prose has no provenance either, so
@@ -231,14 +232,36 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 		f.Provenance = store.ProvenanceAbsent
 	case memory && !docs:
 		// facts + notes — everything EXCEPT prose, and the default for recall.
-		// No longer expressible by excluding the chunk namespace, because the facts
-		// half now lives inside it; this excludes the document CLASS, which is the
-		// only thing being ruled out.
-		f.ExcludeDocumentPrefix = DocumentChunkKeyPrefix
+		if FactsAreChunkHomed {
+			// Not expressible by excluding the chunk namespace once the facts half
+			// lives inside it; what is ruled out is the document CLASS.
+			f.ExcludeDocumentPrefix = DocumentChunkKeyPrefix
+		} else {
+			// While a fact is dual-written, excluding the namespace rules out prose
+			// AND the duplicate half of every fact, which is what this needs.
+			f.ExcludeKeyPrefix = DocumentChunkKeyPrefix
+		}
 	}
 	// docs && facts && notes → everything; the zero filter already says that.
 	return f, nil
 }
+
+// FactsAreChunkHomed reports whether a fact's HOME has moved to the chunk plane.
+//
+// It is false while a fact is written to BOTH planes — its k/v
+// `memory/<class>/<slug>` row and its `doc.chunk:<hex>` body — which is the state
+// until the collapse deletes the k/v row. Both carry an origin, so a
+// provenance-only predicate matches both and one fact comes back TWICE. Measured
+// against real Postgres: `sources=facts` and the `facts+notes` recall default each
+// returned 2 hits for a single fact, which halves the effective top_k.
+//
+// It is a constant rather than a config knob deliberately. Which plane holds a
+// fact is a property of the deployed schema, not an operator preference, and an
+// operator who set it early would silently lose every fact that had not been
+// mirrored yet. Flipping it is a one-line change that belongs in the same commit as
+// the migration that deletes the k/v rows, and the selectors above are written so
+// that flip is all it takes.
+const FactsAreChunkHomed = false
 
 // Class labels a result row so a caller can tell what it got (RFC BW §4b).
 func Class(e store.MemorySearchEntry) store.MemoryRowClass {
