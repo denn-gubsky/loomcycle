@@ -33,6 +33,8 @@ const (
 	HandlerTerminal     = "terminal"     // an end state; no agent, no outbound edges required
 	HandlerVars         = "vars"         // binds ${var.*} from literals, tokens and captures
 	HandlerInput        = "input"        // the start form: a typed schema the client renders
+	HandlerStarter      = "starter"      // reads ONE channel and dispatches a wave of agent runs
+	HandlerChannel      = "channel"      // publishes to a channel; it does NOT read one
 )
 
 // Transition kinds — the `on` label prefix. success is bare; pushback and
@@ -41,6 +43,18 @@ const (
 	OnSuccess     = "success"
 	OnPushback    = "pushback"    // pushback:<reason>
 	OnConditional = "conditional" // conditional:<expr>
+)
+
+// Fan-out shapes for a starter handler.
+const (
+	FanoutPerMessage = "message" // one run per message read — dynamic N
+	FanoutPerOnce    = "once"    // one run holding the whole batch
+)
+
+// When a starter advances its source cursor.
+const (
+	AckAfterResults = "after_results" // at-least-once: a crash mid-wave redelivers
+	AckAfterRead    = "after_read"    // at-most-once: a crash loses the batch
 )
 
 // Wait modes for a parallel handler (mirrors Channel.await).
@@ -66,6 +80,22 @@ type Definition struct {
 	// anything. Exclusion is by omission: teamContent in sign.go is a whitelist,
 	// so a field is out of the hash unless it is listed there.
 	Layout *Layout `json:"layout,omitempty"`
+	// Channels is the TEAM's channel ACL — the Starter is the single ACL subject
+	// for its source and sink, so the authority lives on the workflow rather
+	// than on each agent in a wave.
+	//
+	// Unlike Colors and Layout this IS content and IS hashed: it is authority,
+	// and authority that can change without changing the definition's identity
+	// is not auditable. It is validated at create/fork to only NARROW what the
+	// authoring principal already holds (trust rule 4 — inherit, never widen).
+	Channels *TeamChannels `json:"channels,omitempty"`
+}
+
+// TeamChannels is the workflow's own channel allowlist, same shape as an
+// agent's so an operator reads one grammar in both places.
+type TeamChannels struct {
+	Publish   []string `json:"publish,omitempty"`
+	Subscribe []string `json:"subscribe,omitempty"`
 }
 
 // State is one node: an id + the handler that runs when a task is in it.
@@ -127,6 +157,95 @@ type Handler struct {
 	// so a team is self-describing and a headless caller sees the same contract
 	// the canvas does.
 	Schema json.RawMessage `json:"schema,omitempty"`
+	// Source — kind=starter ONLY: the ONE channel this node reads. A Starter is
+	// the dispatcher: it listens, spawns a wave, and routes the results onward.
+	//
+	// One channel, not a set. That is what makes the cursor correct: a channel
+	// cursor is keyed (tenant, channel, scope, scope_id) with NO subscriber
+	// dimension, so N readers of one channel share one position and compete for
+	// messages. One subscriber per Starter is one cursor, by construction.
+	Source *StarterSource `json:"source,omitempty"`
+	// Fanout — kind=starter ONLY: how many runs the wave is, and of what.
+	Fanout *StarterFanout `json:"fanout,omitempty"`
+	// Prompt — kind=starter ONLY: the wave's prompt templates. A Starter node
+	// carries its own prompt here rather than in SystemPrompt/InputTemplate,
+	// because the payload it dispatches lands in the reserved
+	// {{starter.message}} / {{starter.messages}} data slots and the node needs
+	// somewhere to put the text around them.
+	Prompt *StarterPrompt `json:"prompt,omitempty"`
+	// Sink — kind=starter ONLY: the channel the RUNTIME publishes each spawned
+	// run's result to. Declared, never instructed: an agent told in its prompt
+	// to publish may forget, and a forgotten publish leaves a downstream wait
+	// hanging on a message that never arrives. Declaring it also means an agent
+	// in a wave needs no channel grant in either direction.
+	Sink *StarterSink `json:"sink,omitempty"`
+	// Channel — kind=channel ONLY: the channel this node publishes to. The
+	// publish-only half of the old `channel` kind; reading belongs to a Starter.
+	Channel string `json:"channel,omitempty"`
+	// Binds — kind=starter ONLY: variable name → a strict-subset JSONPath over
+	// the SOURCE MESSAGE, into ${var.*}. Same projector and same grammar as a
+	// webhook's payload_mapping, so there is one JSONPath dialect in the
+	// runtime rather than two.
+	//
+	// A value bound here is UNTRUSTED — a channel message may be agent-written
+	// or webhook-relayed. It is safe in a prompt or a Memory key and is held to
+	// trust rules 5b/5c wherever it reaches a placeholder argument.
+	Binds map[string]string `json:"binds,omitempty"`
+	// Ack — kind=starter ONLY: when the source cursor advances.
+	// "after_results" (the default) acks once the wave's results are in, which
+	// is at-least-once: a crash mid-wave redelivers the batch. "after_read"
+	// acks on read, which is at-most-once and loses a batch to a crash.
+	Ack string `json:"ack,omitempty"`
+}
+
+// StarterSource is the channel a Starter reads, reusing Channel op=subscribe's
+// vocabulary rather than inventing a second one.
+type StarterSource struct {
+	Channel string `json:"channel"`
+	// Wait — any | at_least. NOT "all": await's `all` counts CHANNELS, so over
+	// a single channel it is identical to `any` and returns after the FIRST
+	// message. A Starter reads one channel, so `all` there is always a silent
+	// wrong answer and validation refuses it.
+	Wait string `json:"wait,omitempty"`
+	// N — the threshold for wait=at_least. A floor only: with dynamic fan-out
+	// the effective count comes from the upstream wave's stamp, because an
+	// authored literal is stale the moment the upstream reads one more message.
+	N int `json:"n,omitempty"`
+	// WaitMS — how long to wait for the predicate before the walk errors. 0
+	// means the operator's long-poll cap.
+	WaitMS int `json:"wait_ms,omitempty"`
+	// Batch — how many messages to read at once. 0 means the store default.
+	Batch int `json:"batch,omitempty"`
+}
+
+// StarterFanout is the shape of one wave.
+type StarterFanout struct {
+	// Agent or Agents — what to run. Exactly one of the two.
+	Agent  string   `json:"agent,omitempty"`
+	Agents []string `json:"agents,omitempty"`
+	// Per — "message" spawns one run per message read (DYNAMIC N); "once"
+	// spawns a single run holding all of them. Default "message".
+	Per string `json:"per,omitempty"`
+	// Max is the hard ceiling on one wave's width, REQUIRED for per=message.
+	// Dynamic fan-out is a spawn amplifier: without a ceiling, a channel that
+	// accumulated a thousand messages becomes a thousand agent runs. The
+	// substrate's own spawn cap still applies above this.
+	Max int `json:"max,omitempty"`
+	// Wait — how the walk waits for the wave. Mirrors the parallel handler's.
+	Wait string `json:"wait,omitempty"`
+}
+
+// StarterPrompt is a wave's prompt. Both templates are operator-authored and
+// expanded like any other node's; the message payload is substituted into the
+// reserved data slots AFTER expansion and is never scanned as template text.
+type StarterPrompt struct {
+	System string `json:"system,omitempty"`
+	Input  string `json:"input,omitempty"`
+}
+
+// StarterSink is where a wave's results go. One message per spawned run.
+type StarterSink struct {
+	Channel string `json:"channel"`
 }
 
 // Layout is the optional canvas geometry: where each node sits. Presentation

@@ -227,6 +227,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := teamgraph.Validate(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := checkTeamChannelAuthority(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -335,6 +338,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := teamgraph.Validate(def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := checkTeamChannelAuthority(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
@@ -862,6 +868,43 @@ func (t *TeamDef) buildDefinition(parentJSON string, overlay json.RawMessage) (j
 // applyTeamOverlay merges ov over base per top-level field. Scalars set-if-set;
 // slices/maps replace wholesale (never element-merged) since the graph is a
 // cohesive unit.
+// checkTeamChannelAuthority enforces trust rule 4 on `Definition.Channels`:
+// the workflow's ACL may only NARROW what the authoring principal already
+// holds. Inherit, never widen.
+//
+// This is the half of the team ACL that matters. The field itself is only data;
+// what makes it authority is that the Starter reads and publishes under it
+// rather than under each agent's own grants, so an author who could write a
+// channel into it that they cannot reach themselves would have escalated by
+// authoring a definition. Checked at create AND fork, because a fork is an
+// authoring act by whoever forks, not by whoever wrote the parent.
+//
+// An author with NO channel policy at all can declare no channels — the same
+// default-deny every other channel surface applies, rather than "no policy
+// means no limit".
+func checkTeamChannelAuthority(ctx context.Context, def teamgraph.Definition) error {
+	if def.Channels == nil {
+		return nil
+	}
+	pol := tools.ChannelPolicy(ctx)
+	for _, side := range []struct {
+		name    string
+		want    []string
+		granted []string
+	}{
+		{"publish", def.Channels.Publish, pol.Publish},
+		{"subscribe", def.Channels.Subscribe, pol.Subscribe},
+	} {
+		for _, ch := range side.want {
+			if !channelAllowed(ch, side.granted) {
+				return fmt.Errorf("channels.%s: %q is not in the authoring principal's own %s allowlist — "+
+					"a team ACL may only narrow what its author holds, never widen it", side.name, ch, side.name)
+			}
+		}
+	}
+	return nil
+}
+
 func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	if ov.Entry != "" {
 		base.Entry = ov.Entry
@@ -884,6 +927,13 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	// hash, so a layout-only fork keeps the parent's identity.
 	if ov.Layout != nil {
 		base.Layout = ov.Layout
+	}
+	// Every Definition field needs a case here or a fork returns 200, mints a
+	// version and silently drops it — which is exactly what happened to Layout
+	// when it was added. Channels is the ACL, so dropping it would hand a
+	// forked workflow no channel authority and fail at run time instead.
+	if ov.Channels != nil {
+		base.Channels = ov.Channels
 	}
 }
 
