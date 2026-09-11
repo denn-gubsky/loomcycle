@@ -406,6 +406,28 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		where = append(where, "c.document_id = ?")
 		args = append(args, in.DocumentID)
 	}
+	// THE SUBJECT FILTER, which document_id deliberately is NOT. Filing is
+	// single-parent, so "Dave works at the shop" lives in Dave's document and only
+	// points at the shop; a document filter would answer "what do we know about the
+	// shop" without it, and the second subject would silently lose every relation
+	// fact it is named in. Children UNION inbound references — one document read
+	// plus one indexed probe, not a traversal.
+	if in.About != "" {
+		docID, ok, derr := d.documentOfChunk(ctx, key, in.About)
+		if derr != nil {
+			return errResult("list_facts: about: " + derr.Error()), nil
+		}
+		if !ok {
+			// Reported rather than answered with an empty list: a filter naming a
+			// chunk that does not exist is a caller mistake, and "no facts about it"
+			// is indistinguishable from "that subject has none".
+			return errResult("list_facts: no such chunk: " + in.About +
+				" (about takes a SUBJECT's entity chunk id — a subject document's root_chunk_id)"), nil
+		}
+		frag, fargs := factsAboutSubjectSQL(in.About, docID)
+		where = append(where, frag)
+		args = append(args, fargs...)
+	}
 	// Reuse graph_recall's temporal filter so "currently true" means the same
 	// thing on both surfaces. The INNER JOIN makes m.chunk_id non-null, so the
 	// clause's `m.chunk_id IS NULL OR ...` disjunct is inert here (which is

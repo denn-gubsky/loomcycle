@@ -1748,6 +1748,13 @@ export type DocumentToolInput = {
    *  sync reconciles — so a reading or coverage surface wants this on, and a
    *  federation one does not. */
   claims_only?: boolean;
+  /** list_facts: the facts about ONE SUBJECT — the subject's entity chunk id (a
+   *  subject document's `root_chunk_id`, from get_document). Returns the facts filed
+   *  under it AND the facts filed elsewhere that reference it: filing is
+   *  single-parent, so a fact about two things lives in one of their documents and
+   *  only points at the other, and a document filter would lose it from the second
+   *  subject entirely. */
+  about?: string;
   /** remember: a statement to store as a fact that cites ITSELF — the text becomes both
    *  the claim and its source span, so write what you want recorded rather than an
    *  instruction about it. Additive only; it is never a way to delete. */
