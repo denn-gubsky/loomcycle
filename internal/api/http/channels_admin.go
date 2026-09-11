@@ -28,6 +28,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -211,6 +212,20 @@ func (s *Server) handleChannelRelease(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
 			return
 		}
+	}
+	// A bad `count` is the CALLER's mistake, so answer 400 — writeChannelError's
+	// default arm is 500, which tells a caller the server broke and pages
+	// whoever watches 5xx. The Connector keeps its own guard for any future
+	// non-HTTP caller; this one exists to get the status right.
+	if body.Count < 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request",
+			fmt.Sprintf("release: count must be >= 0 (0 means 1), got %d", body.Count))
+		return
+	}
+	if body.Count > maxChannelReleaseCount {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request",
+			fmt.Sprintf("release: count %d exceeds max %d", body.Count, maxChannelReleaseCount))
+		return
 	}
 	body.Channel = name // the path is authoritative, not the body
 	out, err := s.ReleaseChannel(r.Context(), body)
