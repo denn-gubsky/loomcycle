@@ -1786,6 +1786,15 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 			if sp.RunID != "" {
 				mem["source_run_id"] = sp.RunID
 			}
+			// THE SESSION IS THE FOLLOWABLE HALF. run_id identifies the pass that
+			// ingested the fact; the CHAT is where the words were said, and it is what
+			// `History op=window` takes — with this span — to hand back the turn the
+			// fact was distilled from and the turns around it. That is the reach-through
+			// the answerer needs when the distilled sentence dropped the specific the
+			// question asks for.
+			if sp.SessionID != "" {
+				mem["source_session_id"] = sp.SessionID
+			}
 		}
 		// Omitted when the backend could not classify the row — see RecallFact.Kind.
 		// An absent kind means "unknown", which is why this is not defaulted.
