@@ -104,42 +104,107 @@ type BreakDecision struct {
 // whose operator cannot be reached must not silently release the wave.
 type BreakpointFunc func(ctx context.Context, bp Breakpoint) (BreakDecision, error)
 
-// stage walks a pending count in operator-sized steps.
+// BreakpointSource is what the walk asks whether a state is armed. It is
+// CONSULTED AT EVERY PAUSE POINT, never captured at dispatch — that is the
+// whole interface.
+//
+// Breakpoints began as an argument fixed when the run started, which serves the
+// case where you already know the workflow is broken. It does not serve the
+// common one: you start a run expecting it to work, watch a wave go wrong, and
+// want to stop before the next one. There is nothing to pass at that moment, so
+// "is this armed" has to be a question the walk keeps asking rather than an
+// answer it wrote down.
+//
+// An implementation may therefore change its answers concurrently with the
+// walk, and must be safe for concurrent use.
+type BreakpointSource interface {
+	Armed(state string, phase BreakpointPhase) bool
+}
+
+// StaticBreakpoints is a fixed armed set — the dispatch-time argument, and the
+// behaviour of a walk nobody is watching live.
+type StaticBreakpoints map[string]map[BreakpointPhase]bool
+
+// Armed implements BreakpointSource.
+func (s StaticBreakpoints) Armed(state string, phase BreakpointPhase) bool {
+	return s[state][phase]
+}
+
+// NewStaticBreakpoints builds a fixed source from breakpoint specs, refusing
+// the whole list if any entry is malformed.
+func NewStaticBreakpoints(specs []string) (StaticBreakpoints, error) {
+	if err := ValidateBreakpoints(specs); err != nil {
+		return nil, err
+	}
+	out := StaticBreakpoints{}
+	for _, spec := range specs {
+		id, phase, _ := ParseBreakpoint(spec)
+		if out[id] == nil {
+			out[id] = map[BreakpointPhase]bool{}
+		}
+		if phase == "" {
+			out[id][BeforeDispatch] = true
+			out[id][AfterCollection] = true
+			continue
+		}
+		out[id][phase] = true
+	}
+	return out, nil
+}
+
+// stage walks a shrinking set of pending items in operator-sized steps.
 //
 // It is the shared loop behind both pauses, because "release one, look, release
 // three, look, release the rest" is the same gesture whether what is being
-// released is a dispatch or a publish. act is called with the half-open range
-// to release; ask is called before each step.
-func stage(ctx context.Context, total int, ask func(pending int) (BreakDecision, error), act func(from, to int) error) error {
-	for from := 0; from < total; {
-		dec, err := ask(total - from)
+// released is a dispatch or a publish.
+//
+// pending is RE-READ each round rather than tracked as a range, because the set
+// is not always a suffix: a state armed part-way through a wave holds only the
+// results that had not been published yet, and those are whatever indices
+// happened to still be running.
+func stage(ctx context.Context, pending func() []int, ask func([]int) (BreakDecision, error), act func([]int) error) error {
+	for last := -1; ; {
+		p := pending()
+		if len(p) == 0 {
+			return nil
+		}
+		// act must shrink the pending set; if it ever does not, this would spin
+		// forever asking a human the same question. Fail loudly instead — a
+		// wedged walk is far harder to diagnose than an error naming the bug.
+		if last >= 0 && len(p) >= last {
+			return fmt.Errorf("breakpoint staging made no progress at %d pending — releasing did not retire anything", len(p))
+		}
+		last = len(p)
+
+		dec, err := ask(p)
 		if err != nil {
 			return err
 		}
-		to := total
+		var release []int
 		switch dec.Action {
 		case BreakContinue:
-			// everything remaining
+			release = p
 		case BreakRelease:
 			n := dec.N
 			if n < 1 {
+				// "release some" with no number is a step, not a no-op that
+				// would park forever.
 				n = 1
 			}
-			if from+n < to {
-				to = from + n
+			if n > len(p) {
+				n = len(p)
 			}
+			release = p[:n]
 		default:
 			return fmt.Errorf("aborted at the breakpoint")
 		}
-		if err := act(from, to); err != nil {
+		if err := act(release); err != nil {
 			return err
 		}
-		from = to
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
-	return nil
 }
 
 // ParseBreakpoint splits one breakpoint argument into a state id and the phase
@@ -182,18 +247,21 @@ func ValidateBreakpoints(bps []string) error {
 	return nil
 }
 
-// armed reports whether this state pauses at this phase. A walk with no
-// breakpoints answers false on the first term and never touches the map, so it
-// takes the same path it took before this existed.
+// armed asks the SOURCE, every time — never a value captured when the walk
+// started. That is what lets an operator arm a state while the walk is running.
+//
+// A walk with no breakpoints answers false on the first term and never reaches
+// the source, so it takes the same path it took before any of this existed.
 func (r *agentRunner) armed(st teamgraph.State, phase BreakpointPhase) bool {
-	return r.onBreak != nil && r.breakAt[st.ID][phase]
+	return r.onBreak != nil && r.breakAt != nil && r.breakAt.Armed(st.ID, phase)
 }
 
-// previewPrompts renders the pending half of a wave for the BeforeDispatch
-// pause, in wave order.
-func previewPrompts(h teamgraph.Handler, msgs []ChannelMessage, agentFor func(int) string, from, to int) []PromptPreview {
-	out := make([]PromptPreview, 0, to-from)
-	for i := from; i < to; i++ {
+// previewPrompts renders the pending runs for the BeforeDispatch pause, in wave
+// order. It takes the indices rather than a range because the pending set is
+// not always a suffix.
+func previewPrompts(h teamgraph.Handler, msgs []ChannelMessage, agentFor func(int) string, idx []int) []PromptPreview {
+	out := make([]PromptPreview, 0, len(idx))
+	for _, i := range idx {
 		p := PromptPreview{Index: i, Agent: agentFor(i)}
 		if h.Prompt != nil {
 			p.System, p.Input = h.Prompt.System, h.Prompt.Input
@@ -209,10 +277,11 @@ func previewPrompts(h teamgraph.Handler, msgs []ChannelMessage, agentFor func(in
 	return out
 }
 
-// previewResults renders finished runs for the AfterCollection pause.
-func previewResults(rs []agentResult) []BreakpointResult {
-	out := make([]BreakpointResult, 0, len(rs))
-	for _, res := range rs {
+// previewResults renders the finished runs still awaiting publication.
+func previewResults(all []agentResult, idx []int) []BreakpointResult {
+	out := make([]BreakpointResult, 0, len(idx))
+	for _, i := range idx {
+		res := all[i]
 		out = append(out, BreakpointResult{
 			Index: res.Index, Agent: res.Agent, Ok: res.Ok,
 			Output: res.Output, Error: res.Error,

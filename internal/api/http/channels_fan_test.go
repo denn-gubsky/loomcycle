@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -49,6 +50,7 @@ func channelFanFixture(t *testing.T) (*Server, func()) {
 		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
+		breakpointReg:  breakpoints.NewRegistry(),
 	}
 	srv.SetSystemPublisher(&channels.StorePublisher{Store: s, Bus: bus, Scheduler: sched})
 	srv.SetChannelBus(bus)

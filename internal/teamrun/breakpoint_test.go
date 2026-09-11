@@ -51,8 +51,12 @@ func (c *countingSpawn) count() int {
 
 func breakRunner(t *testing.T, ch *fakeChannels, spawn SpawnFunc, states []string, f BreakpointFunc) *agentRunner {
 	t.Helper()
+	src, err := NewStaticBreakpoints(states)
+	if err != nil {
+		t.Fatalf("NewStaticBreakpoints(%v): %v", states, err)
+	}
 	r := starterRunner(ch, spawn)
-	WithBreakpoints(states, f)(r)
+	WithBreakpoints(src, f)(r)
 	return r
 }
 

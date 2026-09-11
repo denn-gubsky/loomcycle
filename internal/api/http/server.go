@@ -21,6 +21,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/clienttools"
@@ -151,6 +152,13 @@ type Server struct {
 	// parks it at awaiting_input (vs the whole-run cancel registry, which
 	// terminates). Always non-nil after New(); armed only for interactive runs.
 	turnCancelReg *turncancel.Registry
+
+	// breakpointReg maps a live run_id → the armed breakpoint set of the team
+	// walk running under it, so an operator can arm a Starter state while the
+	// walk is already going. Always non-nil (a debugger that silently is not
+	// there is worse than one that refuses), and entries live only as long as
+	// the walk.
+	breakpointReg *breakpoints.Registry
 
 	// residentReg maps a resident interactive sub-agent's run_id → its live
 	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
@@ -511,6 +519,9 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// way to mutate the trust boundary is a restart with new yaml.
 	hookReg := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
 	s := &Server{
+		// Always present: an operator hitting Debug on a run must get either an
+		// arming or a clear refusal, never a silent no-op.
+		breakpointReg:  breakpoints.NewRegistry(),
 		cfgHolder:      config.NewHolder(cfg),
 		providers:      pr,
 		tools:          builtinTools,
@@ -923,6 +934,14 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				}
 				return nil
 			}
+		}
+		if td.LiveBreakpoints == nil {
+			// Ad-hoc Run → Debug: the walk reads its arming from a set this
+			// server can still write to, so a state can be armed after the run
+			// started. Without this the run argument is the only way in, and
+			// the case an operator is actually in — watching a wave go wrong —
+			// has nothing to write to.
+			td.LiveBreakpoints = s.openTeamBreakpoints
 		}
 		if td.ChannelCatalog == nil {
 			// The same merged set the per-agent channel policy is built from, so
@@ -3311,6 +3330,8 @@ func (s *Server) Mux() http.Handler {
 	// PR 2 / interactive terminal: inject an operator "steering" instruction
 	// into an in-flight run (appended to the live conversation mid-turn).
 	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
+	mux.Handle("GET /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunBreakpoints))))
+	mux.Handle("PUT /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutRunBreakpoints))))
 	mux.Handle("POST /v1/runs/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelTurn))))
 	mux.Handle("POST /v1/runs/{run_id}/compact", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCompactRun))))
 	// Re-attach to a running (or finished) run's event stream — the operator

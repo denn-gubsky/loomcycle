@@ -113,6 +113,21 @@ type TeamDef struct {
 	// is omitted from the report rather than reported as failing.
 	AgentExists func(ctx context.Context, name string) bool
 
+	// LiveBreakpoints, if set, opens the MUTABLE armed set for this run's walk,
+	// seeded with the run argument, and returns it plus the release to call when
+	// the walk ends.
+	//
+	// It is what makes ad-hoc debugging possible. A breakpoint set captured at
+	// dispatch only serves an operator who already knows the workflow is broken;
+	// the common case is starting a run that you expect to work, watching a wave
+	// go wrong, and wanting to stop before the next one. There is nothing to
+	// pass at that moment, so the walk has to read an armed set something else
+	// can still write to.
+	//
+	// nil = breakpoints are dispatch-time only (the run argument still works,
+	// and nothing can arm a state once the walk has started).
+	LiveBreakpoints func(ctx context.Context, seed []string) (teamrun.BreakpointSource, func(), error)
+
 	// AskHuman, if set, escalates an iteration-cap overflow to a human instead of
 	// aborting: when the caller passes interrupt_on_cap, a capped state raises an
 	// Interruption `ask` (this closure blocks until answered/timed-out/cancelled)
@@ -892,7 +907,21 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if t.AskHuman == nil {
 			return errResult("run: breakpoints require the Interruption machinery, which is not wired on this server"), nil
 		}
-		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(in.Breakpoints,
+	}
+	// The armed set is opened for EVERY run that could be asked, not only one
+	// that passed `breakpoints`. A run that starts with none is exactly the run
+	// an operator later wants to debug, and if the set only existed when it was
+	// seeded there would be nothing for them to arm.
+	//
+	// An empty set answers false for every state, so a walk nobody arms takes
+	// the same path it took before any of this existed.
+	if t.AskHuman != nil {
+		src, release, serr := t.openBreakpoints(ctx, in.Breakpoints)
+		if serr != nil {
+			return errResult(fmt.Sprintf("run: %s", serr)), nil
+		}
+		defer release()
+		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(src,
 			func(c context.Context, bp teamrun.Breakpoint) (teamrun.BreakDecision, error) {
 				breaks++
 				answer, aerr := t.AskHuman(c, formatBreakpoint(row.Name, bp))
@@ -950,7 +979,10 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				m["cap_decision"] = lastDecision
 			}
 		}
-		if len(in.Breakpoints) > 0 {
+		// Reported when the walk actually paused — not when `breakpoints` was
+		// passed. A walk armed mid-run passed nothing and still paused, and a
+		// walk that was armed but never reached the state paused nothing.
+		if breaks > 0 {
 			m["breakpoints_hit"] = breaks
 			if lastBreak != "" {
 				m["break_decision"] = lastBreak
@@ -1021,6 +1053,24 @@ func capActionLabel(d teamrun.CapDecision) string {
 	default:
 		return "abort"
 	}
+}
+
+// openBreakpoints returns the armed set the walk will consult, plus the release
+// to call when it ends.
+//
+// With LiveBreakpoints wired the set is MUTABLE and addressable while the walk
+// runs; without it the run argument still works exactly as before, fixed at
+// dispatch. Degrading rather than refusing is right here — the dispatch-time
+// behaviour is the feature this replaces, not a broken half of it.
+func (t *TeamDef) openBreakpoints(ctx context.Context, seed []string) (teamrun.BreakpointSource, func(), error) {
+	if t.LiveBreakpoints != nil {
+		return t.LiveBreakpoints(ctx, seed)
+	}
+	src, err := teamrun.NewStaticBreakpoints(seed)
+	if err != nil {
+		return nil, nil, err
+	}
+	return src, func() {}, nil
 }
 
 // maxBreakPreview bounds ONE previewed prompt or output in the question text.

@@ -890,6 +890,13 @@ func requiredScopeFor(method, path string) string {
 	// default empty arm, letting a read-only bearer steer a run.)
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/input"):
 		return auth.ScopeRunsCreate
+	// Arming a team walk's breakpoints holds work back and releases it — a
+	// run-state mutation, same scope as steer/cancel/compact. Without this case
+	// the PUT falls through to the default-deny admin arm, which would lock a
+	// tenant operator out of debugging their own run. (The GET is covered by
+	// the runs-read case below.)
+	case method == http.MethodPut && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/breakpoints"):
+		return auth.ScopeRunsCreate
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
 		return auth.ScopeRunsRead
 	// Run / agent / session / user reads.
