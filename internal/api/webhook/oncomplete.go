@@ -93,11 +93,46 @@ func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name,
 		PublishedAt:       rec.now(),
 		PublishedByUserID: userID,
 	}
-	// maxMessages = 0 means use the store's default cap (operator sizing is a
-	// per-channel cfg concern the publish path doesn't see), mirroring the
-	// scheduler.
+	// A HELD channel stores the hook's message without delivering it, like every
+	// other write to that channel. The rest of the definition — max_messages,
+	// default_ttl, the declared scope — is still not consulted here (this path
+	// has always passed 0 and derived the scope from the user id); widening that
+	// moves where existing messages LAND, which is a separate change. A hold is
+	// not: honouring it can only withhold a message the operator asked to be
+	// withheld.
+	if rec.channelHeld(ctx, tenantID, h.Channel) {
+		msg.VisibleAt = store.ChannelHeldVisibleAt()
+	}
 	_, _, err = rec.store.ChannelPublish(ctx, msg, 0)
 	return err
+}
+
+// channelHeld reports whether a channel is declared `hold:` — yaml first
+// (operator-global, so every tenant sees it), then the tenant's runtime row.
+//
+// A store fault answers false: an unreachable definition plane must not start
+// holding channels nobody declared held. The choice is nearly moot in practice
+// — the publish on the next line uses the SAME store, so a fault here means the
+// message is not written either — and "don't invent a hold" is the safer
+// default for a transient error. A yaml-declared hold never touches the store
+// at all.
+//
+// Mirrors (*http.Server).ChannelHeld, which the in-process publishers use; the
+// receiver has its own because it holds a narrow store interface, not a server.
+func (rec *Receiver) channelHeld(ctx context.Context, tenantID, channel string) bool {
+	if rec.cfg != nil {
+		if def, ok := rec.cfg.Channels[channel]; ok {
+			return def.Hold
+		}
+	}
+	if rec.store == nil {
+		return false
+	}
+	row, err := rec.store.ChannelGet(ctx, tenantID, channel)
+	if err != nil {
+		return false
+	}
+	return row.Hold
 }
 
 // dispatchOnCompleteMemorySet mirrors scheduler.dispatchMemorySet. agent

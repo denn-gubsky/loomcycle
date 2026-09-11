@@ -212,3 +212,42 @@ func TestScheduler_UnknownDeliveryDoesNotFallThroughToARun(t *testing.T) {
 		t.Errorf("last_status = %q, want decode_def", state.LastStatus)
 	}
 }
+
+// A tick to a HELD channel is stored and NOT delivered. Found by running the
+// two features together: the tick wrote straight through the store, bypassing
+// the publisher where the hold is enforced, so a cron walked past a breakpoint.
+func TestScheduler_ChannelDeliveryHonoursAHold(t *testing.T) {
+	enabled := true
+	def := scheduleDef{
+		Delivery: "channel",
+		Channel:  "wave-in",
+		Schedule: "0 * * * *",
+		Enabled:  &enabled,
+	}
+	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global", Hold: true}, true
+	})
+
+	fireT(t, sched)
+
+	msgs, _, err := st.ChannelSubscribe(context.Background(), "", "wave-in", store.MemoryScopeGlobal, "", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("a held channel delivered the tick: %d messages", len(msgs))
+	}
+	// Stored, not lost: releasing hands it over.
+	released, held, err := st.ChannelRelease(context.Background(), "", "wave-in", store.MemoryScopeGlobal, "", 1)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 1 || held != 0 {
+		t.Fatalf("release gave %d leaving %d, want 1 leaving 0 — the tick was not held, it was lost", len(released), held)
+	}
+	msgs, _, _ = st.ChannelSubscribe(context.Background(), "", "wave-in", store.MemoryScopeGlobal, "", "", 10)
+	if len(msgs) != 1 {
+		t.Errorf("after release, %d delivered, want 1", len(msgs))
+	}
+}

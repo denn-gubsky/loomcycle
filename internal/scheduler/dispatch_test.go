@@ -142,3 +142,34 @@ func TestScheduler_OnCompleteChannelPublish_LegacyNilResolver(t *testing.T) {
 		t.Errorf("legacy user/alice message count = %d, want 1", got)
 	}
 }
+
+// An on_complete channel.publish hook honours a hold too — it resolves the
+// channel definition, so it owes the definition the same obedience the tick
+// does. Without this a completed run would walk past the same breakpoint.
+func TestDispatchChannelPublish_HonoursAHold(t *testing.T) {
+	sched, _, _, _, st := schedulerFixture(t, channelHookDef("done"), time.Now().Add(time.Hour))
+	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global", Hold: true}, true
+	})
+
+	err := sched.dispatchOneHook(context.Background(), "sched", "", "researcher", "",
+		scheduleHook{Kind: "channel.publish", Channel: "done"}, "r_1", "a_1")
+	if err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+
+	msgs, _, err := st.ChannelSubscribe(context.Background(), "", "done", store.MemoryScopeGlobal, "", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("a held channel delivered the hook message: %d", len(msgs))
+	}
+	released, _, err := st.ChannelRelease(context.Background(), "", "done", store.MemoryScopeGlobal, "", 1)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 1 {
+		t.Errorf("released %d, want the held hook message", len(released))
+	}
+}

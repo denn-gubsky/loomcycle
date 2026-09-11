@@ -92,6 +92,9 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 	if target.DefaultTTL > 0 {
 		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
 	}
+	if target.Hold {
+		msg.VisibleAt = store.ChannelHeldVisibleAt()
+	}
 	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
 	return err
 }
@@ -122,7 +125,7 @@ func (s *Scheduler) resolvePublishTarget(ctx context.Context, channel, userID, a
 	if !ok {
 		return publishTarget{}, fmt.Errorf("channel.publish: channel %q is not declared (static yaml or runtime substrate)", channel)
 	}
-	out := publishTarget{DefaultTTL: declared.DefaultTTL, MaxMessages: declared.MaxMessages}
+	out := publishTarget{DefaultTTL: declared.DefaultTTL, MaxMessages: declared.MaxMessages, Hold: declared.Hold}
 	switch declared.Scope {
 	case "global":
 		out.Scope = store.MemoryScopeGlobal
@@ -154,6 +157,7 @@ type publishTarget struct {
 	ScopeID     string
 	DefaultTTL  int
 	MaxMessages int
+	Hold        bool
 }
 
 func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID, tenantID string, h scheduleHook) error {

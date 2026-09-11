@@ -473,6 +473,9 @@ type fakeWebhookStore struct {
 	channelPublishes []store.ChannelMessage
 	memorySets       []memorySetCall
 
+	// heldChannels marks runtime-declared `hold: true` channels for ChannelGet.
+	heldChannels map[string]bool
+
 	// askedTenants records every tenant passed to WebhookDefGetActive (RFC N).
 	// Lets the URL-tenant route test assert the receiver threaded the
 	// URL-derived tenant into the resolver.
@@ -509,6 +512,18 @@ func (f *fakeWebhookStore) ChannelPublish(_ context.Context, msg store.ChannelMe
 	defer f.mu.Unlock()
 	f.channelPublishes = append(f.channelPublishes, msg)
 	return "msg-1", 0, nil
+}
+
+// heldChannels names the RUNTIME-declared channels this fake reports as
+// `hold: true`; anything else is not-found, the same answer a real store gives
+// for a yaml-only or undeclared channel.
+func (f *fakeWebhookStore) ChannelGet(_ context.Context, _, name string) (store.ChannelRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.heldChannels[name] {
+		return store.ChannelRow{Name: name, Hold: true}, nil
+	}
+	return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
 }
 
 func (f *fakeWebhookStore) MemorySet(_ context.Context, _ string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, _ time.Duration) error {
@@ -684,6 +699,10 @@ func (s *raceStore) RunByIdempotencyKey(_ context.Context, key string) (store.Ru
 
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b). The race
 // tests never declare on_complete hooks, so no-ops suffice.
+func (s *raceStore) ChannelGet(_ context.Context, _, name string) (store.ChannelRow, error) {
+	return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
+}
+
 func (s *raceStore) ChannelPublish(_ context.Context, _ store.ChannelMessage, _ int) (string, int, error) {
 	return "", 0, nil
 }

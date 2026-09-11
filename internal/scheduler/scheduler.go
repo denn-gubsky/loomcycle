@@ -156,6 +156,12 @@ type DeclaredChannel struct {
 	Scope       string // "global" | "user" | "agent"
 	DefaultTTL  int    // seconds; 0 = no TTL
 	MaxMessages int    // 0 = unbounded
+	// Hold is the breakpoint: the message is STORED at the reserved instant and
+	// delivered to nobody until someone releases it. A scheduler write has to
+	// honour it for the same reason it honours the scope — it resolved the
+	// definition, and a definition half-honoured is a setting the operator
+	// believes they made.
+	Hold bool
 }
 
 // ChannelScopeResolver returns the DECLARED shape of a channel by name.
@@ -518,6 +524,12 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	}
 	if target.DefaultTTL > 0 {
 		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
+	}
+	// A held channel stores the tick without delivering it — the cadence signal
+	// waits for a release. Without this a cron tick would walk straight past a
+	// breakpoint, which is exactly the pairing the two features exist for.
+	if target.Hold {
+		msg.VisibleAt = store.ChannelHeldVisibleAt()
 	}
 	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
 	return err

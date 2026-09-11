@@ -2945,6 +2945,7 @@ func main() {
 				Scope:       def.Scope,
 				DefaultTTL:  def.DefaultTTL,
 				MaxMessages: def.MaxMessages,
+				Hold:        def.Hold,
 			}, true
 		})
 		// RFC BL P2 consolidation fan-out: the provider resolver decides
