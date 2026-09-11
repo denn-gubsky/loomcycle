@@ -29,7 +29,13 @@ type countingSpawn struct {
 	prompts []string
 }
 
-func (c *countingSpawn) fn(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+// fn HONOURS ctx, because that is what a real spawn does — and because a fake
+// that ignores it cannot tell a run that was cancelled from one that ran. The
+// short-circuit test below is only meaningful against a spawner that notices.
+func (c *countingSpawn) fn(ctx context.Context, _ string, p Prompt, _ string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	msg := p.DataSlots[StarterMessageSlot]
