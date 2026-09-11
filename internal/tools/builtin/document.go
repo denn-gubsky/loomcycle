@@ -107,7 +107,7 @@ const documentInputSchema = `{
 		"reason":       {"type": "string", "description": "judge_fact: one sentence on WHY, quoted back to the operator. A verdict nobody can act on is a verdict nobody trusts."},
 		"subject":      {"type": "string", "description": "upsert_chunk: the thing this entity assertion is ABOUT, paired with type — emit both or neither. type says what kind of thing it is, subject names it. A plain document chunk has no subject; passing the pair is what marks a write as an entity the ontology governs."},
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
-		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
+		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Omit when unknown — an undated fact is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded."},
 		"from_pending": {"type": "string", "description": "upsert_chunk: the id of a pending item you drained, so this fact records what produced it. The server fills in the origin and the source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds."},
@@ -1494,6 +1494,25 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	if err := d.writeBody(ctx, mscope, key, rootID, "", "", nil); err != nil {
 		return errResult("create_document: root body: " + err.Error()), nil
+	}
+	// A DOCUMENT'S ROOT CAN BE THE ENTITY ITSELF (RFC CV decision 1). When the
+	// caller names the entity pair AND a natural key, the root chunk gets the
+	// sidecar that makes it an entity node — so the subject node and the document
+	// root are ONE object rather than a container holding a node that repeats it.
+	//
+	// That collapse is the whole point of subject-homing: `/facts/<subject>` is the
+	// subject, its facts are its children, and "what do we know about X" is one
+	// get_document rather than a search or a traversal. Two objects would mean two
+	// titles, two types and two places to correct either.
+	//
+	// Absent the pair this is a no-op, so every existing create_document is
+	// unchanged — an ordinary document's root is not an entity and must not
+	// acquire a sidecar row that the fact surfaces would then list.
+	if strings.TrimSpace(in.Subject) != "" && strings.TrimSpace(in.NaturalKey) != "" {
+		if err := d.writeChunkMeta(ctx, key, rootID, in); err != nil {
+			return errResult("create_document: the root was created but its entity metadata " +
+				"failed, so the document exists and is not the subject it claims to be: " + err.Error()), nil
+		}
 	}
 	// A document's tags are its own (independent of the root chunk's tags).
 	if len(in.Tags) > 0 {
