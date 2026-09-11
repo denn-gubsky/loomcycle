@@ -924,6 +924,24 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				return nil
 			}
 		}
+		if td.ChannelCatalog == nil {
+			// The same merged set the per-agent channel policy is built from, so
+			// "declared" means one thing everywhere. Read through the server
+			// rather than the ctx policy, which makes the preflight behave
+			// identically on every transport — including the def-authoring
+			// planes that carry no channel catalog on the policy at all.
+			td.ChannelCatalog = func(ctx context.Context) map[string]tools.ChannelDef {
+				return s.mergedChannelDefs(ctx, true)
+			}
+		}
+		if td.AgentExists == nil {
+			// The same lookup op=run resolves a member through, so verify cannot
+			// call a team runnable that run would refuse.
+			td.AgentExists = func(ctx context.Context, name string) bool {
+				_, ok := s.lookupAgent(ctx, tenantFromCtx(ctx), name)
+				return ok
+			}
+		}
 		if td.MaxWave == 0 {
 			// The same ceiling the external fan-out surface uses. One number for
 			// "how many runs may one call start", so an operator who tunes it

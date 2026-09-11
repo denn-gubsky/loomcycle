@@ -96,6 +96,23 @@ type TeamDef struct {
 	// unavailable (board_chunk_id is then refused). Wired by SetTeamDefTool.
 	Board teamBoard
 
+	// ChannelCatalog, if set, reads the operator's DECLARED channel set so
+	// create/fork can refuse a definition naming a channel that does not exist,
+	// and verify can report one deleted after the def was written.
+	//
+	// It reads the config + runtime channel rows directly rather than the ctx
+	// channel POLICY, deliberately: the policy is the caller's grant, and the
+	// question here is whether the channel exists at all. Reading the grant
+	// would make the preflight refuse different definitions on different
+	// transports. nil = the declared-set check is SKIPPED (never failed) — a
+	// tool with no catalog cannot tell "undeclared" from "I have no list".
+	ChannelCatalog func(ctx context.Context) map[string]tools.ChannelDef
+
+	// AgentExists, if set, reports whether an agent name resolves, so verify can
+	// report a member retired after the def was written. nil = the agent sweep
+	// is omitted from the report rather than reported as failing.
+	AgentExists func(ctx context.Context, name string) bool
+
 	// AskHuman, if set, escalates an iteration-cap overflow to a human instead of
 	// aborting: when the caller passes interrupt_on_cap, a capped state raises an
 	// Interruption `ask` (this closure blocks until answered/timed-out/cancelled)
@@ -126,7 +143,11 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`(success to advance, pushback to loop back for rework) — output threads to the next state, until a ` +
 	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
 	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
-	`instead of aborting. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
+	`instead of aborting. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
+	`does not grant, or one that is not declared at all, is refused with the exact block to add, rather than ` +
+	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
+	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
+	`a runnable flag. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and/or after collecting (showing each result, before any of ` +
 	`it reaches the sink) and asks a human to release all, release n, or abort. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
@@ -154,7 +175,7 @@ const teamDefInputSchema = `{
     "description":    {"type": "string", "description": "Free-text rationale for create/fork."},
     "promote":        {"type": "boolean", "description": "create defaults true, fork defaults false."},
     "retired":        {"type": "boolean", "description": "Required for retire — set true to retire, false to un-retire."},
-    "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row."},
+    "content_sha256": {"type": "string", "description": "Input for op=verify — the local content hash to compare against the active row. verify also returns runnable + issues[]: what the stored definition references but does not contain (an undeclared channel, a team-ACL gap, a retired member). Optional — verify reports the sweep with or without it."},
     "format":         {"type": "string", "enum": ["mermaid","d2"], "description": "render_diagram output format (default mermaid; d2 is deferred)."},
     "highlight_state": {"type": "string", "description": "render_diagram: optionally mark this state (e.g. a chunk's current state) with a bold outline."},
     "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."},
@@ -251,6 +272,12 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	// Preflight AFTER the authority check: "you may not grant this" is a
+	// harder refusal than "this will not work", and reporting the softer one
+	// first would send the author to fix a def they are not allowed to write.
+	if err := t.preflightChannels(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
@@ -364,6 +391,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := checkTeamChannelAuthority(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := t.preflightChannels(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := t.checkSizeCaps(defJSON, in.Description); err != nil {
@@ -534,14 +564,83 @@ func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result
 		}
 		return errResult(fmt.Sprintf("verify: %s", err)), nil
 	}
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"matches":        in.ContentSHA256 != "" && in.ContentSHA256 == row.ContentSHA256,
 		"current_sha256": row.ContentSHA256,
 		"current_def_id": row.DefID,
 		"version":        row.Version,
 		"name":           row.Name,
 		"deployed":       true,
-	})
+	}
+	// The hash answers "is this the def I wrote". It cannot answer "will it
+	// still run" — a matching def whose channel was deleted or whose member was
+	// retired is byte-identical and broken. So verify also sweeps what the def
+	// REFERENCES but does not contain.
+	//
+	// The sweep NEVER turns verify into an error: the op's contract is a report,
+	// and a caller comparing hashes across deployments must not start failing
+	// because the far side is missing a channel. Findings ride the response.
+	if def, perr := teamgraph.Parse(row.Definition); perr == nil {
+		issues := t.sweepReferences(ctx, def)
+		// `runnable` is reported either way — present-and-true is an answer,
+		// where an absent field would be indistinguishable from a sweep that
+		// did not run. `issues` appears only when there are some, so a healthy
+		// team's response stays the shape callers already parse.
+		out["runnable"] = len(issues) == 0
+		if len(issues) > 0 {
+			out["issues"] = issues
+		}
+	}
+	return okJSON(out)
+}
+
+// sweepReferences reports what a stored definition names that no longer
+// resolves. Each issue is a map so a canvas can render it and a human can read
+// it, and each carries the state that names the thing — the only part anyone
+// can act on.
+func (t *TeamDef) sweepReferences(ctx context.Context, def teamgraph.Definition) []map[string]any {
+	var issues []map[string]any
+	catalog := t.channelCatalog(ctx)
+	for _, ref := range teamgraph.ChannelRefs(def) {
+		// The team ACL is def-internal, so this is checkable on every plane and
+		// is the failure that actually strands workflows: a def promoted before
+		// the ACL existed still validates.
+		if !channelAllowed(ref.Channel, def.GrantList(ref.Side)) {
+			issues = append(issues, map[string]any{
+				"kind": "acl_missing", "state": ref.State, "field": ref.Field,
+				"channel": ref.Channel, "side": string(ref.Side),
+				"detail": fmt.Sprintf("the team's ACL does not grant %s on %q", ref.Side, ref.Channel),
+			})
+		}
+		// Skipped, not reported as broken, when no catalog is wired — the same
+		// reason the preflight skips it.
+		if catalog == nil {
+			continue
+		}
+		if _, ok := catalog[ref.Channel]; !ok {
+			issues = append(issues, map[string]any{
+				"kind": "channel_undeclared", "state": ref.State, "field": ref.Field,
+				"channel": ref.Channel,
+				"detail":  fmt.Sprintf("channel %q is no longer declared", ref.Channel),
+			})
+		}
+	}
+	if t.AgentExists != nil {
+		seen := map[string]bool{}
+		for _, ref := range teamgraph.AgentRefs(def) {
+			if seen[ref.Agent] || t.AgentExists(ctx, ref.Agent) {
+				seen[ref.Agent] = true
+				continue
+			}
+			seen[ref.Agent] = true
+			issues = append(issues, map[string]any{
+				"kind": "agent_missing", "state": ref.State, "field": ref.Field,
+				"agent":  ref.Agent,
+				"detail": fmt.Sprintf("agent %q does not resolve in this tenant", ref.Agent),
+			})
+		}
+	}
+	return issues
 }
 
 // execRenderDiagram generates a diagram for a team — by def_id (a specific
