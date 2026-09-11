@@ -71,9 +71,14 @@ func TestChannel_UnrestrictedPolicyReachesADeclaredChannel(t *testing.T) {
 			t.Errorf("unrestricted policy refused %s on a declared channel: %v", side, err)
 		}
 	}
-	// Still closed over the operator's declared set.
-	if _, _, _, err := c.resolveChannel(ctx, open, "publish", "never-declared"); err == nil {
-		t.Error("unrestricted policy reached an UNDECLARED channel — it lifts the allowlist, not the closed set")
+	// Still closed over the operator's declared set, and refused BY THAT CHECK —
+	// asserting the reason, not merely that something errored. An undeclared
+	// channel falling through to a later guard (an empty scope, say) would also
+	// produce an error while the closed set had in fact been lifted.
+	_, _, _, err := c.resolveChannel(ctx, open, "publish", "never-declared")
+	if err == nil || !strings.Contains(err.Error(), "not declared in operator config") {
+		t.Errorf("unrestricted policy reached an UNDECLARED channel — it lifts the allowlist, "+
+			"not the closed set; err = %v", err)
 	}
 	// And the old spelling grants nothing, which is the bug this replaces.
 	star := tools.ChannelPolicyValue{Publish: []string{"*"}, Subscribe: []string{"*"}, Channels: declared}
