@@ -152,14 +152,22 @@ func TestTeamDefPreflight_RunsOnFork(t *testing.T) {
 func TestTeamDefPreflight_AuthorityRefusalWinsOverPreflight(t *testing.T) {
 	tool, _, cleanup := teamDefFixture(t)
 	defer cleanup()
-	narrow := authoringCtx(nil, []string{"pr-events"}) // holds no publish grant
+	// The def must fail BOTH checks, or the test cannot tell which ran first:
+	// its ACL claims a subscribe grant the author does not hold (authority), AND
+	// leaves the sink with no publish grant (preflight).
+	narrow := authoringCtx(nil, nil) // holds nothing
 
-	res, _ := tool.Execute(narrow, json.RawMessage(`{"op":"create","name":"triage","overlay":`+fullACL()+`}`))
+	res, _ := tool.Execute(narrow, json.RawMessage(
+		`{"op":"create","name":"triage","overlay":`+
+			strings.TrimSuffix(starterGraph, "}")+`,"channels":{"subscribe":["pr-events"]}}}`))
 	if !res.IsError {
 		t.Fatal("expected a refusal")
 	}
 	if !strings.Contains(res.Text, "never widen it") {
 		t.Errorf("the AUTHORITY refusal must come first, got:\n%s", res.Text)
+	}
+	if strings.Contains(res.Text, "does not grant publish") {
+		t.Errorf("the preflight refusal preempted the authority one:\n%s", res.Text)
 	}
 }
 
