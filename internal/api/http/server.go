@@ -2677,7 +2677,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UserID:                effectiveUserID,
 		TenantID:              effectiveTenantID, // RFC L: authoritative tenant (memory tenancy key)
 		AgentID:               agentID,
-		RootRunID:             runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
+		RootRunID:             runID,     // RFC AH Phase 2b: top-level run roots its own spawn tree
+		SessionID:             sessionID, // the chat a run-time write records itself against
 		UserTier:              in.UserTier,
 		UserBearer:            in.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials:       in.UserCredentials, // v1.x RFC F: per-tool named credentials
@@ -4321,7 +4322,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UserID:                req.UserID,
 		TenantID:              req.TenantID, // RFC L: authoritative tenant (memory tenancy key)
 		AgentID:               agentID,
-		RootRunID:             runID, // RFC AH Phase 2b: top-level run roots its own spawn tree
+		RootRunID:             runID,     // RFC AH Phase 2b: top-level run roots its own spawn tree
+		SessionID:             sessionID, // the chat a run-time write records itself against
 		UserTier:              req.UserTier,
 		UserBearer:            req.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials:       req.UserCredentials, // v1.x RFC F: per-tool named credentials
@@ -4931,6 +4933,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		TenantID:              sess.TenantID, // RFC L: tenant from the session (authoritative at creation)
 		AgentID:               agentID,
 		RootRunID:             run.ID, // RFC AH Phase 2b: continuation roots its own spawn tree
+		SessionID:             id,     // the chat a run-time write records itself against
 		UserTier:              body.UserTier,
 		UserBearer:            body.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials:       body.UserCredentials, // v1.x RFC F: per-tool named credentials
@@ -6307,6 +6310,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
 		AgentID:         subAgentID,
 		RootRunID:       parentIdentity.RootRunID,             // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
+		SessionID:       subSessionID,                         // its OWN chat, not the parent's — a sub-agent gets a session of its own
 		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
 		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
 		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
