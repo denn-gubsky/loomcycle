@@ -498,3 +498,55 @@ func TestChunkParentage_RefusesAnUnreachableParent(t *testing.T) {
 		t.Errorf("moving to the root level was refused: %s", r.Text)
 	}
 }
+
+// TestCreateDocument_RefusesAHeldNaturalKeyAndLeavesNothingBehind.
+//
+// chunk_memory_meta.natural_key is UNIQUE per scope, so a document root claiming a key
+// another chunk holds cannot be written — and the write used to be attempted AFTER the
+// documents row and the root chunk were inserted. MEASURED on a store whose subject
+// nodes predate subject-homing: the consolidator retries every pass, so each pass left
+// one more empty, path-less document behind (3 passes → 4 documents), and never wrote
+// the `about` edge either.
+//
+// The count is the assertion. A refusal that leaks is not a refusal.
+func TestCreateDocument_RefusesAHeldNaturalKeyAndLeavesNothingBehind(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Entities","path":"/memory/entities"}`)
+	if r.IsError {
+		t.Fatalf("create shared: %s", r.Text)
+	}
+	shared, _ := out["document_id"].(string)
+	if _, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+shared+
+		`","natural_key":"person:denn","title":"Denn","type":"person","subject":"Denn"}`); r.IsError {
+		t.Fatalf("seed subject node: %s", r.Text)
+	}
+
+	for pass := 1; pass <= 3; pass++ {
+		_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Denn","path":"/facts/denn",`+
+			`"type":"person","subject":"Denn","natural_key":"person:denn"}`)
+		if !r.IsError {
+			t.Fatalf("pass %d: create_document succeeded with a key another chunk holds", pass)
+		}
+		if !strings.Contains(r.Text, "home_facts") {
+			t.Errorf("pass %d: refusal does not point at the migration that frees the key: %s", pass, r.Text)
+		}
+	}
+
+	key := sidecarScope(t, d, ctx)
+	docs, err := d.query(ctx, key, `SELECT count(*) FROM documents`)
+	if err != nil {
+		t.Fatalf("count documents: %v", err)
+	}
+	if n := asInt(docs.Rows[0][0]); n != 1 {
+		t.Errorf("%d documents after 3 refused creates, want 1 — a refusal that leaves the "+
+			"document behind turns one failure into an unbounded leak", n)
+	}
+	chunks, err := d.query(ctx, key, `SELECT count(*) FROM chunks`)
+	if err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if n := asInt(chunks.Rows[0][0]); n != 2 {
+		t.Errorf("%d chunks, want 2 (the shared root and the subject node)", n)
+	}
+}

@@ -639,6 +639,7 @@ agents:
           proposed_names: {},       // name -> true, so one pass proposes a type once
           owner_names: null,        // the target's DECLARED names, resolved once per pass
           entity_nodes: 0,          // distinct subjects given an entity chunk
+          subject_doc_unavailable: 0, // subjects filed in the shared document instead of their own
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
           // because this body re-executes from the top on every turn and must be a
@@ -2522,12 +2523,49 @@ agents:
               st.entity_nodes++;
             }
           } catch (e2) {
-            st.entity_failed++;
+            // RECORDED, NOT COUNTED. The text has to land in st.entity_error because
+            // undeclaredTypeRefusal reads it to decide whether to retry under the
+            // fallback type. But a failure HERE is not yet a failure: homeFor falls
+            // back to the shared entity document, and if that lands then no fact lost
+            // its edge and nothing should read as a broken write. Whoever cannot
+            // recover counts it — upsertEntityChunk does, on the fallback path.
             if (!st.entity_error) { st.entity_error = errText(e2); }
           }
         }
         st.subject_docs[memo] = out;
         return out;
+      }
+
+      // homeFor answers "which document does a fact about this subject go in", and
+      // ALWAYS answers if the graph can be written at all.
+      //
+      // The preferred answer is the subject's own document. The fallback is the shared
+      // entity document with the subject as a sibling node — the shape this pass wrote
+      // before subject-homing — and it exists because a scope written in that shape
+      // CANNOT adopt the new one on its own: natural_key is unique per scope, so while
+      // the old node holds `person:denn` the document claiming the same key cannot be
+      // created. Without a fallback every fact about an already-known subject would be
+      // stored with NO `about` edge, which is a fact unreachable from the person it is
+      // about — the one failure the entity tier exists to prevent. The migration
+      // (op home_facts on the memory admin surface) moves those nodes into their own
+      // documents, after which this never fires again.
+      //
+      // A SUCCESSFUL FALLBACK IS NOT A FAILURE. It is counted on its own line, and
+      // st.entity_failed stays where it belongs — on writes that landed nowhere.
+      // An operator reading "N graph writes failed" would go looking for a broken
+      // Document tool; the real answer is a store that has not been migrated yet, and
+      // the two need opposite actions.
+      function homeFor(st, scope, sharedDoc, subjType, subjName) {
+        var home = subjectDoc(st, scope, subjType, subjName);
+        if (home) { return home; }
+        var subjKey = entityKey(subjType, subjName);
+        var isNew = !st.entity_ids[scope + "\u0000" + subjKey];
+        var id = upsertEntityChunk(st, scope, sharedDoc, subjKey, {
+          title: subjName, type: subjType, subject: subjName
+        });
+        if (!id) { return null; }
+        if (isNew) { st.entity_nodes++; st.subject_doc_unavailable++; }
+        return { doc: sharedDoc, root: id };
       }
 
       // nonEmpty reports a USABLE string field — present, a string, and not merely
@@ -2620,7 +2658,7 @@ agents:
           // subject is one node however many ways the extractor spells its kind.
           var subjType = canonicalType(st, scope, proposed, fact.subject);
           var subjKey = entityKey(subjType, fact.subject);
-          var home = subjectDoc(st, scope, subjType, fact.subject);
+          var home = homeFor(st, scope, docID, subjType, fact.subject);
           if (home) { homeDoc = home.doc; subjID = home.root; }
           // UNDECLARED TYPE: the write was refused because the tenant does not declare this
           // kind. File the kind as an inert candidate an operator can accept, then retry under
@@ -2637,7 +2675,7 @@ agents:
             // retries the same /facts/<slug> document under a type the tenant
             // declares. The memo is dropped so the retry is actually attempted.
             delete st.subject_docs[scope + "\u0000" + slug(normalizeSubject(fact.subject))];
-            var retry = subjectDoc(st, scope, subjType, fact.subject);
+            var retry = homeFor(st, scope, docID, subjType, fact.subject);
             if (retry) { homeDoc = retry.doc; subjID = retry.root; }
           }
           // A REFUSED subject write no longer costs the fact its chunk either. The
@@ -3349,6 +3387,11 @@ agents:
             ent += ", " + st.entity_failed + " graph write(s) failed";
             // The reason, because the transcript of an internal agent cannot be read back.
             if (st.entity_error) { ent += " (first: " + String(st.entity_error).slice(0, 220) + ")"; }
+          }
+          if (st.subject_doc_unavailable) {
+            ent += ", " + st.subject_doc_unavailable + " subject(s) still filed in the shared " +
+              "document because their node predates per-subject documents — move them with the " +
+              "home_facts operation on the memory admin surface";
           }
           if (st.type_fell_back) {
             ent += ", " + st.type_fell_back + " subject(s) filed under " + ENTITY_FALLBACK_TYPE +

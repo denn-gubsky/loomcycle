@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1490,6 +1491,24 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if refused := d.gateEntityType(ctx, in); refused != nil {
 			return *refused, nil
 		}
+		// AND THE KEY MUST BE FREE. chunk_memory_meta.natural_key is UNIQUE per scope,
+		// so a root claiming a key another chunk holds fails — and it used to fail
+		// AFTER the document and its root were inserted, leaving an empty, path-less
+		// document behind every time. Measured on a store whose subject nodes predate
+		// subject-homing: one orphan per subject per consolidation pass, growing
+		// forever, because the caller retries on the next pass and fails identically.
+		//
+		// Refused here, before anything exists, with the holder named — a caller that
+		// hits this is looking at a store whose entities have not been moved into
+		// their own documents yet, and that is what the message has to say.
+		if held, herr := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey); herr != nil {
+			return errResult("create_document: natural key lookup: " + herr.Error()), nil
+		} else if held != "" {
+			return errResult("create_document: chunk " + held + " already holds the natural key " +
+				strconv.Quote(in.NaturalKey) + ", and a key names ONE thing per scope. That entity " +
+				"has not been moved into its own document yet — run the subject-homing migration " +
+				"(POST /v1/_memory/home_facts), which moves the node itself rather than copying it."), nil
+		}
 	}
 	rootID := newDocID()
 	// type/status are set on the root chunk (the authoritative kind/state) AND
@@ -1522,8 +1541,21 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// acquire a sidecar row that the fact surfaces would then list.
 	if strings.TrimSpace(in.Subject) != "" && strings.TrimSpace(in.NaturalKey) != "" {
 		if err := d.writeChunkMeta(ctx, key, rootID, in); err != nil {
-			return errResult("create_document: the root was created but its entity metadata " +
-				"failed, so the document exists and is not the subject it claims to be: " + err.Error()), nil
+			// UNWOUND, not left behind. A document that "is not the subject it claims to
+			// be" is precisely what must not survive the call: it is invisible (the
+			// dirent below never runs), it is empty, and the caller retries — so leaving
+			// it turns one failure into an unbounded leak. The guard above catches the
+			// cause that is knowable in advance; this catches the race and anything else,
+			// because the leak is what does the damage, not its reason.
+			//
+			// An unwind rather than a transaction because the body row lives in the
+			// Memory k/v plane, a DIFFERENT database, which cannot join a SQL txn — the
+			// same constraint delete_chunk works under.
+			_ = d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, rootID)
+			_ = d.exec(ctx, key, `DELETE FROM documents WHERE id = ?`, docID)
+			_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(rootID))
+			return errResult("create_document: the root's entity metadata could not be written, " +
+				"so nothing was created: " + err.Error()), nil
 		}
 	}
 	// A document's tags are its own (independent of the root chunk's tags).
