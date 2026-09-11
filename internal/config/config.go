@@ -5870,10 +5870,21 @@ var validChannelSemantics = map[string]bool{
 // channels; loop / runner / pause-state handlers for event-driven
 // channels).
 var eventDrivenSystemChannels = map[string]bool{
-	"_system/runtime-state":       true, // v0.8.9 pause/resume/restore
-	"_system/provider-events":     true, // provider fallback / cache-invalidated
-	"_system/interrupts/pending":  true, // v0.8.16 Interruption.ask publishes
-	"_system/interrupts/resolved": true, // v0.8.16 resolve endpoint + sweeper publishes
+	// PUBLISHED today — the call sites are real.
+	"_system/interrupts/pending":  true, // Interruption `ask` (internal/tools/builtin/interruption.go)
+	"_system/interrupts/resolved": true, // the resolve endpoint + the interrupt sweeper
+
+	// RESERVED, NOT PUBLISHED. Nothing in the runtime writes these: a sweep of
+	// every SystemPublisher call site finds only the two above. They stay in
+	// the set so an operator who declares one still gets a config that loads
+	// (removing them would turn a working-but-silent declaration into a fatal
+	// "requires a period"), and so the names stay claimed.
+	//
+	// Their comments used to read like the publishers existed, which is worse
+	// than no comment: the next person to wire a consumer would have believed
+	// them. Declare a consumer against these only after wiring the publisher.
+	"_system/runtime-state":   true, // intended: pause/resume/restore transitions
+	"_system/provider-events": true, // intended: provider fallback / cache-invalidated
 }
 
 // eventDrivenSystemChannelNames returns the deterministic list for

@@ -1423,7 +1423,37 @@ base — and built-in agents — **without a source checkout**. Two kinds:
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc/manager`
   Document Assistant agent + its four skills — no skills directory, no
-  `LOOMCYCLE_SKILLS_ROOT`.
+  `LOOMCYCLE_SKILLS_ROOT`. A bundle may also ship pure *declarations* rather
+  than agents — `system-channels` is one.
+
+**`system-channels` — the runtime's own `_system/*` channels.** Declares the
+five a workflow can actually read, so a Starter can source a clock or an
+interruption feed without hand-written yaml:
+
+| channel | kind | publisher |
+|---|---|---|
+| `_system/heartbeat-1m` / `-5m` / `-1h` | cadence, `period:` | the heartbeat goroutine |
+| `_system/interrupts/pending` | event | `Interruption` op=ask |
+| `_system/interrupts/resolved` | event | the resolve endpoint + sweeper |
+
+⚠️ **A ticker writes a row every period, on every deployment, forever** — the
+1-minute one is 1,440 rows a day whether or not anything reads it. That is why
+this is a bundle rather than an always-on default: `LOOMCYCLE_PRESETS=base,system-channels`
+opts in, and an install that never selects it starts no heartbeat goroutine and
+declares no `_system/` channel. Each ticker's `default_ttl` is **twice its
+period** and `max_messages` is 5, so a clock keeps no history — a heartbeat
+means *now*, and a long TTL would let a Starter that was down fire immediately
+on a stale tick.
+
+Agents can never publish to a `_system/` channel regardless of ACL; the prefix
+is reserved for the internal publisher and the admin endpoint. Declare a
+consumer, not a producer.
+
+Two names in the runtime's event-driven registry are deliberately **absent**:
+`_system/runtime-state` and `_system/provider-events` have no publisher in the
+runtime today, so declaring them would ship channels that can only ever be
+empty — which reads as a broken feature rather than an unused one. They stay
+reserved; wire a publisher before wiring a consumer.
 
 List + read them (works on any install, no source tree):
 

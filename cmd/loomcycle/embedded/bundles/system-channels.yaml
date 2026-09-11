@@ -1,0 +1,93 @@
+# Embedded bundle: system-channels
+#
+# The runtime's own `_system/*` channels, declared so a workflow can read them
+# without an operator hand-writing the yaml. Selected via
+# `LOOMCYCLE_PRESETS=…,system-channels`.
+#
+# WHY A BUNDLE AND NOT AN ALWAYS-ON DEFAULT. Declaring a channel is free;
+# TICKING one is not. A heartbeat writes a row every period, on every
+# deployment, forever — including the laptops and the TrueNAS app — whether or
+# not anything reads it. That cost is worth paying once a workflow sources a
+# Starter from a tick, and not before, so it is opted into rather than
+# inherited. One env var replaces the yaml an operator would otherwise write by
+# hand, which was the actual friction.
+#
+# WHAT IS DECLARED IS WHAT SOMETHING PUBLISHES. Every name below has a real
+# publisher in the runtime today:
+#
+#   heartbeat-{1m,5m,1h}   internal/channels/heartbeat.go, one goroutine per
+#                          declared cadence channel
+#   interrupts/pending     Interruption `ask` (internal/tools/builtin)
+#   interrupts/resolved    the resolve endpoint + the interrupt sweeper
+#
+# Names with NO publisher are deliberately absent — declaring them would ship
+# channels that can only ever be empty, which reads as a broken feature rather
+# than an unused one. `_system/runtime-state` and `_system/provider-events` are
+# in the runtime's event-driven registry but nothing writes them (see the note
+# there); the `alarms/*` set never had a publisher either.
+#
+# Agents cannot publish to a `_system/` channel regardless of ACL — the prefix
+# is reserved for the internal publisher and the admin endpoint. A team or an
+# agent SUBSCRIBES to these; it never writes them.
+
+channels:
+  # ---- cadence: a Starter's clock ----
+  #
+  # TTL is 2x the period, not longer, on purpose. A heartbeat means "now" — the
+  # runner's own comment says it represents the moment rather than history — and
+  # a long TTL would let a Starter that has been down fire immediately on a
+  # stale tick it was never meant to see. Two periods is enough that a tick is
+  # never lost to a razor-thin race between publish and read, and short enough
+  # that nothing old is ever waiting.
+  _system/heartbeat-1m:
+    description: "One-minute tick. A Starter sourcing this runs its wave every minute."
+    scope: global
+    publisher: system
+    period: 1m
+    default_ttl: 120
+    max_messages: 5
+    semantic: broadcast
+
+  _system/heartbeat-5m:
+    description: "Five-minute tick."
+    scope: global
+    publisher: system
+    period: 5m
+    default_ttl: 600
+    max_messages: 5
+    semantic: broadcast
+
+  _system/heartbeat-1h:
+    description: "Hourly tick."
+    scope: global
+    publisher: system
+    period: 1h
+    default_ttl: 7200
+    max_messages: 5
+    semantic: broadcast
+
+  # ---- event-driven: published when the event happens, never on a clock ----
+  #
+  # scope: user, matching what the publishers actually pass — an interruption
+  # belongs to the user whose run raised it, and a global declaration would put
+  # every tenant's pending asks on one wire.
+  #
+  # These cost nothing when idle: no goroutine, no tick, a row only when an
+  # interruption is actually raised or answered. They are here rather than
+  # always-on only because a deployment that reads neither should not accrue
+  # rows it never asked for.
+  _system/interrupts/pending:
+    description: "An Interruption ask is waiting for a human. Lets an external dashboard or agent answer one without polling."
+    scope: user
+    publisher: system
+    default_ttl: 86400
+    max_messages: 1000
+    semantic: broadcast
+
+  _system/interrupts/resolved:
+    description: "An Interruption ask was answered, timed out or cancelled."
+    scope: user
+    publisher: system
+    default_ttl: 86400
+    max_messages: 1000
+    semantic: broadcast
