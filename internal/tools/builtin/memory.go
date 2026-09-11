@@ -1708,10 +1708,65 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		}
 		spans = SourceSpansFor(ctx, m.SqlMem, tools.RunIdentity(ctx).TenantID, scope, scopeID, ids)
 	}
+
+	// A FACT'S IDENTITY IS ITS NATURAL KEY, wherever the fact is stored.
+	//
+	// The backend reports a row's own key, which for a chunk-homed fact is the
+	// opaque `doc.chunk:<hex>` address rather than the `memory/<class>/<slug>` name
+	// the fact has always had. Handing that back would change every fact's identity
+	// the moment its home moved — and the consolidator's merge path writes a
+	// recalled neighbour back UNDER ITS OWN KEY, so it would write a fact under an
+	// address instead of a name. SourceSpansFor keys on the natural key too, so the
+	// source span and its run id would quietly stop resolving.
+	//
+	// Resolved in ONE batched query, and only for rows that need it. A chunk whose
+	// sidecar has no natural key (ordinary prose) keeps its own key, so nothing is
+	// invented for a row that has no other name.
+	naturalKeys := map[string]string{}
+	if m.SqlMem != nil {
+		var chunkIDs []string
+		for _, f := range res.Facts {
+			if strings.HasPrefix(f.ID, memrank.DocumentChunkKeyPrefix) {
+				chunkIDs = append(chunkIDs, strings.TrimPrefix(f.ID, memrank.DocumentChunkKeyPrefix))
+			}
+		}
+		if len(chunkIDs) > 0 {
+			for cid, lb := range ChunkLabelsFor(ctx, m.SqlMem, tools.RunIdentity(ctx).TenantID, scope, scopeID, chunkIDs) {
+				if lb.NaturalKey != "" {
+					naturalKeys[memrank.DocumentChunkKeyPrefix+cid] = lb.NaturalKey
+				}
+			}
+		}
+		// The spans are keyed by natural key, so re-resolve them once the names are
+		// known — otherwise a chunk-homed fact loses the source reference P1 built.
+		if len(naturalKeys) > 0 {
+			var named []string
+			for _, f := range res.Facts {
+				if nk, ok := naturalKeys[f.ID]; ok {
+					named = append(named, nk)
+				}
+			}
+			if extra := SourceSpansFor(ctx, m.SqlMem, tools.RunIdentity(ctx).TenantID, scope, scopeID, named); len(extra) > 0 {
+				if spans == nil {
+					// SourceSpansFor returns nil on a miss or a fault, and the first
+					// call above may well have missed: it looked the facts up under
+					// keys they no longer have.
+					spans = make(map[string]FactSource, len(extra))
+				}
+				for k, v := range extra {
+					spans[k] = v
+				}
+			}
+		}
+	}
 	memories := make([]map[string]any, 0, len(res.Facts))
 	for _, f := range res.Facts {
+		id := f.ID
+		if nk, ok := naturalKeys[id]; ok {
+			id = nk
+		}
 		mem := map[string]any{
-			"id":     f.ID, // server-assigned; opaque to loomcycle, NOT a caller key
+			"id":     id, // the fact's stable natural key, wherever it is stored
 			"memory": f.Memory,
 			"score":  f.Score,
 		}
@@ -1719,7 +1774,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		// turn's own leading timestamp and whatever relative phrasing distillation
 		// dropped, which is exactly what a "when did X happen" question needs and a
 		// summarised sentence cannot supply.
-		if sp, ok := spans[f.ID]; ok {
+		if sp, ok := spans[id]; ok {
 			if sp.Span != "" {
 				mem["source"] = sp.Span
 			}
