@@ -58,8 +58,8 @@ func TestConsolidator_ObservedAtReachesTheWrite(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	got, _ := set.Input["observed_at"].(string)
+	set := lastFactWrite(t, f)
+	got := set.ObservedAt
 	if got != "2023-07-07T19:56:00Z" {
 		t.Errorf("Memory.set observed_at = %q, want the extractor's value to reach the write "+
 			"(input keys: %v)", got, keysOf(set.Input))
@@ -82,12 +82,12 @@ func TestConsolidator_ObservedAtIsIndependentOfTheValidityInterval(t *testing.T)
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if got, _ := set.Input["observed_at"].(string); got != "2023-07-07T19:56:00Z" {
+	set := lastFactWrite(t, f)
+	if got := set.ObservedAt; got != "2023-07-07T19:56:00Z" {
 		t.Errorf("observed_at = %q, want it to survive a refused validity interval", got)
 	}
-	if _, ok := set.Input["valid_at"]; ok {
-		t.Errorf("valid_at was written despite being a reversed interval: %v", set.Input["valid_at"])
+	if set.ValidAt != "" {
+		t.Errorf("valid_at was written despite being a reversed interval: %v", set.ValidAt)
 	}
 }
 
@@ -103,11 +103,11 @@ func TestConsolidator_ANonRFC3339TimeIsRefusedNotCoerced(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if v, ok := set.Input["observed_at"]; ok {
-		t.Errorf("observed_at = %v, want the prose date REFUSED and the field omitted entirely", v)
+	set := lastFactWrite(t, f)
+	if set.ObservedAt != "" {
+		t.Errorf("observed_at = %v, want the prose date REFUSED and the field omitted entirely", set.ObservedAt)
 	}
-	if value, _ := set.Input["value"].(string); value != "Dave moved to Berlin." {
+	if value := set.Text; value != "Dave moved to Berlin." {
 		t.Errorf("stored value = %q, want the fact kept — a good fact with a bad date is still a good fact", value)
 	}
 }

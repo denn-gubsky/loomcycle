@@ -298,12 +298,23 @@ func AnswersByCategory(rs []AnswerResult) []AnswerStats {
 // guard whose arithmetic only exists inside the function it protects is a guard
 // nobody can check.
 //
-// `doc.chunk:` rows are chunk BODIES, not recallable facts. Counting them is
-// precisely what made a diverted partition look populated: 16 rows present, ~7 of
-// them actual facts, and the empty-store check waved it through.
+// BOTH KEY SHAPES COUNT, and the reason is that a fact's home moved. `memory/`
+// rows are pre-collapse facts; a fact written now lives in its chunk, whose body
+// is a `doc.chunk:` row — so counting only the first reports ZERO reachable facts
+// on a perfectly healthy store and aborts every run.
+//
+// This is a DELIBERATE WEAKENING of the original rule, which excluded chunk bodies
+// because counting them "is precisely what made a diverted partition look
+// populated: 16 rows present, ~7 of them actual facts". Telling a fact's body from
+// document prose now needs the row's provenance, which this REST client cannot
+// see. What the guard still catches — and what it exists for — is a DIVERTED
+// partition, which has neither kind of row because the facts went to another
+// scope entirely. What it no longer catches is a partition holding prose and no
+// facts, which on this corpus cannot arise: the only document here is the entity
+// document consolidation itself creates.
 func factsDiverted(factsWritten int, keys []string) (reachable int, diverted bool) {
 	for _, k := range keys {
-		if strings.HasPrefix(k, "memory/") {
+		if strings.HasPrefix(k, "memory/") || strings.HasPrefix(k, "doc.chunk:") {
 			reachable++
 		}
 	}

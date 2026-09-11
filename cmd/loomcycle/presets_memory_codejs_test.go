@@ -145,9 +145,6 @@ type fakeToolset struct {
 	// omits the block entirely.
 	bands map[string]any
 
-	// failSetKeys makes Memory op=set refuse for these keys (IsError → a
-	// catchable JS throw), which is how the write-failure scenarios are driven.
-	failSetKeys map[string]bool
 	// failAgent makes the extractor spawn refuse.
 	failAgent bool
 	// failAgentNeedle refuses only the spawns whose PROMPT contains this string,
@@ -167,7 +164,6 @@ func newFakeToolset() *fakeToolset {
 	return &fakeToolset{
 		leaseAcquired:  true,
 		bands:          map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
-		failSetKeys:    map[string]bool{},
 		chunks:         map[string]string{},
 		chunkScopes:    map[string]string{},
 		chunkTypes:     map[string]string{},
@@ -244,9 +240,6 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 		return okResult(map[string]any{"facts": m.f.recallFacts})
 	case "set":
 		key, _ := in["key"].(string)
-		if m.f.failSetKeys[key] {
-			return tools.Result{IsError: true, Text: "set: quota exceeded for " + key}, nil
-		}
 		if m.f.vectors != nil {
 			// File exactly what the pass asked to be embedded — not the value,
 			// not the key. If the two ever diverge this store is what notices.
@@ -333,6 +326,18 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		}
 		if q, ok := in["source_quote"].(string); ok && q != "" {
 			d.f.chunkSpans[key] = q
+		}
+		// THE CHUNK IS WHAT GETS EMBEDDED NOW. The double used to file the vector
+		// from Memory.set's embed_text, because that is where a fact lived; a fact's
+		// home is its chunk, and the Document tool embeds the body it just wrote. A
+		// double still keyed on the old plane would make every merge test pass for
+		// the wrong reason — recall would find no neighbour and the pass would write
+		// a second row instead of merging, exactly as if the band were miscalibrated.
+		//
+		// Only a body-bearing write files a vector: a subject node is an identity,
+		// not a claim, and nothing recalls it.
+		if body, ok := in["body"].(string); ok && body != "" && d.f.vectors != nil {
+			d.f.vectors[key] = body
 		}
 		row := d.f.chunkRows[id]
 		if row == nil {
@@ -750,9 +755,8 @@ func TestConsolidator_StoredFactIsOneSentenceAndIsWhatGetsEmbedded(t *testing.T)
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	value, _ := set.Input["value"].(string)
-	embed, _ := set.Input["embed_text"].(string)
+	set := lastFactWrite(t, f)
+	value := set.Text
 
 	if strings.Contains(value, "(related:") {
 		t.Errorf("stored value carries a cross-reference tail: %q — a fact must be one self-contained sentence and nothing else", value)
@@ -760,8 +764,15 @@ func TestConsolidator_StoredFactIsOneSentenceAndIsWhatGetsEmbedded(t *testing.T)
 	if value != fact {
 		t.Errorf("stored value = %q, want the extractor's sentence verbatim (%q)", value, fact)
 	}
-	if value != embed {
-		t.Errorf("value %q and embed_text %q differ — the merge band is calibrated on the stored sentence, so embedding anything else moves every fact off that calibration", value, embed)
+	// WHAT IS EMBEDDED IS WHAT IS STORED, and it is now true by construction rather
+	// than by agreement. The k/v write carried the sentence twice — once as the
+	// value, once as embed_text — so the two could drift, and this asserted they did
+	// not. A chunk carries the sentence ONCE, as its body, and the Document tool
+	// embeds the body it just wrote: there is no second string left to disagree.
+	// The claim that remains is that the body is the extractor's sentence, asserted
+	// directly above, which is the thing the merge band is calibrated on.
+	if strings.TrimSpace(value) == "" {
+		t.Errorf("the write carried no body, so nothing is embedded and the fact is invisible to recall")
 	}
 }
 
@@ -806,27 +817,25 @@ func TestConsolidator_TwoParaphrasesOfOneFactMergeInPlace(t *testing.T) {
 	res := runConsolidator(t, f)
 
 	// The second wording must land on the FIRST one's key — one fact, one row.
-	sets := []recordedCall{}
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			sets = append(sets, c)
-		}
-	}
+	sets := factWrites(f)
 	if len(sets) != 2 {
 		t.Fatalf("expected two writes (the new fact, then the paraphrase merged onto it), got %d; sequence %v", len(sets), f.ops())
 	}
-	firstKey, _ := sets[0].Input["key"].(string)
-	secondKey, _ := sets[1].Input["key"].(string)
-	if secondKey != firstKey {
-		t.Errorf("the paraphrase was written to a NEW key %q instead of merging onto %q — two rows for one fact; this is what an embedded cross-reference tail defeats", secondKey, firstKey)
+	if sets[1].Key != sets[0].Key {
+		t.Errorf("the paraphrase was written to a NEW key %q instead of merging onto %q — two rows for one fact; this is what an embedded cross-reference tail defeats", sets[1].Key, sets[0].Key)
 	}
 	if !strings.Contains(res.FinalText, "updated in place 1") {
 		t.Errorf("report = %q, want the paraphrase counted as an in-place update", res.FinalText)
 	}
-	// Nothing embedded may differ from what is stored, on any of the writes.
+	// WHAT IS EMBEDDED IS WHAT IS STORED. The k/v write said so explicitly, by
+	// carrying embed_text alongside the value; the chunk write says it structurally
+	// — the Document tool embeds the body it just wrote, so there is no second
+	// string that could disagree. Asserting the body is the stored sentence is
+	// therefore the whole of the old claim.
 	for _, c := range sets {
-		if c.Input["value"] != c.Input["embed_text"] {
-			t.Errorf("write to %v embedded %q but stored %q", c.Input["key"], c.Input["embed_text"], c.Input["value"])
+		if strings.TrimSpace(c.Text) == "" {
+			t.Errorf("write to %q carried no body, so nothing is embedded and the fact is "+
+				"invisible to the next pass's recall", c.Key)
 		}
 	}
 }
@@ -849,7 +858,9 @@ func TestConsolidator_HappyPassAdvancesTheWatermarkAndReleasesTheLease(t *testin
 
 	for _, want := range []string{
 		"Memory.cursor_lease", "Memory.cursor_scan", "Memory.pending_drain",
-		"History.get", "Agent", "Memory.recall", "Memory.set",
+		// Document.upsert_chunk, not Memory.set: a fact's home is its chunk, so that
+		// call IS the write this pass exists to make.
+		"History.get", "Agent", "Memory.recall", "Document.upsert_chunk",
 		"Memory.cursor_advance", "Memory.cursor_release",
 	} {
 		if !f.has(want) {
@@ -1017,12 +1028,24 @@ func TestConsolidator_FailedWriteBlocksTheWatermark(t *testing.T) {
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "user: I prefer Go.\nassistant: ok"
 	f.factsJSON = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
-	f.failSetKeys["memory/preference/denn-prefers-go-backend-services"] = true
+	// THE FAILURE IS INJECTED WHERE THE FACT NOW LIVES. It used to be a refused
+	// Memory.set; the fact's home is its chunk, so a refused chunk write is what a
+	// failed write IS. That is not a rename — it is the rule inverting. The mirror
+	// used to be best-effort precisely BECAUSE the k/v row held the fact ("a graph
+	// failure can never cost a fact"); with the k/v row gone, a swallowed chunk
+	// failure would let this pass report a fact written, advance the watermark, and
+	// leave the chat's facts nowhere.
+	f.failEntityKeys["memory/preference/denn-prefers-go-backend-services"] = true
 
 	res := runConsolidator(t, f)
 
-	if !f.has("Memory.set") {
+	// The write was ATTEMPTED — otherwise a pass that silently skipped the fact
+	// would satisfy every assertion below for the wrong reason.
+	if len(callsWithOp(f, "Document.upsert_chunk")) == 0 {
 		t.Fatalf("the scenario never attempted a write, so it proves nothing; sequence %v", f.ops())
+	}
+	if factWriteCount(f) == 0 {
+		t.Fatalf("no body-bearing chunk write was attempted; sequence %v", f.ops())
 	}
 	if f.has("Memory.cursor_advance") {
 		t.Errorf("watermark advanced despite a refused write — the next pass would skip that chat forever; sequence %v", f.ops())
@@ -1161,7 +1184,7 @@ func TestConsolidator_MalformedExtractorEntriesAreDroppedNotFatal(t *testing.T) 
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 1 {
+	if n := factWriteCount(f); n != 1 {
 		t.Errorf("wrote %d facts, want exactly 1 (the four malformed entries must be dropped); sequence %v", n, f.ops())
 	}
 	if !f.has("Memory.cursor_advance") {
@@ -1200,11 +1223,8 @@ func TestConsolidator_RejectsAFactNamingASessionOrRunId(t *testing.T) {
 	// Three survive: the two that mention ids without carrying one, and the plain
 	// fact. The 32-hex (Postgres) and 16-hex (sqlite) ids are rejected.
 	var wrote []string
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			v, _ := c.Input["value"].(string)
-			wrote = append(wrote, v)
-		}
+	for _, c := range factWrites(f) {
+		wrote = append(wrote, c.Text)
 	}
 	if len(wrote) != 3 {
 		t.Errorf("wrote %d facts, want 3 (both real ids rejected, both id-mentioning facts kept): %q", len(wrote), wrote)
@@ -1290,7 +1310,7 @@ func TestConsolidator_UnreadableExtractionSkipsTheChatAndAdvancesPastIt(t *testi
 	if !f.has("Memory.cursor_advance") {
 		t.Errorf("the pass stuck on a chat that will never parse; sequence %v", f.ops())
 	}
-	if f.has("Memory.set") {
+	if factWriteCount(f) > 0 {
 		t.Errorf("wrote a fact from a reply that is not a fact array; sequence %v", f.ops())
 	}
 	if !strings.Contains(res.FinalText, "not recoverable by a later pass") {
@@ -1348,7 +1368,7 @@ func TestConsolidator_SkipsOnlyTheUnparseableChatAmongSeveral(t *testing.T) {
 
 		res := runConsolidator(t, f)
 
-		if n := f.countOp("Memory.set"); n != 2 {
+		if n := factWriteCount(f); n != 2 {
 			t.Errorf("wrote %d facts, want 2 — the chats either side of the skipped one must still be consolidated; sequence %v", n, f.ops())
 		}
 		adv := lastCall(t, f, "Memory.cursor_advance")
@@ -1452,7 +1472,7 @@ func TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	if f.has("Memory.set") {
+	if factWriteCount(f) > 0 {
 		t.Errorf("a bare object was stored as a fact; sequence %v", f.ops())
 	}
 	if !strings.Contains(res.FinalText, "could not be parsed") {
@@ -1466,7 +1486,7 @@ func TestConsolidator_ObjectReplyIsNotAcceptedAsASingleFact(t *testing.T) {
 	g.factsJSON = `{"facts":[{"text":"Denn prefers Go for backend services.","class":"preference"}]}`
 
 	runConsolidator(t, g)
-	if n := g.countOp("Memory.set"); n != 1 {
+	if n := factWriteCount(g); n != 1 {
 		t.Errorf("the {\"facts\":[…]} wrapper must still be read; wrote %d, sequence %v", n, g.ops())
 	}
 }
@@ -1511,7 +1531,7 @@ func TestConsolidator_ParsesAReplyBehindTheSubAgentHeader(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 7 {
+	if n := factWriteCount(f); n != 7 {
 		t.Errorf("wrote %d facts, want 7 — the reply behind the attribution header is a valid fact array; sequence %v", n, f.ops())
 	}
 	// Nothing was dropped: all seven entries carried text and a known class. The
@@ -1563,7 +1583,7 @@ func TestConsolidator_ParsesEveryShapeAModelActuallyReturns(t *testing.T) {
 
 			res := runConsolidator(t, f)
 
-			if n := f.countOp("Memory.set"); n != 1 {
+			if n := factWriteCount(f); n != 1 {
 				t.Errorf("wrote %d facts, want 1; sequence %v", n, f.ops())
 			}
 			if !f.has("Memory.cursor_advance") {
@@ -1595,7 +1615,7 @@ func TestConsolidator_UnparseableReplyIsReportedWithItsRawPrefix(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	if f.has("Memory.set") {
+	if factWriteCount(f) > 0 {
 		t.Errorf("wrote a fact from a reply that is not a fact array; sequence %v", f.ops())
 	}
 	if !f.has("Memory.cursor_release") {
@@ -1653,7 +1673,7 @@ func TestConsolidator_EmptyExtractorReplyMeansNoFactsAndKeepsGoing(t *testing.T)
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 1 {
+	if n := factWriteCount(f); n != 1 {
 		t.Errorf("wrote %d facts, want 1 — the other chat's fact must still be written; sequence %v", n, f.ops())
 	}
 	adv := lastCall(t, f, "Memory.cursor_advance")
@@ -1722,7 +1742,7 @@ func TestConsolidator_MixedPageReportsEmptyAndUnparseableSeparatelyAndAdvances(t
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 8 {
+	if n := factWriteCount(f); n != 8 {
 		t.Errorf("wrote %d facts, want 8 — the eight good chats must be consolidated around the two that were not; sequence %v", n, f.ops())
 	}
 	adv := lastCall(t, f, "Memory.cursor_advance")
@@ -1797,8 +1817,8 @@ func TestConsolidator_UnknownMergeBandNeverRewritesANeighbour(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if key, _ := set.Input["key"].(string); key == "memory/preference/existing" {
+	set := lastFactWrite(t, f)
+	if key := set.Key; key == "memory/preference/existing" {
 		t.Error("with no merge band configured the pass rewrote a neighbour in place — an unknown band must never fire")
 	}
 	if f.has("Memory.supersede") {
@@ -1830,8 +1850,8 @@ func TestConsolidator_ReadsTheBandsFromTheDeploymentNotAConstant(t *testing.T) {
 	if !f.has("Context.capabilities") {
 		t.Errorf("the pass never asked the deployment for its bands; sequence %v", f.ops())
 	}
-	set := lastCall(t, f, "Memory.set")
-	if key, _ := set.Input["key"].(string); key != "memory/preference/existing" {
+	set := lastFactWrite(t, f)
+	if key := set.Key; key != "memory/preference/existing" {
 		t.Errorf("a 0.72 neighbour under a configured 0.70 merge band must be rewritten in place, got a write to %q — the band is being read from somewhere other than config", key)
 	}
 }
@@ -1848,21 +1868,30 @@ func TestConsolidator_WritesCarryProvenanceAndAreEmbedded(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if set.Input["embed"] != true {
-		t.Errorf("write did not set embed:true — the fact would be invisible to the next pass's recall; input %v", set.Input)
+	set := lastFactWrite(t, f)
+	// EMBEDDING IS NOW STRUCTURAL. The k/v write asked for it (embed:true plus a
+	// separate embed_text); a chunk carries the sentence once, as its body, and the
+	// Document tool embeds the body it just wrote. So the assertion is that a body
+	// was written at all — there is no flag left to forget and no second string to
+	// disagree with the first.
+	if strings.TrimSpace(set.Text) == "" {
+		t.Errorf("write carried no body, so nothing is embedded and the fact is invisible "+
+			"to the next pass's recall; input %v", set.Input)
 	}
-	if set.Input["embed_text"] == nil || set.Input["embed_text"] == "" {
-		t.Errorf("write carried no embed_text; input %v", set.Input)
+	// THE CHAT IT CAME FROM still travels with the fact. The erasure report keys on
+	// it, so a fact without one cannot be surfaced as residue for the subject who
+	// produced it — which is why this survives the move rather than being dropped
+	// as k/v bookkeeping.
+	if got, _ := set.Input["source_session_id"].(string); got != "sess-a" {
+		t.Errorf("write source_session_id = %q, want sess-a; input %v", got, set.Input)
 	}
-	prov, _ := set.Input["provenance"].(map[string]any)
-	if prov == nil || prov["class"] != "preference" || prov["source_session_id"] != "sess-a" {
-		t.Errorf("write provenance = %v, want class=preference and the source session id", prov)
-	}
-	key, _ := set.Input["key"].(string)
+	key := set.Key
 	if !strings.HasPrefix(key, "memory/preference/") {
 		t.Errorf("key = %q, want the memory/<class>/<subject-slug> form that makes a re-read chat idempotent", key)
 	}
+	// The statement CLASS is not a separate column any more — it is the second
+	// segment of the natural key, which is exactly where a re-read chat finds it
+	// again. Asserting the prefix above is asserting the class.
 }
 
 // TestConsolidator_QueuedItemsAreAckedOnlyWhenTheyLand. pending_ack is
@@ -1885,9 +1914,10 @@ func TestConsolidator_QueuedItemsAreAckedOnlyWhenTheyLand(t *testing.T) {
 	bad := newFakeToolset()
 	bad.pending = []map[string]any{pendingRow}
 	bad.factsJSON = `[{"text":"Denn lives in Berlin.","class":"identity"}]`
-	bad.failSetKeys["memory/identity/denn-lives-berlin"] = true
+	// Refused where the fact now lives — its chunk.
+	bad.failEntityKeys["memory/identity/denn-lives-berlin"] = true
 	runConsolidator(t, bad)
-	if !bad.has("Memory.set") {
+	if len(callsWithOp(bad, "Document.upsert_chunk")) == 0 {
 		t.Fatalf("the failing scenario never attempted a write; sequence %v", bad.ops())
 	}
 	if bad.has("Memory.pending_ack") {
@@ -2259,11 +2289,8 @@ func TestConsolidator_LongChatIsSplitOnMessageBoundariesWithNothingDropped(t *te
 	}
 	// 3. MERGED. Both ends of the conversation contributed a fact.
 	var wrote []string
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			v, _ := c.Input["value"].(string)
-			wrote = append(wrote, v)
-		}
+	for _, c := range factWrites(f) {
+		wrote = append(wrote, c.Text)
 	}
 	if len(wrote) != 2 {
 		t.Errorf("wrote %d facts, want 2 — one from the first part and one from the last, merged into a single result: %q", len(wrote), wrote)
@@ -2425,7 +2452,7 @@ func TestConsolidator_UnreadablePartDoesNotDiscardTheRestOfTheChat(t *testing.T)
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n == 0 {
+	if n := factWriteCount(f); n == 0 {
 		t.Fatalf("one unreadable part discarded every other part's facts; sequence %v", f.ops())
 	}
 	if !strings.Contains(res.FinalText, "partially extracted 1 chat") {
@@ -2547,11 +2574,8 @@ func TestConsolidator_NoCallerSideQuestionFilterEatsARealPreference(t *testing.T
 	res := runConsolidator(t, f)
 
 	var wrote []string
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			v, _ := c.Input["value"].(string)
-			wrote = append(wrote, v)
-		}
+	for _, c := range factWrites(f) {
+		wrote = append(wrote, c.Text)
 	}
 	if len(wrote) != 2 {
 		t.Errorf("wrote %d facts, want 2 — a caller-side \"the user asked\" matcher cannot separate a durable preference from a question record, so it must not exist: %q", len(wrote), wrote)
@@ -2569,16 +2593,6 @@ func TestConsolidator_NoCallerSideQuestionFilterEatsARealPreference(t *testing.T
 // longer carries. The four tests below fix the boundary of when that is allowed.
 
 // setCalls returns every Memory op=set the pass issued, in order.
-func setCalls(f *fakeToolset) []recordedCall {
-	var out []recordedCall
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // TestConsolidator_DoesNotOverwriteANeighbourAboutADifferentSubject replays the
 // two rows a live pass actually corrupted. Both are real: the key names the
 // subject the row was minted for, and the value it now holds is a fact about
@@ -2632,13 +2646,13 @@ func TestConsolidator_DoesNotOverwriteANeighbourAboutADifferentSubject(t *testin
 
 			res := runConsolidator(t, f)
 
-			sets := setCalls(f)
+			sets := factWrites(f)
 			if len(sets) != 1 {
 				t.Fatalf("expected exactly one write, got %d; sequence %v", len(sets), f.ops())
 			}
-			key, _ := sets[0].Input["key"].(string)
+			key := sets[0].Key
 			if key == tc.neighbourKey {
-				value, _ := sets[0].Input["value"].(string)
+				value := sets[0].Text
 				t.Fatalf("the pass rewrote %q with %q — that fact is now unrecoverable and the key names a subject its value no longer carries; a single similarity number must not be sufficient authority to destroy a fact",
 					tc.neighbourKey, value)
 			}
@@ -2681,8 +2695,8 @@ func TestConsolidator_LowestScoringGenuineParaphraseStillMergesInPlace(t *testin
 
 	res := runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if key, _ := set.Input["key"].(string); key != existingKey {
+	set := lastFactWrite(t, f)
+	if key := set.Key; key != existingKey {
 		t.Errorf("the paraphrase was written to a NEW key %q instead of merging onto %q — the guard has swallowed a genuine duplicate and the store grows two rows for one fact", key, existingKey)
 	}
 	if !strings.Contains(res.FinalText, "updated in place 1") {
@@ -2722,8 +2736,8 @@ func TestConsolidator_DoesNotMergeOntoAKeyOfADifferentClass(t *testing.T) {
 
 			res := runConsolidator(t, f)
 
-			set := lastCall(t, f, "Memory.set")
-			key, _ := set.Input["key"].(string)
+			set := lastFactWrite(t, f)
+			key := set.Key
 			if key == tc.key {
 				t.Fatalf("the pass rewrote %q with a `fact` — the key is left describing something its value is not", tc.key)
 			}
@@ -2792,6 +2806,82 @@ func clipForTest(s string, n int) string {
 
 // lastCall returns the most recent recorded call matching "Tool.op", failing the
 // test when there is none.
+// --- a fact write, seen through whichever plane holds it ---------------------
+//
+// A fact used to be written twice: a `memory/<class>/<slug>` row and a chunk. The
+// collapse deleted the k/v half, so the assertion "this pass wrote a fact" can no
+// longer mean "it called Memory.set" — it means the fact's chunk landed.
+//
+// These read the CHUNK write rather than restating the new op at 40-odd call
+// sites, and they normalise what the two planes spelled differently: the k/v row
+// took RFC3339 strings, the chunk takes unix nanos, and the tests are about the
+// INSTANT rather than its spelling. Keeping that conversion here is what lets a
+// temporal assertion go on saying what it always said.
+type factWrite struct {
+	// Key is the fact's natural key — `memory/<class>/<slug>`, unchanged by the
+	// move, because one key space for both stores is what stopped them drifting.
+	Key        string
+	Text       string
+	ObservedAt string
+	ValidAt    string
+	InvalidAt  string
+	Quote      string
+	Input      map[string]any
+}
+
+// factWrites returns the pass's fact writes in order. A chunk write with NO body
+// is the SUBJECT node — an identity, not a fact — and is deliberately excluded:
+// counting it would make "facts written" depend on how many distinct subjects a
+// batch happened to mention.
+func factWrites(f *fakeToolset) []factWrite {
+	var out []factWrite
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		body, _ := c.Input["body"].(string)
+		if body == "" {
+			continue
+		}
+		key, _ := c.Input["natural_key"].(string)
+		quote, _ := c.Input["source_quote"].(string)
+		out = append(out, factWrite{
+			Key: key, Text: body, Quote: quote, Input: c.Input,
+			ObservedAt: rfc3339Of(c.Input["observed_at"]),
+			ValidAt:    rfc3339Of(c.Input["valid_at"]),
+			InvalidAt:  rfc3339Of(c.Input["invalid_at"]),
+		})
+	}
+	return out
+}
+
+func factWriteCount(f *fakeToolset) int { return len(factWrites(f)) }
+
+func lastFactWrite(t *testing.T, f *fakeToolset) factWrite {
+	t.Helper()
+	w := factWrites(f)
+	if len(w) == 0 {
+		t.Fatalf("the pass wrote no fact; sequence %v", f.ops())
+	}
+	return w[len(w)-1]
+}
+
+// rfc3339Of turns the chunk plane's unix nanos back into the spelling the tests
+// (and the extractor) use. Empty for an absent field, which is the honest reading:
+// an undated fact carries no instant, and 1970 is not "undated".
+func rfc3339Of(v any) string {
+	var ns int64
+	switch n := v.(type) {
+	case float64:
+		ns = int64(n)
+	case int64:
+		ns = n
+	default:
+		return ""
+	}
+	if ns == 0 {
+		return ""
+	}
+	return time.Unix(0, ns).UTC().Format(time.RFC3339)
+}
+
 func lastCall(t *testing.T, f *fakeToolset, want string) recordedCall {
 	t.Helper()
 	seq := f.ops()
@@ -2831,7 +2921,7 @@ func TestConsolidator_QueuedFactRelaysThePendingID(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
+	set := lastFactWrite(t, f)
 	if got := set.Input["from_pending"]; got != "mp_banked_span" {
 		t.Errorf("Memory.set carried from_pending=%v, want %q — without it the fact lands origin=consolidator and the compaction it came from is unrecoverable",
 			got, "mp_banked_span")
@@ -2859,7 +2949,7 @@ func TestConsolidator_MultiItemBatchIsNotFalselyAttributed(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
+	set := lastFactWrite(t, f)
 	if got, present := set.Input["from_pending"]; present && got != "" {
 		t.Errorf("a multi-item batch attributed its fact to %v; with two items rendered into one call the source is genuinely unknown, and a wrong citation is worse than an absent one", got)
 	}
@@ -2890,7 +2980,7 @@ func TestConsolidator_CarriesTheEntityPairOrNeither(t *testing.T) {
 
 	// All four are durable facts and all four are kept — the entity half is
 	// additive, never a filter.
-	if n := f.countOp("Memory.set"); n != 4 {
+	if n := factWriteCount(f); n != 4 {
 		t.Errorf("wrote %d facts, want 4 — type/subject are optional and must not drop a row; sequence %v", n, f.ops())
 	}
 	if strings.Contains(res.FinalText, "malformed") && !strings.Contains(res.FinalText, "malformed entries dropped 0") {
@@ -2917,7 +3007,7 @@ func TestConsolidator_MirrorsTypedFactsIntoAGraph(t *testing.T) {
 	res := runConsolidator(t, f)
 
 	// Every fact still lands in k/v — the graph is additive.
-	if n := f.countOp("Memory.set"); n != 3 {
+	if n := factWriteCount(f); n != 3 {
 		t.Errorf("k/v writes = %d, want 3; the graph must not replace the authoritative store", n)
 	}
 	// TWO subject nodes for three facts: Denn is one node, not two.
@@ -3028,29 +3118,28 @@ func TestConsolidator_AMergeReachesTheChunkToo(t *testing.T) {
 	}
 }
 
-// TestConsolidator_TheTwoPlanesAgreeOnEveryTemporalField is the DRIFT GATE for
-// the dual-write window (RFC CV P2c).
+// TestConsolidator_TheFactCarriesEveryTemporalFieldItWasGiven replaces the
+// dual-write drift gate, which compared the two planes field by field and has
+// nothing left to compare: the k/v row is gone.
 //
-// A fact is written twice today — a k/v row and a chunk — and the collapse deletes
-// the k/v row. Anything the k/v write carries and the chunk write does not is
-// therefore data that disappears at the collapse, silently, with no error and no
-// failing test. That is not hypothetical: the temporal fields were exactly this
-// gap. The k/v write carried observed_at/valid_at/invalid_at and the mirror carried
-// none, so 103 of 103 facts had an utterance time in one plane and no column for it
-// in the other, and nothing noticed until the planes were compared by hand.
+// The risk it guarded against did not go away with it, only changed shape. It used
+// to be "a field reaches one plane and not the other"; it is now "a field the
+// extractor supplied never reaches the store at all", which is the same silent
+// loss with one fewer place to notice it. So this asserts, field by field, that
+// what the extractor said arrives on the fact.
 //
-// So this asserts FIELD BY FIELD that the chunk write carries what the k/v write
-// carries, and it fails when someone adds a field to one plane and forgets the
-// other. It deliberately does NOT compare `class`: the two planes both have a
-// column of that name and they mean different things — the k/v one is the statement
-// class (preference | decision | …) and the sidecar's is the retention class
-// (derived | evidential) — so asserting parity there would be asserting a
-// coincidence of naming.
-func TestConsolidator_TheTwoPlanesAgreeOnEveryTemporalField(t *testing.T) {
+// Instants, not spellings: the extractor speaks RFC3339 and the chunk takes unix
+// nanos, so a comparison of strings would be a comparison of units.
+//
+// It deliberately does NOT assert `class`. The statement class (preference |
+// decision | …) is the second segment of the natural key, not a column, and the
+// sidecar's own `class` means something else entirely (derived | evidential) —
+// asserting one against the other would be asserting a coincidence of naming.
+func TestConsolidator_TheFactCarriesEveryTemporalFieldItWasGiven(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "### user\n\nI moved to Berlin last week."
-	// Every temporal field populated at once, so a plane that drops one is visible.
+	// Every temporal field populated at once, so a dropped one is visible.
 	f.factsJSON = "```json\n" + `[
 		{"text":"Denn lives in Berlin.","class":"fact","type":"person","subject":"Denn",
 		 "observed_at":"2023-07-07T19:56:00Z","valid_at":"2023-06-30T00:00:00Z",
@@ -3059,64 +3148,23 @@ func TestConsolidator_TheTwoPlanesAgreeOnEveryTemporalField(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	sets := callsWithOp(f, "Memory.set")
-	upserts := callsWithOp(f, "Document.upsert_chunk")
-	if len(sets) != 1 {
-		t.Fatalf("k/v writes = %d, want 1; ops=%v", len(sets), f.ops())
-	}
-	// The subject node is also an upsert; the FACT chunk is the one carrying a body.
-	var factArgs map[string]any
-	for _, c := range upserts {
-		if _, ok := c.Input["body"]; ok {
-			factArgs = c.Input
+	w := lastFactWrite(t, f)
+	for _, tc := range []struct{ field, got, want string }{
+		{"observed_at", w.ObservedAt, "2023-07-07T19:56:00Z"},
+		{"valid_at", w.ValidAt, "2023-06-30T00:00:00Z"},
+		{"invalid_at", w.InvalidAt, "2024-01-01T00:00:00Z"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q — the extractor supplied it and the fact's only home "+
+				"did not record it", tc.field, tc.got, tc.want)
 		}
 	}
-	if factArgs == nil {
-		t.Fatalf("no fact chunk written; upserts=%d ops=%v", len(upserts), f.ops())
+	if w.Text != "Denn lives in Berlin." {
+		t.Errorf("the fact's body is %q, not the sentence the extractor wrote", w.Text)
 	}
-	kv := sets[0].Input
-
-	// nanosOf mirrors the bundle's own RFC3339 → unix-nanos conversion, so the
-	// comparison is of INSTANTS rather than of spellings: the two planes
-	// deliberately store the same moment in different units.
-	nanosOf := func(v any) int64 {
-		s, _ := v.(string)
-		ts, err := time.Parse(time.RFC3339, s)
-		if err != nil {
-			return 0
-		}
-		return ts.UnixNano()
-	}
-	for _, field := range []string{"observed_at", "valid_at", "invalid_at"} {
-		want, inKV := kv[field]
-		if !inKV {
-			t.Errorf("the k/v write carried no %s — the fixture no longer exercises this field", field)
-			continue
-		}
-		got, inChunk := factArgs[field]
-		if !inChunk {
-			t.Errorf("%s reaches the k/v plane but NOT the chunk plane — it would be lost at the collapse", field)
-			continue
-		}
-		gotN := int64(0)
-		switch v := got.(type) {
-		case float64:
-			gotN = int64(v)
-		case int64:
-			gotN = v
-		}
-		if gotN != nanosOf(want) {
-			t.Errorf("%s: chunk plane has %d, k/v plane has %v (%d nanos) — the planes disagree on the instant",
-				field, gotN, want, nanosOf(want))
-		}
-	}
-
-	// And the claim itself, which is the one field whose loss would be obvious but
-	// whose absence from this list would make the test look complete when it was not.
-	body, _ := factArgs["body"].(string)
-	value, _ := kv["value"].(string)
-	if body != value {
-		t.Errorf("the chunk body %q is not the stored value %q", body, value)
+	// The chat it came from, which the erasure report keys on.
+	if got, _ := w.Input["source_session_id"].(string); got != "sess-a" {
+		t.Errorf("source_session_id = %q, want sess-a", got)
 	}
 }
 
@@ -3140,7 +3188,7 @@ func TestConsolidator_AFactWithNoSubjectStillGetsItsChunk(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 2 {
+	if n := factWriteCount(f); n != 2 {
 		t.Errorf("k/v writes = %d, want 2 — a subjectless fact is still a fact", n)
 	}
 	// One chunk per fact, keyed on the k/v key: the fact node needs no subject.
@@ -3206,7 +3254,7 @@ func TestConsolidator_AGraphFailureNeverCostsAFact(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 1 {
+	if n := factWriteCount(f); n != 1 {
 		t.Errorf("the fact must still be stored when the graph write fails; k/v writes=%d", n)
 	}
 	if !f.has("Memory.cursor_advance") {
@@ -3277,7 +3325,7 @@ func TestConsolidator_RefusesAStatementClassAsAnEntityType(t *testing.T) {
 	res := runConsolidator(t, f)
 
 	// All three facts still land in k/v — the refusal is about the GRAPH only.
-	if n := f.countOp("Memory.set"); n != 3 {
+	if n := factWriteCount(f); n != 3 {
 		t.Errorf("k/v writes = %d, want 3; refusing an entity type must not cost a fact", n)
 	}
 	if _, bad := f.chunks["preference:user"]; bad {
@@ -3537,9 +3585,9 @@ func TestConsolidator_NonLatinFactsGetDistinctKeys(t *testing.T) {
 	runConsolidator(t, f)
 
 	var keys []string
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			if k, _ := c.Input["key"].(string); k != "" {
+	for _, c := range factWrites(f) {
+		{
+			if k := c.Key; k != "" {
 				keys = append(keys, k)
 			}
 		}
@@ -3578,9 +3626,9 @@ func TestConsolidator_NonLatinFactKeyIsStableAcrossPasses(t *testing.T) {
 		f.factsJSON = `[{"text":"Користувач живе у Києві.","class":"fact",` +
 			`"type":"location","subject":"Київ"}]`
 		runConsolidator(t, f)
-		for _, c := range f.calls {
-			if c.Tool == "Memory" && c.Op == "set" {
-				if k, _ := c.Input["key"].(string); k != "" {
+		for _, c := range factWrites(f) {
+			{
+				if k := c.Key; k != "" {
 					return k
 				}
 			}
@@ -3627,9 +3675,9 @@ func TestConsolidator_LatinFactKeysAreUNCHANGED(t *testing.T) {
 	runConsolidator(t, f)
 
 	var key string
-	for _, c := range f.calls {
-		if c.Tool == "Memory" && c.Op == "set" {
-			key, _ = c.Input["key"].(string)
+	for _, c := range factWrites(f) {
+		{
+			key = c.Key
 		}
 	}
 	// The exact pre-fix key for this text: memory/<class>/<first 6 content words>.
@@ -3703,7 +3751,7 @@ func TestConsolidator_JudgeIsOffUntilTheDeploymentTurnsItOn(t *testing.T) {
 		t.Errorf("the report mentions judging on a deployment that did not ask for it: %q", res.FinalText)
 	}
 	// And the facts still landed. A disabled judge is not a disabled pass.
-	if n := f.countOp("Memory.set"); n != 2 {
+	if n := factWriteCount(f); n != 2 {
 		t.Errorf("k/v writes = %d, want 2", n)
 	}
 }
@@ -3823,7 +3871,7 @@ func TestConsolidator_AJudgeOutageLeavesFactsRecallable(t *testing.T) {
 	f.failAgentNeedle = "BEGIN CANDIDATES" // the judge only; extraction is fine
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n != 2 {
+	if n := factWriteCount(f); n != 2 {
 		t.Errorf("k/v writes = %d, want 2 — a judge outage must not cost a fact", n)
 	}
 	if len(f.verdicts) != 0 {
@@ -4225,7 +4273,7 @@ func TestConsolidator_ConflictDetectionIsOffUntilTheDeploymentTurnsItOn(t *testi
 		t.Errorf("the report mentions conflicts on a deployment that did not ask: %q", res.FinalText)
 	}
 	// And the pass still did its job. A disabled detector is not a disabled pass.
-	if n := f.countOp("Memory.set"); n == 0 {
+	if n := factWriteCount(f); n == 0 {
 		t.Error("no fact was written with detection off")
 	}
 }
@@ -4351,7 +4399,7 @@ func TestConsolidator_AConflictJudgeOutageIsANoOp(t *testing.T) {
 	f.failAgentNeedle = "BEGIN PAIRS"
 	res := runConsolidator(t, f)
 
-	if n := f.countOp("Memory.set"); n == 0 {
+	if n := factWriteCount(f); n == 0 {
 		t.Error("a conflict-judge outage cost the pass its fact writes")
 	}
 	if !strings.Contains(res.FinalText, "judge call(s) failed") {
@@ -4467,7 +4515,7 @@ func TestConsolidator_AnUnreadableQueueItemDoesNotBlockTheOnesBehindIt(t *testin
 	res := runConsolidator(t, f)
 
 	// The good item behind it landed.
-	if !f.has("Memory.set") {
+	if factWriteCount(f) == 0 {
 		t.Errorf("the item behind the unreadable one was never consolidated; sequence %v", f.ops())
 	}
 	// The bad item was NOT acked — an ack is the one irreversible step, and an
@@ -4541,11 +4589,11 @@ func TestConsolidator_WritesTheValidityInterval(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if got, _ := set.Input["valid_at"].(string); got != "2023-10-03T00:00:00Z" {
+	set := lastFactWrite(t, f)
+	if got := set.ValidAt; got != "2023-10-03T00:00:00Z" {
 		t.Errorf("valid_at = %q, want the extractor's resolved date to reach the store", got)
 	}
-	if got, _ := set.Input["invalid_at"].(string); got != "2023-10-04T00:00:00Z" {
+	if got := set.InvalidAt; got != "2023-10-04T00:00:00Z" {
 		t.Errorf("invalid_at = %q, want it carried through", got)
 	}
 }
@@ -4563,12 +4611,12 @@ func TestConsolidator_UndatedFactCarriesNoIntervalKeys(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if _, present := set.Input["valid_at"]; present {
+	set := lastFactWrite(t, f)
+	if set.ValidAt != "" {
 		t.Errorf("an undated fact carried a valid_at key: %#v — undated must stay "+
-			"distinguishable from dated-to-nothing", set.Input["valid_at"])
+			"distinguishable from dated-to-nothing", set.ValidAt)
 	}
-	if _, present := set.Input["invalid_at"]; present {
+	if set.InvalidAt != "" {
 		t.Error("an undated fact carried an invalid_at key")
 	}
 }
@@ -4594,15 +4642,15 @@ func TestConsolidator_BadIntervalIsStrippedButTheFactSurvives(t *testing.T) {
 
 			runConsolidator(t, f)
 
-			set := lastCall(t, f, "Memory.set")
-			if v, _ := set.Input["value"].(string); v != "Calvin met artists in Boston." {
+			set := lastFactWrite(t, f)
+			if v := set.Text; v != "Calvin met artists in Boston." {
 				t.Errorf("the FACT was lost over a bad date (value = %q); a good fact with a "+
 					"bad date is still a good fact", v)
 			}
-			if _, present := set.Input["valid_at"]; present {
-				t.Errorf("a %s interval reached the store: %#v", tc.name, set.Input["valid_at"])
+			if set.ValidAt != "" {
+				t.Errorf("a %s interval reached the store: %#v", tc.name, set.ValidAt)
 			}
-			if _, present := set.Input["invalid_at"]; present {
+			if set.InvalidAt != "" {
 				t.Errorf("a %s interval reached the store via invalid_at", tc.name)
 			}
 		})
@@ -4645,15 +4693,22 @@ func TestConsolidator_PlacementRoutesBOTHHALVESToTheDeclaredScope(t *testing.T) 
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
+	set := lastFactWrite(t, f)
 	if got, _ := set.Input["scope"].(string); got != "tenant" {
 		t.Errorf("the fact row went to %q, want tenant", got)
 	}
-	// Provenance says it was moved. source_session_id alone does not, and an operator
-	// looking at a row in the shared plane has to be able to answer "why is this here".
-	prov, _ := set.Input["provenance"].(map[string]any)
-	if from, _ := prov["promoted_from"].(string); from != "user" {
-		t.Errorf("provenance.promoted_from = %q, want user: %v", from, prov)
+	// AN OPERATOR MUST STILL BE ABLE TO ANSWER "why is this here". The k/v write
+	// said so with an explicit `promoted_from`, and that column has no home in the
+	// chunk plane — nothing ever read it, so it is not carried rather than being
+	// given a migration of its own.
+	//
+	// What answers the question now is the pair below: the fact sits in the TENANT
+	// scope while naming a chat that happened in the USER scope. A fact written
+	// where it was said carries the same scope on both; only a moved one disagrees,
+	// which is exactly what promoted_from recorded.
+	if got, _ := set.Input["source_session_id"].(string); got == "" {
+		t.Errorf("a placed fact carries no source session, so nothing says where it came "+
+			"from and 'why is this here' is unanswerable: %v", set.Input)
 	}
 
 	upserts := callsWithOp(f, "Document.upsert_chunk")
@@ -4724,7 +4779,7 @@ func TestConsolidator_NoDeclarationLeavesEveryFactInTheCallersScope(t *testing.T
 			}
 		}
 	}
-	set := lastCall(t, f, "Memory.set")
+	set := lastFactWrite(t, f)
 	prov, _ := set.Input["provenance"].(map[string]any)
 	if _, ok := prov["promoted_from"]; ok {
 		t.Errorf("an unplaced fact must not claim it was promoted: %v", prov)
@@ -4768,7 +4823,7 @@ func TestConsolidator_PlacementFailureKeepsEverythingInTheCallersScopeAndSaysSo(
 
 	res := runConsolidator(t, f)
 
-	for _, c := range callsWithOp(f, "Memory.set") {
+	for _, c := range factWrites(f) {
 		if got, _ := c.Input["scope"].(string); got != "user" {
 			t.Errorf("a write went to %q after placement failed, want the caller's own user scope", got)
 		}
@@ -4784,7 +4839,7 @@ func TestConsolidator_PlacementFailureKeepsEverythingInTheCallersScopeAndSaysSo(
 			"nobody asked for is not evidence of anything", n)
 	}
 	// And the pass still stored the fact — a placement fault is not a fact lost.
-	if len(callsWithOp(f, "Memory.set")) == 0 {
+	if len(factWrites(f)) == 0 {
 		t.Error("no fact was written at all")
 	}
 }
@@ -4811,11 +4866,11 @@ func TestConsolidator_DisplacedTwinIsRetiredInTheOldScope(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
+	set := lastFactWrite(t, f)
 	if got, _ := set.Input["scope"].(string); got != "tenant" {
 		t.Fatalf("precondition: the rewrite should have gone to tenant, got %q", got)
 	}
-	key, _ := set.Input["key"].(string)
+	key := set.Key
 
 	var found bool
 	for _, c := range callsWithOp(f, "Memory.supersede") {

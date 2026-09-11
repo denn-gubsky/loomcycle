@@ -36,8 +36,8 @@ func TestConsolidator_ObservedAtIsParsedFromTheTurnWithoutTheModel(t *testing.T)
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	got, _ := set.Input["observed_at"].(string)
+	set := lastFactWrite(t, f)
+	got := set.ObservedAt
 	if got != "2023-07-07T19:56:00Z" {
 		t.Errorf("observed_at = %q, want 2023-07-07T19:56:00Z parsed from the turn's own "+
 			"bracketed stamp — the model emits nothing, so asking it cannot be the mechanism "+
@@ -57,8 +57,8 @@ func TestConsolidator_AModelSuppliedTimeIsNotOverwritten(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if got, _ := set.Input["observed_at"].(string); got != "2023-06-01T09:00:00Z" {
+	set := lastFactWrite(t, f)
+	if got := set.ObservedAt; got != "2023-06-01T09:00:00Z" {
 		t.Errorf("observed_at = %q, want the model's own value kept — the parser fills a gap, "+
 			"it does not override a reading of the sentence", got)
 	}
@@ -77,12 +77,12 @@ func TestConsolidator_AnUnparseableStampIsRefusedNotGuessed(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if v, ok := set.Input["observed_at"]; ok {
+	set := lastFactWrite(t, f)
+	if v := set.ObservedAt; v != "" {
 		t.Errorf("observed_at = %v, want the field OMITTED — a guessed date files the fact "+
 			"under a day it did not happen", v)
 	}
-	if value, _ := set.Input["value"].(string); value != "Dave moved to Berlin." {
+	if value := set.Text; value != "Dave moved to Berlin." {
 		t.Errorf("stored value = %q, want the fact kept regardless", value)
 	}
 }
@@ -107,8 +107,8 @@ func TestConsolidator_TwoDifferentStampsInOneBatchAreNotCollapsed(t *testing.T) 
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	got, _ := set.Input["observed_at"].(string)
+	set := lastFactWrite(t, f)
+	got := set.ObservedAt
 	// The cat fact belongs to the SECOND turn. The first turn's date would be wrong.
 	if got != "2023-08-20T09:15:00Z" {
 		t.Errorf("observed_at = %q, want the August turn's stamp (2023-08-20T09:15:00Z) — "+
@@ -134,8 +134,8 @@ func TestConsolidator_RFC3339AndISOStampsAreAccepted(t *testing.T) {
 
 		runConsolidator(t, f)
 
-		set := lastCall(t, f, "Memory.set")
-		if got, _ := set.Input["observed_at"].(string); got != tc.want {
+		set := lastFactWrite(t, f)
+		if got := set.ObservedAt; got != tc.want {
 			t.Errorf("stamp %q -> observed_at %q, want %q", tc.stamp, got, tc.want)
 		}
 	}
