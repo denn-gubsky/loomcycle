@@ -1644,6 +1644,10 @@ export type DocumentToolInput = {
   under_path?: string;
   /** query_chunks: raw read-only SELECT (escape hatch; validator-gated). */
   sql?: string;
+  /** Row/response bound. On `documents_summary` it defaults to 500 (max 5000) and
+   *  the response reports `truncated: true` when it clips — an `under_path` over a
+   *  subject-homed fact store is as wide as the tenant's entity count, so page the
+   *  directory with `path op=ls` and pass each page's ids as `document_ids`. */
   limit?: number;
   /** define/list_types: the type name. */
   name?: string;

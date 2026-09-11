@@ -85,7 +85,7 @@ const documentInputSchema = `{
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
 		"document_id": {"type": "string"},
-		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path)."},
+		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here."},
 		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
 		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk (omit for a child of the root)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
@@ -1787,6 +1787,33 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 	if len(uniq) == 0 {
 		return jsonResult(map[string]any{"documents": []any{}})
 	}
+	// BOUND THE RESPONSE (RFC CV OQ2). under_path resolves to EVERY document under
+	// a subtree, and subject-homed facts make `/facts` exactly as large as the
+	// tenant's entity count — so this built a ten-thousand-element IN list and
+	// returned ten thousand rows. Postgres serves that; an agent's context window
+	// does not, which is the same reason `path op=ls` is paged.
+	//
+	// The bound is a DEFAULT rather than a refusal, which is a deliberate deviation
+	// from "requires under_path or a limit": refusing an unbounded call would break
+	// the explorer, which legitimately passes a page of ids it already holds, and
+	// buys nothing — the response is bounded either way. Truncation is REPORTED, so
+	// it is a bound rather than a lie.
+	//
+	// No cursor, and that is not an omission. A caller pages the DIRECTORY through
+	// `path op=ls`, which has one, and asks for metadata a page at a time; a second
+	// cursor here would let it page metadata for a set it never enumerated.
+	limit := in.Limit
+	if limit <= 0 {
+		limit = lsDefaultLimit
+	}
+	if limit > lsMaxLimit {
+		limit = lsMaxLimit
+	}
+	truncated := false
+	if len(uniq) > limit {
+		uniq = uniq[:limit]
+		truncated = true
+	}
 	// Batch: the documents rows.
 	ph, args := inPlaceholders(uniq)
 	dres, err := d.query(ctx, key, `SELECT id, title, root_chunk_id FROM documents WHERE id IN (`+ph+`)`, args...)
@@ -1844,7 +1871,15 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 		}
 		out = append(out, entry)
 	}
-	return jsonResult(map[string]any{"documents": out})
+	// truncated is emitted only when it fired: a caller that never hit the bound
+	// should not have to reason about a field that is always false.
+	res := map[string]any{"documents": out}
+	if truncated {
+		res["truncated"] = true
+		res["note"] = "more documents matched than were returned; narrow under_path, " +
+			"or page the directory with `path op=ls` and pass each page's ids as document_ids"
+	}
+	return jsonResult(res)
 }
 
 func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
