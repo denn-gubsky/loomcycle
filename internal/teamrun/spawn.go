@@ -37,6 +37,19 @@ type Prompt struct {
 	// Input is the user segment: the node's InputTemplate when it has one, else
 	// the output threaded from the previous state. RAW, like System.
 	Input string
+	// DataSlots are literal → replacement pairs the assembler substitutes AFTER
+	// placeholder expansion has finished, and whose content it never scans.
+	//
+	// This is a SECURITY boundary, not a convenience. A Starter's source message
+	// is attacker-influenceable — anyone who can reach the channel writes it —
+	// and expansion resolves {{...}} under the RUNTIME's authority, ungated by
+	// the agent's tools or scopes. A payload spliced in before expansion could
+	// therefore synthesise a placeholder and get it executed. Substituted after,
+	// it is data that happens to contain braces.
+	//
+	// Empty for every non-starter state, so an ordinary node's assembly is
+	// byte-identical to before this existed.
+	DataSlots map[string]string
 	// Values resolves this state's ${var.*} / ${now.*} / ${team.*}, keyed
 	// without the ${}: "var.pr", "now.date", "team.state".
 	//
@@ -86,14 +99,51 @@ const consolidatorSignalMarker = "signal:"
 //
 // The returned Outcome (output + edge) is what the Walk engine routes on, so all
 // team-graph shapes execute without any change to the walk.
-func NewAgentRunner(spawn SpawnFunc) Runner {
-	return &agentRunner{spawn: spawn}
+func NewAgentRunner(spawn SpawnFunc, opts ...RunnerOption) Runner {
+	r := &agentRunner{spawn: spawn}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 type agentRunner struct {
 	spawn SpawnFunc
 	// now is injectable so a test can pin ${now.*}. nil = time.Now.
 	now func() time.Time
+	// channels is the Starter's wire. nil means a definition containing a
+	// starter state cannot run — refused at the state rather than silently
+	// skipped, because a workflow whose source never fires looks identical to
+	// one whose source is empty.
+	channels ChannelIO
+	// wave, when set, returns a ctx carrying the wave a spawn belongs to. The
+	// server supplies it (it owns the run-creation seam that stamps it); nil
+	// simply means the correlation is not recorded.
+	wave func(ctx context.Context, walkID, waveID string, index int) context.Context
+	// logf reports what a Starter could not do but must not fail for — a sink
+	// publish that errored, an ack that did not land. nil = log.Printf.
+	logf func(format string, args ...any)
+}
+
+// RunnerOption configures the production runner. Options rather than more
+// constructor parameters because a Starter needs three collaborators a plain
+// agent walk does not, and every existing NewAgentRunner call site should keep
+// compiling unchanged.
+type RunnerOption func(*agentRunner)
+
+// WithChannels wires the Starter's channel executor.
+func WithChannels(io ChannelIO) RunnerOption {
+	return func(r *agentRunner) { r.channels = io }
+}
+
+// WithWaveContext wires the seam that carries a wave identity to run creation.
+func WithWaveContext(f func(ctx context.Context, walkID, waveID string, index int) context.Context) RunnerOption {
+	return func(r *agentRunner) { r.wave = f }
+}
+
+// WithRunnerLogf wires the non-fatal log sink.
+func WithRunnerLogf(f func(format string, args ...any)) RunnerOption {
+	return func(r *agentRunner) { r.logf = f }
 }
 
 func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
@@ -108,6 +158,25 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 			v, refused := Expand(tmpl, env)
 			r.noteRefused(st.ID, name, refused)
 			task.SetVar(name, v)
+		}
+		return Outcome{Output: input}, nil
+
+	case teamgraph.HandlerStarter:
+		return r.runStarter(ctx, st, task)
+
+	case teamgraph.HandlerChannel:
+		// A publish-only node: the workflow states something on a channel and
+		// threads its input onward unchanged. It runs nothing, so there is no
+		// output of its own to produce.
+		if r.channels == nil {
+			return Outcome{}, fmt.Errorf("state %q publishes to a channel but no channel executor is wired", st.ID)
+		}
+		payload, err := json.Marshal(map[string]any{"state": st.ID, "output": input})
+		if err != nil {
+			return Outcome{}, fmt.Errorf("state %q channel payload: %w", st.ID, err)
+		}
+		if err := r.channels.Publish(ctx, st.Handler.Channel, payload); err != nil {
+			return Outcome{}, fmt.Errorf("state %q publish %q: %w", st.ID, st.Handler.Channel, err)
 		}
 		return Outcome{Output: input}, nil
 

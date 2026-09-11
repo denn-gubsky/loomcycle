@@ -53,6 +53,14 @@ type Task struct {
 	State           string
 	Input           string
 	IterationCounts map[string]int
+	// WalkID identifies this traversal, so the runs a walk spawns can be
+	// grouped back together afterwards. Minted by Walk when empty; a caller
+	// that already has an id (a resumed board-bound walk) supplies its own.
+	//
+	// It is a correlation key and nothing more: nothing branches on it, and an
+	// empty one only means the runs cannot be grouped, never that the walk
+	// behaves differently.
+	WalkID string
 	// Vars carries the workflow's ${var.*} values across states. A flat string
 	// map on purpose — see Expand for why this is not a typed variable bus.
 	// Nil until a state assigns or captures one; use SetVar rather than writing
@@ -173,6 +181,9 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 	}
 	if task.IterationCounts == nil {
 		task.IterationCounts = map[string]int{}
+	}
+	if task.WalkID == "" {
+		task.WalkID = mintWalkID()
 	}
 	max := teamgraph.EffectiveMaxIterations(d)
 

@@ -48,6 +48,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -905,12 +906,28 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				// Team members thread results as strings today; a stateful member's
 				// Σ hand-off is a separate follow-on (teamrun is string-only
 				// end-to-end). Drop state here — the Agent-tool fan-out carries it.
-				out, _, _, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID, p.Values)
+				out, _, _, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID, p.Values, p.DataSlots)
 				return out, err
 			}
 		}
 		if td.Admit == nil {
 			td.Admit = s.admitTeamRun
+		}
+		if td.Channels == nil {
+			td.Channels = func(ctx context.Context, d teamgraph.Definition) teamrun.ChannelIO {
+				// Returning a TYPED nil through an interface would be a non-nil
+				// interface holding nil — the classic Go trap, and here it would
+				// turn "no store" into a nil-pointer panic inside the walk.
+				if io := s.newTeamChannelIO(ctx, d); io != nil {
+					return io
+				}
+				return nil
+			}
+		}
+		if td.WaveContext == nil {
+			td.WaveContext = func(ctx context.Context, walkID, waveID string, index int) context.Context {
+				return store.WithWaveTask(ctx, store.WaveTask{WalkID: walkID, WaveID: waveID, Index: index})
+			}
 		}
 	}
 	s.teamDefTool = t
@@ -5736,14 +5753,14 @@ func secretEnvValues(environ []string) map[string]string {
 // SystemPrompt). It never replaces the agent's prompt, so an agent's identity
 // cannot be overridden by whoever spawns it.
 func (s *Server) runSubAgent(ctx context.Context, name string, systemExtra string, prompt string, defID string) (string, map[string]any, string, error) {
-	return s.runSubAgentWithValues(ctx, name, systemExtra, prompt, defID, nil)
+	return s.runSubAgentWithValues(ctx, name, systemExtra, prompt, defID, nil, nil)
 }
 
 // values resolves ${var.*} / ${now.*} / ${team.*} in the caller's segments, in
 // the SAME pass as the {{...}} families. Non-nil only for a team state — see
 // teamrun.Prompt.Values for why the map travels instead of finished text.
-func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, prompt, defID string, values map[string]string) (string, map[string]any, string, error) {
-	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, func(providers.Event) {}, values)
+func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, prompt, defID string, values, dataSlots map[string]string) (string, map[string]any, string, error) {
+	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, func(providers.Event) {}, values, dataSlots)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -5791,6 +5808,44 @@ type subRunPrep struct {
 	Opts      loop.RunOptions       // fully built; interactive fields (SteerQueue/OnSteer/Interactive/ArmTurnCancel) left ZERO for the caller to set
 	Slot      *providerSlot         // acquired provider slot; caller releases
 	cleanup   func()
+}
+
+// composeCallerText resolves a caller's segments and THEN fills their data
+// slots. THE ORDER IS THE SECURITY PROPERTY, which is why it is one named
+// function rather than two adjacent lines somebody could swap.
+//
+// Expansion resolves {{...}} under the RUNTIME's authority, ungated by the
+// spawned agent's tools or scopes. A data slot's content is attacker-
+// influenceable — a Starter's source message is written by whoever can reach
+// the channel. Filling slots BEFORE expansion would therefore let a publisher
+// synthesise a placeholder and have the runtime execute it: an ungated read
+// primitive handed to anyone who can publish. Filling them AFTER makes the
+// payload data that happens to contain braces.
+//
+// Both arguments are empty for every non-starter spawn, so an ordinary
+// assembly is byte-identical to before data slots existed.
+func (s *Server) composeCallerText(ctx context.Context, mi memInject, values, dataSlots map[string]string, system, user string) (string, string) {
+	system, user = s.expandCallerSegments(ctx, mi, values, system, user)
+	return applyDataSlots(system, dataSlots), applyDataSlots(user, dataSlots)
+}
+
+// applyDataSlots substitutes literal slot markers with their content, once,
+// with no rescanning of what it wrote — plain replacement, deliberately not a
+// regex and deliberately not the expander.
+//
+// It runs AFTER placeholder expansion, which is the whole point: see the call
+// site. Order is not significant between slots because each marker is a fixed
+// literal that no other slot's content can produce a second copy of — the
+// markers are reserved, and an operator writing one into a prompt of a state
+// that fills no slots simply gets it back unchanged.
+func applyDataSlots(text string, slots map[string]string) string {
+	if text == "" || len(slots) == 0 {
+		return text
+	}
+	for marker, content := range slots {
+		text = strings.ReplaceAll(text, marker, content)
+	}
+	return text
 }
 
 // composeSubRunSegments builds a sub-run's input segments: the agent's own
@@ -5854,10 +5909,10 @@ func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop
 // resident child, like a top-level interactive run, must not swap/hold the
 // provider gate across turns) — everything else is identical.
 func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
-	return s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, interactive, fwd, nil)
+	return s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, interactive, fwd, nil, nil)
 }
 
-func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values map[string]string) (*subRunPrep, error) {
+func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string) (*subRunPrep, error) {
 	// RFC N: a parent in tenant T resolves the sub-agent name within T's
 	// view (parent tenant flows via ctx RunIdentity, inherited by every
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
@@ -5989,6 +6044,18 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		subIdentity.ParentContext.BoardChunkID = bt.ChunkID
 		subIdentity.ParentContext.BoardDocumentID = bt.DocumentID
 	}
+	// RFC CY L4: a Starter puts its wave on ctx per spawned run; stamp it the
+	// same way, so a wave's runs can be recovered by a join instead of being
+	// copied anywhere. Cleared from subRunCtx below with the board task, so
+	// only the DIRECT handler run carries it and not its own sub-agents.
+	if wt, ok := store.WaveTaskFromContext(ctx); ok {
+		if subIdentity.ParentContext == nil {
+			subIdentity.ParentContext = &store.ParentContext{}
+		}
+		subIdentity.ParentContext.WalkID = wt.WalkID
+		subIdentity.ParentContext.WaveID = wt.WaveID
+		subIdentity.ParentContext.WaveIndex = wt.Index
+	}
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("create sub-session for %q: %w", name, err)
@@ -6028,6 +6095,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// Board task tags only the DIRECT handler run; clear it on the handler's own
 	// execution ctx so its sub-agents aren't also pinned onto the card (RFC BT P4).
 	subRunCtx = store.WithBoardTask(subRunCtx, store.BoardTask{})
+	// Same for the wave: a wave is the runs the Starter dispatched, not
+	// everything they went on to spawn. Leaving it set would make a wave's
+	// apparent width depend on how chatty its agents were.
+	subRunCtx = store.WithWaveTask(subRunCtx, store.WaveTask{})
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)
@@ -6121,9 +6192,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// same single pass. Until this, a {{document:...}} in a team node's prompt
 	// was inert — it reached the model as literal text — so the workflow
 	// bindings the team design is built on did not resolve at all.
-	systemExtra, prompt = s.expandCallerSegments(ctx, memInject{
+	systemExtra, prompt = s.composeCallerText(ctx, memInject{
 		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
-	}, values, systemExtra, prompt)
+	}, values, dataSlots, systemExtra, prompt)
 	segs := composeSubRunSegments(def.SystemPrompt, systemExtra, prompt)
 
 	// Inherit the parent's caller-authoritative host policy. Without
