@@ -261,7 +261,7 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 // mirrored yet. Flipping it is a one-line change that belongs in the same commit as
 // the migration that deletes the k/v rows, and the selectors above are written so
 // that flip is all it takes.
-const FactsAreChunkHomed = false
+const FactsAreChunkHomed = true
 
 // Class labels a result row so a caller can tell what it got (RFC BW §4b).
 func Class(e store.MemorySearchEntry) store.MemoryRowClass {

@@ -250,6 +250,13 @@ type docInput struct {
 	// only thing a caller may pass — the fields themselves stay unsettable, which
 	// is what keeps origin an unforgeable statement about who wrote a fact.
 	FromPending string `json:"from_pending,omitempty"`
+	// SourceSessionID names the chat this fact was distilled FROM, for a fact that
+	// came off the transcript path rather than a drained queue row (where
+	// from_pending supplies it server-side). Descriptive metadata like the rest of
+	// the provenance block — never consulted for authorization — but the erasure
+	// report keys on it, so a fact without one cannot be surfaced as residue for
+	// the subject who produced it.
+	SourceSessionID string `json:"source_session_id,omitempty"`
 	// pendingProv is what the server resolved from that row. UNEXPORTED, like
 	// bodyOrigin, so the tool's JSON input can never supply it — the id is the
 	// caller's to pass, the provenance is the server's to decide.

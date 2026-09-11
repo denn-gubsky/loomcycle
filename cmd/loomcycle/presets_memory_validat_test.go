@@ -29,11 +29,11 @@ func TestConsolidator_RelativePhraseResolvesAgainstObservedAt(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if got, _ := set.Input["observed_at"].(string); got != "2023-07-07T19:56:00Z" {
+	set := lastFactWrite(t, f)
+	if got := set.ObservedAt; got != "2023-07-07T19:56:00Z" {
 		t.Fatalf("observed_at = %q, want the turn's stamp as the anchor", got)
 	}
-	if got, _ := set.Input["valid_at"].(string); got != "2023-06-30T19:56:00Z" {
+	if got := set.ValidAt; got != "2023-06-30T19:56:00Z" {
 		t.Errorf("valid_at = %q, want 2023-06-30T19:56:00Z (one week before it was said) — "+
 			"the anchor and the phrase are both present, so the fact is datable", got)
 	}
@@ -50,8 +50,8 @@ func TestConsolidator_ModelValidAtWinsOverTheFallback(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if got, _ := set.Input["valid_at"].(string); got != "2023-07-01T00:00:00Z" {
+	set := lastFactWrite(t, f)
+	if got := set.ValidAt; got != "2023-07-01T00:00:00Z" {
 		t.Errorf("valid_at = %q, want the model's own value kept", got)
 	}
 }
@@ -68,8 +68,8 @@ func TestConsolidator_AnAbsoluteDateInTheSentenceIsNotComputedOver(t *testing.T)
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if v, ok := set.Input["valid_at"]; ok {
+	set := lastFactWrite(t, f)
+	if v := set.ValidAt; v != "" {
 		t.Errorf("valid_at = %v, want NO computed value: the sentence names June 2023, so the "+
 			"date is stated rather than inferable", v)
 	}
@@ -85,8 +85,8 @@ func TestConsolidator_TwoDifferentRelativePhrasesRefuse(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if v, ok := set.Input["valid_at"]; ok {
+	set := lastFactWrite(t, f)
+	if v := set.ValidAt; v != "" {
 		t.Errorf("valid_at = %v, want the field OMITTED — two different references in one "+
 			"sentence cannot both be the world-time", v)
 	}
@@ -104,8 +104,8 @@ func TestConsolidator_MonthArithmeticCrossesTheBoundaryCorrectly(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	got, _ := set.Input["valid_at"].(string)
+	set := lastFactWrite(t, f)
+	got := set.ValidAt
 	if got != "2023-02-28T12:00:00Z" && got != "2023-03-03T12:00:00Z" {
 		t.Errorf("valid_at = %q — want a real month subtraction from 31 March", got)
 	}
@@ -126,8 +126,8 @@ func TestConsolidator_ForwardReferenceIsNotDated(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	set := lastCall(t, f, "Memory.set")
-	if v, ok := set.Input["valid_at"]; ok {
+	set := lastFactWrite(t, f)
+	if v := set.ValidAt; v != "" {
 		t.Errorf("valid_at = %v, want NO value for a forward reference", v)
 	}
 }

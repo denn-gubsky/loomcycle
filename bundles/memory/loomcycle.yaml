@@ -2205,10 +2205,21 @@ agents:
         // and is indistinguishable from one read out of an ordinary transcript,
         // which is the whole thing the pending origin column exists to tell apart.
         if (pendingID) { args.from_pending = pendingID; }
-        try {
-          Memory.set(args);
-        } catch (e) {
-          block(st, "write failed for " + key + ": " + errText(e));
+        // THE CHUNK IS THE FACT'S ONLY HOME. The k/v `memory/<class>/<slug>` row
+        // this used to write is gone — one text, one embedding, one provenance
+        // record. `args` is still assembled above because it carries the temporal
+        // fields and the pending attribution into the mirror.
+        //
+        // THE FAILURE RULE INVERTS, and this is the part to read twice. It used to
+        // say "the entity graph mirrors the fact AFTER the authoritative write
+        // lands, so a graph failure can never cost a fact" — true while the k/v row
+        // held the fact. Now a chunk write that fails IS the fact failing, so it
+        // blocks the pass exactly as a k/v failure did. Without this a pass reports
+        // facts written and has written none, and the watermark advances past
+        // chats whose facts were never stored.
+        if (!mirrorEntity(st, key, fact, scope, pendingID, sourceID)) {
+          block(st, "write failed for " + key + ": the fact chunk did not land" +
+                    (st.entity_error ? " (" + String(st.entity_error).slice(0, 200) + ")" : ""));
           return false;
         }
         st.written_keys[key] = true;
@@ -2216,10 +2227,6 @@ agents:
           st.placed++;
           st.placement_moved_keys[key] = scope;
         }
-        // The entity graph mirrors the fact AFTER the authoritative write lands, so
-        // a graph failure can never cost a fact. SAME scope as the row above — the two
-        // halves of one fact never split.
-        mirrorEntity(st, key, fact, scope, pendingID);
         return true;
       }
 
@@ -2526,10 +2533,10 @@ agents:
       //   written, and the subject node and edge are skipped — the fact keeps its home,
       //   the graph stays honest, and st.fact_no_subject counts the gap so it reads as
       //   work still to do instead of a silent default.
-      function mirrorEntity(st, key, fact, scope, pendingID) {
+      function mirrorEntity(st, key, fact, scope, pendingID, sourceID) {
         scope = scope || CONFIG.scope;
         var docID = entitiesDoc(st, scope);
-        if (!docID) { return; }
+        if (!docID) { return false; }
 
         var subjID = "";
         if (nonEmpty(fact.subject)) {
@@ -2615,8 +2622,13 @@ agents:
         // consolidation pass from any other agent, and once the chunk is the fact's
         // only home there is no k/v twin left holding the real answer.
         if (pendingID) { factArgs.from_pending = pendingID; }
+        // THE CHAT THIS CAME FROM. A queued fact gets it server-side from the drained
+        // row; a transcript-path fact has no such row, and this is its only route. The
+        // erasure report keys on it — without it a placed fact cannot be surfaced as
+        // residue for the subject who produced it.
+        if (sourceID) { factArgs.source_session_id = sourceID; }
         var factID = upsertEntityChunk(st, scope, docID, key, factArgs);
-        if (!factID) { return; }
+        if (!factID) { return false; }
         st.entity_facts++;
 
         // Queued for the judge in write order. A fact with NO span cannot be judged
@@ -2659,6 +2671,10 @@ agents:
             if (!st.entity_error) { st.entity_error = errText(e); }
           }
         }
+        // The FACT CHUNK landed. The edge may not have, and that stays best-effort:
+        // an unreachable fact is a retrieval gap, a missing fact is data loss, and
+        // only the second may fail a write.
+        return true;
       }
 
       // ------------------------------------------------------------- the judge

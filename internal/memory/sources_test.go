@@ -45,12 +45,9 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 				"(exclude AND require the same prefix), which would return nothing",
 		},
 		{
-			name: "facts require provenance, and exclude the twin while dual-written",
+			name: "facts are wherever provenance is, now that the chunk is their home",
 			q:    SearchQuery{Sources: []Source{SourceFacts}},
-			want: store.MemorySearchFilter{
-				Provenance:       store.ProvenanceRequired,
-				ExcludeKeyPrefix: DocumentChunkKeyPrefix,
-			},
+			want: store.MemorySearchFilter{Provenance: store.ProvenanceRequired},
 			comment: "origin is server-stamped, so it is the unforgeable discriminator " +
 				"(RFC BW §9 Q1) — class is model-supplied and would let an agent promote " +
 				"its own note to a fact. No namespace constraint: excluding the chunk " +
@@ -66,9 +63,9 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 			},
 		},
 		{
-			name: "facts+notes excludes the chunk namespace while facts are dual-written",
+			name: "facts+notes excludes the document CLASS, not the namespace",
 			q:    SearchQuery{Sources: []Source{SourceFacts, SourceNotes}},
-			want: store.MemorySearchFilter{ExcludeKeyPrefix: DocumentChunkKeyPrefix},
+			want: store.MemorySearchFilter{ExcludeDocumentPrefix: DocumentChunkKeyPrefix},
 			comment: "the recall default: everything the agent remembers, prose " +
 				"excluded. Excluding the namespace no longer expresses that, because " +
 				"the facts half now lives inside it — so what is ruled out is the " +
@@ -77,7 +74,7 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 		{
 			name: "an explicit prefix survives a source selector",
 			q:    SearchQuery{Prefix: "proj/", Sources: []Source{SourceFacts, SourceNotes}},
-			want: store.MemorySearchFilter{KeyPrefix: "proj/", ExcludeKeyPrefix: DocumentChunkKeyPrefix},
+			want: store.MemorySearchFilter{KeyPrefix: "proj/", ExcludeDocumentPrefix: DocumentChunkKeyPrefix},
 		},
 		{
 			name: "an explicit prefix WINS over documents-only",

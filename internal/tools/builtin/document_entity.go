@@ -592,6 +592,12 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 	// which is the source reference, whereas the ctx run id is merely the run doing
 	// the writing. sessionID has no other writer in this plane at all.
 	sessionID := prev.SessionID
+	// The caller's, when it has one and the server has not resolved a better answer
+	// from a drained row. A transcript-path fact has no pending row, so this is its
+	// only route to the chat half of its source reference.
+	if in.SourceSessionID != "" {
+		sessionID = in.SourceSessionID
+	}
 	if in.pendingProv != nil {
 		if in.pendingProv.SourceRunID != "" {
 			runID = in.pendingProv.SourceRunID
