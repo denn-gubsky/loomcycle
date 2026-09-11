@@ -64,9 +64,16 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 	// self guard needs to tell a fact about them from a fact about a colleague; a
 	// per-item read would repeat the same export for every fact in the pass.
 	selfNames := m.selfNames(ctx)
+	// A WRITE WITH NO RUN IS THE OPERATOR PLANE, which is what makes it a curator —
+	// there is no transcript behind it. Derived exactly as originForEntityWrite
+	// derives `operator`, so the two cannot disagree about who is acting, and
+	// unforgeable for the same reason: a caller cannot manufacture the absence of a
+	// run id.
+	curator := tools.RunID(ctx) == ""
 	out := make([]map[string]any, 0, len(in.Items))
 	moved := 0
 	subjectTypes := map[string][]string{}
+	knownToTenant := map[string]bool{}
 
 	for _, it := range in.Items {
 		row := map[string]any{
@@ -86,6 +93,9 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 		subj := strings.ToLower(strings.TrimSpace(it.Subject))
 		if _, seen := subjectTypes[subj]; !seen && subj != "" {
 			subjectTypes[subj] = m.typesForSubject(ctx, callerScope, callerScopeID, it.Subject)
+			// Memoised beside it and for the same reason: a pass writes several facts
+			// about the same handful of subjects, and this is one query per subject.
+			knownToTenant[subj] = m.subjectKnownToTenant(ctx, it.Subject)
 		}
 		d := memrank.ResolvePlacement(memrank.PlacementInput{
 			DeclaredType:  it.Type,
@@ -100,6 +110,9 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 			// sql_scopes too: a tenant placement also writes the chunk mirror, which is a
 			// Document write and gated on both planes.
 			GrantedSqlScopes: tools.SqlMemPolicy(ctx).AllowedScopes,
+			// The curator gate's two inputs (RFC CV decision 6).
+			SubjectKnownToTenant: knownToTenant[subj],
+			CuratorWrite:         curator,
 		})
 		row["scope"], row["moved"], row["reason"] = d.Scope, d.Moved, d.Reason
 		if d.Advisory != "" {
@@ -131,6 +144,41 @@ func (m *Memory) placementOntology(ctx context.Context) (terms []memrank.Ontolog
 	}
 	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
 	return d.tenantOntologyState(ctx)
+}
+
+// subjectKnownToTenant reports whether the TENANT registry already holds an entity
+// node for this subject — the question the curator gate turns on.
+//
+// FAILS CLOSED. Every error path returns false, which reads as "unknown" and keeps
+// the fact in the caller's own scope. That is the safe direction: the cost of a false
+// negative is a fact that stays home and a subject an operator adopts by hand; the
+// cost of a false positive is a subject minted from one user's transcript that every
+// other user's facts then attach to.
+//
+// Matched on the identity node's TITLE, the same way typesForSubject does, because a
+// live store holds nodes titled "user", "loomboard", "git configuration" — the
+// natural key's slug is derived from that title by the bundle and is not something
+// this side should re-derive.
+func (m *Memory) subjectKnownToTenant(ctx context.Context, subject string) bool {
+	if m.SqlMem == nil || strings.TrimSpace(subject) == "" {
+		return false
+	}
+	d := &Document{Store: m.Store, SqlMem: m.SqlMem}
+	tenant := sqlScopeTenant(ctx)
+	// The two planes key a tenant differently — SQL Memory carries it in the scope id,
+	// the k/v plane leaves it empty — so this asks docScopeKeyFor rather than building
+	// the key by hand, which is the seam the three-keying-planes review flagged.
+	key, ok := docScopeKeyFor(tools.RunIdentity(ctx).TenantID, store.MemoryScopeTenant, tenant)
+	if !ok {
+		return false
+	}
+	res, err := d.query(ctx, key,
+		`SELECT 1 FROM chunks c JOIN chunk_memory_meta mm ON mm.chunk_id = c.id
+		  WHERE lower(coalesce(c.title, '')) = lower(?) LIMIT 1`, subject)
+	if err != nil || res == nil {
+		return false
+	}
+	return len(res.Rows) > 0
 }
 
 // typesForSubject returns the entity types this subject is already recorded under, in the

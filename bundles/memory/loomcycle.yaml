@@ -617,6 +617,7 @@ agents:
           placement_displace_failed: 0,
           placement_moved_keys: {}, // key -> target scope, for the displaced-twin retire
           placement_error: "",
+          unadopted_subjects: {},   // subject -> true, for the ones the tenant does not know yet
           placement_asked: {},      // type|subject already asked about, so batches don't re-ask
           subject_types: {},        // scope + slug -> the type this subject is ALREADY filed under
           type_stabilised: 0,       // times the extractor's guess was overridden by the existing type
@@ -2153,6 +2154,14 @@ agents:
             var row = rows[r];
             if (row && row.moved && row.scope) {
               st.placement[row.type + "\u0000" + row.subject] = row.scope;
+            } else if (row && row.subject && typeof row.reason === "string" &&
+                       row.reason.indexOf("does not yet know the subject") !== -1) {
+              // A SUBJECT AWAITING ADOPTION. The declaration says its facts are shared,
+              // and the server declined to mint the entity from one user's transcript —
+              // so the fact stays here and a curator has something to act on. Reported
+              // rather than logged: this is the only place an operator learns which
+              // names are waiting, and a silent gate reads as a broken declaration.
+              st.unadopted_subjects[row.subject] = true;
             }
           }
         } catch (e) {
@@ -3284,6 +3293,17 @@ agents:
         }
         // Said out loud rather than swallowed: the pass stored everything in this scope,
         // which is correct behaviour but NOT the behaviour a declaring operator expects.
+        var unadopted = Object.keys(st.unadopted_subjects);
+        if (unadopted.length > 0) {
+          // Named, up to a few: "3 subjects" sends an operator looking, the names let
+          // them act. Bounded because a pass meeting a hundred new subjects would
+          // otherwise bury the rest of the report.
+          var shown = unadopted.slice(0, 8).join(", ");
+          parts.push("subjects the tenant does not know yet, so their facts stayed here: " +
+            unadopted.length + " (" + shown +
+            (unadopted.length > 8 ? ", …" : "") +
+            ") — create the entity in tenant scope once to share what is learned about it");
+        }
         if (st.placement_error) {
           parts.push("scope placement unavailable (" + st.placement_error +
             ") — everything stayed in " + CONFIG.scope + " scope");

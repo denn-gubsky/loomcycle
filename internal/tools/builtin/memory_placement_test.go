@@ -71,12 +71,40 @@ func placementFixture(t *testing.T, confirmed bool, scopes ...string) (*Memory, 
 	// SAME TENANT as the fixture that authored the ontology ("tnt"). The reader keys the
 	// ontology on the run's tenant, so a mismatch here would read an empty plane and
 	// every assertion below would pass or fail for the wrong reason.
+	// A RUN ID, because a consolidation pass HAS one and the curator gate keys on its
+	// absence. Without it the fixture modelled an operator acting by hand, so every
+	// test below would take the curator path and silently stop exercising the gate it
+	// is named for — passing for a reason unrelated to its assertion.
+	ctx = tools.WithRunID(ctx, "run-placement")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: "u_alice", TenantID: "tnt"})
+	// And the fixture's subjects are ADOPTED — the tenant registry already holds them —
+	// so each test reports the guard it is about rather than the curator gate.
+	// TestMemoryPlacement_AnUnadoptedSubjectStaysHome covers the gate itself.
+	adoptTenantSubjects(t, d, dctx, "checkout-api", "Cluj-Napoca", "Maria", "Ada Lovelace", "ada", "user", "u_alice", "s")
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: scopes})
 	// sql_scopes mirrors memory_scopes here: a tenant placement needs both, because the
 	// fact's chunk mirror is a Document write. The both-grants case has its own test.
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: scopes})
 	return &Memory{Store: d.Store, SqlMem: d.SqlMem}, ctx
+}
+
+// adoptTenantSubjects records each name as an entity the TENANT already knows — what
+// a curator does once, by hand, before a pass may place facts about it.
+func adoptTenantSubjects(t *testing.T, d *Document, dctx context.Context, names ...string) {
+	t.Helper()
+	out, r := docExec(t, d, dctx, `{"op":"create_document","scope":"tenant","title":"Registry","path":"/facts/_registry"}`)
+	if r.IsError {
+		t.Fatalf("registry document: %s", r.Text)
+	}
+	docID, _ := out["document_id"].(string)
+	for i, n := range names {
+		nj, _ := json.Marshal(n)
+		if _, r := docExec(t, d, dctx, fmt.Sprintf(
+			`{"op":"upsert_chunk","scope":"tenant","document_id":%q,"natural_key":"seed:%d","title":%s,"type":"object","subject":%s}`,
+			docID, i, string(nj), string(nj))); r.IsError {
+			t.Fatalf("adopt %s: %s", n, r.Text)
+		}
+	}
 }
 
 func placements(t *testing.T, m *Memory, ctx context.Context, body string) []map[string]any {
@@ -297,5 +325,71 @@ func TestMemoryPlacement_TenantNeedsSqlScopesToo(t *testing.T) {
 	}
 	if s, _ := got[0]["reason"].(string); !strings.Contains(s, "sql_scopes") {
 		t.Errorf("the reason must name sql_scopes, got %q", s)
+	}
+}
+
+// TestMemoryPlacement_AnUnadoptedSubjectStaysHome is the curator gate END TO END —
+// the wiring, not the decision (internal/memory covers that).
+//
+// Two things are derived server-side and neither can be supplied by a caller: whether
+// this is a curator (no run id ⇒ the operator plane, no transcript behind it) and
+// whether the tenant registry already holds the subject. A pass that meets an unknown
+// one leaves the fact in its own scope and says which subject to adopt.
+func TestMemoryPlacement_AnUnadoptedSubjectStaysHome(t *testing.T) {
+	m, ctx := placementFixture(t, true)
+
+	// `payments-api` is declared `service` (→ tenant) but was never adopted.
+	got := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[
+		{"type":"service","subject":"payments-api"}]}`)
+	if len(got) != 1 {
+		t.Fatalf("want one placement, got %v", got)
+	}
+	if got[0]["moved"] == true || got[0]["scope"] != "user" {
+		t.Fatalf("a subject the tenant has never seen was minted from a pass: %v", got[0])
+	}
+	reason, _ := got[0]["reason"].(string)
+	if !strings.Contains(reason, "payments-api") || !strings.Contains(reason, "adopts") {
+		t.Errorf("the reason must name the subject and how to adopt it, got %q", reason)
+	}
+
+	// The ADOPTED sibling moves in the same call, which is what proves the registry
+	// lookup is doing the deciding rather than something about this fixture.
+	both := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[
+		{"type":"service","subject":"payments-api"},
+		{"type":"service","subject":"checkout-api"}]}`)
+	if len(both) != 2 {
+		t.Fatalf("want two placements, got %v", both)
+	}
+	if both[0]["moved"] == true {
+		t.Errorf("the unadopted subject moved: %v", both[0])
+	}
+	if both[1]["moved"] != true || both[1]["scope"] != "tenant" {
+		t.Errorf("the adopted subject did not move: %v", both[1])
+	}
+}
+
+// TestMemoryPlacement_ACuratorMintsWhatAPassMayNot. Adoption has to be possible or the
+// gate is a wall: an operator acting by hand carries no run, and that absence is what
+// the server reads as "no transcript behind this".
+func TestMemoryPlacement_ACuratorMintsWhatAPassMayNot(t *testing.T) {
+	m, ctx := placementFixture(t, true)
+
+	// The same unadopted subject, asked by an OPERATOR — same grants, no run.
+	operator := tools.WithMemoryPolicy(context.Background(), tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent", "user", "tenant"}})
+	operator = tools.WithSqlMemPolicy(operator, tools.SqlMemPolicyValue{
+		AllowedScopes: []string{"agent", "user", "tenant"}})
+	operator = tools.WithRunIdentity(operator, tools.RunIdentityValue{UserID: "u_alice", TenantID: "tnt"})
+
+	got := placements(t, m, operator, `{"op":"placement","scope":"user","items":[
+		{"type":"service","subject":"payments-api"}]}`)
+	if len(got) != 1 || got[0]["moved"] != true || got[0]["scope"] != "tenant" {
+		t.Fatalf("a curator could not place a subject the tenant does not know yet: %v", got)
+	}
+
+	// And the pass still cannot, so the difference really is the identity.
+	if p := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[
+		{"type":"service","subject":"payments-api"}]}`); p[0]["moved"] == true {
+		t.Errorf("the pass placed it too — the gate is not keying on the caller: %v", p[0])
 	}
 }

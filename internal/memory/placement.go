@@ -83,6 +83,16 @@ type PlacementInput struct {
 	// Only consulted for a tenant target. Document leaves agent and user scope ungated,
 	// so a user placement needs nothing here.
 	GrantedSqlScopes []string
+
+	// SubjectKnownToTenant reports whether the tenant registry ALREADY holds this
+	// subject. A pass may add facts about a subject the tenant knows; minting the
+	// subject itself is a different act, and the one that shapes what every other
+	// user's facts attach to.
+	SubjectKnownToTenant bool
+	// CuratorWrite marks a write from the operator plane — no run, so no transcript
+	// behind it. Server-derived and unforgeable: it comes from the absence of a run
+	// id, which no caller can fake.
+	CuratorWrite bool
 }
 
 // PlacementDecision is where the fact goes and why.
@@ -158,6 +168,26 @@ func ResolvePlacement(in PlacementInput) PlacementDecision {
 	if target == MemoryScopeTenantName && !grants(in.GrantedSqlScopes, target) {
 		return stay("this agent has memory_scopes: [tenant] but not sql_scopes: [tenant], " +
 			"and a tenant fact needs both — its chunk mirror is a Document write")
+	}
+
+	// THE CURATOR GATE. A tenant entity is what every user's facts about that thing
+	// attach to, so whoever mints one shapes everybody's memory — and the subject's
+	// NAME comes from a model reading one user's untrusted transcript. The control
+	// flow being deterministic does not help here: the consolidator is trustworthy
+	// code carrying an untrustworthy string.
+	//
+	// So adding facts about a subject the tenant already knows is ordinary work, and
+	// minting the subject is a curator's act. A pass that meets an unknown one leaves
+	// the fact in its own scope — nothing is lost, nothing is shared, and the reason
+	// names the subject so an operator can adopt it.
+	//
+	// FAILS CLOSED, like every other guard here: an unreadable registry reads as
+	// "unknown", which keeps the fact at home rather than placing it on a guess.
+	if target == MemoryScopeTenantName && !in.SubjectKnownToTenant && !in.CuratorWrite {
+		return stay("left in " + in.CallerScope + " scope: the tenant does not yet know the subject " +
+			strings.TrimSpace(in.Subject) + ", and a subject read from one user's transcript is " +
+			"proposed rather than minted. An operator adopts it by creating the entity in tenant " +
+			"scope once; facts about it place automatically after that")
 	}
 
 	if target == MemoryScopeTenantName && in.Isolated {

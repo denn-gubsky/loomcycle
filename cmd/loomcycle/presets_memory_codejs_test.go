@@ -57,8 +57,11 @@ type fakeToolset struct {
 	// in. Empty (the default, and the real default) means the ontology declares nothing
 	// and every fact stays in the caller's scope. placementFails makes the op error, which
 	// is what a deployment without SQL Memory or with an unreadable ontology looks like.
-	placements     map[string]string
-	placementFails bool
+	placements map[string]string
+	// unadoptedSubjects names the subjects the tenant registry does not hold, so the
+	// server's curator gate declines to place their facts (RFC CV decision 6).
+	unadoptedSubjects map[string]bool
+	placementFails    bool
 	// failTypeLookup makes the canonical-type query error, so a lookup failure can be told
 	// apart from a chunk-write failure in the report.
 	failTypeLookup bool
@@ -171,18 +174,19 @@ type fakeToolset struct {
 
 func newFakeToolset() *fakeToolset {
 	return &fakeToolset{
-		leaseAcquired:   true,
-		bands:           map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
-		chunks:          map[string]string{},
-		subjectDocs:     map[string]string{},
-		chunkScopes:     map[string]string{},
-		chunkTypes:      map[string]string{},
-		chunkSpans:      map[string]string{},
-		chunkRows:       map[string]map[string]any{},
-		verdicts:        map[string]string{},
-		failEntityKeys:  map[string]bool{},
-		failSubjectDocs: map[string]bool{},
-		proposedTypes:   map[string]bool{},
+		leaseAcquired:     true,
+		bands:             map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
+		chunks:            map[string]string{},
+		subjectDocs:       map[string]string{},
+		chunkScopes:       map[string]string{},
+		chunkTypes:        map[string]string{},
+		chunkSpans:        map[string]string{},
+		chunkRows:         map[string]map[string]any{},
+		verdicts:          map[string]string{},
+		failEntityKeys:    map[string]bool{},
+		failSubjectDocs:   map[string]bool{},
+		unadoptedSubjects: map[string]bool{},
+		proposedTypes:     map[string]bool{},
 		// Source of truth for this format: formatSubAgentOutput in
 		// internal/api/http/resume.go. Nothing links them — grep that name.
 		subAgentHeader: "[sub-agent agent_id=a_test000000000000]\n",
@@ -274,8 +278,19 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 			if got, ok := m.f.placements[typ+"\x00"+subj]; ok {
 				target = got
 			}
+			reason := "test"
+			// The server's curator gate: a subject the tenant has not adopted keeps its
+			// fact in the caller's scope and says so. Modelled by the REASON TEXT the
+			// bundle matches on, because that string is the whole contract between the
+			// two — a double that invented its own wording would let the bundle drift
+			// away from the server and still pass.
+			if m.f.unadoptedSubjects[subj] {
+				target = caller
+				reason = "left in " + caller + " scope: the tenant does not yet know the subject " +
+					subj + ", and a subject read from one user's transcript is proposed rather than minted."
+			}
 			row := map[string]any{"type": typ, "subject": subj, "scope": target,
-				"moved": target != caller, "reason": "test"}
+				"moved": target != caller, "reason": reason}
 			if target != caller {
 				moved++
 			}
@@ -4995,6 +5010,46 @@ func TestConsolidator_NoDeclarationLeavesEveryFactInTheCallersScope(t *testing.T
 
 // TestConsolidator_PlacementIsAskedOncePerPass: the op is a batch for a reason. Asking per
 // fact would put a tool call in front of every write.
+// TestConsolidator_AnUnadoptedSubjectIsNamedForTheOperator.
+//
+// The tenant registry is curator-only (RFC CV decision 6): a subject read from one
+// user's transcript is proposed, not minted, so its facts stay in the user's scope
+// until an operator adopts it. That is the right default and a SILENT one — the
+// operator declared that this type's facts are shared, and they are not being shared,
+// with nothing on any surface saying why.
+//
+// So the pass names them. Without this the gate reads as a broken declaration, and
+// the first thing an operator would do is go looking for a fault in placement.
+func TestConsolidator_AnUnadoptedSubjectIsNamedForTheOperator(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nThe checkout API owns payments. The billing worker retries."
+	f.factsJSON = `[
+		{"text":"The checkout API owns payments.","class":"fact","type":"service","subject":"checkout-api"},
+		{"text":"The billing worker retries failed charges.","class":"fact","type":"service","subject":"billing-worker"}
+	]`
+	// checkout-api is adopted and places; billing-worker is not.
+	f.placements = map[string]string{
+		"service\x00checkout-api":   "tenant",
+		"service\x00billing-worker": "tenant",
+	}
+	f.unadoptedSubjects = map[string]bool{"billing-worker": true}
+
+	res := runConsolidator(t, f)
+
+	if !strings.Contains(res.FinalText, "billing-worker") {
+		t.Errorf("the report must NAME the subject awaiting adoption — a count sends an "+
+			"operator looking, a name lets them act: %s", res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "tenant scope") {
+		t.Errorf("the report must say what to do about it: %s", res.FinalText)
+	}
+	// The adopted one is not named, or the list is noise rather than a work queue.
+	if strings.Contains(res.FinalText, "checkout-api") {
+		t.Errorf("a subject that placed fine was listed as awaiting adoption: %s", res.FinalText)
+	}
+}
+
 func TestConsolidator_PlacementIsAskedOncePerPass(t *testing.T) {
 	f := newFakeToolset()
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}

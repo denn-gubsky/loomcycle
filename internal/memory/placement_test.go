@@ -38,6 +38,11 @@ func base(in PlacementInput) PlacementInput {
 	if in.GrantedSqlScopes == nil {
 		in.GrantedSqlScopes = []string{"agent", "user", "tenant"}
 	}
+	// And the fixture's subjects are ALREADY ADOPTED, for the same reason: the curator
+	// gate would otherwise fire first and every test below would report it instead of
+	// the guard it is named for. TestResolvePlacement_AnUnadoptedSubjectIsNotMinted
+	// covers the gate, and builds its input directly so it can say false.
+	in.SubjectKnownToTenant = true
 	return in
 }
 
@@ -279,6 +284,8 @@ func TestResolvePlacement_TenantNeedsBothGrants(t *testing.T) {
 		Terms: placementOntology(), CallerScope: "user", UserID: "u_alice",
 		GrantedScopes:    []string{"user", "tenant"}, // k/v yes...
 		GrantedSqlScopes: []string{"user"},           // ...SQL no
+		// Adopted, so this test reports the grant and not the curator gate.
+		SubjectKnownToTenant: true,
 	}
 	got := ResolvePlacement(in)
 	if got.Moved || got.Scope != "user" {
@@ -303,5 +310,71 @@ func TestResolvePlacement_TenantNeedsBothGrants(t *testing.T) {
 	}
 	if got := ResolvePlacement(userTarget); got.Scope != "user" || !got.Moved {
 		t.Errorf("a user-scope placement must not need sql_scopes: %+v", got)
+	}
+}
+
+// TestResolvePlacement_AnUnadoptedSubjectIsNotMinted is the curator gate.
+//
+// A tenant entity is what every user's facts about that thing attach to, so whoever
+// mints one shapes everybody's memory — and the subject's NAME arrives from a model
+// reading one user's untrusted transcript. That the consolidator is deterministic
+// code does not help: it is trustworthy code carrying an untrustworthy string.
+//
+// So the split is between ADDING to a subject the tenant already knows, which is
+// ordinary work, and MINTING one, which is a curator's act. The unadopted fact is not
+// refused and not lost — it stays in the caller's own scope, exactly as every other
+// placement guard leaves it.
+func TestResolvePlacement_AnUnadoptedSubjectIsNotMinted(t *testing.T) {
+	unadopted := PlacementInput{
+		DeclaredType: "service", Subject: "checkout-api",
+		Terms: placementOntology(), CallerScope: "user", UserID: "u_alice",
+		GrantedScopes:    []string{"user", "tenant"},
+		GrantedSqlScopes: []string{"user", "tenant"},
+		// The whole point: everything else permits the move.
+		SubjectKnownToTenant: false,
+	}
+
+	got := ResolvePlacement(unadopted)
+	if got.Moved || got.Scope != "user" {
+		t.Fatalf("a subject the tenant has never seen was minted from one user's transcript: %+v", got)
+	}
+	// The reason has to name the subject and the remedy, or an operator cannot act on
+	// it — a fact that quietly stays home is indistinguishable from one nothing declared.
+	if !strings.Contains(got.Reason, "checkout-api") {
+		t.Errorf("the reason must name the subject to adopt, got %q", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "adopts") {
+		t.Errorf("the reason must say how to adopt it, got %q", got.Reason)
+	}
+
+	// ADOPTED: the same fact places.
+	adopted := unadopted
+	adopted.SubjectKnownToTenant = true
+	if got := ResolvePlacement(adopted); !got.Moved || got.Scope != "tenant" {
+		t.Errorf("an adopted subject's fact should place: %+v", got)
+	}
+
+	// THE CURATOR PATH: an operator-plane write has no transcript behind it, so it
+	// mints. This is what makes adoption possible at all.
+	curator := unadopted
+	curator.CuratorWrite = true
+	if got := ResolvePlacement(curator); !got.Moved || got.Scope != "tenant" {
+		t.Errorf("a curator must be able to place a subject the tenant does not know yet: %+v", got)
+	}
+}
+
+// TestResolvePlacement_TheCuratorGateDoesNotReachTheUserPlane. The gate is about the
+// SHARED plane — a type declaring `user` scope routes a fact within the caller's own
+// world, where there is no registry to poison and nobody else to affect.
+func TestResolvePlacement_TheCuratorGateDoesNotReachTheUserPlane(t *testing.T) {
+	got := ResolvePlacement(PlacementInput{
+		DeclaredType: "person", Subject: "Maria",
+		Terms: placementOntology(), CallerScope: "agent", UserID: "u_alice",
+		GrantedScopes:        []string{"agent", "user"},
+		GrantedSqlScopes:     []string{"agent", "user"},
+		SubjectKnownToTenant: false,
+	})
+	if !got.Moved || got.Scope != "user" {
+		t.Errorf("a user-scope placement was blocked by a gate meant for the tenant plane: %+v", got)
 	}
 }
