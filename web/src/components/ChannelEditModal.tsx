@@ -168,11 +168,12 @@ export default function ChannelEditModal({
                 checked={hold}
                 onChange={(e) => setHold(e.target.checked)}
               />{" "}
-              Hold (breakpoint)
+              Hold (operator gate)
             </span>
             <small>
-              Publishes are stored but never delivered until you release
-              them — one at a time from the channel page.
+              Publishes are stored and delivered to nobody until you release
+              them from the channel page. Applies to every reader of this
+              channel.
             </small>
           </label>
         </div>

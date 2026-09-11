@@ -801,7 +801,7 @@ channels:
   review-queue:
     scope: global
     max_messages: 100
-    hold: true                # breakpoint: store, deliver only on release
+    hold: true                # operator gate: store, deliver only on release
 ```
 
 Per-agent ACL via the agent yaml:
@@ -879,9 +879,9 @@ It long-polls up to `wait_ms` (clamped to the operator's `LOOMCYCLE_CHANNELS_LON
 
 > **`await` vs `Agent.parallel_spawn`:** both are barriers, but over different things. `parallel_spawn` joins the **sub-agents this agent spawned** (`wg.Wait()`). `await` joins **independent producers** — scheduler-fired runs, inbound webhooks, separately-spawned agents — that `parallel_spawn` can't reach. A scheduler-driven fan-out (N collectors) → consolidator pipeline uses `await`; an in-agent fan-out uses `parallel_spawn`. (`on_complete: channel.publish` on a `ScheduledRun` stamps `schedule_name` per fire — the distinct-producer key an `at_least`/`all` consolidator counts.)
 
-### Breakpoints (`hold` + `release`)
+### Holding a channel (`hold` + `release`)
 
-A channel declared `hold: true` **stores a publish without delivering it**. Nothing is handed to a subscriber and no long-poll wakes; the message waits until someone releases it — `Channel op=release` for an agent, `POST /v1/_channels/{name}/release` for an operator, the **Release** control on the channel page in the Web UI. `count` defaults to 1, oldest first, so a workflow wired through the channel can be **single-stepped**: the wave upstream runs, its results queue, and nothing downstream starts until a human says go.
+A channel declared `hold: true` **stores a publish without delivering it**. Nothing is handed to a subscriber and no long-poll wakes; the message waits until someone releases it — `Channel op=release` for an agent, `POST /v1/_channels/{name}/release` for an operator, the **Release** control on the channel page in the Web UI. `count` defaults to 1, oldest first.
 
 ```
 POST /v1/_channels/review-queue/release   { "count": 1 }
@@ -890,19 +890,23 @@ POST /v1/_channels/review-queue/release   { "count": 1 }
 
 A bad `count` (above the cap of 1000, or negative) is a 400; `0` means one. An undeclared channel is a 404, as on every other channel route.
 
+**What this is for: operator control of a wire.** Stop a channel now — a misbehaving producer, an incident, a consumer you need to keep away from a backlog while you look at it — without deleting anything and without editing the producer. A hold applies to **every** reader of that channel, which is the point: it is a property of the wire, not of any one consumer.
+
+**What this is NOT: a workflow debugger.** Stepping an agent workflow wave by wave is a different job, and a hold is the wrong tool for it on three counts — it stalls the channel for every other consumer in the tenant, not just the workflow you are debugging; it cannot show you the *prompt* an agent received, because a prompt never travels on a channel; and a held message is unreadable by design, so you would be releasing blind. The workflow debugger belongs on the node that *reads* a channel and dispatches work, where the messages, the composed prompts and the results are all in hand at once. Do not build one on this.
+
 What a hold does **not** change:
 
 - **TTL still counts from publish time.** An expired held message is never released and never delivered — holding is not a way to outlive the retention its publisher declared.
 - **Overflow still trims the oldest**, reporting `dropped_oldest`, exactly as on any other channel. A hold buffers; it does not make the buffer unbounded.
-- **The hold wins over `deliver_at`.** A held message waits for a release, not for a clock, so a caller cannot schedule its way past the breakpoint. The publish result says `"held": true` instead of a `visible_at`.
+- **The hold wins over `deliver_at`.** A held message waits for a release, not for a clock, so a caller cannot schedule its way past the gate. The publish result says `"held": true` instead of a `visible_at`.
 
 `release` is gated by the **publish** allowlist rather than subscribe: releasing is the act of making a message deliverable — the half of a publish the hold deferred — so the question is whether the agent may put messages on this channel, not whether it may read them. `_system/` channels are released through the admin endpoint, like every other write to one.
 
-Releasing a channel with nothing held reports zero rather than failing, and a channel switched back to `hold: false` can still release what it holds — turning the breakpoint off does not flush the queue.
+Releasing a channel with nothing held reports zero rather than failing, and a channel switched back to `hold: false` can still release what it holds — turning the gate off does not flush the queue.
 
 **Every writer that resolves the channel definition honours the hold**, which is more than the in-band tool: the admin/connector publish path, the scheduler's `delivery: channel` tick and its `on_complete: channel.publish` hook, and a webhook's `on_complete` hook. Internal publishers that go through the system publisher (heartbeats, interrupts, the inbound webhook relay) are covered by one check inside it. The rule that decides new cases: *a writer either resolves the channel definition or honours nothing from it.*
 
-A held message is marked by a reserved far-future `visible_at`, so it survives a snapshot round trip still held — restoring a snapshotted workflow does not open its breakpoints. The channel listing reports `hold: true` and suppresses that reserved instant rather than printing it as a delivery time.
+A held message is marked by a reserved far-future `visible_at`, so it survives a snapshot round trip still held — restoring a snapshotted deployment does not open its gates. The channel listing reports `hold: true` and suppresses that reserved instant rather than printing it as a delivery time.
 
 ### Delivery semantics
 

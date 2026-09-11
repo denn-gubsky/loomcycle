@@ -187,12 +187,12 @@ func (s *Server) handleChannelPurge(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleChannelRelease serves POST /v1/_channels/{name}/release — the
-// operator half of the RFC CY hold breakpoint: hand the oldest `count`
-// (default 1) held messages to subscribers.
+// operator half of the hold gate: hand the oldest `count` (default 1) held
+// messages to subscribers.
 //
 // Allowed on yaml channels, like purge and unlike DELETE: releasing moves
 // messages, it does not mutate the definition — and a yaml-declared hold: is
-// exactly the channel an operator most wants to single-step.
+// exactly the channel an operator most needs to reopen by hand.
 //
 // scope/scope_id come from the body (default global) so the same route reaches
 // a user- or tenant-scoped hold queue without a second route family.

@@ -554,8 +554,8 @@ type Connector interface {
 	PurgeChannel(ctx context.Context, name string) (ChannelPurgeResult, error)
 
 	// ReleaseChannel hands the oldest Count held messages on a `hold:`
-	// channel to its subscribers — the operator half of the breakpoint the
-	// in-band Channel op=release gives agents. Releasing on a channel with
+	// channel to its subscribers — the operator half of the gate the in-band
+	// Channel op=release gives agents. Releasing on a channel with
 	// nothing held reports zero rather than failing: "advance the queue" is
 	// a reasonable request even when the queue is empty.
 	//

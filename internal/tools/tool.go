@@ -744,9 +744,9 @@ type ChannelDef struct {
 	// internal Go publisher and the admin endpoint may write. Empty =
 	// agents may publish (ACL permitting).
 	Publisher string
-	// Hold makes the channel a breakpoint: a publish is stored but not
-	// delivered or notified until a release. See store.ChannelHeldVisibleAt
-	// for how a held message is marked.
+	// Hold is the operator's gate on the wire: a publish is stored but not
+	// delivered or notified, for EVERY reader, until a release. See
+	// store.ChannelHeldVisibleAt for how a held message is marked.
 	Hold bool
 }
 

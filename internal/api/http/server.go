@@ -2042,7 +2042,7 @@ func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map
 			MaxMessages: ch.MaxMessages,
 			Semantic:    ch.Semantic,
 			Publisher:   ch.Publisher, // v0.8.6: agent publish refusal when "system"
-			Hold:        ch.Hold,      // RFC CY: store-without-delivering breakpoint
+			Hold:        ch.Hold,      // operator gate: store without delivering
 		}
 	}
 	if includeRuntime && s.store != nil {

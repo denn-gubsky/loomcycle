@@ -2267,7 +2267,7 @@ type Store interface {
 
 	// ChannelRelease makes the `count` oldest HELD messages on one
 	// (channel, scope, scope_id) deliverable now — the read half of the
-	// hold breakpoint (see ChannelHeldVisibleAt). Released messages take a
+	// hold gate (see ChannelHeldVisibleAt). Released messages take a
 	// visible_at of the release instant, so they sort AFTER everything
 	// already delivered and a subscriber's cursor never has to rewind.
 	//
@@ -3085,8 +3085,9 @@ type ChannelRow struct {
 	MaxMessages int
 	Publisher   string
 	Period      string
-	// Hold makes the channel a breakpoint: a publish is stored but never
-	// delivered or notified until a release. See ChannelHeldVisibleAt.
+	// Hold is the operator's gate on the wire: a publish is stored but never
+	// delivered or notified, for every reader, until a release. See
+	// ChannelHeldVisibleAt.
 	Hold      bool
 	CreatedAt time.Time
 }

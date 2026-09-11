@@ -2217,20 +2217,26 @@ type Channel struct {
 	Publisher string `yaml:"publisher"`
 	Period    string `yaml:"period"`
 
-	// Hold turns the channel into a BREAKPOINT: a publish is stored but
-	// never delivered and never wakes a subscriber, until an operator (or
-	// an agent with publish rights) releases it — `Channel op=release`, or
-	// POST /v1/_channels/{name}/release.
+	// Hold is the operator's GATE ON THE WIRE: a publish is stored but never
+	// delivered and never wakes a subscriber, until someone releases it —
+	// `Channel op=release`, or POST /v1/_channels/{name}/release.
+	//
+	// Why an operator wants this: stop a channel NOW — a misbehaving
+	// producer, an incident, a consumer to keep away from a backlog while
+	// they look at it — without deleting anything and without editing the
+	// producer. It applies to EVERY reader of the channel, which is the
+	// point: it is a property of the wire, not of one consumer.
+	//
+	// NOT a workflow debugger. Stepping an agent workflow wave by wave
+	// stalls the channel for every other consumer, cannot show the prompt an
+	// agent received (a prompt never travels on a channel), and releases
+	// blind because a held message is unreadable by design. That belongs on
+	// the node that reads a channel and dispatches work.
 	//
 	// A held message keeps its TTL, so a hold never becomes a way to keep a
 	// message past the retention its publisher declared, and overflow trims
-	// the oldest exactly as on any other channel.
-	//
-	// Why an operator wants this: a workflow whose stages are wired through
-	// channels can be single-stepped by holding one of them — the wave
-	// upstream runs, its results queue, and nothing downstream starts until
-	// a human says go. Default false: every existing channel delivers as
-	// before.
+	// the oldest exactly as on any other channel. Default false: every
+	// existing channel delivers as before.
 	Hold bool `yaml:"hold"`
 }
 

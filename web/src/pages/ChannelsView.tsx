@@ -414,7 +414,7 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
   );
 }
 
-// ReleaseForm is the operator's breakpoint step on a hold: channel: hand the
+// ReleaseForm is the operator's release step on a hold: channel: hand the
 // oldest N held messages to whatever is subscribed. Rendered only when the
 // channel is declared hold — on any other channel there is nothing to release.
 function ReleaseForm({

@@ -1829,7 +1829,8 @@ export interface ChannelDescriptor {
   period?: string;
   default_ttl?: number;
   max_messages?: number;
-  /** Breakpoint: publishes are stored but never delivered until released. */
+  /** Operator gate: publishes are stored but never delivered to any reader
+   *  until released. Not a per-consumer pause. */
   hold?: boolean;
   message_count: number;
   /** RFC3339 — empty when count == 0. */
@@ -2046,8 +2047,9 @@ export interface CreateChannelOptions {
   publisher?: string;
   /** Free-form retention hint; not enforced by the substrate. */
   period?: string;
-  /** Breakpoint: publishes are stored but never delivered until
-   *  {@link LoomcycleClient.releaseChannel} hands them over. */
+  /** Operator gate on the whole channel: publishes are stored but never
+   *  delivered to any reader until {@link LoomcycleClient.releaseChannel}
+   *  hands them over. */
   hold?: boolean;
   signal?: AbortSignal;
 }
@@ -2060,8 +2062,8 @@ export interface UpdateChannelOptions {
   max_messages?: number;
   /** "queue" | "topic" */
   semantic?: string;
-  /** Turn the breakpoint on or off. Messages already held stay held
-   *  until released — turning it off does not flush the queue. */
+  /** Turn the gate on or off. Messages already held stay held until
+   *  released — turning it off does not flush the queue. */
   hold?: boolean;
   signal?: AbortSignal;
 }

@@ -259,7 +259,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"semantic":     {"type": "string", "enum": ["queue", "topic"], "description": "Default queue."},
 					"default_ttl":  {"type": "integer", "description": "Per-message TTL seconds. 0 = no TTL."},
 					"max_messages": {"type": "integer", "description": "Bounded-queue cap. 0 = unbounded."},
-					"hold":         {"type": "boolean", "description": "Breakpoint: publishes are stored but never delivered until released (POST /v1/_channels/{name}/release, or Channel op=release)."},
+					"hold":         {"type": "boolean", "description": "Operator gate on the whole channel: publishes are stored but never delivered to any reader until released (POST /v1/_channels/{name}/release, or Channel op=release)."},
 					"publisher":    {"type": "string", "description": "create only. Free-form attribution."}
 				}
 			}`),

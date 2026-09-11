@@ -181,7 +181,7 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 	return out, nil
 }
 
-// ReleaseChannel implements the operator half of the hold breakpoint: hand
+// ReleaseChannel implements the operator half of the hold gate: hand
 // the oldest Count held messages to subscribers and wake the long-poll bus,
 // exactly as the publish would have done had the channel not been held.
 //

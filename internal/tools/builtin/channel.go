@@ -108,8 +108,8 @@ const channelDescription = `Persistent inter-agent message bus. ` +
 	`await is non-committing (detection only) — it never advances cursors, so subscribe/ack exactly what you process. ` +
 	`broadcast is the symmetric fan-OUT: publish one payload to MULTIPLE channels in a single call (e.g. ping N workers to start). ` +
 	`Both await and broadcast cap at 32 channels and refuse the whole op if any channel fails its ACL (no partial broadcast). ` +
-	`A channel the operator declared hold: stores publishes without delivering them; release hands over the oldest count (default 1) ` +
-	`so a workflow wired through that channel can be single-stepped. release needs the PUBLISH allowlist — it completes a publish.`
+	`A channel the operator declared hold: stores publishes without delivering them to anyone; release hands over the oldest count ` +
+	`(default 1). It is an operator gate on the whole channel, not a per-consumer pause. release needs the PUBLISH allowlist — it completes a publish.`
 
 const channelInputSchema = `{
   "type": "object",
@@ -446,9 +446,9 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 	return result, nil
 }
 
-// maxReleaseCount bounds one release. A release is a breakpoint step, not a
-// drain — an operator asking for a million is asking for something the hold
-// was there to prevent, and the bound keeps one call's transaction small.
+// maxReleaseCount bounds one release. A release is a step, not a drain — an
+// operator asking for a million is asking for something the hold was there to
+// prevent, and the bound keeps one call's transaction small.
 const maxReleaseCount = 1000
 
 // MaxReleaseCountForDrift exports the cap for the wire-surface drift test in

@@ -229,7 +229,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
 		{"ChannelStatsEmptyOnNoMessages", testChannelStatsEmptyOnNoMessages},
 		{"ChannelGetPointLookup", testChannelGetPointLookup},
-		// RFC CY hold breakpoint
+		// RFC CY hold gate
 		{"ChannelHoldRoundTripsOnTheDefinition", testChannelHoldRoundTripsOnTheDefinition},
 		{"ChannelReleaseHandsOverOldestFirst", testChannelReleaseHandsOverOldestFirst},
 		{"ChannelReleaseSkipsExpiredHeld", testChannelReleaseSkipsExpiredHeld},

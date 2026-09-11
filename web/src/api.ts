@@ -1427,7 +1427,8 @@ export interface ChannelDescriptor {
   period?: string;
   default_ttl?: number;
   max_messages?: number;
-  // Breakpoint: publishes are stored but never delivered until released.
+  // Operator gate: publishes are stored but never delivered to any reader
+  // until released.
   hold?: boolean;
   message_count: number;
   oldest_visible_at?: string;
@@ -2241,7 +2242,7 @@ export interface ChannelReleaseResult {
 }
 
 // releaseChannel hands the oldest `count` (default 1) messages held on a
-// hold: channel to its subscribers — the operator's breakpoint step.
+// hold: channel to its subscribers — the operator's release step.
 export function releaseChannel(
   name: string,
   count?: number,
