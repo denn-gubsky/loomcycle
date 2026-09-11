@@ -3439,6 +3439,11 @@ func TestConsolidator_AnUnmigratedSubjectStillGetsItsEdge(t *testing.T) {
 	if !strings.Contains(res.FinalText, "home_facts") {
 		t.Errorf("the report must name the migration that frees the key, got: %s", res.FinalText)
 	}
+	// And NOT told a write failed, because none did. The two readings send an
+	// operator to opposite places: one to a broken Document tool, one to a migration.
+	if strings.Contains(res.FinalText, "graph write(s) failed") {
+		t.Errorf("a recovered fallback was reported as a failed graph write: %s", res.FinalText)
+	}
 }
 
 // TestConsolidator_AGraphFailureNeverCostsAFact is the safety property. The k/v row

@@ -2523,7 +2523,12 @@ agents:
               st.entity_nodes++;
             }
           } catch (e2) {
-            st.entity_failed++;
+            // RECORDED, NOT COUNTED. The text has to land in st.entity_error because
+            // undeclaredTypeRefusal reads it to decide whether to retry under the
+            // fallback type. But a failure HERE is not yet a failure: homeFor falls
+            // back to the shared entity document, and if that lands then no fact lost
+            // its edge and nothing should read as a broken write. Whoever cannot
+            // recover counts it — upsertEntityChunk does, on the fallback path.
             if (!st.entity_error) { st.entity_error = errText(e2); }
           }
         }
@@ -2545,9 +2550,11 @@ agents:
       // (op home_facts on the memory admin surface) moves those nodes into their own
       // documents, after which this never fires again.
       //
-      // Counted separately from entity_failed: a fallback is a store awaiting migration,
-      // not a broken write, and an operator reading "N graph writes failed" would go
-      // looking for the wrong thing.
+      // A SUCCESSFUL FALLBACK IS NOT A FAILURE. It is counted on its own line, and
+      // st.entity_failed stays where it belongs — on writes that landed nowhere.
+      // An operator reading "N graph writes failed" would go looking for a broken
+      // Document tool; the real answer is a store that has not been migrated yet, and
+      // the two need opposite actions.
       function homeFor(st, scope, sharedDoc, subjType, subjName) {
         var home = subjectDoc(st, scope, subjType, subjName);
         if (home) { return home; }
