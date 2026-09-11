@@ -928,6 +928,7 @@ type streamUserRunStatesArgs struct {
 	UserID    string   `json:"user_id"`
 	Statuses  []string `json:"statuses,omitempty"`
 	Agent     string   `json:"agent,omitempty"`
+	WalkID    string   `json:"walk_id,omitempty"`
 	MaxEvents int      `json:"max_events,omitempty"`
 	TimeoutMS int      `json:"timeout_ms,omitempty"`
 }
@@ -988,6 +989,7 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 		UserID:   a.UserID,
 		Statuses: a.Statuses,
 		Agent:    a.Agent,
+		WalkID:   a.WalkID,
 	}, visit)
 	if err != nil {
 		return toolErr("stream_user_run_states: " + err.Error()), nil

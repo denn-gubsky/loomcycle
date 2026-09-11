@@ -857,9 +857,14 @@ type ParentContext struct {
 	// restarted mid-wave rebuilds the wave the same way, which is what lets the
 	// deferred sink publish stay a deferral rather than a second copy of the
 	// results. Empty for every non-wave run.
-	WalkID    string `json:"walk_id,omitempty"`
-	WaveID    string `json:"wave_id,omitempty"`
-	WaveIndex int    `json:"wave_index,omitempty"`
+	WalkID string `json:"walk_id,omitempty"`
+	WaveID string `json:"wave_id,omitempty"`
+	// No omitempty: index 0 is a REAL position in a wave, and dropping it
+	// makes the first run of every wave indistinguishable from a run with no
+	// index at all. It is only ever written alongside WalkID/WaveID, so this
+	// adds a field to an object that was already being stored rather than
+	// creating new rows.
+	WaveIndex int `json:"wave_index"`
 }
 
 // WaveTask is the Starter wave a spawned run belongs to, carried on ctx from
@@ -893,9 +898,19 @@ func WaveTaskFromContext(ctx context.Context) (WaveTask, bool) {
 // IsZero reports whether every field is empty (no meaningful tracking
 // context). Wire entry points normalise a zero struct to nil so
 // back-compat decode paths stay clean.
+// EVERY field must be listed. A field added to ParentContext and not added
+// here makes a context carrying ONLY that field encode as zero — the column is
+// written NULL and the value is dropped silently, on every run, with nothing
+// to point at.
+//
+// That is not hypothetical: the wave correlation (WalkID/WaveID/WaveIndex)
+// was added without being listed, so every run a Starter spawned stored a NULL
+// parent_context and the join the design was built on never existed. It looked
+// correct everywhere except in the database.
 func (p *ParentContext) IsZero() bool {
 	return p == nil || (p.RootAgentRunID == "" && p.FunctionKey == "" && p.TierAtRun == "" &&
-		p.BoardScope == "" && p.BoardChunkID == "" && p.BoardDocumentID == "")
+		p.BoardScope == "" && p.BoardChunkID == "" && p.BoardDocumentID == "" &&
+		p.WalkID == "" && p.WaveID == "" && p.WaveIndex == 0)
 }
 
 // Clone returns a deep copy (nil-safe) so a parent's ParentContext can

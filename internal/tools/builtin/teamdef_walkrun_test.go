@@ -215,3 +215,66 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met within 3s")
 }
+
+// TestTeamDefTool_Run_WalkIDIsTheRunID is what makes a live view of a running
+// workflow possible at all.
+//
+// A walk stamps its id on the parent_context of every run it spawns, and a
+// caller holds the run_id that op=run returned. Until these were the same
+// value, watching a walk meant knowing an id the API never handed out: the
+// caller had a run_id, the spawned runs carried an internal `wlk_…`, and
+// nothing connected them. Now one handle answers "which walk is this"
+// everywhere — the response, the run row, every spawned run, and the stream
+// filter.
+func TestTeamDefTool_Run_WalkIDIsTheRunID(t *testing.T) {
+	tool, ctx, _, _, done := breakFixture(t)
+	defer done()
+	rec := &walkRunRecorder{}
+	tool.WalkRun = rec.open
+
+	var seenWalks []string
+	tool.WaveContext = func(c context.Context, walkID, waveID string, index int) context.Context {
+		seenWalks = append(seenWalks, walkID)
+		return c
+	}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	runID, _ := decodeResult(t, res.Text)["run_id"].(string)
+	if runID == "" {
+		t.Fatal("no run_id on the response")
+	}
+	if len(seenWalks) == 0 {
+		t.Fatal("no wave was dispatched — nothing stamped a walk id")
+	}
+	for i, got := range seenWalks {
+		if got != runID {
+			t.Errorf("spawn %d carried walk_id %q, but the caller was given run_id %q — "+
+				"a caller cannot filter the stream by an id it was never told", i, got, runID)
+		}
+	}
+}
+
+// TestTeamDefTool_Run_WalkIDFallsBackWhenThereIsNoRun: with no run tracking
+// wired the walk still needs an id for its own correlation, so teamrun mints
+// one. The absence of a run must not leave spawned runs unstamped.
+func TestTeamDefTool_Run_WalkIDFallsBackWhenThereIsNoRun(t *testing.T) {
+	tool, ctx, _, _, done := breakFixture(t)
+	defer done()
+	tool.WalkRun = nil
+
+	var seen []string
+	tool.WaveContext = func(c context.Context, walkID, _ string, _ int) context.Context {
+		seen = append(seen, walkID)
+		return c
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if len(seen) == 0 || seen[0] == "" {
+		t.Fatalf("spawned runs went unstamped with no run tracking: %v", seen)
+	}
+}

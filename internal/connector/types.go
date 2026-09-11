@@ -716,6 +716,14 @@ type StreamUserRunStatesRequest struct {
 	UserID   string   `json:"user_id"`
 	Statuses []string `json:"statuses,omitempty"`
 	Agent    string   `json:"agent,omitempty"`
+	// WalkID narrows the stream to the runs ONE team walk spawned, matched
+	// against each event's parent_context.walk_id.
+	//
+	// The walk's own run id IS that walk id, so a caller that started a team
+	// with mode=detach filters by exactly the handle it already holds — no
+	// second identifier, and no mapping to look up. This is what makes a live
+	// canvas view of a running workflow a filter rather than a feature.
+	WalkID string `json:"walk_id,omitempty"`
 	// TenantID + TenantScoped enforce RFC L/N tenant isolation on the stream.
 	// When TenantScoped is true, only events whose run TenantID == TenantID are
 	// yielded (a tenant principal must not see another tenant's run

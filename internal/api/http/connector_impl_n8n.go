@@ -188,6 +188,13 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 			if req.Agent != "" && evt.Agent != req.Agent {
 				continue
 			}
+			// A run with no parent context cannot belong to a walk, so an
+			// unstamped event is filtered out rather than passed through — a
+			// walk view that also showed unrelated runs would not be a walk
+			// view.
+			if !walkIDMatches(req.WalkID, evt.ParentContext) {
+				continue
+			}
 			if len(statusSet) > 0 && !statusSet[evt.Status] {
 				continue
 			}
@@ -199,6 +206,19 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 			}
 		}
 	}
+}
+
+// walkIDMatches reports whether an event belongs to the filtered walk.
+//
+// An empty filter matches everything — the whole-user stream is unchanged for
+// every caller that does not ask for a walk. A run with NO parent context
+// cannot belong to any walk, so it is EXCLUDED rather than passed through: a
+// walk view that also showed unrelated runs would not be a walk view.
+func walkIDMatches(want string, pc *store.ParentContext) bool {
+	if want == "" {
+		return true
+	}
+	return pc != nil && pc.WalkID == want
 }
 
 func runStateEventToConnector(e runstate.RunStateEvent) connector.RunStateEvent {

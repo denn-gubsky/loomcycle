@@ -892,6 +892,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 
 	task := &teamrun.Task{Input: in.Input}
+	// ONE HANDLE FOR THE WHOLE WALK. teamrun mints a walk id only when the task
+	// does not carry one, so the walk's own run id becomes the correlation key
+	// stamped on every run it spawns.
+	//
+	// Without this there were two ids and no way to get from one to the other:
+	// a caller held the run_id that mode=detach returned, while the spawned
+	// runs carried an internal `wlk_…` nobody had ever seen. Watching a walk
+	// meant knowing an id the API never handed out. Now `run_id` is the answer
+	// to "which walk is this" everywhere — the response, the run row, the
+	// parent_context of every agent the walk starts, and the stream filter.
+	if runID != "" {
+		task.WalkID = runID
+	}
 
 	// Assemble walk options. When neither feature is used, opts is empty and Walk
 	// runs with no options → the ephemeral Phase-1 behaviour is byte-identical.

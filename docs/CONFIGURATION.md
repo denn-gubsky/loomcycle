@@ -1426,6 +1426,28 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   `LOOMCYCLE_SKILLS_ROOT`. A bundle may also ship pure *declarations* rather
   than agents — `system-channels` is one.
 
+### Watching a team walk live
+
+A team walk is a run, and its **`run_id` is also its walk id** — the correlation
+stamped on the `parent_context` of every agent run the walk spawns. So one
+handle answers "which walk is this" everywhere:
+
+```sh
+# start it and keep the handle
+curl -XPOST …/v1/_teamdef -d '{"op":"run","name":"triage","mode":"detach"}'
+# → {"run_id":"r_4325…","status":"running"}
+
+# watch that walk's agents appear and finish, live
+curl -N "…/v1/users/{user_id}/agents/stream?walk_id=r_4325…"
+```
+
+The same filter is on the `stream_user_run_states` MCP tool (`walk_id`). The
+`stream_open` event echoes `filter_walk_id`, so a mistyped id shows up as a
+wrong echo rather than as a workflow that quietly produced nothing.
+
+Each event's `parent_context` carries `walk_id`, `wave_id` and `wave_index`, so
+a client can group a fan-out by wave and order it by position.
+
 ### Armed subscriptions — a promoted team that runs itself
 
 `LOOMCYCLE_TEAM_SUBSCRIPTIONS=1` (default **off**) drives a **promoted** team

@@ -64,6 +64,10 @@ func parseStreamFilter(userID string, q map[string][]string) connector.StreamUse
 	if vals := q["agent"]; len(vals) > 0 {
 		out.Agent = strings.TrimSpace(vals[0])
 	}
+	// `?walk_id=<run_id of the walk>` — watch one team walk's agents live.
+	if vals := q["walk_id"]; len(vals) > 0 {
+		out.WalkID = strings.TrimSpace(vals[0])
+	}
 	return out
 }
 
@@ -122,9 +126,14 @@ func (s *Server) handleStreamUserAgents(w http.ResponseWriter, r *http.Request) 
 	// n8n's trigger-setup phase where the workflow waits for the
 	// credential test before arming.
 	stream.sendRaw("stream_open", map[string]any{
-		"user_id":            userID,
-		"filter_status":      sortedCopy(req.Statuses),
-		"filter_agent":       req.Agent,
+		"user_id":       userID,
+		"filter_status": sortedCopy(req.Statuses),
+		"filter_agent":  req.Agent,
+		// Echoed so a client can confirm its filter was understood. A
+		// mistyped param would otherwise look like a workflow that simply
+		// produced no events, which is the same thing a working filter looks
+		// like right up until it isn't.
+		"filter_walk_id":     req.WalkID,
 		"keepalive_interval": int(streamKeepaliveInterval.Seconds()),
 	})
 
