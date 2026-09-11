@@ -16,8 +16,9 @@ func TestDiversionGuard_CatchesTheContaminatedRunAndPassesTheHealthyOne(t *testi
 			out = append(out, fmt.Sprintf("memory/fact/f-%d", i))
 		}
 		for i := 0; i < chunks; i++ {
-			// doc.chunk rows are chunk BODIES, not recallable facts — counting them
-			// as facts is what let the partition look populated when it was not.
+			// doc.chunk rows are chunk BODIES. They used not to count, because
+			// counting them let a diverted partition look populated; a fact's home
+			// is now its chunk, so they do.
 			out = append(out, fmt.Sprintf("doc.chunk:%032x", i))
 		}
 		return out
@@ -37,11 +38,19 @@ func TestDiversionGuard_CatchesTheContaminatedRunAndPassesTheHealthyOne(t *testi
 		{"the turns arm writes no facts — guard must stay silent", 0, 0, 419, false},
 		{"exactly half is a shortfall we tolerate", 40, 20, 0, false},
 		{"just under half refuses", 40, 19, 0, true},
+		// AFTER THE COLLAPSE a healthy run has no `memory/` rows at all — every fact
+		// lives in its chunk. Counting only the old shape reported ZERO reachable and
+		// aborted a perfectly good run, which is the case this row exists for.
+		{"post-collapse: every fact lives in its chunk", 104, 0, 96, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reachable, refuse := factsDiverted(tc.written, keys(tc.facts, tc.chunks))
-			if reachable != tc.facts {
-				t.Errorf("counted %d reachable, want %d — doc.chunk rows must not count as facts", reachable, tc.facts)
+			// BOTH shapes are a fact's home now: `memory/` before the collapse, the
+			// chunk body after. Every refuse/pass outcome below is unchanged by that —
+			// the contaminated run still refuses, the healthy ones still pass — which
+			// is what says the widening did not blunt the guard.
+			if want := tc.facts + tc.chunks; reachable != want {
+				t.Errorf("counted %d reachable, want %d", reachable, want)
 			}
 			if refuse != tc.wantRefuse {
 				t.Errorf("refuse = %v, want %v (written=%d reachable=%d)", refuse, tc.wantRefuse, tc.written, reachable)
