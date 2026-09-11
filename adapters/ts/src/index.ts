@@ -252,7 +252,12 @@ export type {
   ListTeamsResponse,
   TeamDiagram,
   CreatedTeam,
+  PromotedTeam,
+  RetiredTeam,
   TeamDefDetail,
+  TeamVerification,
+  TeamVersion,
+  TeamVersionList,
   TeamRunResult,
   // RFC AL Path VFS + RFC AK Document on the wire (v1.4.0)
   PathToolInput,

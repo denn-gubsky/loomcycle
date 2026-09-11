@@ -148,7 +148,11 @@ import type {
   SubstrateToolResponse,
   CreatedTeam,
   ListTeamsResponse,
+  PromotedTeam,
+  RetiredTeam,
   TeamDefDetail,
+  TeamVerification,
+  TeamVersionList,
   TeamDiagram,
   TeamRunResult,
   PathToolInput,
@@ -1759,6 +1763,68 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<CreatedTeam> {
     return postJSON<CreatedTeam>(this.ctx, "/v1/_teamdef", { op: "fork", name, overlay }, opts);
+  }
+
+  /** List every version of ONE team, newest first (op=list) — the lineage
+   *  behind {@link LoomcycleClient.listTeams}' roll-up. Tenant-scoped
+   *  server-side; a name with no versions returns an empty list rather than
+   *  raising. */
+  async listTeamVersions(
+    name: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamVersionList> {
+    return postJSON<TeamVersionList>(this.ctx, "/v1/_teamdef", { op: "list", name }, opts);
+  }
+
+  /** Point the team's active pointer at one version (op=promote) — what a new
+   *  run of the team by NAME will execute.
+   *
+   *  `forkTeam` defaults to promote:false, so authoring a version and putting
+   *  it in force are deliberately two steps: an edited graph can be reviewed,
+   *  diagrammed, even run by `defId`, before it becomes what the name means. */
+  async promoteTeam(
+    defId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<PromotedTeam> {
+    return postJSON<PromotedTeam>(this.ctx, "/v1/_teamdef", { op: "promote", def_id: defId }, opts);
+  }
+
+  /** Soft-retire one version, or un-retire it (op=retire, `retired` required).
+   *
+   *  Retiring is REVERSIBLE and version-scoped: the row stays, its history stays
+   *  readable, and passing `false` brings it back. Removing a team is
+   *  {@link LoomcycleClient.deleteTeam}, which is neither. */
+  async retireTeam(
+    defId: string,
+    retired: boolean,
+    opts?: { signal?: AbortSignal },
+  ): Promise<RetiredTeam> {
+    return postJSON<RetiredTeam>(
+      this.ctx,
+      "/v1/_teamdef",
+      { op: "retire", def_id: defId, retired },
+      opts,
+    );
+  }
+
+  /** Compare a locally computed content hash against the deployed active
+   *  version (op=verify) — the drift check for a team kept in source control
+   *  and pushed to several deployments.
+   *
+   *  Never raises for an absent team: a name with no active version answers
+   *  `{deployed: false, matches: false}`, which a caller distinguishes from a
+   *  deployed version whose hash differs. */
+  async verifyTeam(
+    name: string,
+    contentSha256: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamVerification> {
+    return postJSON<TeamVerification>(
+      this.ctx,
+      "/v1/_teamdef",
+      { op: "verify", name, content_sha256: contentSha256 },
+      opts,
+    );
   }
 
   /** Hard-remove a whole team by name — all versions + the active pointer
