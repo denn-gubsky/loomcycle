@@ -83,6 +83,9 @@
  *     forkTeam(name, overlay): Promise<CreatedTeam>
  *     deleteTeam(name): Promise<{name, deleted}>
  *     runTeam({name|defId, input}): Promise<TeamRunResult>
+ *     runTeam({..., mode:"detach"}): Promise<TeamRunDetached>     // the handle, now — the walk runs on
+ *     getRunBreakpoints(runId): Promise<TeamBreakpoints>          // debug a walk that is already running
+ *     setRunBreakpoints(runId, breakpoints): Promise<TeamBreakpoints>
  *
  *     // Path VFS + chunked-graph Documents on the wire (v1.4.0 — RFC AL / RFC AK)
  *     path(input): Promise<PathToolResponse>                      // resolve/ls/stat/mkdir/mv/rm
@@ -258,7 +261,10 @@ export type {
   TeamVerification,
   TeamVersion,
   TeamVersionList,
+  TeamBreakpoints,
+  TeamRunDetached,
   TeamRunResult,
+  TeamRunTarget,
   // RFC AL Path VFS + RFC AK Document on the wire (v1.4.0)
   PathToolInput,
   PathToolResponse,
