@@ -2956,6 +2956,78 @@ func TestConsolidator_MirrorsTypedFactsIntoAGraph(t *testing.T) {
 	}
 }
 
+// TestConsolidator_AMergeReachesTheChunkToo.
+//
+// The merge path rewrites a recalled neighbour IN PLACE under its own key — that is
+// the mechanism that collapses duplicates. upsertEntityChunk memoised per natural
+// key and returned the cached id without calling the tool again, so the merged
+// wording never reached the chunk: the k/v row held it and the chunk still held the
+// original, revision 1.
+//
+// MEASURED on a real corpus before this fix: of 4 facts merged in a pass, 3 ended
+// with different TEXT in the two planes. Invisible while the k/v row is the fact's
+// home; once the chunk is the only home, every merge is silently discarded and the
+// duplicates it exists to collapse come back.
+//
+// The fixture is the one the in-place merge test already uses, because the bug only
+// appears when the SAME natural key is written twice in one pass — two facts that
+// merely resemble each other slug to two different keys and would pass either way.
+func TestConsolidator_AMergeReachesTheChunkToo(t *testing.T) {
+	const (
+		first  = "Denn prefers Go over Python for backend services."
+		second = "Denn prefers Go rather than Python for backend services."
+	)
+	f := newFakeToolset()
+	f.bands = map[string]any{"merge_threshold": 0.75, "related_threshold": 0.40}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I prefer Go over Python.\nassistant: ok"
+	// type+subject so the fact is mirrored into the graph at all.
+	f.factsJSON = `[{"text":"` + first + `","class":"preference","type":"person","subject":"Denn"},
+	                {"text":"` + second + `","class":"preference","type":"person","subject":"Denn"}]`
+	// One pre-existing row in the RELATED band, exactly as the in-place merge test
+	// sets it up — the scripted similarity is what makes the second wording recall
+	// the first and merge onto its key.
+	f.vectors = map[string]string{
+		"memory/fact/denn-works-mostly-backend-services": "Denn works mostly on backend services.",
+	}
+
+	res := runConsolidator(t, f)
+	if !strings.Contains(res.FinalText, "updated in place 1") {
+		t.Fatalf("fixture: the paraphrase did not merge, so the same natural key is never "+
+			"written twice and this test proves nothing; report = %q", res.FinalText)
+	}
+
+	// Both writes must have REACHED the tool. Under the old memo the second was
+	// answered from the cache and never issued, so the chunk kept the first wording.
+	var bodies []string
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		if b, ok := c.Input["body"].(string); ok && b != "" {
+			bodies = append(bodies, b)
+		}
+	}
+	if len(bodies) < 2 {
+		t.Errorf("only %d content-bearing chunk write(s) reached the tool (%v) — the rewrite "+
+			"under an existing natural key was answered from the memo, so the chunk keeps the "+
+			"stale wording while the k/v row has the merged one", len(bodies), bodies)
+	}
+	if len(bodies) > 0 && bodies[len(bodies)-1] != second {
+		t.Errorf("the last chunk write carried %q, want the merged wording %q", bodies[len(bodies)-1], second)
+	}
+
+	// And the SUBJECT node must still be memoised: both facts are about Denn, and
+	// re-writing an identity that cannot change is the cost the memo exists to avoid.
+	subjectWrites := 0
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		if b, _ := c.Input["body"].(string); b == "" {
+			subjectWrites++
+		}
+	}
+	if subjectWrites > 1 {
+		t.Errorf("the subject node was written %d times for one subject — the memo must still "+
+			"short-circuit a write that carries no content", subjectWrites)
+	}
+}
+
 // TestConsolidator_TheTwoPlanesAgreeOnEveryTemporalField is the DRIFT GATE for
 // the dual-write window (RFC CV P2c).
 //
