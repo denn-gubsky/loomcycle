@@ -5763,12 +5763,6 @@ type subRunPrep struct {
 	cleanup   func()
 }
 
-// prepareSubRun does all sub-run setup shared by the synchronous spawn path and
-// the resident interactive path. fwd is the recording emit's forward sink (the
-// sync path passes a no-op; the interactive path passes a turn-capturer).
-// interactive=true means: pass a nil provider slot to fallbackForRun (a parked
-// resident child, like a top-level interactive run, must not swap/hold the
-// provider gate across turns) — everything else is identical.
 // composeSubRunSegments builds a sub-run's input segments: the agent's own
 // system_prompt (with cache_control), then an optional caller-supplied system
 // segment, then the prompt as the first user message. Mirrors the shape of
@@ -5823,6 +5817,12 @@ func composeSubRunSegments(agentSystemPrompt, systemExtra, prompt string) []loop
 	})
 }
 
+// prepareSubRun does all sub-run setup shared by the synchronous spawn path and
+// the resident interactive path. fwd is the recording emit's forward sink (the
+// sync path passes a no-op; the interactive path passes a turn-capturer).
+// interactive=true means: pass a nil provider slot to fallbackForRun (a parked
+// resident child, like a top-level interactive run, must not swap/hold the
+// provider gate across turns) — everything else is identical.
 func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event)) (*subRunPrep, error) {
 	return s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, interactive, fwd, nil)
 }

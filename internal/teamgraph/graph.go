@@ -76,7 +76,7 @@ type State struct {
 
 // Handler is the "who acts" for a state.
 type Handler struct {
-	Kind string `json:"kind"` // agent | parallel | consolidator | terminal
+	Kind string `json:"kind"` // agent | parallel | consolidator | terminal | vars | input
 	// Agent — for kind=agent and kind=consolidator: the AgentDef name to run.
 	Agent string `json:"agent,omitempty"`
 	// Agents — for kind=parallel: the AgentDef names fanned out concurrently.
