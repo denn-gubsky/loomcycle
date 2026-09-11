@@ -150,3 +150,124 @@ describe("runTeam", () => {
     await expect(client.runTeam({ name: "triage" })).rejects.toBeInstanceOf(AuthError);
   });
 });
+
+// The version-lifecycle ops (list / promote / retire / verify). They existed on
+// the substrate tool from the start and were reachable over HTTP, but a client
+// that could author a team could not put one in force or check it for drift —
+// so a workflow kept in source control had no way to ask "is what I have what
+// is deployed?" without hand-rolling the POST.
+
+describe("listTeamVersions", () => {
+  it("POSTs op=list by name and returns the lineage", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        name: "triage",
+        versions: [
+          { def_id: "tdf_2", name: "triage", version: 2, parent_def_id: "tdf_1" },
+          { def_id: "tdf_1", name: "triage", version: 1 },
+        ],
+      }),
+    ]);
+
+    const res = await client.listTeamVersions("triage");
+    expect(res.versions).toHaveLength(2);
+    expect(res.versions[0]!.parent_def_id).toBe("tdf_1");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_teamdef");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("list");
+    expect(body.name).toBe("triage");
+  });
+
+  it("tolerates a name with no versions", async () => {
+    const { client } = makeClient([jsonResponse({ name: "ghost", versions: [] })]);
+    const res = await client.listTeamVersions("ghost");
+    expect(res.versions).toEqual([]);
+  });
+});
+
+describe("promoteTeam", () => {
+  it("POSTs op=promote by def_id", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "tdf_2", name: "triage", promoted: true }),
+    ]);
+
+    const res = await client.promoteTeam("tdf_2");
+    expect(res.promoted).toBe(true);
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.op).toBe("promote");
+    expect(body.def_id).toBe("tdf_2");
+  });
+});
+
+describe("retireTeam", () => {
+  it("POSTs op=retire with the required retired flag", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ def_id: "tdf_1", retired: true })]);
+
+    const res = await client.retireTeam("tdf_1", true);
+    expect(res.retired).toBe(true);
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.op).toBe("retire");
+    expect(body.def_id).toBe("tdf_1");
+    expect(body.retired).toBe(true);
+  });
+
+  // Retiring is reversible; `retired: false` must reach the wire as false
+  // rather than being dropped as a falsy value, or un-retiring would silently
+  // become a no-op that reports success.
+  it("sends retired:false to un-retire", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ def_id: "tdf_1", retired: false })]);
+
+    await client.retireTeam("tdf_1", false);
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.retired).toBe(false);
+    expect("retired" in body).toBe(true);
+  });
+});
+
+describe("verifyTeam", () => {
+  it("POSTs op=verify with the local hash and reports a match", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        name: "triage",
+        matches: true,
+        deployed: true,
+        current_sha256: "sha256:abc",
+        current_def_id: "tdf_2",
+        version: 2,
+      }),
+    ]);
+
+    const res = await client.verifyTeam("triage", "sha256:abc");
+    expect(res.matches).toBe(true);
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.op).toBe("verify");
+    expect(body.name).toBe("triage");
+    expect(body.content_sha256).toBe("sha256:abc");
+  });
+
+  // An absent team is an ANSWER, not an error — and it is a different answer
+  // from a deployed version whose hash differs. A caller that conflated them
+  // would report drift on a team that was never deployed.
+  it("reports deployed:false for a name with no active version", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        name: "ghost",
+        matches: false,
+        deployed: false,
+        current_sha256: "",
+        current_def_id: "",
+        version: 0,
+      }),
+    ]);
+
+    const res = await client.verifyTeam("ghost", "sha256:abc");
+    expect(res.deployed).toBe(false);
+    expect(res.matches).toBe(false);
+  });
+});

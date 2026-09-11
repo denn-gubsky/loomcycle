@@ -1432,6 +1432,62 @@ export interface TeamDefDetail {
   definition: unknown;
 }
 
+/** One team version's record in {@link TeamVersionList} (op=list). Same shape
+ *  as {@link TeamDefDetail} plus the lineage + authorship fields the version
+ *  history needs — who wrote it, when, and which version it forked from. */
+export interface TeamVersion {
+  def_id: string;
+  name: string;
+  version: number;
+  parent_def_id?: string;
+  description?: string;
+  created_at?: string;
+  created_by_agent_id?: string;
+  retired?: boolean;
+  bootstrapped_from_static?: boolean;
+  content_sha256?: string;
+  definition?: unknown;
+}
+
+/** Result of {@link LoomcycleClient.listTeamVersions} (op=list) — every version
+ *  of ONE team, newest first. Tenant-scoped server-side. */
+export interface TeamVersionList {
+  name: string;
+  versions: TeamVersion[];
+}
+
+/** Result of {@link LoomcycleClient.promoteTeam} (op=promote) — the version the
+ *  active pointer now names. */
+export interface PromotedTeam {
+  def_id: string;
+  name: string;
+  promoted: boolean;
+}
+
+/** Result of {@link LoomcycleClient.retireTeam} (op=retire) — the version's new
+ *  retired state. Retiring is reversible (pass `false` to un-retire); it is
+ *  {@link LoomcycleClient.deleteTeam} that removes anything. */
+export interface RetiredTeam {
+  def_id: string;
+  retired: boolean;
+}
+
+/** Result of {@link LoomcycleClient.verifyTeam} (op=verify) — whether a locally
+ *  computed content hash matches the deployed active version.
+ *
+ *  `deployed: false` means the name has no active version in this tenant at all
+ *  (`matches` is then false and the current_* fields are empty) — distinct from
+ *  a deployed version whose hash differs, which is a DRIFT rather than an
+ *  absence. */
+export interface TeamVerification {
+  name: string;
+  matches: boolean;
+  deployed: boolean;
+  current_sha256: string;
+  current_def_id: string;
+  version: number;
+}
+
 /** Result of {@link LoomcycleClient.runTeam} (op=run) — the walk trace. `status`
  *  is `"completed"` (a terminal state was reached) or `"iteration_cap"` (a
  *  state's cycle cap tripped; `capped_state` + `iteration_count` describe it).
