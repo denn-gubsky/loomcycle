@@ -406,10 +406,13 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
 		AllowedScopes: []string{"agent", "user", "tenant"},
 	})
-	// Channel: "*" wildcard matches every channel name.
+	// Channel: unrestricted, said with the discriminator rather than a "*" in
+	// the allowlist. The matcher supports an exact name and a trailing "/*"
+	// prefix only, so the old []string{"*"} matched NO channel and this plane
+	// silently held no channel authority at all.
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"*"},
-		Subscribe: []string{"*"},
+		AllPublish:   true,
+		AllSubscribe: true,
 	})
 	// AgentDef + SkillDef: "any" scope (operator-blessed admin).
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{

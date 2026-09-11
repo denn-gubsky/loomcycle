@@ -149,10 +149,13 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
 		AllowedScopes: []string{"agent", "user", "tenant"},
 	})
-	// Channel: open ACL ("*" matches every channel name).
+	// Channel: unrestricted, said with the discriminator rather than a "*" in
+	// the allowlist. The matcher supports an exact name and a trailing "/*"
+	// prefix only, so the old []string{"*"} matched NO channel and this plane
+	// silently held no channel authority at all.
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"*"},
-		Subscribe: []string{"*"},
+		AllPublish:   true,
+		AllSubscribe: true,
 	})
 
 	// Def families: "any" name within the stamped tenant (same for admin +

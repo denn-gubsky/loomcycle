@@ -725,10 +725,42 @@ type ctxKeyChannelPolicy struct{}
 //
 // Empty Publish / Subscribe means "no channel access on that side"
 // — the tool returns a typed refusal with the allowlist enumerated.
+//
+// A NAME IS NOT A PATTERN. The matcher supports an exact name and a trailing
+// "/*" prefix, and nothing else — a bare "*" in an allowlist is just a channel
+// literally called "*", so it matches no real channel at all. An unrestricted
+// plane therefore says so with AllPublish / AllSubscribe rather than with a
+// string, because a string that LOOKS like a wildcard and grants nothing is a
+// capability that silently disappears.
 type ChannelPolicyValue struct {
 	Publish   []string
 	Subscribe []string
 	Channels  map[string]ChannelDef
+
+	// AllPublish / AllSubscribe lift the allowlist entirely for that side.
+	//
+	// Set ONLY by the operator/admin planes that genuinely hold every channel —
+	// the per-tenant MCP session, the gRPC substrate surface, the HTTP
+	// substrate-admin surface. It is an explicit discriminator rather than a
+	// sentinel value in the list precisely so a future reader cannot mistake
+	// one for the other, and so no operator-authored yaml can ever produce it:
+	// the field has no config path.
+	AllPublish   bool
+	AllSubscribe bool
+}
+
+// GrantsFor returns one side's allowlist and whether that side is unrestricted.
+// Callers ask the policy rather than reaching for the field, so the "or the
+// plane holds everything" half can never be forgotten at one of the sites.
+// An unknown side grants nothing — the closed default.
+func (p ChannelPolicyValue) GrantsFor(side string) (all bool, allowlist []string) {
+	switch side {
+	case "publish":
+		return p.AllPublish, p.Publish
+	case "subscribe":
+		return p.AllSubscribe, p.Subscribe
+	}
+	return false, nil
 }
 
 // ChannelDef mirrors config.Channel for the tool layer. Lives here
