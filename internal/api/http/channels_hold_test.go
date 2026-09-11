@@ -281,14 +281,25 @@ func TestChannelRelease_WireAndToolCapsAgree(t *testing.T) {
 }
 
 // Over-cap is refused rather than silently clamped: a caller asking to release
-// a million is asking for something the hold was there to prevent, and
-// quietly doing a thousand of them is not the answer they wanted.
-func TestChannelHold_ReleaseOverCapIsRefused(t *testing.T) {
+// a million is asking for something the hold was there to prevent, and quietly
+// doing a thousand of them is not the answer they wanted.
+//
+// It is a 400, not a 500. Found by running the endpoint rather than testing it:
+// the refusal reached writeChannelError's default arm, which reports 500 — so a
+// caller's own typo read as "the server broke" and would page whoever watches
+// 5xx. A negative count is refused the same way; 0 keeps meaning "one".
+func TestChannelHold_ReleaseBadCountIs400(t *testing.T) {
 	srv, _, cleanup := channelHoldFixture(t)
 	defer cleanup()
-	rec := postJSON(t, srv, "/v1/_channels/gate/release", `{"count":100000}`)
-	if rec.Code == http.StatusOK {
-		t.Errorf("an over-cap release succeeded: %s", rec.Body.String())
+	for _, body := range []string{`{"count":100000}`, `{"count":-5}`} {
+		rec := postJSON(t, srv, "/v1/_channels/gate/release", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("release %s: status %d, want 400 (%s)", body, rec.Code, rec.Body.String())
+		}
+	}
+	// 0 is not a bad count — it is the default, and still releases one.
+	if rec := postJSON(t, srv, "/v1/_channels/gate/release", `{"count":0}`); rec.Code != http.StatusOK {
+		t.Errorf("release count:0 → status %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
 }
 
