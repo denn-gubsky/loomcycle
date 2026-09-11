@@ -103,6 +103,7 @@ const documentInputSchema = `{
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
 		"min_score":   {"type": "number", "description": "verbatim_answer: how close a match must be before it can be quoted as an answer (default 0.6). Cosine scale is a property of the embedding model, so tune this against your own — the response always reports the actual score, including when it refuses."},
 		"include_refuted": {"type": "boolean", "description": "list_facts / graph_recall: also return facts a judge marked unsupported. They are withheld by default and never deleted, so this is how you read what was refused and why (each carries judge_reason)."},
+		"about":       {"type": "string", "description": "list_facts: the facts about ONE SUBJECT — pass the subject's entity chunk id (a subject document's root_chunk_id, from get_document). Returns the facts filed under it AND the facts filed elsewhere that reference it, because a fact about two things lives in one of their documents and points at the other: filtering by document alone would lose it from the second subject entirely."},
 		"claims_only": {"type": "boolean", "description": "list_facts: return only CLAIMS, dropping the entity identity nodes (the subject a fact is about — 'Ollama', 'the user'). A claim carries a sentence and can carry a source span; an identity node is a name and never can, so a listing meant for reading or for verification coverage wants this on. Off by default because the default listing is every chunk carrying entity metadata, which is what document sync reconciles."},
 		"verdict":      {"type": "string", "enum": ["supported","unclear","unsupported","mistyped"], "description": "judge_fact: whether the fact's recorded source span supports it. supported = the span carries the claim; unclear = it partly does; unsupported = it does not; mistyped = the span DOES support the claim but it is filed under a type the ontology does not say it is (the fix is to retype it, not to drop it, so it stays visible). The confidence each maps to is set by the server, and an unsupported fact stops being returned by the fact surfaces without being deleted."},
 		"reason":       {"type": "string", "description": "judge_fact: one sentence on WHY, quoted back to the operator. A verdict nobody can act on is a verdict nobody trusts."},
@@ -189,6 +190,11 @@ type docInput struct {
 	// IncludeRefuted surfaces facts a judge refused. Off by default and available on
 	// purpose: "quarantine, never delete" is only meaningful if the quarantine can be read.
 	IncludeRefuted bool `json:"include_refuted"`
+	// About narrows a fact listing to ONE SUBJECT, by its entity chunk id. It is not
+	// a document filter and must not become one: a subject's facts are the ones filed
+	// under it PLUS the ones filed elsewhere that reference it, and a relation-fact is
+	// only ever filed under one of the two subjects it names.
+	About string `json:"about,omitempty"`
 	// ClaimsOnly drops entity IDENTITY nodes from a fact listing, leaving the claims.
 	// Opt-in rather than the default because list_facts' contract is "chunks that carry
 	// entity metadata", and the document-federation reconcile depends on that breadth —
@@ -1779,6 +1785,28 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		resp["color_enabled"] = enabled
 		if len(scheme) > 0 {
 			resp["color_scheme"] = scheme
+		}
+		// WHAT THE TREE CANNOT REACH. When this document's root is a subject, a fact
+		// about it AND about something else is filed under the other one — the tree
+		// holds each chunk once — so walking this document answers only half of "what
+		// do we know about X". These are the other half, and they are reported HERE
+		// rather than in export_md because that output round-trips through import_md:
+		// an edge whose far end is in another document would either be dropped on
+		// import or re-created pointing at nothing.
+		//
+		// Not gated on "is this an entity". An ordinary document's root is the target
+		// of no `about` edge, so the indexed probe returns nothing and the block is
+		// omitted — a gate would cost a query to save one.
+		refs, refsTruncated, rerr := d.inboundSubjectRefs(ctx, key, rootID, docID)
+		if rerr != nil {
+			return errResult("get_document: references: " + rerr.Error()), nil
+		}
+		if len(refs) > 0 {
+			resp["references"] = refs
+			if refsTruncated {
+				resp["references_truncated"] = true
+				resp["references_note"] = subjectRefsNote(rootID)
+			}
 		}
 	}
 	return jsonResult(resp)
