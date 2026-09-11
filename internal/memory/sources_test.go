@@ -45,9 +45,12 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 				"(exclude AND require the same prefix), which would return nothing",
 		},
 		{
-			name: "facts are wherever provenance is, in EITHER namespace",
+			name: "facts require provenance, and exclude the twin while dual-written",
 			q:    SearchQuery{Sources: []Source{SourceFacts}},
-			want: store.MemorySearchFilter{Provenance: store.ProvenanceRequired},
+			want: store.MemorySearchFilter{
+				Provenance:       store.ProvenanceRequired,
+				ExcludeKeyPrefix: DocumentChunkKeyPrefix,
+			},
 			comment: "origin is server-stamped, so it is the unforgeable discriminator " +
 				"(RFC BW §9 Q1) — class is model-supplied and would let an agent promote " +
 				"its own note to a fact. No namespace constraint: excluding the chunk " +
@@ -63,9 +66,9 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 			},
 		},
 		{
-			name: "facts+notes excludes the document CLASS, not the namespace",
+			name: "facts+notes excludes the chunk namespace while facts are dual-written",
 			q:    SearchQuery{Sources: []Source{SourceFacts, SourceNotes}},
-			want: store.MemorySearchFilter{ExcludeDocumentPrefix: DocumentChunkKeyPrefix},
+			want: store.MemorySearchFilter{ExcludeKeyPrefix: DocumentChunkKeyPrefix},
 			comment: "the recall default: everything the agent remembers, prose " +
 				"excluded. Excluding the namespace no longer expresses that, because " +
 				"the facts half now lives inside it — so what is ruled out is the " +
@@ -74,7 +77,7 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 		{
 			name: "an explicit prefix survives a source selector",
 			q:    SearchQuery{Prefix: "proj/", Sources: []Source{SourceFacts, SourceNotes}},
-			want: store.MemorySearchFilter{KeyPrefix: "proj/", ExcludeDocumentPrefix: DocumentChunkKeyPrefix},
+			want: store.MemorySearchFilter{KeyPrefix: "proj/", ExcludeKeyPrefix: DocumentChunkKeyPrefix},
 		},
 		{
 			name: "an explicit prefix WINS over documents-only",
@@ -178,6 +181,43 @@ func TestClass_LabelsRowsFromTheirOwnColumns(t *testing.T) {
 		})
 		if got != tc.want {
 			t.Errorf("Class(key=%q origin=%q) = %q, want %q", tc.key, tc.origin, got, tc.want)
+		}
+	}
+}
+
+// TestSearchQueryFilter_DualWriteNeverSelectsAFactTwice is the invariant the
+// FactsAreChunkHomed constant exists for.
+//
+// While a fact is written to both planes, its k/v row and its chunk body BOTH
+// carry an origin, so a provenance-only predicate matches both and one fact comes
+// back twice — measured against real Postgres as 2 hits for a single fact, on
+// `sources=facts` and on the `facts+notes` recall default. Duplicates halve the
+// effective top_k, which is an accuracy effect, so this is a correctness invariant
+// rather than a retrieval-quality preference.
+//
+// The assertion is written against the CONSTANT rather than against today's value,
+// so it keeps meaning after the collapse flips it: before, exactly one plane is
+// selected; after, the namespace is no longer excluded because there is no twin
+// left to exclude.
+func TestSearchQueryFilter_DualWriteNeverSelectsAFactTwice(t *testing.T) {
+	for _, srcs := range [][]Source{
+		{SourceFacts},
+		{SourceFacts, SourceNotes},
+	} {
+		f, err := (SearchQuery{Sources: srcs}).Filter()
+		if err != nil {
+			t.Fatalf("Filter(%v): %v", srcs, err)
+		}
+		if FactsAreChunkHomed {
+			if f.ExcludeKeyPrefix == DocumentChunkKeyPrefix {
+				t.Errorf("%v still excludes the chunk namespace after the collapse — that is "+
+					"where the facts live now, so this selects nothing", srcs)
+			}
+			continue
+		}
+		if f.ExcludeKeyPrefix != DocumentChunkKeyPrefix {
+			t.Errorf("%v selects BOTH planes while a fact is dual-written, so every fact "+
+				"comes back twice and the effective top_k halves; got %+v", srcs, f)
 		}
 	}
 }
