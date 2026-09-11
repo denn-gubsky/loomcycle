@@ -137,3 +137,22 @@ func TestValidate_StarterBindsAreValidatedLikeCapture(t *testing.T) {
 		t.Errorf("a malformed binds path was accepted")
 	}
 }
+
+// binds project THE source message, so they contradict per=once — which hands
+// the agent the whole batch and has no "the" message to project from. Binding
+// from an arbitrary one of N would be a silent choice the author never made.
+func TestValidate_StarterBindsContradictPerOnce(t *testing.T) {
+	h := okStarter()
+	h.Fanout.Per = FanoutPerOnce
+	h.Fanout.Max = 0
+	h.Binds = map[string]string{"pr": "$.pull_request.number"}
+	err := Validate(starterDef(h))
+	if err == nil || !strings.Contains(err.Error(), "binds project ONE source message") {
+		t.Errorf("err = %v, want a refusal explaining the contradiction", err)
+	}
+	// …and are fine on per=message, which is the default.
+	h.Fanout.Per, h.Fanout.Max = FanoutPerMessage, 4
+	if err := Validate(starterDef(h)); err != nil {
+		t.Errorf("binds with per=message refused: %v", err)
+	}
+}

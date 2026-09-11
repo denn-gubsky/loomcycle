@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
@@ -74,22 +76,23 @@ const (
 	SinkError = "error"
 )
 
-// runStarter executes one starter state: read, dispatch, publish, ack.
-//
-// This phase dispatches exactly ONE run (the vertical slice). The fan-out —
-// dynamic N, the ceiling, wave-size stamping — is the next phase, and the wave
-// envelope is already shaped for it so that phase adds width, not a rewrite.
+// runStarter executes one starter state: read, dispatch the wave, publish one
+// sink message per run, ack.
 func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
 	h := st.Handler
 	if r.channels == nil {
 		return Outcome{}, fmt.Errorf("state %q is a starter but no channel executor is wired", st.ID)
 	}
 
+	width, err := r.waveWidth(st)
+	if err != nil {
+		return Outcome{}, err
+	}
 	want := 1
 	if h.Source.Wait == teamgraph.WaitAtLeast && h.Source.N > want {
 		want = h.Source.N
 	}
-	msgs, cursor, err := r.channels.Read(ctx, h.Source.Channel, want, h.Source.Batch, h.Source.WaitMS)
+	msgs, cursor, err := r.channels.Read(ctx, h.Source.Channel, want, width, h.Source.WaitMS)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("state %q read %q: %w", st.ID, h.Source.Channel, err)
 	}
@@ -100,40 +103,165 @@ func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *
 		// never a silent proceed".
 		return Outcome{}, fmt.Errorf("state %q: no message on %q within the wait", st.ID, h.Source.Channel)
 	}
-
-	// binds project the SOURCE MESSAGE into ${var.*}. The values are UNTRUSTED
-	// (a channel message may be agent-written or webhook-relayed); they are safe
-	// in a prompt, and trust rules 5b/5c hold them wherever they reach a
-	// placeholder argument.
-	r.bindFromMessage(st, task, msgs[0])
-
-	waveID := mintWaveID()
-	agent := h.Fanout.Agent
-	if agent == "" && len(h.Fanout.Agents) > 0 {
-		agent = h.Fanout.Agents[0]
+	// The read is already bounded by width, but a store that returned more
+	// would otherwise widen the wave past the author's ceiling.
+	if len(msgs) > width {
+		msgs = msgs[:width]
 	}
 
-	out, runErr := r.dispatchOne(ctx, st, task, agent, waveID, 0, len(msgs), msgs[0])
+	results, waveErr := r.runWave(ctx, st, task, msgs)
 
-	// The sink publish is a GUARANTEED path: it has already happened by here,
-	// including when the spawn panicked. See dispatchOne.
-	if runErr != nil {
-		// The wave failed, and the sink says so. The walk still fails — a
-		// Starter is a state, and a state whose only run errored has produced
-		// nothing to thread onward.
-		return Outcome{}, fmt.Errorf("state %q wave: %w", st.ID, runErr)
-	}
-
-	// Ack LAST. after_results is at-least-once by construction: a crash between
-	// the results and this line redelivers the batch, which is the tradeoff the
-	// definition asked for. after_read would have acked before dispatch and
-	// lost the batch instead.
-	if h.Ack != teamgraph.AckAfterRead && cursor != "" {
+	// Ack LAST, and only on success. after_results is at-least-once by
+	// construction: a crash — or a failed wave — between the results and this
+	// line redelivers the batch, which is the tradeoff the definition asked
+	// for. after_read acks on read instead and loses the batch to a crash.
+	if waveErr == nil && h.Ack != teamgraph.AckAfterRead && cursor != "" {
 		if aerr := r.channels.Ack(ctx, h.Source.Channel, cursor); aerr != nil {
 			r.log("teamrun: state %q ack %q: %v", st.ID, h.Source.Channel, aerr)
 		}
 	}
-	return r.captured(st, task, Outcome{Output: out})
+	if waveErr != nil {
+		return Outcome{}, fmt.Errorf("state %q wave: %w", st.ID, waveErr)
+	}
+
+	// The state's output is ALWAYS the results envelope, even for a wave of
+	// one. A Starter's output shape must not depend on how many messages
+	// happened to arrive, or a downstream consolidator works on Tuesday and
+	// breaks on Wednesday. It is the same envelope a parallel handler produces,
+	// so one consolidator agent reads either.
+	envelope, err := resultsEnvelope(results)
+	if err != nil {
+		return Outcome{}, err
+	}
+	return r.captured(st, task, Outcome{Output: envelope})
+}
+
+// waveWidth is how many runs this state may dispatch at once: the author's
+// ceiling, bounded by the deployment's.
+//
+// A definition that asks for more than the deployment allows is REFUSED rather
+// than quietly given less. Silently capping is the shape of bug that has cost
+// this codebase real time — an operator sets a number, the runtime uses a
+// different one, and nothing says so.
+func (r *agentRunner) waveWidth(st teamgraph.State) (int, error) {
+	h := st.Handler
+	if h.Fanout.Per == teamgraph.FanoutPerOnce {
+		// One run holding the whole batch; the read is bounded by `batch` alone.
+		w := h.Source.Batch
+		if w <= 0 {
+			w = defaultStarterBatch
+		}
+		return w, nil
+	}
+	w := h.Fanout.Max
+	if b := h.Source.Batch; b > 0 && b < w {
+		// Reading fewer than the ceiling is legitimate: the ceiling says "never
+		// more than this", the batch says "take this many at a time".
+		w = b
+	}
+	if r.maxWave > 0 && h.Fanout.Max > r.maxWave {
+		return 0, fmt.Errorf("state %q fanout max=%d exceeds this deployment's ceiling of %d — "+
+			"lower the definition's max, or raise the substrate's", st.ID, h.Fanout.Max, r.maxWave)
+	}
+	return w, nil
+}
+
+// defaultStarterBatch is how many messages a per=once wave reads when the
+// definition says nothing. Matches the Channel tool's own subscribe default, so
+// an author who reasons about one reasons about both.
+const defaultStarterBatch = 10
+
+// runWave dispatches the wave and returns one result per spawned run, in index
+// order. Every result has a sink message published for it, whatever happened.
+//
+// Concurrency and the wait threshold mirror runParallel — a Starter wave IS a
+// fan-out, and having two answers for "how many must succeed" would be two
+// places to get it wrong.
+func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Task, msgs []ChannelMessage) ([]agentResult, error) {
+	h := st.Handler
+	waveID := mintWaveID()
+
+	// per=once is ONE run holding every message; per=message is one run each.
+	dispatches := len(msgs)
+	if h.Fanout.Per == teamgraph.FanoutPerOnce {
+		dispatches = 1
+	}
+	agentFor := func(i int) string {
+		if h.Fanout.Agent != "" {
+			return h.Fanout.Agent
+		}
+		// A list of agents fans the SAME message set across them; with
+		// per=message and more messages than agents it cycles, so `agents` is
+		// "these roles" rather than "this many runs".
+		return h.Fanout.Agents[i%len(h.Fanout.Agents)]
+	}
+
+	// binds project THE source message, so they run only where there is one.
+	if h.Fanout.Per != teamgraph.FanoutPerOnce {
+		r.bindFromMessage(st, task, msgs[0])
+	}
+	env := r.envFor(st, task)
+
+	need, err := requiredSuccesses(h.Fanout.Wait, dispatches)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make([]agentResult, dispatches)
+	sem := make(chan struct{}, parallelConcurrency(dispatches))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+
+	for i := 0; i < dispatches; i++ {
+		i := i
+		agent := agentFor(i)
+		slots := waveSlots(h, msgs, i)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-runCtx.Done():
+				// Cancelled before it ever ran — still a result, and still a
+				// sink message, because the count is the contract.
+				res := agentResult{Index: i, Agent: agent, Ok: false, Error: runCtx.Err().Error()}
+				results[i] = res
+				r.publishSink(ctx, st, waveID, dispatches, res)
+				return
+			}
+			results[i] = r.dispatchOne(runCtx, st, env, agent, waveID, i, dispatches, slots)
+			if results[i].Ok {
+				mu.Lock()
+				successes++
+				if successes >= need {
+					cancel() // enough succeeded → stop the rest (no-op for wait:all)
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successes < need {
+		wait := h.Fanout.Wait
+		if wait == "" {
+			wait = teamgraph.WaitAll
+		}
+		var fails []string
+		for _, res := range results {
+			if !res.Ok {
+				fails = append(fails, fmt.Sprintf("%s: %s", res.Agent, res.Error))
+			}
+		}
+		return results, fmt.Errorf("%d of %d runs succeeded, need %d (wait=%q): %s",
+			successes, dispatches, need, wait, strings.Join(fails, "; "))
+	}
+	return results, nil
 }
 
 // dispatchOne spawns one run of the wave and publishes exactly one sink message
@@ -143,85 +271,89 @@ func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *
 // counting messages cannot tell "still running" from "died", so a wave that can
 // produce fewer messages than runs turns a downstream wait into a hang. The
 // count is the contract.
-func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, task *Task, agent, waveID string, index, waveSize int, msg ChannelMessage) (out string, err error) {
-	published := false
-	publish := func(status, output, errText string) {
-		if published || st.Handler.Sink == nil {
-			return
-		}
-		published = true
-		payload, merr := json.Marshal(SinkMessage{
-			Wave: waveID, WaveSize: waveSize, Index: index, Agent: agent,
-			Status: status, Output: output, Error: errText,
-		})
-		if merr != nil {
-			r.log("teamrun: state %q sink marshal: %v", st.ID, merr)
-			return
-		}
-		// A survival ctx: the wave's result must reach the sink even when the
-		// walk's ctx is already cancelled, for the same reason the scheduler
-		// records a result on one — a cancelled parent must not be able to
-		// make a fan-in wait forever.
-		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		if perr := r.channels.Publish(pctx, st.Handler.Sink.Channel, payload); perr != nil {
-			r.log("teamrun: state %q sink publish: %v", st.ID, perr)
-		}
-	}
+func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env Env, agent, waveID string, index, waveSize int, slots map[string]string) (res agentResult) {
+	res = agentResult{Index: index, Agent: agent}
 	defer func() {
 		if rec := recover(); rec != nil {
-			err = fmt.Errorf("agent %q panicked: %v", agent, rec)
-			publish(SinkError, "", err.Error())
-			return
+			res = agentResult{Index: index, Agent: agent, Ok: false,
+				Error: fmt.Sprintf("agent %q panicked: %v", agent, rec)}
 		}
-		if err != nil {
-			publish(SinkError, "", err.Error())
-			return
-		}
-		publish(SinkOK, out, "")
+		r.publishSink(ctx, st, waveID, waveSize, res)
 	}()
 
-	env := r.envFor(st, task)
-	prompt := composeWavePrompt(st.Handler, msg, env)
+	prompt := Prompt{Values: env.Values(), DataSlots: slots}
+	if st.Handler.Prompt != nil {
+		prompt.System, prompt.Input = st.Handler.Prompt.System, st.Handler.Prompt.Input
+	}
 	// The wave this run belongs to rides ctx to the run-creation seam, which
 	// stamps it on the run's ParentContext. A join, not a copy.
-	spawnCtx := r.withWave(ctx, task, waveID, index)
-	out, err = r.spawn(spawnCtx, agent, prompt, "")
-	return out, err
+	out, err := r.spawn(r.withWave(ctx, env.WalkID, waveID, index), agent, prompt, "")
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.Ok, res.Output = true, out
+	return res
 }
 
-// composeWavePrompt builds a wave run's prompt.
-//
-// THE DATA SLOT IS SUBSTITUTED LAST AND ITS CONTENT IS NEVER SCANNED. The
-// message payload is attacker-influenceable — anyone who can reach the channel
-// can write it — and prompt assembly resolves {{...}} placeholders under the
-// RUNTIME's authority, ungated by the agent's tools or scopes. Splicing the
-// payload in as template text would therefore hand an ungated read primitive to
-// whoever can publish. So the operator's template is what carries placeholders,
-// and the payload arrives after they are all resolved, as data.
-//
-// That is why the slot is not just another ${...}: those resolve inside the one
-// combined pass, and this one must land outside it.
-func composeWavePrompt(h teamgraph.Handler, msg ChannelMessage, env Env) Prompt {
-	var system, input string
-	if h.Prompt != nil {
-		system, input = h.Prompt.System, h.Prompt.Input
+// publishSink writes one run's outcome to the sink. Called from dispatchOne's
+// defer, so it runs on every path including a panic.
+func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveID string, waveSize int, res agentResult) {
+	if st.Handler.Sink == nil {
+		return
 	}
-	return Prompt{
-		System: system,
-		Input:  input,
-		Values: env.Values(),
-		// DataSlots are substituted by the assembler AFTER expansion completes.
-		DataSlots: map[string]string{
-			StarterMessageSlot: string(msg.Payload),
-		},
+	msg := SinkMessage{
+		Wave: waveID, WaveSize: waveSize, Index: res.Index, Agent: res.Agent,
+		Status: SinkOK, Output: res.Output,
+	}
+	if !res.Ok {
+		msg.Status, msg.Output, msg.Error = SinkError, "", res.Error
+	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		r.log("teamrun: state %q sink marshal: %v", st.ID, err)
+		return
+	}
+	// A survival ctx: the wave's result must reach the sink even when the
+	// walk's ctx is already cancelled — by a sibling hitting the wait
+	// threshold, or by the parent run. A cancelled parent must not be able to
+	// make a downstream fan-in wait forever.
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if perr := r.channels.Publish(pctx, st.Handler.Sink.Channel, payload); perr != nil {
+		r.log("teamrun: state %q sink publish: %v", st.ID, perr)
 	}
 }
 
-// StarterMessageSlot is the reserved slot a Starter's prompt uses to receive
-// the source message. Reserved: an operator writing it into a non-starter
-// prompt gets nothing, because nothing fills it there.
-const StarterMessageSlot = "{{starter.message}}"
+// waveSlots builds the data slots for one dispatch: the single message for
+// per=message, the whole batch as a JSON array for per=once.
+func waveSlots(h teamgraph.Handler, msgs []ChannelMessage, i int) map[string]string {
+	if h.Fanout.Per == teamgraph.FanoutPerOnce {
+		parts := make([]json.RawMessage, 0, len(msgs))
+		for _, m := range msgs {
+			parts = append(parts, m.Payload)
+		}
+		all, err := json.Marshal(parts)
+		if err != nil {
+			all = []byte("[]")
+		}
+		return map[string]string{StarterMessagesSlot: string(all)}
+	}
+	return map[string]string{StarterMessageSlot: string(msgs[i].Payload)}
+}
+
+// The reserved slots a Starter's prompt receives its payload in. Reserved: an
+// operator writing one into a prompt that fills no slots gets it back
+// unchanged, because nothing fills it there.
+//
+// Two, because the two fan-out shapes hand the agent different things: one
+// message each (per=message), or the whole batch as a JSON array (per=once).
+// Naming them separately means a template says which shape it expects, instead
+// of a singular name quietly holding a list.
+const (
+	StarterMessageSlot  = "{{starter.message}}"
+	StarterMessagesSlot = "{{starter.messages}}"
+)
 
 // logf reports what a Starter could not do but must not fail for.
 func (r *agentRunner) log(format string, args ...any) {
@@ -256,11 +388,11 @@ func (r *agentRunner) bindFromMessage(st teamgraph.State, task *Task, msg Channe
 }
 
 // withWave puts this run's wave identity on ctx for the run-creation seam.
-func (r *agentRunner) withWave(ctx context.Context, task *Task, waveID string, index int) context.Context {
+func (r *agentRunner) withWave(ctx context.Context, walkID, waveID string, index int) context.Context {
 	if r.wave == nil {
 		return ctx
 	}
-	return r.wave(ctx, task.WalkID, waveID, index)
+	return r.wave(ctx, walkID, waveID, index)
 }
 
 // mintWaveID / mintWalkID return fresh correlation ids. Short and opaque: they

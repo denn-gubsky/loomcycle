@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -102,8 +104,13 @@ func TestStarter_ReadsDispatchesPublishesAcks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("starter: %v", err)
 	}
-	if out.Output != "looks fine" {
-		t.Errorf("output = %q, want the agent's", out.Output)
+	// ALWAYS the results envelope, even for a wave of one: a Starter's output
+	// shape must not depend on how many messages happened to arrive, or a
+	// downstream consolidator works on Tuesday and breaks on Wednesday. It is
+	// the same envelope a parallel handler produces, so one consolidator agent
+	// reads either.
+	if !strings.Contains(out.Output, `"output":"looks fine"`) || !strings.HasPrefix(out.Output, `{"results":`) {
+		t.Errorf("output = %q, want the results envelope", out.Output)
 	}
 
 	// The payload reaches the agent through the DATA SLOT, not the template.
@@ -249,5 +256,222 @@ func TestChannelKind_PublishesAndThreadsInputThrough(t *testing.T) {
 	}
 	if len(ch.published) != 1 || ch.published[0].Channel != "verdicts" {
 		t.Fatalf("published = %+v", ch.published)
+	}
+}
+
+// ---- P5: fan-out ----
+
+func inbox(n int) []ChannelMessage {
+	out := make([]ChannelMessage, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, ChannelMessage{
+			ID:      "m" + strconv.Itoa(i),
+			Payload: json.RawMessage(`{"i":` + strconv.Itoa(i) + `}`),
+		})
+	}
+	return out
+}
+
+// N messages become N runs and N sink messages, each carrying its index and the
+// wave's SIZE — the number a downstream fan-in counts to, taken from the
+// runtime rather than from a literal the author would have to keep in sync.
+func TestStarterFanout_OneRunAndOneSinkMessagePerMessage(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(4)}
+	var mu sync.Mutex
+	var seen []string
+	r := starterRunner(ch, func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+		mu.Lock()
+		seen = append(seen, p.DataSlots[StarterMessageSlot])
+		mu.Unlock()
+		return "done", nil
+	})
+
+	if _, err := r.RunHandler(context.Background(), starterState(), &Task{}); err != nil {
+		t.Fatalf("wave: %v", err)
+	}
+	if len(seen) != 4 {
+		t.Fatalf("spawned %d runs, want 4", len(seen))
+	}
+	sinks := ch.sinks(t)
+	if len(sinks) != 4 {
+		t.Fatalf("published %d sink messages, want 4 — the count IS the fan-in contract", len(sinks))
+	}
+	idx := map[int]bool{}
+	for _, m := range sinks {
+		if m.WaveSize != 4 {
+			t.Errorf("sink wave_size = %d, want 4 (the runtime's count, not a literal)", m.WaveSize)
+		}
+		if m.Wave != sinks[0].Wave {
+			t.Errorf("one wave produced two wave ids")
+		}
+		idx[m.Index] = true
+	}
+	if len(idx) != 4 {
+		t.Errorf("indices = %v, want one per run", idx)
+	}
+	// Each run got ITS message, not a shared one.
+	sort.Strings(seen)
+	if seen[0] != `{"i":0}` || seen[3] != `{"i":3}` {
+		t.Errorf("data slots = %v, want one message each", seen)
+	}
+}
+
+// per=once is ONE run holding the whole batch, in the plural slot. The two
+// shapes have separate slot names so a template says which it expects.
+func TestStarterFanout_PerOnceIsOneRunWithTheBatch(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(3)}
+	var got Prompt
+	r := starterRunner(ch, func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+		got = p
+		return "done", nil
+	})
+	st := starterState()
+	st.Handler.Fanout.Per = teamgraph.FanoutPerOnce
+	st.Handler.Fanout.Max = 0
+	st.Handler.Prompt.Input = "All:\n" + StarterMessagesSlot
+
+	if _, err := r.RunHandler(context.Background(), st, &Task{}); err != nil {
+		t.Fatalf("wave: %v", err)
+	}
+	if sinks := ch.sinks(t); len(sinks) != 1 || sinks[0].WaveSize != 1 {
+		t.Fatalf("sinks = %+v, want exactly one", sinks)
+	}
+	all := got.DataSlots[StarterMessagesSlot]
+	if !strings.HasPrefix(all, "[") || !strings.Contains(all, `{"i":2}`) {
+		t.Errorf("messages slot = %q, want a JSON array of every message", all)
+	}
+	if _, singular := got.DataSlots[StarterMessageSlot]; singular {
+		t.Errorf("per=once filled the SINGULAR slot too — a batch is not a message")
+	}
+}
+
+// A definition asking for a wider wave than the deployment allows is REFUSED,
+// not quietly given less. Silently capping is the shape of bug that costs real
+// time: an operator sets a number and the runtime uses a different one.
+func TestStarterFanout_MaxAboveTheDeploymentCeilingIsRefused(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(2)}
+	spawned := 0
+	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+		spawned++
+		return "", nil
+	})
+	r.maxWave = 2
+	st := starterState()
+	st.Handler.Fanout.Max = 8
+
+	_, err := r.RunHandler(context.Background(), st, &Task{})
+	if err == nil || !strings.Contains(err.Error(), "exceeds this deployment's ceiling") {
+		t.Fatalf("err = %v, want a ceiling refusal naming both numbers", err)
+	}
+	if spawned != 0 {
+		t.Errorf("refused AFTER spawning %d runs — the refusal must come first", spawned)
+	}
+}
+
+// The author's own ceiling bounds the wave even when more messages are waiting;
+// the rest stay on the channel for the next pass, unacked.
+func TestStarterFanout_MaxBoundsTheWaveAndLeavesTheRest(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(10)}
+	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+		return "done", nil
+	})
+	st := starterState()
+	st.Handler.Fanout.Max = 3
+
+	if _, err := r.RunHandler(context.Background(), st, &Task{}); err != nil {
+		t.Fatalf("wave: %v", err)
+	}
+	if sinks := ch.sinks(t); len(sinks) != 3 {
+		t.Errorf("wave was %d wide, want the authored max of 3", len(sinks))
+	}
+}
+
+// A wave where one run fails still publishes a sink message for EVERY run, so a
+// downstream fan-in is unblocked by the failure instead of hanging on it.
+func TestStarterFanout_AFailedRunStillLeavesTheCountWhole(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(3)}
+	var mu sync.Mutex
+	n := 0
+	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+		mu.Lock()
+		n++
+		mine := n
+		mu.Unlock()
+		if mine == 2 {
+			return "", errors.New("second one failed")
+		}
+		return "ok", nil
+	})
+
+	_, err := r.RunHandler(context.Background(), starterState(), &Task{})
+	if err == nil {
+		t.Fatalf("wait=all with a failure must fail the state")
+	}
+	sinks := ch.sinks(t)
+	if len(sinks) != 3 {
+		t.Fatalf("published %d sink messages for a 3-wide wave — the count is the contract", len(sinks))
+	}
+	errs := 0
+	for _, m := range sinks {
+		if m.Status == SinkError {
+			errs++
+		}
+	}
+	if errs != 1 {
+		t.Errorf("%d error sinks, want exactly the failed run's", errs)
+	}
+}
+
+// wait=at_least lets a wave succeed with failures, and the state still advances.
+func TestStarterFanout_WaitAtLeastSucceedsBelowFull(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(3)}
+	var mu sync.Mutex
+	n := 0
+	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+		mu.Lock()
+		n++
+		mine := n
+		mu.Unlock()
+		if mine == 1 {
+			return "", errors.New("one failed")
+		}
+		return "ok", nil
+	})
+	st := starterState()
+	st.Handler.Fanout.Wait = teamgraph.WaitAtLeast + ":2"
+
+	out, err := r.RunHandler(context.Background(), st, &Task{})
+	if err != nil {
+		t.Fatalf("at_least:2 with 2 successes must pass: %v", err)
+	}
+	if !strings.Contains(out.Output, `"ok":false`) {
+		t.Errorf("the envelope hides the failure: %s", out.Output)
+	}
+	if len(ch.acked) != 1 {
+		t.Errorf("a successful wave did not ack: %v", ch.acked)
+	}
+}
+
+// A list of agents spreads the wave across roles, cycling when there are more
+// messages than agents — `agents` is "these roles", not "this many runs".
+func TestStarterFanout_AgentsListCyclesAcrossMessages(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(4)}
+	var mu sync.Mutex
+	counts := map[string]int{}
+	r := starterRunner(ch, func(_ context.Context, agent string, _ Prompt, _ string) (string, error) {
+		mu.Lock()
+		counts[agent]++
+		mu.Unlock()
+		return "ok", nil
+	})
+	st := starterState()
+	st.Handler.Fanout.Agent = ""
+	st.Handler.Fanout.Agents = []string{"a", "b"}
+
+	if _, err := r.RunHandler(context.Background(), st, &Task{}); err != nil {
+		t.Fatalf("wave: %v", err)
+	}
+	if counts["a"] != 2 || counts["b"] != 2 {
+		t.Errorf("agent spread = %v, want 2 each", counts)
 	}
 }

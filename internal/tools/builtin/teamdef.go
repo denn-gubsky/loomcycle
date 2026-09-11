@@ -82,6 +82,11 @@ type TeamDef struct {
 	// correlation is not recorded.
 	WaveContext func(ctx context.Context, walkID, waveID string, index int) context.Context
 
+	// MaxWave is the DEPLOYMENT's ceiling on one Starter wave's width — the
+	// operator's bound on a spawn amplifier whose definition anyone with def
+	// authority can author. 0 disables the check.
+	MaxWave int
+
 	// Board, if set, lets an op=run OPTIONALLY bind to a Document task board: when
 	// the caller passes board_chunk_id, the walk persists its position onto that
 	// chunk's status (chunk.status = the current team state) on every transition
@@ -760,6 +765,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 	if t.WaveContext != nil {
 		runnerOpts = append(runnerOpts, teamrun.WithWaveContext(t.WaveContext))
+	}
+	if t.MaxWave > 0 {
+		runnerOpts = append(runnerOpts, teamrun.WithMaxWave(t.MaxWave))
 	}
 	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn, runnerOpts...), opts...)
 
