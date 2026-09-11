@@ -3197,6 +3197,20 @@ type MemorySearchFilter struct {
 	// caller is unaffected.
 	Provenance MemoryProvenanceConstraint
 
+	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT provenance —
+	// which is exactly the document class, and nothing else.
+	//
+	// It exists because ExcludeKeyPrefix stopped being able to express "not prose".
+	// That worked only while the chunk namespace held nothing but prose; a fact
+	// homed in a chunk lives at the same prefix, so excluding the namespace now
+	// excludes the facts too. The two fields are therefore not variants of one
+	// idea: ExcludeKeyPrefix drops a NAMESPACE, this drops a CLASS.
+	//
+	// Kept as a prefix rather than a bool because the store owns no knowledge of
+	// what the document namespace is called — the caller supplies it, as it already
+	// does for the other two prefix fields.
+	ExcludeDocumentPrefix string
+
 	// ObservedFrom / ObservedTo bound the row's observed time (RFC CL). Zero on
 	// either side is an open bound; both zero constrains nothing. The bounds are
 	// ALREADY WIDENED by the caller's slack — the store applies what it is given and
@@ -3292,8 +3306,21 @@ func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
 
 // IsZero reports whether the filter constrains nothing — the signal that a backend
 // may take a query path with no predicate at all.
+//
+// EVERY predicate-bearing field has to be listed here, because of what the sentence
+// above licenses: a backend that trusts this drops the predicates it does not see.
+// It previously tested only the two prefix fields, so a provenance-constrained
+// filter reported "constrains nothing" — latent, since no backend consumes it yet,
+// but the contract invites exactly the path that would have silently returned notes
+// alongside facts.
+//
+// The observed-time and as-of bounds are deliberately included on the same
+// reasoning; they are predicates like any other.
 func (f MemorySearchFilter) IsZero() bool {
-	return f.KeyPrefix == "" && f.ExcludeKeyPrefix == ""
+	return f.KeyPrefix == "" && f.ExcludeKeyPrefix == "" && f.ExcludeDocumentPrefix == "" &&
+		f.Provenance == ProvenanceAny &&
+		f.ObservedFrom.IsZero() && f.ObservedTo.IsZero() && !f.RequireObserved &&
+		f.AsOf.IsZero() && !f.RequireValid
 }
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when
