@@ -888,6 +888,8 @@ POST /v1/_channels/review-queue/release   { "count": 1 }
   → { "channel": "review-queue", "released": ["msg_..."], "released_count": 1, "still_held": 2 }
 ```
 
+A bad `count` (above the cap of 1000, or negative) is a 400; `0` means one. An undeclared channel is a 404, as on every other channel route.
+
 What a hold does **not** change:
 
 - **TTL still counts from publish time.** An expired held message is never released and never delivered — holding is not a way to outlive the retention its publisher declared.
@@ -897,6 +899,10 @@ What a hold does **not** change:
 `release` is gated by the **publish** allowlist rather than subscribe: releasing is the act of making a message deliverable — the half of a publish the hold deferred — so the question is whether the agent may put messages on this channel, not whether it may read them. `_system/` channels are released through the admin endpoint, like every other write to one.
 
 Releasing a channel with nothing held reports zero rather than failing, and a channel switched back to `hold: false` can still release what it holds — turning the breakpoint off does not flush the queue.
+
+**Every writer that resolves the channel definition honours the hold**, which is more than the in-band tool: the admin/connector publish path, the scheduler's `delivery: channel` tick and its `on_complete: channel.publish` hook, and a webhook's `on_complete` hook. Internal publishers that go through the system publisher (heartbeats, interrupts, the inbound webhook relay) are covered by one check inside it. The rule that decides new cases: *a writer either resolves the channel definition or honours nothing from it.*
+
+A held message is marked by a reserved far-future `visible_at`, so it survives a snapshot round trip still held — restoring a snapshotted workflow does not open its breakpoints. The channel listing reports `hold: true` and suppresses that reserved instant rather than printing it as a delivery time.
 
 ### Delivery semantics
 
