@@ -163,6 +163,28 @@ var (
 	LockKeyDeadLinkGC int64
 )
 
+// TeamSubscriptionLockKey derives a team's subscription-sweep key from its
+// DEF ID, so exactly one replica drives that team's entry Starter at a time.
+//
+// PER-DEF, and held for the WHOLE walk rather than just the decision to start
+// one. A single process-wide key would make two subscribed teams collide every
+// tick, and the loser would forfeit its cadence to whichever team the sweep
+// reached first — the same trap MemoryConsolidatorLockKey documents below.
+// Releasing before the walk finishes would be worse: the next tick would start
+// a SECOND walk over the same source while the first still ran, and the two
+// would compete for one cursor. That is not corruption (a channel cursor has no
+// subscriber dimension, so each message still goes to exactly one reader) but
+// it is a spend amplifier, which is the thing an autonomous subscriber must
+// never be.
+//
+// The cost of holding it is one pinned pgx connection per team with work in
+// flight. Bounded by the number of subscribed teams, and only while a walk is
+// actually running — an idle team takes the lock, finds nothing, and releases
+// within a query.
+func TeamSubscriptionLockKey(defID string) int64 {
+	return fnvKey("team_subscription:" + defID)
+}
+
 // MemoryConsolidatorLockKey derives the RFC BL P2 consolidation fan-out's
 // advisory-lock key from the SCHEDULE DEF id, so only one replica per tick
 // enumerates that schedule's targets and dispatches their runs.

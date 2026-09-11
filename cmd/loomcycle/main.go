@@ -2815,6 +2815,47 @@ func main() {
 		}()
 	}
 
+	// RFC CY L5: the armed-subscription sweep. A PROMOTED team whose entry
+	// state is a Starter runs on its own when its source channel has work.
+	//
+	// DEFAULT OFF, deliberately. This is the only part of the runtime that
+	// starts agent runs unprompted — turning it on turns the definition plane
+	// into a spend commitment, because every message on a subscribed source
+	// becomes a wave of runs. An operator should arrive at that on purpose.
+	//
+	// The sweep needs no arm/disarm bookkeeping: each tick asks the store which
+	// teams are promoted, so promote arms and retire/delete disarm with no
+	// runtime state to leak or reconcile after a crash.
+	if cfg.Env.TeamSubscriptions && srv != nil && storeIface != nil {
+		if advisoryLock != nil {
+			// Cluster singleton per TEAM (not per process): exactly one replica
+			// drives a given team at a time, and the lock is held across the
+			// whole walk so a second tick cannot start a concurrent one.
+			srv.SetAdvisoryLock(advisoryLock)
+		}
+		tick := time.Duration(cfg.Env.TeamSubscriptionsTickSeconds) * time.Second
+		go func() {
+			t := time.NewTicker(tick)
+			defer t.Stop()
+			for {
+				select {
+				case <-bgCtx.Done():
+					return
+				case <-t.C:
+					started, err := srv.SweepTeamSubscriptions(bgCtx)
+					if err != nil {
+						log.Printf("team-subscriptions: sweep: %v", err)
+						continue
+					}
+					if started > 0 {
+						log.Printf("team-subscriptions: started %d walk(s)", started)
+					}
+				}
+			}
+		}()
+		log.Printf("team-subscriptions: enabled (tick=%s, cluster_gated=%v)", tick, advisoryLock != nil)
+	}
+
 	// RFC BL P1: reconcile the boot-time help-topic search index. The go:embed
 	// help corpus is immutable in-process (no hot-reload), so this is one-shot at
 	// boot. Content-hash gated — an unchanged corpus re-embeds nothing; only

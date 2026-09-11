@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -537,7 +538,38 @@ func (t *TeamDef) execRetire(ctx context.Context, in teamDefInput) (tools.Result
 	if err := t.Store.TeamDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
-	return okJSON(map[string]any{"def_id": in.DefID, "retired": *in.Retired})
+	out := map[string]any{"def_id": in.DefID, "retired": *in.Retired}
+	// Name the channels this version subscribed to.
+	//
+	// A retired workflow stops being swept, so nothing keeps reading its
+	// source — but the operator cannot SEE that from a bare {def_id, retired}.
+	// An unattended subscription is the failure mode this phase is most likely
+	// to produce, and the cheapest guard against it is telling the person who
+	// retired the team exactly which wires it was on, so they can check that
+	// nothing is still accumulating there.
+	if def, perr := teamgraph.Parse(row.Definition); perr == nil {
+		var sources []string
+		seen := map[string]bool{}
+		for _, ref := range teamgraph.ChannelRefs(def) {
+			if ref.Side != teamgraph.SideSubscribe || seen[ref.Channel] {
+				continue
+			}
+			seen[ref.Channel] = true
+			sources = append(sources, ref.Channel)
+		}
+		if len(sources) > 0 {
+			sort.Strings(sources)
+			// `released` when retiring, `resumed` when un-retiring: the same
+			// list means opposite things, and a caller reading one field name
+			// for both would have to know the verb to interpret it.
+			key := "sources_released"
+			if !*in.Retired {
+				key = "sources_resumed"
+			}
+			out[key] = sources
+		}
+	}
+	return okJSON(out)
 }
 
 // execDelete hard-deletes a team by name (all versions + active pointer). Teams
