@@ -86,8 +86,13 @@ type FactHomingReport struct {
 	FactsMoved          int              `json:"facts_moved"`
 	FactsWithoutSubject int              `json:"facts_without_subject"`
 	Skipped             []FactHomingSkip `json:"skipped,omitempty"`
-	DryRun              bool             `json:"dry_run"`
-	Note                string           `json:"note,omitempty"`
+	// PathWarnings names subjects that WERE homed but could not be given their
+	// Path-tree name — reachable by search and by id, invisible to a path browse.
+	// Separate from Skipped because the two need opposite actions: a skip is work
+	// still to do, this is work done and mis-filed.
+	PathWarnings []string `json:"path_warnings,omitempty"`
+	DryRun       bool     `json:"dry_run"`
+	Note         string   `json:"note,omitempty"`
 }
 
 // homingSubject is one old-shape subject node and the facts pointing at it.
@@ -124,7 +129,6 @@ func (d *Document) HomeFactsUnderSubjects(ctx context.Context, tenantID string,
 	// is no run identity on an HTTP request, and an unstamped call would resolve
 	// paths in the default tenant's tree while writing SQL in the named one.
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: tenantID})
-	mscope := scope
 
 	sharedID, err := d.docIDFromInput(ctx, key, docInput{Path: rememberedFactsPath})
 	if err != nil {
@@ -190,7 +194,7 @@ func (d *Document) HomeFactsUnderSubjects(ctx context.Context, tenantID string,
 		// transaction, and an orphaned body is invisible dead k/v where an orphaned
 		// row would not be.
 		if target.dropRoot != "" {
-			_, _ = d.Store.MemoryDelete(ctx, tenantID, mscope, key.ScopeID, chunkBodyKey(target.dropRoot))
+			_, _ = d.Store.MemoryDelete(ctx, tenantID, scope, key.ScopeID, chunkBodyKey(target.dropRoot))
 		}
 		// The Path-tree name LAST, and only for a document this run created: a failure
 		// here leaves the facts correctly homed and merely unnamed, which is the
@@ -198,11 +202,10 @@ func (d *Document) HomeFactsUnderSubjects(ctx context.Context, tenantID string,
 		// rather than undoing the document).
 		if !target.adopt {
 			if _, perr := d.registerDocDirent(ctx, key, target.docID, path); perr != nil {
-				rep.Skipped = append(rep.Skipped, FactHomingSkip{
-					NaturalKey: s.naturalKey, Subject: s.name,
-					Reason: "the facts were homed but " + path + " could not be registered, so the " +
-						"document is reachable by search and by id and not by path: " + perr.Error(),
-				})
+				rep.PathWarnings = append(rep.PathWarnings,
+					s.naturalKey+" was homed in document "+target.docID+" but "+path+
+						" could not be registered, so it is reachable by search and by id "+
+						"and not by path: "+perr.Error())
 			}
 		}
 	}
@@ -349,7 +352,11 @@ func (d *Document) collectHomingSubjects(ctx context.Context, key sqlmem.ScopeKe
 	// counted so the gap reads as work still to do rather than a silent default.
 	noSubject := 0
 	for id, c := range here {
-		if isFact[id] || byID[id] != nil || c.naturalKey == "" {
+		// Keyed in the FACT keyspace is what makes a chunk a fact here — the one
+		// namespace the k/v and chunk planes share verbatim. Testing merely "has a
+		// sidecar" would also count a subject node whose facts happen to live
+		// elsewhere, and report an identity as a fact with nowhere to go.
+		if isFact[id] || !strings.HasPrefix(c.naturalKey, MemoryFactKeyPrefix) {
 			continue
 		}
 		noSubject++
@@ -395,7 +402,18 @@ type homeTarget struct {
 // subject per pass. Those are exactly the documents to reuse.
 func (d *Document) subjectHomeTarget(ctx context.Context, key sqlmem.ScopeKey, path string, s homingSubject) (homeTarget, error) {
 	existing, derr := d.docIDFromInput(ctx, key, docInput{Path: path})
-	if derr != nil || existing == "" {
+	if derr != nil {
+		// ONLY "not there" means "make one". Treating a transient dirent read fault
+		// as absence would create a SECOND document for a subject that already has
+		// one, and the Path tree can name only one of them — a fork no later run
+		// would notice, because the subject is gone from the shared document either
+		// way.
+		if !strings.Contains(derr.Error(), "no such path") {
+			return homeTarget{}, derr
+		}
+		return homeTarget{docID: newDocID()}, nil
+	}
+	if existing == "" {
 		return homeTarget{docID: newDocID()}, nil
 	}
 	res, qerr := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ?`, existing)
