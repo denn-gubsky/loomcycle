@@ -75,6 +75,15 @@ func TestListTeamSubscriptions_TheEnumerationIsTheArming(t *testing.T) {
 		`{"state":"done","handler":{"kind":"terminal"}}],`+
 		`"transitions":[{"from":"a","to":"done","on":"success"}]}`, true, false)
 
+	// A malformed def: kind=agent but carrying a source. Validation refuses to
+	// author this, so it can only arrive from an older row or a direct write —
+	// and the KIND check is the only thing standing between it and being driven
+	// as though it were a Starter.
+	seedTeam(t, srv, "agent-with-source", `{"entry":"a","states":[`+
+		`{"state":"a","handler":{"kind":"agent","agent":"x","source":{"channel":"c1"}}},`+
+		`{"state":"done","handler":{"kind":"terminal"}}],`+
+		`"transitions":[{"from":"a","to":"done","on":"success"}]}`, true, false)
+
 	subs, err := srv.listTeamSubscriptions(context.Background())
 	if err != nil {
 		t.Fatalf("list: %v", err)
