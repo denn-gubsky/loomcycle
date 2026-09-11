@@ -2219,7 +2219,7 @@ agents:
         // The entity graph mirrors the fact AFTER the authoritative write lands, so
         // a graph failure can never cost a fact. SAME scope as the row above — the two
         // halves of one fact never split.
-        mirrorEntity(st, key, fact, scope);
+        mirrorEntity(st, key, fact, scope, pendingID);
         return true;
       }
 
@@ -2513,7 +2513,7 @@ agents:
       //   written, and the subject node and edge are skipped — the fact keeps its home,
       //   the graph stays honest, and st.fact_no_subject counts the gap so it reads as
       //   work still to do instead of a silent default.
-      function mirrorEntity(st, key, fact, scope) {
+      function mirrorEntity(st, key, fact, scope, pendingID) {
         scope = scope || CONFIG.scope;
         var docID = entitiesDoc(st, scope);
         if (!docID) { return; }
@@ -2596,6 +2596,12 @@ agents:
           var ivaN = nanosOfStamp(fact.invalid_at);
           if (ivaN !== null) { factArgs.invalid_at = ivaN; }
         }
+        // SAME attribution as the k/v write above. The server resolves origin and the
+        // source ids from the drained row, so a distilled fact says "consolidator"
+        // rather than "agent_explicit" — originForEntityWrite cannot tell a
+        // consolidation pass from any other agent, and once the chunk is the fact's
+        // only home there is no k/v twin left holding the real answer.
+        if (pendingID) { factArgs.from_pending = pendingID; }
         var factID = upsertEntityChunk(st, scope, docID, key, factArgs);
         if (!factID) { return; }
         st.entity_facts++;

@@ -110,6 +110,7 @@ const documentInputSchema = `{
 		"natural_key": {"type": "string", "description": "upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Omit when unknown — an undated fact is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded."},
+		"from_pending": {"type": "string", "description": "upsert_chunk: the id of a pending item you drained, so this fact records what produced it. The server fills in the origin and the source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds."},
 		"observed_at": {"type": "integer", "description": "When the thing was SAID or written (unix nanos), as distinct from when it became true. \"Yesterday I met them in Boston\", said on the 4th, is observed_at the 4th and valid_at the 3rd. Omit when unknown."},
 		"invalid_at": {"type": "integer", "description": "When the fact STOPPED being true in the world (unix nanos). Leave unset for something still true."},
 		"class":      {"type": "string", "enum": ["derived","evidential"], "description": "derived = distilled from something else (the default). evidential = source material, exempt from age-based pruning. list_facts: filter to facts of this class."},
@@ -244,7 +245,16 @@ type docInput struct {
 	// a caller must not be able to claim one — an exported field would be settable
 	// from the tool's JSON input and the column would stop being trustworthy.
 	bodyOrigin string
-	Confidence *float64 `json:"confidence"`
+	// FromPending attributes this write to a pending-queue row the caller drained,
+	// so the SERVER stamps the origin and source ids from that row. The id is the
+	// only thing a caller may pass — the fields themselves stay unsettable, which
+	// is what keeps origin an unforgeable statement about who wrote a fact.
+	FromPending string `json:"from_pending,omitempty"`
+	// pendingProv is what the server resolved from that row. UNEXPORTED, like
+	// bodyOrigin, so the tool's JSON input can never supply it — the id is the
+	// caller's to pass, the provenance is the server's to decide.
+	pendingProv *store.MemoryProvenance
+	Confidence  *float64 `json:"confidence"`
 	// Class is 'derived' | 'evidential' — the retention-exemption signal.
 	Class string `json:"class"`
 
