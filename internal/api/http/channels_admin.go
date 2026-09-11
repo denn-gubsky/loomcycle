@@ -64,6 +64,12 @@ type channelAckBody struct {
 	Cursor string `json:"cursor"`
 }
 
+// channelReleaseBody is the (optional) body of a release — how many held
+// messages to hand over. An empty body means one.
+type channelReleaseBody struct {
+	Count int `json:"count,omitempty"`
+}
+
 // ---- error mapping ----------------------------------------------
 
 // writeChannelError maps the typed Connector errors to HTTP status +
@@ -178,6 +184,42 @@ func (s *Server) handleChannelPurge(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleChannelRelease serves POST /v1/_channels/{name}/release — the
+// operator half of the RFC CY hold breakpoint: hand the oldest `count`
+// (default 1) held messages to subscribers.
+//
+// Allowed on yaml channels, like purge and unlike DELETE: releasing moves
+// messages, it does not mutate the definition — and a yaml-declared hold: is
+// exactly the channel an operator most wants to single-step.
+//
+// scope/scope_id come from the body (default global) so the same route reaches
+// a user- or tenant-scoped hold queue without a second route family.
+func (s *Server) handleChannelRelease(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_name", "missing channel name in URL path")
+		return
+	}
+	var body connector.ChannelReleaseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// An empty body is the common case ("release one") — only a malformed
+	// non-empty body is an error, mirroring subscribe.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body: "+err.Error())
+			return
+		}
+	}
+	body.Channel = name // the path is authoritative, not the body
+	out, err := s.ReleaseChannel(r.Context(), body)
+	if err != nil {
+		writeChannelError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // ---- admin handlers (scope=global) ------------------------------

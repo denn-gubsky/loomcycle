@@ -25,6 +25,7 @@ import (
 //	subscribe      — drain up to N new messages; auto-commits the previous batch's cursor
 //	ack            — explicitly commit a cursor (crash-safety: commit BEFORE next read)
 //	peek           — non-consuming read; never advances cursor
+//	release        — hand the oldest N HELD messages to subscribers (hold: channels)
 //	list_channels  — informational; reports the agent's publish/subscribe allowlists
 //
 // scope_id is RESOLVED SERVER-SIDE based on the agent's run context
@@ -99,19 +100,21 @@ func (c *Channel) shouldWarnTruncation(channel string) bool {
 
 const channelDescription = `Persistent inter-agent message bus. ` +
 	`Publish JSON payloads to a named channel; subscribe to drain new messages with cursor-based at-least-once delivery. ` +
-	`Operations: publish, subscribe, ack, peek, list_channels, await, broadcast. ` +
+	`Operations: publish, subscribe, ack, peek, release, list_channels, await, broadcast. ` +
 	`Channel ACLs are operator-configured; the tool refuses ops on channels not in this agent's publish/subscribe allowlists. ` +
 	`Scope (agent / user / global) is set by the operator per channel; cursor isolation matches that scope. ` +
 	`await is a fan-in barrier across MULTIPLE channels (wait for any / all / at_least N messages, or a timeout) — the complement to ` +
 	`Agent.parallel_spawn (which joins sub-agents); use await to join independent producers (scheduler / webhook / separately-spawned agents). ` +
 	`await is non-committing (detection only) — it never advances cursors, so subscribe/ack exactly what you process. ` +
 	`broadcast is the symmetric fan-OUT: publish one payload to MULTIPLE channels in a single call (e.g. ping N workers to start). ` +
-	`Both await and broadcast cap at 32 channels and refuse the whole op if any channel fails its ACL (no partial broadcast).`
+	`Both await and broadcast cap at 32 channels and refuse the whole op if any channel fails its ACL (no partial broadcast). ` +
+	`A channel the operator declared hold: stores publishes without delivering them; release hands over the oldest count (default 1) ` +
+	`so a workflow wired through that channel can be single-stepped. release needs the PUBLISH allowlist — it completes a publish.`
 
 const channelInputSchema = `{
   "type": "object",
   "properties": {
-    "op":           {"type": "string", "enum": ["publish","subscribe","ack","peek","list_channels","await","broadcast"], "description": "Which operation to perform."},
+    "op":           {"type": "string", "enum": ["publish","subscribe","ack","peek","release","list_channels","await","broadcast"], "description": "Which operation to perform."},
     "channel":      {"type": "string", "description": "The channel name (required for publish/subscribe/ack/peek)."},
     "channels":     {"type": "array", "items": {"type": "string"}, "description": "await + broadcast (max 32 channels). await resolves each under the SUBSCRIBE allowlist (fan-in); broadcast under the PUBLISH allowlist (fan-out)."},
     "mode":         {"type": "string", "enum": ["any","all","at_least"], "description": "Await only: any = ≥1 channel has a message; all = every channel has ≥1; at_least = total messages across channels ≥ n. Default any."},
@@ -122,7 +125,8 @@ const channelInputSchema = `{
     "from_cursor":  {"type": "string", "description": "Subscribe/peek only: read starting after this cursor. Absent = since last ack. \"cur_0\" = replay from oldest."},
     "max_messages": {"type": "integer", "description": "Subscribe/peek only: max messages to return (default 10, cap 100)."},
     "wait_ms":      {"type": "integer", "description": "Subscribe only: long-poll budget in ms. 0 = return immediately. Capped by operator config."},
-    "cursor":       {"type": "string", "description": "Ack only: the cursor to commit (must be >= currently committed)."}
+    "cursor":       {"type": "string", "description": "Ack only: the cursor to commit (must be >= currently committed)."},
+    "count":        {"type": "integer", "description": "Release only: how many held messages to hand over, oldest first. Default 1."}
   },
   "required": ["op"],
   "additionalProperties": false
@@ -141,6 +145,7 @@ type channelInput struct {
 	MaxMessages int             `json:"max_messages,omitempty"`
 	WaitMS      int             `json:"wait_ms,omitempty"`
 	Cursor      string          `json:"cursor,omitempty"`
+	Count       int             `json:"count,omitempty"` // release: how many held messages to hand over
 }
 
 // Name implements tools.Tool.
@@ -178,6 +183,8 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execAck(ctx, policy, in)
 	case "peek":
 		return c.execPeek(ctx, policy, in)
+	case "release":
+		return c.execRelease(ctx, policy, in)
 	case "list_channels":
 		return c.execListChannels(policy)
 	case "await":
@@ -187,7 +194,7 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, list_channels, await, broadcast)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, release, list_channels, await, broadcast)", in.Op)), nil
 	}
 }
 
@@ -360,7 +367,7 @@ func parsePublishDeliverAt(deliverAt string, now time.Time) (visibleAt time.Time
 // subscribers (or arms the deferred-visibility timer), and emits the typed
 // audit event — the side-effecting half of a publish, shared by publish +
 // broadcast. Returns the per-channel result map (message_id / channel /
-// dropped_oldest, + visible_at when deferred).
+// dropped_oldest, + visible_at when deferred, + held when the channel holds).
 func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.ChannelDef, scope store.MemoryScope, scopeID string, value json.RawMessage, ttl int64, visibleAt time.Time, deferred bool, now time.Time) (map[string]any, error) {
 	// TTL precedence: per-message > channel default > none. TTL counts
 	// from publish time, not deliver_at — a deferred message never
@@ -372,6 +379,16 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 	var expiresAt time.Time
 	if ttlSecs > 0 {
 		expiresAt = now.Add(time.Duration(ttlSecs) * time.Second)
+	}
+
+	// A held channel stores the message at the reserved visible_at and wakes
+	// nobody — it waits for a release, not for a clock, so an operator-set
+	// hold overrides a caller's deliver_at rather than racing it. The TTL
+	// still counts from publish time: holding is not a way to outlive the
+	// retention the publisher declared.
+	if def.Hold {
+		visibleAt = store.ChannelHeldVisibleAt()
+		deferred = false
 	}
 
 	id, dropped, err := c.Store.ChannelPublish(ctx, store.ChannelMessage{
@@ -388,10 +405,14 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 		return nil, err
 	}
 	// Deferred publishes go via the scheduler so long-poll subscribers
-	// wake at visible_at. Immediate publishes notify the bus directly.
-	if deferred && c.Scheduler != nil {
+	// wake at visible_at. Immediate publishes notify the bus directly. A
+	// held publish notifies nobody — that is what holding means.
+	switch {
+	case def.Hold:
+		// no notification, no timer
+	case deferred && c.Scheduler != nil:
 		c.Scheduler.Schedule(channel, id, visibleAt)
-	} else if c.Bus != nil {
+	case c.Bus != nil:
 		c.Bus.Notify(channel)
 	}
 	// Typed audit event (v0.8.4 polish): a separate event type so SSE
@@ -417,7 +438,74 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 	if deferred {
 		result["visible_at"] = visibleAt.UTC().Format(time.RFC3339Nano)
 	}
+	if def.Hold {
+		// Say so in the result: a publisher that gets back a message_id and
+		// no further word would reasonably assume the message was delivered.
+		result["held"] = true
+	}
 	return result, nil
+}
+
+// maxReleaseCount bounds one release. A release is a breakpoint step, not a
+// drain — an operator asking for a million is asking for something the hold
+// was there to prevent, and the bound keeps one call's transaction small.
+const maxReleaseCount = 1000
+
+// MaxReleaseCountForDrift exports the cap for the wire-surface drift test in
+// internal/api/http — the two caps are one rule, and a test is the only thing
+// that keeps them one.
+const MaxReleaseCountForDrift = maxReleaseCount
+
+// execRelease hands the oldest `count` HELD messages on a channel to its
+// subscribers (RFC CY). Default 1: a release is a single step unless the
+// caller says otherwise.
+//
+// Gated by the PUBLISH allowlist, not subscribe: releasing is the act of
+// making a message deliverable — the second half of a publish that the hold
+// deferred — so the right question is "may this agent put messages on this
+// channel", not "may it read them". The system-channel refusals apply for the
+// same reason (a held _system channel is released through the admin endpoint,
+// as with every other write to one).
+//
+// Releasing on a channel with nothing held is a no-op reporting zero, not an
+// error: "advance the queue" is a reasonable request even when the queue is
+// empty, and a workflow driver should not have to poll before stepping.
+func (c *Channel) execRelease(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
+	def, scope, scopeID, refusal := c.checkPublishACL(ctx, policy, in.Channel)
+	if refusal != "" {
+		return errResult(refusal), nil
+	}
+	count := in.Count
+	if count <= 0 {
+		count = 1
+	}
+	if count > maxReleaseCount {
+		return errResult(fmt.Sprintf("release: count %d exceeds max %d", count, maxReleaseCount)), nil
+	}
+	released, stillHeld, err := c.Store.ChannelRelease(ctx, tools.RunIdentity(ctx).TenantID, in.Channel, scope, scopeID, count)
+	if err != nil {
+		return errResult(fmt.Sprintf("release: %s", err)), nil
+	}
+	// Wake long-poll subscribers exactly as a publish would — from their side
+	// a release IS the publish arriving.
+	if len(released) > 0 && c.Bus != nil {
+		c.Bus.Notify(in.Channel)
+	}
+	if released == nil {
+		released = []string{} // JSON [] not null — a consumer indexes this
+	}
+	out := map[string]any{
+		"channel":        in.Channel,
+		"released":       released,
+		"released_count": len(released),
+		"still_held":     stillHeld,
+	}
+	if !def.Hold {
+		// The channel is not declared hold:, so nothing new will be held.
+		// Say it rather than let a zero look like a timing problem.
+		out["note"] = "channel is not declared hold: — nothing new is held on it"
+	}
+	return okJSON(out)
 }
 
 // execBroadcast is the symmetric fan-OUT to await's fan-in (RFC S shape):

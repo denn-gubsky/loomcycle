@@ -835,6 +835,7 @@ func (c *Context) execChannels(ctx context.Context, in contextInput) (tools.Resu
 		DefaultTTL  int    `json:"default_ttl,omitempty"`
 		MaxMessages int    `json:"max_messages,omitempty"`
 		Publisher   string `json:"publisher,omitempty"`
+		Hold        bool   `json:"hold,omitempty"`
 		Publish     bool   `json:"publish"`
 		Subscribe   bool   `json:"subscribe"`
 	}
@@ -867,6 +868,7 @@ func (c *Context) execChannels(ctx context.Context, in contextInput) (tools.Resu
 			DefaultTTL:  def.DefaultTTL,
 			MaxMessages: def.MaxMessages,
 			Publisher:   def.Publisher,
+			Hold:        def.Hold,
 			Publish:     publishSet[name],
 			Subscribe:   subscribeSet[name],
 		})

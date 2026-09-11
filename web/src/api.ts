@@ -1427,6 +1427,8 @@ export interface ChannelDescriptor {
   period?: string;
   default_ttl?: number;
   max_messages?: number;
+  // Breakpoint: publishes are stored but never delivered until released.
+  hold?: boolean;
   message_count: number;
   oldest_visible_at?: string;
   newest_visible_at?: string;
@@ -2220,6 +2222,7 @@ export interface ChannelCreateRequest {
   max_messages?: number;
   publisher?: string;
   period?: string;
+  hold?: boolean;
 }
 
 export interface ChannelUpdateRequest {
@@ -2227,6 +2230,30 @@ export interface ChannelUpdateRequest {
   default_ttl?: number;
   max_messages?: number;
   semantic?: string;
+  hold?: boolean;
+}
+
+export interface ChannelReleaseResult {
+  channel: string;
+  released: string[];
+  released_count: number;
+  still_held: number;
+}
+
+// releaseChannel hands the oldest `count` (default 1) messages held on a
+// hold: channel to its subscribers — the operator's breakpoint step.
+export function releaseChannel(
+  name: string,
+  count?: number,
+): Promise<ChannelReleaseResult> {
+  return jsonFetch<ChannelReleaseResult>(
+    `/v1/_channels/${encodeURIComponent(name)}/release`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(count && count > 0 ? { count } : {}),
+    },
+  );
 }
 
 export function createChannel(body: ChannelCreateRequest): Promise<ChannelDescriptor> {

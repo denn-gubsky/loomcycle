@@ -3258,6 +3258,18 @@ button.primary:disabled {
   color: var(--danger, #d33);
   border-color: var(--danger, #d33);
 }
+/* RFC CY — a held channel is a breakpoint; the chip says so at a glance
+   because "nothing is arriving" otherwise looks like a broken workflow. */
+.channel-hold {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--warn, #b8860b);
+  border: 1px solid var(--warn, #b8860b);
+}
 .channel-row {
   display: flex;
   align-items: center;

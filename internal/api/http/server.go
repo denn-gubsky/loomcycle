@@ -2042,6 +2042,7 @@ func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map
 			MaxMessages: ch.MaxMessages,
 			Semantic:    ch.Semantic,
 			Publisher:   ch.Publisher, // v0.8.6: agent publish refusal when "system"
+			Hold:        ch.Hold,      // RFC CY: store-without-delivering breakpoint
 		}
 	}
 	if includeRuntime && s.store != nil {
@@ -2064,6 +2065,7 @@ func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map
 					MaxMessages: r.MaxMessages,
 					Semantic:    r.Semantic,
 					Publisher:   r.Publisher,
+					Hold:        r.Hold,
 				}
 			}
 		}
@@ -2104,6 +2106,31 @@ func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (strin
 		return "", false
 	}
 	return def.Scope, true
+}
+
+// ChannelHeld reports whether a channel is declared `hold:` (RFC CY) —
+// publishes are stored but never delivered until a release. Wired into the
+// SystemPublisher so every internal publish path (heartbeats, the webhook
+// relay, interrupts, the admin endpoint) honours the hold without each one
+// resolving the definition itself.
+//
+// A POINT lookup, not the mergedChannelDefs scan ResolveChannelScope uses:
+// this runs on every system publish, including the webhook relay's hot path.
+// Static yaml wins over a runtime row, matching the merge order everywhere
+// else. A store fault answers false — an unreachable definition plane must
+// not silently start holding a channel that isn't declared held.
+func (s *Server) ChannelHeld(ctx context.Context, channel string) bool {
+	if def, ok := s.cfg().Channels[channel]; ok {
+		return def.Hold
+	}
+	if s.store == nil {
+		return false
+	}
+	row, err := s.store.ChannelGet(ctx, tenantFromCtx(ctx), channel)
+	if err != nil {
+		return false
+	}
+	return row.Hold
 }
 
 // fallbackForRun builds the v0.8.2 PR-2 runtime-fallback policy +
@@ -2958,6 +2985,10 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_channels/{name}/peek", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelPeek))))
 	mux.Handle("POST /v1/_channels/{name}/ack", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAdminChannelAck))))
 	mux.Handle("POST /v1/_channels/{name}/purge", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleChannelPurge))))
+	// RFC CY: release held messages on a `hold:` channel. Allowed on yaml
+	// channels for the same reason purge is — it moves messages, it does not
+	// mutate the definition.
+	mux.Handle("POST /v1/_channels/{name}/release", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleChannelRelease))))
 	// RFC S client twins — multi-channel fan-in / fan-out. The reserved
 	// `_await` / `_broadcast` literals are strictly more specific than the
 	// `{name...}` system-publish catch-all, so Go 1.22+ mux routes them here.

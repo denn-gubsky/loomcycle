@@ -12,12 +12,28 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // ListChannels returns the operator-declared channels joined with
 // runtime stats (count + oldest/newest visible_at). Mirrors what
 // handleListChannels writes to the HTTP wire — same code path
 // minus the JSON-encoder framing.
+// formatVisibleAt renders a message's visible_at for the channel listing,
+// returning "" for anything that is not a real delivery time.
+//
+// A HELD message carries the reserved sentinel instant (RFC CY), and printing
+// "2200-01-01" in an operator's channel list reads as a bug rather than as
+// "this channel is holding". The `hold` flag on the descriptor is what says
+// that; the timestamp says nothing, which is the truth — a held message has no
+// scheduled arrival.
+func formatVisibleAt(t time.Time) string {
+	if t.IsZero() || store.IsChannelHeld(t) {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsResponse, error) {
 	stats, err := s.store.ChannelStats(ctx)
 	if err != nil {
@@ -47,16 +63,13 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			Period:      ch.Period,
 			DefaultTTL:  ch.DefaultTTL,
 			MaxMessages: ch.MaxMessages,
+			Hold:        ch.Hold,
 			Source:      "yaml",
 		}
 		if st, ok := statsByName[name]; ok {
 			desc.MessageCount = st.Count
-			if !st.OldestVisibleAt.IsZero() {
-				desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
-			}
-			if !st.NewestVisibleAt.IsZero() {
-				desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
-			}
+			desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
+			desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
 		}
 		out = append(out, desc)
 	}
@@ -87,16 +100,13 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			Period:      r.Period,
 			DefaultTTL:  r.DefaultTTL,
 			MaxMessages: r.MaxMessages,
+			Hold:        r.Hold,
 			Source:      "runtime",
 		}
 		if st, ok := statsByName[r.Name]; ok {
 			desc.MessageCount = st.Count
-			if !st.OldestVisibleAt.IsZero() {
-				desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
-			}
-			if !st.NewestVisibleAt.IsZero() {
-				desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
-			}
+			desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
+			desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
 		}
 		out = append(out, desc)
 	}
@@ -115,12 +125,8 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			continue
 		}
 		desc := connector.ChannelDescriptor{Name: name, MessageCount: st.Count, Source: "orphan"}
-		if !st.OldestVisibleAt.IsZero() {
-			desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
-		}
-		if !st.NewestVisibleAt.IsZero() {
-			desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
-		}
+		desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
+		desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
 		out = append(out, desc)
 	}
 	// Deterministic order — easier on transports that snapshot the

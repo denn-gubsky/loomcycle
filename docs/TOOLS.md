@@ -797,6 +797,11 @@ channels:
     default_ttl: 3600
     max_messages: 1000
     semantic: broadcast
+
+  review-queue:
+    scope: global
+    max_messages: 100
+    hold: true                # breakpoint: store, deliver only on release
 ```
 
 Per-agent ACL via the agent yaml:
@@ -831,6 +836,11 @@ Wildcards are anchored at the end (`findings/*` matches `findings/alpha` but NOT
 
 // Peek — non-consuming read (debugging or at-least-once consumer pattern):
 { "op": "peek", "channel": "findings", "from_cursor": "cur_0", "max_messages": 10 }
+
+// Release — hand the oldest N messages held on a `hold:` channel to
+// subscribers. Needs the PUBLISH allowlist (it completes a publish):
+{ "op": "release", "channel": "review-queue", "count": 1 }
+//   → { "channel": "review-queue", "released": ["msg_..."], "released_count": 1, "still_held": 2 }
 
 // List — informational, reports this agent's allowlists:
 { "op": "list_channels" }
@@ -868,6 +878,25 @@ It long-polls up to `wait_ms` (clamped to the operator's `LOOMCYCLE_CHANNELS_LON
 **`await` is non-committing (detection only).** It returns each fired channel's `next_cursor` but never advances the committed cursor — auto-committing across N channels on a partial/`any`/timeout result would silently consume messages on channels the agent didn't act on. After `await` returns, the agent `subscribe`/`ack`s exactly what it processes. Each channel is resolved through the agent's **subscribe** allowlist, so `await` can't read a channel it couldn't `subscribe` to. Max 32 channels per call.
 
 > **`await` vs `Agent.parallel_spawn`:** both are barriers, but over different things. `parallel_spawn` joins the **sub-agents this agent spawned** (`wg.Wait()`). `await` joins **independent producers** — scheduler-fired runs, inbound webhooks, separately-spawned agents — that `parallel_spawn` can't reach. A scheduler-driven fan-out (N collectors) → consolidator pipeline uses `await`; an in-agent fan-out uses `parallel_spawn`. (`on_complete: channel.publish` on a `ScheduledRun` stamps `schedule_name` per fire — the distinct-producer key an `at_least`/`all` consolidator counts.)
+
+### Breakpoints (`hold` + `release`)
+
+A channel declared `hold: true` **stores a publish without delivering it**. Nothing is handed to a subscriber and no long-poll wakes; the message waits until someone releases it — `Channel op=release` for an agent, `POST /v1/_channels/{name}/release` for an operator, the **Release** control on the channel page in the Web UI. `count` defaults to 1, oldest first, so a workflow wired through the channel can be **single-stepped**: the wave upstream runs, its results queue, and nothing downstream starts until a human says go.
+
+```
+POST /v1/_channels/review-queue/release   { "count": 1 }
+  → { "channel": "review-queue", "released": ["msg_..."], "released_count": 1, "still_held": 2 }
+```
+
+What a hold does **not** change:
+
+- **TTL still counts from publish time.** An expired held message is never released and never delivered — holding is not a way to outlive the retention its publisher declared.
+- **Overflow still trims the oldest**, reporting `dropped_oldest`, exactly as on any other channel. A hold buffers; it does not make the buffer unbounded.
+- **The hold wins over `deliver_at`.** A held message waits for a release, not for a clock, so a caller cannot schedule its way past the breakpoint. The publish result says `"held": true` instead of a `visible_at`.
+
+`release` is gated by the **publish** allowlist rather than subscribe: releasing is the act of making a message deliverable — the half of a publish the hold deferred — so the question is whether the agent may put messages on this channel, not whether it may read them. `_system/` channels are released through the admin endpoint, like every other write to one.
+
+Releasing a channel with nothing held reports zero rather than failing, and a channel switched back to `hold: false` can still release what it holds — turning the breakpoint off does not flush the queue.
 
 ### Delivery semantics
 

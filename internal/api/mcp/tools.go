@@ -242,7 +242,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "channel",
-			Description: "Channel tool ops (publish/subscribe/ack/peek/list_channels/await/broadcast). await = multi-channel fan-in barrier (any/all/at_least N or timeout; non-committing); broadcast = symmetric fan-out (one payload → N channels, atomic ACL pre-flight). Pass-through.",
+			Description: "Channel tool ops (publish/subscribe/ack/peek/release/list_channels/await/broadcast). await = multi-channel fan-in barrier (any/all/at_least N or timeout; non-committing); broadcast = symmetric fan-out (one payload → N channels, atomic ACL pre-flight); release = hand over the oldest count (default 1) messages held on a hold: channel. Pass-through.",
 			InputSchema: builtinSchema("channel"),
 		},
 		{
@@ -259,6 +259,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"semantic":     {"type": "string", "enum": ["queue", "topic"], "description": "Default queue."},
 					"default_ttl":  {"type": "integer", "description": "Per-message TTL seconds. 0 = no TTL."},
 					"max_messages": {"type": "integer", "description": "Bounded-queue cap. 0 = unbounded."},
+					"hold":         {"type": "boolean", "description": "Breakpoint: publishes are stored but never delivered until released (POST /v1/_channels/{name}/release, or Channel op=release)."},
 					"publisher":    {"type": "string", "description": "create only. Free-form attribution."}
 				}
 			}`),

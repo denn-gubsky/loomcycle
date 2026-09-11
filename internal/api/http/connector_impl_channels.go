@@ -26,6 +26,13 @@ import (
 // the wire surface — same cap as the in-band Channel tool's maxFanChannels.
 const channelFanCap = 32
 
+// maxChannelReleaseCount bounds one release — the wire twin of the in-band
+// tool's builtin.maxReleaseCount. Kept in step by
+// TestChannelRelease_WireAndToolCapsAgree in channels_hold_test.go: two caps
+// that drift mean the same request is accepted on one surface and refused on
+// the other.
+const maxChannelReleaseCount = 1000
+
 // resolveChannelScope maps the wire-string `scope` to the store enum
 // and validates `scope_id` shape. Channel CRUD only supports global +
 // user; agent scope isn't reachable from an HTTP boundary (the agent
@@ -61,6 +68,7 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 		return channelDef{
 			MaxMessages: def.MaxMessages,
 			DefaultTTL:  def.DefaultTTL,
+			Hold:        def.Hold,
 		}, nil
 	}
 	if s.store != nil {
@@ -74,6 +82,7 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 			return channelDef{
 				MaxMessages: row.MaxMessages,
 				DefaultTTL:  row.DefaultTTL,
+				Hold:        row.Hold,
 			}, nil
 		case isNotFound(err):
 			// fall through to the not-declared signal below
@@ -89,6 +98,7 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 type channelDef struct {
 	MaxMessages int
 	DefaultTTL  int
+	Hold        bool
 }
 
 // PublishChannel publishes a message to a declared channel. Delegates
@@ -130,6 +140,12 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		}
 		deliverAt = parsed
 	}
+	// A hold overrides deliver_at: the message waits for a release, not for
+	// a clock. Passed as the reserved instant so the publisher's own HoldFn
+	// short-circuits instead of resolving the definition a second time.
+	if def.Hold {
+		deliverAt = store.ChannelHeldVisibleAt()
+	}
 
 	// Audit attribution: "_admin" for global-scope (operator), the
 	// user_id for user-scope (per-end-user). The bearer's identity
@@ -154,10 +170,62 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		Channel:   req.Channel,
 		CreatedAt: msg.PublishedAt.UTC().Format(time.RFC3339Nano),
 	}
-	if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) {
+	if def.Hold {
+		// Report the hold instead of a visible_at in the year 2200 — the
+		// reserved instant is an implementation marker, not a promise about
+		// when this message is coming.
+		out.Held = true
+	} else if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) {
 		out.VisibleAt = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
 	}
 	return out, nil
+}
+
+// ReleaseChannel implements the operator half of the hold breakpoint: hand
+// the oldest Count held messages to subscribers and wake the long-poll bus,
+// exactly as the publish would have done had the channel not been held.
+//
+// Deliberately NOT gated on the channel being declared hold: — a channel
+// switched back to delivering can still have messages held from before, and
+// refusing to release them would strand the queue with no way out but a
+// purge.
+func (s *Server) ReleaseChannel(ctx context.Context, req connector.ChannelReleaseRequest) (connector.ChannelReleaseResult, error) {
+	if req.Channel == "" {
+		return connector.ChannelReleaseResult{}, fmt.Errorf("release: missing required field: channel")
+	}
+	if req.Count > maxChannelReleaseCount {
+		return connector.ChannelReleaseResult{}, fmt.Errorf("release: count %d exceeds max %d", req.Count, maxChannelReleaseCount)
+	}
+	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
+		return connector.ChannelReleaseResult{}, err
+	}
+	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	if err != nil {
+		return connector.ChannelReleaseResult{}, err
+	}
+	if s.store == nil {
+		return connector.ChannelReleaseResult{}, fmt.Errorf("release: no store configured")
+	}
+	count := req.Count
+	if count <= 0 {
+		count = 1
+	}
+	released, stillHeld, err := s.store.ChannelRelease(ctx, tenantFromCtx(ctx), req.Channel, scope, scopeID, count)
+	if err != nil {
+		return connector.ChannelReleaseResult{}, fmt.Errorf("release: %w", err)
+	}
+	if released == nil {
+		released = []string{}
+	}
+	if len(released) > 0 && s.channelBus != nil {
+		s.channelBus.Notify(req.Channel)
+	}
+	return connector.ChannelReleaseResult{
+		Channel:       req.Channel,
+		Released:      released,
+		ReleasedCount: len(released),
+		StillHeld:     stillHeld,
+	}, nil
 }
 
 // SubscribeChannel reads the next batch of messages, optionally waiting

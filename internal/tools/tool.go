@@ -744,6 +744,10 @@ type ChannelDef struct {
 	// internal Go publisher and the admin endpoint may write. Empty =
 	// agents may publish (ACL permitting).
 	Publisher string
+	// Hold makes the channel a breakpoint: a publish is stored but not
+	// delivered or notified until a release. See store.ChannelHeldVisibleAt
+	// for how a held message is marked.
+	Hold bool
 }
 
 // WithChannelPolicy attaches the agent's resolved Channel policy to ctx.

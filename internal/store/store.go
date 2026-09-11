@@ -52,6 +52,35 @@ func MintChannelMessageID(t time.Time) string {
 	return fmt.Sprintf("msg_%016x%s", uint64(t.UnixNano()), hex.EncodeToString(buf[:]))
 }
 
+// ChannelHeldVisibleAt is the reserved `visible_at` instant a message on a
+// HELD channel carries — the storage marker for "stored, but not deliverable
+// until someone releases it".
+//
+// WHY A RESERVED INSTANT RATHER THAN A `held` COLUMN. Every channel read
+// already filters `visible_at <= now`, so a held row is withheld by machinery
+// that exists — subscribe, peek, await and any read path added later, without
+// each one having to remember. A boolean column would need its own predicate
+// on every one of those queries, and a query that FORGETS it delivers a
+// message that was supposed to be stopped. The two designs fail in opposite
+// directions and only one of them is safe: a missed sentinel keeps a message
+// hidden, a missed column releases it.
+//
+// The instant is far enough out that no real deferred publish reaches it, and
+// short of 2262 so UnixNano does not overflow int64 (the same bound
+// MintChannelMessageID's lex-order invariant depends on). It is RESERVED: a
+// caller that names this exact instant as a deliver_at gets hold semantics,
+// which is the documented behaviour, not an accident.
+func ChannelHeldVisibleAt() time.Time {
+	return time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC)
+}
+
+// IsChannelHeld reports whether a visible_at marks a held message. Exact
+// equality on the reserved instant — a deferred publish one nanosecond off is
+// an ordinary deferred publish and delivers on its own.
+func IsChannelHeld(visibleAt time.Time) bool {
+	return visibleAt.Equal(ChannelHeldVisibleAt())
+}
+
 // EncodeChannelCursor renders a (visible_at, msg_id) tuple as the
 // opaque cursor token agents receive. Format:
 //
@@ -2236,6 +2265,22 @@ type Store interface {
 	// from cur_0 without disturbing the consumer's position.
 	ChannelPeek(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID, fromCursor string, limit int) ([]ChannelMessage, error)
 
+	// ChannelRelease makes the `count` oldest HELD messages on one
+	// (channel, scope, scope_id) deliverable now — the read half of the
+	// hold breakpoint (see ChannelHeldVisibleAt). Released messages take a
+	// visible_at of the release instant, so they sort AFTER everything
+	// already delivered and a subscriber's cursor never has to rewind.
+	//
+	// Returns the released ids in delivery order plus how many stay held.
+	// Releasing more than are held releases what there is; releasing on a
+	// channel with nothing held is a no-op, not an error — a release is a
+	// request to advance, and "nothing to advance" is an answer.
+	//
+	// Expired rows are skipped: a held message still honours its TTL, so a
+	// hold is not a way to keep a message past the retention its publisher
+	// declared.
+	ChannelRelease(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID string, count int) (released []string, stillHeld int, err error)
+
 	// ChannelStats returns one row per channel that has at least one
 	// non-expired message, with the aggregate count + oldest/newest
 	// visible_at timestamps. Channels declared in operator yaml but
@@ -3040,7 +3085,10 @@ type ChannelRow struct {
 	MaxMessages int
 	Publisher   string
 	Period      string
-	CreatedAt   time.Time
+	// Hold makes the channel a breakpoint: a publish is stored but never
+	// delivered or notified until a release. See ChannelHeldVisibleAt.
+	Hold      bool
+	CreatedAt time.Time
 }
 
 // ChannelPatch carries the subset of fields ChannelsUpdate can
@@ -3052,6 +3100,7 @@ type ChannelPatch struct {
 	DefaultTTL  *int
 	MaxMessages *int
 	Semantic    *string
+	Hold        *bool
 }
 
 // MemoryScope is the addressing axis for a Memory or Channel row.

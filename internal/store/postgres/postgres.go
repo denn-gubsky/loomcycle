@@ -4772,6 +4772,82 @@ func (s *Store) ChannelPeek(ctx context.Context, tenantID, channel string, scope
 	return msgs, err
 }
 
+// ChannelRelease makes the `count` oldest held messages deliverable now.
+//
+// SELECT ... FOR UPDATE, then UPDATE, in one transaction: under READ COMMITTED
+// two concurrent releases would otherwise pick the same rows and each report
+// them as its own. FOR UPDATE makes the second wait, and when it proceeds the
+// re-checked predicate no longer matches the rows the first took, so it moves
+// on to the next held messages instead of double-releasing.
+//
+// The UPDATE re-states the held predicate for the same reason.
+func (s *Store) ChannelRelease(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID string, count int) ([]string, int, error) {
+	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
+	if count <= 0 {
+		count = 1
+	}
+	held := store.ChannelHeldVisibleAt()
+
+	var tx pgx.Tx
+	if err := retryOnTransientConn(ctx, func() error {
+		var beginErr error
+		tx, beginErr = s.pool.Begin(ctx)
+		return beginErr
+	}); err != nil {
+		return nil, 0, fmt.Errorf("channel release begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM channel_messages
+		  WHERE tenant_id = $1 AND channel = $2 AND scope = $3 AND scope_id = $4
+		    AND visible_at = $5
+		    AND (expires_at IS NULL OR expires_at > NOW())
+		  ORDER BY id ASC
+		  LIMIT $6
+		  FOR UPDATE`,
+		tenantID, channel, string(scope), scopeID, held, count)
+	if err != nil {
+		return nil, 0, fmt.Errorf("channel release select: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx,
+			`UPDATE channel_messages SET visible_at = NOW() WHERE id = $1 AND visible_at = $2`,
+			id, held); err != nil {
+			return nil, 0, fmt.Errorf("channel release update: %w", err)
+		}
+	}
+
+	var stillHeld int
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM channel_messages
+		  WHERE tenant_id = $1 AND channel = $2 AND scope = $3 AND scope_id = $4
+		    AND visible_at = $5
+		    AND (expires_at IS NULL OR expires_at > NOW())`,
+		tenantID, channel, string(scope), scopeID, held).Scan(&stillHeld); err != nil {
+		return nil, 0, fmt.Errorf("channel release remaining: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, 0, fmt.Errorf("channel release commit: %w", err)
+	}
+	return ids, stillHeld, nil
+}
+
 func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT tenant_id, channel, COUNT(*), MIN(visible_at), MAX(visible_at)

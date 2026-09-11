@@ -79,11 +79,13 @@ import type {
   ChannelPeekResult,
   ChannelPublishResult,
   ChannelPurgeResult,
+  ChannelReleaseResult,
   ChannelSubscribeResult,
   CreateChannelOptions,
   ListChannelsResponse,
   PeekChannelOptions,
   PublishChannelOptions,
+  ReleaseChannelOptions,
   SetMemoryEntryOptions,
   SetMemoryEntryResponse,
   SubscribeChannelOptions,
@@ -2390,6 +2392,7 @@ export class LoomcycleClient {
     if (opts.max_messages !== undefined) body.max_messages = opts.max_messages;
     if (opts.publisher !== undefined) body.publisher = opts.publisher;
     if (opts.period !== undefined) body.period = opts.period;
+    if (opts.hold !== undefined) body.hold = opts.hold;
     return postJSON<ChannelDescriptor>(this.ctx, "/v1/_channels", body, {
       signal: opts.signal,
     });
@@ -2407,6 +2410,7 @@ export class LoomcycleClient {
     if (opts.default_ttl !== undefined) body.default_ttl = opts.default_ttl;
     if (opts.max_messages !== undefined) body.max_messages = opts.max_messages;
     if (opts.semantic !== undefined) body.semantic = opts.semantic;
+    if (opts.hold !== undefined) body.hold = opts.hold;
     return patchJSON<ChannelDescriptor>(
       this.ctx,
       `/v1/_channels/${encodeURIComponent(name)}`,
@@ -2444,6 +2448,27 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_channels/${encodeURIComponent(name)}/purge`,
       {},
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Hand the oldest `count` (default 1) messages held on a `hold:`
+   *  channel to its subscribers. Allowed on yaml-declared channels —
+   *  releasing moves messages, it does not mutate the definition.
+   *  Releasing a channel with nothing held reports zero rather than
+   *  failing. */
+  async releaseChannel(
+    name: string,
+    opts?: ReleaseChannelOptions,
+  ): Promise<ChannelReleaseResult> {
+    const body: Record<string, unknown> = {};
+    if (opts?.count !== undefined) body.count = opts.count;
+    if (opts?.scope !== undefined) body.scope = opts.scope;
+    if (opts?.scope_id !== undefined) body.scope_id = opts.scope_id;
+    return postJSON<ChannelReleaseResult>(
+      this.ctx,
+      `/v1/_channels/${encodeURIComponent(name)}/release`,
+      body,
       { signal: opts?.signal },
     );
   }

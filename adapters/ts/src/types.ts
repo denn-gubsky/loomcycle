@@ -1773,6 +1773,8 @@ export interface ChannelDescriptor {
   period?: string;
   default_ttl?: number;
   max_messages?: number;
+  /** Breakpoint: publishes are stored but never delivered until released. */
+  hold?: boolean;
   message_count: number;
   /** RFC3339 — empty when count == 0. */
   oldest_visible_at?: string;
@@ -1988,6 +1990,9 @@ export interface CreateChannelOptions {
   publisher?: string;
   /** Free-form retention hint; not enforced by the substrate. */
   period?: string;
+  /** Breakpoint: publishes are stored but never delivered until
+   *  {@link LoomcycleClient.releaseChannel} hands them over. */
+  hold?: boolean;
   signal?: AbortSignal;
 }
 
@@ -1999,7 +2004,30 @@ export interface UpdateChannelOptions {
   max_messages?: number;
   /** "queue" | "topic" */
   semantic?: string;
+  /** Turn the breakpoint on or off. Messages already held stay held
+   *  until released — turning it off does not flush the queue. */
+  hold?: boolean;
   signal?: AbortSignal;
+}
+
+/** Options for {@link LoomcycleClient.releaseChannel}. */
+export interface ReleaseChannelOptions {
+  /** How many held messages to hand over, oldest first. Default 1. */
+  count?: number;
+  /** "global" (default) | "user" | "tenant". */
+  scope?: string;
+  /** Required when scope is "user". */
+  scope_id?: string;
+  signal?: AbortSignal;
+}
+
+/** Result of {@link LoomcycleClient.releaseChannel}. `released` is the
+ *  ids handed over, in delivery order; `still_held` is what is left. */
+export interface ChannelReleaseResult {
+  channel: string;
+  released: string[];
+  released_count: number;
+  still_held: number;
 }
 
 // ---- v0.11.5 Memory entry admin CRUD types ----

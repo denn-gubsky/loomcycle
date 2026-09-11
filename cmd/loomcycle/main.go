@@ -2058,6 +2058,9 @@ func main() {
 		Store:     storeIface,
 		Bus:       channelBus,
 		Scheduler: channelScheduler,
+		// RFC CY: one wiring point makes every internal publish path
+		// honour a `hold:` channel — see StorePublisher.HoldFn.
+		HoldFn: srv.ChannelHeld,
 	}
 	srv.SetSystemPublisher(sysPublisher)
 	// Wire the SystemPublisher onto the Interruption tool too — same

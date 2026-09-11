@@ -10,6 +10,7 @@ import {
   listChannels,
   peekChannel,
   publishChannel,
+  releaseChannel,
 } from "../api";
 import Splitter from "../components/Splitter";
 import ChannelEditModal from "../components/ChannelEditModal";
@@ -355,8 +356,16 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
           {channel.max_messages !== undefined && channel.max_messages > 0 && (
             <span>max={channel.max_messages}</span>
           )}
+          {channel.hold && <span className="channel-hold">hold</span>}
         </div>
       </div>
+
+      {channel.hold && (
+        <ReleaseForm
+          channelName={channel.name}
+          onReleased={() => setReloadKey((k) => k + 1)}
+        />
+      )}
 
       <PublishForm
         channelName={channel.name}
@@ -401,6 +410,69 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+// ReleaseForm is the operator's breakpoint step on a hold: channel: hand the
+// oldest N held messages to whatever is subscribed. Rendered only when the
+// channel is declared hold — on any other channel there is nothing to release.
+function ReleaseForm({
+  channelName,
+  onReleased,
+}: {
+  channelName: string;
+  onReleased: () => void;
+}) {
+  const [count, setCount] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<{ released: number; held: number } | null>(
+    null,
+  );
+
+  const submit = async () => {
+    setErr(null);
+    setResult(null);
+    const n = parseInt(count.trim() || "1", 10);
+    if (!Number.isInteger(n) || n <= 0) {
+      setErr("count must be a positive integer.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await releaseChannel(channelName, n);
+      setResult({ released: r.released_count, held: r.still_held });
+      onReleased();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="channel-detail-section">
+      <h4>Release (held)</h4>
+      <label className="modal-field">
+        <span>count</span>
+        <input
+          type="number"
+          min="1"
+          value={count}
+          onChange={(e) => setCount(e.target.value)}
+        />
+      </label>
+      <button type="button" onClick={submit} disabled={busy}>
+        {busy ? "Releasing…" : "Release"}
+      </button>
+      {err && <div className="error-banner">{err}</div>}
+      {result && (
+        <div className="flash-ok">
+          Released {result.released} message{result.released === 1 ? "" : "s"};{" "}
+          {result.held} still held.
+        </div>
+      )}
     </div>
   );
 }

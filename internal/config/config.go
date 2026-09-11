@@ -2216,6 +2216,22 @@ type Channel struct {
 	// ACL allows) but may not publish regardless of Publisher value.
 	Publisher string `yaml:"publisher"`
 	Period    string `yaml:"period"`
+
+	// Hold turns the channel into a BREAKPOINT: a publish is stored but
+	// never delivered and never wakes a subscriber, until an operator (or
+	// an agent with publish rights) releases it — `Channel op=release`, or
+	// POST /v1/_channels/{name}/release.
+	//
+	// A held message keeps its TTL, so a hold never becomes a way to keep a
+	// message past the retention its publisher declared, and overflow trims
+	// the oldest exactly as on any other channel.
+	//
+	// Why an operator wants this: a workflow whose stages are wired through
+	// channels can be single-stepped by holding one of them — the wave
+	// upstream runs, its results queue, and nothing downstream starts until
+	// a human says go. Default false: every existing channel delivers as
+	// before.
+	Hold bool `yaml:"hold"`
 }
 
 // PeriodDuration parses Period as a Go time.Duration. Returns 0 + nil

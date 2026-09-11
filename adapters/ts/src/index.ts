@@ -286,6 +286,7 @@ export type {
   ChannelPeekResult,
   ChannelPublishResult,
   ChannelPurgeResult,
+  ChannelReleaseResult,
   ChannelScope,
   ChannelSubscribeResult,
   PeekChannelOptions,
@@ -301,6 +302,7 @@ export type {
   ChannelBroadcastResult,
   // Channel admin CRUD (v0.11.5)
   CreateChannelOptions,
+  ReleaseChannelOptions,
   UpdateChannelOptions,
   // Memory entry admin CRUD (v0.11.5)
   SetMemoryEntryOptions,

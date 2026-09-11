@@ -431,7 +431,7 @@ func TestCodeJS_ReplayDivergence_FailsLoud(t *testing.T) {
 // canary that catches a regression to a hardcoded subset OR an op whose name
 // collides with a reserved JS property).
 var memoryOpsMirror = []string{"get", "set", "delete", "list", "incr", "search", "merge", "append_dedupe", "bounded_list", "add", "recall"}
-var channelOpsMirror = []string{"publish", "subscribe", "ack", "peek", "list_channels"}
+var channelOpsMirror = []string{"publish", "subscribe", "ack", "peek", "release", "list_channels"}
 
 // Meta-tool op drift: every op the Memory/Channel tools accept must be
 // reachable from code-js as Memory.<op>(...) / Channel.<op>(...), and none may

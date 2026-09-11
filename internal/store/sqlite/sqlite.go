@@ -393,6 +393,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			max_messages INTEGER NOT NULL DEFAULT 0,
 			publisher    TEXT    NOT NULL DEFAULT '',
 			period       TEXT    NOT NULL DEFAULT '',
+			hold         INTEGER NOT NULL DEFAULT 0,
 			created_at   INTEGER NOT NULL,
 			tenant_id    TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY (tenant_id, name)
@@ -1060,6 +1061,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE channel_messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE channel_cursors ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE channels ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// RFC CY: a held channel stores without delivering until a
+		// release. Mirrors postgres migration 0075. Idempotent ALTER for
+		// existing DBs; the CREATE TABLE above already declares it.
+		`ALTER TABLE channels ADD COLUMN hold INTEGER NOT NULL DEFAULT 0`,
 		// v0.9.x content_sha256 — see internal/store/postgres/migrations/
 		// 0018_agent_defs_content_sha256.up.sql for the rationale. NULL
 		// until the boot-time backfill walks pre-migration rows.
@@ -5499,6 +5504,92 @@ func (s *Store) ChannelSubscribe(ctx context.Context, tenantID, channel string, 
 func (s *Store) ChannelPeek(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, error) {
 	msgs, _, err := s.channelRead(ctx, tenantID, channel, scope, scopeID, fromCursor, limit)
 	return msgs, err
+}
+
+// ChannelRelease makes the `count` oldest held messages deliverable now.
+//
+// BEGIN IMMEDIATE, not a deferred transaction: this reads the held set and
+// then writes it, and a deferred txn takes the write lock only at the UPDATE
+// — two concurrent releases would both read the same ids and the second's
+// upgrade could fail busy. Same pattern, and the same reason, as
+// MemoryIncrement.
+//
+// The UPDATE re-states the held predicate so a row another releaser already
+// took can never be released twice, whatever the isolation level does.
+func (s *Store) ChannelRelease(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID string, count int) ([]string, int, error) {
+	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
+	if count <= 0 {
+		count = 1
+	}
+	now := time.Now()
+	nowNs := now.UnixNano()
+	heldNs := store.ChannelHeldVisibleAt().UnixNano()
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, 0, fmt.Errorf("channel release begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	rows, err := conn.QueryContext(ctx,
+		`SELECT id FROM channel_messages
+		  WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
+		    AND visible_at = ?
+		    AND (expires_at IS NULL OR expires_at > ?)
+		  ORDER BY id ASC
+		  LIMIT ?`,
+		tenantID, channel, string(scope), scopeID, heldNs, nowNs, count)
+	if err != nil {
+		return nil, 0, fmt.Errorf("channel release select: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, err
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		if _, err := conn.ExecContext(ctx,
+			`UPDATE channel_messages SET visible_at = ? WHERE id = ? AND visible_at = ?`,
+			nowNs, id, heldNs); err != nil {
+			return nil, 0, fmt.Errorf("channel release update: %w", err)
+		}
+	}
+
+	var stillHeld int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM channel_messages
+		  WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
+		    AND visible_at = ?
+		    AND (expires_at IS NULL OR expires_at > ?)`,
+		tenantID, channel, string(scope), scopeID, heldNs, nowNs).Scan(&stillHeld); err != nil {
+		return nil, 0, fmt.Errorf("channel release remaining: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return nil, 0, fmt.Errorf("channel release commit: %w", err)
+	}
+	committed = true
+	return ids, stillHeld, nil
 }
 
 func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
