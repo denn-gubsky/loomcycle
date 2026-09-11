@@ -111,9 +111,14 @@ func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name,
 // (operator-global, so every tenant sees it), then the tenant's runtime row.
 //
 // A store fault answers false: an unreachable definition plane must not start
-// holding a channel nobody declared held. Mirrors (*http.Server).ChannelHeld,
-// which the in-process publishers use; the receiver has its own because it
-// holds a narrow store interface rather than the server.
+// holding channels nobody declared held. The choice is nearly moot in practice
+// — the publish on the next line uses the SAME store, so a fault here means the
+// message is not written either — and "don't invent a hold" is the safer
+// default for a transient error. A yaml-declared hold never touches the store
+// at all.
+//
+// Mirrors (*http.Server).ChannelHeld, which the in-process publishers use; the
+// receiver has its own because it holds a narrow store interface, not a server.
 func (rec *Receiver) channelHeld(ctx context.Context, tenantID, channel string) bool {
 	if rec.cfg != nil {
 		if def, ok := rec.cfg.Channels[channel]; ok {
