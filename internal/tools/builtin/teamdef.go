@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -113,6 +114,29 @@ type TeamDef struct {
 	// is omitted from the report rather than reported as failing.
 	AgentExists func(ctx context.Context, name string) bool
 
+	// WalkRun, if set, gives an op=run walk its OWN run: a session, a `runs`
+	// row, a run id on ctx, and the Interruption policy the pause machinery
+	// needs. It returns the walk's ctx, the run id, and the finish to call when
+	// the walk ends.
+	//
+	// WHY A WALK IS A RUN. Everything that makes a walk observable or
+	// controllable from outside is addressed by run id — the breakpoint set,
+	// the Interruption ask a pause is answered through, cancel, the event
+	// stream. A walk that had no run had no handle, so none of them could reach
+	// it. That was not a gap in any one of them; it was the walk not being a
+	// first-class unit of work.
+	//
+	// It also fixes the thing no amount of endpoint-adding could: over HTTP,
+	// op=run is synchronous, so a caller learned nothing until the walk was
+	// over. With a run and `mode:"detach"` the run id comes back immediately
+	// and the caller holds a handle WHILE the walk runs, which is what a
+	// debugger needs and what live status will need next.
+	//
+	// nil = the walk runs under the caller's own ctx (an in-band agent run
+	// already has a run id; a direct API call gets none, and its breakpoints
+	// are unaddressable — the behaviour before this existed).
+	WalkRun func(ctx context.Context, teamName string, detach bool) (walkCtx context.Context, runID string, finish func(error), err error)
+
 	// LiveBreakpoints, if set, opens the MUTABLE armed set for this run's walk,
 	// seeded with the run argument, and returns it plus the release to call when
 	// the walk ends.
@@ -158,7 +182,8 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`(success to advance, pushback to loop back for rework) — output threads to the next state, until a ` +
 	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
 	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
-	`instead of aborting. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
+	`instead of aborting. A run is a first-class unit of work: it gets its own run_id (returned either way), so it can be ` +
+	`addressed while it runs — mode=detach returns that id immediately instead of waiting for the walk. create and fork PREFLIGHT a definition's channel references — a channel the team's own ACL ` +
 	`does not grant, or one that is not declared at all, is refused with the exact block to add, rather than ` +
 	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
@@ -197,6 +222,7 @@ const teamDefInputSchema = `{
     "board_chunk_id": {"type": "string", "description": "run (optional): bind the walk to a Document chunk task board. Each state transition persists chunk.status = the current team state (durable progress), and a later run RESUMES from the persisted status. Omit for an ephemeral run (default)."},
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
+    "mode":             {"type": "string", "enum": ["detach"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. Either way the response carries run_id."},
     "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"review\" pauses both phases, \"review:before_dispatch\" or \"review:after_collection\" pauses one. At before_dispatch the wave is composed but nothing has run; at after_collection the runs are done but nothing has reached the sink. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS."}
   },
   "required": ["op"]
@@ -219,6 +245,7 @@ type teamDefInput struct {
 	BoardScope     string          `json:"board_scope,omitempty"`      // run: board_chunk_id's Document scope (agent|user, default user)
 	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"` // run: escalate an iteration cap to a human instead of aborting
 	Breakpoints    []string        `json:"breakpoints,omitempty"`      // run: starter states to pause at (debug mode)
+	Mode           string          `json:"mode,omitempty"`             // run: "" (wait for the walk) | "detach" (return the run id now)
 }
 
 // Name implements tools.Tool.
@@ -810,6 +837,28 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}
 	}
 
+	detach := in.Mode == "detach"
+	if in.Mode != "" && !detach {
+		return errResult(fmt.Sprintf("run: unknown mode %q (only \"detach\")", in.Mode)), nil
+	}
+	// The walk becomes a RUN — after admission, so a refused request never
+	// mints a row. From here on walkCtx carries the run id, which is what makes
+	// the walk addressable: breakpoints, the Interruption ask a pause is
+	// answered through, and cancel all key on it.
+	runID := ""
+	finishRun := func(error) {}
+	if t.WalkRun != nil {
+		var werr error
+		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, row.Name, detach)
+		if werr != nil {
+			return errResult(fmt.Sprintf("run: %s", werr)), nil
+		}
+	} else if detach {
+		// Refused, not silently run inline: a caller that asked for a handle
+		// and got a completed walk instead has no way to notice.
+		return errResult("run: mode=detach requires run tracking, which is not wired on this server"), nil
+	}
+
 	task := &teamrun.Task{Input: in.Input}
 
 	// Assemble walk options. When neither feature is used, opts is empty and Walk
@@ -915,12 +964,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	//
 	// An empty set answers false for every state, so a walk nobody arms takes
 	// the same path it took before any of this existed.
+	releaseBreakpoints := func() {}
 	if t.AskHuman != nil {
-		src, release, serr := t.openBreakpoints(ctx, in.Breakpoints)
+		// Opened on the WALK ctx, which now carries the run id — that is the key
+		// the arming endpoint addresses. Opening it on the caller's ctx would
+		// register the set under whatever run the CALLER is in, or under none.
+		src, release, serr := t.openBreakpoints(walkCtx, in.Breakpoints)
 		if serr != nil {
 			return errResult(fmt.Sprintf("run: %s", serr)), nil
 		}
-		defer release()
+		// NOT a defer: a detached walk outlives this function, and releasing
+		// here would unregister the armed set the moment the caller got its run
+		// id back — leaving a running walk nobody could arm.
+		releaseBreakpoints = release
 		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(src,
 			func(c context.Context, bp teamrun.Breakpoint) (teamrun.BreakDecision, error) {
 				breaks++
@@ -949,7 +1005,36 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if t.MaxWave > 0 {
 		runnerOpts = append(runnerOpts, teamrun.WithMaxWave(t.MaxWave))
 	}
-	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn, runnerOpts...), opts...)
+	runner := teamrun.NewAgentRunner(t.Spawn, runnerOpts...)
+	walk := func() ([]teamrun.StepRecord, error) {
+		defer releaseBreakpoints()
+		trace, werr := teamrun.Walk(walkCtx, def, task, runner, opts...)
+		finishRun(werr)
+		return trace, werr
+	}
+
+	if detach {
+		// The caller gets its handle NOW and the walk continues behind it. This
+		// is the whole point of the mode: a synchronous op=run tells the caller
+		// nothing until it is over, so there is no moment at which it can arm a
+		// breakpoint, read a pause, or watch progress.
+		//
+		// walkCtx is already detached from the request by WalkRun, so the walk
+		// survives this handler returning; only cancel stops it.
+		go func() {
+			if _, werr := walk(); werr != nil {
+				log.Printf("teamdef: detached walk %q (run %s): %v", row.Name, runID, werr)
+			}
+		}()
+		return okJSON(map[string]any{
+			"name":   row.Name,
+			"def_id": row.DefID,
+			"run_id": runID,
+			"status": "running",
+		})
+	}
+
+	trace, walkErr := walk()
 
 	steps := make([]map[string]any, 0, len(trace))
 	for _, s := range trace {
@@ -966,6 +1051,12 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// the relevant feature was used, keeping the default ephemeral response shape
 	// byte-identical for existing callers.
 	annotate := func(m map[string]any) map[string]any {
+		if runID != "" {
+			// Reported on the synchronous path as well: a caller holding a
+			// second connection can still arm this walk while it runs, and the
+			// id is what every run surface keys on afterwards.
+			m["run_id"] = runID
+		}
 		if boardBound {
 			m["board_chunk_id"] = in.BoardChunkID
 			m["board_scope"] = boardScope
