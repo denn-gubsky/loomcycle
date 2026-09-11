@@ -1479,6 +1479,18 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	now := time.Now().UnixNano()
 	docID := newDocID()
+	// THE ONTOLOGY GATE APPLIES HERE TOO, now that a root can be an entity. It used
+	// to live on upsert_chunk alone, which was the only way to make one; a
+	// subject-homed store creates its entities through create_document, so leaving
+	// the gate behind would let any caller mint an entity of an undeclared kind
+	// simply by creating a document — curation (RFC CA) bypassed by a different op.
+	//
+	// Gated BEFORE the document exists, so a refusal leaves nothing behind.
+	if strings.TrimSpace(in.Subject) != "" && strings.TrimSpace(in.NaturalKey) != "" {
+		if refused := d.gateEntityType(ctx, in); refused != nil {
+			return *refused, nil
+		}
+	}
 	rootID := newDocID()
 	// type/status are set on the root chunk (the authoritative kind/state) AND
 	// mirrored to the documents row (the denormalized copy query_documents /

@@ -679,6 +679,7 @@ agents:
           // Next pass will try again; within a pass, once is enough.
           judge_attempted: {},
           entity_failed: 0,         // entity writes that failed (k/v still landed)
+          subject_docs: {},        // scope+slug -> {doc, root} for /facts/<slug>
           fact_no_subject: 0,       // facts chunked with no subject node (extractor named none)
           type_absent: 0,           // subjects filed under the fallback because no type was given
           entity_type_refused: 0,   // typed facts whose type was a statement class
@@ -2476,6 +2477,59 @@ agents:
         return "";
       }
 
+      // subjectDoc resolves — creating on first sight — the DOCUMENT that IS a
+      // subject: `/facts/<subject-slug>`, whose root chunk is the entity node
+      //. Returns {doc, root}, or null when it cannot be had.
+      //
+      // WHY A DOCUMENT PER SUBJECT rather than one shared entity document: it makes
+      // "what do we know about X" a single get_document instead of a search or a
+      // traversal, and `path op=ls /facts` a real entity directory. The facts are
+      // the document's children, so the answer is a read of one tree.
+      //
+      // THE PATH CARRIES IDENTITY ONLY — `/facts/denn`, never `/facts/person/denn`
+      //. Type is MUTABLE: on one measured run the extractor proposed a
+      // different kind for an already-filed subject 91 times. With the type in the
+      // path every re-type would be a document MOVE, and the type would live in two
+      // places that can disagree. It stays a chunk field, where canonicalType
+      // already arbitrates it.
+      //
+      // The memo is keyed on the slug alone for the same reason: one subject is one
+      // document however its kind is spelled this pass.
+      function subjectDoc(st, scope, subjType, subjName) {
+        var slug8 = slug(normalizeSubject(subjName));
+        if (!slug8) { return null; }
+        var memo = scope + "\u0000" + slug8;
+        if (st.subject_docs[memo] !== undefined) { return st.subject_docs[memo]; }
+        var path = "/facts/" + slug8;
+        var out = null;
+        try {
+          var got = JSON.parse(Document({ op: "get_document", scope: scope, path: path }));
+          if (got && got.document_id && got.root_chunk_id) {
+            out = { doc: got.document_id, root: got.root_chunk_id };
+          }
+        } catch (e) { /* not there yet — created below */ }
+        if (!out) {
+          try {
+            var made = JSON.parse(Document({
+              op: "create_document", scope: scope, title: subjName, path: path,
+              // The pair PLUS the key is what makes the root the entity itself
+              // rather than a container holding one.
+              type: subjType, subject: subjName,
+              natural_key: entityKey(subjType, subjName)
+            }));
+            if (made && made.document_id && made.root_chunk_id) {
+              out = { doc: made.document_id, root: made.root_chunk_id };
+              st.entity_nodes++;
+            }
+          } catch (e2) {
+            st.entity_failed++;
+            if (!st.entity_error) { st.entity_error = errText(e2); }
+          }
+        }
+        st.subject_docs[memo] = out;
+        return out;
+      }
+
       // nonEmpty reports a USABLE string field — present, a string, and not merely
       // whitespace. The extractor omits a key, sends null, and sends "" for the same
       // "I do not know", so all three have to read the same way.
@@ -2538,6 +2592,11 @@ agents:
         var docID = entitiesDoc(st, scope);
         if (!docID) { return false; }
 
+        // homeDoc is the document the fact is filed in: its SUBJECT's, when it has
+        // one. A fact naming nobody keeps the shared entity document — it has no
+        // subject to be homed under, and inventing one is the thing mirrorEntity
+        // refuses to do.
+        var homeDoc = docID;
         var subjID = "";
         if (nonEmpty(fact.subject)) {
           // A statement class is not an entity type — "preference:user" reads as "the entity
@@ -2561,10 +2620,8 @@ agents:
           // subject is one node however many ways the extractor spells its kind.
           var subjType = canonicalType(st, scope, proposed, fact.subject);
           var subjKey = entityKey(subjType, fact.subject);
-          var isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
-          subjID = upsertEntityChunk(st, scope, docID, subjKey, {
-            title: fact.subject, type: subjType, subject: fact.subject
-          });
+          var home = subjectDoc(st, scope, subjType, fact.subject);
+          if (home) { homeDoc = home.doc; subjID = home.root; }
           // UNDECLARED TYPE: the write was refused because the tenant does not declare this
           // kind. File the kind as an inert candidate an operator can accept, then retry under
           // the fallback — the key has to move with the type, since the type is part of a
@@ -2576,16 +2633,17 @@ agents:
             st.subject_types[scope + "\u0000" + slug(normalizeSubject(fact.subject))] = ENTITY_FALLBACK_TYPE;
             subjType = ENTITY_FALLBACK_TYPE;
             subjKey = entityKey(subjType, fact.subject);
-            isNewSubject = !st.entity_ids[scope + "\u0000" + subjKey];
-            subjID = upsertEntityChunk(st, scope, docID, subjKey, {
-              title: fact.subject, type: subjType, subject: fact.subject
-            });
+            // The identity PATH does not move — only the kind changes — so this
+            // retries the same /facts/<slug> document under a type the tenant
+            // declares. The memo is dropped so the retry is actually attempted.
+            delete st.subject_docs[scope + "\u0000" + slug(normalizeSubject(fact.subject))];
+            var retry = subjectDoc(st, scope, subjType, fact.subject);
+            if (retry) { homeDoc = retry.doc; subjID = retry.root; }
           }
           // A REFUSED subject write no longer costs the fact its chunk either. The
           // existing safety property is that a graph failure degrades to "no edge" and
           // never to "no fact"; once the chunk is the fact's home, that property has to
           // cover the chunk and not just the k/v row.
-          if (subjID && isNewSubject) { st.entity_nodes++; }
         } else {
           st.fact_no_subject++;
         }
@@ -2627,7 +2685,10 @@ agents:
         // erasure report keys on it — without it a placed fact cannot be surfaced as
         // residue for the subject who produced it.
         if (sourceID) { factArgs.source_session_id = sourceID; }
-        var factID = upsertEntityChunk(st, scope, docID, key, factArgs);
+        // FILED UNDER ITS SUBJECT. No parent_id: create_chunk makes a chunk with
+        // none a child of the document's root, which IS the entity — so the fact
+        // becomes a child of the thing it is about, and the dossier is one read.
+        var factID = upsertEntityChunk(st, scope, homeDoc, key, factArgs);
         if (!factID) { return false; }
         st.entity_facts++;
 
