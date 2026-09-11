@@ -74,7 +74,19 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// the k/v plane through create_chunk when it is new and through the entity body
 	// writer when it already exists; stamping only one of those would leave the
 	// discriminator depending on whether a fact had been seen before.
+	//
+	// A drained pending row, when the caller named one, OVERRIDES the ambient
+	// attribution — the same override the k/v path applies, and for the same reason:
+	// a server-recorded producer beats an ambient guess. It also fills session_id,
+	// which had NO writer in this plane at all, because the run id is on the context
+	// and the session id is not.
 	in.bodyOrigin = originForEntityWrite(ctx)
+	if prov, ok := d.resolveChunkPending(ctx, mscope, key.ScopeID, in.FromPending); ok {
+		if prov.Origin != "" {
+			in.bodyOrigin = prov.Origin
+		}
+		in.pendingProv = &prov
+	}
 
 	if existing == "" {
 		// Delegate the INSERT to create_chunk rather than writing a second insert
@@ -575,6 +587,19 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 	if runID == "" {
 		runID = prev.RunID
 	}
+	// The pending row WINS over the ambient run context when the caller attributed
+	// this write to one: it names the run and session the fact was distilled FROM,
+	// which is the source reference, whereas the ctx run id is merely the run doing
+	// the writing. sessionID has no other writer in this plane at all.
+	sessionID := prev.SessionID
+	if in.pendingProv != nil {
+		if in.pendingProv.SourceRunID != "" {
+			runID = in.pendingProv.SourceRunID
+		}
+		if in.pendingProv.SourceSessionID != "" {
+			sessionID = in.pendingProv.SourceSessionID
+		}
+	}
 	naturalKey := in.NaturalKey
 	if naturalKey == "" {
 		naturalKey = prev.NaturalKey
@@ -608,11 +633,11 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by, observed_at, access_count, last_accessed_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunkID, int64Arg(validAt), invalidAt, createdAt, expiredAt, class,
-		originForEntityWrite(ctx), confidence,
+		originForEntityWriteWith(ctx, in), confidence,
 		// session_id has no writer yet: it is not on the run ctx, only the run id is.
 		// Preserved rather than nulled so the consolidation path — which CAN fill it
 		// when it relays a drained pending row — does not lose it to the next upsert.
-		nullIfEmpty(prev.SessionID), nullIfEmpty(runID), int64Arg(prev.EventSeq),
+		nullIfEmpty(sessionID), nullIfEmpty(runID), int64Arg(prev.EventSeq),
 		nullIfEmpty(naturalKey), nullIfEmpty(sourceQuote), nullIfEmpty(subject),
 		judgedAt, nullIfEmpty(judgeReason), nullIfEmpty(judgedBy),
 		int64Arg(observedAt),
@@ -671,9 +696,65 @@ func asFloat64Ptr(v any) *float64 {
 // originForEntityWrite decides the provenance label from the RUN, never the input.
 // A write arriving with no run id is an operator acting by hand (the MCP/off-run
 // plane); one inside a run is an agent.
+// resolveChunkPending reads the provenance the server recorded on a drained
+// pending row. A miss is SILENT and the write still succeeds, matching Memory set:
+// an unknown or unowned id must not cost a fact its write, and distinguishing "no
+// such row" from "not yours" would leak which ids exist.
+//
+// The cross-scope retry is the one the k/v path already needs, for the same
+// measured reason: a consolidation pass drains the queue in the USER scope and,
+// when the ontology declares the fact's type shared, writes the fact to the TENANT
+// scope — so the primary lookup misses and the placed fact lands with no
+// server-stamped origin and no session id. NOT an authorization widening: the
+// fallback tuple is built from the run's OWN identity, never from caller input.
+func (d *Document) resolveChunkPending(ctx context.Context, scope store.MemoryScope, scopeID, pendingID string) (store.MemoryProvenance, bool) {
+	if pendingID == "" || d.Store == nil {
+		return store.MemoryProvenance{}, false
+	}
+	ident := tools.RunIdentity(ctx)
+	row, err := d.Store.MemoryPendingGet(ctx, ident.TenantID, scope, scopeID, pendingID)
+	if err != nil && ident.UserID != "" && !(scope == store.MemoryScopeUser && scopeID == ident.UserID) {
+		row, err = d.Store.MemoryPendingGet(ctx, ident.TenantID, store.MemoryScopeUser, ident.UserID, pendingID)
+	}
+	if err != nil {
+		return store.MemoryProvenance{}, false
+	}
+	return store.MemoryProvenance{
+		Origin:          row.Origin,
+		SourceSessionID: row.SourceSessionID,
+		SourceRunID:     row.SourceRunID,
+	}, true
+}
+
+// originForEntityWriteWith is originForEntityWrite with the server's resolution of
+// a drained pending row layered on top, so the SIDECAR and the BODY row agree about
+// who wrote the fact. They are two halves of one record; disagreeing would make a
+// fact's provenance depend on which half a reader consulted.
+func originForEntityWriteWith(ctx context.Context, in docInput) string {
+	if in.pendingProv != nil && in.pendingProv.Origin != "" {
+		return in.pendingProv.Origin
+	}
+	return originForEntityWrite(ctx)
+}
+
 func originForEntityWrite(ctx context.Context) string {
 	if tools.RunID(ctx) == "" {
 		return "operator"
+	}
+	// A CONSOLIDATION PASS SAYS SO, exactly as the k/v path does. provenanceForSet
+	// stamps `consolidator` when the run holds the Consolidation memory policy, and
+	// this used to check only that a run existed — so the same distillation landed
+	// origin=consolidator on its k/v row and agent_explicit on its chunk. Harmless
+	// only while the k/v twin held the real answer; once the chunk is the fact's
+	// only home, every machine-distilled fact would claim to have been written by
+	// hand, and origin is the column that exists to say otherwise.
+	//
+	// The RUN requirement is the same safeguard and for the same measured reason:
+	// the operator planes hand out Consolidation alongside wildcard memory scopes
+	// and carry no run id, so keying on the grant alone would let any authenticated
+	// operator session mint facts that claim a machine distilled them.
+	if tools.MemoryPolicy(ctx).Consolidation {
+		return memoryOriginConsolidator
 	}
 	return "agent_explicit"
 }
