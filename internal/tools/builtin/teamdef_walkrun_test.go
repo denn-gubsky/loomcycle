@@ -232,9 +232,15 @@ func TestTeamDefTool_Run_WalkIDIsTheRunID(t *testing.T) {
 	rec := &walkRunRecorder{}
 	tool.WalkRun = rec.open
 
+	// WaveContext is called from EVERY dispatch goroutine, so the recorder has
+	// to be guarded — a fan-out fixture that collects unguarded is a data race
+	// the -race build catches and a plain run does not.
+	var mu sync.Mutex
 	var seenWalks []string
 	tool.WaveContext = func(c context.Context, walkID, waveID string, index int) context.Context {
+		mu.Lock()
 		seenWalks = append(seenWalks, walkID)
+		mu.Unlock()
 		return c
 	}
 
@@ -246,6 +252,8 @@ func TestTeamDefTool_Run_WalkIDIsTheRunID(t *testing.T) {
 	if runID == "" {
 		t.Fatal("no run_id on the response")
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(seenWalks) == 0 {
 		t.Fatal("no wave was dispatched — nothing stamped a walk id")
 	}
@@ -265,15 +273,20 @@ func TestTeamDefTool_Run_WalkIDFallsBackWhenThereIsNoRun(t *testing.T) {
 	defer done()
 	tool.WalkRun = nil
 
+	var mu sync.Mutex
 	var seen []string
 	tool.WaveContext = func(c context.Context, walkID, _ string, _ int) context.Context {
+		mu.Lock()
 		seen = append(seen, walkID)
+		mu.Unlock()
 		return c
 	}
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`))
 	if res.IsError {
 		t.Fatalf("run: %s", res.Text)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(seen) == 0 || seen[0] == "" {
 		t.Fatalf("spawned runs went unstamped with no run tracking: %v", seen)
 	}
