@@ -314,3 +314,45 @@ func TestTeamDefVerify_UndeployedTeamIsUnchanged(t *testing.T) {
 		t.Errorf("an undeployed team must not claim a runnable verdict: %v", out)
 	}
 }
+
+// TestTeamDefVerify_RetireNamesTheChannelsItReleased: retiring a subscribed
+// workflow stops it being driven, but a bare {def_id, retired} does not let the
+// operator SEE that. An unattended subscription is the failure this phase is
+// most likely to produce, so retire names the wires the team was on.
+func TestTeamDefVerify_RetireNamesTheChannelsItReleased(t *testing.T) {
+	tool, ctx, cleanup := teamDefFixture(t)
+	defer cleanup()
+	tool.ChannelCatalog = declared("pr-events", "verdicts")
+	actx := authoringCtx([]string{"verdicts"}, []string{"pr-events"})
+	created := createTeam(t, tool, actx, "triage", fullACL())
+	defID, _ := created["def_id"].(string)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","def_id":"`+defID+`","retired":true}`))
+	if res.IsError {
+		t.Fatalf("retire: %s", res.Text)
+	}
+	out := decodeResult(t, res.Text)
+	if out["retired"] != true {
+		t.Fatalf("retired = %v", out["retired"])
+	}
+	srcs, _ := out["sources_released"].([]any)
+	if len(srcs) != 1 || srcs[0] != "pr-events" {
+		t.Errorf("sources_released = %v, want [pr-events] — the SOURCE, not the sink", out["sources_released"])
+	}
+	// The sink is not a subscription and must not be reported as released.
+	if strings.Contains(res.Text, "verdicts") {
+		t.Errorf("retire named the sink channel; only sources are subscriptions: %s", res.Text)
+	}
+
+	// Un-retiring says the opposite thing under a different key — the same list
+	// with one name would need the caller to know the verb to read it.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"retire","def_id":"`+defID+`","retired":false}`))
+	out = decodeResult(t, res.Text)
+	if _, wrong := out["sources_released"]; wrong {
+		t.Error("un-retire reported sources_released")
+	}
+	resumed, _ := out["sources_resumed"].([]any)
+	if len(resumed) != 1 || resumed[0] != "pr-events" {
+		t.Errorf("sources_resumed = %v, want [pr-events]", out["sources_resumed"])
+	}
+}

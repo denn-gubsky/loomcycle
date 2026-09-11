@@ -160,6 +160,17 @@ type Server struct {
 	// the walk.
 	breakpointReg *breakpoints.Registry
 
+	// advisoryLock, when set, gates the team-subscription sweep so exactly one
+	// replica drives a given promoted team at a time. nil = single-process
+	// (or no Postgres): the sweep drives every team itself, which is correct
+	// for one replica and is why a single-node deployment needs no coordinator
+	// to run its workflows.
+	advisoryLock *coord.AdvisoryLock
+
+	// subBackoff holds off a subscribed team whose walk just failed, so a
+	// poison message cannot drive the same failure every tick.
+	subBackoff subscriptionBackoff
+
 	// residentReg maps a resident interactive sub-agent's run_id → its live
 	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
 	// drives Agent op=open/send/close + the idle sweeper + parent-teardown reap.
@@ -899,6 +910,11 @@ func (s *Server) SetScheduleDefTool(t tools.Tool) {
 // Connector.TeamDef + POST /v1/_teamdef + the LoomCycle MCP meta-tool all refuse
 // with "not configured". The tool only needs the store + byte caps, so it can be
 // constructed alongside ScheduleDef in main.go.
+// SetAdvisoryLock wires the cluster singleton coordinator used by the
+// team-subscription sweep. Mirrors the scheduler's SetFanoutCoordination:
+// optional, and absent means single-process.
+func (s *Server) SetAdvisoryLock(l *coord.AdvisoryLock) { s.advisoryLock = l }
+
 func (s *Server) SetTeamDefTool(t tools.Tool) {
 	// Wire execution into the tool: op=run walks a team's graph, spawning each
 	// state's agent via the same runSubAgent path the Agent tool uses — it

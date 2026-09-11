@@ -2934,6 +2934,24 @@ type Env struct {
 	// LOOMCYCLE_RESUME_FANOUT=1; should be on at BOTH the capturing and
 	// restoring instances for a cross-instance hand-off.
 	ResumeFanout bool
+	// TeamSubscriptions enables the armed-subscription sweep: a PROMOTED team
+	// whose entry state is a Starter is driven automatically when its source
+	// channel has work, with no human asking for each run.
+	//
+	// Default OFF, and this one earns the gate rather than inheriting it. It is
+	// the only part of the runtime that starts agent runs unprompted, so
+	// turning it on turns a definition plane into a spend commitment: every
+	// message on a subscribed source becomes a wave of agent runs. An operator
+	// should arrive at that deliberately. Unset, the sweep never ticks and a
+	// promoted team runs only when something asks it to — exactly as before.
+	//
+	// LOOMCYCLE_TEAM_SUBSCRIPTIONS=1.
+	TeamSubscriptions bool
+	// TeamSubscriptionsTickSeconds is how often the sweep looks for work.
+	// 0 = the code default (15s). The tick is the worst-case latency between a
+	// message landing on a source and its wave starting; it is not a poll of
+	// every channel, but one peek per subscribed team.
+	TeamSubscriptionsTickSeconds int
 	// MaxInteractiveChildren caps how many resident interactive sub-agents (RFC
 	// BK Agent op=open) one run may hold open at once. 0 = the code default (8).
 	// Exceeding it fails op=open (the parent must close one first).
@@ -3937,6 +3955,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ProvisionIdentityDocs:       getenvBool("LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", true),
 		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		ResumeFanout:                os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
+		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
 		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
@@ -4581,6 +4600,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SCHEDULER_TICK_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.SchedulerTickSeconds = n
+		}
+	}
+	// RFC CY L5: the armed-subscription sweep. Default 15s — the worst-case
+	// latency between a message landing on a subscribed source and its wave
+	// starting. Only read when TeamSubscriptions is on.
+	cfg.Env.TeamSubscriptionsTickSeconds = 15
+	if v := os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.TeamSubscriptionsTickSeconds = n
 		}
 	}
 	cfg.Env.SchedulerFireTimeoutSeconds = 600

@@ -1426,6 +1426,34 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   `LOOMCYCLE_SKILLS_ROOT`. A bundle may also ship pure *declarations* rather
   than agents — `system-channels` is one.
 
+### Armed subscriptions — a promoted team that runs itself
+
+`LOOMCYCLE_TEAM_SUBSCRIPTIONS=1` (default **off**) drives a **promoted** team
+whose entry state is a `starter`: when its source channel has work, the walk
+starts, with nobody asking for it.
+
+⚠️ **This is the only part of the runtime that starts agent runs unprompted.**
+Turning it on turns the definition plane into a spend commitment — every message
+on a subscribed source becomes a wave of agent runs. Arrive at it deliberately.
+
+- **Promote arms, retire disarms.** There is no arming bookkeeping: each tick
+  asks the store what is promoted, so a retired, deleted or unpromoted team is
+  simply not in the answer — nothing to leak, nothing to reconcile after a
+  crash. `TeamDef op=retire` reports `sources_released` so you can see which
+  wires the workflow was reading.
+- **The source must be `scope: tenant` or `scope: global`.** A sweep has no user
+  and no agent, so an `agent`- or `user`-scoped source is refused rather than
+  guessed at — picking one of its per-user queues would silently drive one and
+  let every other accumulate.
+- **One replica at a time.** Cluster deployments gate each team behind a
+  Postgres advisory lock held for the whole walk, so two replicas never dispatch
+  the same wave concurrently. Single-replica needs no coordinator.
+- **A failing walk backs off** (exponential, capped at 10 minutes, cleared by a
+  success). A failed walk does not ack its source, so without this a poison
+  message would drive the same failure every tick.
+- `LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS` (default 15) is the worst-case
+  latency between a message landing and its wave starting.
+
 **`system-channels` — the runtime's own `_system/*` channels.** Declares the
 five a workflow can actually read, so a Starter can source a clock or an
 interruption feed without hand-written yaml:
