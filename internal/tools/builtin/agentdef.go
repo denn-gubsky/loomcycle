@@ -677,14 +677,70 @@ func (a *AgentDef) checkScopeForName(policy tools.AgentDefPolicyValue, name, _ s
 			// for the pinned-but-undesired current behaviour.
 			return nil
 		default:
-			if strings.HasPrefix(sc, "named:") {
-				if strings.TrimPrefix(sc, "named:") == name {
+			if pat, ok := strings.CutPrefix(sc, "named:"); ok {
+				if matchNamedScope(pat, name) {
 					return nil
 				}
 			}
 		}
 	}
 	return fmt.Errorf("AgentDef tool: name %q not in this agent's agent_def_scopes (%v)", name, policy.Scopes)
+}
+
+// matchNamedScope matches a `named:<pattern>` grant against an agent name.
+//
+// Agent names are a SEGMENTED path grammar (agents.ValidateName splits on "/"
+// and validates each segment), so a grant should be able to speak in segments
+// too. Exact match still works; the two wildcards are path-style, familiar from
+// gitignore:
+//
+//	named:sdlc          → sdlc                        (exact, unchanged)
+//	named:sdlc/*        → sdlc/review                 but NOT sdlc/review/sec
+//	named:sdlc/**       → sdlc/review AND sdlc/review/sec
+//	named:sdlc/review/* → sdlc/review/sec only
+//
+// WHY IT EXISTS. A team-scoped meta-agent authors clones under a `<team>/`
+// prefix, and those names do not exist when the grant is written — with exact
+// match only, the convention is useless for authority and an operator must
+// either enumerate names that do not exist yet or fall back to `any`.
+//
+// WHY WIDENING THE GATE IS SAFE. A glob only ever expands what an OPERATOR
+// explicitly wrote in a def, so it grants nothing an operator could not grant by
+// enumeration — it removes the requirement to enumerate the unknowable. And
+// ValidateName REFUSES `*` and `?` in a name, so a pattern can never be confused
+// for a literal name and no existing name can accidentally match as a glob.
+// That property is what makes this a safe addition rather than a new surface.
+//
+// `*` matches exactly ONE segment, so an operator can grant one level without
+// granting the subtree — which a flat prefix match cannot express, and which is
+// the whole reason for having two wildcards.
+func matchNamedScope(pattern, name string) bool {
+	if pattern == name {
+		return true
+	}
+	if !strings.Contains(pattern, "*") {
+		return false // exact-only pattern, already compared
+	}
+	pseg := strings.Split(pattern, "/")
+	nseg := strings.Split(name, "/")
+	for i, p := range pseg {
+		if p == "**" {
+			// Matches all REMAINING segments — but at least one, so `sdlc/**`
+			// grants the subtree without granting `sdlc` itself. A grant on the
+			// parent is `named:sdlc`, and conflating the two would hand out an
+			// agent the operator did not name.
+			return i < len(nseg) && i == len(pseg)-1
+		}
+		if i >= len(nseg) {
+			return false
+		}
+		if p != "*" && p != nseg[i] {
+			return false
+		}
+	}
+	// Every pattern segment matched; the name must not have more left over, or
+	// `sdlc/*` would match `sdlc/review/sec` and silently grant the subtree.
+	return len(nseg) == len(pseg)
 }
 
 // buildDefinition takes the base definition (parent's JSON for fork;
@@ -716,9 +772,40 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := json.Unmarshal(overlay, &ov); err != nil {
 			return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
 		}
+		if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
+}
+
+// validateOverlayNamedScopes applies the operator-yaml rule for
+// `named:<pattern>` grants to the SUBSTRATE write path, where one agent
+// authors another's def.
+//
+// The two planes have to agree. Operator yaml refuses a bare `named:**` (it
+// grants every name at that depth) and a pattern the matcher can never match;
+// without the same check here, an operator who learned the rule from a boot
+// error finds the runtime path quietly keeping a different one.
+//
+// It checks only what the CALLER supplied, never what a parent def already
+// carried: refusing on an inherited value would brick forking a def that
+// predates this rule, and this validates authoring, not history. Scope strings
+// that are not `named:` are left alone — widening validation to the whole
+// closed set would start refusing typos that today round-trip harmlessly as
+// default-deny, which is a separate decision from this one.
+func validateOverlayNamedScopes(scopes []string) error {
+	for _, sc := range scopes {
+		pat, ok := strings.CutPrefix(sc, "named:")
+		if !ok {
+			continue
+		}
+		if err := config.ValidateNamedScopePattern(pat); err != nil {
+			return fmt.Errorf("agent_def_scopes: %w", err)
+		}
+	}
+	return nil
 }
 
 // resolveToolsRoot returns the operator-blessed Tools

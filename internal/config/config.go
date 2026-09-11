@@ -5873,6 +5873,55 @@ var validHistoryScopes = map[string]bool{
 	"any":    true, // legacy alias for "global"
 }
 
+// ValidateNamedScopePattern checks the pattern half of a `named:<pattern>`
+// capability grant — the segment-glob matcher lives in the AgentDef tool
+// (matchNamedScope), and this is the shape it will accept.
+//
+// EVERY REFUSAL HERE IS A GRANT THAT WOULD NEVER FIRE, or one that fires far
+// wider than it reads. A pattern the matcher silently never matches is worse
+// than a boot error: the operator believes an authority was granted, and finds
+// out when the agent is refused at 3am.
+//
+// Exported because the substrate write path (an agent authoring another
+// agent's def) has to apply the same rule as operator yaml. A check that runs
+// on only one of the two planes teaches an operator a rule the other plane
+// does not keep.
+func ValidateNamedScopePattern(pattern string) error {
+	if pattern == "" {
+		return fmt.Errorf("agent_def_scopes: \"named:\" requires a non-empty name (e.g. \"named:coder\")")
+	}
+	// A BARE wildcard matches every name at that depth, which is so close to
+	// `any` that writing it is almost certainly a mistake rather than an
+	// intent — and an operator who does mean "everything" should say `any`,
+	// where it reads as the grant it is. Refused rather than warned: a log
+	// line at config load is not seen by the person editing the yaml.
+	if pattern == "*" || pattern == "**" {
+		return fmt.Errorf("agent_def_scopes: \"named:%s\" grants every agent name — write \"any\" if that is the intent, "+
+			"or scope the pattern (e.g. \"named:sdlc/**\")", pattern)
+	}
+	segs := strings.Split(pattern, "/")
+	for i, seg := range segs {
+		if !strings.Contains(seg, "*") {
+			continue
+		}
+		// A segment is either a literal or a whole wildcard. `sdlc*` reads like
+		// a prefix match and is not one — the matcher compares segments, so it
+		// would match only an agent literally named `sdlc*`, which
+		// agents.ValidateName forbids. Dead on arrival, so refuse it.
+		if seg != "*" && seg != "**" {
+			return fmt.Errorf("agent_def_scopes: \"named:%s\" — a wildcard must be a whole segment (%q is neither a literal name nor \"*\"/\"**\"); "+
+				"write \"named:sdlc/*\" for one level or \"named:sdlc/**\" for the subtree", pattern, seg)
+		}
+		// `**` means "all remaining segments", so anything after it can never
+		// be reached. `a/**/b` matches nothing at all today.
+		if seg == "**" && i != len(segs)-1 {
+			return fmt.Errorf("agent_def_scopes: \"named:%s\" — \"**\" matches all remaining segments, so it must be last; "+
+				"a pattern with segments after it can never match", pattern)
+		}
+	}
+	return nil
+}
+
 // validateAgentDefScope checks one entry in an agent's
 // agent_def_scopes list. Closed set:
 //
@@ -5889,12 +5938,8 @@ func validateAgentDefScope(sc string) error {
 	case "self", "descendants", "any":
 		return nil
 	}
-	if strings.HasPrefix(sc, "named:") {
-		ref := strings.TrimPrefix(sc, "named:")
-		if ref == "" {
-			return fmt.Errorf("agent_def_scopes: \"named:\" requires a non-empty name (e.g. \"named:coder\")")
-		}
-		return nil
+	if ref, ok := strings.CutPrefix(sc, "named:"); ok {
+		return ValidateNamedScopePattern(ref)
 	}
 	return fmt.Errorf("unknown scope %q (want one of: self, descendants, any, or \"named:<name>\")", sc)
 }
