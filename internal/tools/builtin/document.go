@@ -238,7 +238,12 @@ type docInput struct {
 	// chunk plane had no column for it at all — so a fact mirrored into the graph
 	// silently lost the one temporal field that is actually populated (measured
 	// 103/103 on a real corpus, against 27/103 for valid_at).
-	ObservedAt *int64   `json:"observed_at"`
+	ObservedAt *int64 `json:"observed_at"`
+	// bodyOrigin is the origin to stamp on this chunk's BODY row, threaded from
+	// the fact-tier write path. UNEXPORTED on purpose: origin names the writer, so
+	// a caller must not be able to claim one — an exported field would be settable
+	// from the tool's JSON input and the column would stop being trustworthy.
+	bodyOrigin string
 	Confidence *float64 `json:"confidence"`
 	// Class is 'derived' | 'evidential' — the retention-exemption signal.
 	Class string `json:"class"`
@@ -950,6 +955,28 @@ type chunkBody struct {
 }
 
 func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage) error {
+	return d.writeBodyAs(ctx, mscope, key, chunkID, chunkType, body, fields, "")
+}
+
+// writeBodyAs is writeBody with the row's ORIGIN — who produced this content.
+//
+// An ordinary document chunk passes "" and the row stays provenance-free, which is
+// what marks it as prose. An ENTITY write passes the same origin its sidecar
+// records, and that is the whole point: a fact's body row was previously
+// indistinguishable from a document's, because both are `doc.chunk:<hex>` keys with
+// an empty origin. Retrieval therefore had only the key prefix to go on, and the
+// key prefix says "chunk body", not "fact" — so `sources=documents` returned facts
+// and labelled them documents.
+//
+// It has to be ORIGIN rather than a new column. origin is already server-stamped
+// and deliberately absent from the `Memory set` input schema BECAUSE it names the
+// writer, so a caller cannot claim one; a fresh `row_class` column would add a
+// writer-forgot-to-set failure mode, which is the class of bug a derived
+// discriminator exists to avoid. And it cannot be a lookup: chunk_memory_meta lives
+// in SQL Memory — a DIFFERENT database from the k/v plane — so consulting it per
+// candidate would be a cross-database round trip from each of the four call sites
+// that label a row.
+func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string) error {
 	scopeID := key.ScopeID
 	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
@@ -957,7 +984,12 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, key 
 	// structure never drift across the tenant axis.
 	tenant := direntTenant(ctx)
 	bodyKey := chunkBodyKey(chunkID)
-	if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
+	if origin == "" {
+		if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
+			return err
+		}
+	} else if err := d.Store.MemorySetProvenance(ctx, tenant, mscope, scopeID, bodyKey, v, 0,
+		store.MemoryProvenance{Origin: origin}); err != nil {
 		return err
 	}
 	// The body is durable at this point. Embedding is a SEPARATE, best-effort
@@ -1954,7 +1986,7 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if insErr != nil {
 		return errResult("create_chunk: " + insErr.Error()), nil
 	}
-	if err := d.writeBody(ctx, mscope, key, id, in.Type, in.Body, in.Fields); err != nil {
+	if err := d.writeBodyAs(ctx, mscope, key, id, in.Type, in.Body, in.Fields, in.bodyOrigin); err != nil {
 		return errResult("create_chunk: body: " + err.Error()), nil
 	}
 	// Seed the body-change log at revision 1 (RFC BS Phase 3a) — the chunk's body
