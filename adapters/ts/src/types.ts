@@ -1497,6 +1497,13 @@ export interface TeamRunResult {
   name: string;
   def_id: string;
   status: string;
+  /** The walk's own run id. A team walk IS a run — it opens a `runs` row filed
+   *  under `team:<name>` — which is what makes it addressable while it runs:
+   *  {@link LoomcycleClient.setRunBreakpoints} arms it, `GET /v1/runs/{id}/
+   *  interrupts` carries a pause, and cancel stops it. Returned on the
+   *  synchronous path too, so a caller holding a second connection can debug a
+   *  walk it is waiting on. */
+  run_id?: string;
   final_state?: string;
   final_output?: string;
   capped_state?: string;
@@ -1504,6 +1511,61 @@ export interface TeamRunResult {
   iteration_count?: number;
   steps: Array<Record<string, unknown>>;
   [extra: string]: unknown;
+}
+
+/** What team {@link LoomcycleClient.runTeam} walks, and how. */
+export interface TeamRunTarget {
+  name?: string;
+  defId?: string;
+  /** The initial task handed to the entry state's agent. */
+  input?: string;
+  /** Bind the walk to a Document chunk task board: each state transition
+   *  persists `chunk.status` = the current team state, and every handler run
+   *  the walk spawns carries the task key on its `parent_context`. */
+  boardChunkId?: string;
+  /** The Document scope of `boardChunkId` (agent | user, default user). */
+  boardScope?: "agent" | "user";
+  /** "detach" returns the run id immediately and leaves the walk running
+   *  behind it. Omit to wait for the walk and get its trace — which still
+   *  returns `run_id`, so a second connection can debug a walk you await. */
+  mode?: "detach";
+  /** Starter state ids to pause at, armed before the walk starts. Each is
+   *  `"<state>"` (both phases) or `"<state>:before_dispatch"` /
+   *  `"<state>:after_collection"`.
+   *
+   *  A walk can also be armed AFTER it starts — see
+   *  {@link LoomcycleClient.setRunBreakpoints} — which is the case this
+   *  argument cannot serve: you start a run expecting it to work, watch a wave
+   *  go wrong, and want to stop before the next one. */
+  breakpoints?: string[];
+}
+
+/** What {@link LoomcycleClient.runTeam} returns for `mode: "detach"` — the
+ *  handle, immediately, with the walk still running behind it.
+ *
+ *  Detaching exists because op=run is otherwise SYNCHRONOUS: the caller learns
+ *  nothing until the walk is over, so there is no moment at which it can arm a
+ *  breakpoint, read a pause, or watch progress. There are no `steps` yet —
+ *  poll the run, or read its events, for those. */
+export interface TeamRunDetached {
+  name: string;
+  def_id: string;
+  /** Address every other run surface with this. */
+  run_id: string;
+  /** Always "running" — the walk has been started, not awaited. */
+  status: string;
+  [extra: string]: unknown;
+}
+
+/** The armed debug breakpoints of a live team walk, as
+ *  {@link LoomcycleClient.getRunBreakpoints} / {@link LoomcycleClient.setRunBreakpoints}
+ *  report them. */
+export interface TeamBreakpoints {
+  run_id: string;
+  /** Canonical: always phase-qualified (`"<state>:before_dispatch"`) and
+   *  sorted, so what you read back is what the walk will actually do rather
+   *  than an echo of the shorthand you sent. */
+  armed: string[];
 }
 
 /** Input for {@link LoomcycleClient.path} — the RFC AL Unix-like VFS tool

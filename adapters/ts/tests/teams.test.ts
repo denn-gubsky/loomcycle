@@ -271,3 +271,110 @@ describe("verifyTeam", () => {
     expect(res.matches).toBe(false);
   });
 });
+
+// ---- the debug surface: a walk is a run, and can be armed while it runs ----
+
+describe("runTeam debug arguments", () => {
+  it("passes mode + breakpoints through as snake_case", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", run_id: "r_1", status: "running" }),
+    ]);
+
+    const res = await client.runTeam({
+      name: "triage",
+      input: "go",
+      mode: "detach",
+      breakpoints: ["wave", "review:after_collection"],
+    });
+    // Detaching returns the HANDLE, not a trace — that is the point: op=run is
+    // otherwise synchronous, so there is no moment at which a caller can arm a
+    // breakpoint or read a pause on a walk that is still running.
+    expect(res.run_id).toBe("r_1");
+    expect(res.status).toBe("running");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_teamdef");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body).toMatchObject({
+      op: "run",
+      name: "triage",
+      input: "go",
+      mode: "detach",
+      breakpoints: ["wave", "review:after_collection"],
+    });
+  });
+
+  it("omits mode + breakpoints when unset, so an ordinary run is unchanged", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", status: "completed", steps: [] }),
+    ]);
+
+    await client.runTeam({ name: "triage", input: "go" });
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect("mode" in body).toBe(false);
+    expect("breakpoints" in body).toBe(false);
+  });
+
+  it("surfaces run_id on the synchronous path too", async () => {
+    // A caller that waits for the walk can still debug it from a second
+    // connection — the id is what every run surface keys on.
+    const { client } = makeClient([
+      jsonResponse({ name: "triage", def_id: "team_1", run_id: "r_2", status: "completed", steps: [] }),
+    ]);
+    const res = await client.runTeam({ name: "triage", input: "go" });
+    expect(res.run_id).toBe("r_2");
+  });
+});
+
+describe("getRunBreakpoints / setRunBreakpoints", () => {
+  it("GETs the armed set for a run", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_1", armed: ["wave:before_dispatch"] }),
+    ]);
+
+    const res = await client.getRunBreakpoints("r_1");
+    expect(res.armed).toEqual(["wave:before_dispatch"]);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/runs/r_1/breakpoints");
+    expect((call[1] as RequestInit).method).toBe("GET");
+  });
+
+  it("PUTs the WHOLE set, not a delta", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_1", armed: ["wave:after_collection", "wave:before_dispatch"] }),
+    ]);
+
+    await client.setRunBreakpoints("r_1", ["wave"]);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/runs/r_1/breakpoints");
+    expect((call[1] as RequestInit).method).toBe("PUT");
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ breakpoints: ["wave"] });
+  });
+
+  it("sends an empty list as the off switch rather than omitting the field", async () => {
+    // Omitting it would read as "no change" on a PUT that means "replace".
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_1", armed: [] })]);
+    await client.setRunBreakpoints("r_1", []);
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
+      breakpoints: [],
+    });
+  });
+
+  it("percent-encodes the run id into the path", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "a/b", armed: [] })]);
+    await client.getRunBreakpoints("a/b");
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/runs/a%2Fb/breakpoints");
+  });
+
+  it("propagates a 404 for a run with no live walk", async () => {
+    // An arming that silently did nothing is worse than a refusal, so the
+    // client must not swallow this into an empty set.
+    const { client } = makeClient([
+      errorResponse(404, { code: "no_live_walk", error: "no live team walk for that run_id" }),
+    ]);
+    await expect(client.setRunBreakpoints("r_gone", ["wave"])).rejects.toThrow();
+  });
+});

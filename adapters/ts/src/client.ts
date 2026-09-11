@@ -150,7 +150,10 @@ import type {
   ListTeamsResponse,
   PromotedTeam,
   RetiredTeam,
+  TeamBreakpoints,
   TeamDefDetail,
+  TeamRunDetached,
+  TeamRunTarget,
   TeamVerification,
   TeamVersionList,
   TeamDiagram,
@@ -1848,28 +1851,64 @@ export class LoomcycleClient {
    *  task handed to the entry state's agent. The walk runs under the same
    *  admission a normal run gets (token budget / operator-key / depth). */
   async runTeam(
-    target: {
-      name?: string;
-      defId?: string;
-      input?: string;
-      /** Bind the walk to a Document chunk task board (RFC BT P4): each state
-       *  transition persists `chunk.status` = the current team state, and every
-       *  handler run this walk spawns carries the task key on its
-       *  `parent_context` (so a board client can pin the live agent to the
-       *  card). Omit for an ephemeral run. */
-      boardChunkId?: string;
-      /** The Document scope of `boardChunkId` (agent | user, default user). */
-      boardScope?: "agent" | "user";
-    },
+    target: TeamRunTarget & { mode: "detach" },
     opts?: { signal?: AbortSignal },
-  ): Promise<TeamRunResult> {
+  ): Promise<TeamRunDetached>;
+  async runTeam(
+    target: TeamRunTarget & { mode?: undefined },
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamRunResult>;
+  async runTeam(
+    target: TeamRunTarget,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamRunResult | TeamRunDetached> {
     const body: Record<string, unknown> = { op: "run" };
     if (target.name !== undefined) body.name = target.name;
     if (target.defId !== undefined) body.def_id = target.defId;
     if (target.input !== undefined) body.input = target.input;
     if (target.boardChunkId !== undefined) body.board_chunk_id = target.boardChunkId;
     if (target.boardScope !== undefined) body.board_scope = target.boardScope;
+    if (target.mode !== undefined) body.mode = target.mode;
+    if (target.breakpoints !== undefined) body.breakpoints = target.breakpoints;
     return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
+  }
+
+  /** Read the debug breakpoints armed on a live team walk
+   *  (`GET /v1/runs/{run_id}/breakpoints`).
+   *
+   *  404 when no walk is in flight under that run on this replica — loudly,
+   *  because an arming that appeared to succeed and then never paused anything
+   *  is the worst possible outcome for a debugger. Surface it rather than
+   *  treating it as "nothing armed". */
+  async getRunBreakpoints(runId: string, opts?: { signal?: AbortSignal }): Promise<TeamBreakpoints> {
+    return jsonFetch<TeamBreakpoints>(this.ctx, `/v1/runs/${encodeURIComponent(runId)}/breakpoints`, opts);
+  }
+
+  /** Replace the debug breakpoints armed on a live team walk
+   *  (`PUT /v1/runs/{run_id}/breakpoints`).
+   *
+   *  The WHOLE desired set, not a delta: you hold the configuration and push
+   *  it, so two operators cannot interleave a read-modify-write. `[]` is the
+   *  off switch. A malformed entry is refused whole and leaves the previous
+   *  arming exactly as it was.
+   *
+   *  Each entry is a starter state id — `"review"` arms both phases,
+   *  `"review:before_dispatch"` or `"review:after_collection"` arms one. An arm
+   *  takes effect at the next pause the walk reaches; disarming RELEASES
+   *  whatever is still pending rather than stranding it.
+   *
+   *  A pause is read and answered through the run's interrupts. */
+  async setRunBreakpoints(
+    runId: string,
+    breakpoints: string[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<TeamBreakpoints> {
+    return putJSON<TeamBreakpoints>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/breakpoints`,
+      { breakpoints },
+      opts,
+    );
   }
 
   /** Invoke the RFC AL Path VFS tool over HTTP (`POST /v1/_path`). A
