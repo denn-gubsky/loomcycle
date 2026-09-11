@@ -48,10 +48,15 @@ func TestBreakpoint_ArmingMidWalkPausesTheNextWave(t *testing.T) {
 		return BreakDecision{Action: BreakContinue}, nil
 	}
 
-	// Wave 1: nobody has armed anything. It must run straight through.
+	// ONE runner across both waves — the way Walk actually drives a graph that
+	// loops back to its Starter. A test that built a fresh runner for wave 2
+	// would pass even if the source were read once and cached, which is exactly
+	// the bug this is about.
 	ch := threeMessages()
 	r := starterRunner(ch, spawn.fn)
 	WithBreakpoints(src, ask)(r)
+
+	// Wave 1: nobody has armed anything. It must run straight through.
 	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"}); err != nil {
 		t.Fatalf("wave 1: %v", err)
 	}
@@ -65,15 +70,12 @@ func TestBreakpoint_ArmingMidWalkPausesTheNextWave(t *testing.T) {
 	// The operator watches that wave, does not like it, and hits Debug.
 	src.arm("wave", BeforeDispatch)
 
-	// Wave 2 — the SAME runner, already constructed — must now pause.
-	ch2 := threeMessages()
-	r2 := starterRunner(ch2, spawn.fn)
-	WithBreakpoints(src, ask)(r2)
-	if _, err := r2.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"}); err != nil {
+	// Wave 2 on the SAME runner must now pause.
+	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"}); err != nil {
 		t.Fatalf("wave 2: %v", err)
 	}
 	if len(pauses) != 1 || pauses[0] != BeforeDispatch {
-		t.Errorf("wave 2 paused %v, want one before_dispatch — arming after dispatch had no effect", pauses)
+		t.Errorf("wave 2 paused %v, want one before_dispatch — the runner cached its arming instead of re-reading it", pauses)
 	}
 }
 

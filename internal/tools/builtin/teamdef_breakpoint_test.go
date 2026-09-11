@@ -259,3 +259,41 @@ func TestFormatBreakpoint_TruncatesAnOversizedPreview(t *testing.T) {
 		t.Errorf("a truncated preview must say so:\n%s", q)
 	}
 }
+
+// TestTeamDefTool_Run_OpensALiveSetEvenWithNoBreakpoints: the run that an
+// operator later wants to debug is precisely the run that passed no
+// breakpoints. If the armed set only existed when it was seeded, ad-hoc
+// Run → Debug would have nothing to write to.
+func TestTeamDefTool_Run_OpensALiveSetEvenWithNoBreakpoints(t *testing.T) {
+	tool, ctx, io, _, done := breakFixture(t)
+	defer done()
+	tool.AskHuman = func(context.Context, string) (string, error) { return "continue", nil }
+
+	opened, released := 0, 0
+	var seenSeed []string
+	tool.LiveBreakpoints = func(_ context.Context, seed []string) (teamrun.BreakpointSource, func(), error) {
+		opened++
+		seenSeed = seed
+		src, err := teamrun.NewStaticBreakpoints(seed)
+		return src, func() { released++ }, err
+	}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if opened != 1 {
+		t.Fatalf("a run that armed nothing opened %d live sets, want 1 — there would be nothing to arm mid-run", opened)
+	}
+	if len(seenSeed) != 0 {
+		t.Errorf("seed = %v, want empty", seenSeed)
+	}
+	// And it is released when the walk ends — a set outliving its walk would
+	// pause a later run nobody is watching.
+	if released != 1 {
+		t.Errorf("released %d times, want 1", released)
+	}
+	if io.count() != 2 {
+		t.Errorf("published %d sink messages, want 2 — an unarmed run must be unaffected", io.count())
+	}
+}
