@@ -74,6 +74,9 @@ type fakeToolset struct {
 	// The entity half, filled by fakeDocument.
 	entitiesDocID string
 	chunks        map[string]string // natural_key -> chunk id
+	// subjectDocs maps a subject document's id -> the entity natural_key its ROOT
+	// is, so a test can tell which subject a fact was filed under.
+	subjectDocs map[string]string
 	// chunkScopes maps chunk id -> the scope it was written into. The double used to be
 	// scope-BLIND, which is why it could not see the placed-fact edge bug: the feature
 	// under test is entirely about which scope a write lands in, and the fake answered
@@ -165,6 +168,7 @@ func newFakeToolset() *fakeToolset {
 		leaseAcquired:  true,
 		bands:          map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
 		chunks:         map[string]string{},
+		subjectDocs:    map[string]string{},
 		chunkScopes:    map[string]string{},
 		chunkTypes:     map[string]string{},
 		chunkSpans:     map[string]string{},
@@ -299,6 +303,42 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 		}
 		return okResult(map[string]any{"document_id": d.f.entitiesDocID})
 	case "create_document":
+		// A SUBJECT-HOMED document: /facts/<slug>, whose ROOT is the entity. The
+		// double has to model two things the tool now does, or the tests stop
+		// exercising them: the ontology gate applies here (an entity can be minted
+		// through create_document, so leaving the gate on upsert_chunk alone would
+		// let a subject of an undeclared kind through), and each subject gets its
+		// OWN document rather than every fact landing in one.
+		subj, _ := in["subject"].(string)
+		nk, _ := in["natural_key"].(string)
+		if subj != "" && nk != "" {
+			// The refusal knob has to reach here too: a subject is created through
+			// this op now, so a double that only refuses upsert_chunk would leave
+			// every entity-write-failure test injecting nothing.
+			if d.f.failEntityKeys[nk] {
+				return tools.Result{IsError: true, Text: "create_document: refused for " + nk}, nil
+			}
+			if len(d.f.declaredTypes) > 0 {
+				if typ, _ := in["type"].(string); typ != "" && !d.f.declaredTypes[typ] {
+					return tools.Result{IsError: true, Text: "create_document: " + strconv.Quote(typ) +
+						" is not an entity type this tenant declares, so an assertion typed with it " +
+						"becomes a node nobody can find. Declared: object, person"}, nil
+				}
+			}
+			id, existed := d.f.chunks[nk]
+			if !existed {
+				id = fmt.Sprintf("chunk-%d", len(d.f.chunks)+1)
+				d.f.chunks[nk] = id
+				wscope, _ := in["scope"].(string)
+				d.f.chunkScopes[id] = wscope
+			}
+			if typ, _ := in["type"].(string); typ != "" {
+				d.f.chunkTypes[nk] = typ
+			}
+			docID := "doc-" + nk
+			d.f.subjectDocs[docID] = nk
+			return okResult(map[string]any{"document_id": docID, "root_chunk_id": id})
+		}
 		d.f.entitiesDocID = "doc-entities"
 		return okResult(map[string]any{"document_id": d.f.entitiesDocID, "root_chunk_id": "root"})
 	case "upsert_chunk":
@@ -2854,6 +2894,32 @@ func factWrites(f *fakeToolset) []factWrite {
 
 func factWriteCount(f *fakeToolset) int { return len(factWrites(f)) }
 
+// subjectWrites returns the calls that put a SUBJECT NODE in the store, whichever
+// op carried it.
+//
+// A subject used to be an upsert_chunk inside one shared entity document. It is now
+// the ROOT of its own `/facts/<slug>` document, so it arrives as a create_document
+// — the node and the document are one object, which is what makes a subject's
+// dossier a single read. Tests care that a subject was written once, under one
+// identity, not which op the write happened to be.
+func subjectWrites(f *fakeToolset) []recordedCall {
+	var out []recordedCall
+	for _, c := range f.calls {
+		if c.Tool != "Document" {
+			continue
+		}
+		if c.Op != "upsert_chunk" && c.Op != "create_document" {
+			continue
+		}
+		subj, _ := c.Input["subject"].(string)
+		nk, _ := c.Input["natural_key"].(string)
+		if subj != "" && nk != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func lastFactWrite(t *testing.T, f *fakeToolset) factWrite {
 	t.Helper()
 	w := factWrites(f)
@@ -3165,6 +3231,76 @@ func TestConsolidator_TheFactCarriesEveryTemporalFieldItWasGiven(t *testing.T) {
 	// The chat it came from, which the erasure report keys on.
 	if got, _ := w.Input["source_session_id"].(string); got != "sess-a" {
 		t.Errorf("source_session_id = %q, want sess-a", got)
+	}
+}
+
+// TestConsolidator_AFactIsFiledUnderItsSubject is the P3 claim itself.
+//
+// A subject is its own document at /facts/<slug>, whose ROOT is the entity node,
+// and its facts are that document's children. That is what makes "what do we know
+// about X" one read instead of a search or a traversal, and what makes
+// `path op=ls /facts` an entity directory.
+//
+// The path carries IDENTITY ONLY — /facts/caroline, never /facts/person/caroline.
+// Type is mutable (on a measured run the extractor proposed a different kind for an
+// already-filed subject 91 times), so a type in the path would make every re-type a
+// document move and put the type in two places that can disagree.
+func TestConsolidator_AFactIsFiledUnderItsSubject(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nCaroline paints, and Denn writes Go."
+	f.factsJSON = `[
+		{"text":"Caroline paints in watercolour.","class":"fact","type":"person","subject":"Caroline"},
+		{"text":"Caroline organises the art show.","class":"fact","type":"person","subject":"Caroline"},
+		{"text":"Denn prefers Go.","class":"preference","type":"person","subject":"Denn"}
+	]`
+
+	runConsolidator(t, f)
+
+	// One document per SUBJECT, created at the identity path.
+	paths := map[string]string{}
+	for _, c := range subjectWrites(f) {
+		p, _ := c.Input["path"].(string)
+		nk, _ := c.Input["natural_key"].(string)
+		paths[nk] = p
+	}
+	if len(paths) != 2 {
+		t.Fatalf("three facts about two subjects produced %d subject document(s): %v", len(paths), paths)
+	}
+	for nk, p := range paths {
+		want := "/facts/" + strings.TrimPrefix(nk, "person:")
+		if p != want {
+			t.Errorf("subject %s was filed at %q, want %q — the path carries identity only, so a "+
+				"re-type must not move the document", nk, p, want)
+		}
+	}
+
+	// Each fact lands in ITS subject's document, and the two Caroline facts share
+	// one — which is the whole point: her dossier is a single read.
+	byDoc := map[string][]string{}
+	for _, w := range factWrites(f) {
+		doc, _ := w.Input["document_id"].(string)
+		byDoc[doc] = append(byDoc[doc], w.Key)
+	}
+	if len(byDoc) != 2 {
+		t.Fatalf("facts landed in %d documents, want 2 (one per subject): %v", len(byDoc), byDoc)
+	}
+	var sizes []int
+	for _, keys := range byDoc {
+		sizes = append(sizes, len(keys))
+	}
+	sort.Ints(sizes)
+	if sizes[0] != 1 || sizes[1] != 2 {
+		t.Errorf("facts split %v across the two subject documents, want 1 and 2 — both of "+
+			"Caroline's belong in hers", sizes)
+	}
+	// And NOT in the shared entity document, which is now only for facts naming
+	// nobody.
+	for doc := range byDoc {
+		if doc == "doc-entities" {
+			t.Errorf("a subject's fact was filed in the shared entity document — subject-homing " +
+				"is what makes the dossier one read")
+		}
 	}
 }
 
@@ -4909,12 +5045,7 @@ func TestConsolidator_ASubjectKeepsTheTypeItIsAlreadyFiledUnder(t *testing.T) {
 
 	res := runConsolidator(t, f)
 
-	var subjectUpserts []recordedCall
-	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
-		if s, _ := c.Input["subject"].(string); s != "" {
-			subjectUpserts = append(subjectUpserts, c)
-		}
-	}
+	subjectUpserts := subjectWrites(f)
 	if len(subjectUpserts) != 1 {
 		t.Fatalf("want one subject-node upsert, got %d", len(subjectUpserts))
 	}
@@ -4974,10 +5105,7 @@ func TestConsolidator_OneSubjectTypedTwoWaysInOnePassStillMakesOneNode(t *testin
 	runConsolidator(t, f)
 
 	keys := map[string]bool{}
-	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
-		if s, _ := c.Input["subject"].(string); s == "" {
-			continue
-		}
+	for _, c := range subjectWrites(f) {
 		k, _ := c.Input["natural_key"].(string)
 		keys[k] = true
 	}
