@@ -30,6 +30,15 @@ type teamContent struct {
 	MaxIterations int          `json:"max_iterations,omitempty"`
 	States        []State      `json:"states"`
 	Transitions   []Transition `json:"transitions"`
+	// Channels is the team's channel ACL, and it IS content — unlike Colors and
+	// Layout. It is AUTHORITY, and authority that can change without changing
+	// the definition's identity is not auditable: a verify against a recorded
+	// hash would pass while the workflow had quietly gained a channel.
+	//
+	// Added LAST, with omitempty, for the reason the comment above gives: a
+	// definition that omits it marshals byte-identically to one written before
+	// the field existed, so every recorded content_sha256 stays valid.
+	Channels *TeamChannels `json:"channels,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of a TeamDef's canonical
@@ -42,6 +51,7 @@ func Sign(name string, d Definition) string {
 		MaxIterations: d.MaxIterations,
 		States:        d.States,
 		Transitions:   d.Transitions,
+		Channels:      d.Channels,
 	})
 	if err != nil {
 		buf = []byte("{}")
