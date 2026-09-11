@@ -116,8 +116,12 @@ func TestTeamDef_ForkCannotWidenTheChannelACL(t *testing.T) {
 	tool, _, cleanup := teamDefFixture(t)
 	defer cleanup()
 	broad := authoringCtx([]string{"verdicts"}, []string{"pr-events"})
+	// The parent declares BOTH sides. It used to declare only subscribe, which
+	// the create-time preflight now refuses — the graph's sink had no publish
+	// grant, so the team could never have run. The widening rule this test is
+	// about is unchanged; the fixture just stopped being an unrunnable def.
 	createTeam(t, tool, broad, "triage",
-		strings.TrimSuffix(starterGraph, "}")+`,"channels":{"subscribe":["pr-events"]}}`)
+		strings.TrimSuffix(starterGraph, "}")+`,"channels":{"publish":["verdicts"],"subscribe":["pr-events"]}}`)
 
 	res, _ := tool.Execute(broad, json.RawMessage(
 		`{"op":"fork","name":"triage","overlay":{"channels":{"subscribe":["pr-events","secrets"]}}}`))
