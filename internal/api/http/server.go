@@ -3262,6 +3262,7 @@ func (s *Server) Mux() http.Handler {
 	// embedded before the write path rejected it). Admin, like its sibling sweeps —
 	// and unlike them it DELETES, so its dry_run default is load-bearing.
 	mux.Handle("POST /v1/_memory/purge_stale_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryPurgeStaleEmbeddings))))
+	mux.Handle("POST /v1/_memory/collapse_facts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryCollapseFacts))))
 	mux.Handle("POST /v1/_document/describe_images", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDescribeImages))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see

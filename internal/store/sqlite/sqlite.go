@@ -4410,7 +4410,7 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		// for correctly-dated rows, and zero is a meaningful value on this column
 		// ("undated"), so absent and unread were indistinguishable downstream.
 		`SELECT key, value, expires_at, created_at, updated_at,
-		        observed_at, valid_at, invalid_at
+		        observed_at, valid_at, invalid_at, access_count, last_accessed_at
 		 FROM memory
 		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key LIKE ? ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > ?)
@@ -4434,9 +4434,11 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 			observedAt sql.NullInt64
 			validAt    sql.NullInt64
 			invalidAt  sql.NullInt64
+			accessCnt  sql.NullInt64
+			lastAccess sql.NullInt64
 		)
 		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt,
-			&observedAt, &validAt, &invalidAt); err != nil {
+			&observedAt, &validAt, &invalidAt, &accessCnt, &lastAccess); err != nil {
 			return nil, false, err
 		}
 		entry := store.MemoryEntry{
@@ -4459,6 +4461,10 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		}
 		if invalidAt.Valid {
 			entry.InvalidAt = time.Unix(0, invalidAt.Int64)
+		}
+		entry.AccessCount = accessCnt.Int64
+		if lastAccess.Valid {
+			entry.LastAccessedAt = time.Unix(0, lastAccess.Int64)
 		}
 		out = append(out, entry)
 	}
