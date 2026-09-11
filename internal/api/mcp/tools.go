@@ -510,7 +510,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "stream_user_run_states",
-			Description: "Subscribe to run state transitions for one user_id. Returns {events: [RunStateEvent...], count}. When the session opted into capabilities.loomcycle.runEvents=true, each matching event also arrives as a notifications/loomcycle/run_state notification and the response carries an empty events array (count only). Filters: statuses (e.g. ['completed','failed']) and agent (exact name). max_events caps the response at N events; timeout_ms bounds the blocking wait.",
+			Description: "Subscribe to run state transitions for one user_id. Returns {events: [RunStateEvent...], count}. When the session opted into capabilities.loomcycle.runEvents=true, each matching event also arrives as a notifications/loomcycle/run_state notification and the response carries an empty events array (count only). Filters: statuses (e.g. ['completed','failed']), agent (exact name), and walk_id — the runs one team walk spawned, matched on parent_context.walk_id. A team walk's own run_id IS its walk_id, so filtering by the id a detached run returned gives a live view of that workflow's agents. max_events caps the response at N events; timeout_ms bounds the blocking wait.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["user_id"],
@@ -518,6 +518,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"user_id":    {"type": "string"},
 					"statuses":   {"type": "array", "items": {"type": "string"}},
 					"agent":      {"type": "string"},
+					"walk_id":    {"type": "string", "description": "Only runs spawned by this team walk (its run_id)."},
 					"max_events": {"type": "integer", "minimum": 1, "default": 16},
 					"timeout_ms": {"type": "integer", "minimum": 100, "default": 30000}
 				}
