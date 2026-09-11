@@ -3355,6 +3355,14 @@ type MemoryEntry struct {
 	// rather than off by one row.
 	ValidAt   time.Time `json:"valid_at,omitempty"`
 	InvalidAt time.Time `json:"invalid_at,omitempty"`
+	// AccessCount / LastAccessedAt are the RETRIEVAL counters (RFC BL hybrid
+	// retrieval): access_count feeds the ranker's frequency term. They are
+	// advisory and per-replica, so a listing is not their authority — they are
+	// exposed here because a migration that MOVES a row has to carry them, and a
+	// counter that cannot be read cannot be carried. Zero means "never accessed",
+	// which is a real value and not an absence.
+	AccessCount    int64     `json:"access_count,omitempty"`
+	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"`
 }
 
 // MemoryTimes carries the caller-supplied times on a memory write.

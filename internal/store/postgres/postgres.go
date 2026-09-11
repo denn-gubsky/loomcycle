@@ -3812,7 +3812,7 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		// finding that the extractor never filled the fields, when the rows in
 		// Postgres carried real timestamps the whole time.
 		`SELECT key, value::text, expires_at, created_at, updated_at,
-		        observed_at, valid_at, invalid_at
+		        observed_at, valid_at, invalid_at, access_count, last_accessed_at
 		 FROM memory
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key LIKE $4 ESCAPE '\'
 		   AND (expires_at IS NULL OR expires_at > NOW())
@@ -3836,9 +3836,11 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 			observedAt *time.Time
 			validAt    *time.Time
 			invalidAt  *time.Time
+			accessCnt  *int64
+			lastAccess *time.Time
 		)
 		if err := rows.Scan(&key, &valueText, &expiresAt, &createdAt, &updatedAt,
-			&observedAt, &validAt, &invalidAt); err != nil {
+			&observedAt, &validAt, &invalidAt, &accessCnt, &lastAccess); err != nil {
 			return nil, false, fmt.Errorf("memory list scan: %w", err)
 		}
 		entry := store.MemoryEntry{
@@ -3861,6 +3863,12 @@ func (s *Store) MemoryList(ctx context.Context, tenantID string, scope store.Mem
 		}
 		if invalidAt != nil {
 			entry.InvalidAt = *invalidAt
+		}
+		if accessCnt != nil {
+			entry.AccessCount = *accessCnt
+		}
+		if lastAccess != nil {
+			entry.LastAccessedAt = *lastAccess
 		}
 		out = append(out, entry)
 	}
