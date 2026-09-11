@@ -233,6 +233,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelHoldRoundTripsOnTheDefinition", testChannelHoldRoundTripsOnTheDefinition},
 		{"ChannelReleaseHandsOverOldestFirst", testChannelReleaseHandsOverOldestFirst},
 		{"ChannelReleaseSkipsExpiredHeld", testChannelReleaseSkipsExpiredHeld},
+		{"ChannelHoldSurvivesASnapshotRoundTrip", testChannelHoldSurvivesASnapshotRoundTrip},
 		// v0.8.6 deferred publish (PR 1)
 		{"ChannelDeferredHiddenUntilVisible", testChannelDeferredHiddenUntilVisible},
 		{"ChannelDeferredDeliversAfterProgressedCursor", testChannelDeferredDeliversAfterProgressedCursor},
@@ -6007,6 +6008,61 @@ func testChannelReleaseHandsOverOldestFirst(t *testing.T, s store.Store) {
 	}
 	if len(released) != 0 || stillHeld != 0 {
 		t.Errorf("release on a drained queue reported %d/%d, want 0/0", len(released), stillHeld)
+	}
+}
+
+// testChannelHoldSurvivesASnapshotRoundTrip pins the one path that could
+// silently RELEASE every held message: snapshot restore is the only writer
+// that sets visible_at from a caller-supplied value without clamping, so if it
+// ever normalised the instant the way ChannelPublish clamps a past one, an
+// operator restoring a snapshot would find every breakpoint opened.
+//
+// Snapshotting a paused workflow and bringing it up elsewhere is exactly when
+// an operator is relying on the hold still being there.
+func testChannelHoldSurvivesASnapshotRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+		Channel: "ch-snap", Scope: store.MemoryScopeAgent, ScopeID: "x",
+		Payload:   json.RawMessage(`"held"`),
+		VisibleAt: store.ChannelHeldVisibleAt(),
+	}, 0); err != nil {
+		t.Fatalf("publish held: %v", err)
+	}
+	rows, err := s.SnapshotReadChannelMessages(ctx)
+	if err != nil {
+		t.Fatalf("snapshot read: %v", err)
+	}
+	var held store.ChannelMessage
+	for _, r := range rows {
+		if r.Channel == "ch-snap" {
+			held = r
+		}
+	}
+	if held.ID == "" {
+		t.Fatalf("the held message is missing from the snapshot — a hold must not make it unexportable")
+	}
+	if !store.IsChannelHeld(held.VisibleAt) {
+		t.Fatalf("the export lost the held instant: %v", held.VisibleAt)
+	}
+
+	// Restore it under a fresh id, as a restore onto another deployment would.
+	held.ID = "msg_restored0000000000000000"
+	if _, err := s.SnapshotRestoreChannelMessage(ctx, held); err != nil {
+		t.Fatalf("snapshot restore: %v", err)
+	}
+	msgs, _, err := s.ChannelSubscribe(ctx, "", "ch-snap", store.MemoryScopeAgent, "x", "", 10)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("restore released %d held message(s) — the breakpoint opened itself", len(msgs))
+	}
+	released, _, err := s.ChannelRelease(ctx, "", "ch-snap", store.MemoryScopeAgent, "x", 10)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 2 {
+		t.Errorf("released %d, want 2 (the original and the restored copy)", len(released))
 	}
 }
 
