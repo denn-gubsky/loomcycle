@@ -585,7 +585,9 @@ A schedule's **delivery** decides what a tick does. The default (`delivery: run`
 
 A fired schedule's `on_complete` hooks deliver results through one of three kinds (`internal/scheduler/dispatch.go`): `channel.publish`, `memory.set`, or `mcp.call`. Schedules resolve MCP-tool bearers via `user_credentials_from_env` against the operator's `EnvAllowlist` — the same RFC F credential mechanism, not a parallel one. Persisted in the `schedule_defs` table (migration `0029`).
 
-References: `internal/scheduler/scheduler.go` (sweeper, `tick`, `fireOne`, `fireChannelDelivery`), `internal/scheduler/dispatch.go` (`on_complete` kinds), `internal/tools/builtin/scheduledef.go`, `internal/config/config.go` (`ScheduledRun`).
+Both scheduler writes to a channel — the tick and the `on_complete` hook — resolve the channel's **declaration** through an injected `ChannelScopeResolver` and honour all of it: the declared scope (F37/RFC T), `default_ttl`, `max_messages`, and `hold:`. That matters most at cron cadence, where a write that ignored retention would accumulate half a million rows a year on a channel whose operator did set limits, and where a write that ignored a hold would walk a workflow straight past its breakpoint.
+
+References: `internal/scheduler/scheduler.go` (sweeper, `tick`, `fireOne`, `fireChannelDelivery`, `recordFireOutcome`), `internal/scheduler/dispatch.go` (`on_complete` kinds, `resolvePublishTarget`), `internal/tools/builtin/scheduledef.go`, `internal/config/config.go` (`ScheduledRun`).
 
 ## Multi-replica HA (v0.12.0→v0.12.6)
 
