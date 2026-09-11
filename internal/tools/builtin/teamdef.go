@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -125,7 +126,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`(success to advance, pushback to loop back for rework) — output threads to the next state, until a ` +
 	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
 	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
-	`instead of aborting. retire soft-retires one version; delete ` +
+	`instead of aborting. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
+	`before dispatching (showing each composed prompt) and/or after collecting (showing each result, before any of ` +
+	`it reaches the sink) and asks a human to release all, release n, or abort. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
 	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
 
@@ -157,7 +160,8 @@ const teamDefInputSchema = `{
     "input":          {"type": "string", "description": "run: the initial input handed to the entry state's agent (the task/prompt the team works on)."},
     "board_chunk_id": {"type": "string", "description": "run (optional): bind the walk to a Document chunk task board. Each state transition persists chunk.status = the current team state (durable progress), and a later run RESUMES from the persisted status. Omit for an ephemeral run (default)."},
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
-    "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."}
+    "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
+    "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"review\" pauses both phases, \"review:before_dispatch\" or \"review:after_collection\" pauses one. At before_dispatch the wave is composed but nothing has run; at after_collection the runs are done but nothing has reached the sink. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS."}
   },
   "required": ["op"]
 }`
@@ -178,6 +182,7 @@ type teamDefInput struct {
 	BoardChunkID   string          `json:"board_chunk_id,omitempty"`   // run: bind the walk to a Document chunk board
 	BoardScope     string          `json:"board_scope,omitempty"`      // run: board_chunk_id's Document scope (agent|user, default user)
 	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"` // run: escalate an iteration cap to a human instead of aborting
+	Breakpoints    []string        `json:"breakpoints,omitempty"`      // run: starter states to pause at (debug mode)
 }
 
 // Name implements tools.Tool.
@@ -755,7 +760,54 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}))
 	}
 
+	// Breakpoints are a RUN argument, deliberately: a `debug: true` in a
+	// definition would change its content hash, so turning the debugger on would
+	// fork the workflow — and the thing being debugged would not be the thing
+	// that runs in production.
+	breaks := 0
+	lastBreak := ""
 	var runnerOpts []teamrun.RunnerOption
+	if len(in.Breakpoints) > 0 {
+		if err := teamrun.ValidateBreakpoints(in.Breakpoints); err != nil {
+			return errResult(fmt.Sprintf("run: %s", err)), nil
+		}
+		// A breakpoint on a state that does not exist — or on one that never
+		// dispatches a wave — would arm nothing, and the operator would sit
+		// watching a walk that runs to completion without ever pausing. Refuse
+		// the typo instead.
+		for _, bp := range in.Breakpoints {
+			id, _, _ := teamrun.ParseBreakpoint(bp)
+			bst, known := teamgraph.StateByID(def, id)
+			if !known {
+				return errResult(fmt.Sprintf("run: breakpoint %q: team %q has no state %q", bp, row.Name, id)), nil
+			}
+			if bst.Handler.Kind != teamgraph.HandlerStarter {
+				return errResult(fmt.Sprintf("run: breakpoint %q: state %q is a %q, and only a starter dispatches a wave to pause on",
+					bp, id, bst.Handler.Kind)), nil
+			}
+		}
+		// REFUSED rather than degraded. interrupt_on_cap may silently fall back
+		// to aborting because the fallback is still safe; a breakpoint's whole
+		// job is to hold work back, so running at full speed because nobody can
+		// be asked is the opposite of what the caller requested.
+		if t.AskHuman == nil {
+			return errResult("run: breakpoints require the Interruption machinery, which is not wired on this server"), nil
+		}
+		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(in.Breakpoints,
+			func(c context.Context, bp teamrun.Breakpoint) (teamrun.BreakDecision, error) {
+				breaks++
+				answer, aerr := t.AskHuman(c, formatBreakpoint(row.Name, bp))
+				if aerr != nil {
+					// Unavailable / timed out / cancelled / declined → abort.
+					// A debugger nobody can answer must not release the wave.
+					lastBreak = "abort"
+					return teamrun.BreakDecision{Action: teamrun.BreakAbort}, nil
+				}
+				dec := parseBreakAnswer(answer)
+				lastBreak = breakActionLabel(dec)
+				return dec, nil
+			}))
+	}
 	if t.Channels != nil {
 		// Built per run: the executor closes over THIS definition's ACL, which
 		// is what makes the team the ACL subject for its source and sink.
@@ -797,6 +849,12 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			m["interruptions"] = interruptions
 			if lastDecision != "" {
 				m["cap_decision"] = lastDecision
+			}
+		}
+		if len(in.Breakpoints) > 0 {
+			m["breakpoints_hit"] = breaks
+			if lastBreak != "" {
+				m["break_decision"] = lastBreak
 			}
 		}
 		return m
@@ -861,6 +919,99 @@ func capActionLabel(d teamrun.CapDecision) string {
 		return "continue"
 	case teamrun.CapReroute:
 		return "reroute:" + d.Reroute
+	default:
+		return "abort"
+	}
+}
+
+// maxBreakPreview bounds ONE previewed prompt or output in the question text.
+// An agent's output can be a whole document; a human deciding "release this or
+// not" needs enough to recognise it, and an Interruption ask that carries a
+// megabyte helps nobody.
+const maxBreakPreview = 600
+
+// formatBreakpoint renders a pause as the question a human answers.
+//
+// The wave's width is stated on every pause so "3 of 8" means the same thing at
+// each step of a staged release, and each pending entry is listed with its wave
+// index — the index is what the operator matches against the sink messages and
+// the run list afterwards.
+func formatBreakpoint(team string, bp teamrun.Breakpoint) string {
+	var b strings.Builder
+	phase := "BEFORE dispatching"
+	unit := "run"
+	if bp.Phase == teamrun.AfterCollection {
+		phase = "AFTER collecting"
+		unit = "result"
+	}
+	fmt.Fprintf(&b, "Team %q: state %q paused %s wave %s (%d %ss in the wave, %d pending).\n",
+		team, bp.State, phase, bp.Wave, bp.WaveSize, unit, bp.Pending)
+	for _, p := range bp.Prompts {
+		fmt.Fprintf(&b, "[%d] %s ← %s\n", p.Index, p.Agent, truncPreview(p.Message))
+	}
+	for _, res := range bp.Results {
+		status, body := "ok", res.Output
+		if !res.Ok {
+			status, body = "error", res.Error
+		}
+		fmt.Fprintf(&b, "[%d] %s %s: %s\n", res.Index, res.Agent, status, truncPreview(body))
+	}
+	verb := "dispatch"
+	if bp.Phase == teamrun.AfterCollection {
+		verb = "publish"
+	}
+	fmt.Fprintf(&b, "Reply `continue` to %s all %d, `release:<n>` to %s the first n and pause again, or `abort` to stop the walk.",
+		verb, bp.Pending, verb)
+	return b.String()
+}
+
+// truncPreview bounds one previewed body and says so, rather than silently
+// handing a human a prefix they would read as the whole thing.
+func truncPreview(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "(empty)"
+	}
+	if len(s) <= maxBreakPreview {
+		return s
+	}
+	return s[:maxBreakPreview] + fmt.Sprintf("… (+%d bytes)", len(s)-maxBreakPreview)
+}
+
+// parseBreakAnswer maps a human's free-text breakpoint answer to a decision.
+// Mirrors parseCapAnswer: only an explicit continue or release proceeds, and
+// everything else — "abort", empty, an unrecognised reply — stops. A debugger
+// that defaulted to releasing would be a debugger you cannot trust to hold.
+func parseBreakAnswer(answer string) teamrun.BreakDecision {
+	trimmed := strings.TrimSpace(answer)
+	switch {
+	case strings.EqualFold(trimmed, "continue"), strings.EqualFold(trimmed, "all"):
+		return teamrun.BreakDecision{Action: teamrun.BreakContinue}
+	case strings.HasPrefix(strings.ToLower(trimmed), "release"):
+		rest := strings.TrimSpace(trimmed[len("release"):])
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, ":"))
+		if rest == "" {
+			// "release" with no number is one step — the same reading the
+			// runner gives an N below 1.
+			return teamrun.BreakDecision{Action: teamrun.BreakRelease, N: 1}
+		}
+		n, err := strconv.Atoi(rest)
+		if err != nil || n < 1 {
+			return teamrun.BreakDecision{Action: teamrun.BreakAbort}
+		}
+		return teamrun.BreakDecision{Action: teamrun.BreakRelease, N: n}
+	default:
+		return teamrun.BreakDecision{Action: teamrun.BreakAbort}
+	}
+}
+
+// breakActionLabel is the human-readable decision recorded on the run response.
+func breakActionLabel(d teamrun.BreakDecision) string {
+	switch d.Action {
+	case teamrun.BreakContinue:
+		return "continue"
+	case teamrun.BreakRelease:
+		return fmt.Sprintf("release:%d", d.N)
 	default:
 		return "abort"
 	}

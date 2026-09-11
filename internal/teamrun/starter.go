@@ -211,41 +211,124 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 	defer cancel()
 
 	results := make([]agentResult, dispatches)
+	published := make([]bool, dispatches)
 	sem := make(chan struct{}, parallelConcurrency(dispatches))
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	var mu sync.Mutex // guards successes and published
 	successes := 0
 
-	for i := 0; i < dispatches; i++ {
-		i := i
-		agent := agentFor(i)
-		slots := waveSlots(h, msgs, i)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-runCtx.Done():
-				// Cancelled before it ever ran — still a result, and still a
-				// sink message, because the count is the contract.
-				res := agentResult{Index: i, Agent: agent, Ok: false, Error: runCtx.Err().Error()}
-				results[i] = res
-				r.publishSink(ctx, st, waveID, dispatches, res)
-				return
-			}
-			results[i] = r.dispatchOne(runCtx, st, env, agent, waveID, i, dispatches, slots)
-			if results[i].Ok {
+	// The sink publish is DEFERRED when this state is armed at AfterCollection:
+	// the operator is reviewing the wave, and the next stage must not see a
+	// result they have not released. It is a deferral, never a durable cache —
+	// the runs themselves hold the outputs, and if this process dies while
+	// parked, no sink message arrives: the orchestrator-died-mid-wave case the
+	// design already documents and the downstream wait_ms already backstops.
+	deferPublish := r.armed(st, AfterCollection)
+
+	// A staged dispatch must not short-circuit. The wait threshold exists to
+	// stop runs nobody is waiting for, but an operator stepping through a wave
+	// released each batch deliberately — cancelling one because an earlier batch
+	// already met the threshold would make the debugger lie about what it ran.
+	shortCircuit := !r.armed(st, BeforeDispatch)
+
+	// emit publishes run i's sink message exactly once. The claim is taken under
+	// the lock and the publish made outside it: publishSink is a store write
+	// with its own timeout, and holding the wave's lock across it would
+	// serialize a fan-out that exists to be parallel.
+	emit := func(i int) {
+		mu.Lock()
+		if published[i] {
+			mu.Unlock()
+			return
+		}
+		published[i] = true
+		mu.Unlock()
+		r.publishSink(ctx, st, waveID, dispatches, results[i])
+	}
+
+	dispatch := func(from, to int) error {
+		var wg sync.WaitGroup
+		for i := from; i < to; i++ {
+			i := i
+			agent := agentFor(i)
+			slots := waveSlots(h, msgs, i)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-runCtx.Done():
+					// Cancelled before it ever ran — still a result, and still
+					// a sink message, because the count is the contract.
+					results[i] = agentResult{Index: i, Agent: agent, Ok: false, Error: runCtx.Err().Error()}
+					if !deferPublish {
+						emit(i)
+					}
+					return
+				}
+				res := r.dispatchOne(runCtx, st, env, agent, waveID, i, slots)
 				mu.Lock()
-				successes++
-				if successes >= need {
-					cancel() // enough succeeded → stop the rest (no-op for wait:all)
+				results[i] = res
+				if res.Ok {
+					successes++
+					if shortCircuit && successes >= need {
+						cancel() // enough succeeded → stop the rest (no-op for wait:all)
+					}
 				}
 				mu.Unlock()
-			}
-		}()
+				if !deferPublish {
+					emit(i)
+				}
+			}()
+		}
+		wg.Wait()
+		return nil
 	}
-	wg.Wait()
+
+	// PAUSE 1 — before_dispatch. Every prompt is composed and nothing has run.
+	if r.armed(st, BeforeDispatch) {
+		err = stage(ctx, dispatches,
+			func(pending int) (BreakDecision, error) {
+				return r.onBreak(ctx, Breakpoint{
+					State: st.ID, Phase: BeforeDispatch, Wave: waveID,
+					WaveSize: dispatches, Pending: pending,
+					Prompts: previewPrompts(h, msgs, agentFor, dispatches-pending, dispatches),
+				})
+			}, dispatch)
+	} else {
+		err = dispatch(0, dispatches)
+	}
+	if err != nil {
+		return results, err
+	}
+
+	// PAUSE 2 — after_collection. The wave is complete and the sink is empty.
+	//
+	// Aborting here publishes NOTHING further, and that is the point: an
+	// operator who rejects a wave is saying the next stage must not see it. A
+	// flush-on-abort would make the one thing this breakpoint exists to do —
+	// withhold a result — untrue. Runs already released in an earlier step stay
+	// published, because the operator released them. Nothing downstream is left
+	// hanging either way: the abort fails the walk, so there is no next stage.
+	if deferPublish {
+		if err := stage(ctx, dispatches,
+			func(pending int) (BreakDecision, error) {
+				from := dispatches - pending
+				return r.onBreak(ctx, Breakpoint{
+					State: st.ID, Phase: AfterCollection, Wave: waveID,
+					WaveSize: dispatches, Pending: pending,
+					Results: previewResults(results[from:]),
+				})
+			},
+			func(from, to int) error {
+				for i := from; i < to; i++ {
+					emit(i)
+				}
+				return nil
+			}); err != nil {
+			return results, err
+		}
+	}
 
 	if successes < need {
 		wait := h.Fanout.Wait
@@ -264,21 +347,22 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 	return results, nil
 }
 
-// dispatchOne spawns one run of the wave and publishes exactly one sink message
-// for it, whatever happens.
+// dispatchOne spawns one run of the wave and ALWAYS returns a result, including
+// for a panic in the spawner.
 //
-// The publish is deferred so it survives a panic in the spawner: a fan-in
-// counting messages cannot tell "still running" from "died", so a wave that can
-// produce fewer messages than runs turns a downstream wait into a hang. The
-// count is the contract.
-func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env Env, agent, waveID string, index, waveSize int, slots map[string]string) (res agentResult) {
+// It returns the result rather than publishing it, because whether a result may
+// be published is the caller's question once a breakpoint can withhold one. The
+// guarantee the recover protects is unchanged and still load-bearing: a fan-in
+// counting sink messages cannot tell "still running" from "died", so a wave that
+// produced fewer results than runs would turn a downstream wait into a hang.
+// The count is the contract.
+func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env Env, agent, waveID string, index int, slots map[string]string) (res agentResult) {
 	res = agentResult{Index: index, Agent: agent}
 	defer func() {
 		if rec := recover(); rec != nil {
 			res = agentResult{Index: index, Agent: agent, Ok: false,
 				Error: fmt.Sprintf("agent %q panicked: %v", agent, rec)}
 		}
-		r.publishSink(ctx, st, waveID, waveSize, res)
 	}()
 
 	prompt := Prompt{Values: env.Values(), DataSlots: slots}
@@ -296,8 +380,8 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	return res
 }
 
-// publishSink writes one run's outcome to the sink. Called from dispatchOne's
-// defer, so it runs on every path including a panic.
+// publishSink writes one run's outcome to the sink. Called through the wave's
+// emit, which claims each index once so a staged release cannot double-publish.
 func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveID string, waveSize int, res agentResult) {
 	if st.Handler.Sink == nil {
 		return
