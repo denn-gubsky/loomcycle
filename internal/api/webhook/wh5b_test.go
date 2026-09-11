@@ -350,3 +350,86 @@ func TestReceiver_Test_BadSig_WouldAcceptFalse(t *testing.T) {
 		t.Fatal("dry-run /test must NOT invoke the runner even on bad sig")
 	}
 }
+
+// A webhook's on_complete channel.publish honours a HELD channel: the message
+// is stored at the reserved instant and delivered to nobody until a release.
+//
+// This path resolves the channel definition (now), so it owes the definition
+// the same obedience every other writer does — a breakpoint with one writer
+// that walks past it is not a breakpoint. Both declaration sources are covered:
+// operator yaml here, and a runtime-declared row below.
+func TestReceiver_OnCompleteChannelPublish_HonoursAHold(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		channels map[string]config.Channel
+		held     map[string]bool
+	}{
+		{"yaml-declared", map[string]config.Channel{"results": {Scope: "global", Hold: true}}, nil},
+		{"runtime-declared", nil, map[string]bool{"results": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			secret := "shhh"
+			now := time.Unix(1_700_000_000, 0)
+			body := []byte(`{"goal":"do it","user":"u-7"}`)
+
+			wh := config.Webhook{
+				Enabled:        true,
+				Delivery:       "spawn",
+				Agent:          "researcher",
+				Auth:           config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"},
+				PayloadMapping: map[string]string{"goal": "$.goal", "user_id": "$.user"},
+				OnComplete: []config.ScheduledRunHook{
+					{Kind: "channel.publish", Channel: "results"},
+				},
+			}
+			fr := &fakeRunner{runID: "run-1", agentID: "agent-1"}
+			st := &fakeWebhookStore{existing: map[string]store.Run{}, heldChannels: tc.held}
+			rec := newTestReceiverWithStore(t, map[string]config.Webhook{"gh": wh}, fr, st,
+				map[string]string{"WH_SECRET": secret}, []string{"WH_SECRET"}, now)
+			rec.cfg.Channels = tc.channels
+
+			h := http.Header{}
+			h.Set("X-Hub-Signature-256", githubSig(secret, body))
+			if w := doPost(rec, "gh", body, h); w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", w.Code, w.Body.String())
+			}
+
+			cp, _ := waitForHooks(t, st, 1, 0)
+			if !store.IsChannelHeld(cp[0].VisibleAt) {
+				t.Errorf("visible_at = %v, want the reserved held instant — the hook walked past the hold",
+					cp[0].VisibleAt)
+			}
+		})
+	}
+}
+
+// The control: an ordinary channel is unaffected — no held instant, so the
+// message delivers as it always has.
+func TestReceiver_OnCompleteChannelPublish_UnheldChannelIsUnchanged(t *testing.T) {
+	secret := "shhh"
+	now := time.Unix(1_700_000_000, 0)
+	body := []byte(`{"goal":"do it","user":"u-7"}`)
+
+	wh := config.Webhook{
+		Enabled:        true,
+		Delivery:       "spawn",
+		Agent:          "researcher",
+		Auth:           config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"},
+		PayloadMapping: map[string]string{"goal": "$.goal", "user_id": "$.user"},
+		OnComplete:     []config.ScheduledRunHook{{Kind: "channel.publish", Channel: "results"}},
+	}
+	fr := &fakeRunner{runID: "run-1", agentID: "agent-1"}
+	st := &fakeWebhookStore{existing: map[string]store.Run{}}
+	rec := newTestReceiverWithStore(t, map[string]config.Webhook{"gh": wh}, fr, st,
+		map[string]string{"WH_SECRET": secret}, []string{"WH_SECRET"}, now)
+
+	h := http.Header{}
+	h.Set("X-Hub-Signature-256", githubSig(secret, body))
+	if w := doPost(rec, "gh", body, h); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	cp, _ := waitForHooks(t, st, 1, 0)
+	if store.IsChannelHeld(cp[0].VisibleAt) {
+		t.Errorf("an undeclared channel was treated as held: %v", cp[0].VisibleAt)
+	}
+}

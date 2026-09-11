@@ -45,6 +45,10 @@ func (s *stubWebhookStore) ChannelPublish(_ context.Context, _ store.ChannelMess
 	return "", 0, nil
 }
 
+func (s *stubWebhookStore) ChannelGet(_ context.Context, _, name string) (store.ChannelRow, error) {
+	return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
+}
+
 func (s *stubWebhookStore) MemorySet(_ context.Context, _ string, _ store.MemoryScope, _, _ string, _ json.RawMessage, _ time.Duration) error {
 	return nil
 }

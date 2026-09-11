@@ -29,6 +29,13 @@ type WebhookStore interface {
 	// interface unchanged; the webhook receiver only needs these two of
 	// the channel/memory surface.
 	ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (id string, dropped int, err error)
+
+	// ChannelGet resolves a RUNTIME-declared channel so an on_complete
+	// channel.publish hook can honour its `hold:` — a held channel that a
+	// webhook hook wrote straight past would be a breakpoint with a hole in it.
+	// Signature matches store.Store, so store.Store still satisfies this
+	// interface unchanged.
+	ChannelGet(ctx context.Context, tenantID, name string) (store.ChannelRow, error)
 	MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 }
 
