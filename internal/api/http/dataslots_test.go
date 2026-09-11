@@ -89,22 +89,32 @@ func TestComposeCallerText_SlotsAreFilledAfterExpansion(t *testing.T) {
 	srv := &Server{cfgHolder: config.NewHolder(&config.Config{})}
 	const slot = "{{starter.message}}"
 
-	// ${var.wave} proves expansion DID run; the payload proves it did not run
-	// over the slot content.
+	// The payload carries a VARIABLE reference, not a {{...}} placeholder, and
+	// that choice is the test. A {{memory:…}} in a store-less fixture is left
+	// intact either way, so it cannot tell the two orders apart — the first
+	// version of this test used one and passed against a deliberately swapped
+	// implementation. `${var.wave}` IS resolved with nothing but a values map,
+	// so it discriminates: expanded means the payload went in first.
+	//
+	// It is also a real attack in its own right. A publisher who can get
+	// ${var.*} interpolated reads the workflow's variables, which is a
+	// disclosure the data slot exists to deny.
 	system, user := srv.composeCallerText(context.Background(), memInject{},
-		map[string]string{"var.wave": "w1"},
-		map[string]string{slot: `{"note":"{{memory:key:secrets}}"}`},
+		map[string]string{"var.wave": "w1", "var.secret": "s3cr3t"},
+		map[string]string{slot: `{"note":"${var.secret} and {{memory:key:x}}"}`},
 		"wave ${var.wave}", "Review:\n"+slot)
 
 	if system != "wave w1" {
-		t.Fatalf("expansion did not run on the system segment: %q", system)
+		t.Fatalf("expansion did not run on the operator's own segment: %q", system)
 	}
-	if !strings.Contains(user, `{{memory:key:secrets}}`) {
-		t.Fatalf("the payload did not land as text: %q", user)
+	if !strings.Contains(user, "${var.secret}") {
+		t.Errorf("the payload's ${var.secret} was RESOLVED — slots were filled before expansion, "+
+			"so a publisher can read the workflow's variables: %q", user)
 	}
-	// If the slot had been filled first, the expander would have consumed the
-	// placeholder and this literal would be gone.
-	if strings.Contains(user, "<memory") || !strings.Contains(user, "{{memory:key:secrets}}") {
-		t.Errorf("the payload's placeholder was expanded — slots were filled before expansion: %q", user)
+	if strings.Contains(user, "s3cr3t") {
+		t.Errorf("a variable value leaked into the payload: %q", user)
+	}
+	if !strings.Contains(user, "{{memory:key:x}}") {
+		t.Errorf("the payload did not land as text: %q", user)
 	}
 }
