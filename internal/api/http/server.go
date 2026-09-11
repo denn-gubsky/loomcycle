@@ -935,6 +935,14 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				return nil
 			}
 		}
+		if td.WalkRun == nil {
+			// A team walk becomes a real run, so every run-scoped surface —
+			// breakpoints, the Interruption ask a pause is answered through,
+			// cancel — has a handle to reach it by. Without it, op=run over the
+			// substrate route had no run id and no Interruption policy, and an
+			// armed breakpoint aborted the walk instead of pausing it.
+			td.WalkRun = s.openTeamWalkRun
+		}
 		if td.LiveBreakpoints == nil {
 			// Ad-hoc Run → Debug: the walk reads its arming from a set this
 			// server can still write to, so a state can be armed after the run
