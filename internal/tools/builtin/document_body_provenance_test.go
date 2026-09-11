@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -70,5 +71,59 @@ func TestChunkBody_AFactCarriesItsOriginAndProseDoesNot(t *testing.T) {
 	}
 	if got := store.ClassifyMemoryRow("doc.chunk:"+proseID, proseProv.Origin, "doc.chunk:"); got != store.MemoryRowDocument {
 		t.Errorf("ordinary prose classifies as %q, want document", got)
+	}
+}
+
+// TestChunkBody_EditingAFactDoesNotStripItsProvenance is the defect a review pass
+// caught in the change above.
+//
+// update_chunk rewrites a body through the origin-less path, and a plain MemorySet
+// delegates to MemorySetProvenance with the extra arguments zeroed — so it CLEARS
+// the column. Once that column is what tells a fact from prose, an operator merely
+// correcting a fact's wording would silently reclassify it as a document, and
+// nothing would report it: the text would still be right, the fact would just stop
+// being a fact.
+func TestChunkBody_EditingAFactDoesNotStripItsProvenance(t *testing.T) {
+	d, ctx, st := documentFixture(t)
+	doc := newEntityDoc(t, d, ctx)
+
+	out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+doc+`",
+		"natural_key":"memory/fact/denn-prefers-go","title":"Denn prefers Go",
+		"body":"Denn prefers Go for backend services.","type":"fact","subject":"Denn"}`)
+	if r.IsError {
+		t.Fatalf("upsert_chunk: %s", r.Text)
+	}
+	id := asStr(out["id"])
+	sk := sidecarScope(t, d, ctx)
+	tenant := direntTenant(ctx)
+
+	before, err := st.MemoryProvenanceGet(ctx, tenant, store.MemoryScopeUser, sk.ScopeID, "doc.chunk:"+id)
+	if err != nil || before.Origin == "" {
+		t.Fatalf("fixture: the fact's body row should carry an origin, got %+v (%v)", before, err)
+	}
+
+	// An ORDINARY EDIT, through the op an operator would actually use. update_chunk
+	// is optimistically concurrent, so it needs the current revision.
+	cur, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+id+`"}`)
+	if r.IsError {
+		t.Fatalf("get_chunk: %s", r.Text)
+	}
+	rev, _ := cur["revision"].(float64)
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,
+		"revision":%d,"body":"Denn prefers Go for backend services, and Rust for tooling."}`,
+		id, int(rev))); r.IsError {
+		t.Fatalf("update_chunk: %s", r.Text)
+	}
+
+	after, err := st.MemoryProvenanceGet(ctx, tenant, store.MemoryScopeUser, sk.ScopeID, "doc.chunk:"+id)
+	if err != nil {
+		t.Fatalf("read back after the edit: %v", err)
+	}
+	if after.Origin != before.Origin {
+		t.Errorf("editing the fact changed its origin %q -> %q — a wording correction must not "+
+			"turn a fact into prose", before.Origin, after.Origin)
+	}
+	if got := store.ClassifyMemoryRow("doc.chunk:"+id, after.Origin, "doc.chunk:"); got != store.MemoryRowFact {
+		t.Errorf("after an ordinary edit the fact classifies as %q, want fact", got)
 	}
 }

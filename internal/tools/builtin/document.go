@@ -996,12 +996,38 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 	// structure never drift across the tenant axis.
 	tenant := direntTenant(ctx)
 	bodyKey := chunkBodyKey(chunkID)
-	if origin == "" {
+	// A BODY REWRITE NEVER ERASES PROVENANCE. MemorySet delegates to
+	// MemorySetProvenance with the extra arguments zeroed, so a plain set over an
+	// existing row CLEARS its origin — verified, not assumed. That matters because
+	// the origin on a body row is now what distinguishes a fact from prose: without
+	// this, an operator editing a fact through update_chunk (which writes the body
+	// with no origin of its own) would strip the column and silently reclassify the
+	// fact as a document. The text would still be right; the fact would just stop
+	// being a fact.
+	//
+	// This is the same rule writeChunkMeta already applies to the sidecar — "an
+	// operator correcting a fact's wording must not strip the span it was derived
+	// from" — applied to the other half of the same fact. A caller that supplies an
+	// origin still wins; absence means "I have nothing to say about provenance",
+	// never "erase it".
+	//
+	// The whole provenance struct is carried, not just the origin, so a re-set does
+	// not clear class or the source ids either. The extra point read costs nothing
+	// next to the embedding call this function already makes.
+	prov := store.MemoryProvenance{Origin: origin}
+	if prev, perr := d.Store.MemoryProvenanceGet(ctx, tenant, mscope, scopeID, bodyKey); perr == nil {
+		if prov.Origin == "" {
+			prov.Origin = prev.Origin
+		}
+		prov.Class = prev.Class
+		prov.SourceSessionID = prev.SourceSessionID
+		prov.SourceRunID = prev.SourceRunID
+	}
+	if prov.Origin == "" && prov.Class == "" && prov.SourceSessionID == "" && prov.SourceRunID == "" {
 		if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
 			return err
 		}
-	} else if err := d.Store.MemorySetProvenance(ctx, tenant, mscope, scopeID, bodyKey, v, 0,
-		store.MemoryProvenance{Origin: origin}); err != nil {
+	} else if err := d.Store.MemorySetProvenance(ctx, tenant, mscope, scopeID, bodyKey, v, 0, prov); err != nil {
 		return err
 	}
 	// The body is durable at this point. Embedding is a SEPARATE, best-effort
