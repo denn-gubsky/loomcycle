@@ -267,6 +267,13 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 // guard ensures that if a future refactor relaxes that check, the
 // wildcard can't accidentally grant `findings/*` access to
 // `findings/../secret` or `findings//bypass`.
+// ChannelAllowed is channelAllowed, exported for the TEAM ACL — a Starter
+// resolves its source and sink against `Definition.Channels` and must apply the
+// identical rule an agent's allowlist gets, including the trailing `/*` prefix
+// wildcard and the path-traversal guard. One matcher, so "allowed" cannot come
+// to mean two things.
+func ChannelAllowed(name string, allowlist []string) bool { return channelAllowed(name, allowlist) }
+
 func channelAllowed(name string, allowlist []string) bool {
 	name = strings.TrimSpace(name)
 	if strings.Contains(name, "..") || strings.Contains(name, "//") {

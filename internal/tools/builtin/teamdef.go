@@ -69,6 +69,19 @@ type TeamDef struct {
 	// nil = no admission (unit tests / authoring-only wiring).
 	Admit func(ctx context.Context) (context.Context, error)
 
+	// Channels, when set, is what a `starter` state reads and what a `channel`
+	// state publishes to — the fifth injected collaborator, alongside Spawn,
+	// Admit and Board. It is built PER RUN from the definition, because the
+	// team's own channel ACL is part of that definition; hence a factory rather
+	// than a value. nil means a definition containing a starter cannot run, and
+	// says so at the state rather than skipping it silently.
+	Channels func(ctx context.Context, d teamgraph.Definition) teamrun.ChannelIO
+
+	// WaveContext, when set, returns a ctx carrying the wave a spawn belongs to,
+	// for the seam that stamps it on the spawned run. nil only means the
+	// correlation is not recorded.
+	WaveContext func(ctx context.Context, walkID, waveID string, index int) context.Context
+
 	// Board, if set, lets an op=run OPTIONALLY bind to a Document task board: when
 	// the caller passes board_chunk_id, the walk persists its position onto that
 	// chunk's status (chunk.status = the current team state) on every transition
@@ -737,7 +750,18 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}))
 	}
 
-	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn), opts...)
+	var runnerOpts []teamrun.RunnerOption
+	if t.Channels != nil {
+		// Built per run: the executor closes over THIS definition's ACL, which
+		// is what makes the team the ACL subject for its source and sink.
+		if io := t.Channels(walkCtx, def); io != nil {
+			runnerOpts = append(runnerOpts, teamrun.WithChannels(io))
+		}
+	}
+	if t.WaveContext != nil {
+		runnerOpts = append(runnerOpts, teamrun.WithWaveContext(t.WaveContext))
+	}
+	trace, walkErr := teamrun.Walk(walkCtx, def, task, teamrun.NewAgentRunner(t.Spawn, runnerOpts...), opts...)
 
 	steps := make([]map[string]any, 0, len(trace))
 	for _, s := range trace {

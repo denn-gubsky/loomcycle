@@ -847,6 +847,47 @@ type ParentContext struct {
 	BoardScope      string `json:"board_scope,omitempty"`
 	BoardChunkID    string `json:"board_chunk_id,omitempty"`
 	BoardDocumentID string `json:"board_document_id,omitempty"`
+	// Walk/Wave correlate a run to the TeamDef walk and the Starter WAVE that
+	// spawned it. A wave is N runs dispatched together from one channel read;
+	// these three are the join that recovers it.
+	//
+	// It is a JOIN, not a copy: the prompt, transcript, tokens, cost and error
+	// of every run in a wave already exist: what was missing was the key that
+	// groups them. A canvas reviewing a wave reads the runs; a Starter that
+	// restarted mid-wave rebuilds the wave the same way, which is what lets the
+	// deferred sink publish stay a deferral rather than a second copy of the
+	// results. Empty for every non-wave run.
+	WalkID    string `json:"walk_id,omitempty"`
+	WaveID    string `json:"wave_id,omitempty"`
+	WaveIndex int    `json:"wave_index,omitempty"`
+}
+
+// WaveTask is the Starter wave a spawned run belongs to, carried on ctx from
+// the walk to the run-creation seam — the same shape and the same propagation
+// BoardTask uses, because it answers the same kind of question ("which larger
+// thing is this run part of") and is stamped at the same place.
+type WaveTask struct {
+	WalkID string
+	WaveID string
+	Index  int
+}
+
+type waveTaskCtxKey struct{}
+
+// WithWaveTask attaches the wave a spawn belongs to. The Starter sets it per
+// spawned run; internal/api/http stamps it onto that run's ParentContext.
+func WithWaveTask(ctx context.Context, w WaveTask) context.Context {
+	return context.WithValue(ctx, waveTaskCtxKey{}, w)
+}
+
+// WaveTaskFromContext returns the wave on ctx. ok=false for a missing or
+// cleared task, so a plain agent run is untouched.
+func WaveTaskFromContext(ctx context.Context) (WaveTask, bool) {
+	w, _ := ctx.Value(waveTaskCtxKey{}).(WaveTask)
+	if w.WaveID == "" {
+		return WaveTask{}, false
+	}
+	return w, true
 }
 
 // IsZero reports whether every field is empty (no meaningful tracking
