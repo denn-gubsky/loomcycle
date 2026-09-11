@@ -132,6 +132,16 @@ type agentRunner struct {
 	// internal/connector, and teamrun importing that would undo the dependency
 	// contract this package is built on.
 	maxWave int
+	// breakAt is the set of state ids the operator armed, and onBreak is how
+	// they are asked. BOTH come from the RUN, never from the definition: a
+	// `debug: true` in a def would change its content hash, so turning the
+	// debugger on would fork the workflow — and then the thing being debugged
+	// is not the thing that runs in production.
+	//
+	// Empty breakAt means no state ever asks, so a walk without breakpoints
+	// takes byte-identical paths to one from before this existed.
+	breakAt map[string]map[BreakpointPhase]bool
+	onBreak BreakpointFunc
 }
 
 // RunnerOption configures the production runner. Options rather than more
@@ -153,6 +163,40 @@ func WithWaveContext(f func(ctx context.Context, walkID, waveID string, index in
 // WithMaxWave wires the deployment's ceiling on one Starter wave.
 func WithMaxWave(n int) RunnerOption {
 	return func(r *agentRunner) { r.maxWave = n }
+}
+
+// WithBreakpoints arms debug pauses on the named Starter states.
+//
+// A RUN argument by construction: the caller passes the state ids it was given
+// for THIS run, so the same promoted definition runs straight through in
+// production and paused in a canvas.
+func WithBreakpoints(states []string, f BreakpointFunc) RunnerOption {
+	return func(r *agentRunner) {
+		if len(states) == 0 || f == nil {
+			return
+		}
+		r.breakAt = make(map[string]map[BreakpointPhase]bool, len(states))
+		for _, s := range states {
+			id, phase, ok := ParseBreakpoint(s)
+			if !ok {
+				continue // refused at the run boundary; skipped here as belt
+			}
+			if r.breakAt[id] == nil {
+				r.breakAt[id] = map[BreakpointPhase]bool{}
+			}
+			if phase == "" {
+				r.breakAt[id][BeforeDispatch] = true
+				r.breakAt[id][AfterCollection] = true
+				continue
+			}
+			r.breakAt[id][phase] = true
+		}
+		if len(r.breakAt) == 0 {
+			r.breakAt = nil
+			return
+		}
+		r.onBreak = f
+	}
 }
 
 // WithRunnerLogf wires the non-fatal log sink.
