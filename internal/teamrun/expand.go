@@ -50,6 +50,12 @@ type Env struct {
 	Now       time.Time
 	State     string
 	Iteration int
+	// WalkID identifies the traversal, carried here so a handler that spawns
+	// does not need the Task to correlate what it spawned. NOT a token: it is
+	// deliberately absent from Values, because a walk id in a prompt is a
+	// string an agent could copy into somewhere it does not belong, and nothing
+	// in a prompt needs it.
+	WalkID string
 }
 
 // Values flattens the environment into the map prompt assembly resolves from,

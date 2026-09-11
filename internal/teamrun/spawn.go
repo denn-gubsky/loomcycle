@@ -123,6 +123,15 @@ type agentRunner struct {
 	// logf reports what a Starter could not do but must not fail for — a sink
 	// publish that errored, an ack that did not land. nil = log.Printf.
 	logf func(format string, args ...any)
+	// maxWave is the DEPLOYMENT's ceiling on one wave's width, distinct from
+	// the definition's own `fanout.max`. Dynamic fan-out is a spawn amplifier,
+	// and the definition is authored by whoever can write a def — the operator
+	// bounds it. 0 disables the check (tests, embeds).
+	//
+	// It is injected rather than imported because the number lives in
+	// internal/connector, and teamrun importing that would undo the dependency
+	// contract this package is built on.
+	maxWave int
 }
 
 // RunnerOption configures the production runner. Options rather than more
@@ -139,6 +148,11 @@ func WithChannels(io ChannelIO) RunnerOption {
 // WithWaveContext wires the seam that carries a wave identity to run creation.
 func WithWaveContext(f func(ctx context.Context, walkID, waveID string, index int) context.Context) RunnerOption {
 	return func(r *agentRunner) { r.wave = f }
+}
+
+// WithMaxWave wires the deployment's ceiling on one Starter wave.
+func WithMaxWave(n int) RunnerOption {
+	return func(r *agentRunner) { r.maxWave = n }
 }
 
 // WithRunnerLogf wires the non-fatal log sink.
@@ -279,6 +293,7 @@ func (r *agentRunner) envFor(st teamgraph.State, task *Task) Env {
 		Now:       now(),
 		State:     st.ID,
 		Iteration: task.IterationCounts[st.ID],
+		WalkID:    task.WalkID,
 	}
 }
 

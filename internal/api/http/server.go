@@ -924,6 +924,12 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				return nil
 			}
 		}
+		if td.MaxWave == 0 {
+			// The same ceiling the external fan-out surface uses. One number for
+			// "how many runs may one call start", so an operator who tunes it
+			// tunes both rather than discovering a second one later.
+			td.MaxWave = connector.MaxBatchSpawns
+		}
 		if td.WaveContext == nil {
 			td.WaveContext = func(ctx context.Context, walkID, waveID string, index int) context.Context {
 				return store.WithWaveTask(ctx, store.WaveTask{WalkID: walkID, WaveID: waveID, Index: index})

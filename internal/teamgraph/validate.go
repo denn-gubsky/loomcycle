@@ -341,6 +341,13 @@ func validateStarter(stateID string, h Handler) error {
 		return err
 	}
 
+	// `binds` project THE source message into ${var.*}. per=once hands the agent
+	// a batch, so there is no "the" message — binding from an arbitrary one of N
+	// would be a silent choice the author never made.
+	if h.Fanout.Per == FanoutPerOnce && len(h.Binds) > 0 {
+		return fmt.Errorf("team definition: state %q starter has `binds` with per=once — "+
+			"binds project ONE source message, and per=once hands the agent the whole batch", stateID)
+	}
 	if h.Sink != nil && strings.TrimSpace(h.Sink.Channel) == "" {
 		return fmt.Errorf("team definition: state %q starter `sink` is present but names no channel", stateID)
 	}
