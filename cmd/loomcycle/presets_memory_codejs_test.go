@@ -99,6 +99,12 @@ type fakeToolset struct {
 	edges            []string // "from-kind->to"
 	supersededChunks []string // "old by new"
 	failEntityKeys   map[string]bool
+	// failSubjectDocs models the ONE state a pre-subject-homing store is in: the
+	// entity's natural key is already held by a node in the shared document, so
+	// create_document cannot claim it (the column is unique per scope) while
+	// upsert_chunk, which UPDATES the holder, works fine. failEntityKeys cannot
+	// express it — it fails both ops — and the difference is the whole fallback.
+	failSubjectDocs map[string]bool
 
 	leaseAcquired bool
 	sessions      []map[string]any
@@ -165,17 +171,18 @@ type fakeToolset struct {
 
 func newFakeToolset() *fakeToolset {
 	return &fakeToolset{
-		leaseAcquired:  true,
-		bands:          map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
-		chunks:         map[string]string{},
-		subjectDocs:    map[string]string{},
-		chunkScopes:    map[string]string{},
-		chunkTypes:     map[string]string{},
-		chunkSpans:     map[string]string{},
-		chunkRows:      map[string]map[string]any{},
-		verdicts:       map[string]string{},
-		failEntityKeys: map[string]bool{},
-		proposedTypes:  map[string]bool{},
+		leaseAcquired:   true,
+		bands:           map[string]any{"merge_threshold": 0.9, "related_threshold": 0.5},
+		chunks:          map[string]string{},
+		subjectDocs:     map[string]string{},
+		chunkScopes:     map[string]string{},
+		chunkTypes:      map[string]string{},
+		chunkSpans:      map[string]string{},
+		chunkRows:       map[string]map[string]any{},
+		verdicts:        map[string]string{},
+		failEntityKeys:  map[string]bool{},
+		failSubjectDocs: map[string]bool{},
+		proposedTypes:   map[string]bool{},
 		// Source of truth for this format: formatSubAgentOutput in
 		// internal/api/http/resume.go. Nothing links them — grep that name.
 		subAgentHeader: "[sub-agent agent_id=a_test000000000000]\n",
@@ -317,6 +324,11 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 			// every entity-write-failure test injecting nothing.
 			if d.f.failEntityKeys[nk] {
 				return tools.Result{IsError: true, Text: "create_document: refused for " + nk}, nil
+			}
+			if d.f.failSubjectDocs[nk] {
+				return tools.Result{IsError: true, Text: "create_document: chunk " + d.f.chunks[nk] +
+					" already holds the natural key " + strconv.Quote(nk) + ", and a key names ONE " +
+					"thing per scope."}, nil
 			}
 			if len(d.f.declaredTypes) > 0 {
 				if typ, _ := in["type"].(string); typ != "" && !d.f.declaredTypes[typ] {
@@ -3372,6 +3384,60 @@ func TestConsolidator_ASubjectWithNoTypeIsFiledUnderTheFallbackType(t *testing.T
 	}
 	if n := len(callsWithOp(f, "Document.link_chunks")); n != 2 {
 		t.Errorf("edges = %d, want 2 — a named subject is reachable even with no type given", n)
+	}
+}
+
+// TestConsolidator_AnUnmigratedSubjectStillGetsItsEdge.
+//
+// A scope written before subject-homing CANNOT adopt it on its own: natural_key is
+// unique per scope, so while the old node in the shared document holds `person:denn`,
+// the document claiming that key cannot be created. MEASURED against the real store:
+// create_document fails on the constraint on every pass.
+//
+// Without a fallback the consequence is not a cosmetic one. subjectDoc returns
+// nothing, so no subject node is resolved, so NO `about` EDGE IS WRITTEN — and a fact
+// unreachable from the person it is about is the failure the entity tier exists to
+// prevent. The fact would still be stored, which is why nothing else in the suite
+// catches it.
+//
+// So the fall back is the shape that scope is already in: the subject as a node in the
+// shared document, the fact beside it, the edge joining them. It self-retires — after
+// the home_facts migration moves the node into its own document, the preferred path
+// succeeds and this never fires.
+func TestConsolidator_AnUnmigratedSubjectStillGetsItsEdge(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nDenn prefers Go."
+	f.factsJSON = `[{"text":"Denn prefers Go.","class":"preference","type":"person","subject":"Denn"}]`
+	// The pre-subject-homing state: the node exists and holds the key, so its own
+	// document cannot claim it — while upsert_chunk, which updates the holder, works.
+	f.chunks["person:denn"] = "chunk-existing"
+	f.chunkTypes["person:denn"] = "person"
+	f.failSubjectDocs = map[string]bool{"person:denn": true}
+
+	res := runConsolidator(t, f)
+
+	if n := factWriteCount(f); n != 1 {
+		t.Fatalf("the fact must still be stored; fact writes=%d", n)
+	}
+	links := callsWithOp(f, "Document.link_chunks")
+	if len(links) != 1 {
+		t.Fatalf("about edges = %d, want 1 — a subject whose own document cannot be created "+
+			"must still be reachable from its facts", len(links))
+	}
+	if to, _ := links[0].Input["to_id"].(string); to != "chunk-existing" {
+		t.Errorf("edge points at %q, want the existing subject node chunk-existing", to)
+	}
+	// And the fact is filed beside it, in the shared document — the old shape,
+	// entire, rather than a fact homed nowhere.
+	if doc, _ := lastFactWrite(t, f).Input["document_id"].(string); doc != "doc-entities" {
+		t.Errorf("fact filed in %q, want the shared entity document while the subject is "+
+			"still in it", doc)
+	}
+	// The operator is TOLD, and told the remedy — a store in this state is one
+	// migration away from the shape it should be in, and nothing else would say so.
+	if !strings.Contains(res.FinalText, "home_facts") {
+		t.Errorf("the report must name the migration that frees the key, got: %s", res.FinalText)
 	}
 }
 
