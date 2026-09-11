@@ -28,6 +28,17 @@ import (
 type ChunkLabel struct {
 	Document string // the document's title
 	Title    string // the chunk's own title (its heading)
+	// NaturalKey is the fact's STABLE IDENTITY — `memory/<class>/<slug>`, the same
+	// string its k/v row is keyed on, by deliberate design ("one key space for both
+	// stores is what stops them drifting").
+	//
+	// It is carried here so a chunk-homed fact can be addressed by the name it has
+	// always had. A chunk's row key is `doc.chunk:<hex>`, which is an opaque
+	// server-assigned address; handing that back as a fact's id would change every
+	// fact's identity the moment its home moved, and the consolidator's merge path
+	// writes a neighbour back UNDER ITS OWN KEY. Empty for an ordinary prose chunk,
+	// which has no sidecar row.
+	NaturalKey string
 }
 
 // maxChunkLabelLookup bounds the IN list. Both search surfaces cap top_k at 50
@@ -71,8 +82,11 @@ func ChunkLabelsFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	}
 
 	// LEFT JOIN: a chunk whose document row is missing still yields its own title.
-	stmt := `SELECT c.id, c.title, d.title FROM chunks c ` +
-		`LEFT JOIN documents d ON d.id = c.document_id WHERE c.id IN (` +
+	// The sidecar joins the same way and for the same reason — an ordinary prose
+	// chunk has no row there, and must still yield its label.
+	stmt := `SELECT c.id, c.title, d.title, coalesce(m.natural_key, '') FROM chunks c ` +
+		`LEFT JOIN documents d ON d.id = c.document_id ` +
+		`LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id WHERE c.id IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + `)`
 	res, err := sm.Query(ctx, key, sm.Rebind(stmt), ids)
 	if err != nil || res == nil {
@@ -87,7 +101,11 @@ func ChunkLabelsFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 		if id == "" {
 			continue
 		}
-		out[id] = ChunkLabel{Document: asStr(row[2]), Title: asStr(row[1])}
+		lb := ChunkLabel{Document: asStr(row[2]), Title: asStr(row[1])}
+		if len(row) > 3 {
+			lb.NaturalKey = asStr(row[3])
+		}
+		out[id] = lb
 	}
 	return out
 }
