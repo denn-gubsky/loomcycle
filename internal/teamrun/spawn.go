@@ -132,15 +132,18 @@ type agentRunner struct {
 	// internal/connector, and teamrun importing that would undo the dependency
 	// contract this package is built on.
 	maxWave int
-	// breakAt is the set of state ids the operator armed, and onBreak is how
-	// they are asked. BOTH come from the RUN, never from the definition: a
-	// `debug: true` in a def would change its content hash, so turning the
-	// debugger on would fork the workflow — and then the thing being debugged
-	// is not the thing that runs in production.
+	// breakAt is where the operator's arming is READ FROM — consulted at every
+	// pause, never captured at dispatch, so a state can be armed while the walk
+	// is already running. onBreak is how the pause is asked.
 	//
-	// Empty breakAt means no state ever asks, so a walk without breakpoints
-	// takes byte-identical paths to one from before this existed.
-	breakAt map[string]map[BreakpointPhase]bool
+	// BOTH come from the RUN, never from the definition: a `debug: true` in a
+	// def would change its content hash, so turning the debugger on would fork
+	// the workflow — and then the thing being debugged is not the thing that
+	// runs in production.
+	//
+	// A nil source means no state ever asks, so a walk without breakpoints takes
+	// byte-identical paths to one from before this existed.
+	breakAt BreakpointSource
 	onBreak BreakpointFunc
 }
 
@@ -165,36 +168,19 @@ func WithMaxWave(n int) RunnerOption {
 	return func(r *agentRunner) { r.maxWave = n }
 }
 
-// WithBreakpoints arms debug pauses on the named Starter states.
+// WithBreakpoints wires the debug pauses: where the arming is read from, and
+// how a pause is asked.
 //
-// A RUN argument by construction: the caller passes the state ids it was given
-// for THIS run, so the same promoted definition runs straight through in
-// production and paused in a canvas.
-func WithBreakpoints(states []string, f BreakpointFunc) RunnerOption {
+// A RUN argument by construction — the caller supplies both for THIS run, so
+// the same promoted definition runs straight through in production and paused
+// in a canvas. The source is consulted at every pause rather than read once, so
+// a caller holding a live set can arm a state after the walk has started.
+func WithBreakpoints(src BreakpointSource, f BreakpointFunc) RunnerOption {
 	return func(r *agentRunner) {
-		if len(states) == 0 || f == nil {
+		if src == nil || f == nil {
 			return
 		}
-		r.breakAt = make(map[string]map[BreakpointPhase]bool, len(states))
-		for _, s := range states {
-			id, phase, ok := ParseBreakpoint(s)
-			if !ok {
-				continue // refused at the run boundary; skipped here as belt
-			}
-			if r.breakAt[id] == nil {
-				r.breakAt[id] = map[BreakpointPhase]bool{}
-			}
-			if phase == "" {
-				r.breakAt[id][BeforeDispatch] = true
-				r.breakAt[id][AfterCollection] = true
-				continue
-			}
-			r.breakAt[id][phase] = true
-		}
-		if len(r.breakAt) == 0 {
-			r.breakAt = nil
-			return
-		}
+		r.breakAt = src
 		r.onBreak = f
 	}
 }
