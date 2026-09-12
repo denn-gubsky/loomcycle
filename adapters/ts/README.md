@@ -335,7 +335,7 @@ Two substrate-side surfaces added in the n8n integration's Phase 0 wire-API work
 | Method | Returns | Notes |
 |---|---|---|
 | `listChannels()` | `Promise<ListChannelsResponse>` | Operator-declared channels + aggregate stats (`message_count`, `oldest_visible_at`, `newest_visible_at`). Mirrors `GET /v1/_channels`. |
-| `streamUserRunStates(userId, opts?)` | `AsyncIterable<RunStateStreamItem>` | SSE stream of run state transitions for one user. Yields one `{ kind: "open", ... }` frame then one `{ kind: "event", payload: RunStateEvent }` per matching transition until close. |
+| `streamUserRunStates(userId, opts?)` | `AsyncIterable<RunStateStreamItem>` | SSE stream of run state transitions for one user. Yields one `{ kind: "open", ... }` frame then one `{ kind: "event", payload: RunStateEvent }` per matching transition until close. `opts.walkId` (v1.78.0) narrows it server-side to one team walk's agents. |
 
 **Streaming run-state events** — for orchestration UIs that want to react when an agent run completes / fails / cancels:
 
@@ -536,6 +536,31 @@ for await (const item of client.streamUserRunStates(userId, {
 ```
 
 `streamUserRunStates` holds ONE connection per user regardless of how many concurrent runs that user has. Server-enforced 30-minute timeout; reconnect on close.
+
+### `walkId` — watching ONE team walk's agents (v1.78.0)
+
+A detached team walk returns a `run_id`, and that id **is** the walk id every run it spawns carries in `parent_context.walk_id`. Pass it back as `walkId` and the server filters the stream to that workflow — no second identifier, nothing to map:
+
+```ts
+const { run_id } = await client.runTeam({ team: "triage", detach: true });
+
+for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
+  if (item.kind === "open") {
+    // The server echoes the filter it applied. Check it: a filter that matched
+    // nothing and a filter the server did not understand are both a quiet
+    // stream, and only this tells them apart.
+    if (item.payload.filter_walk_id !== run_id) throw new Error("walk filter not applied");
+    continue;
+  }
+  if (item.kind !== "event") continue;
+  const pc = item.payload.parent_context;
+  // wave_id groups one fan-out; wave_index is the position inside it, so a
+  // live view can place an agent WITHIN the walk, not merely inside it.
+  render(item.payload.agent, item.payload.status, pc?.wave_id, pc?.wave_index);
+}
+```
+
+Unlike `parentAgentId`, which the adapter applies after parsing each frame, `walkId` is applied by the server — it reduces what crosses the wire, not just what your callback sees.
 
 ### `debug: true` — synthetic open/close frames
 

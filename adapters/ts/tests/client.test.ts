@@ -1070,6 +1070,98 @@ describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => 
     expect(url).toContain("agent=writer");
   });
 
+  // loomcycle v1.78.0 — the walk filter is SERVER-side, so the only thing the
+  // adapter has to get right is putting it on the URL under the name the
+  // server's parseStreamFilter reads: `walk_id`. A wrong name is invisible —
+  // the server ignores the param, streams everything, and the caller sees a
+  // working stream that is quietly unfiltered.
+  it("streamUserRunStates sends walkId as the server's ?walk_id= param", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([])]);
+    for await (const _ of client.streamUserRunStates("user-a", {
+      walkId: "run_walk_123",
+    })) {
+      // drain
+    }
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain("walk_id=run_walk_123");
+    // Not smuggled under some other spelling the server does not read.
+    expect(url).not.toContain("walkId=");
+  });
+
+  it("streamUserRunStates omits walk_id when no walk is named", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([])]);
+    for await (const _ of client.streamUserRunStates("user-a", {
+      agent: "writer",
+    })) {
+      // drain
+    }
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain("walk_id");
+  });
+
+  // The open frame's filter_walk_id exists so a caller can tell "the filter
+  // matched nothing" from "the server never understood the filter" — both of
+  // which look like a stream that stays quiet. It is only useful if the type
+  // surfaces it.
+  it("streamUserRunStates surfaces the server's echoed walk filter", async () => {
+    const frames = [
+      `event: stream_open\ndata: ${JSON.stringify({
+        user_id: "user-a",
+        filter_status: null,
+        filter_agent: "",
+        filter_walk_id: "run_walk_123",
+        keepalive_interval: 25,
+      })}\n\n`,
+    ];
+    const { client } = makeClient([sseResponse(frames)]);
+    const items = [];
+    for await (const item of client.streamUserRunStates("user-a", {
+      walkId: "run_walk_123",
+    })) {
+      items.push(item);
+    }
+    expect(items[0]?.kind).toBe("open");
+    if (items[0]?.kind === "open") {
+      expect(items[0].payload.filter_walk_id).toBe("run_walk_123");
+    }
+  });
+
+  // The wave correlation is what places an agent WITHIN the walk rather than
+  // merely inside it: a fan-out of N shares one wave_id and differs only by
+  // wave_index. wave_index 0 is a REAL first position, so it must survive the
+  // round trip rather than reading as absent.
+  it("streamUserRunStates exposes the wave correlation on parent_context", async () => {
+    const frames = [
+      `event: run_state\ndata: ${JSON.stringify({
+        run_id: "r1",
+        agent_id: "ag1",
+        agent: "researcher",
+        user_id: "user-a",
+        status: "running",
+        ts: "2026-09-12T00:00:00Z",
+        parent_context: {
+          walk_id: "run_walk_123",
+          wave_id: "wave_1",
+          wave_index: 0,
+        },
+      })}\n\n`,
+    ];
+    const { client } = makeClient([sseResponse(frames)]);
+    const items = [];
+    for await (const item of client.streamUserRunStates("user-a", {
+      walkId: "run_walk_123",
+    })) {
+      items.push(item);
+    }
+    expect(items).toHaveLength(1);
+    if (items[0]?.kind === "event") {
+      const pc = items[0].payload.parent_context;
+      expect(pc?.walk_id).toBe("run_walk_123");
+      expect(pc?.wave_id).toBe("wave_1");
+      expect(pc?.wave_index).toBe(0);
+    }
+  });
+
   it("streamUserRunStates ignores keepalive comment lines", async () => {
     const frames = [
       ": keepalive\n\n",
