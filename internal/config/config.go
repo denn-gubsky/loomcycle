@@ -6705,6 +6705,15 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: {{tool:%s}} in system prompt is not an allowlisted read-only tool call (allowed: %s)",
 				name, unknown[0], strings.Join(meminject.AllToolRefs(), ", "))
 		}
+		// The ARGUMENT form — {{tool:<Tool>:<argument>}} — has its own, smaller
+		// set, because it is the one family that can reach the network. Same
+		// reason to reject at boot, one step sharper: {{tool:Bash:rm -rf /}}
+		// matches the family's pattern on purpose so it is REFUSED here rather
+		// than sitting in a prompt that looks wired and is not.
+		if unknown := meminject.UnknownToolCalls(agent.SystemPrompt); len(unknown) > 0 {
+			return fmt.Errorf("agent %q: {{tool:%s:...}} in system prompt is not a tool the argument form may name (allowed: %s)",
+				name, unknown[0], strings.Join(meminject.AllToolCalls(), ", "))
+		}
 		// Same posture for a document ref: the placeholder pattern matches
 		// loosely on purpose, so a ref with no path is REFUSED loudly here rather
 		// than left silently literal in a prompt the operator believes is wired.

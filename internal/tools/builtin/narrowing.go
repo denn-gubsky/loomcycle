@@ -295,3 +295,15 @@ func intersectHosts(operator, caller []string) []string {
 	}
 	return out
 }
+
+// HostOnStaticAllowlist exposes the operator-floor host matcher to callers
+// outside this package.
+//
+// It exists so trust rule 5d — a resolved prompt-expansion value that becomes a
+// network target must be on the operator's static http_host_allowlist — is
+// decided by the SAME matcher the HTTP tool dials through, rather than a second
+// implementation of suffix-matching that could disagree about, say, whether
+// "evilexample.com" matches "example.com".
+func HostOnStaticAllowlist(host string, allowlist []string) bool {
+	return hostAllowed(host, allowlist)
+}

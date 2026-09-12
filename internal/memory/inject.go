@@ -141,7 +141,17 @@ var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
 // the operator had placed it in the prompt. Substitution output is never
 // rescanned within one ReplaceAllStringFunc, which closes that cross-family
 // injection path by construction.
-var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern)
+// memorySubFormPattern is listed BEFORE memoryPlaceholderPattern, and the order
+// is load-bearing: the bare variant pattern's `[a-z_]+` matches `key`, so it
+// would claim `{{memory:key:launch}}` up to the second colon and leave `:launch}}`
+// behind as literal text. Go's regexp is leftmost-first across alternatives, so
+// putting the more specific form first makes the longer match win.
+// toolArgFormPattern precedes toolPlaceholderPattern for the same reason. The
+// two cannot actually collide today — the no-argument form requires `}}` right
+// after the ref and the argument form requires a second colon — but the
+// ordering means a later widening of either charset degrades into a longer
+// match rather than a truncated one.
+var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern)
 
 // combinedWithVarsRe is combinedPlaceholderRe plus the ${var.*} family. It is a
 // SEPARATE regex, used only when the caller supplies Values, so a prompt with no
@@ -153,7 +163,7 @@ var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern
 // variable cannot become a placeholder and a placeholder body cannot become a
 // variable. Ordering stops existing, and with it the injection path that
 // ordering created.
-var combinedWithVarsRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + varPlaceholderPattern)
+var combinedWithVarsRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + varPlaceholderPattern)
 
 // References reports whether s contains any {{memory:...}} placeholder
 // (escaped or not). A cheap gate so the caller can skip the whole injection
@@ -220,6 +230,35 @@ type ExpandInput struct {
 	// agent prompt byte-identical — a nil map means the variable family is not
 	// even in the regex.
 	Values map[string]string
+	// MemoryRefs holds the rendered body for each widened {{memory:key|search:…}}
+	// reference. Read under the RUN'S OWN scope by the caller, so the family
+	// adds reach without adding authority.
+	//
+	// Keyed by the RESOLVED ref — the caller collects keys with
+	// ReferencesMemoryRefs, which resolves through the same helper the expander
+	// does, so the two cannot key the same reference differently.
+	MemoryRefs map[MemoryRef]string
+	// ToolCalls holds the rendered body for each widened {{tool:Name:arg}}
+	// reference, keyed the same way. Unlike every other family this one can
+	// involve a NETWORK call, which is why the caller must bound it and must
+	// fail soft — an absent entry renders to nothing.
+	ToolCalls map[ToolCall]string
+	// HostAllowed reports whether a resolved NETWORK TARGET's host is on the
+	// operator's STATIC http_host_allowlist (trust rule 5d).
+	//
+	// A function rather than a list so this package stays pure string work with
+	// no config dependency, and so the caller applies one predicate at both the
+	// point of refusal and the point it dials. NIL refuses every network
+	// argument: an unwired caller must not be a permissive one.
+	HostAllowed func(host string) bool
+	// OperatorAuthored gates the WIDENED families only — a def an operator
+	// wrote may use them; one an agent wrote may not, and is refused with a
+	// reason rather than silently rendered empty.
+	//
+	// Supplied by the caller from the resolved definition, so this package
+	// stays pure string work with no ctx of its own. FALSE is the safe default:
+	// an unset field cannot grant authority.
+	OperatorAuthored bool
 	// ToolMaxTokens caps the TOTAL injected tool-result content (chars/4).
 	// <= 0 disables.
 	//
@@ -288,6 +327,17 @@ func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
 		// Which family matched: the memory pattern is tried first and only
 		// matches a full {{memory:...}} placeholder, so a non-nil result is
 		// unambiguous.
+		// The widened sub-forms are recognised BEFORE the bare variant, mirroring
+		// the alternation order above.
+		if memorySubFormRe.MatchString(match) {
+			return expandMemorySubForm(match, in.MemoryRefs, &remaining, in.OperatorAuthored, in.Values, &refused)
+		}
+		// The widened tool form draws on the TOOL budget, like its no-argument
+		// sibling: both are runtime-knowledge blocks rather than accumulated
+		// content an operator placed.
+		if toolArgFormRe.MatchString(match) {
+			return expandToolArgForm(match, in.ToolCalls, &toolRemaining, in.OperatorAuthored, in.Values, in.HostAllowed, &refused)
+		}
 		sub := placeholderRe.FindStringSubmatch(match)
 		if sub == nil {
 			// Not the memory family. The remaining two are disjoint, so a match

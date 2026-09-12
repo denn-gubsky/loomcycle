@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"time"
 
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -369,3 +370,134 @@ func firstSentence(desc string, maxBytes int) string {
 // utf8Start reports whether b starts a UTF-8 sequence, so a hard cap never splits
 // a multi-byte rune (a split rune renders as U+FFFD).
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+const (
+	// promptFetchTimeout bounds the network work ONE prompt assembly may do,
+	// across every {{tool:WebFetch|WebSearch:…}} reference the prompt names —
+	// not per reference.
+	//
+	// A shared budget rather than a per-call one because the cost that matters
+	// is the latency added to run entry, sub-agent spawn and resume, and a
+	// per-call bound multiplies by however many refs a prompt happens to carry.
+	// Five seconds is short on purpose: this family is a convenience binding,
+	// and a page that cannot answer in five seconds is one the agent should
+	// fetch itself with the tool, where it can react to the delay.
+	promptFetchTimeout = 5 * time.Second
+
+	// promptFetchMaxBytes caps ONE fetched body before the tool budget trims it.
+	// The default WebFetch ceiling is 256 KiB, which would be read off the wire
+	// and then almost entirely discarded by toolInjectMaxTokens.
+	promptFetchMaxBytes = 16 << 10
+)
+
+// staticHostAllowed is trust rule 5d's predicate: is this host on the
+// OPERATOR's static allowlist?
+//
+// Static is the whole point. A run's caller-authoritative list can be widened
+// per call, and a prompt-expansion fetch happens before any of that is in
+// force, under the runtime's own authority — so the floor is the only list that
+// can govern it. It uses the same effective list the HTTP tool is built with
+// (localhost aliases stripped unless the operator opted them in), so a host the
+// runtime's own tool would refuse to dial is refused here too.
+//
+// No config ⇒ false. An unwired server must not be a permissive one.
+func (s *Server) staticHostAllowed(host string) bool {
+	cfg := s.cfg()
+	if cfg == nil {
+		return false
+	}
+	return builtin.HostOnStaticAllowlist(host, builtin.StripLocalhostAliases(
+		cfg.Env.HTTPHostAllowlist, cfg.Env.HTTPPrivateHostAllowlist))
+}
+
+// renderToolCalls dispatches each widened {{tool:Name:arg}} reference and
+// returns the rendered body per call.
+//
+// FAIL SOFT, ALWAYS. A refused host, an unreachable one, a timeout, an empty
+// result — every one of them yields no entry, the placeholder renders to
+// nothing, and the run proceeds. This is the cost the network family was
+// allowed on the condition it be paid here: prompt assembly runs at every run
+// entry, sub-agent spawn and resume, and a page being down must never be the
+// reason a run fails.
+func (s *Server) renderToolCalls(ctx context.Context, mi memInject, calls []meminject.ToolCall) map[meminject.ToolCall]string {
+	if len(calls) == 0 {
+		return nil
+	}
+	fctx, cancel := context.WithTimeout(ctx, promptFetchTimeout)
+	defer cancel()
+	out := make(map[meminject.ToolCall]string, len(calls))
+	for _, call := range calls {
+		var body string
+		switch call.Tool {
+		case "WebFetch":
+			body = s.renderWebFetch(fctx, call.Arg)
+		case "WebSearch":
+			body = s.renderWebSearch(fctx, mi, call.Arg)
+		}
+		if body = strings.TrimSpace(body); body != "" {
+			out[call] = body
+		}
+	}
+	return out
+}
+
+// renderWebFetch fetches ONE allowlisted URL through the real WebFetch tool.
+//
+// The tool is constructed against the operator's STATIC allowlist, which is
+// what makes this the enforcement point for trust rule 5d rather than a second
+// opinion about it: the expander refuses an off-list host so the operator sees
+// WHY, and this construction is why the request is never made. Both consult the
+// same list through the same matcher.
+func (s *Server) renderWebFetch(ctx context.Context, rawURL string) string {
+	cfg := s.cfg()
+	if cfg == nil {
+		return ""
+	}
+	wf := &builtin.WebFetch{
+		HTTP: &builtin.HTTP{
+			HostAllowlist: builtin.StripLocalhostAliases(
+				cfg.Env.HTTPHostAllowlist, cfg.Env.HTTPPrivateHostAllowlist),
+			PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+			MaxResponseBytes:     promptFetchMaxBytes,
+			Timeout:              promptFetchTimeout,
+		},
+		MaxOutputBytes: promptFetchMaxBytes,
+	}
+	req, _ := json.Marshal(map[string]any{"url": rawURL})
+	res, err := wf.Execute(ctx, req)
+	if err != nil || res.IsError {
+		return ""
+	}
+	return res.Text
+}
+
+// renderWebSearch runs ONE query through the real WebSearch fallback circuit.
+//
+// Its argument is a query, not a network target, so trust rule 5d does not
+// apply: the endpoint is the operator's configured search provider and no
+// argument can change it. The tenant's own credentials still resolve, because
+// the dispatch carries the run's tool ctx — the same posture the other
+// renderers take.
+func (s *Server) renderWebSearch(ctx context.Context, mi memInject, query string) string {
+	if s.searchRegistry == nil || s.searchResolver == nil {
+		return ""
+	}
+	ws := &builtin.WebSearch{
+		Registry:          s.searchRegistry,
+		Resolver:          s.searchResolver,
+		HostKeys:          s.searchHostKeys,
+		MaxResultsDefault: promptSearchResults,
+		Timeout:           promptFetchTimeout,
+	}
+	req, _ := json.Marshal(map[string]any{"query": query, "max_results": promptSearchResults})
+	res, err := ws.Execute(s.docToolCtx(ctx, mi), req)
+	if err != nil || res.IsError {
+		return ""
+	}
+	return res.Text
+}
+
+// promptSearchResults is how many hits a {{tool:WebSearch:…}} binding inlines.
+// Small on purpose: the binding exists to give an agent a starting point, not
+// to be its research pass.
+const promptSearchResults = 5
