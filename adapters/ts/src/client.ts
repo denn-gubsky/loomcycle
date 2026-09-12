@@ -2630,6 +2630,18 @@ export class LoomcycleClient {
    *  Errors during the stream throw — they do NOT surface as items.
    *  Pass an AbortSignal to terminate cleanly from the consumer side.
    *
+   *  v1.78.0 — `walkId` is a SERVER-side filter: only the runs one team
+   *  walk spawned. A walk's own run_id IS its walk id, so a caller that
+   *  started a team with `detach: true` passes back the handle it already
+   *  holds and gets a live view of that workflow's agents:
+   *
+   *  ```ts
+   *  const { run_id } = await client.runTeam({ team: "triage", detach: true });
+   *  for await (const item of client.streamUserRunStates(userId, { walkId: run_id })) {
+   *    if (item.kind === "event") place(item.payload.parent_context?.wave_index);
+   *  }
+   *  ```
+   *
    *  v0.9.x options:
    *  - `parentAgentId` — client-side filter: only `kind: "event"`
    *    items whose payload's `parent_agent_id` matches are yielded.
@@ -2650,6 +2662,9 @@ export class LoomcycleClient {
     }
     if (opts?.agent) {
       params.set("agent", opts.agent);
+    }
+    if (opts?.walkId) {
+      params.set("walk_id", opts.walkId);
     }
     const qs = params.toString();
     const path =

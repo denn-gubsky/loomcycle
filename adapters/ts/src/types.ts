@@ -351,6 +351,22 @@ export interface ParentContext {
   board_scope?: string;
   board_chunk_id?: string;
   board_document_id?: string;
+  /** Team-walk correlation (loomcycle v1.78.0). A run spawned by a team walk
+   *  carries the walk's own run_id here, plus which WAVE of that walk it
+   *  belongs to and its index within the wave.
+   *
+   *  `walk_id` is what {@link StreamUserRunStatesOptions.walkId} filters on
+   *  server-side; `wave_id` + `wave_index` are what let a live view place an
+   *  agent within the walk rather than merely inside it — a fan-out of N
+   *  agents shares one `wave_id` and differs only by `wave_index`.
+   *
+   *  Absent on any run no team walk spawned. */
+  walk_id?: string;
+  wave_id?: string;
+  /** Position within the wave, 0-based. Sent even when 0 (unlike the string
+   *  fields, which are omitted when empty), so an index of 0 is a real first
+   *  position and not an absent one. */
+  wave_index?: number;
 }
 
 export interface ContinueOptions {
@@ -2230,6 +2246,13 @@ export interface RunStateStreamOpen {
   user_id: string;
   filter_status: string[] | null;
   filter_agent: string;
+  /** v1.78.0 — the walk filter the server actually applied, echoed back.
+   *
+   *  Worth reading rather than assuming: a filter that matched nothing and a
+   *  filter the server never understood look identical from the outside — both
+   *  are a stream that stays quiet. Comparing this to what you sent tells the
+   *  two apart before you wait on an empty stream. Empty when unfiltered. */
+  filter_walk_id?: string;
   keepalive_interval: number;
 }
 
@@ -2253,12 +2276,28 @@ export interface StreamUserRunStatesOptions {
   statuses?: string[];
   /** Filter to one agent name. Empty means any. */
   agent?: string;
+  /** v1.78.0 — SERVER-side filter: only the runs one team walk spawned,
+   *  matched against each event's `parent_context.walk_id`.
+   *
+   *  A team walk's own run_id IS its walk id, so a caller that started a team
+   *  with `detach: true` passes back exactly the handle it already holds —
+   *  there is no second identifier and nothing to map. That is what makes a
+   *  live view of one running workflow's agents a filter rather than a
+   *  feature.
+   *
+   *  Unlike {@link StreamUserRunStatesOptions.parentAgentId}, this is applied
+   *  by the server, so it reduces what crosses the wire and not just what your
+   *  callback sees. The server echoes it back on the open frame as
+   *  {@link RunStateStreamOpen.filter_walk_id}. */
+  walkId?: string;
   /** v0.9.x — client-side filter on the run's parent_agent_id.
    *  Useful for "show me only the sub-runs spawned by agent X."
    *  The filter is applied AFTER the SSE frame is parsed, so this
    *  shrinks what your callback sees but doesn't reduce server-side
-   *  load. Server-side filtering is a separate (future) request.
-   *  Pass the empty string to opt out (default). */
+   *  load. Pass the empty string to opt out (default).
+   *
+   *  For the one case that HAS a server-side filter, prefer it: see
+   *  {@link StreamUserRunStatesOptions.walkId}. */
   parentAgentId?: string;
   /** v0.9.x — opt-in observability: when true, the iterator yields a
    *  client-synthesized `{ kind: "close", payload: { reason } }` item
