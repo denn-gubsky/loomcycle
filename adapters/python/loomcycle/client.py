@@ -1534,14 +1534,30 @@ class LoomcycleClient:
         *,
         statuses: Optional[Sequence[str]] = None,
         agent: str = "",
+        walk_id: str = "",
     ) -> AsyncIterator[Mapping[str, Any]]:
         """Stream run-state transitions for a user's runs (mirror of the
         gRPC ``StreamUserRunStates`` / HTTP
         ``GET /v1/users/{user_id}/agents/stream``). Optional ``statuses``
         filter (empty = all transitions); optional ``agent`` filter
         (empty = any agent). Yields ``{run_id, agent_id, agent, user_id,
-        parent_agent_id, status, stop_reason, error, ts}`` dicts as
-        transitions arrive.
+        parent_agent_id, status, stop_reason, error, ts, parent_context}``
+        dicts as transitions arrive.
+
+        ``walk_id`` narrows the stream to the runs ONE team walk spawned,
+        matched server-side against each event's
+        ``parent_context["walk_id"]``. A team walk's own run id IS its walk
+        id, so a caller that started a team detached passes back exactly the
+        handle it already holds::
+
+            async for evt in client.stream_user_run_states(
+                user_id, walk_id=run_id
+            ):
+                pc = evt["parent_context"]
+                # pc is None for a run outside any walk. Inside one,
+                # wave_id groups a fan-out and wave_index is the position
+                # within it — index 0 is a real first position.
+                place(evt["agent"], evt["status"], pc and pc["wave_id"])
 
         Sync-returning — consume with ``async for`` (see
         :meth:`run_streaming`)."""
@@ -1549,6 +1565,7 @@ class LoomcycleClient:
             user_id=user_id,
             statuses=list(statuses or ()),
             agent=agent,
+            walk_id=walk_id,
         )
         return self._drive_run_state_stream(
             self._stub.StreamUserRunStates(req, metadata=self._auth_metadata())
@@ -1949,7 +1966,12 @@ def _resolver_matrix_to_dict(resp: "pb.ResolverMatrixResponse") -> Mapping[str, 
 
 
 def _run_state_event_to_dict(e: "pb.RunStateEvent") -> Mapping[str, Any]:
-    """Convert proto RunStateEvent → public dict."""
+    """Convert proto RunStateEvent → public dict.
+
+    ``parent_context`` is always present as a KEY and is ``None`` for a run
+    that carried no lineage, so absence is a value to test rather than a
+    ``KeyError`` to guard. That distinction is load-bearing: an empty dict
+    would read as "this run is in a walk whose id happens to be blank"."""
     return {
         "run_id": e.run_id,
         "agent_id": e.agent_id,
@@ -1960,6 +1982,29 @@ def _run_state_event_to_dict(e: "pb.RunStateEvent") -> Mapping[str, Any]:
         "stop_reason": e.stop_reason,
         "error": e.error,
         "ts": e.ts,
+        "parent_context": _parent_context_to_dict(e),
+    }
+
+
+def _parent_context_to_dict(e: "pb.RunStateEvent") -> Optional[Mapping[str, Any]]:
+    """Project the run's lineage, or None when it carried none.
+
+    HasField is the presence test rather than a truthiness check on the
+    fields: every one of them can legitimately be empty or zero, and
+    ``wave_index == 0`` is a real first position in a wave."""
+    if not e.HasField("parent_context"):
+        return None
+    pc = e.parent_context
+    return {
+        "root_agent_run_id": pc.root_agent_run_id,
+        "function_key": pc.function_key,
+        "tier_at_run": pc.tier_at_run,
+        "board_scope": pc.board_scope,
+        "board_chunk_id": pc.board_chunk_id,
+        "board_document_id": pc.board_document_id,
+        "walk_id": pc.walk_id,
+        "wave_id": pc.wave_id,
+        "wave_index": pc.wave_index,
     }
 
 

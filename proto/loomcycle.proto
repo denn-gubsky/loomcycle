@@ -1504,6 +1504,17 @@ message StreamUserRunStatesRequest {
   repeated string statuses = 2;
   // Optional filter — empty means any agent matches.
   string agent = 3;
+  // Optional filter — only the runs ONE team walk spawned, matched against
+  // each event's parent_context.walk_id. Empty means every walk.
+  //
+  // A team walk's own run id IS its walk id, so a caller that started a team
+  // with mode=detach filters by exactly the handle it already holds — no
+  // second identifier, and nothing to map. That is what makes a live view of
+  // one running workflow's agents a filter rather than a feature.
+  //
+  // Server-side: it reduces what crosses the wire, not merely what the caller
+  // keeps.
+  string walk_id = 4;
 }
 
 // RunStateEvent mirrors the SSE wire shape from the HTTP transport.
@@ -1518,6 +1529,42 @@ message RunStateEvent {
   string stop_reason = 7;
   string error = 8;
   string ts = 9;
+  // The run's opaque caller-tracking lineage, echoed on the transition.
+  // Unset for a run that carried none — a message field, so "absent" is
+  // distinguishable from "present and empty".
+  ParentContext parent_context = 10;
+}
+
+// ParentContext mirrors the lineage the HTTP transport emits as the SSE
+// event's `parent_context` object. It is what the walk_id filter matches on,
+// and what lets a subscriber attribute a finishing sub-agent to the request
+// that started it.
+//
+// Every field is caller- or runtime-supplied correlation. None of it is
+// secret, which is why it is safe to echo on a transition stream at all.
+message ParentContext {
+  // The consumer's identifier for the user-initiated run at the root of the
+  // spawn tree, echoed on every descendant.
+  string root_agent_run_id = 1;
+  // The consumer's logical-operation key for the root request.
+  string function_key = 2;
+  // The consumer's tier marker captured at root-run time. Distinct from
+  // user_tier, which is loomcycle's own resolver policy.
+  string tier_at_run = 3;
+  // Workflow-board correlation: a board-bound team run stamps these on each
+  // handler run it spawns, so a client can pin a live agent to its card.
+  string board_scope = 4;
+  string board_chunk_id = 5;
+  string board_document_id = 6;
+  // Team-walk correlation. walk_id says the run is INSIDE a walk; wave_id and
+  // wave_index say WHERE — a fan-out of N runs dispatched together from one
+  // channel read shares a wave_id and differs only by index.
+  string walk_id = 7;
+  string wave_id = 8;
+  // 0 is a REAL first position, not an absent one. proto3 cannot tell the two
+  // apart on a scalar, which is exactly why parent_context itself is a MESSAGE:
+  // a caller checks whether the lineage is present, then reads the index.
+  int32 wave_index = 9;
 }
 
 // ========================

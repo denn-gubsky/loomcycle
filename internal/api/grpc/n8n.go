@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // ListChannels — mirrors GET /v1/_channels.
@@ -61,9 +62,14 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 	// TenantScoped, which the gRPC path previously left false).
 	tenantID, allTenants := grpcTenantScope(stream.Context())
 	cReq := connector.StreamUserRunStatesRequest{
-		UserID:       req.GetUserId(),
-		Statuses:     req.GetStatuses(),
-		Agent:        req.GetAgent(),
+		UserID:   req.GetUserId(),
+		Statuses: req.GetStatuses(),
+		Agent:    req.GetAgent(),
+		// Narrow to one team walk's runs. Applied by the connector against
+		// each event's parent_context.walk_id, exactly as the HTTP handler's
+		// ?walk_id= does — the two transports must not disagree about what a
+		// walk filter means.
+		WalkID:       req.GetWalkId(),
 		TenantID:     tenantID,
 		TenantScoped: !allTenants,
 	}
@@ -82,6 +88,7 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 			StopReason:    evt.StopReason,
 			Error:         evt.Error,
 			Ts:            evt.TS,
+			ParentContext: parentContextToProto(evt.ParentContext),
 		})
 	}
 
@@ -93,4 +100,34 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 		return status.Error(codes.Internal, err.Error())
 	}
 	return nil
+}
+
+// parentContextToProto maps the run's lineage onto the wire message, or nil
+// when the run carried none.
+//
+// It exists because the gRPC transport used to drop this entirely: the HTTP
+// SSE frame has carried `parent_context` since v0.12.x, and a gRPC subscriber
+// could neither attribute a finishing sub-agent to the request that started it
+// nor tell which wave of a walk a run belonged to. The walk_id FILTER is
+// server-side, so a client can now narrow the stream — but narrowing is only
+// half of it; placing a run inside the walk needs the wave fields.
+//
+// Every field is copied explicitly rather than by reflection so a field added
+// to store.ParentContext fails to compile here instead of silently going
+// missing on one transport, which is the failure this whole change is fixing.
+func parentContextToProto(pc *store.ParentContext) *loomcyclepb.ParentContext {
+	if pc == nil {
+		return nil
+	}
+	return &loomcyclepb.ParentContext{
+		RootAgentRunId:  pc.RootAgentRunID,
+		FunctionKey:     pc.FunctionKey,
+		TierAtRun:       pc.TierAtRun,
+		BoardScope:      pc.BoardScope,
+		BoardChunkId:    pc.BoardChunkID,
+		BoardDocumentId: pc.BoardDocumentID,
+		WalkId:          pc.WalkID,
+		WaveId:          pc.WaveID,
+		WaveIndex:       int32(pc.WaveIndex),
+	}
 }
