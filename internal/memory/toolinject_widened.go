@@ -241,7 +241,11 @@ func expandToolArgForm(match string, bodies map[ToolCall]string, remaining *int,
 	}
 	arg, ok := resolveWidenedArg(sub[3], values, toolArgCharsetRe, MaxToolArgBytes, refused)
 	if !ok {
-		*refused = append(*refused, "tool:"+name)
+		// The RAW argument, not the resolved one: the template is
+		// operator-written and identifies which placeholder was refused; the
+		// resolved value is the untrusted half. Same split the memory sub-form
+		// makes.
+		*refused = append(*refused, "tool:"+name+":"+strings.TrimSpace(sub[3]))
 		return ""
 	}
 	// TRUST RULE 5d. The host is NAMED in the refusal on purpose, against this
