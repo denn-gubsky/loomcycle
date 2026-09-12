@@ -764,13 +764,22 @@ func firstUserText(segs []loop.PromptSegment) string {
 //
 // Returns the inputs unchanged when there is nothing to do, which is every
 // non-team run: no caller segment, no values, no refs.
-func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values map[string]string, system, user string) (string, string) {
+func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values map[string]string, system, user string, operatorAuthored bool) (string, string) {
 	if system == "" && user == "" {
 		return system, user
 	}
 	combined := system + "\n" + user
 	docRefs := meminject.ReferencesDocRefs(combined)
 	toolRefs := meminject.ReferencesToolRefs(combined)
+	// The WIDENED families, collected only for a team an operator wrote — the
+	// same two-cost gate the agent-prompt path uses: collecting nothing means a
+	// def that may not use them causes neither the store reads nor the fetch.
+	var memRefs []meminject.MemoryRef
+	var toolCalls []meminject.ToolCall
+	if operatorAuthored {
+		memRefs = meminject.ReferencesMemoryRefs(combined, values)
+		toolCalls = meminject.ReferencesToolCalls(combined, values)
+	}
 	// ReferencesWidened is checked here for the same reason the agent-prompt
 	// fast path checks it: a segment whose ONLY placeholder is a widened one has
 	// no other reason to enter expansion, and skipping leaves it sitting in the
@@ -788,24 +797,21 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		MaxTokens:     config.DefaultMemoryInjectMaxTokens,
 		ToolMaxTokens: toolInjectMaxTokens,
-		// OperatorAuthored is deliberately FALSE, so the WIDENED families are
-		// refused in a caller segment.
+		MemoryRefs:    s.renderMemoryRefs(ctx, mi, memRefs),
+		ToolCalls:     s.renderToolCalls(ctx, mi, toolCalls),
+		// The TEAM DEFINITION's authorship, supplied by the caller — NOT the
+		// spawned agent's, and not read from ctx.
 		//
-		// A caller segment is a TEAM NODE's prompt, and its author is the
-		// TeamDef — not the agent being spawned. Gating on the spawned agent's
-		// flag would be wrong in the direction that matters: an
-		// operator-authored agent invoked from a model-authored team node would
-		// pass a guard whose whole question is who wrote the TEMPLATE. TeamDef
-		// carries no authorship marker yet, and inventing a proxy for one here
-		// would be exactly the "branch on a signal that resembles the answer"
-		// mistake the guard exists to avoid. Until it has one, the widened
-		// families are unavailable here — which costs nothing that worked
-		// before, because they are new.
+		// A caller segment is a TEAM NODE's prompt, so the question the guard
+		// asks is who wrote that template. Gating on the spawned agent's flag
+		// would be wrong in the direction that matters: an operator-authored
+		// agent invoked from a model-authored node would pass a guard whose
+		// whole subject is the node. The two authors are independent, and the
+		// flag travels with the prompt for exactly that reason.
 		//
-		// HostAllowed is still supplied: a fail-closed predicate plus a
-		// fail-closed authorship flag is the posture to leave behind for
-		// whoever wires the marker, not a nil waiting to be noticed.
-		OperatorAuthored: false,
+		// FALSE for every non-team caller — there is no template to author —
+		// which is also the safe direction for a seam nobody has wired yet.
+		OperatorAuthored: operatorAuthored,
 		HostAllowed:      s.staticHostAllowed,
 	}
 	// Deliberately NO Sections: the {{memory:...}} variants render an agent's

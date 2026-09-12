@@ -87,7 +87,7 @@ func TestNodePrompt_CarriesTheBuiltInTokenValues(t *testing.T) {
 	r := varsRunner(nil)
 	st := agentState("reviewer")
 	st.Handler.InputTemplate = "at ${now.date} in ${team.state}"
-	p := nodePrompt(st.Handler, "threaded", r.envFor(st, &Task{}))
+	p := r.nodePrompt(st.Handler, "threaded", r.envFor(st, &Task{}))
 
 	if p.Values["now.date"] != fixedNow.UTC().Format("2006-01-02") {
 		t.Errorf("now.date = %q", p.Values["now.date"])

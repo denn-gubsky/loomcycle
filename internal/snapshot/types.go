@@ -121,6 +121,17 @@ type AgentDefEntry struct {
 	// (omitempty); restoring older snapshots into newer readers works
 	// without a section-version bump.
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// OperatorAuthored records whether an OPERATOR wrote this definition.
+	//
+	// Carried through the snapshot because losing it is a silent DEMOTION:
+	// the flag gates the widened prompt-expansion families, so a restore that
+	// dropped it would leave an operator's own definitions unable to resolve
+	// bindings that worked before the capture — a working def broken by an
+	// operation that is supposed to preserve it.
+	//
+	// Additive (omitempty): an older snapshot restores as not-operator-authored,
+	// which is the same safe direction the column default takes.
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // AgentDefActiveSection wraps the active-pointer entries.
@@ -201,6 +212,10 @@ type TeamDefEntry struct {
 	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
 	// ContentSHA256 — see AgentDefEntry.ContentSHA256.
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// OperatorAuthored — see AgentDefEntry.OperatorAuthored. It matters more
+	// here: a team node's prompt is expanded under this flag, so a demoted
+	// TeamDef stops resolving the bindings its own nodes were written around.
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // TeamDefActiveSection mirrors SkillDefActiveSection.

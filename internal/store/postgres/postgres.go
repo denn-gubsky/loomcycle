@@ -2180,7 +2180,8 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 	rows, err := s.pool.Query(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition::text, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static, tenant_id, content_sha256
+		        retired, bootstrapped_from_static, tenant_id, content_sha256,
+		        operator_authored
 		 FROM teamdefs
 		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
@@ -2204,6 +2205,7 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 			&definition, &description,
 			&r.CreatedAt, &createdBy, &createdRun,
 			&r.Retired, &r.BootstrappedFromStatic, &r.TenantID, &contentSHA,
+			&r.OperatorAuthored,
 		); err != nil {
 			return nil, fmt.Errorf("scan team_def: %w", err)
 		}
@@ -2740,14 +2742,16 @@ func (s *Store) SnapshotRestoreTeamDef(ctx context.Context, r store.TeamDefRow) 
 		`INSERT INTO teamdefs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
+			retired, bootstrapped_from_static, content_sha256, tenant_id,
+			operator_authored
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		 ON CONFLICT (def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
 		string(r.Definition), nullIfEmpty(r.Description),
 		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
 		r.Retired, r.BootstrappedFromStatic,
 		nullIfEmpty(r.ContentSHA256), r.TenantID,
+		r.OperatorAuthored,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore team_def: %w", err)
@@ -5908,14 +5912,16 @@ func (s *Store) TeamDefCreate(ctx context.Context, row store.TeamDefRow) (store.
 		INSERT INTO teamdefs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id,
+			operator_authored
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		row.DefID, row.Name, row.Version, nullableString(row.ParentDefID),
 		string(row.Definition), nullableString(row.Description),
 		row.CreatedAt,
 		nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
 		row.Retired, row.BootstrappedFromStatic,
 		nullableString(row.ContentSHA256), row.TenantID,
+		row.OperatorAuthored,
 	); err != nil {
 		return store.TeamDefRow{}, fmt.Errorf("team_def insert: %w", err)
 	}
@@ -6089,7 +6095,8 @@ const teamDefSelect = `SELECT
 	retired,
 	bootstrapped_from_static,
 	COALESCE(content_sha256, ''),
-	tenant_id
+	tenant_id,
+	operator_authored
 FROM teamdefs`
 
 func (s *Store) scanTeamDef(row pgx.Row) (store.TeamDefRow, error) {
@@ -6107,6 +6114,7 @@ func (s *Store) scanTeamDef(row pgx.Row) (store.TeamDefRow, error) {
 		&out.Retired, &out.BootstrappedFromStatic,
 		&out.ContentSHA256,
 		&out.TenantID,
+		&out.OperatorAuthored,
 	)
 	if err != nil {
 		return store.TeamDefRow{}, err
@@ -6132,6 +6140,7 @@ func (s *Store) scanTeamDefRows(rows pgx.Rows) ([]store.TeamDefRow, error) {
 			&r.Retired, &r.BootstrappedFromStatic,
 			&r.ContentSHA256,
 			&r.TenantID,
+			&r.OperatorAuthored,
 		); err != nil {
 			return nil, err
 		}

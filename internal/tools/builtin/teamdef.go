@@ -340,6 +340,11 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    teamgraph.Sign(in.Name, def),
 		TenantID:         tenantID,
+		// Who wrote this team, from the CTX rather than from anything the
+		// caller supplied. CreatedByAgentID above is a run's own claim about
+		// itself; this is the runtime's. A team's node prompts are expanded
+		// under this flag, so it must not be assertable by the body it gates.
+		OperatorAuthored: tools.IsSubstrateOperator(ctx),
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
@@ -452,6 +457,10 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    teamgraph.Sign(in.Name, def),
 		TenantID:         tenantID,
+		// The FORKER's ctx, never the parent row's flag. A fork may rewrite
+		// every node prompt, so inheriting would launder an operator-authored
+		// team into an agent-authored one that kept the authority.
+		OperatorAuthored: tools.IsSubstrateOperator(ctx),
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
@@ -1050,6 +1059,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if t.MaxWave > 0 {
 		runnerOpts = append(runnerOpts, teamrun.WithMaxWave(t.MaxWave))
 	}
+	// From the DEF ROW, not from ctx and not from the definition body. The row
+	// is where the runtime recorded who wrote this team; the body is the thing
+	// the flag gates, so a team that could assert its own authorship would be
+	// asserting its own authority.
+	runnerOpts = append(runnerOpts, teamrun.WithOperatorAuthored(row.OperatorAuthored))
 	runner := teamrun.NewAgentRunner(t.Spawn, runnerOpts...)
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()

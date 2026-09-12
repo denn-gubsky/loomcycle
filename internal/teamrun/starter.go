@@ -409,7 +409,7 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 		}
 	}()
 
-	prompt := Prompt{Values: env.Values(), DataSlots: slots}
+	prompt := Prompt{Values: env.Values(), DataSlots: slots, OperatorAuthored: r.operatorAuthored}
 	if st.Handler.Prompt != nil {
 		prompt.System, prompt.Input = st.Handler.Prompt.System, st.Handler.Prompt.Input
 	}

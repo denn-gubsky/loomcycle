@@ -50,6 +50,15 @@ type Prompt struct {
 	// Empty for every non-starter state, so an ordinary node's assembly is
 	// byte-identical to before this existed.
 	DataSlots map[string]string
+	// OperatorAuthored is the TEAM definition's authorship, and it gates the
+	// widened prompt-expansion families inside System and Input.
+	//
+	// It travels on the PROMPT rather than on ctx because ctx already carries
+	// the spawned AGENT's authorship, and the two answer different questions:
+	// a team node's prompt is the TeamDef's text, so who wrote the agent it
+	// dispatches to is the wrong subject. Putting both on one ctx key would
+	// make the guard read whichever was stamped last.
+	OperatorAuthored bool
 	// Values resolves this state's ${var.*} / ${now.*} / ${team.*}, keyed
 	// without the ${}: "var.pr", "now.date", "team.state".
 	//
@@ -123,6 +132,12 @@ type agentRunner struct {
 	// logf reports what a Starter could not do but must not fail for — a sink
 	// publish that errored, an ack that did not land. nil = log.Printf.
 	logf func(format string, args ...any)
+	// operatorAuthored is the TEAM DEFINITION's authorship, stamped onto every
+	// Prompt this runner builds. The walk reads it from the def row it
+	// resolved; a runner constructed without it builds prompts that cannot use
+	// the widened families, which is the safe direction for a test double or
+	// an embed that never sets it.
+	operatorAuthored bool
 	// maxWave is the DEPLOYMENT's ceiling on one wave's width, distinct from
 	// the definition's own `fanout.max`. Dynamic fan-out is a spawn amplifier,
 	// and the definition is authored by whoever can write a def — the operator
@@ -161,6 +176,13 @@ func WithChannels(io ChannelIO) RunnerOption {
 // WithWaveContext wires the seam that carries a wave identity to run creation.
 func WithWaveContext(f func(ctx context.Context, walkID, waveID string, index int) context.Context) RunnerOption {
 	return func(r *agentRunner) { r.wave = f }
+}
+
+// WithOperatorAuthored records whether an OPERATOR wrote the definition this
+// runner is walking. It gates the widened prompt-expansion families inside
+// every node prompt the walk hands out — see Prompt.OperatorAuthored.
+func WithOperatorAuthored(v bool) RunnerOption {
+	return func(r *agentRunner) { r.operatorAuthored = v }
 }
 
 // WithMaxWave wires the deployment's ceiling on one Starter wave.
@@ -231,7 +253,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		return r.captured(st, task, Outcome{Output: input})
 
 	case teamgraph.HandlerAgent:
-		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input, env), "")
+		out, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -276,7 +298,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		// it reads the raw work product (not a results envelope) — it judges the
 		// previous state's output directly. This state IS the consolidator, so
 		// the node's own system prompt applies to it.
-		out, err := r.spawn(ctx, st.Handler.Agent, nodePrompt(st.Handler, input, env), "")
+		out, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -301,12 +323,19 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 // the templates travel raw and the values travel beside them, so prompt
 // assembly can resolve variables and placeholders in one pass. Substituting
 // here would be the pre-pass this design exists to remove (see Prompt.Values).
-func nodePrompt(h teamgraph.Handler, threaded string, env Env) Prompt {
+//
+// A METHOD rather than a free function so it can stamp the definition's
+// authorship: every prompt a walk hands out carries the flag its own templates
+// are expanded under, and no call site can construct one that forgot to.
+func (r *agentRunner) nodePrompt(h teamgraph.Handler, threaded string, env Env) Prompt {
 	in := threaded
 	if h.InputTemplate != "" {
 		in = h.InputTemplate
 	}
-	return Prompt{System: h.SystemPrompt, Input: in, Values: env.Values()}
+	return Prompt{
+		System: h.SystemPrompt, Input: in, Values: env.Values(),
+		OperatorAuthored: r.operatorAuthored,
+	}
 }
 
 // envFor snapshots what the expander may read for one state's turn. Now is read
@@ -393,7 +422,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 	// One node, one role: every member of a fan-out shares this state's system
 	// prompt and input. States whose members need DIFFERENT roles are separate
 	// `agent` states, which is the shape per-node prompts exist to make cheap.
-	prompt := nodePrompt(st.Handler, input, env)
+	prompt := r.nodePrompt(st.Handler, input, env)
 	n := len(agents)
 	need, err := requiredSuccesses(st.Handler.Wait, n)
 	if err != nil {
@@ -462,7 +491,9 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 // system prompt (which describes that agent's role) is deliberately not applied
 // to it; it receives only the envelope.
 func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelope string) (Outcome, error) {
-	out, err := r.spawn(ctx, consolidator, Prompt{Input: envelope}, "")
+	out, err := r.spawn(ctx, consolidator, Prompt{
+		Input: envelope, OperatorAuthored: r.operatorAuthored,
+	}, "")
 	if err != nil {
 		return Outcome{}, err
 	}
