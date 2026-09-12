@@ -3402,6 +3402,99 @@ func TestConsolidator_ASubjectWithNoTypeIsFiledUnderTheFallbackType(t *testing.T
 	}
 }
 
+// TestConsolidator_ARelationFactReferencesEverySubjectItNames.
+//
+// The extractor used to emit ONE subject, so "Dave works at the shop" became a fact
+// about Dave that merely mentioned the shop — read the shop and half its relations
+// were missing. Containment cannot fix that: the tree needs exactly one parent.
+//
+// So the fact is HOMED under the first subject and REFERENCES the rest. That is the
+// producer half of the reader contract: `list_facts about:<shop>` and the shop
+// dossier's references block both read the inbound `about` edge this writes.
+func TestConsolidator_ARelationFactReferencesEverySubjectItNames(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nDave started at the corner shop."
+	f.factsJSON = `[{"text":"Dave works at the corner shop.","class":"fact","type":"person",
+	                 "subjects":["Dave","the corner shop"]}]`
+
+	runConsolidator(t, f)
+
+	// One fact, homed once.
+	if n := factWriteCount(f); n != 1 {
+		t.Fatalf("fact writes = %d, want 1 — a fact about two things is still ONE fact", n)
+	}
+	// An `about` edge to EACH subject: one home, one reference.
+	links := callsWithOp(f, "Document.link_chunks")
+	if len(links) != 2 {
+		t.Fatalf("about edges = %d, want 2 (Dave and the shop) — a relation fact is "+
+			"unreachable from the subject it is not filed under without the second", len(links))
+	}
+	to := map[string]bool{}
+	for _, c := range links {
+		id, _ := c.Input["to_id"].(string)
+		to[id] = true
+	}
+	if len(to) != 2 {
+		t.Errorf("both edges point at the same node: %v", to)
+	}
+	// Both subjects exist as nodes, and the referenced one is NOT typed as the fact's
+	// own kind by accident.
+	keys := map[string]bool{}
+	for _, c := range subjectWrites(f) {
+		k, _ := c.Input["natural_key"].(string)
+		keys[k] = true
+	}
+	if !keys["person:dave"] {
+		t.Errorf("Dave got no node under his own type; keys=%v", keys)
+	}
+	if len(keys) != 2 {
+		t.Errorf("subject nodes = %v, want two (the home and the referenced one)", keys)
+	}
+}
+
+// TestConsolidator_TheSameSubjectNamedTwiceIsOneReference. "Dave" and "dave" slug to
+// one node, so two edges to it would be the same reference written twice — and the
+// duplicate would inflate the report's count of what a fact is about.
+func TestConsolidator_TheSameSubjectNamedTwiceIsOneReference(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nDave prefers Go."
+	f.factsJSON = `[{"text":"Dave prefers Go.","class":"preference","type":"person",
+	                 "subjects":["Dave","dave","  Dave  "]}]`
+
+	runConsolidator(t, f)
+
+	if n := len(callsWithOp(f, "Document.link_chunks")); n != 1 {
+		t.Errorf("about edges = %d, want 1 — one subject spelled three ways is one node", n)
+	}
+}
+
+// TestConsolidator_ALegacySingleSubjectStillLands. A tenant may override the
+// extractor prompt, and an extractor answering the older schema must not have its
+// facts silently stripped of the subject they name.
+func TestConsolidator_ALegacySingleSubjectStillLands(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nDave prefers Go."
+	f.factsJSON = `[{"text":"Dave prefers Go.","class":"preference","type":"person","subject":"Dave"}]`
+
+	runConsolidator(t, f)
+
+	if n := len(callsWithOp(f, "Document.link_chunks")); n != 1 {
+		t.Fatalf("about edges = %d, want 1 — the older schema still names a subject", n)
+	}
+	found := false
+	for _, c := range subjectWrites(f) {
+		if k, _ := c.Input["natural_key"].(string); k == "person:dave" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a legacy single `subject` produced no subject node")
+	}
+}
+
 // TestConsolidator_AnUnmigratedSubjectStillGetsItsEdge.
 //
 // A scope written before subject-homing CANNOT adopt it on its own: natural_key is
