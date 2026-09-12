@@ -427,18 +427,31 @@ func (s *Server) renderToolCalls(ctx context.Context, mi memInject, calls []memi
 	defer cancel()
 	out := make(map[meminject.ToolCall]string, len(calls))
 	for _, call := range calls {
-		var body string
-		switch call.Tool {
-		case "WebFetch":
-			body = s.renderWebFetch(fctx, call.Arg)
-		case "WebSearch":
-			body = s.renderWebSearch(fctx, mi, call.Arg)
+		body, handled := s.renderToolCall(fctx, mi, call)
+		if !handled {
+			continue
 		}
 		if body = strings.TrimSpace(body); body != "" {
 			out[call] = body
 		}
 	}
 	return out
+}
+
+// renderToolCall dispatches ONE widened call. handled=false means the widened
+// set names a tool this file has no renderer for — pinned by
+// TestWidenedToolCalls_AllHaveRenderer, because the symptom otherwise reads
+// exactly like a page that would not load, which is the one failure this family
+// is designed to be indistinguishable from.
+func (s *Server) renderToolCall(ctx context.Context, mi memInject, call meminject.ToolCall) (string, bool) {
+	switch call.Tool {
+	case "WebFetch":
+		return s.renderWebFetch(ctx, call.Arg), true
+	case "WebSearch":
+		return s.renderWebSearch(ctx, mi, call.Arg), true
+	default:
+		return "", false
+	}
 }
 
 // renderWebFetch fetches ONE allowlisted URL through the real WebFetch tool.

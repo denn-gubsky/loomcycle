@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -255,5 +256,19 @@ func TestCallerSegments_RefuseTheWidenedFamilies(t *testing.T) {
 	}
 	if !strings.Contains(logged, "tool:WebFetch (def is not operator-authored)") {
 		t.Errorf("the network form was not refused BY THE GUARD in a caller segment: %q", logged)
+	}
+}
+
+// TestWidenedToolCalls_AllHaveRenderer pins the widened set to its renderers.
+// Adding a tool in internal/memory without wiring one here would degrade to
+// "renders nothing" — indistinguishable from the refused-or-unreachable case
+// this family fails soft into, so it would never be noticed.
+func TestWidenedToolCalls_AllHaveRenderer(t *testing.T) {
+	s := &Server{} // no cfg, no search registry: every renderer returns "" without dialing
+	for _, name := range meminject.AllToolCalls() {
+		call := meminject.ToolCall{Tool: name, Arg: "https://docs.example.com/a"}
+		if _, handled := s.renderToolCall(context.Background(), memInject{}, call); !handled {
+			t.Errorf("the widened set names %s but renderToolCall has no case for it", name)
+		}
 	}
 }
