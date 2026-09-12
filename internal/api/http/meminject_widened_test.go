@@ -259,6 +259,60 @@ func TestCallerSegments_RefuseTheWidenedFamilies(t *testing.T) {
 	}
 }
 
+// TestCallerSegments_OperatorAuthoredTeamResolvesTheWidenedFamilies is the
+// other side, and the reason P3 exists at all.
+//
+// ${var} resolves ONLY in a caller segment, so this is the ONLY path on which
+// trust rule 5d's own example — a variable choosing a fetch target — can
+// actually happen. Until the TeamDef carried an authorship flag, the rule
+// guarded a path nothing could reach.
+func TestCallerSegments_OperatorAuthoredTeamResolvesTheWidenedFamilies(t *testing.T) {
+	hit := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit++
+		_, _ = w.Write([]byte("THE FETCHED PAGE"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+
+	s, mi := widenedFixture(t, []string{u.Hostname()}, []string{u.Hostname()})
+	const (
+		system = "role: {{memory:key:launch}}"
+		user   = "task: {{tool:WebFetch:${var.doc_url}}}"
+	)
+
+	// An OPERATOR-authored team: both widened families resolve, and the
+	// variable picks a LISTED host.
+	gotSys, gotUser := s.expandCallerSegments(context.Background(), mi,
+		map[string]string{"var.doc_url": srv.URL + "/a"}, system, user, true)
+	if !strings.Contains(gotSys, "ship on friday") {
+		t.Fatalf("an operator-authored team node did not get the widened memory family:\n%s", gotSys)
+	}
+	if !strings.Contains(gotUser, "THE FETCHED PAGE") {
+		t.Fatalf("a parameterised fetch did not resolve — 5d's canonical case:\n%s", gotUser)
+	}
+
+	// Same team, same template, a variable aiming at a host the operator never
+	// listed. Refused, named, and — the part that matters — NOT FETCHED.
+	var captured strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&captured)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	before := hit
+	_, gotUser = s.expandCallerSegments(context.Background(), mi,
+		map[string]string{"var.doc_url": "https://attacker.test/x"}, system, user, true)
+	if strings.Contains(gotUser, "THE FETCHED PAGE") {
+		t.Fatalf("an off-allowlist host rendered:\n%s", gotUser)
+	}
+	if hit != before {
+		t.Errorf("the request was MADE to an off-allowlist host (%d → %d)", before, hit)
+	}
+	if logged := captured.String(); !strings.Contains(logged, "attacker.test") {
+		t.Errorf("the refusal must NAME the host an operator has to add or reject: %q", logged)
+	}
+}
+
 // TestWidenedToolCalls_AllHaveRenderer pins the widened set to its renderers.
 // Adding a tool in internal/memory without wiring one here would degrade to
 // "renders nothing" — indistinguishable from the refused-or-unreachable case
