@@ -76,6 +76,8 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 		"which fixture set to score: default | hierarchy. hierarchy measures whether the "+
 			"model picks the most specific type that fits, and REQUIRES an -ontology-terms "+
 			"carrying the matching hierarchy (it is defaulted for you when omitted)")
+	temperature := fs.Float64("temperature", -1, "pin the sampling temperature (default -1 = the provider's own default). Pinning is what makes two runs of this eval comparable: unpinned, the violation count swings by tens of points between runs and no prompt change is measurable underneath it")
+	seed := fs.Int("seed", 0, "pin the sampling seed (0 = unset). Use with --temperature 0 when you need a run someone else can reproduce")
 	showFacts := fs.Bool("show-facts", false, "print every case's emitted facts, including the ones that passed")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -162,6 +164,8 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 		Model:        *model,
 		Effort:       *effort,
 		MaxTokens:    *maxTokens,
+		Temperature:  temperatureOrNil(*temperature),
+		Seed:         seedOrNil(*seed),
 	})
 	if err != nil {
 		return failOp(stderr, "memory-eval-live: %v", err)
@@ -503,3 +507,22 @@ func expandEvalPlaceholders(prompt, tenantTerms string) (string, error) {
 
 // unexpandedPlaceholder matches any surviving {{...}} of either family.
 var unexpandedPlaceholder = regexp.MustCompile(`\{\{\s*(memory|tool)\s*:[^}]*\}\}`)
+
+// temperatureOrNil maps the sentinel -1 to "leave the provider's default alone".
+// A literal 0.0 is a REAL value here — it is the whole point of pinning — so the
+// absent case cannot be the zero value.
+func temperatureOrNil(v float64) *float64 {
+	if v < 0 {
+		return nil
+	}
+	return &v
+}
+
+// seedOrNil maps 0 to unset. Ollama treats seed 0 as "pick one", so there is no
+// value lost by spending it as the sentinel.
+func seedOrNil(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}

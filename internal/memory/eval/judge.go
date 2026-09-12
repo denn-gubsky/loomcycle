@@ -562,3 +562,8 @@ func ParseJudgeReply(raw string) ([]JudgeVerdictEntry, bool) {
 	}
 	return out, true
 }
+
+// Sampling reports how this run was sampled. The judge axis does not pin it
+// today, so it is always the provider's default — reported as such rather than
+// left to the reader to assume, which is the whole point of the field.
+func (r JudgeReport) Sampling() (*float64, *int) { return nil, nil }

@@ -43,6 +43,9 @@ type Measured interface {
 	// Incomplete reports (errors, harnessFault) — why a run's numbers may not be
 	// recordable.
 	Incomplete() (int, string)
+	// Sampling returns how the run was sampled, so the recorded entry says whether
+	// its numbers can be reproduced or were one draw from a distribution.
+	Sampling() (*float64, *int)
 }
 
 // BaselineEntry is one measured run's scores.
@@ -62,6 +65,23 @@ type BaselineEntry struct {
 	Recall map[string]float64 `json:"recall,omitempty"`
 	// Violations per ability. Present even at 0, because 0 is the interesting value.
 	Violations map[string]int `json:"violations"`
+	// Temperature and Seed record HOW the run was sampled, and an entry without
+	// them was measured on the provider's own default — which is to say, on one
+	// draw from a distribution.
+	//
+	// Measured: unpinned, this corpus returns 7 clean runs in 12 on the shipped
+	// prompt; pinned at temperature 0 with a seed, six consecutive runs were
+	// identical on every ability. So an entry that does not say how it was sampled
+	// cannot be reproduced, and the refusal to record a violating run gives false
+	// comfort: whoever re-drew until the number came out clean recorded something
+	// that looks exactly like this.
+	//
+	// NOT part of Key(). The key identifies what was scored — provider, model,
+	// effort, prompt, corpus — and adding sampling to it would make a pinned entry
+	// fail to match an unpinned lookup, silently un-gating the model it was
+	// recorded for.
+	Temperature *float64 `json:"temperature,omitempty"`
+	Seed        *int     `json:"seed,omitempty"`
 }
 
 // Key identifies the run this entry describes.
@@ -258,6 +278,7 @@ func SaveBaselineEntry(path string, r Measured) error {
 		Recall:             map[string]float64{},
 		Violations:         map[string]int{},
 	}
+	entry.Temperature, entry.Seed = r.Sampling()
 	for _, s := range abilities {
 		if s.Recall >= 0 {
 			entry.Recall[string(s.Ability)] = s.Recall

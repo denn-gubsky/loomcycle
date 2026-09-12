@@ -1378,3 +1378,59 @@ func TestMatchExpected_TypeIsAHardFilter(t *testing.T) {
 		}
 	}
 }
+
+// TestRunExtraction_PinnedSamplingReachesEveryCall.
+//
+// Without this the harness measures a SAMPLED model while its gate demands a
+// single run with zero violations — so "record a clean baseline" is drawing until
+// the number comes out right, which is exactly the cherry-picking that
+// SaveBaselineEntry's refusal exists to prevent. Measured on the shipped prompt at
+// qwen3.8/effort=low: 7 of 12 unpinned runs were clean, and six consecutive pinned
+// runs were identical on every ability.
+//
+// EVERY call, not just the first: cases measured under different sampling do not
+// add up to a number about one configuration, and the canary runs ahead of the
+// rest so it is the easiest one to miss.
+func TestRunExtraction_PinnedSamplingReachesEveryCall(t *testing.T) {
+	corpus := ExtractionFixture()
+	replies := map[string]string{}
+	for _, c := range corpus.Cases {
+		replies[c.Name] = `[]`
+	}
+	rec := &samplingRecorder{replies: replies, corpus: corpus}
+	temp, seed := 0.0, 7
+	if _, err := RunExtraction(context.Background(), rec, ExtractionInput{
+		Corpus: corpus, SystemPrompt: "you extract durable facts",
+		Provider: "p", Model: "m", Temperature: &temp, Seed: &seed,
+	}); err != nil {
+		t.Fatalf("RunExtraction: %v", err)
+	}
+	if rec.calls == 0 {
+		t.Fatal("no calls were made, so this asserts nothing")
+	}
+	if rec.unpinned > 0 {
+		t.Errorf("%d of %d calls went out without the pinned sampling — a run is only "+
+			"reproducible if every case was measured the same way", rec.unpinned, rec.calls)
+	}
+}
+
+// samplingRecorder answers every case and counts how many calls carried the
+// sampling it was given.
+type samplingRecorder struct {
+	replies  map[string]string
+	corpus   ExtractionCorpus
+	calls    int
+	unpinned int
+}
+
+func (s *samplingRecorder) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	s.calls++
+	if req.Temperature == nil || *req.Temperature != 0.0 || req.Seed == nil || *req.Seed != 7 {
+		s.unpinned++
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: `[]`}
+	ch <- providers.Event{Type: providers.EventDone}
+	close(ch)
+	return ch, nil
+}
