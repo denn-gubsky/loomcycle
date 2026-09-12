@@ -3427,7 +3427,7 @@ func TestConsolidator_ARelationFactReferencesEverySubjectItNames(t *testing.T) {
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "### user\n\nDave started at the corner shop."
 	f.factsJSON = `[{"text":"Dave works at the corner shop.","class":"fact","type":"person",
-	                 "subjects":["Dave","the corner shop"]}]`
+	                 "subject":"Dave","also_about":["the corner shop"]}]`
 
 	runConsolidator(t, f)
 
@@ -3472,7 +3472,7 @@ func TestConsolidator_TheSameSubjectNamedTwiceIsOneReference(t *testing.T) {
 	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
 	f.transcript = "### user\n\nDave prefers Go."
 	f.factsJSON = `[{"text":"Dave prefers Go.","class":"preference","type":"person",
-	                 "subjects":["Dave","dave","  Dave  "]}]`
+	                 "subject":"Dave","also_about":["dave","  Dave  "]}]`
 
 	runConsolidator(t, f)
 
@@ -6075,5 +6075,23 @@ func TestConsolidator_TheSHIPPEDDefaultWindowsALongChatAndLeavesAShortOneWhole(t
 		t.Errorf("an 8-turn chat produced %d extractor calls — a source under "+
 			"min_turns_to_window must be extracted WHOLE however the window is set, or "+
 			"each piece is too thin to carry a fact and the item stalls unacked", n)
+	}
+}
+
+// TestConsolidator_ASubjectsListIsStillReadFromAnOverriddenPrompt. The shipped
+// prompt asks for `subject` + `also_about`, because asking for a LIST cost the
+// invented-entity guarantee. A tenant that overrides the prompt and asks for
+// `subjects` must still have its facts reach both ends of a relation.
+func TestConsolidator_ASubjectsListIsStillReadFromAnOverriddenPrompt(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nDave started at the corner shop."
+	f.factsJSON = `[{"text":"Dave works at the corner shop.","class":"fact","type":"person",
+	                 "subjects":["Dave","the corner shop"]}]`
+
+	runConsolidator(t, f)
+
+	if n := len(callsWithOp(f, "Document.link_chunks")); n != 2 {
+		t.Errorf("about edges = %d, want 2 — the older list schema still names both ends", n)
 	}
 }
