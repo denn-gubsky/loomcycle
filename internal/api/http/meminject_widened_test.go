@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,15 +14,21 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// widenedFixture returns a Server whose static HTTP host allowlist is exactly
-// hosts, plus an in-memory store with one user-scope memory key.
-func widenedFixture(t *testing.T, hosts ...string) (*Server, memInject) {
+// widenedFixture returns a Server with the given static host allowlist and
+// private-host exemption, plus an in-memory store holding one user-scope key.
+//
+// The two lists are SEPARATE parameters on purpose. They are the two layers the
+// HTTP tool applies — the NAME allowlist and the private-IP exemption — and a
+// test that sets them together cannot tell which one refused a loopback URL. A
+// 5d test that thinks it is checking the name layer while the IP guard is doing
+// the work proves nothing about 5d.
+func widenedFixture(t *testing.T, allow, private []string) (*Server, memInject) {
 	t.Helper()
 	st, _ := memStoreFixture(t)
 	s := &Server{store: st, cfgHolder: config.NewHolder(&config.Config{
 		Env: config.Env{
-			HTTPHostAllowlist:        hosts,
-			HTTPPrivateHostAllowlist: hosts, // tests dial loopback; see StripLocalhostAliases
+			HTTPHostAllowlist:        allow,
+			HTTPPrivateHostAllowlist: private,
 		},
 	})}
 	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "a"}
@@ -41,7 +48,7 @@ func widenedFixture(t *testing.T, hosts ...string) (*Server, memInject) {
 // text. The fast path is what would leave it there — a prompt whose only
 // placeholder is a widened one has no other reason to enter expansion.
 func TestWidenedInjection_AuthorshipDecidesAndTheFastPathDoesNotHideIt(t *testing.T) {
-	s, mi := widenedFixture(t)
+	s, mi := widenedFixture(t, nil, nil)
 
 	operator := config.AgentDef{SystemPrompt: "Plan: {{memory:key:launch}}", OperatorAuthored: true}
 	got, _ := s.applyMemoryInjection(context.Background(), operator, mi)
@@ -67,7 +74,7 @@ func TestWidenedInjection_AuthorshipDecidesAndTheFastPathDoesNotHideIt(t *testin
 // reads as not-operator-authored because it predates the column. Gating what it
 // already used would strip expansion from every working def on upgrade.
 func TestWidenedInjection_PreExistingFamiliesAreUntouchedByTheGuard(t *testing.T) {
-	s, mi := widenedFixture(t)
+	s, mi := widenedFixture(t, nil, nil)
 	legacy := config.AgentDef{
 		SystemPrompt: "{{memory:consolidation_bands}}\n{{document:/specs/launch}}",
 		// OperatorAuthored deliberately unset — the legacy-row value.
@@ -98,7 +105,7 @@ func TestWidenedFetch_RendersAnAllowlistedHostAndRefusesEveryOther(t *testing.T)
 		t.Fatalf("parse: %v", err)
 	}
 
-	s, mi := widenedFixture(t, u.Hostname())
+	s, mi := widenedFixture(t, []string{u.Hostname()}, []string{u.Hostname()})
 	def := config.AgentDef{
 		SystemPrompt:     "Context: {{tool:WebFetch:" + srv.URL + "/page}}",
 		OperatorAuthored: true,
@@ -111,9 +118,11 @@ func TestWidenedFetch_RendersAnAllowlistedHostAndRefusesEveryOther(t *testing.T)
 		t.Errorf("the fetched body was not DATA-framed:\n%s", got.SystemPrompt)
 	}
 
-	// Same live server, but the operator does not list its host.
+	// Same live server, still reachable — the private-IP guard is lifted for
+	// loopback — but the operator does not LIST its host. So the only thing that
+	// can stop the request is the name allowlist, which is what 5d is about.
 	before := hit
-	s2, mi2 := widenedFixture(t, "docs.example.com")
+	s2, mi2 := widenedFixture(t, []string{"docs.example.com"}, []string{u.Hostname()})
 	got2, _ := s2.applyMemoryInjection(context.Background(), def, mi2)
 	if strings.Contains(got2.SystemPrompt, "THE FETCHED PAGE") {
 		t.Fatalf("an off-allowlist host rendered:\n%s", got2.SystemPrompt)
@@ -135,7 +144,7 @@ func TestWidenedFetch_FailsSoftWhenTheHostIsUnreachable(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	srv.Close() // nothing is listening now
 
-	s, mi := widenedFixture(t, u.Hostname())
+	s, mi := widenedFixture(t, []string{u.Hostname()}, []string{u.Hostname()})
 	def := config.AgentDef{
 		SystemPrompt:     "before {{tool:WebFetch:" + u.String() + "/page}} after",
 		OperatorAuthored: true,
@@ -196,7 +205,18 @@ func TestStaticHostAllowed_IsTheOperatorFloor(t *testing.T) {
 // there — and the check that matters is that the seam fails CLOSED, not that it
 // happens to be unwired.
 func TestCallerSegments_RefuseTheWidenedFamilies(t *testing.T) {
-	s, mi := widenedFixture(t, "docs.example.com")
+	s, mi := widenedFixture(t, []string{"docs.example.com"}, nil)
+
+	// Observed through the refusal LOG, not through the rendered output.
+	// Rendering nothing would prove nothing here: a caller segment supplies no
+	// bodies for either widened family, so both render empty whatever the flag
+	// says. The refusal is the only signal that the GUARD is what stopped them,
+	// and it is the thing that would change if the flag were flipped.
+	var captured strings.Builder
+	prev := log.Writer()
+	log.SetOutput(&captured)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
 	system, user := s.expandCallerSegments(context.Background(), mi, map[string]string{"var.x": "launch"},
 		"role: {{memory:key:launch}}", "task: {{tool:WebFetch:https://docs.example.com/a}}")
 	if strings.Contains(system, "ship on friday") {
@@ -205,9 +225,16 @@ func TestCallerSegments_RefuseTheWidenedFamilies(t *testing.T) {
 	if strings.Contains(user, "<tool-result") {
 		t.Errorf("a caller segment used the widened network family:\n%s", user)
 	}
-	for _, s := range []string{system, user} {
-		if strings.Contains(s, "{{") {
-			t.Errorf("a refused placeholder was left literal:\n%s", s)
+	for _, out := range []string{system, user} {
+		if strings.Contains(out, "{{") {
+			t.Errorf("a refused placeholder was left literal:\n%s", out)
 		}
+	}
+	logged := captured.String()
+	if !strings.Contains(logged, "memory:key (def is not operator-authored)") {
+		t.Errorf("the memory sub-form was not refused BY THE GUARD in a caller segment: %q", logged)
+	}
+	if !strings.Contains(logged, "tool:WebFetch (def is not operator-authored)") {
+		t.Errorf("the network form was not refused BY THE GUARD in a caller segment: %q", logged)
 	}
 }
