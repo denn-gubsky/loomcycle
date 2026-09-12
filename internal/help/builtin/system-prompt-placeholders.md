@@ -118,6 +118,17 @@ runtime's authority, not gated by the agent's own tools or scopes. That is what
 makes the bindings useful, and it is why a definition a model could have written
 does not get to aim one.
 
+**In a team node's prompt, the author is the TEAM.** A team's `system` and
+`input` templates are expanded for the agent the node dispatches to, but they
+are the team's text — so it is the TEAM's authorship that decides, not the
+agent's. An operator-written team may use the argument forms in its node
+prompts even when it dispatches to an agent-written agent, and a team an agent
+wrote may not, whichever agent it dispatches to.
+
+A team node's prompt is also the only place `${...}` resolves, so it is where a
+parameterised fetch actually happens — and where the host allowlist above is
+doing its work.
+
 ### Why you would use it
 
 The tool schemas are already sent to the model on every request, so this adds no
