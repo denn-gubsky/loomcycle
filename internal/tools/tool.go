@@ -1118,6 +1118,26 @@ func CompactionOverride(ctx context.Context) *config.Compaction {
 type ctxKeyResolvedProvider struct{}
 type ctxKeyResolvedModel struct{}
 
+type ctxKeyOperatorAuthored struct{}
+
+// WithOperatorAuthored records whether the agent this run resolved was written
+// by an OPERATOR rather than by an agent at runtime.
+//
+// Stamped from the RESOLVED definition at loop-ctx assembly, beside the other
+// per-agent policies, so a tool can ask without re-reading the definition
+// plane. Absent means false — a run whose ctx was never stamped has not proved
+// operator authorship, which is the safe direction.
+func WithOperatorAuthored(ctx context.Context, v bool) context.Context {
+	return context.WithValue(ctx, ctxKeyOperatorAuthored{}, v)
+}
+
+// OperatorAuthored reports whether this run's agent definition was
+// operator-authored. False for an unstamped ctx.
+func OperatorAuthored(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyOperatorAuthored{}).(bool)
+	return v
+}
+
 // WithResolvedProvider attaches the resolved provider id to ctx.
 func WithResolvedProvider(ctx context.Context, providerID string) context.Context {
 	if providerID == "" {

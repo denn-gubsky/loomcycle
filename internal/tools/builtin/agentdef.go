@@ -295,6 +295,11 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    contentSHA,
 		TenantID:         tenantID,
+		// Authority comes from the CTX, never from the def or the identity a
+		// run supplies: CreatedByAgentID is whatever the caller says it is, so
+		// deriving authorship from it would let a def grant itself the
+		// authority this gates by naming an operator-looking agent.
+		OperatorAuthored: tools.IsSubstrateOperator(ctx),
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
@@ -471,6 +476,11 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		CreatedByAgentID: ident.AgentID,
 		ContentSHA256:    signFromMergedDef(in.Name, def),
 		TenantID:         tenantID,
+		// The FORKER's authority, never the parent's. A fork may change the
+		// body, so inheriting the parent's flag would let an agent launder an
+		// operator-authored def into an agent-authored one that still carries
+		// operator authority.
+		OperatorAuthored: tools.IsSubstrateOperator(ctx),
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
@@ -921,6 +931,12 @@ func (a *AgentDef) bootstrapStatic(ctx context.Context, name string, static conf
 		CreatedByAgentID:       ident.AgentID,
 		BootstrappedFromStatic: true,
 		ContentSHA256:          signFromMergedDef(name, def),
+		// TRUE regardless of who triggered the bootstrap. The body is the
+		// operator's own cfg.Agents yaml — an agent forking a static name
+		// merely causes the lineage root to be materialised; it did not write
+		// it. (The FORK that follows is stamped from its own caller, so an
+		// agent still cannot inherit this by forking.)
+		OperatorAuthored: true,
 		// RFC N: the bootstrapped lineage root lives in the forking
 		// caller's tenant (static cfg.Agents is the shared base; the
 		// fork that triggers bootstrap is per-tenant). "" = shared.

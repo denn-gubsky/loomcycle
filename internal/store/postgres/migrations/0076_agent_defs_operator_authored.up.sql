@@ -1,0 +1,19 @@
+-- 0076_agent_defs_operator_authored.up.sql — RFC CY item 8: who wrote this def.
+--
+-- Distinguishes a definition an OPERATOR authored (their yaml, or an off-run
+-- call under an operator token) from one an AGENT authored at runtime. It is
+-- the gate the widened prompt-expansion families sit behind: those families
+-- resolve under the RUNTIME's authority rather than the agent's, so widening
+-- them for a def an agent wrote itself would hand a model an ungated read
+-- primitive it could aim.
+--
+-- AUTHORITY, NOT CONTENT. Deliberately absent from content_sha256 (the same
+-- treatment *_def_scopes and the RFC AX restriction bit get), so every
+-- existing row keeps its hash byte-for-byte and a fork across deployments
+-- still verifies.
+--
+-- Default FALSE, and that is the safe direction: a legacy row reads as NOT
+-- operator-authored, so nothing gains authority by having predated the column.
+-- It also means the guard must only gate what it ADDS — gating an existing
+-- family would strip expansion from every legacy def the moment this runs.
+ALTER TABLE agent_defs ADD COLUMN IF NOT EXISTS operator_authored BOOLEAN NOT NULL DEFAULT FALSE;

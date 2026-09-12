@@ -435,6 +435,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
 			content_sha256            TEXT,
 			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			operator_authored         INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS agent_defs_by_name   ON agent_defs(name, version DESC)`,
@@ -1105,6 +1106,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// (tenant_id=''); see the CREATE TABLE notes for the isolation
 		// caveat. DEFAULT '' backfills existing rows to the shared tenant.
 		`ALTER TABLE agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// RFC CY item 8. Default 0 so a legacy row reads as NOT
+		// operator-authored — the safe direction: nothing gains authority by
+		// having predated the column.
+		`ALTER TABLE agent_defs ADD COLUMN operator_authored INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dynamic_agents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC N — tenant-scope the skill definition plane (mirror of the
@@ -3194,7 +3199,7 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static, tenant_id
+		        retired, bootstrapped_from_static, tenant_id, operator_authored
 		 FROM agent_defs
 		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
@@ -3205,21 +3210,22 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 	var out []store.AgentDefRow
 	for rows.Next() {
 		var (
-			r           store.AgentDefRow
-			createdNs   int64
-			parentDefID sql.NullString
-			description sql.NullString
-			createdBy   sql.NullString
-			createdRun  sql.NullString
-			definition  string
-			retiredInt  int
-			bootstrap   int
+			r            store.AgentDefRow
+			createdNs    int64
+			parentDefID  sql.NullString
+			description  sql.NullString
+			createdBy    sql.NullString
+			createdRun   sql.NullString
+			definition   string
+			retiredInt   int
+			bootstrap    int
+			operatorAuth int
 		)
 		if err := rows.Scan(
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&createdNs, &createdBy, &createdRun,
-			&retiredInt, &bootstrap, &r.TenantID,
+			&retiredInt, &bootstrap, &r.TenantID, &operatorAuth,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent_def: %w", err)
 		}
@@ -3238,6 +3244,7 @@ func (s *Store) SnapshotReadAgentDefs(ctx context.Context) ([]store.AgentDefRow,
 			r.CreatedByRunID = createdRun.String
 		}
 		r.Retired = retiredInt != 0
+		r.OperatorAuthored = operatorAuth != 0
 		r.BootstrappedFromStatic = bootstrap != 0
 		out = append(out, r)
 	}
@@ -3861,13 +3868,15 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		`INSERT OR IGNORE INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id,
+			operator_authored
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
 		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
 		nilIfEmpty(r.ContentSHA256), r.TenantID,
+		boolToInt(r.OperatorAuthored),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore agent_def: %w", err)
@@ -6030,14 +6039,16 @@ func (s *Store) AgentDefCreate(ctx context.Context, row store.AgentDefRow) (stor
 		`INSERT INTO agent_defs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id,
+			operator_authored
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
 		nilIfEmpty(row.ContentSHA256), row.TenantID,
+		boolToInt(row.OperatorAuthored),
 	); err != nil {
 		return store.AgentDefRow{}, err
 	}
@@ -6310,16 +6321,18 @@ const agentDefSelect = `SELECT
 	retired,
 	bootstrapped_from_static,
 	COALESCE(content_sha256, ''),
-	tenant_id
+	tenant_id,
+	operator_authored
 FROM agent_defs`
 
 func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
 	var (
-		out        store.AgentDefRow
-		definition string
-		createdAt  int64
-		retired    int
-		bootstrap  int
+		out              store.AgentDefRow
+		definition       string
+		createdAt        int64
+		retired          int
+		bootstrap        int
+		operatorAuthored int
 	)
 	err := row.Scan(
 		&out.DefID, &out.Name, &out.Version,
@@ -6331,6 +6344,7 @@ func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
 		&retired, &bootstrap,
 		&out.ContentSHA256,
 		&out.TenantID,
+		&operatorAuthored,
 	)
 	if err != nil {
 		return store.AgentDefRow{}, err
@@ -6339,6 +6353,7 @@ func (s *Store) scanAgentDef(row *sql.Row) (store.AgentDefRow, error) {
 	out.CreatedAt = time.Unix(0, createdAt)
 	out.Retired = retired != 0
 	out.BootstrappedFromStatic = bootstrap != 0
+	out.OperatorAuthored = operatorAuthored != 0
 	return out, nil
 }
 
@@ -6346,11 +6361,12 @@ func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
 	var out []store.AgentDefRow
 	for rows.Next() {
 		var (
-			r          store.AgentDefRow
-			definition string
-			createdAt  int64
-			retired    int
-			bootstrap  int
+			r                store.AgentDefRow
+			definition       string
+			createdAt        int64
+			retired          int
+			bootstrap        int
+			operatorAuthored int
 		)
 		if err := rows.Scan(
 			&r.DefID, &r.Name, &r.Version,
@@ -6362,6 +6378,7 @@ func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
 			&retired, &bootstrap,
 			&r.ContentSHA256,
 			&r.TenantID,
+			&operatorAuthored,
 		); err != nil {
 			return nil, err
 		}
@@ -6369,6 +6386,7 @@ func (s *Store) scanAgentDefRows(rows *sql.Rows) ([]store.AgentDefRow, error) {
 		r.CreatedAt = time.Unix(0, createdAt)
 		r.Retired = retired != 0
 		r.BootstrappedFromStatic = bootstrap != 0
+		r.OperatorAuthored = operatorAuthored != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()

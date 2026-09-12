@@ -940,6 +940,20 @@ type UserTier struct {
 
 // AgentDef is one agent the API can address by name.
 type AgentDef struct {
+	// OperatorAuthored reports whether an OPERATOR wrote this definition —
+	// their yaml, or an off-run call under an operator token — rather than an
+	// agent writing it at runtime. Resolved, never authored: `json:"-"` and no
+	// yaml tag, so it is neither persisted nor hashed nor settable from a
+	// definition body. lookup sets it from the source it resolved the agent
+	// from; a static cfg.Agents entry is operator-authored by construction,
+	// because it IS the operator's yaml.
+	//
+	// It gates only the WIDENED prompt-expansion families, never the ones that
+	// already existed — gating those would strip expansion from every
+	// agent-authored def the moment the migration ran, and a guard that breaks
+	// working defs on upgrade is an outage, not a guard.
+	OperatorAuthored bool `json:"-" yaml:"-"`
+
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
 	// Code is the inline code-js orchestrator source (RFC J). When set

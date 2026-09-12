@@ -262,6 +262,16 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// started outside the loop's stamping path (e.g. some tests).
 		"provider": tools.ResolvedProvider(ctx),
 		"model":    tools.ResolvedModel(ctx),
+		// operator_authored says whether a PERSON wrote this agent's
+		// definition — the operator's yaml, or an off-run call under an
+		// operator token — rather than an agent writing it at runtime.
+		//
+		// Worth answering on its own: "who wrote me" is a question a
+		// self-evolving agent, and an operator auditing one, both ask. It is
+		// also the bit that decides which prompt-expansion families this
+		// agent's definition may use, so an agent seeing an expansion refused
+		// can tell WHY rather than guessing.
+		"operator_authored": tools.OperatorAuthored(ctx),
 	}
 	// sampling: the resolved LLM sampling params (temperature, top_p, …) in
 	// effect for this run (per-run > per-agent). Non-secret — the agent is

@@ -30,6 +30,7 @@ func TestSubstrateAgentDef_ConfigRoundTripCoversEveryField(t *testing.T) {
 		"SystemPromptFile": "a load-time path read from disk; a runtime-authored def has no filesystem to read",
 		"DisableContext":   "load-time only — it suppresses the default-add of the Context tool and bakes into Tools before anything resolves",
 		"SkillDefScopes":   "removed-field tombstone (RFC BA); skill authoring is governed by the skills: allowlist, and carrying it would resurrect a dead gate",
+		"OperatorAuthored": "AUTHORITY, not content. It lives on the agent_defs ROW and is stamped from the ctx at the write site; carrying it through the definition body would let a def claim its own authorship — and would put it in the content hash, forking every existing row",
 	}
 
 	var full config.AgentDef
