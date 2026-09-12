@@ -189,3 +189,79 @@ async def test_stream_user_run_states_yields_decoded_events():
     assert list(captured["req"].statuses) == ["running", "completed"]
     assert [e["status"] for e in got] == ["running", "completed"]
     assert got[0]["run_id"] == "r1"
+
+
+@pytest.mark.asyncio
+async def test_stream_user_run_states_forwards_the_walk_filter():
+    """The walk filter is SERVER-side, so the only thing the adapter has to
+    get right is putting it on the request. An unforwarded filter does not
+    error — the stream simply carries every walk's runs, which looks exactly
+    like a walk that spawned a lot of agents. So assert on what was SENT."""
+    client = _make_client()
+    captured: dict = {}
+
+    def fake(req, metadata=None):
+        captured["req"] = req
+        return _ItemStream([])
+
+    client._stub.StreamUserRunStates = fake  # type: ignore[attr-defined]
+
+    async for _ in client.stream_user_run_states("u1", walk_id="run_walk_123"):
+        pass
+
+    assert captured["req"].walk_id == "run_walk_123"
+
+
+@pytest.mark.asyncio
+async def test_stream_user_run_states_surfaces_the_wave_correlation():
+    """walk_id says a run is INSIDE a walk; wave_id and wave_index say where.
+
+    A fan-out of N runs dispatched from one channel read shares a wave_id and
+    differs only by index, so a client that can filter but cannot read these
+    can list a walk's agents without being able to draw it.
+
+    wave_index 0 is a REAL first position. proto3 cannot tell 0 from unset on
+    a scalar, which is why parent_context is a MESSAGE — absence is carried by
+    the message, not by its fields."""
+    client = _make_client()
+    events = [
+        pb.RunStateEvent(
+            run_id="r0",
+            agent="researcher",
+            user_id="u1",
+            status="running",
+            parent_context=pb.ParentContext(
+                root_agent_run_id="root-1",
+                function_key="triage",
+                walk_id="run_walk_123",
+                wave_id="wave_1",
+                wave_index=0,
+            ),
+        ),
+        # A run outside any walk. parent_context must be None, not an empty
+        # mapping a caller would read as "walk_id happens to be blank".
+        pb.RunStateEvent(run_id="r1", agent="solo", user_id="u1", status="completed"),
+    ]
+
+    def fake(req, metadata=None):
+        return _ItemStream(events)
+
+    client._stub.StreamUserRunStates = fake  # type: ignore[attr-defined]
+
+    got = []
+    async for e in client.stream_user_run_states("u1", walk_id="run_walk_123"):
+        got.append(e)
+
+    pc = got[0]["parent_context"]
+    assert pc is not None, "parent_context was dropped — the run cannot be placed in its walk"
+    assert pc["walk_id"] == "run_walk_123"
+    assert pc["wave_id"] == "wave_1"
+    assert pc["wave_index"] == 0
+    # The lineage fields that predate the wave correlation come through too.
+    assert pc["root_agent_run_id"] == "root-1"
+    assert pc["function_key"] == "triage"
+
+    # Present as a KEY even when absent, so this is a value to test rather
+    # than a KeyError to guard.
+    assert "parent_context" in got[1]
+    assert got[1]["parent_context"] is None

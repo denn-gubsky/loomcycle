@@ -32,6 +32,7 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
     cancel_agent(...)         — cancel a live agent (cascades to children)
     list_user_agents(...)     — list a user's recent runs
     stream_user_run_states(...) — stream a user's run-state transitions
+                                 (walk_id= narrows to one team walk)
     get_transcript(...)       — read the persisted event log for a session
     resolve_probe()           — resolver provider/model availability matrix
     health()                  — liveness probe
@@ -125,4 +126,4 @@ __all__ = [
     "SubstrateToolRefusedError",
 ]
 
-__version__ = "1.67.0"
+__version__ = "1.78.0"
