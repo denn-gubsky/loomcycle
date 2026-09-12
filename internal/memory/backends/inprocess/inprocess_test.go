@@ -15,6 +15,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -1149,4 +1150,45 @@ func mustJSON(t *testing.T, v string) json.RawMessage {
 		t.Fatalf("marshal: %v", err)
 	}
 	return raw
+}
+
+// TestAdd_EnqueuesWithTheSessionSoTheFactCanBeFollowedBack (RFC CV P1).
+//
+// A fact distilled from a queued item inherits the item's provenance, and the
+// SESSION is the half that makes it followable: recall reports it, and the
+// History window op takes it with the fact's span to return the turn the fact
+// came from.
+//
+// It was empty for as long as RunIdentityValue carried no session id — the
+// enqueue said so in a comment — and the consequence was invisible because the
+// fact still stored fine. Measured on a benchmark store before the fix: 8 of 215
+// facts carried a session, and all 8 came from the harness's own agents rather
+// than from the corpus under test.
+func TestAdd_EnqueuesWithTheSessionSoTheFactCanBeFollowedBack(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	b := inprocess.New(s, nil)
+
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		UserID: "u1", TenantID: "t1", SessionID: "s_the_chat",
+	})
+	if _, err := b.Add(ctx, store.MemoryScopeUser, "u1",
+		[]memory.LayerMessage{{Role: "user", Content: "we moved the release to the 14th"}},
+		memory.AddOptions{Infer: true}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rows, err := s.MemoryPendingDrain(context.Background(), "t1", store.MemoryScopeUser, "u1", 10)
+	if err != nil {
+		t.Fatalf("pending list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("enqueued %d rows, want 1", len(rows))
+	}
+	if got := rows[0].SourceSessionID; got != "s_the_chat" {
+		t.Errorf("SourceSessionID = %q, want s_the_chat — without it every fact distilled "+
+			"from this item is unreachable from the conversation it came from", got)
+	}
 }

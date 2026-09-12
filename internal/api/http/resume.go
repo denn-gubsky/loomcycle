@@ -245,7 +245,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
 		AgentID:       run.AgentID,
-		RootRunID:     run.ID, // RFC AH Phase 2b: resumed run roots its own tree
+		RootRunID:     run.ID,        // RFC AH Phase 2b: resumed run roots its own tree
+		SessionID:     run.SessionID, // restored from the run row, like every other durable field here
 		UserTier:      run.UserTier,
 		ParentContext: run.ParentContext,
 		// UserBearer / UserCredentials are intentionally absent — secrets are

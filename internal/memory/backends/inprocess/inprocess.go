@@ -456,11 +456,16 @@ func (b *Backend) Add(ctx context.Context, scope store.MemoryScope, scopeID stri
 			// consolidated fact's provenance is resolved FROM, so a forgeable one
 			// would let an agent dictate how its own writes are labelled.
 			Origin: store.PendingOriginAgentExplicit,
-			// No session-id ctx helper today (RunIdentityValue carries no
-			// session id), so SourceSessionID stays empty; SourceRunID is enough
-			// to correlate the enqueue back to the run that produced it.
-			SourceRunID: tools.RunID(ctx),
-			CreatedAt:   time.Now().UTC(),
+			// WHERE THE WORDS WERE SAID, so the fact distilled from this item can
+			// be followed back to the turn it came from. It stayed empty while
+			// RunIdentityValue carried no session id, and the cost was not
+			// cosmetic: every fact from a queued item was unreachable from its
+			// source, measured at 8 of 215 on a benchmark store — and those 8 came
+			// from the harness's own agents rather than the corpus. Empty for an
+			// off-run caller, which is honest: there is no conversation behind it.
+			SourceSessionID: tools.RunIdentity(ctx).SessionID,
+			SourceRunID:     tools.RunID(ctx),
+			CreatedAt:       time.Now().UTC(),
 		}
 		if err := b.store.MemoryPendingEnqueue(ctx, row); err != nil {
 			return memory.AddResult{}, fmt.Errorf("add: enqueue pending: %w", err)

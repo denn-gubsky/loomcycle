@@ -429,6 +429,48 @@ func ingestLayer(ctx context.Context, mc *MCPClient, conv Conversation, stdout i
 	return len(sessions), nil
 }
 
+// ingestChats writes one conversation into the store AS CHATS — one loomcycle
+// session per LoCoMo session, one turn per message — instead of onto the
+// consolidation queue.
+//
+// WHY BOTH PATHS EXIST. The queue path is the deterministic default and it is
+// the right ingest for measuring retrieval: turns go in verbatim, nothing
+// interprets them. But it produces facts with NOTHING TO FOLLOW BACK TO — there
+// is no conversation in the store behind them — so it cannot measure the
+// reach-through, where a recalled fact hands back the turn it was distilled
+// from. This path makes the corpus a real transcript so that relation exists.
+//
+// EVERY TURN IS POSTED AS A USER MESSAGE, including the second speaker's. A turn
+// already carries "[date] Speaker: text" in its body, so the speaker is not lost
+// — only the role label is — and the alternative (getting a model to utter the
+// other side verbatim) would measure that model's transcription fidelity, which
+// is the reason this harness refuses to prompt an agent to store turns.
+//
+// The scribe agent should do as little as possible: its replies become assistant
+// turns in the transcript, and a chatty one dilutes what the extractor reads.
+func ingestChats(ctx context.Context, mc *MCPClient, conv Conversation, scribe, userID string, stdout io.Writer) (int, error) {
+	sessions := conv.LayerMessages()
+	turns := 0
+	for i, msgs := range sessions {
+		if err := ctx.Err(); err != nil {
+			return i, err
+		}
+		sessionID := ""
+		for j, m := range msgs {
+			rr, err := mc.SpawnTurn(ctx, scribe, userID, sessionID, m.Content)
+			if err != nil {
+				return i, fmt.Errorf("chat ingest (session %d/%d, turn %d/%d): %w",
+					i+1, len(sessions), j+1, len(msgs), err)
+			}
+			sessionID = rr.SessionID
+			turns++
+		}
+	}
+	fmt.Fprintf(stdout, "  wrote %d chat(s) holding %d turn(s) — the corpus is a transcript, so a "+
+		"distilled fact can be followed back to the turn it came from\n", len(sessions), turns)
+	return len(sessions), nil
+}
+
 // consolidateDrain runs consolidation passes until the queue is empty.
 //
 // The pass reports what it did in prose, including "queued items N, acked M",
@@ -722,7 +764,13 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 				}
 				rep.SeededTurns += n
 			}
-			ingested, err := ingestLayer(ctx, mc, conv, stdout)
+			var ingested int
+			var err error
+			if opts.ingestAsChats {
+				ingested, err = ingestChats(ctx, mc, conv, opts.scribe, userID, stdout)
+			} else {
+				ingested, err = ingestLayer(ctx, mc, conv, stdout)
+			}
 			if err != nil {
 				return err
 			}

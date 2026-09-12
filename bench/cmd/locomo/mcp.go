@@ -180,6 +180,7 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, args map[string]a
 // RunResult is the subset of a spawn_run ack this harness reads.
 type RunResult struct {
 	RunID      string `json:"run_id"`
+	SessionID  string `json:"session_id"`
 	Status     string `json:"status"`
 	StopReason string `json:"stop_reason"`
 	FinalText  string `json:"final_text"`
@@ -218,6 +219,51 @@ func (c *MCPClient) SpawnRun(ctx context.Context, agent, userID, prompt string) 
 	}
 	if rr.Status != "completed" {
 		return rr, fmt.Errorf("run %s: status=%s %s", rr.RunID, rr.Status, truncate(rr.Error, 200))
+	}
+	return rr, nil
+}
+
+// SpawnTurn posts ONE conversation turn. With sessionID empty it opens a new
+// chat and returns the id; with it set the turn continues that chat.
+//
+// This is what makes the corpus a CONVERSATION rather than a pile of queue
+// items. It matters for the fact->source relation: a fact distilled from a chat
+// carries the chat it came from, and a fact distilled from a queued Memory-add
+// carries nothing to follow — the consolidator passes an empty source id on the
+// batched path by design ("batching costs the per-item provenance"), and an
+// off-run MCP caller has no session to record in the first place. Measured on
+// this benchmark before the change: 8 of 215 facts carried a session, and all 8
+// came from the harness's own answerer and judge rather than from the corpus.
+func (c *MCPClient) SpawnTurn(ctx context.Context, agent, userID, sessionID, text string) (RunResult, error) {
+	args := map[string]any{
+		"segments": []any{map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "trusted-text", "text": text}},
+		}},
+	}
+	if sessionID != "" {
+		// A continuation takes the session and ignores the agent — the session's
+		// stored agent is authoritative.
+		args["session_id"] = sessionID
+	} else {
+		args["agent"] = agent
+	}
+	if userID != "" {
+		args["user_id"] = userID
+	}
+	txt, err := c.CallTool(ctx, "spawn_run", args)
+	if err != nil {
+		return RunResult{}, err
+	}
+	var rr RunResult
+	if err := json.Unmarshal([]byte(txt), &rr); err != nil {
+		return RunResult{}, fmt.Errorf("spawn_run: decode ack: %w (got %s)", err, truncate(txt, 200))
+	}
+	if rr.Status != "completed" {
+		return rr, fmt.Errorf("run %s: status=%s %s", rr.RunID, rr.Status, truncate(rr.Error, 200))
+	}
+	if rr.SessionID == "" {
+		return rr, fmt.Errorf("spawn_run returned no session id, so the next turn cannot continue this chat")
 	}
 	return rr, nil
 }

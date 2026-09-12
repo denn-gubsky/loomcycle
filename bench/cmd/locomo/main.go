@@ -81,6 +81,12 @@ type options struct {
 	// and 8). With the corpus fixed, the only variable left is the projection
 	// under test, and a repeat run measures ANSWERER variance alone.
 	answerOnly bool
+	// ingestAsChats writes the corpus as real chats instead of queue items, so a
+	// distilled fact has a conversation to point back at. Off by default: the
+	// queue path is the deterministic ingest every other axis measures against.
+	ingestAsChats bool
+	// scribe is the agent whose runs carry the turns when ingestAsChats is set.
+	scribe     string
 	runTimeout time.Duration
 }
 
@@ -88,31 +94,33 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("locomo", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		mode        = fs.String("mode", "convert", "convert | ingest | search | all | purge | answer")
-		data        = fs.String("data", "", "path to the dataset json (required; not vendored — see README)")
-		dataset     = fs.String("dataset", "locomo", "which corpus the -data file is: locomo | longmemeval")
-		instance    = fs.String("loomcycle", "http://127.0.0.1:8787", "base URL of the running loomcycle")
-		scope       = fs.String("scope", "agent", "memory scope to write/read (agent|user|tenant)")
-		topK        = fs.Int("top-k", 10, "retrieval depth metrics are computed at")
-		categories  = fs.String("categories", "1,2,3,4", "LoCoMo categories to score (5 is adversarial and has no ground truth)")
-		convLimit   = fs.Int("conversations", 0, "only the first N conversations (0 = all)")
-		concurrency = fs.Int("concurrency", 4, "parallel requests during ingest")
-		out         = fs.String("out", "", "output directory (default: bench/results/locomo-<timestamp>)")
-		dryRun      = fs.Bool("dry-run", false, "parse and report, write nothing")
-		noEmbed     = fs.Bool("no-embed", false, "skip embedding on ingest (use /v1/_memory/backfill_embeddings after)")
-		unit        = fs.String("unit", "turn", "row granularity: turn|session (RFC CM-1)")
-		dated       = fs.Bool("dated", false, "stamp observed_at from each row's session date (RFC CL)")
-		onlyDated   = fs.Bool("only-date-questions", false, "grade ONLY questions naming an absolute date/window (RFC CL slice)")
-		injectWhen  = fs.Bool("inject-when", false, "resolve the question date phrase and hand the answerer a when window")
-		allowShared = fs.Bool("allow-shared-tenant", false, "permit writing into the default/legacy tenant (NOT isolated)")
-		timeout     = fs.Duration("timeout", 60*time.Second, "per-request timeout")
-		answerer    = fs.String("answerer", "locomo/answerer", "agent that answers from memory (answer axis)")
-		judge       = fs.String("judge", "locomo/judge", "agent that grades an answer against gold (answer axis)")
-		sampleQ     = fs.Int("sample-questions", 0, "answer axis: grade only N questions, stratified by category (0 = all)")
-		consPasses  = fs.Int("consolidate-passes", 12, "answer axis: max consolidation passes per conversation (0 = skip consolidation entirely)")
-		answerOnly  = fs.Bool("answer-only", false, "answer axis: grade the EXISTING store — skip flush/purge/seed/ingest/consolidate. For measuring a retrieval-side change with the corpus held constant; the empty-store guard still applies")
-		seedTurns   = fs.Bool("seed-turns", false, "answer axis: also write one embedded row per TURN into the partition the answerer reads, so it answers from conversation content rather than only from distilled facts (this is what the published systems do)")
-		runTimeout  = fs.Duration("run-timeout", 10*time.Minute, "answer axis: per-run timeout (agent runs are slower than REST calls)")
+		mode          = fs.String("mode", "convert", "convert | ingest | search | all | purge | answer")
+		data          = fs.String("data", "", "path to the dataset json (required; not vendored — see README)")
+		dataset       = fs.String("dataset", "locomo", "which corpus the -data file is: locomo | longmemeval")
+		instance      = fs.String("loomcycle", "http://127.0.0.1:8787", "base URL of the running loomcycle")
+		scope         = fs.String("scope", "agent", "memory scope to write/read (agent|user|tenant)")
+		topK          = fs.Int("top-k", 10, "retrieval depth metrics are computed at")
+		categories    = fs.String("categories", "1,2,3,4", "LoCoMo categories to score (5 is adversarial and has no ground truth)")
+		convLimit     = fs.Int("conversations", 0, "only the first N conversations (0 = all)")
+		concurrency   = fs.Int("concurrency", 4, "parallel requests during ingest")
+		out           = fs.String("out", "", "output directory (default: bench/results/locomo-<timestamp>)")
+		dryRun        = fs.Bool("dry-run", false, "parse and report, write nothing")
+		noEmbed       = fs.Bool("no-embed", false, "skip embedding on ingest (use /v1/_memory/backfill_embeddings after)")
+		unit          = fs.String("unit", "turn", "row granularity: turn|session (RFC CM-1)")
+		dated         = fs.Bool("dated", false, "stamp observed_at from each row's session date (RFC CL)")
+		onlyDated     = fs.Bool("only-date-questions", false, "grade ONLY questions naming an absolute date/window (RFC CL slice)")
+		injectWhen    = fs.Bool("inject-when", false, "resolve the question date phrase and hand the answerer a when window")
+		allowShared   = fs.Bool("allow-shared-tenant", false, "permit writing into the default/legacy tenant (NOT isolated)")
+		timeout       = fs.Duration("timeout", 60*time.Second, "per-request timeout")
+		answerer      = fs.String("answerer", "locomo/answerer", "agent that answers from memory (answer axis)")
+		judge         = fs.String("judge", "locomo/judge", "agent that grades an answer against gold (answer axis)")
+		sampleQ       = fs.Int("sample-questions", 0, "answer axis: grade only N questions, stratified by category (0 = all)")
+		consPasses    = fs.Int("consolidate-passes", 12, "answer axis: max consolidation passes per conversation (0 = skip consolidation entirely)")
+		ingestAsChats = fs.Bool("ingest-as-chats", false, "answer axis: write the corpus as real chats (one per session, one turn per message) instead of onto the consolidation queue, so a distilled fact can be followed back to the turn it came from. Needs -scribe")
+		scribe        = fs.String("scribe", "locomo/scribe", "answer axis: the agent whose runs carry the turns under -ingest-as-chats; it should reply as briefly as possible, since its replies become assistant turns in the transcript")
+		answerOnly    = fs.Bool("answer-only", false, "answer axis: grade the EXISTING store — skip flush/purge/seed/ingest/consolidate. For measuring a retrieval-side change with the corpus held constant; the empty-store guard still applies")
+		seedTurns     = fs.Bool("seed-turns", false, "answer axis: also write one embedded row per TURN into the partition the answerer reads, so it answers from conversation content rather than only from distilled facts (this is what the published systems do)")
+		runTimeout    = fs.Duration("run-timeout", 10*time.Minute, "answer axis: per-run timeout (agent runs are slower than REST calls)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -132,7 +140,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		allowSharedTenant: *allowShared, timeout: *timeout,
 		answerer: *answerer, judge: *judge, sampleQuestions: *sampleQ,
 		consolidatePasses: *consPasses, runTimeout: *runTimeout, seedTurns: *seedTurns,
-		answerOnly: *answerOnly,
+		answerOnly:    *answerOnly,
+		ingestAsChats: *ingestAsChats,
+		scribe:        *scribe,
 	}
 	if opts.concurrency < 1 {
 		opts.concurrency = 1

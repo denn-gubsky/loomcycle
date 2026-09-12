@@ -416,6 +416,21 @@ type RunIdentityValue struct {
 	// completes. Empty for a run started outside the volume-aware run-start
 	// path (the ephemeral VolumeDef create op then refuses — no active run).
 	RootRunID string
+	// SessionID is the CHAT this run belongs to. It exists so a write made
+	// during a run can record WHERE it came from: `Memory op=add` enqueues a
+	// consolidation item, the fact distilled from it inherits the pointer, and a
+	// recalled fact can then hand back the turn it was derived from.
+	//
+	// It used to be absent, and the absence was load-bearing in the wrong
+	// direction — the enqueue path said so in a comment ("No session-id ctx
+	// helper today … so SourceSessionID stays empty") and every fact distilled
+	// from a queued item was therefore unreachable from its source. Measured on a
+	// benchmark store: 8 of 215 facts carried a session, and all 8 came from the
+	// harness's own agents rather than from the corpus.
+	//
+	// A sub-agent gets its OWN session, so this is NOT inherited like TenantID —
+	// runSubAgent stamps the child's.
+	SessionID string
 	// TenantID is the RFC L authoritative data-isolation boundary. On
 	// authenticated routes it is set from the resolved auth.Principal's
 	// TenantID (which overrides the wire tenant_id); for legacy /
