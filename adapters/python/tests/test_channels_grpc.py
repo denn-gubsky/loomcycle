@@ -238,6 +238,17 @@ async def test_stream_user_run_states_surfaces_the_wave_correlation():
                 wave_index=0,
             ),
         ),
+        # A sub-agent with lineage but NO walk — every sub-agent has carried
+        # root_agent_run_id since long before team walks existed. This is the
+        # case a truthiness check on walk_id/wave_id gets wrong: the lineage is
+        # present and must be surfaced, even though nothing about a walk is.
+        pb.RunStateEvent(
+            run_id="r2",
+            agent="helper",
+            user_id="u1",
+            status="running",
+            parent_context=pb.ParentContext(root_agent_run_id="root-1"),
+        ),
         # A run outside any walk. parent_context must be None, not an empty
         # mapping a caller would read as "walk_id happens to be blank".
         pb.RunStateEvent(run_id="r1", agent="solo", user_id="u1", status="completed"),
@@ -261,7 +272,18 @@ async def test_stream_user_run_states_surfaces_the_wave_correlation():
     assert pc["root_agent_run_id"] == "root-1"
     assert pc["function_key"] == "triage"
 
+    # Lineage without a walk still surfaces. Presence is decided by the
+    # MESSAGE, never by whether its fields happen to be set.
+    no_walk = got[1]["parent_context"]
+    assert no_walk is not None, (
+        "a sub-agent's lineage was dropped because it named no walk — presence "
+        "must be HasField, not a truthiness check on walk_id/wave_id"
+    )
+    assert no_walk["root_agent_run_id"] == "root-1"
+    assert no_walk["walk_id"] == ""
+    assert no_walk["wave_index"] == 0
+
     # Present as a KEY even when absent, so this is a value to test rather
     # than a KeyError to guard.
-    assert "parent_context" in got[1]
-    assert got[1]["parent_context"] is None
+    assert "parent_context" in got[2]
+    assert got[2]["parent_context"] is None
