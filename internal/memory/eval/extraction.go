@@ -218,9 +218,14 @@ type ExtractionReport struct {
 	// or editing a case moves every recall figure just as surely as editing the
 	// prompt does, so it belongs in the baseline key for the same reason — see
 	// Baseline's header.
-	CorpusSHA256 string         `json:"corpus_sha256"`
-	Cases        []CaseResult   `json:"cases"`
-	Abilities    []AbilityScore `json:"abilities"`
+	CorpusSHA256 string `json:"corpus_sha256"`
+	// Temperature and Seed record how this run was SAMPLED — absent means the
+	// provider's default, which is one draw from a distribution rather than a
+	// number anyone can reproduce.
+	Temperature *float64       `json:"temperature,omitempty"`
+	Seed        *int           `json:"seed,omitempty"`
+	Cases       []CaseResult   `json:"cases"`
+	Abilities   []AbilityScore `json:"abilities"`
 	// TotalViolations across every ability — the headline safety number.
 	TotalViolations int `json:"total_violations"`
 	// TotalErrors counts cases that never produced an answer. Non-zero means the
@@ -304,6 +309,20 @@ type ExtractionInput struct {
 	Model     string
 	Effort    string
 	MaxTokens int
+	// Temperature and Seed PIN THE SAMPLING, and without them this harness is
+	// measuring a random variable while its gate demands a single clean run.
+	//
+	// Measured, shipped prompt, qwen3.8, effort=low: 7 of 12 runs clean, and a
+	// candidate prompt 12 of 16 — Fisher p=0.43, so the wording difference is
+	// invisible underneath the sampling noise. Worse, the gate refuses to record a
+	// run with any violation, so "record a clean baseline" on a ~60%-clean model is
+	// drawing until you like the number, which is the cherry-picking the refusal
+	// exists to prevent.
+	//
+	// Nil leaves the provider's own default, which is what every baseline recorded
+	// before this was measured under — so an old entry keeps meaning what it meant.
+	Temperature *float64
+	Seed        *int
 	// CaseTimeout bounds ONE case's call. Zero = no per-case bound (the caller's
 	// ctx is the only limit).
 	//
@@ -332,6 +351,8 @@ func RunExtraction(ctx context.Context, c Caller, in ExtractionInput) (Extractio
 		Effort:             in.Effort,
 		SystemPromptSHA256: sha256Hex(in.SystemPrompt),
 		CorpusSHA256:       in.Corpus.Digest(),
+		Temperature:        in.Temperature,
+		Seed:               in.Seed,
 	}
 
 	// Canary first.
@@ -469,6 +490,11 @@ func runCase(ctx context.Context, c Caller, in ExtractionInput, cs ExtractionCas
 	if in.MaxTokens > 0 {
 		req.MaxTokens = in.MaxTokens
 	}
+	// Passed through unconditionally when set: a pinned run must be pinned on
+	// EVERY case, or the cases differ in how they were measured and the total is
+	// not a number about one configuration.
+	req.Temperature = in.Temperature
+	req.Seed = in.Seed
 
 	if in.CaseTimeout > 0 {
 		var cancel context.CancelFunc
@@ -837,3 +863,6 @@ func truncate(s string, n int) string {
 	}
 	return s[:cut] + "…"
 }
+
+// Sampling reports how this run was sampled (nil = the provider's default).
+func (r ExtractionReport) Sampling() (*float64, *int) { return r.Temperature, r.Seed }
