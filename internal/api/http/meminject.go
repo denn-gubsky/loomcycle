@@ -771,7 +771,14 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	combined := system + "\n" + user
 	docRefs := meminject.ReferencesDocRefs(combined)
 	toolRefs := meminject.ReferencesToolRefs(combined)
-	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 && !meminject.References(combined) {
+	// ReferencesWidened is checked here for the same reason the agent-prompt
+	// fast path checks it: a segment whose ONLY placeholder is a widened one has
+	// no other reason to enter expansion, and skipping leaves it sitting in the
+	// prompt as literal text. Refused and removed is the intended outcome — and
+	// on this path EVERY widened reference is refused (see OperatorAuthored
+	// below), so this is the only thing that makes the refusal visible at all.
+	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 &&
+		!meminject.References(combined) && !meminject.ReferencesWidened(combined) {
 		return system, user
 	}
 

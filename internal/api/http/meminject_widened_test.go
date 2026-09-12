@@ -232,7 +232,11 @@ func TestCallerSegments_RefuseTheWidenedFamilies(t *testing.T) {
 	log.SetOutput(&captured)
 	t.Cleanup(func() { log.SetOutput(prev) })
 
-	system, user := s.expandCallerSegments(context.Background(), mi, map[string]string{"var.x": "launch"},
+	// NIL values on purpose: with a values map the segment enters expansion for
+	// the variable family anyway, which hides whether the widened forms are
+	// themselves enough to get it there. A team node with no variables is the
+	// case that would otherwise skip expansion and keep the placeholder.
+	system, user := s.expandCallerSegments(context.Background(), mi, nil,
 		"role: {{memory:key:launch}}", "task: {{tool:WebFetch:https://docs.example.com/a}}")
 	if strings.Contains(system, "ship on friday") {
 		t.Errorf("a caller segment used the widened memory family:\n%s", system)
