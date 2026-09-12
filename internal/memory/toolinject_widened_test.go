@@ -361,3 +361,29 @@ func TestReferencesWidened_SeesWhatTheFastPathWouldSkip(t *testing.T) {
 		}
 	}
 }
+
+// TestToolArgForm_DrawsOnTheMemoryBudgetNotTheToolOne pins which budget a
+// fetched page spends.
+//
+// The tool budget exists for the fixed runtime-knowledge blocks — inventory,
+// guide, capabilities — and budgets are consumed left-to-right. A fetched page
+// is content an operator pointed at, and is orders of magnitude larger, so
+// sharing their budget would mean a {{tool:WebFetch:…}} one line higher
+// silently truncates the agent's own tool inventory. Moving a line in a prompt
+// would change what the agent knows it can call.
+func TestToolArgForm_DrawsOnTheMemoryBudgetNotTheToolOne(t *testing.T) {
+	got := Expand("{{tool:WebFetch:https://docs.example.com/a}}\n{{tool:Context.tools}}", ExpandInput{
+		ToolCalls:        map[ToolCall]string{{Tool: "WebFetch", Arg: "https://docs.example.com/a"}: strings.Repeat("x", 4000)},
+		ToolResults:      map[ToolRef]string{{Tool: "Context", Op: "tools"}: "INVENTORY"},
+		OperatorAuthored: true,
+		HostAllowed:      allowOnly("docs.example.com"),
+		MaxTokens:        100, // 400 bytes for the memory family
+		ToolMaxTokens:    100, // 400 bytes for the tool family
+	})
+	if !strings.Contains(got, "INVENTORY") {
+		t.Errorf("a fetched page spent the tool budget and starved the agent's own inventory:\n%s", got)
+	}
+	if !strings.Contains(got, "[memory truncated]") {
+		t.Errorf("the fetched page was not bounded by the memory budget:\n%s", got)
+	}
+}

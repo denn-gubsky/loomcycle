@@ -141,6 +141,7 @@ var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
 // the operator had placed it in the prompt. Substitution output is never
 // rescanned within one ReplaceAllStringFunc, which closes that cross-family
 // injection path by construction.
+//
 // memorySubFormPattern is listed BEFORE memoryPlaceholderPattern, and the order
 // is load-bearing: the bare variant pattern's `[a-z_]+` matches `key`, so it
 // would claim `{{memory:key:launch}}` up to the second colon and leave `:launch}}`
@@ -332,11 +333,15 @@ func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
 		if memorySubFormRe.MatchString(match) {
 			return expandMemorySubForm(match, in.MemoryRefs, &remaining, in.OperatorAuthored, in.Values, &refused)
 		}
-		// The widened tool form draws on the TOOL budget, like its no-argument
-		// sibling: both are runtime-knowledge blocks rather than accumulated
-		// content an operator placed.
+		// The widened tool form draws on the MEMORY budget, not the tool one —
+		// the same split the document family takes, for the same reason. The
+		// tool budget exists for the fixed runtime-knowledge blocks (inventory,
+		// guide, capabilities); a fetched page is content an operator POINTED
+		// AT, and is far larger. Sharing the tool budget with it would let a
+		// {{tool:WebFetch:…}} placed one line higher truncate the agent's own
+		// tool inventory.
 		if toolArgFormRe.MatchString(match) {
-			return expandToolArgForm(match, in.ToolCalls, &toolRemaining, in.OperatorAuthored, in.Values, in.HostAllowed, &refused)
+			return expandToolArgForm(match, in.ToolCalls, &remaining, in.OperatorAuthored, in.Values, in.HostAllowed, &refused)
 		}
 		sub := placeholderRe.FindStringSubmatch(match)
 		if sub == nil {
