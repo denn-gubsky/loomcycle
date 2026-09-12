@@ -2754,6 +2754,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// top-level runs (the load-bearing isolation property).
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
+	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
@@ -4391,6 +4392,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// sub-agents via ctx; never shared across top-level runs).
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
+	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, req.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
@@ -4993,6 +4995,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// sub-agents via ctx; never shared across top-level runs).
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, tools.NewEphemeralVolumeSet())
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
+	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, sess.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
@@ -6401,6 +6404,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// state, not agent state. The ALLOWLISTS (publish / subscribe)
 	// come from the child's yaml.
 	subCtx = tools.WithChannelPolicy(subCtx, s.channelPolicyForAgent(subCtx, def))
+	subCtx = tools.WithOperatorAuthored(subCtx, def.OperatorAuthored)
 	// Sub-agent event emitter writes to the SUB's transcript (per
 	// subEmit above). Channel-tool publishes from inside the sub
 	// surface on the sub's SSE stream, not the parent's.

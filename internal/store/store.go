@@ -3943,6 +3943,23 @@ type AgentDefRow struct {
 	// content_sha256. Set from the authoritative principal at the write
 	// site; never from the wire.
 	TenantID string `json:"tenant_id,omitempty"`
+	// OperatorAuthored records whether an OPERATOR wrote this definition —
+	// their yaml, or an off-run call under an operator token — rather than an
+	// agent writing it at runtime.
+	//
+	// Stamped from tools.IsSubstrateOperator(ctx), NOT from CreatedByAgentID:
+	// a run supplies its own agent id, so a def that claimed authorship by
+	// naming an operator-looking agent would grant itself the authority this
+	// gates.
+	//
+	// AUTHORITY, NOT CONTENT — absent from content_sha256 (the same treatment
+	// *_def_scopes and the RFC AX restriction bit get), so an existing row
+	// keeps its hash byte-for-byte and a fork still verifies across
+	// deployments.
+	//
+	// A legacy row reads FALSE, which is the safe direction: nothing gains
+	// authority by having predated the column.
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // AgentDefNameSummary is one entry of AgentDefListNames' output.

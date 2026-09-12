@@ -110,6 +110,8 @@ func Agent(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name
 	// 2. Static cfg.Agents — the shared operator base.
 	if cfg != nil {
 		if def, ok := cfg.Agents[name]; ok {
+			// The operator's own yaml, by construction.
+			def.OperatorAuthored = true
 			return def, true
 		}
 	}
@@ -159,6 +161,10 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	}
 	def := sd.ToConfigDef()
 	NormalizeAgentDef(&def)
+	// From the ROW, not the definition body: authorship is authority and is
+	// deliberately not part of the persisted def (nor of its content hash), so
+	// a def cannot claim it by containing it.
+	def.OperatorAuthored = activeRow.OperatorAuthored
 	return def, true
 }
 
