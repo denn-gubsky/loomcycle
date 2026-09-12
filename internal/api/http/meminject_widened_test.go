@@ -131,6 +131,21 @@ func TestWidenedFetch_RendersAnAllowlistedHostAndRefusesEveryOther(t *testing.T)
 		t.Errorf("the request was MADE to an off-allowlist host (%d → %d) — the refusal has to "+
 			"stop the dial, not just the rendering", before, hit)
 	}
+
+	// An AGENT-authored def naming a perfectly allowlisted host must not cause
+	// the fetch EITHER. Rendering nothing is not enough: the guard's subject is
+	// who may aim the runtime's network, so a def that may not aim it must not
+	// produce a request whose result is then discarded.
+	before = hit
+	agentDef := config.AgentDef{SystemPrompt: def.SystemPrompt} // OperatorAuthored unset
+	got3, _ := s.applyMemoryInjection(context.Background(), agentDef, mi)
+	if strings.Contains(got3.SystemPrompt, "THE FETCHED PAGE") {
+		t.Fatalf("an agent-authored def rendered a fetched page:\n%s", got3.SystemPrompt)
+	}
+	if hit != before {
+		t.Errorf("an agent-authored def caused the fetch anyway (%d → %d) — the guard must be "+
+			"applied before the work, not after it", before, hit)
+	}
 }
 
 // TestWidenedFetch_FailsSoftWhenTheHostIsUnreachable is the cost the network
