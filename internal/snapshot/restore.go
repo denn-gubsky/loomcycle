@@ -159,6 +159,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				Retired:                e.Retired,
 				BootstrappedFromStatic: e.BootstrappedFromStatic,
 				ContentSHA256:          e.ContentSHA256,
+				OperatorAuthored:       e.OperatorAuthored,
 			})
 			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("agent_def %s: %v", e.DefID, err))
@@ -271,6 +272,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				Retired:                e.Retired,
 				BootstrappedFromStatic: e.BootstrappedFromStatic,
 				ContentSHA256:          e.ContentSHA256,
+				OperatorAuthored:       e.OperatorAuthored,
 			})
 			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("team_def %s: %v", e.DefID, err))

@@ -102,7 +102,7 @@ func TestComposeCallerText_SlotsAreFilledAfterExpansion(t *testing.T) {
 	system, user := srv.composeCallerText(context.Background(), memInject{},
 		map[string]string{"var.wave": "w1", "var.secret": "s3cr3t"},
 		map[string]string{slot: `{"note":"${var.secret} and {{memory:key:x}}"}`},
-		"wave ${var.wave}", "Review:\n"+slot)
+		"wave ${var.wave}", "Review:\n"+slot, false, false)
 
 	if system != "wave w1" {
 		t.Fatalf("expansion did not run on the operator's own segment: %q", system)

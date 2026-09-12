@@ -519,6 +519,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
 			content_sha256            TEXT,
 			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			operator_authored         INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(tenant_id, name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS teamdefs_by_name   ON teamdefs(name, version DESC)`,
@@ -1110,6 +1111,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// operator-authored — the safe direction: nothing gains authority by
 		// having predated the column.
 		`ALTER TABLE agent_defs ADD COLUMN operator_authored INTEGER NOT NULL DEFAULT 0`,
+		// Same for the TEAM plane: a team node's prompt is authored by the
+		// TeamDef, so the widened families inside it are gated on THIS flag
+		// and not on the spawned agent's.
+		`ALTER TABLE teamdefs ADD COLUMN operator_authored INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dynamic_agents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC N — tenant-scope the skill definition plane (mirror of the
@@ -3371,7 +3376,8 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT def_id, name, version, parent_def_id, definition, description,
 		        created_at, created_by_agent_id, created_by_run_id,
-		        retired, bootstrapped_from_static, tenant_id, content_sha256
+		        retired, bootstrapped_from_static, tenant_id, content_sha256,
+		        operator_authored
 		 FROM teamdefs
 		 ORDER BY tenant_id ASC, name ASC, version ASC`,
 	)
@@ -3392,18 +3398,21 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 			retiredInt  int
 			bootstrap   int
 			contentSHA  sql.NullString
+			operatorAut int
 		)
 		if err := rows.Scan(
 			&r.DefID, &r.Name, &r.Version, &parentDefID,
 			&definition, &description,
 			&createdNs, &createdBy, &createdRun,
 			&retiredInt, &bootstrap, &r.TenantID, &contentSHA,
+			&operatorAut,
 		); err != nil {
 			return nil, fmt.Errorf("scan team_def: %w", err)
 		}
 		if contentSHA.Valid {
 			r.ContentSHA256 = contentSHA.String
 		}
+		r.OperatorAuthored = operatorAut != 0
 		r.Definition = json.RawMessage(definition)
 		r.CreatedAt = time.Unix(0, createdNs)
 		if parentDefID.Valid {
@@ -3973,13 +3982,15 @@ func (s *Store) SnapshotRestoreTeamDef(ctx context.Context, r store.TeamDefRow) 
 		`INSERT OR IGNORE INTO teamdefs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id,
+			operator_authored
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
 		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic),
 		nilIfEmpty(r.ContentSHA256), r.TenantID,
+		boolToInt(r.OperatorAuthored),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore team_def: %w", err)
@@ -6728,14 +6739,16 @@ func (s *Store) TeamDefCreate(ctx context.Context, row store.TeamDefRow) (store.
 		`INSERT INTO teamdefs (
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
-			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			retired, bootstrapped_from_static, content_sha256, tenant_id,
+			operator_authored
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
 		string(row.Definition), nilIfEmpty(row.Description),
 		row.CreatedAt.UnixNano(),
 		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		boolToInt(row.Retired), boolToInt(row.BootstrappedFromStatic),
 		nilIfEmpty(row.ContentSHA256), row.TenantID,
+		boolToInt(row.OperatorAuthored),
 	); err != nil {
 		return store.TeamDefRow{}, err
 	}
@@ -6913,16 +6926,18 @@ const teamDefSelect = `SELECT
 	retired,
 	bootstrapped_from_static,
 	COALESCE(content_sha256, ''),
-	tenant_id
+	tenant_id,
+	operator_authored
 FROM teamdefs`
 
 func (s *Store) scanTeamDef(row *sql.Row) (store.TeamDefRow, error) {
 	var (
-		out        store.TeamDefRow
-		definition string
-		createdAt  int64
-		retired    int
-		bootstrap  int
+		out              store.TeamDefRow
+		definition       string
+		createdAt        int64
+		retired          int
+		bootstrap        int
+		operatorAuthored int
 	)
 	err := row.Scan(
 		&out.DefID, &out.Name, &out.Version,
@@ -6934,6 +6949,7 @@ func (s *Store) scanTeamDef(row *sql.Row) (store.TeamDefRow, error) {
 		&retired, &bootstrap,
 		&out.ContentSHA256,
 		&out.TenantID,
+		&operatorAuthored,
 	)
 	if err != nil {
 		return store.TeamDefRow{}, err
@@ -6942,6 +6958,7 @@ func (s *Store) scanTeamDef(row *sql.Row) (store.TeamDefRow, error) {
 	out.CreatedAt = time.Unix(0, createdAt)
 	out.Retired = retired != 0
 	out.BootstrappedFromStatic = bootstrap != 0
+	out.OperatorAuthored = operatorAuthored != 0
 	return out, nil
 }
 
@@ -6949,11 +6966,12 @@ func (s *Store) scanTeamDefRows(rows *sql.Rows) ([]store.TeamDefRow, error) {
 	var out []store.TeamDefRow
 	for rows.Next() {
 		var (
-			r          store.TeamDefRow
-			definition string
-			createdAt  int64
-			retired    int
-			bootstrap  int
+			r                store.TeamDefRow
+			definition       string
+			createdAt        int64
+			retired          int
+			bootstrap        int
+			operatorAuthored int
 		)
 		if err := rows.Scan(
 			&r.DefID, &r.Name, &r.Version,
@@ -6965,6 +6983,7 @@ func (s *Store) scanTeamDefRows(rows *sql.Rows) ([]store.TeamDefRow, error) {
 			&retired, &bootstrap,
 			&r.ContentSHA256,
 			&r.TenantID,
+			&operatorAuthored,
 		); err != nil {
 			return nil, err
 		}
@@ -6972,6 +6991,7 @@ func (s *Store) scanTeamDefRows(rows *sql.Rows) ([]store.TeamDefRow, error) {
 		r.CreatedAt = time.Unix(0, createdAt)
 		r.Retired = retired != 0
 		r.BootstrappedFromStatic = bootstrap != 0
+		r.OperatorAuthored = operatorAuthored != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()

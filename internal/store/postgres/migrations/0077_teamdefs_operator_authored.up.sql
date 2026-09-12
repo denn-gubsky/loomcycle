@@ -1,0 +1,19 @@
+-- 0077_teamdefs_operator_authored.up.sql — who wrote this TEAM definition.
+--
+-- The mirror of 0076 on agent_defs, and it is needed for a reason agent_defs
+-- did not have: a team node's prompt is a CALLER SEGMENT, expanded on behalf
+-- of the agent being spawned but authored by the TeamDef. Gating that segment
+-- on the spawned agent's flag would ask the wrong question — an
+-- operator-authored agent invoked from a model-authored node would pass a
+-- guard whose entire subject is who wrote the TEMPLATE.
+--
+-- AUTHORITY, NOT CONTENT. Absent from content_sha256 by construction:
+-- teamgraph.Sign hashes the DEFINITION, and this lives on the row beside it.
+-- So every existing row keeps its hash byte-for-byte and a fork across
+-- deployments still verifies.
+--
+-- Default FALSE, the safe direction: a legacy row reads as NOT
+-- operator-authored, so nothing gains authority by having predated the column.
+-- The guard must therefore only gate what it ADDS — every family a team node
+-- prompt could already use keeps working for every row.
+ALTER TABLE teamdefs ADD COLUMN IF NOT EXISTS operator_authored BOOLEAN NOT NULL DEFAULT FALSE;

@@ -4140,6 +4140,21 @@ type TeamDefRow struct {
 	// tenants forking the same body get the same content_sha256. Set from
 	// the authoritative principal at the write site; never from the wire.
 	TenantID string `json:"tenant_id,omitempty"`
+	// OperatorAuthored records whether an OPERATOR wrote this team — their own
+	// off-run call under an operator token — rather than an agent authoring it
+	// at runtime.
+	//
+	// It gates the widened prompt-expansion families inside a team node's
+	// prompt. Those resolve under the RUNTIME's authority rather than the
+	// spawned agent's, so a team a model wrote must not be able to aim one.
+	// The AGENT's own flag cannot answer this: the node prompt is the TeamDef's
+	// text, and the two authors are independent.
+	//
+	// Stamped from tools.IsSubstrateOperator(ctx), NOT from CreatedByAgentID:
+	// a run supplies that itself. Deliberately excluded from ContentSHA256 —
+	// authority, not content — which teamgraph.Sign gets for free by hashing
+	// the definition rather than the row.
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // TeamDefNameSummary mirrors SkillDefNameSummary.

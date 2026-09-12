@@ -294,6 +294,8 @@ func Run(t *testing.T, factory Factory) {
 		// pre-migration single-`name`-PK schema (clobber); passes after.
 		{"TeamDefTenantIsolation", testTeamDefTenantIsolation},
 		{"TeamDefContentSHA256RoundTrip", testTeamDefContentSHA256RoundTrip},
+		{"TeamDefOperatorAuthoredRoundTrip", testTeamDefOperatorAuthoredRoundTrip},
+		{"AgentDefOperatorAuthoredRoundTrip", testAgentDefOperatorAuthoredRoundTrip},
 		// v0.9.x MCPServerDef substrate — mirror of the AgentDef + SkillDef tests.
 		{"MCPServerDefCreateAndGet", testMCPServerDefCreateAndGet},
 		{"MCPServerDefVersionMonotonic", testMCPServerDefVersionMonotonic},
@@ -12565,5 +12567,76 @@ func testSnapshotMemoryTemporalRoundTrip(t *testing.T, s store.Store) {
 		t.Errorf("restored undated row reports observed=%v valid=%v invalid=%v, want all ZERO — "+
 			"binding the zero instant instead of NULL dates every undated row to year 1",
 			restoredUndated.ObservedAt, restoredUndated.ValidAt, restoredUndated.InvalidAt)
+	}
+}
+
+// testTeamDefOperatorAuthoredRoundTrip pins the authorship flag at the STORE
+// contract, so both tiers must carry it rather than one.
+//
+// It is a column that is easy to add to a CREATE TABLE and forget in a scanner
+// or an insert: the write succeeds, the read returns the zero value, and the
+// only visible symptom is a team whose node prompts quietly stop resolving
+// their bindings. Asserting both values matters — always-false passes a test
+// that only checks the operator case from the wrong direction.
+func testTeamDefOperatorAuthoredRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{{"toa-op", true}, {"toa-ag", false}} {
+		row := mkTeamDef(tc.id, "toa-"+tc.id, "")
+		row.OperatorAuthored = tc.want
+		created, err := s.TeamDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create %s: %v", tc.id, err)
+		}
+		got, err := s.TeamDefGet(ctx, created.DefID)
+		if err != nil {
+			t.Fatalf("get %s: %v", tc.id, err)
+		}
+		if got.OperatorAuthored != tc.want {
+			t.Errorf("%s: operator_authored = %v, want %v", tc.id, got.OperatorAuthored, tc.want)
+		}
+		// Through the LIST scanner too — a separate scan site, and the one a
+		// single-read test leaves uncovered.
+		rows, err := s.TeamDefListByName(ctx, row.Name)
+		if err != nil || len(rows) == 0 {
+			t.Fatalf("list %s: %v (%d rows)", tc.id, err, len(rows))
+		}
+		if rows[0].OperatorAuthored != tc.want {
+			t.Errorf("%s via list: operator_authored = %v, want %v", tc.id, rows[0].OperatorAuthored, tc.want)
+		}
+	}
+}
+
+// testAgentDefOperatorAuthoredRoundTrip is the same contract on the agent
+// plane. It existed only as a sqlite-specific upgrade test, so the Postgres
+// tier had no assertion that its scanner reads the column at all.
+func testAgentDefOperatorAuthoredRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{{"aoa-op", true}, {"aoa-ag", false}} {
+		row := mkDef(tc.id, "aoa-"+tc.id, "")
+		row.OperatorAuthored = tc.want
+		created, err := s.AgentDefCreate(ctx, row)
+		if err != nil {
+			t.Fatalf("create %s: %v", tc.id, err)
+		}
+		got, err := s.AgentDefGet(ctx, created.DefID)
+		if err != nil {
+			t.Fatalf("get %s: %v", tc.id, err)
+		}
+		if got.OperatorAuthored != tc.want {
+			t.Errorf("%s: operator_authored = %v, want %v", tc.id, got.OperatorAuthored, tc.want)
+		}
+		rows, err := s.AgentDefListByName(ctx, row.Name)
+		if err != nil || len(rows) == 0 {
+			t.Fatalf("list %s: %v (%d rows)", tc.id, err, len(rows))
+		}
+		if rows[0].OperatorAuthored != tc.want {
+			t.Errorf("%s via list: operator_authored = %v, want %v", tc.id, rows[0].OperatorAuthored, tc.want)
+		}
 	}
 }

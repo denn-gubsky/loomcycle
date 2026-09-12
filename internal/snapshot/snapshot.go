@@ -225,6 +225,7 @@ func captureAgentDefs(ctx context.Context, s store.Store, out *AgentDefsSection)
 			Retired:                r.Retired,
 			BootstrappedFromStatic: r.BootstrappedFromStatic,
 			ContentSHA256:          r.ContentSHA256,
+			OperatorAuthored:       r.OperatorAuthored,
 		})
 	}
 	return nil
@@ -319,6 +320,7 @@ func captureTeamDefs(ctx context.Context, s store.Store, out *TeamDefsSection) e
 			Retired:                r.Retired,
 			BootstrappedFromStatic: r.BootstrappedFromStatic,
 			ContentSHA256:          r.ContentSHA256,
+			OperatorAuthored:       r.OperatorAuthored,
 		})
 	}
 	return nil
