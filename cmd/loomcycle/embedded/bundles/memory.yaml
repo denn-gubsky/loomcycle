@@ -348,12 +348,34 @@ agents:
         // the system prompt, the temporal rule (~1.4k chars), the owner line, the
         // rolling context, and the REPLY the model still has to generate.
         context_reserve_pct: 40,
-        // extract_window_turns is the extraction GRANULARITY knob. 0 keeps the
-        // historical behaviour exactly — parts are packed to the character budget
-        // alone, which for a normal chat means ONE call for the whole transcript.
-        // N > 0 closes a part after N turns, so N=1 is per-message extraction and
-        // N=4..6 the short sliding window, with max_part_chars still a hard
-        // ceiling above it.
+        // extract_window_turns is the extraction GRANULARITY knob, and it is ON.
+        // N closes a part after N turns, so N=1 is per-message extraction and
+        // N=4..8 a sliding window, with max_part_chars still a hard ceiling above
+        // it. 0 restores the historical behaviour — one call for the whole
+        // transcript — for an operator who wants it.
+        //
+        // WHY 8, AND WHY ON AT ALL. Measured on a 419-turn conversation corpus:
+        // reading a whole chat scores 0.2867-0.3732 and EVERY window from 8 down
+        // to 1 scores 0.5175-0.5764. Whole-chat → 8 messages is +23.6pp, 34 vs 11
+        // discordant, p=0.0008. But 8 → 1 is 13 vs 14 discordant, p=1.0000: the
+        // effect is "window at all", not "window at N", and the whole 8..1 band
+        // sits INSIDE the control arm's own 8.7pp run-to-run spread. So accuracy
+        // does not choose the number and cost does — 8 messages costs 56 extractor
+        // calls for the accuracy that per-message buys with 419.
+        //
+        // Facts do NOT peak where accuracy does: they rise monotonically as the
+        // window narrows (199 → 245 → 323 → 366). Choosing N to maximise fact
+        // count would pick the most expensive point on a flat curve, which is the
+        // trap the extractor-model measurement already walked into — 42% more
+        // facts for a non-significant +4.2pp.
+        //
+        // SAFE ON SHORT SOURCES BY CONSTRUCTION, which is what makes this a
+        // default rather than a knob. min_turns_to_window below means a source
+        // shorter than 20 turns is extracted whole however this is set, so
+        // windowing can only fire where sources are long — which is exactly where
+        // it was measured to help. On a short multi-session corpus the two
+        // settings are the SAME configuration: measured, 0 of 4 instances
+        // windowed and fact counts matching the unwindowed arm.
         //
         // ⚠️ IT INTERACTS WITH max_parts_per_pass, WHICH BOUNDS A PASS'S TOTAL
         // SWEEP IF LEFT AT 4. A 22-turn chat at N=1 is 22 parts; the cap keeps the
@@ -365,7 +387,7 @@ agents:
         // calls per chat by the turn count, and a pass must still clear its chats
         // inside run_timeout_seconds (1500) which must stay under lease_ttl_ms
         // (1800000) or another worker re-claims the queue.
-        extract_window_turns: 0,
+        extract_window_turns: 8,
         // Windowing FRAGMENTS a small source below the size at which the
         // extractor finds anything, so it is applied only to a source with at
         // least this many turns.

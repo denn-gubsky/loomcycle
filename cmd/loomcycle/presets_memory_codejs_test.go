@@ -668,17 +668,21 @@ func okResult(v any) (tools.Result, error) {
 
 // runConsolidator drives the SHIPPED code-js body through the real loop against
 // the scripted toolset and returns the run result.
+// runConsolidator runs the pass AS SHIPPED — whatever extract_window_turns the
+// bundle carries. It used to pass 0, which silently made every caller a test of
+// the unwindowed path; that is no longer the default, so a test that needs the
+// unwindowed path asks for it with runConsolidatorWindow(t, f, 0).
 func runConsolidator(t *testing.T, f *fakeToolset) loop.RunResult {
 	t.Helper()
-	return runConsolidatorWindow(t, f, 0)
+	return runConsolidatorWindow(t, f, -1)
 }
 
 // runConsolidatorWindow runs the pass with the extraction granularity knob set.
 //
 // The knob is patched in the CODE BODY rather than exposed as a test hook,
-// because the body is what ships: rewriting the literal proves the shipped
-// default is 0 (the replacement must match exactly, or the test fails loudly)
-// and exercises the same path an operator gets by editing the bundle.
+// because the body is what ships: rewriting the literal exercises the same path
+// an operator gets by editing the bundle. windowTurns < 0 leaves the shipped
+// value in place; 0 turns windowing explicitly OFF.
 func runConsolidatorWindow(t *testing.T, f *fakeToolset, windowTurns int) loop.RunResult {
 	t.Helper()
 	cfg := memoryBundleConfig(t)
@@ -687,14 +691,21 @@ func runConsolidatorWindow(t *testing.T, f *fakeToolset, windowTurns int) loop.R
 		t.Fatalf("memory/consolidator not registered (agents: %v)", agentNames(cfg))
 	}
 	body := agent.Code
-	if windowTurns > 0 {
-		const shipped = "extract_window_turns: 0,"
-		if strings.Count(body, shipped) != 1 {
-			t.Fatalf("expected exactly one %q in the shipped body (found %d) — the default "+
-				"changed or the knob was renamed", shipped, strings.Count(body, shipped))
+	// windowTurns < 0 means "leave the shipped default alone"; 0 means "explicitly
+	// OFF". A test that wants no windowing has to SAY so, because the shipped
+	// default is now 8 — inheriting it from the default is how three tests here
+	// came to assert the old value without mentioning it.
+	if windowTurns >= 0 {
+		// Matched by SHAPE, not by the shipped value. This used to hard-code
+		// "extract_window_turns: 0," and so encoded the default it was meant to be
+		// independent of — the day the default moved, every windowing test failed
+		// for a reason unrelated to what it asserts.
+		re := regexp.MustCompile(`extract_window_turns: \d+,`)
+		if n := len(re.FindAllString(body, -1)); n != 1 {
+			t.Fatalf("expected exactly one extract_window_turns literal in the shipped body "+
+				"(found %d) — the knob was renamed or duplicated", n)
 		}
-		body = strings.Replace(body, shipped,
-			"extract_window_turns: "+strconv.Itoa(windowTurns)+",", 1)
+		body = re.ReplaceAllString(body, "extract_window_turns: "+strconv.Itoa(windowTurns)+",")
 	}
 	agent.Code = body
 	return runConsolidatorBody(t, f, agent)
@@ -4286,7 +4297,9 @@ func TestConsolidator_JudgeCallsAreBatchedAndBounded(t *testing.T) {
 	f.factsJSON = "[" + strings.Join(facts, ",") + "]"
 	f.factsByNeedle = []needleReply{{Needle: "BEGIN CANDIDATES", Reply: `[]`}}
 
-	runConsolidator(t, f)
+	// Windowing OFF: this asserts how the JUDGE batches a fixed candidate set, and
+	// granularity changes how many candidates there are to batch.
+	runConsolidatorWindow(t, f, 0)
 
 	prompts := judgePrompts(f)
 	if len(prompts) != 2 {
@@ -5736,7 +5749,9 @@ func TestConsolidator_QueuedPathHonoursTheExtractionWindow(t *testing.T) {
 	}
 
 	wide := newFixture()
-	runConsolidator(t, wide)
+	// Windowing explicitly OFF: this is the control the narrow arm is measured
+	// against, so it must not inherit whatever the shipped default happens to be.
+	runConsolidatorWindow(t, wide, 0)
 	wideCalls := len(extractorPrompts(wide))
 
 	narrow := newFixture()
@@ -5788,7 +5803,9 @@ func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 	}
 
 	wide := newFixture()
-	runConsolidator(t, wide)
+	// Windowing explicitly OFF: this is the CONTROL the narrow arm is measured
+	// against, so it must not inherit whatever the shipped default happens to be.
+	runConsolidatorWindow(t, wide, 0)
 	wideCalls := len(extractorPrompts(wide))
 
 	narrow := newFixture()
@@ -5796,7 +5813,7 @@ func TestConsolidator_QueuedWindowSplitsBYMESSAGENotJustByItem(t *testing.T) {
 	narrowCalls := len(extractorPrompts(narrow))
 
 	if wideCalls != 1 {
-		t.Fatalf("default made %d calls for one queued item, want 1", wideCalls)
+		t.Fatalf("unwindowed control made %d calls for one queued item, want 1", wideCalls)
 	}
 	if narrowCalls < 4 {
 		t.Errorf("per-message window made %d call(s) for a single 24-message item, want one per "+
@@ -5893,6 +5910,11 @@ func TestConsolidator_ASmallExtractorContextClampsThePartBudget(t *testing.T) {
 		}
 		agent.Code = strings.Replace(agent.Code, shipped,
 			"extractor_context_tokens: "+strconv.Itoa(ctxTokens)+",", 1)
+		// Windowing OFF. This asserts that the CHARACTER ceiling tracks the
+		// extractor's context; with a turn window on, parts close on the turn count
+		// long before the char budget binds, so the clamp under test never fires.
+		agent.Code = regexp.MustCompile(`extract_window_turns: \d+,`).
+			ReplaceAllString(agent.Code, "extract_window_turns: 0,")
 		runConsolidatorBody(t, f, agent)
 
 		var out []int
@@ -6018,5 +6040,40 @@ func TestConsolidator_MultiLineMessagesCountAsONETurn(t *testing.T) {
 		"Line three adds detail.\nLine four ends it.") {
 		t.Errorf("a message was split across windows — a fact derived here could be handed a span "+
 			"that stops mid-sentence:\n%s", joined[:min(400, len(joined))])
+	}
+}
+
+// TestConsolidator_TheSHIPPEDDefaultWindowsALongChatAndLeavesAShortOneWhole.
+//
+// The windowing default rests on two measurements that pull in opposite
+// directions: on a long conversation corpus, windowing is worth +23.6pp
+// (p=0.0008); on a short multi-session one it is unresolved at +3.2pp (p=0.34),
+// and without a guard it was actively destructive — one slice went to 0.0000 and
+// half the corpus produced no facts at all.
+//
+// What makes the default safe is that min_turns_to_window keeps it from firing on
+// exactly the sources where its benefit is unproven. That is a claim about the
+// SHIPPED configuration, so it is asserted against the shipped body rather than
+// against a window the test sets itself.
+func TestConsolidator_TheSHIPPEDDefaultWindowsALongChatAndLeavesAShortOneWhole(t *testing.T) {
+	longChat := newFakeToolset()
+	longChat.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	longChat.transcript = historyTranscript(40, 200) // 40 turns, past the guard
+	longChat.factsJSON = `[]`
+	runConsolidator(t, longChat)
+	if n := len(extractorPrompts(longChat)); n < 2 {
+		t.Errorf("a 40-turn chat produced %d extractor call(s) — the shipped default must "+
+			"WINDOW a long source, which is where windowing was measured to help", n)
+	}
+
+	shortChat := newFakeToolset()
+	shortChat.sessions = []map[string]any{scanRow("sess-b", "2026-07-01T10:00:00Z")}
+	shortChat.transcript = historyTranscript(8, 200) // 8 turns, under the guard
+	shortChat.factsJSON = `[]`
+	runConsolidator(t, shortChat)
+	if n := len(extractorPrompts(shortChat)); n != 1 {
+		t.Errorf("an 8-turn chat produced %d extractor calls — a source under "+
+			"min_turns_to_window must be extracted WHOLE however the window is set, or "+
+			"each piece is too thin to carry a fact and the item stalls unacked", n)
 	}
 }
