@@ -167,9 +167,10 @@ func TestTeamDef_RunCarriesAuthorshipOntoEveryNodePrompt(t *testing.T) {
 				t.Fatal("the walk spawned nothing")
 			}
 			for i, p := range seen {
-				if p.OperatorAuthored != tc.want {
-					t.Errorf("prompt[%d].OperatorAuthored = %v, want %v — the node prompt is "+
-						"expanded under this flag", i, p.OperatorAuthored, tc.want)
+				if p.SystemAuthored != tc.want {
+					t.Errorf("prompt[%d].SystemAuthored = %v, want %v — the node's system "+
+						"prompt is the TEAM's text and is expanded under this flag",
+						i, p.SystemAuthored, tc.want)
 				}
 			}
 		})

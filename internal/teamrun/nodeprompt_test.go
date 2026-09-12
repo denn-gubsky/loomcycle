@@ -168,3 +168,45 @@ func mustPrompt(t *testing.T, h teamgraph.Handler, threaded string) Prompt {
 	t.Helper()
 	return (&agentRunner{}).nodePrompt(h, threaded, Env{})
 }
+
+// TestNodePrompt_InputIsAuthoredOnlyWhenItIsATemplate pins the split at the
+// only place that knows which it is.
+//
+// A node that declares an input_template states its own task in the TEAM's
+// words. A node that does not works on what the previous state handed it —
+// that agent's OUTPUT. The system prompt is the team's either way.
+func TestNodePrompt_InputIsAuthoredOnlyWhenItIsATemplate(t *testing.T) {
+	r := &agentRunner{operatorAuthored: true}
+
+	templated := r.nodePrompt(teamgraph.Handler{
+		SystemPrompt: "you review", InputTemplate: "review ${var.x}",
+	}, "PREVIOUS AGENT OUTPUT", Env{})
+	if templated.Input != "review ${var.x}" {
+		t.Fatalf("a declared input_template must replace the threaded input, got %q", templated.Input)
+	}
+	if !templated.SystemAuthored || !templated.InputAuthored {
+		t.Errorf("both segments are the team's own text here: system=%v input=%v",
+			templated.SystemAuthored, templated.InputAuthored)
+	}
+
+	threaded := r.nodePrompt(teamgraph.Handler{SystemPrompt: "you review"},
+		"PREVIOUS AGENT OUTPUT", Env{})
+	if threaded.Input != "PREVIOUS AGENT OUTPUT" {
+		t.Fatalf("without a template the node works on the threaded input, got %q", threaded.Input)
+	}
+	if !threaded.SystemAuthored {
+		t.Error("the system prompt is the team's text whether or not the input is")
+	}
+	if threaded.InputAuthored {
+		t.Error("threaded agent OUTPUT was marked operator-authored — it would then be " +
+			"expanded under the runtime's authority, which is the model aiming a binding")
+	}
+
+	// A team nobody authored gets neither, whatever the node declares.
+	agentTeam := (&agentRunner{}).nodePrompt(teamgraph.Handler{
+		SystemPrompt: "s", InputTemplate: "i",
+	}, "threaded", Env{})
+	if agentTeam.SystemAuthored || agentTeam.InputAuthored {
+		t.Errorf("an agent-authored team's node prompt claimed authorship: %+v", agentTeam)
+	}
+}

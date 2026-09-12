@@ -764,21 +764,34 @@ func firstUserText(segs []loop.PromptSegment) string {
 //
 // Returns the inputs unchanged when there is nothing to do, which is every
 // non-team run: no caller segment, no values, no refs.
-func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values map[string]string, system, user string, operatorAuthored bool) (string, string) {
+func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values map[string]string, system, user string, systemAuthored, inputAuthored bool) (string, string) {
 	if system == "" && user == "" {
 		return system, user
 	}
 	combined := system + "\n" + user
 	docRefs := meminject.ReferencesDocRefs(combined)
 	toolRefs := meminject.ReferencesToolRefs(combined)
-	// The WIDENED families, collected only for a team an operator wrote — the
-	// same two-cost gate the agent-prompt path uses: collecting nothing means a
-	// def that may not use them causes neither the store reads nor the fetch.
+	// The WIDENED families, collected PER SEGMENT from the segments allowed to
+	// use them — the same two-cost gate the agent-prompt path applies: a
+	// segment that may not use them causes neither the store reads nor the
+	// fetch.
+	//
+	// Collecting from `combined` would defeat the split: a reference sitting in
+	// threaded agent OUTPUT would be resolved because the SYSTEM segment
+	// happened to be operator-authored, and the body would then be waiting in
+	// the map for the expander.
+	authored := ""
+	if systemAuthored {
+		authored += system
+	}
+	if inputAuthored {
+		authored += "\n" + user
+	}
 	var memRefs []meminject.MemoryRef
 	var toolCalls []meminject.ToolCall
-	if operatorAuthored {
-		memRefs = meminject.ReferencesMemoryRefs(combined, values)
-		toolCalls = meminject.ReferencesToolCalls(combined, values)
+	if authored != "" {
+		memRefs = meminject.ReferencesMemoryRefs(authored, values)
+		toolCalls = meminject.ReferencesToolCalls(authored, values)
 	}
 	// ReferencesWidened is checked here for the same reason the agent-prompt
 	// fast path checks it: a segment whose ONLY placeholder is a widened one has
@@ -799,27 +812,26 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 		ToolMaxTokens: toolInjectMaxTokens,
 		MemoryRefs:    s.renderMemoryRefs(ctx, mi, memRefs),
 		ToolCalls:     s.renderToolCalls(ctx, mi, toolCalls),
-		// The TEAM DEFINITION's authorship, supplied by the caller — NOT the
-		// spawned agent's, and not read from ctx.
-		//
-		// A caller segment is a TEAM NODE's prompt, so the question the guard
-		// asks is who wrote that template. Gating on the spawned agent's flag
-		// would be wrong in the direction that matters: an operator-authored
-		// agent invoked from a model-authored node would pass a guard whose
-		// whole subject is the node. The two authors are independent, and the
-		// flag travels with the prompt for exactly that reason.
-		//
-		// FALSE for every non-team caller — there is no template to author —
-		// which is also the safe direction for a seam nobody has wired yet.
-		OperatorAuthored: operatorAuthored,
-		HostAllowed:      s.staticHostAllowed,
+		HostAllowed:   s.staticHostAllowed,
 	}
 	// Deliberately NO Sections: the {{memory:...}} variants render an agent's
 	// own accumulated memory, which belongs to the AgentDef's prompt. A caller
 	// segment naming one renders nothing rather than injecting a different
 	// agent's material into a prompt the agent did not author.
-	outSystem, sysRefused := meminject.ExpandWithRefusals(system, in)
-	outUser, userRefused := meminject.ExpandWithRefusals(user, in)
+	// Each segment is expanded under ITS OWN authorship. The system segment is
+	// always the team's `system_prompt`; the user segment is the node's
+	// `input_template` when it declares one and the previous state's THREADED
+	// OUTPUT when it does not. Sharing one flag across both would let model
+	// output borrow the team's authority — the thing trust rule 5d exists to
+	// prevent, arriving through the back door.
+	//
+	// FALSE for every non-team caller: there is no template, so there is no
+	// author, and that is also the safe value for a seam nobody has wired.
+	sysIn, userIn := in, in
+	sysIn.OperatorAuthored = systemAuthored
+	userIn.OperatorAuthored = inputAuthored
+	outSystem, sysRefused := meminject.ExpandWithRefusals(system, sysIn)
+	outUser, userRefused := meminject.ExpandWithRefusals(user, userIn)
 	noteRefusedValues(mi.AgentName, append(sysRefused, userRefused...))
 	return outSystem, outUser
 }

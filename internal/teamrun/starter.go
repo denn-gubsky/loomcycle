@@ -409,7 +409,12 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 		}
 	}()
 
-	prompt := Prompt{Values: env.Values(), DataSlots: slots, OperatorAuthored: r.operatorAuthored}
+	// BOTH authored: a starter node's System and Input come from the team's own
+	// template. The attacker-influenceable part — the source message — is
+	// carried in DataSlots, which are substituted AFTER expansion and never
+	// scanned, so it is already outside the expander's reach.
+	prompt := Prompt{Values: env.Values(), DataSlots: slots,
+		SystemAuthored: r.operatorAuthored, InputAuthored: r.operatorAuthored}
 	if st.Handler.Prompt != nil {
 		prompt.System, prompt.Input = st.Handler.Prompt.System, st.Handler.Prompt.Input
 	}

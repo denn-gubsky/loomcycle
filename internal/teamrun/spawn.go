@@ -50,15 +50,28 @@ type Prompt struct {
 	// Empty for every non-starter state, so an ordinary node's assembly is
 	// byte-identical to before this existed.
 	DataSlots map[string]string
-	// OperatorAuthored is the TEAM definition's authorship, and it gates the
-	// widened prompt-expansion families inside System and Input.
+	// SystemAuthored and InputAuthored say, PER SEGMENT, whether that text is
+	// operator-authored TEMPLATE text. They gate the widened prompt-expansion
+	// families, which resolve under the RUNTIME's authority.
 	//
-	// It travels on the PROMPT rather than on ctx because ctx already carries
-	// the spawned AGENT's authorship, and the two answer different questions:
-	// a team node's prompt is the TeamDef's text, so who wrote the agent it
-	// dispatches to is the wrong subject. Putting both on one ctx key would
-	// make the guard read whichever was stamped last.
-	OperatorAuthored bool
+	// TWO FLAGS, NOT ONE, BECAUSE THE TWO SEGMENTS HAVE DIFFERENT AUTHORS.
+	// System is always the team's own `system_prompt`. Input is the node's
+	// `input_template` when it declares one — also the team's — but OTHERWISE
+	// it is the previous state's THREADED OUTPUT: model-generated text, which
+	// may carry whatever a tool result, a fetched page or a channel message
+	// put into it.
+	//
+	// Treating the team's authorship as covering both would hand that output
+	// the runtime's own reach: an agent could emit {{tool:WebFetch:…}} and have
+	// the next node's assembly fetch it. Trust rule 5d exists to stop a value
+	// choosing a target — "the operator authors the template, an attacker picks
+	// the target" — and threaded output is the attacker's half.
+	//
+	// They travel on the PROMPT rather than on ctx because ctx already carries
+	// the spawned AGENT's authorship, and that is a third, unrelated subject:
+	// who wrote the agent says nothing about who wrote the text it is handed.
+	SystemAuthored bool
+	InputAuthored  bool
 	// Values resolves this state's ${var.*} / ${now.*} / ${team.*}, keyed
 	// without the ${}: "var.pr", "now.date", "team.state".
 	//
@@ -329,12 +342,17 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 // are expanded under, and no call site can construct one that forgot to.
 func (r *agentRunner) nodePrompt(h teamgraph.Handler, threaded string, env Env) Prompt {
 	in := threaded
-	if h.InputTemplate != "" {
+	// A node that declares an input_template states its own task in the TEAM's
+	// words. One that does not works on what the previous state handed it,
+	// which is that agent's output — see Prompt.InputAuthored.
+	inputIsTemplate := h.InputTemplate != ""
+	if inputIsTemplate {
 		in = h.InputTemplate
 	}
 	return Prompt{
 		System: h.SystemPrompt, Input: in, Values: env.Values(),
-		OperatorAuthored: r.operatorAuthored,
+		SystemAuthored: r.operatorAuthored,
+		InputAuthored:  r.operatorAuthored && inputIsTemplate,
 	}
 }
 
@@ -491,8 +509,11 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 // system prompt (which describes that agent's role) is deliberately not applied
 // to it; it receives only the envelope.
 func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelope string) (Outcome, error) {
+	// InputAuthored is FALSE: the envelope is built from the agents' OWN
+	// OUTPUTS. It is the most obviously model-written text in a walk, and the
+	// one a consolidator is definitionally handed.
 	out, err := r.spawn(ctx, consolidator, Prompt{
-		Input: envelope, OperatorAuthored: r.operatorAuthored,
+		Input: envelope, SystemAuthored: r.operatorAuthored,
 	}, "")
 	if err != nil {
 		return Outcome{}, err
