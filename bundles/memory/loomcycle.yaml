@@ -641,6 +641,7 @@ agents:
           owner_names: null,        // the target's DECLARED names, resolved once per pass
           entity_nodes: 0,          // distinct subjects given an entity chunk
           subject_doc_unavailable: 0, // subjects filed in the shared document instead of their own
+          subject_refs: 0,          // extra subjects a fact REFERENCES beyond the one it is homed under
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
           // because this body re-executes from the top on every turn and must be a
@@ -1318,7 +1319,21 @@ agents:
           // there is nothing to name a node after, and the orphan kind would reach
           // the judge's mistyping check, which needs the pair to mean anything.
           var typ = (typeof f.type === "string") ? f.type.trim().toLowerCase() : "";
-          var subj = (typeof f.subject === "string") ? f.subject.trim() : "";
+          // EVERY thing the fact is about, not just the first. A relation names two
+          // — "Dave works at the shop" — and a single field forced the extractor to
+          // pick one, so the fact became about Dave and merely mentioned the shop.
+          // Read the shop and it was not there.
+          //
+          // `subject` survives as the HOME: the tree needs exactly one parent, and
+          // every other consumer (placement, the judge's mistyping pair, the report)
+          // asks about the one subject a fact is filed under. So the list is read
+          // here, the home is its first entry, and only mirrorEntity looks wider.
+          //
+          // A legacy string `subject` is still accepted: a tenant may override this
+          // prompt, and an extractor that answers the older schema must not have its
+          // facts silently stripped of their subject.
+          var subjects = normaliseSubjects(f);
+          var subj = subjects.length > 0 ? subjects[0] : "";
           if (!subj) { typ = ""; }
           // The validity interval is OPTIONAL and validated shallowly: an
           // unparseable or reversed interval is dropped while the FACT is kept,
@@ -1332,8 +1347,8 @@ agents:
           // what `Memory when=` narrows on. Validated by the same RFC3339-or-nothing
           // rule and carried separately, so a dropped interval never takes it with it.
           var oa = tsOrEmpty(f.observed_at);
-          out.push({ text: text, cls: cls, type: typ, subject: subj, quote: "",
-                     observed_at: oa, valid_at: va, invalid_at: iva });
+          out.push({ text: text, cls: cls, type: typ, subject: subj, subjects: subjects,
+                     quote: "", observed_at: oa, valid_at: va, invalid_at: iva });
         }
         return out;
       }
@@ -2577,6 +2592,47 @@ agents:
         return { doc: sharedDoc, root: id };
       }
 
+      // MAX_SUBJECTS bounds what one fact may be about.
+      //
+      // Each extra subject costs an entity node, an edge and a placement question, and
+      // a fact about more than a handful of things is a fact that should have been
+      // split. Four covers every relation shape the corpus actually produces ("Gina
+      // and Jon agreed to cover Dave's shift" is three) and stops a confused model
+      // turning one sentence into a hub that every traversal runs through.
+      var MAX_SUBJECTS = 4;
+
+      // normaliseSubjects reads EVERY thing a fact is about, from either schema.
+      //
+      // The list form is what the extractor is asked for now; the bare string is the
+      // older shape and is still accepted, because a tenant may override the prompt
+      // and a fact whose subject was silently dropped is unreachable from the thing
+      // it is about — the failure the entity tier exists to prevent.
+      //
+      // Deduplicated case-insensitively on the NORMALISED name, because "Dave" and
+      // "dave" slug to one node: two edges to the same node is not a second
+      // reference, it is the same one written twice.
+      function normaliseSubjects(f) {
+        var raw = [];
+        if (f && Object.prototype.toString.call(f.subjects) === "[object Array]") {
+          raw = f.subjects;
+        } else if (f && typeof f.subjects === "string") {
+          // A model asked for a list sometimes sends one string anyway.
+          raw = [f.subjects];
+        }
+        if (raw.length === 0 && f && typeof f.subject === "string") { raw = [f.subject]; }
+        var out = [], seen = {};
+        for (var i = 0; i < raw.length && out.length < MAX_SUBJECTS; i++) {
+          if (typeof raw[i] !== "string") { continue; }
+          var name = raw[i].trim();
+          if (!name) { continue; }
+          var k = slug(normalizeSubject(name));
+          if (!k || seen[k]) { continue; }
+          seen[k] = true;
+          out.push(name);
+        }
+        return out;
+      }
+
       // nonEmpty reports a USABLE string field — present, a string, and not merely
       // whitespace. The extractor omits a key, sends null, and sends "" for the same
       // "I do not know", so all three have to read the same way.
@@ -2777,6 +2833,37 @@ agents:
           } catch (e) {
             st.entity_failed++; // the nodes exist; only the edge is missing
             if (!st.entity_error) { st.entity_error = errText(e); }
+          }
+        }
+
+        // EVERY OTHER THING THE FACT IS ABOUT. It is HOMED under the first subject —
+        // the tree needs exactly one parent — and REFERENCES the rest, which is the
+        // whole difference between containment and reference: read the shop and the
+        // fact filed under Dave is still reachable, through an edge rather than
+        // through the tree.
+        //
+        // Same best-effort posture as the home edge: a reference that fails to write
+        // costs reachability from that one subject and never the fact.
+        if (subjID && fact.subjects && fact.subjects.length > 1) {
+          for (var si = 1; si < fact.subjects.length; si++) {
+            var alsoName = fact.subjects[si];
+            if (!nonEmpty(alsoName)) { continue; }
+            // The SAME type arbitration as the home subject: canonicalType keeps one
+            // subject on one node however many kinds the extractor spells it, and the
+            // fallback covers a kind the tenant does not declare. Without this a
+            // referenced subject would be minted under whatever the fact's own type
+            // happened to be, which is the fact's kind and not the subject's.
+            var alsoType = canonicalType(st, scope, ENTITY_FALLBACK_TYPE, alsoName);
+            var alsoHome = homeFor(st, scope, docID, alsoType, alsoName);
+            if (!alsoHome || !alsoHome.root) { continue; }
+            try {
+              Document({ op: "link_chunks", scope: scope,
+                         from_id: factID, to_id: alsoHome.root, kind: "about" });
+              st.subject_refs++;
+            } catch (e2) {
+              st.entity_failed++;
+              if (!st.entity_error) { st.entity_error = errText(e2); }
+            }
           }
         }
         // The FACT CHUNK landed. The edge may not have, and that stays best-effort:
@@ -3407,6 +3494,9 @@ agents:
             ent += ", " + st.entity_failed + " graph write(s) failed";
             // The reason, because the transcript of an internal agent cannot be read back.
             if (st.entity_error) { ent += " (first: " + String(st.entity_error).slice(0, 220) + ")"; }
+          }
+          if (st.subject_refs) {
+            ent += ", " + st.subject_refs + " reference(s) to a second subject a fact is also about";
           }
           if (st.subject_doc_unavailable) {
             ent += ", " + st.subject_doc_unavailable + " subject(s) still filed in the shared " +
