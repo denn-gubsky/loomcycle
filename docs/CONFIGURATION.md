@@ -940,7 +940,7 @@ agents:
 
 ### System-prompt placeholders
 
-A `system_prompt` may contain placeholders the server expands at run start, before the first model call. Two closed-set families; anything outside the set **fails config load** rather than silently rendering nothing.
+A `system_prompt` may contain placeholders the server expands at run start, before the first model call. Two closed-set families; anything outside the set **fails config load** rather than silently rendering nothing. Each family has a no-argument form any definition may use, and an argument form (a second colon) only an operator-written definition may use.
 
 | Placeholder | Expands to |
 |---|---|
@@ -951,6 +951,10 @@ A `system_prompt` may contain placeholders the server expands at run start, befo
 | `{{memory:user_info}}` | the operator-authored user-root document + the learned `human` block |
 | `{{memory:search_request}}` | an LLM-free retrieval against the run's initial user input |
 | `{{memory:consolidation_bands}}` | the deployment's duplicate-detection similarity bands |
+| `{{tool:WebFetch:<url>}}` | the framed body of that page, fetched once at run start — **operator-written definitions only**, host must be on `http_host_allowlist` |
+| `{{tool:WebSearch:<query>}}` | the framed results of that search — **operator-written definitions only** |
+| `{{memory:key:<key>}}` | one stored memory entry, under the run's own scope — **operator-written definitions only** |
+| `{{memory:search:<query>}}` | the top matches for that query, under the run's own scope — **operator-written definitions only** |
 
 ```yaml
 agents:
@@ -966,13 +970,17 @@ agents:
       - Files: Grep to locate first, then Read.
 ```
 
-**`{{tool:...}}` is limited to an allowlist of read-only calls — `Context.tools`, `Context.guide`, `Context.capabilities`.** Prompt assembly runs at every run entry, sub-agent spawn and resume, so a placeholder naming a mutating tool would write on each one, one naming `Agent` would spawn during its own parent's assembly, and one naming a network tool would put a call on the critical path of every run. A runtime-authored agent's system prompt is model-writable, so what may be called from a prompt is deliberately not model-chosen. `{{tool:Bash.run}}` is a boot error that lists what is allowed.
+**`{{tool:<Tool>.<op>}}` is limited to an allowlist of read-only calls — `Context.tools`, `Context.guide`, `Context.capabilities`.** Prompt assembly runs at every run entry, sub-agent spawn and resume, so a placeholder naming a mutating tool would write on each one, and one naming `Agent` would spawn during its own parent's assembly. A runtime-authored agent's system prompt is model-writable, so what may be called from a prompt is deliberately not model-chosen. `{{tool:Bash.run}}` is a boot error that lists what is allowed.
+
+**The ARGUMENT forms — a second colon — are gated on who WROTE the definition.** `{{tool:WebFetch:<url>}}`, `{{tool:WebSearch:<query>}}`, `{{memory:key:<key>}}` and `{{memory:search:<query>}}` are available to a definition an **operator** wrote (static YAML, or one authored through an operator's own session — `operator_authored` on the row). A definition an agent wrote may use every no-argument placeholder above; its argument forms render nothing and the refusal is logged with the reason. Existing definitions are unaffected: the gate covers only the argument forms, so nothing that worked before stops working on upgrade. `{{tool:Bash:...}}` is a boot error, like the no-argument form.
+
+**A fetch is bounded twice more.** The argument may contain `${...}` so a fetch can be parameterised from workflow variables — but a resolved URL's **host must be on the operator's static `http_host_allowlist`**, so a variable can never aim the runtime at a host the operator did not list; an unlisted host is refused and the refusal names it. And the network work is bounded by one 5-second budget for the whole assembly and **fails soft**: a refused, unreachable, slow or empty page renders nothing and the run proceeds. Write the prompt so it still reads correctly when the section is absent. (`WebSearch` takes a query, not a target, so the host allowlist does not apply to it.)
 
 Use them in place of a hand-written tool list, which cannot be kept in sync with the `tools:` list beside it — the bundled `chat/*` agents had drifted to naming 12 of their 17 tools. Keep the *guidance* hand-written (which tool to prefer, when to reach for one); let the *inventory*, the *call digest*, and the *capabilities* be generated. Note these add no capability: the full schemas are already sent on every request. They exist because smaller local models under-attend to that array and act as though they have no tools — starting "blind" on which op to call and which fields are required — until asked to check.
 
 **`inject_tool_guide: true`** on an agent delivers the runtime knowledge automatically: prompt assembly appends whichever of `{{tool:Context.capabilities}}` and `{{tool:Context.guide}}` the prompt does not already place (mirroring how `core_blocks` auto-appends). It defaults **off**, so an agent that never sets it is byte-identical to before. The bundled `chat/*` and `doc/manager` agents enable it.
 
-Shared rules: a leading backslash escapes (`\{{tool:Context.tools}}` renders literally); names are case-insensitive; expanded content is framed as reference data and cannot forge its own delimiter; a placeholder appearing *inside* expanded content stays literal; each family has an independent token budget (memory's is `memory_inject_max_tokens`, default 1024) so the two never compete on prompt order; expansion is deterministic, so provider prompt-caching still hits. Agents can read the same reference at runtime via `Context op=help topic=system-prompt-placeholders`.
+Shared rules: a leading backslash escapes (`\{{tool:Context.tools}}` renders literally); names are case-insensitive; expanded content is framed as reference data and cannot forge its own delimiter; a placeholder appearing *inside* expanded content stays literal; each family has an independent token budget (memory's is `memory_inject_max_tokens`, default 1024, and it also covers the argument forms' content, so a fetched page cannot truncate the tool inventory) so the two never compete on prompt order; expansion is deterministic, so provider prompt-caching still hits. Agents can read the same reference at runtime via `Context op=help topic=system-prompt-placeholders`.
 
 ---
 

@@ -90,12 +90,31 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	wantUserInfo := meminject.ReferencesVariant(promptSrc, meminject.VariantUserInfo)
 	toolRefs := meminject.ReferencesToolRefs(promptSrc)
 	docRefs := meminject.ReferencesDocRefs(promptSrc)
+	// The WIDENED families are COLLECTED only for a def an operator wrote. The
+	// expander's guard is what refuses them and says why; this is what stops a
+	// def that may not use them from causing the store reads and the network
+	// call regardless. Authorship rides on the def itself rather than on ctx
+	// because ctx is not stamped yet on every assembly path — the sub-agent
+	// path stamps it after this call — and a guard that reads an unstamped
+	// value is a guard that fails open.
+	var memRefs []meminject.MemoryRef
+	var toolCalls []meminject.ToolCall
+	if agentDef.OperatorAuthored {
+		memRefs = meminject.ReferencesMemoryRefs(promptSrc, nil)
+		toolCalls = meminject.ReferencesToolCalls(promptSrc, nil)
+	}
 
-	// Fast path: no core blocks, no placeholder of either family, no protocol, no
+	// Fast path: no core blocks, no placeholder of any family, no protocol, no
 	// forced provisioning → return byte-identical with no store reads and no tool
 	// dispatch. Keeps every non-memory agent exactly as before.
+	//
+	// The widened check is ReferencesWidened rather than the collected slices:
+	// those are authorship-gated, so a non-operator def whose only placeholder
+	// is a widened one would take the fast path and leave the placeholder in the
+	// prompt as literal text. Refused and removed is the intended outcome.
 	if len(blocks) == 0 && !meminject.References(promptSrc) && len(toolRefs) == 0 &&
-		len(docRefs) == 0 && !agentDef.MemoryProtocol && !forceRoots {
+		len(docRefs) == 0 && !meminject.ReferencesWidened(promptSrc) &&
+		!agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
 
@@ -156,13 +175,23 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
 
 	out := agentDef
-	out.SystemPrompt = meminject.Expand(promptSrc, meminject.ExpandInput{
+	expanded, refused := meminject.ExpandWithRefusals(promptSrc, meminject.ExpandInput{
 		Sections:      sections,
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		Documents:     s.renderDocuments(ctx, mi, docRefs),
+		MemoryRefs:    s.renderMemoryRefs(ctx, mi, memRefs),
+		ToolCalls:     s.renderToolCalls(ctx, mi, toolCalls),
 		MaxTokens:     maxTokens,
 		ToolMaxTokens: toolInjectMaxTokens,
+		// The widened families and their network bound. OperatorAuthored FALSE
+		// is the safe direction: a legacy row that predates the column reads as
+		// not-operator-authored and simply cannot use what this added, while
+		// every family it already used keeps working.
+		OperatorAuthored: agentDef.OperatorAuthored,
+		HostAllowed:      s.staticHostAllowed,
 	})
+	out.SystemPrompt = expanded
+	noteRefusedValues(mi.AgentName, refused)
 
 	// Prepend the runtime-authored memory protocol in a region ABOVE any
 	// {{memory:...}} DATA blocks. It is trusted guidance (how to USE memory), so
@@ -742,7 +771,14 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	combined := system + "\n" + user
 	docRefs := meminject.ReferencesDocRefs(combined)
 	toolRefs := meminject.ReferencesToolRefs(combined)
-	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 && !meminject.References(combined) {
+	// ReferencesWidened is checked here for the same reason the agent-prompt
+	// fast path checks it: a segment whose ONLY placeholder is a widened one has
+	// no other reason to enter expansion, and skipping leaves it sitting in the
+	// prompt as literal text. Refused and removed is the intended outcome — and
+	// on this path EVERY widened reference is refused (see OperatorAuthored
+	// below), so this is the only thing that makes the refusal visible at all.
+	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 &&
+		!meminject.References(combined) && !meminject.ReferencesWidened(combined) {
 		return system, user
 	}
 
@@ -752,6 +788,25 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		MaxTokens:     config.DefaultMemoryInjectMaxTokens,
 		ToolMaxTokens: toolInjectMaxTokens,
+		// OperatorAuthored is deliberately FALSE, so the WIDENED families are
+		// refused in a caller segment.
+		//
+		// A caller segment is a TEAM NODE's prompt, and its author is the
+		// TeamDef — not the agent being spawned. Gating on the spawned agent's
+		// flag would be wrong in the direction that matters: an
+		// operator-authored agent invoked from a model-authored team node would
+		// pass a guard whose whole question is who wrote the TEMPLATE. TeamDef
+		// carries no authorship marker yet, and inventing a proxy for one here
+		// would be exactly the "branch on a signal that resembles the answer"
+		// mistake the guard exists to avoid. Until it has one, the widened
+		// families are unavailable here — which costs nothing that worked
+		// before, because they are new.
+		//
+		// HostAllowed is still supplied: a fail-closed predicate plus a
+		// fail-closed authorship flag is the posture to leave behind for
+		// whoever wires the marker, not a nil waiting to be noticed.
+		OperatorAuthored: false,
+		HostAllowed:      s.staticHostAllowed,
 	}
 	// Deliberately NO Sections: the {{memory:...}} variants render an agent's
 	// own accumulated memory, which belongs to the AgentDef's prompt. A caller
@@ -763,15 +818,68 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	return outSystem, outUser
 }
 
-// noteRefusedValues surfaces variables dropped for carrying placeholder
-// delimiters. A security event, not a formatting quirk — something bound a value
-// that tried to synthesise a placeholder — so it is logged, WITHOUT the value,
-// which is the untrusted part.
+// noteRefusedValues surfaces what prompt assembly REFUSED. A security event,
+// not a formatting quirk, so it is logged rather than swallowed.
+//
+// Each entry names the reference, and never the resolved value — the value is
+// the untrusted part. The ONE deliberate exception is a trust-rule-5d host: a
+// refusal an operator cannot act on is a refusal they will disable, and the
+// host has already survived the charset check and the URL grammar.
 func noteRefusedValues(agent string, refused []string) {
 	if len(refused) == 0 {
 		return
 	}
-	log.Printf("prompt: agent %q: refused %v — a resolved value contained {{ or }}, or left a document ref "+
-		"outside the ref charset; a variable may not introduce a prompt placeholder nor escape a ref frame",
+	log.Printf("prompt: agent %q: refused %v — a resolved value contained {{ or }} or left its argument's "+
+		"charset, a widened family was named by a def no operator authored, or a network target was not on "+
+		"the operator's static http_host_allowlist",
 		agent, refused)
+}
+
+// renderMemoryRefs resolves the widened {{memory:key|search:…}} references.
+//
+// UNDER THE RUN'S OWN SCOPE, exactly like the other families: the same
+// (tenant, user) the agent's own Memory tool would read. The family adds REACH
+// — content lands in the prompt without a tool call — and no authority. What
+// the authorship guard gates is who may use that reach, not how far it goes.
+//
+// A ref that resolves to nothing is simply absent from the map, and the
+// expander renders it as nothing. Prompt assembly runs at every run entry,
+// sub-agent spawn and resume, so a deleted key must never fail a run.
+func (s *Server) renderMemoryRefs(ctx context.Context, mi memInject, refs []meminject.MemoryRef) map[meminject.MemoryRef]string {
+	if len(refs) == 0 || s.store == nil || mi.UserID == "" {
+		return nil
+	}
+	out := make(map[meminject.MemoryRef]string, len(refs))
+	for _, ref := range refs {
+		switch ref.Kind {
+		case meminject.MemoryKindKey:
+			entry, err := s.store.MemoryGet(ctx, mi.Tenant, store.MemoryScopeUser, mi.UserID, ref.Arg)
+			if err != nil {
+				continue
+			}
+			if body := strings.TrimSpace(renderMemoryValue(entry.Value)); body != "" {
+				out[ref] = body
+			}
+		case meminject.MemoryKindSearch:
+			const topK = 5
+			entries, err := s.store.MemoryFullTextSearch(ctx, mi.Tenant, store.MemoryScopeUser, mi.UserID,
+				store.MemorySearchFilter{}, ref.Arg, topK)
+			if err != nil || len(entries) == 0 {
+				continue
+			}
+			var b strings.Builder
+			for _, e := range entries {
+				// Core blocks already arrive via {{memory:core_blocks}}; a query
+				// that matches one must not render it twice.
+				if strings.HasPrefix(e.Key, meminject.CoreBlockKeyPrefix) {
+					continue
+				}
+				fmt.Fprintf(&b, "- %s: %s\n", e.Key, renderMemoryValue(e.Value))
+			}
+			if body := strings.TrimSpace(b.String()); body != "" {
+				out[ref] = body
+			}
+		}
+	}
+	return out
 }
