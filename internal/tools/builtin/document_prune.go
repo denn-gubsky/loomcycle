@@ -69,6 +69,14 @@ func (d *Document) PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, 
 		return len(ids), nil
 	}
 
+	return d.cascadeDeleteChunks(ctx, key, mscope, ids)
+}
+
+// cascadeDeleteChunks is the ONE writer of a chunk's removal, shared by the
+// retired-content prune and the whole-scope reclaim. A second implementation would
+// drift from this one, and the drift shows up as an orphaned edge or a body left
+// in the Memory plane — invisible, because nothing reads an orphan.
+func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ids []string) (int, error) {
 	pruned := 0
 	for _, id := range ids {
 		// One transaction per chunk rather than one for the batch: a fault partway
@@ -76,10 +84,21 @@ func (d *Document) PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, 
 		// rolling back work the next sweep would repeat. The operation is idempotent,
 		// so a retry costs nothing.
 		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			// THE TABLE SET MATCHES delete_chunk's, and it has to stay matched. This
+			// file's own header says a prune that reimplemented the delete would drift
+			// from delete_chunk — and it had: chunk_tags, chunk_revisions and
+			// chunk_layout were added to delete_chunk and never here, so pruning a
+			// retired fact left its TAGS, its CANVAS POSITION and — worst — its whole
+			// body-change log behind. `chunk_revisions.body` is the fact's text, so the
+			// prune removed the chunk and kept the words it existed to reap, in a table
+			// no read path consults and no sweeper walks.
 			for _, stmt := range []string{
 				`DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`,
 				`DELETE FROM chunk_assets WHERE chunk_id = ?`,
+				`DELETE FROM chunk_tags WHERE chunk_id = ?`,
 				`DELETE FROM chunk_memory_meta WHERE chunk_id = ?`,
+				`DELETE FROM chunk_revisions WHERE chunk_id = ?`,
+				`DELETE FROM chunk_layout WHERE chunk_id = ?`,
 				`DELETE FROM chunks WHERE id = ?`,
 			} {
 				args := []any{id}
@@ -114,6 +133,56 @@ func (d *Document) PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, 
 		pruned++
 	}
 	return pruned, nil
+}
+
+// PruneScopeChunks deletes EVERY chunk in one scope, bodies included.
+//
+// It backs the retention sweeper's whole-scope reclaim of a fully-retired agent.
+// That reclaim already drops the SQL-Memory scope wholesale, which removes the
+// chunks, the edges and the sidecar in one statement — but a chunk BODY is not in
+// SQL Memory, it is a `doc.chunk:<hex>` row in the k/v plane, and dropping the
+// scope leaves every one of them behind with nothing left to name them.
+//
+// ⚠️ THIS MUST RUN BEFORE THE SCOPE IS DROPPED. The chunk ids are the only route
+// from a scope to its bodies, and dropping the scope destroys them. That ordering
+// is the whole reason this exists as a separate call rather than as cleanup after.
+//
+// Unlike PruneRetiredChunks there is no cutoff and no evidential exemption: the
+// agent this scope belongs to is gone, so "keep the source of what was derived"
+// has nothing left to protect — the derived material is going too. A prune that
+// exempted evidential content here would leave a scope that can never be emptied.
+//
+// ⚠️ IT DELETES THE SQL ROWS TOO, THOUGH THE SCOPE DROP WOULD TAKE THEM ANYWAY,
+// and that redundancy is bought deliberately. Deleting only the bodies would be
+// cheaper — one k/v delete per chunk instead of a transaction each — but it leaves
+// a window where a failed DropScope has chunks whose text is gone. This tool's
+// standing rule is that the safe asymmetry is an unreferenced body, never a chunk
+// whose text has vanished, so the full cascade runs and a failed drop leaves the
+// scope consistently empty instead of consistently broken.
+func (d *Document) PruneScopeChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, dryRun bool) (int, error) {
+	if d.Store == nil || d.SqlMem == nil {
+		return 0, fmt.Errorf("document prune: not configured")
+	}
+	// A scope that never used the chunk tier has no `chunks` table. Same treatment
+	// as the retired-content prune: report nothing to do rather than a fault, and
+	// never provision a table for a scope the sweeper is merely walking past.
+	res, err := d.query(ctx, key, `SELECT id FROM chunks`)
+	if err != nil {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		if id := asStr(r[0]); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	if dryRun {
+		return len(ids), nil
+	}
+	return d.cascadeDeleteChunks(ctx, key, mscope, ids)
 }
 
 // bodyTenantsFor returns the tenant value(s) a chunk body may be stored under, given
