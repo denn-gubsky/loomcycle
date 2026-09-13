@@ -703,7 +703,7 @@ agents:
           // judge that is slightly off it doubles every pass's model spend silently.
           // Next pass will try again; within a pass, once is enough.
           judge_attempted: {},
-          entity_failed: 0,         // entity writes that failed (k/v still landed)
+          entity_failed: 0,         // graph writes around a fact that failed (edges, subject nodes)
           subject_docs: {},        // scope+slug -> {doc, root} for /facts/<slug>
           fact_no_subject: 0,       // facts chunked with no subject node (extractor named none)
           type_absent: 0,           // subjects filed under the fallback because no type was given
@@ -1691,10 +1691,12 @@ agents:
           // with two places to correct it, which is the duplication this feature exists
           // to remove. So retire it.
           //
-          // The POINTER is exact without a new column: the row was rewritten under the
-          // SAME key, so the live copy is (this key, the target scope), and the new row's
-          // provenance carries promoted_from. A retired row is a soft archive — the audit
-          // trail survives and nothing is deleted.
+          // The POINTER is exact without a new column, and without a replacement edge:
+          // the row was rewritten under the SAME key, so the live copy is (this key, the
+          // target scope) and the key itself is the pointer. That is why this retirement
+          // names no survivor — there is no second chunk to point at, and an edge to
+          // nothing would assert a replacement that does not exist. A retired row is a
+          // soft archive: the audit trail survives and nothing is deleted.
           //
           // Not routed through supersede_queue: that queue's cap exists to stop a steered
           // "everything you know is obsolete" driving an unbounded sweep, and this is
