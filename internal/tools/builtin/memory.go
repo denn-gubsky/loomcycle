@@ -2219,12 +2219,12 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	// returns nil. So the k/v half stamped nothing, silently, and reported success.
 	// The translation added for merge has to be carried by every consumer of the id.
 	ref := m.resolveFactChunk(ctx, in)
-	bodyKey := in.Key
+	bodyTenant, bodyScope, bodyScopeID, bodyKey := tenantID, scope, scopeID, in.Key
 	if ref.resolved {
-		bodyKey = ref.bodyKey
+		bodyTenant, bodyScope, bodyScopeID, bodyKey = ref.bodyTenant, ref.bodyScope, ref.bodyScopeID, ref.bodyKey
 	}
 
-	if err := m.Store.MemorySupersede(ctx, tenantID, scope, scopeID, bodyKey); err != nil {
+	if err := m.Store.MemorySupersede(ctx, bodyTenant, bodyScope, bodyScopeID, bodyKey); err != nil {
 		return errResult(fmt.Sprintf("supersede: %s", err)), nil
 	}
 	out := map[string]any{"ok": true}
@@ -2263,9 +2263,21 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 // k/v row, a store with SQL Memory off, or an agent whose sql_scopes do not grant
 // the scope — and the k/v stamp alone is the whole retirement.
 type factChunkRef struct {
-	doc           *Document
-	scopeKey      sqlmem.ScopeKey
-	bodyKey       string // the k/v row's real key: doc.chunk:<chunkID>
+	doc      *Document
+	scopeKey sqlmem.ScopeKey
+	// THE BODY'S OWN COORDINATES, not the ones the Memory tool resolved. A chunk
+	// body is written by Document at (direntTenant, its memory scope, the SQL Memory
+	// key's ScopeID) — and under scope=tenant that ScopeID is the tenant, while the
+	// Memory tool deliberately uses "" there because the tenant_id column already
+	// carries the identity. Stamping the row at Memory's coordinates would miss it
+	// for every tenant-scope fact: the same silent miss this op exists to fix, one
+	// keying plane over. Under agent and user scope the two agree, which is exactly
+	// why this has to be taken from the body's own key rather than assumed.
+	bodyTenant  string
+	bodyScope   store.MemoryScope
+	bodyScopeID string
+	bodyKey     string // the k/v row's real key: doc.chunk:<chunkID>
+
 	chunkID       string
 	replacementID string
 	resolved      bool
@@ -2283,7 +2295,7 @@ func (m *Memory) resolveFactChunk(ctx context.Context, in memoryInput) factChunk
 		return factChunkRef{}
 	}
 	doc := &Document{Store: m.Store, SqlMem: m.SqlMem, Cfg: m.Cfg}
-	skey, _, err := doc.resolveScope(ctx, in.Scope)
+	skey, mscope, err := doc.resolveScope(ctx, in.Scope)
 	if err != nil {
 		return factChunkRef{}
 	}
@@ -2293,8 +2305,11 @@ func (m *Memory) resolveFactChunk(ctx context.Context, in memoryInput) factChunk
 	}
 	ref := factChunkRef{
 		doc: doc, scopeKey: skey, chunkID: chunkID,
-		bodyKey:  memrank.DocumentChunkKeyPrefix + chunkID,
-		resolved: true,
+		bodyTenant:  direntTenant(ctx),
+		bodyScope:   mscope,
+		bodyScopeID: skey.ScopeID,
+		bodyKey:     memrank.DocumentChunkKeyPrefix + chunkID,
+		resolved:    true,
 	}
 	// A replacement that cannot be resolved is DROPPED, not an error: the fact being
 	// retired is the one the caller asked about, and refusing the whole retirement

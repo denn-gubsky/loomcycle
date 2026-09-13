@@ -164,6 +164,69 @@ func TestMemorySupersede_RawRowStillWorks(t *testing.T) {
 	}
 }
 
+// TestMemorySupersede_ClosesATenantScopeFactToo crosses the keying seam.
+//
+// A chunk BODY is written by Document at the SQL Memory key's ScopeID. Under
+// scope=user and scope=agent that equals the Memory tool's scope_id, so the two
+// agree by accident; under scope=tenant it does NOT — Document uses the tenant,
+// Memory deliberately uses "" because the tenant_id column already carries the
+// identity. Stamping at the Memory tool's coordinates therefore misses every
+// tenant-scope fact: the same silent miss this op exists to fix, one plane over.
+//
+// This is why the scope has to be varied in the test rather than reasoned about:
+// the user-scope case passes under both the right and the wrong coordinates.
+func TestMemorySupersede_ClosesATenantScopeFactToo(t *testing.T) {
+	m, d, ctx := supersedeFixture(t)
+	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent", "user", "tenant"},
+		Consolidation: true,
+	})
+	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant facts","path":"/t/tenant-facts"}`)
+	if r.IsError {
+		t.Fatalf("create_document(tenant): %s", r.Text)
+	}
+	doc := asStr(out["document_id"])
+	if doc == "" {
+		t.Fatalf("create_document returned no document_id: %v", out)
+	}
+	const key = "memory/fact/acme-is-a-customer"
+	out, r = docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"tenant","document_id":"`+doc+`",
+		"natural_key":"`+key+`","title":"Acme is a customer","body":"Acme is a customer.",
+		"type":"fact","subject":"Acme"}`)
+	if r.IsError {
+		t.Fatalf("upsert_chunk(tenant): %s", r.Text)
+	}
+	chunkID := asStr(out["id"])
+
+	if res, _ := m.Execute(ctx, json.RawMessage(
+		`{"op":"cursor_lease","scope":"tenant","lease_ttl_ms":60000}`)); res.IsError {
+		t.Fatalf("cursor_lease(tenant): %s", res.Text)
+	}
+	if res, _ := m.Execute(ctx, json.RawMessage(
+		`{"op":"supersede","scope":"tenant","key":"`+key+`"}`)); res.IsError {
+		t.Fatalf("supersede(tenant): %s", res.Text)
+	}
+
+	// The body row lives at Document's coordinates, so that is where it must be read.
+	skey, mscope, err := d.resolveScope(ctx, "tenant")
+	if err != nil {
+		t.Fatalf("resolveScope(tenant): %v", err)
+	}
+	_, gerr := m.Store.MemoryGet(ctx, direntTenant(ctx), mscope, skey.ScopeID,
+		memory.DocumentChunkKeyPrefix+chunkID)
+	var nf *store.ErrNotFound
+	if !errors.As(gerr, &nf) {
+		t.Errorf("the tenant-scope fact's body row is still live (err=%v) — recall will keep "+
+			"returning a fact that was retired, because the stamp went to scope_id \"\" "+
+			"while the body is keyed on the tenant", gerr)
+	}
+	if !chunkIsRetiredIn(t, d, ctx, "tenant", chunkID) {
+		t.Error("the tenant-scope fact is still current in the graph")
+	}
+}
+
 func leaseUser(t *testing.T, m *Memory, ctx context.Context) {
 	t.Helper()
 	res, _ := m.Execute(ctx, json.RawMessage(`{"op":"cursor_lease","scope":"user","lease_ttl_ms":60000}`))
@@ -191,8 +254,15 @@ func bodyRowIsLive(t *testing.T, m *Memory, ctx context.Context, scopeID, key st
 }
 
 func chunkIsRetired(t *testing.T, d *Document, ctx context.Context, chunkID string) bool {
+	return chunkIsRetiredIn(t, d, ctx, "user", chunkID)
+}
+
+func chunkIsRetiredIn(t *testing.T, d *Document, ctx context.Context, scope, chunkID string) bool {
 	t.Helper()
-	sk := sidecarScope(t, d, ctx)
+	sk, _, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		t.Fatalf("resolveScope(%s): %v", scope, err)
+	}
 	res, err := d.query(ctx, sk, `SELECT expired_at FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID)
 	if err != nil {
 		t.Fatalf("read sidecar: %v", err)
