@@ -1169,6 +1169,52 @@ func TestConsolidator_RetirementIsCappedAtFivePerPass(t *testing.T) {
 	}
 }
 
+// TestConsolidator_RetirementCarriesTheSurvivor. Retirement used to be two calls
+// — a k/v supersede plus a best-effort `supersede_chunk` mirror — and the survivor
+// reached the graph only through that second call. Now it travels on the first, so
+// this is what stops `supersede_keeper` quietly ceasing to be passed: without the
+// survivor a retirement still happens but stops saying WHAT replaced the fact, and
+// nothing else in the suite would notice.
+func TestConsolidator_RetirementCarriesTheSurvivor(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: I prefer Go.\nassistant: ok"
+	f.factsJSON = `[{"text":"Denn prefers Go for backend services.","class":"preference"}]`
+	// Two neighbours above the merge band: the higher is kept and rewritten in
+	// place, so the lower is the one retired — and the keeper is its survivor.
+	f.recallFacts = append(f.recallFacts,
+		map[string]any{"id": "memory/preference/keeper", "memory": "Denn likes Go.", "score": 0.99},
+		map[string]any{"id": "memory/preference/dupe", "memory": "Denn likes Go.", "score": 0.98})
+
+	runConsolidator(t, f)
+
+	var found bool
+	for _, c := range f.calls {
+		if c.Tool != "Memory" || c.Op != "supersede" {
+			continue
+		}
+		found = true
+		if key, _ := c.Input["key"].(string); key != "memory/preference/dupe" {
+			t.Errorf("retired %q, want the lower-scoring duplicate", key)
+		}
+		if by, _ := c.Input["superseded_by"].(string); by != "memory/preference/keeper" {
+			t.Errorf("superseded_by = %q, want the surviving row memory/preference/keeper — "+
+				"a retirement with no named survivor cannot answer why we stopped "+
+				"believing the fact", by)
+		}
+	}
+	if !found {
+		t.Fatalf("the pass issued no supersede at all; sequence %v", f.ops())
+	}
+	// The graph mirror is gone: one op closes both planes, so a second call would
+	// mean the two-writer split had come back.
+	if len(f.supersededChunks) != 0 {
+		t.Errorf("the pass still mirrors retirement through supersede_chunk (%v) — "+
+			"that is the split where a fact ends up retired in one plane only",
+			f.supersededChunks)
+	}
+}
+
 // TestConsolidator_BusyTargetStopsWithoutReadingOrReleasing. A lease it does not
 // hold is not its to release: releasing would hand the target to a third pass
 // while the real owner is mid-flight.

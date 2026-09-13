@@ -840,53 +840,106 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 	// one that could not do it. Previously this surfaced the raw PK violation
 	// ("UNIQUE constraint failed: chunk_edges.from_id, ..."), leaking schema
 	// internals into a model-visible result.
-	prior, err := d.query(ctx, key,
-		`SELECT from_id FROM chunk_edges WHERE to_id = ? AND kind = 'supersedes'`, in.SupersedesID)
+	existing, err := d.priorSuperseder(ctx, key, in.SupersedesID)
 	if err != nil {
 		return errResult("supersede_chunk: supersession lookup: " + err.Error()), nil
 	}
-	for _, row := range prior.Rows {
-		existing := asStr(row[0])
-		if existing == in.ID {
-			return okJSON(map[string]any{
-				"id": in.ID, "supersedes": in.SupersedesID, "already": true,
-			})
-		}
+	if existing == in.ID {
+		return okJSON(map[string]any{
+			"id": in.ID, "supersedes": in.SupersedesID, "already": true,
+		})
+	}
+	if existing != "" {
 		return errResult(fmt.Sprintf(
 			"supersede_chunk: chunk %q is already superseded by %q. To correct that newer "+
 				"fact, supersede %q instead — superseding the same chunk twice would leave two "+
 				"contradictory current facts.", in.SupersedesID, existing, existing)), nil
 	}
 
-	now := time.Now().UnixNano()
-	txErr := d.withSqlTxn(ctx, key, func(txnID string) error {
-		// The retired row may have no sidecar yet (it predates the entity tier, or
-		// was written by plain create_chunk), so seed one before closing it —
-		// otherwise the UPDATE silently affects zero rows and the fact stays current.
-		res, err := d.queryTxn(ctx, txnID, `SELECT chunk_id FROM chunk_memory_meta WHERE chunk_id = ?`, in.SupersedesID)
-		if err != nil {
-			return err
-		}
-		if len(res.Rows) == 0 {
-			if err := d.execTxn(ctx, txnID,
-				`INSERT INTO chunk_memory_meta (chunk_id, valid_at, created_at, class, origin) VALUES (?, ?, ?, ?, ?)`,
-				in.SupersedesID, now, now, "derived", originForEntityWrite(ctx)); err != nil {
-				return err
-			}
-		}
-		if err := d.execTxn(ctx, txnID,
-			`UPDATE chunk_memory_meta SET invalid_at = ?, expired_at = ? WHERE chunk_id = ?`,
-			now, now, in.SupersedesID); err != nil {
-			return err
-		}
-		return d.execTxn(ctx, txnID,
-			`INSERT INTO chunk_edges (from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?)`,
-			in.ID, in.SupersedesID, "supersedes", now)
-	})
+	now, _, txErr := d.retireChunk(ctx, key, in.SupersedesID, in.ID)
 	if txErr != nil {
 		return errResult("supersede_chunk: " + txErr.Error()), nil
 	}
 	return okJSON(map[string]any{
 		"id": in.ID, "supersedes": in.SupersedesID, "retired_at": now,
 	})
+}
+
+// retireChunk closes a chunk in the graph and, when a replacement is named, links
+// it. It is the ONE place the graph half of a retirement is written, shared by
+// `Document supersede_chunk` and `Memory supersede` — the same reason
+// conversationTurns is shared between windowing and rendering: two writers of the
+// same invariant drift, and a retirement that is recorded differently depending on
+// which tool was called is a retirement nobody can reason about.
+//
+// replacementID may be empty. That is a DISPLACEMENT rather than a correction —
+// the fact was rewritten under the same key in another scope, so the pointer is
+// the key itself and there is no second chunk to point at. The row is still
+// closed; it simply carries no `supersedes` edge, which is honest: an edge to
+// nothing would assert a replacement that does not exist.
+func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retiredID, replacementID string) (int64, string, error) {
+	// IDEMPOTENCE BELONGS TO THE WRITER, not to each caller. These retirements are
+	// driven by a background consolidator that retries after a partial failure, and
+	// a retry that reports failure for work already done is indistinguishable from
+	// one that could not do it. The edge is a primary key, so re-inserting it raises
+	// a UNIQUE violation that would surface as a corrupted-looking error on a run
+	// that in fact had nothing left to do.
+	prior, err := d.priorSuperseder(ctx, key, retiredID)
+	if err != nil {
+		return 0, "", err
+	}
+	// A replacement already recorded — the same one, or a different one — is never
+	// overwritten. The caller decides what that means (supersede_chunk refuses a
+	// second fork by name; a consolidator treats the retirement as already reached),
+	// so this reports it rather than choosing.
+	if prior != "" {
+		replacementID = ""
+	}
+	now := time.Now().UnixNano()
+	err = d.withSqlTxn(ctx, key, func(txnID string) error {
+		// The retired row may have no sidecar yet (it predates the entity tier, or
+		// was written by plain create_chunk), so seed one before closing it —
+		// otherwise the UPDATE silently affects zero rows and the fact stays current.
+		res, err := d.queryTxn(ctx, txnID, `SELECT chunk_id FROM chunk_memory_meta WHERE chunk_id = ?`, retiredID)
+		if err != nil {
+			return err
+		}
+		if len(res.Rows) == 0 {
+			if err := d.execTxn(ctx, txnID,
+				`INSERT INTO chunk_memory_meta (chunk_id, valid_at, created_at, class, origin) VALUES (?, ?, ?, ?, ?)`,
+				retiredID, now, now, "derived", originForEntityWrite(ctx)); err != nil {
+				return err
+			}
+		}
+		if err := d.execTxn(ctx, txnID,
+			`UPDATE chunk_memory_meta SET invalid_at = ?, expired_at = ? WHERE chunk_id = ?`,
+			now, now, retiredID); err != nil {
+			return err
+		}
+		if replacementID == "" {
+			return nil
+		}
+		return d.execTxn(ctx, txnID,
+			`INSERT INTO chunk_edges (from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?)`,
+			replacementID, retiredID, "supersedes", now)
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	return now, prior, nil
+}
+
+// priorSuperseder names the chunk that already retired this one, or "" when none
+// has. One row at most: the edge is (from_id, to_id, kind) and a chunk may be
+// retired once, which is the invariant that keeps exactly one current answer.
+func (d *Document) priorSuperseder(ctx context.Context, key sqlmem.ScopeKey, retiredID string) (string, error) {
+	res, err := d.query(ctx, key,
+		`SELECT from_id FROM chunk_edges WHERE to_id = ? AND kind = 'supersedes'`, retiredID)
+	if err != nil {
+		return "", err
+	}
+	if len(res.Rows) == 0 {
+		return "", nil
+	}
+	return asStr(res.Rows[0][0]), nil
 }

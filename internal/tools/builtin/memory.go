@@ -307,6 +307,7 @@ const memoryInputSchema = `{
     "session_id":    {"type": "string", "description": "cursor_advance: the watermark session id, copied verbatim from the same cursor_scan row as completed_at (required — the pair travels together). Must be a real, finished chat belonging to this memory target."},
     "ids":           {"type": "array", "description": "pending_ack: the pending-row ids to mark drained (as returned by pending_drain).", "items": {"type": "string"}},
     "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}, "additionalProperties": false},
+    "superseded_by": {"type": "string", "description": "supersede-only: the natural key of the fact that REPLACES the one being retired. Pass it when this is a correction and the graph will record which fact replaced which; omit it when the row is merely displaced (rewritten under the same key elsewhere), so no replacement is asserted. A key that resolves to nothing is ignored and the retirement still happens."},
     "from_pending":  {"type": "string", "description": "set-only: the id of a pending item you drained, so this fact records what produced it. Pass the id and the server fills in the origin and source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds. Prefer this over filling source_session_id / source_run_id by hand when the fact came from a drained item."},
     "include_source": {"type": "boolean", "description": "recall-only: include the verbatim source span each fact was distilled from, plus source_run_id — the run it came from, which History can resolve to the whole conversation (default TRUE). The span carries the original wording and its own leading timestamp, so a fact whose summary dropped \"last week\" is still datable through it; the run id is where to go when one sentence is not enough. Pass false for a smaller payload."},
     "include_provenance": {"type": "boolean", "description": "get-only: also return where the fact came from, and whether that origin is still readable (origin_available). A false origin_available means the chat has since been deleted — the fact is still valid, you just cannot go re-read its source."}
@@ -417,6 +418,13 @@ type memoryInput struct {
 	// into a probe for which ids exist. It grants nothing — the caller was
 	// already authorized to write this key.
 	FromPending string `json:"from_pending,omitempty"`
+	// SupersededBy names the fact that REPLACES the one being superseded, by its
+	// natural key. Optional, and the two absences mean different things: with it,
+	// the retirement is a correction and the graph records which fact replaced
+	// which; without it, the row is merely displaced (rewritten under the same key
+	// in another scope), so the pointer is the key itself and no replacement edge
+	// is asserted.
+	SupersededBy string `json:"superseded_by,omitempty"`
 	// IncludeProvenance asks `get` to also return where the fact came from, plus
 	// whether that origin is still inspectable (RFC BL P3). Opt-in: it costs a
 	// second read, and the default output stays byte-identical.
@@ -2192,10 +2200,127 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	if in.Key == "" {
 		return errResult("supersede: missing required field: key"), nil
 	}
-	if err := m.Store.MemorySupersede(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.Key); err != nil {
+	tenantID := tools.RunIdentity(ctx).TenantID
+
+	// A FACT IS RETIRED IN BOTH PLANES OR IN NEITHER.
+	//
+	// Once the chunk became a fact's only home, retirement stopped being one write.
+	// The body row in the k/v plane is what recall and search read; the sidecar in
+	// SQL Memory is what list_facts and graph_recall read. Closing one and not the
+	// other leaves a corrected fact still answering questions on the surface that
+	// was not closed — and the dangerous direction is the live one: recall is the
+	// path the answerer uses.
+	//
+	// This is also where the natural-key translation lands. `recall` reports a
+	// chunk-homed fact under its natural key rather than its `doc.chunk:<hex>` row
+	// key — deliberately, so the merge path writes a neighbour back under its NAME.
+	// Retirement was handed that same name and passed it straight to the k/v store,
+	// where no row has it, and MemorySupersede treats a missing key as a no-op that
+	// returns nil. So the k/v half stamped nothing, silently, and reported success.
+	// The translation added for merge has to be carried by every consumer of the id.
+	ref := m.resolveFactChunk(ctx, in)
+	bodyTenant, bodyScope, bodyScopeID, bodyKey := tenantID, scope, scopeID, in.Key
+	if ref.resolved {
+		bodyTenant, bodyScope, bodyScopeID, bodyKey = ref.bodyTenant, ref.bodyScope, ref.bodyScopeID, ref.bodyKey
+	}
+
+	if err := m.Store.MemorySupersede(ctx, bodyTenant, bodyScope, bodyScopeID, bodyKey); err != nil {
 		return errResult(fmt.Sprintf("supersede: %s", err)), nil
 	}
-	return okJSON(map[string]any{"ok": true})
+	out := map[string]any{"ok": true}
+	if !ref.resolved {
+		// Not chunk-homed (a raw k/v row, or SQL Memory is off / not granted to this
+		// agent, in which case this caller has no chunks to close). The k/v stamp
+		// above is the whole retirement, exactly as before.
+		return okJSON(out)
+	}
+	out["chunk_id"] = ref.chunkID
+	// The graph half is NOT best-effort. It used to be a separate, silently-skipped
+	// mirror in the consolidator; a failure here now fails the op so the pass retries
+	// rather than counting a retirement that only half happened. Both halves are
+	// idempotent, so a retry converges.
+	retiredAt, prior, err := ref.doc.retireChunk(ctx, ref.scopeKey, ref.chunkID, ref.replacementID)
+	if err != nil {
+		return errResult(fmt.Sprintf(
+			"supersede: %q is hidden from recall but still current in the fact graph: %s", in.Key, err)), nil
+	}
+	out["retired_at"] = retiredAt
+	switch {
+	case prior != "":
+		// Already retired by an earlier call or an earlier pass. Reported rather than
+		// refused: the goal state is reached, and a consolidator retrying after a
+		// partial failure must be able to tell "already done" from "could not do it".
+		out["already"] = true
+		out["superseded_by_chunk"] = prior
+	case ref.replacementID != "":
+		out["superseded_by"] = in.SupersededBy
+	}
+	return okJSON(out)
+}
+
+// factChunkRef is what a fact's natural key resolves to when the fact is
+// chunk-homed. `resolved` false means the caller has no chunk for this key — a raw
+// k/v row, a store with SQL Memory off, or an agent whose sql_scopes do not grant
+// the scope — and the k/v stamp alone is the whole retirement.
+type factChunkRef struct {
+	doc      *Document
+	scopeKey sqlmem.ScopeKey
+	// THE BODY'S OWN COORDINATES, not the ones the Memory tool resolved. A chunk
+	// body is written by Document at (direntTenant, its memory scope, the SQL Memory
+	// key's ScopeID) — and under scope=tenant that ScopeID is the tenant, while the
+	// Memory tool deliberately uses "" there because the tenant_id column already
+	// carries the identity. Stamping the row at Memory's coordinates would miss it
+	// for every tenant-scope fact: the same silent miss this op exists to fix, one
+	// keying plane over. Under agent and user scope the two agree, which is exactly
+	// why this has to be taken from the body's own key rather than assumed.
+	bodyTenant  string
+	bodyScope   store.MemoryScope
+	bodyScopeID string
+	bodyKey     string // the k/v row's real key: doc.chunk:<chunkID>
+
+	chunkID       string
+	replacementID string
+	resolved      bool
+}
+
+// resolveFactChunk maps the natural keys a caller holds onto the chunks they name.
+//
+// EVERY FAILURE IS "not chunk-homed", never an error. A key with no chunk is the
+// ordinary case for a raw memory row, and an agent that cannot reach SQL Memory
+// also cannot have written a chunk — so in both cases there is nothing to close in
+// the graph and the k/v stamp is complete on its own. Refusing here would break
+// retirement for every deployment that does not run the fact tier.
+func (m *Memory) resolveFactChunk(ctx context.Context, in memoryInput) factChunkRef {
+	if m.SqlMem == nil {
+		return factChunkRef{}
+	}
+	doc := &Document{Store: m.Store, SqlMem: m.SqlMem, Cfg: m.Cfg}
+	skey, mscope, err := doc.resolveScope(ctx, in.Scope)
+	if err != nil {
+		return factChunkRef{}
+	}
+	chunkID, err := doc.chunkIDByNaturalKey(ctx, skey, in.Key)
+	if err != nil || chunkID == "" {
+		return factChunkRef{}
+	}
+	ref := factChunkRef{
+		doc: doc, scopeKey: skey, chunkID: chunkID,
+		bodyTenant:  direntTenant(ctx),
+		bodyScope:   mscope,
+		bodyScopeID: skey.ScopeID,
+		bodyKey:     memrank.DocumentChunkKeyPrefix + chunkID,
+		resolved:    true,
+	}
+	// A replacement that cannot be resolved is DROPPED, not an error: the fact being
+	// retired is the one the caller asked about, and refusing the whole retirement
+	// because the survivor is unknown would leave the stale row live — the outcome
+	// this op exists to prevent. It is recorded as a displacement instead.
+	if in.SupersededBy != "" && in.SupersededBy != in.Key {
+		if rid, err := doc.chunkIDByNaturalKey(ctx, skey, in.SupersededBy); err == nil && rid != chunkID {
+			ref.replacementID = rid
+		}
+	}
+	return ref
 }
 
 func (m *Memory) execPendingDrain(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {

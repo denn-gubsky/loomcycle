@@ -625,7 +625,7 @@ agents:
           merge_refused_subject: 0, // above the band, but about a different subject
           merge_refused_class: 0,   // above the band, but filed under another class
           supersede_queue: [],      // neighbour keys judged duplicates of a kept row
-          supersede_keeper: {},     // retired key -> the key that survived it (entity half)
+          supersede_keeper: {},     // retired key -> the key that survived it
           written_keys: {},         // never retire a row this pass just wrote
           entities_doc: {},         // scope -> /memory/entities document id, resolved once each
           entity_ids: {},           // scope + "\u0000" + natural_key -> chunk id, for this pass
@@ -703,7 +703,7 @@ agents:
           // judge that is slightly off it doubles every pass's model spend silently.
           // Next pass will try again; within a pass, once is enough.
           judge_attempted: {},
-          entity_failed: 0,         // entity writes that failed (k/v still landed)
+          entity_failed: 0,         // graph writes around a fact that failed (edges, subject nodes)
           subject_docs: {},        // scope+slug -> {doc, root} for /facts/<slug>
           fact_no_subject: 0,       // facts chunked with no subject node (extractor named none)
           type_absent: 0,           // subjects filed under the fallback because no type was given
@@ -1678,9 +1678,9 @@ agents:
           // them is what collapses the pile back to one canonical row.
           for (var d = 1; d < dupes.length; d++) {
             st.supersede_queue.push(dupes[d].id);
-            // The entity half needs the SURVIVOR too: supersede_chunk records which
-            // chunk replaced which, so a retirement with no replacement cannot be
-            // expressed. dupes[0] is the row being kept and rewritten.
+            // THE SURVIVOR travels with the retirement: the graph records which fact
+            // replaced which, so "why did we stop believing this" is answerable.
+            // dupes[0] is the row being kept and rewritten.
             st.supersede_keeper[dupes[d].id] = dupes[0].id;
           }
           if (!write(st, primary.id, fact, sourceID, pendingID)) { return false; }
@@ -1691,10 +1691,12 @@ agents:
           // with two places to correct it, which is the duplication this feature exists
           // to remove. So retire it.
           //
-          // The POINTER is exact without a new column: the row was rewritten under the
-          // SAME key, so the live copy is (this key, the target scope), and the new row's
-          // provenance carries promoted_from. A retired row is a soft archive — the audit
-          // trail survives and nothing is deleted.
+          // The POINTER is exact without a new column, and without a replacement edge:
+          // the row was rewritten under the SAME key, so the live copy is (this key, the
+          // target scope) and the key itself is the pointer. That is why this retirement
+          // names no survivor — there is no second chunk to point at, and an edge to
+          // nothing would assert a replacement that does not exist. A retired row is a
+          // soft archive: the audit trail survives and nothing is deleted.
           //
           // Not routed through supersede_queue: that queue's cap exists to stop a steered
           // "everything you know is obsolete" driving an unbounded sweep, and this is
@@ -2217,46 +2219,14 @@ agents:
       function write(st, key, fact, sourceID, pendingID) {
         // The scope the ontology declares for this fact's subject, or CONFIG.scope.
         var scope = placementFor(st, fact);
-        var prov = sourceID ? { "class": fact.cls, source_session_id: sourceID }
-                            : { "class": fact.cls };
-        // WHERE IT CAME FROM, on a placed fact only. An operator looking at a row in the
-        // shared plane must be able to answer "why is this here" without guessing, and
-        // source_session_id alone does not say that the row was MOVED. It also keeps the
-        // erasure report honest: a placed fact still carries the session it came from, so
-        // it shows up as residue for the subject who produced it even though a user
-        // erasure correctly leaves it alone.
-        if (scope !== CONFIG.scope) { prov.promoted_from = CONFIG.scope; }
-        var args = {
-          scope: scope,
-          key: key,
-          value: fact.text,
-          embed: true,
-          embed_text: fact.text,
-          provenance: prov
-        };
-        // WHEN the fact was true, when the extractor could tell. Omitted entirely
-        // otherwise — an undated fact is the common and correct case, and a
-        // fabricated date would file it under a day it did not happen.
-        if (fact.valid_at) {
-          args.valid_at = fact.valid_at;
-          if (fact.invalid_at) { args.invalid_at = fact.invalid_at; }
-        }
-        // WHEN IT WAS SAID. Set independently of valid_at — `Memory set` has taken
-        // observed_at since the temporal tier shipped, and it is what a `when` window
-        // matches against, so a fact that carries only an utterance time is still
-        // findable by time. Omitted when the extractor could not read one.
-        if (fact.observed_at) { args.observed_at = fact.observed_at; }
-        // A fact distilled from a QUEUED item relays that item's id so the server
-        // resolves its origin + source ids from the pending row. We cannot author
-        // origin ourselves — it is server-stamped precisely so an agent cannot
-        // label its own writes — so without this the fact lands origin=consolidator
-        // and is indistinguishable from one read out of an ordinary transcript,
-        // which is the whole thing the pending origin column exists to tell apart.
-        if (pendingID) { args.from_pending = pendingID; }
         // THE CHUNK IS THE FACT'S ONLY HOME. The k/v `memory/<class>/<slug>` row
         // this used to write is gone — one text, one embedding, one provenance
-        // record. `args` is still assembled above because it carries the temporal
-        // fields and the pending attribution into the mirror.
+        // record — and so is the argument object that fed it. That object outlived
+        // the call by one change, with a comment claiming it still "carries the
+        // temporal fields and the pending attribution into the mirror"; it did not.
+        // mirrorEntity re-derives every one of them from `fact` and `pendingID`, so
+        // the block was assembled and dropped on the hottest path in the pass while
+        // reading as load-bearing.
         //
         // THE FAILURE RULE INVERTS, and this is the part to read twice. It used to
         // say "the entity graph mirrors the fact AFTER the authoritative write
@@ -2452,8 +2422,7 @@ agents:
         var found = "";
         // The SLUG is interpolated, never the raw subject: slug() emits [a-z0-9-] only
         // (rawWords is ASCII-only, with a hash fallback for non-Latin), so no quote and no
-        // LIKE wildcard can occur. The same guarantee entityIDByKey relies on — do NOT
-        // extend this to a caller-supplied string.
+        // LIKE wildcard can occur — do NOT extend this to a caller-supplied string.
         try {
           var res = JSON.parse(Document({
             op: "query_chunks", scope: scope,
@@ -3239,57 +3208,6 @@ agents:
                "[{\"i\": 1, \"verdict\": \"supported\", \"reason\": \"...\"}]";
       }
 
-      // retireEntity mirrors a k/v supersession onto the graph. supersede_chunk
-      // needs BOTH sides, so a retirement whose survivor is unknown is skipped
-      // rather than guessed — marking a fact retired with no replacement would
-      // assert that we stopped believing it for no recorded reason.
-      function retireEntity(st, retiredKey) {
-        var keeperKey = st.supersede_keeper[retiredKey];
-        if (!keeperKey) { return; }
-        // CONFIG.scope explicitly: duplicate collapse is a within-scope operation, and
-        // both the retired row and its survivor are in the scope this pass owns.
-        var docID = entitiesDoc(st, CONFIG.scope);
-        if (!docID) { return; }
-        var oldID = entityIDByKey(st, retiredKey), newID = entityIDByKey(st, keeperKey);
-        if (!oldID || !newID) { return; } // neither was ever mirrored — nothing to retire
-        try {
-          Document({ op: "supersede_chunk", scope: CONFIG.scope,
-                     id: newID, supersedes_id: oldID });
-        } catch (e) {
-          st.entity_failed++;
-          if (!st.entity_error) { st.entity_error = errText(e); }
-        }
-      }
-
-      // entityIDByKey resolves a natural key to a chunk id, including one written
-      // by an EARLIER pass (this pass's cache only holds what it wrote itself).
-      //
-      // The key is interpolated rather than bound because query_chunks' sql escape
-      // hatch takes no parameters. That is safe HERE and only here: every natural
-      // key this file produces comes from slug() or entityKey(), whose output is
-      // [a-z0-9:-] by construction, so no quote can occur. Do not extend this to a
-      // key from anywhere else.
-      function entityIDByKey(st, naturalKey) {
-        // CONFIG.scope's memo, because that is the scope this queries. The memo is keyed
-        // by scope since placement made the same natural key exist in more than one.
-        var memo = CONFIG.scope + "\u0000" + naturalKey;
-        if (st.entity_ids[memo]) { return st.entity_ids[memo]; }
-        if (!/^[a-z0-9:_/-]+$/.test(naturalKey)) { return ""; }
-        try {
-          var res = JSON.parse(Document({
-            op: "query_chunks", scope: CONFIG.scope,
-            sql: "SELECT chunk_id FROM chunk_memory_meta WHERE natural_key = '" + naturalKey + "'"
-          }));
-          if (res && res.rows && res.rows.length && res.rows[0].length) {
-            st.entity_ids[memo] = String(res.rows[0][0]);
-            return st.entity_ids[memo];
-          }
-        } catch (e) {
-          st.entity_failed++;
-        }
-        return "";
-      }
-
       // retire applies the ONLY destructive-ish op in the pipeline, capped.
       // Memory.delete is never called anywhere in this file: supersede is a soft
       // archive, so a re-derived fact revives its row and the audit trail
@@ -3305,10 +3223,19 @@ agents:
         st.supersede_capped = keys.length - capped.length;
 
         for (var j = 0; j < capped.length; j++) {
+          // ONE CALL, BOTH PLANES. This used to be a k/v supersede followed by a
+          // best-effort graph mirror, which could leave a fact hidden from recall and
+          // still current in the graph — or, because the k/v half was handed a natural
+          // key the k/v plane does not use, retired in neither while reporting success.
+          // The survivor travels with it so the graph records what replaced what; a
+          // retirement whose survivor is unknown is still a retirement, and the fact is
+          // closed rather than skipped.
+          var args = { scope: CONFIG.scope, key: capped[j] };
+          var keeper = st.supersede_keeper[capped[j]];
+          if (keeper) { args.superseded_by = keeper; }
           try {
-            Memory.supersede({ scope: CONFIG.scope, key: capped[j] });
+            Memory.supersede(args);
             st.superseded++;
-            retireEntity(st, capped[j]);
           } catch (e) {
             block(st, "supersede failed for " + capped[j] + ": " + errText(e));
           }
