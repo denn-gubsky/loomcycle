@@ -211,6 +211,14 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 				if res.Error == "" {
 					res.Error = err.Error()
 				}
+				// Batch children are a fourth writer of failure state; classify
+				// here too so a child refused by admission is as legible as a
+				// single spawn_run refused the same way.
+				if res.ErrorInfo == nil {
+					if info, ok := errclassify.CategoryOf(err); ok {
+						res.ErrorInfo = &info
+					}
+				}
 			}
 			results[i] = res
 		}(i)

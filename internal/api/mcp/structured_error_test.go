@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -189,5 +190,112 @@ func TestStructured_ValidationCarriesAFix(t *testing.T) {
 	}
 	if fix == res.Content[0].Text {
 		t.Error("description merely restates the message — costs tokens, carries no decision")
+	}
+}
+
+// --- isError is derived, not set per-writer ---
+
+// TestRunResult_IsErrorMatchesTheFailure is the invariant that replaced the old
+// behaviour, where a failed run came back success-shaped with isError unset and
+// the failure buried in a JSON string.
+//
+// A census found seven writers of run-failure state and only one had been
+// taught to classify, so isError is derived at the single render point instead
+// of set by each writer. This pins that derivation for every status a run can
+// end in.
+func TestRunResult_IsErrorMatchesTheFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		result      connector.SpawnRunResult
+		wantIsError bool
+		why         string
+	}{
+		{"completed", connector.SpawnRunResult{Status: "completed"}, false,
+			"a successful run is not an error"},
+		{"failed", connector.SpawnRunResult{Status: "failed", Error: "boom"}, true,
+			"the old behaviour returned this success-shaped"},
+		{"timeout", connector.SpawnRunResult{Status: "timeout", Error: "deadline"}, true,
+			"a transport timeout is a failed call"},
+		{"cancelled", connector.SpawnRunResult{Status: "cancelled", Error: "context canceled"}, false,
+			"the caller asked for it; reporting their own request back as an error " +
+				"would have an agent recover from something it did on purpose"},
+		{"error string with no status", connector.SpawnRunResult{Error: "something broke"}, true,
+			"a writer that sets only Error must still produce isError"},
+		{"empty result", connector.SpawnRunResult{}, false,
+			"nothing to report"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolResultForRun(tc.result)
+			if got.IsError != tc.wantIsError {
+				t.Errorf("IsError = %v, want %v — %s", got.IsError, tc.wantIsError, tc.why)
+			}
+		})
+	}
+}
+
+// isError and the structured payload must never disagree. A classified failure
+// that came back isError:false would be exactly the inconsistency this phase
+// exists to remove.
+func TestRunResult_StructuredContentNeverContradictsIsError(t *testing.T) {
+	classified := &tools.ErrorInfo{
+		Category:    tools.CategoryTransient,
+		Retryable:   true,
+		Description: "retry shortly",
+	}
+
+	t.Run("classified failure sets both", func(t *testing.T) {
+		res := toolResultForRun(connector.SpawnRunResult{
+			Status: "failed", Error: "boom", ErrorInfo: classified,
+		})
+		if !res.IsError {
+			t.Error("classified failure came back isError:false")
+		}
+		m := decodeStructured(t, res)
+		if m["errorCategory"] != "transient" {
+			t.Errorf("errorCategory = %v", m["errorCategory"])
+		}
+	})
+
+	t.Run("success never carries an error payload", func(t *testing.T) {
+		// Even if a writer wrongly attached ErrorInfo to a completed run.
+		res := toolResultForRun(connector.SpawnRunResult{
+			Status: "completed", ErrorInfo: classified,
+		})
+		if res.IsError {
+			t.Error("a completed run was reported as an error")
+		}
+		if len(res.StructuredContent) != 0 {
+			t.Errorf("success carries an error payload: %s", res.StructuredContent)
+		}
+	})
+
+	t.Run("unclassified failure still flags isError", func(t *testing.T) {
+		res := toolResultForRun(connector.SpawnRunResult{Status: "failed", Error: "boom"})
+		if !res.IsError {
+			t.Error("an unclassified failure must still be a failed call")
+		}
+		if len(res.StructuredContent) != 0 {
+			t.Errorf("unclassified failure invented a payload: %s", res.StructuredContent)
+		}
+	})
+}
+
+// The run payload itself is unchanged: isError is additional signal, not a
+// replacement for the result body a caller already parses.
+func TestRunResult_PayloadSurvivesTheIsErrorChange(t *testing.T) {
+	res := toolResultForRun(connector.SpawnRunResult{
+		Status: "failed", Error: "boom", RunID: "r-1", AgentID: "a-1",
+	})
+	if len(res.Content) != 1 {
+		t.Fatalf("expected one content block, got %d", len(res.Content))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &payload); err != nil {
+		t.Fatalf("content is no longer the result JSON: %v", err)
+	}
+	for k, want := range map[string]string{"run_id": "r-1", "agent_id": "a-1", "error": "boom"} {
+		if payload[k] != want {
+			t.Errorf("payload[%q] = %v, want %q", k, payload[k], want)
+		}
 	}
 }

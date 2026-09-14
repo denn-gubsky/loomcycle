@@ -300,12 +300,21 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		if result.Error == "" {
 			result.Error = fmt.Sprintf("spawn_run exceeded the %dms MCP transport timeout; the run was cancelled", effectiveTimeoutMS)
 		}
-		return toolResultJSON(result), nil
+		// Hand-labelled: the transport deadline is constructed here, so there
+		// is no typed error for the classifier to match on.
+		if result.ErrorInfo == nil {
+			result.ErrorInfo = &tools.ErrorInfo{
+				Category:    tools.CategoryTransient,
+				Retryable:   true,
+				Description: "The run exceeded this MCP connection's transport timeout and was cancelled. Retrying may succeed; a shorter task or a longer timeout will help.",
+			}
+		}
+		return toolResultForRun(result), nil
 	}
 	if err != nil {
 		return toolErrFrom("spawn_run", err), nil
 	}
-	return toolResultWithError(result, result.ErrorInfo), nil
+	return toolResultForRun(result), nil
 }
 
 // handleSpawnRuns is the RFC Y external fan-out tool: validate each child spec
@@ -464,6 +473,13 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 	case runErr != nil:
 		result.Status = "failed"
 		result.Error = runErr.Error()
+		// Second classification point. The streaming spawn path is a
+		// SEPARATE writer from connector.SpawnRun and flattens the typed
+		// error the same way, so classifying only in the connector would
+		// leave every RunEventsEnabled session unclassified.
+		if info, ok := errclassify.CategoryOf(runErr); ok {
+			result.ErrorInfo = &info
+		}
 	}
 	return result, nil
 }
@@ -881,17 +897,42 @@ func toolErrValidation(msg, fix string) *loommcp.CallToolResult {
 	return res
 }
 
-// toolResultWithError renders a connector result that carries a classified
-// failure. IsError is deliberately NOT set: a run that started and reported
-// failure is a completed tool call with a failure payload, and flipping it
-// would change how every existing spawn_run consumer reads the result. The
-// category rides alongside so an agent can still tell a transient refusal from
-// a permanent one. Whether admission refusals should flip IsError is a
-// semantics decision, deliberately left out of this change.
-func toolResultWithError(v any, info *tools.ErrorInfo) *loommcp.CallToolResult {
-	res := toolResultJSON(v)
-	if info != nil {
-		res.StructuredContent = loommcp.StructuredErrorJSON(*info)
+// runFailed reports whether a spawn result is a FAILED tool call.
+//
+// A cancelled run is deliberately not a failure: the caller asked for it, and
+// reporting their own request back as an error would have an agent
+// "recovering" from something it did on purpose. This mirrors the classifier,
+// which leaves context.Canceled unclassified for the same reason.
+func runFailed(r connector.SpawnRunResult) bool {
+	switch r.Status {
+	case "failed", "timeout":
+		return true
+	case "cancelled":
+		return false
+	}
+	return r.Error != ""
+}
+
+// toolResultForRun is the ONE place a spawn result becomes a tool result.
+//
+// isError is DERIVED here rather than set by each writer. A census of the
+// failure paths found seven writers — the connector's own failure and
+// cancellation branches, its event-only error path, its batch-child fallback,
+// the streaming spawner's two branches and the transport-timeout path — and
+// only one of them had been taught to classify. Deriving at the single render
+// point means a writer cannot forget, and a new one inherits it.
+//
+// Before this, a run that failed came back success-shaped: isError unset, with
+// the failure buried in an `error` string inside the JSON payload. A caller had
+// to parse the payload to learn the call had failed at all.
+func toolResultForRun(r connector.SpawnRunResult) *loommcp.CallToolResult {
+	res := toolResultJSON(r)
+	if !runFailed(r) {
+		return res
+	}
+	res.IsError = true
+	if r.ErrorInfo != nil {
+		res.StructuredContent = loommcp.StructuredErrorJSON(*r.ErrorInfo)
 	}
 	return res
 }
