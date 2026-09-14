@@ -112,53 +112,29 @@ func toolDescription(t *testing.T, name string) string {
 	return ""
 }
 
-// rubricDone lists the MCP tools whose descriptions have been rewritten to the
-// full rubric: purpose, inputs and their constraints, what it refuses or caps,
-// and — the element this surface had ZERO of — when to use THIS tool rather
-// than the neighbour a caller would otherwise pick.
-//
-// WHY A LIST AND NOT EVERY TOOL. 52 descriptions are being converted in
-// clusters, and a test that fails for the 30 not yet reached would have to be
-// skipped, which is the same as not having it. Every tool moved into this list
-// is held to the rubric from then on; the companion test below makes the list
-// itself hard to forget about.
+// Every MCP tool must meet the rubric: purpose, inputs and their constraints,
+// what it refuses or caps, and — the element this surface had ZERO of — when to
+// use THIS tool rather than the neighbour a caller would otherwise pick.
 //
 // WHY BOUNDARIES ARE THE CHECKED ELEMENT. This surface is consumed by EXTERNAL
 // agents over the MCP transport — a Claude Code session, someone else's client
 // — with no loomcycle system prompt in front of them doing the disambiguating.
-// The description is the entire briefing. Clusters here are dense and the names
+// The description is the entire briefing. The clusters are dense and the names
 // are near-synonyms: subscribe_channel vs peek_channel+ack_channel is an
-// at-most-once vs at-least-once decision, get_snapshot vs export_snapshot is
-// read vs move, register_agent vs agentdef is a scratch agent vs a durable one.
+// at-most-once vs at-least-once decision; get_snapshot vs export_snapshot is
+// read vs move; register_agent vs agentdef is a scratch agent vs a durable one;
+// a2aservercarddef advertises US while a2aagentdef registers a peer WE call.
 // Picking the wrong one of those is not a formatting problem.
-var rubricDone = []string{
-	// Channel cluster: one meta-tool, four single-op twins, an admin aggregate,
-	// and the definition plane.
-	"channel", "publish_channel", "subscribe_channel", "peek_channel",
-	"ack_channel", "list_channels", "channeldef",
-	// Snapshot cluster: all admin-only, and read-vs-move is the trap.
-	"create_snapshot", "list_snapshots", "get_snapshot", "export_snapshot",
-	"restore_snapshot", "delete_snapshot",
-	// Run and agent cluster: one-vs-many, and scratch-vs-durable.
-	"spawn_run", "spawn_runs", "cancel_run", "get_run", "list_runs",
-	"compact_run", "register_agent", "unregister_agent", "list_agents",
-	// The def family: versioned-and-promoted, versioned-and-auto-promoted, and
-	// plain handles. An external agent does not know what a "def" is, so each
-	// says what it authors, whether it is live before promote, and which
-	// neighbour owns the job it does not.
-	"agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef",
-	"webhookdef", "a2aservercarddef", "a2aagentdef", "memorybackenddef",
-	"documentsourcedef", "volumedef", "credentialdef", "operatortokendef",
-}
+//
+// NO OPT-IN LIST. This ranged over an explicit set while the 52 were being
+// converted in clusters; now that they all comply, it ranges over the surface
+// itself — so a NEW tool is held to the rubric the day it is added, rather than
+// the day somebody remembers to list it.
 
 func TestToolSurface_ConvertedToolsStateTheirBoundaries(t *testing.T) {
 	boundary := regexp.MustCompile(`(?i)\bdo not use\b|\bdo NOT\b`)
-	for _, name := range rubricDone {
-		desc := toolDescription(t, name)
-		if desc == "" {
-			t.Errorf("%s: not in the tool surface — did it get renamed or removed?", name)
-			continue
-		}
+	for _, tool := range toolDescriptors() {
+		name, desc := tool.Name, tool.Description
 		if !boundary.MatchString(desc) {
 			t.Errorf("%s: description never says what NOT to use it for. An external agent "+
 				"reads this cold, with no system prompt to disambiguate — name the neighbour "+
@@ -168,24 +144,5 @@ func TestToolSurface_ConvertedToolsStateTheirBoundaries(t *testing.T) {
 			t.Errorf("%s: description is %d bytes, too short to carry inputs, limits AND a "+
 				"boundary", name, len(desc))
 		}
-	}
-}
-
-// TestToolSurface_RubricListIsHonest keeps rubricDone from drifting into a
-// decorative list: every name in it must still be a real tool, and the count
-// must match what the cluster comments above claim. A tool dropped from the
-// surface silently shrinking the checked set is the failure mode.
-func TestToolSurface_RubricListIsHonest(t *testing.T) {
-	seen := map[string]bool{}
-	for _, n := range rubricDone {
-		if seen[n] {
-			t.Errorf("%s listed twice in rubricDone", n)
-		}
-		seen[n] = true
-	}
-	if got, want := len(rubricDone), 35; got != want {
-		t.Errorf("rubricDone has %d entries, expected %d — update the count deliberately when "+
-			"a cluster is converted, so the number stays a claim rather than a side effect",
-			got, want)
 	}
 }
