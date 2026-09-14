@@ -18,8 +18,17 @@ type Read struct {
 	MaxBytes int64
 }
 
-func (r *Read) Name() string        { return "Read" }
-func (r *Read) Description() string { return "Read a UTF-8 text file from disk." }
+func (r *Read) Name() string { return "Read" }
+func (r *Read) Description() string {
+	return "Read one UTF-8 text file from a volume you are bound to. " +
+		"Takes `path` relative to the volume root (an absolute path is accepted only if it resolves inside the root; ~ is not expanded) " +
+		"and optional `volume` to pick a non-default one — call Context op=self to see which volumes you have. " +
+		"Returns the file's text, truncated at 256 KiB. " +
+		"Use this to read source, config or data files you know the path of. " +
+		"Do NOT use it to find files — use Glob to match by name or Grep to search by content. " +
+		"Do NOT use it for stored documents or memory: those live in the Document and Memory tools, not on a volume. " +
+		"An agent bound to no volume is refused, and a path outside the root is refused rather than clamped."
+}
 
 func (r *Read) InputSchema() json.RawMessage {
 	return json.RawMessage(`{

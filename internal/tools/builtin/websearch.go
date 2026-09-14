@@ -65,7 +65,13 @@ const (
 
 func (s *WebSearch) Name() string { return "WebSearch" }
 func (s *WebSearch) Description() string {
-	return "Search the web (lightweight discovery). Returns titles + URLs + short snippets."
+	return "Search the web and return ranked results as title + URL + short snippet. " +
+		"Takes `query` (free text) and optional `max_results` (default 5, hard ceiling 25). " +
+		"Use this to DISCOVER pages when you do not have a URL — \"who currently maintains X\", \"recent changes to Y\". " +
+		"Then follow up with WebFetch on a result URL to read the page: snippets are capped at 256 characters and are not enough to answer from. " +
+		"Do NOT use it to read a page you already have the URL for — that is WebFetch. " +
+		"It searches the public web only; it cannot see this deployment's documents, memory or files. " +
+		"With no search provider configured the call is refused rather than returning an empty list."
 }
 
 func (s *WebSearch) InputSchema() json.RawMessage {

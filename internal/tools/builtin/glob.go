@@ -40,8 +40,13 @@ const globDefaultMaxResults = 100
 func (g *Glob) Name() string { return "Glob" }
 
 func (g *Glob) Description() string {
-	return "Find files in the sandbox root by glob pattern (supports ** for recursive match). " +
-		"Returns matching paths sorted by modification time, newest first."
+	return "Find files by NAME on a volume, using a glob pattern. " +
+		"Takes `pattern` — `*` and `?` match within one path segment, `[abc]` is a character class, and `**` matches across segments recursively " +
+		"(e.g. `**/*_test.go`); optional `path` narrows to a subdirectory and `volume` picks a non-default one. " +
+		"Returns matching paths sorted by modification time, newest first, so recently-touched files come back on top. " +
+		"Use this when you know roughly what a file is CALLED but not where it is. " +
+		"Do NOT use it to search file CONTENTS — that is Grep. " +
+		"It matches paths only: a pattern that matches nothing returns an empty list rather than an error."
 }
 
 func (g *Glob) InputSchema() json.RawMessage {

@@ -27,7 +27,12 @@ type Write struct {
 
 func (w *Write) Name() string { return "Write" }
 func (w *Write) Description() string {
-	return "Create or overwrite a text file inside the sandbox root."
+	return "Create a file, or replace an existing one WHOLE, on a volume you are bound to read-write. " +
+		"Takes `path` relative to the volume root and `content` (UTF-8, up to 1 MiB); optional `volume` picks a non-default one. " +
+		"The write is atomic — readers never see a partial file — and it replaces the entire contents. " +
+		"Use this to create a new file or to rewrite a small one end to end. " +
+		"Do NOT use it to change part of an existing file: that silently discards everything you did not re-send. Use Edit, which fails loudly instead. " +
+		"An agent with no read-write volume is refused, as is a path resolving outside the root."
 }
 
 func (w *Write) InputSchema() json.RawMessage {

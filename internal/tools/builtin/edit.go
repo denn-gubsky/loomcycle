@@ -27,7 +27,13 @@ type Edit struct {
 
 func (e *Edit) Name() string { return "Edit" }
 func (e *Edit) Description() string {
-	return "Replace text in an existing file inside the sandbox root."
+	return "Replace an exact string inside an EXISTING file on a read-write volume, leaving the rest untouched. " +
+		"Takes `path`, `old_string` (must match the file byte for byte, whitespace included) and `new_string`; " +
+		"optional `replace_all` lifts the uniqueness requirement, optional `volume` picks a non-default one. " +
+		"By default `old_string` must occur EXACTLY ONCE — an ambiguous match is an error asking you for more surrounding context, not a guess. " +
+		"Use this for every change to a file that already exists; it is the safe default because it cannot lose content you did not mention. " +
+		"Do NOT use it to create a file — it refuses a missing path; use Write. " +
+		"Files are read whole, so it is bounded at 1 MiB."
 }
 
 func (e *Edit) InputSchema() json.RawMessage {

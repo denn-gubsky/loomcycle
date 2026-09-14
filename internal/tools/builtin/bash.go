@@ -65,7 +65,14 @@ type Bash struct {
 
 func (b *Bash) Name() string { return "Bash" }
 func (b *Bash) Description() string {
-	return "Run a shell command in a sandboxed working directory. Returns combined stdout+stderr."
+	return "Run ONE shell command with its working directory set to a read-write volume. " +
+		"Takes `command` (a shell string) and optional `timeout_ms` (default 30s, hard ceiling 5 minutes). " +
+		"Returns combined stdout+stderr, truncated at 1 MiB, plus the exit code. " +
+		"Use this for work the other tools do not cover — running a build, a test suite, a one-off script. " +
+		"Do NOT use it for work a dedicated tool covers — Read/Write/Edit for files, Glob for finding them by name, Grep for searching their contents. " +
+		"Those are bounded, sandboxed and predictable; a shell command is none of the three, and `cat`/`find`/`grep` here will also burn output budget the dedicated tools do not. " +
+		"Each call is a FRESH shell: no state, no exported variables and no `cd` survive between calls, so chain steps in one command. " +
+		"The tool is disabled by default and refuses every call unless the operator enabled it."
 }
 
 func (b *Bash) InputSchema() json.RawMessage {
