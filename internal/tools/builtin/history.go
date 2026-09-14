@@ -104,6 +104,7 @@ const historyInputSchema = `{
 		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume","related","window"]},
 		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self. The owner id is resolved server-side from the run identity, never the wire."},
 		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume/window: the chat (session) id to target — for window, the session recall reported on the fact. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
+		"match":           {"type": "string", "enum": ["title","content"], "description": "search: what to match the query against. \"title\" (default) is the cheap path — a case-insensitive match on the chat's name, which is usually auto-generated. \"content\" searches what was actually SAID in the chats, over the turns you typed; it needs an embedder and a user_id on the run, and returns each chat with the turn that matched it."},
 		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled)."},
 		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity."},
 		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity."},
@@ -138,6 +139,7 @@ type historyInput struct {
 	To              string `json:"to"`
 	Tag             string `json:"tag"`
 	TitleContains   string `json:"title_contains"`
+	Match           string `json:"match"`
 	Query           string `json:"query"`
 	PinnedOnly      bool   `json:"pinned_only"`
 	IncludeArchived bool   `json:"include_archived"`
@@ -177,6 +179,12 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "list":
 		return h.list(ctx, scope, in, false)
 	case "search":
+		if err := validMatchMode(in.Match); err != nil {
+			return errResult(err.Error()), nil
+		}
+		if strings.EqualFold(strings.TrimSpace(in.Match), contentMatchMode) {
+			return h.searchContent(ctx, scope, in)
+		}
 		return h.list(ctx, scope, in, true)
 	case "get":
 		return h.get(ctx, scope, in)
