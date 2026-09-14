@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -207,4 +208,103 @@ func grantedTenantCtx(ctx context.Context) context.Context {
 		AllowedScopes: []string{"agent", "user", "tenant"}})
 	return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
 		AllowedScopes: []string{"agent", "user", "tenant"}})
+}
+
+// TestAdoptSubjectProposal_DoesNotBackfillFactsFromOtherScopes — RFC CV P4, decided
+// 2026-09-14.
+//
+// The ontology declaring `person → tenant` means facts about people are MEANT to be
+// shared, and the curator gate only delayed that while the subject was unknown. So
+// there is a real argument that adoption should reach back and move what was learned
+// in the meantime.
+//
+// IT MUST NOT, and the reason is what the gate was protecting in the first place.
+// Moving those facts republishes one user's accumulated history to the whole tenant,
+// retroactively, as a side effect of an operator clicking accept on a NAME. Minting an
+// entity and publishing a person's back catalogue are different decisions, and only one
+// of them was made. Adoption shares from now on.
+//
+// The property holds today because AdoptSubjectProposal only creates a document. That
+// is an accident of implementation, not a design anybody wrote down, and it would be
+// undone by the obvious "while we're here, move the existing facts over" change. This
+// is what makes that a red build.
+func TestAdoptSubjectProposal_DoesNotBackfillFactsFromOtherScopes(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	seedTenantOntology(t, d, ctx)
+
+	// What the user's own scope already knows about Dave, learned while the tenant did
+	// not know him.
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Dave",
+		"path":"/facts/dave"}`)
+	if r.IsError {
+		t.Fatalf("seed user dossier: %s", r.Text)
+	}
+	userDoc := asStr(out["document_id"])
+	out, r = docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+userDoc+`",
+		"natural_key":"memory/fact/dave-runs-the-shop","title":"Dave runs the shop",
+		"body":"Dave runs the shop.","type":"fact","subject":"Dave"}`)
+	if r.IsError {
+		t.Fatalf("seed user fact: %s", r.Text)
+	}
+	userFact := asStr(out["id"])
+
+	if _, r := docExec(t, d, ctx, `{"op":"propose_subject","subject":"Dave",
+		"natural_key":"person:dave","path":"dave"}`); r.IsError {
+		t.Fatalf("propose_subject: %s", r.Text)
+	}
+	read, _ := d.OntologyTermsFromTree(grantedTenantCtx(ctx), "tenant", memory.OntologyPath)
+	var chunkID string
+	for _, p := range read.Proposals {
+		if strings.EqualFold(p.Name, "Dave") {
+			chunkID = p.ChunkID
+		}
+	}
+	_, f, evidence := d.SubjectProposal(grantedTenantCtx(ctx), "tenant", chunkID)
+	if _, err := d.AdoptSubjectProposalInScope(grantedTenantCtx(ctx), "tenant", f, evidence); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+
+	// STILL THERE, STILL LIVE, STILL WHERE IT WAS. Each half is asserted separately
+	// because they fail differently: a moved fact is gone, a "migrated" one is
+	// superseded in place, and a copied one is in both — and only the first is visible
+	// to a test that just counts rows in the user scope.
+	userKey, _, _ := d.resolveScope(ctx, "user")
+	if n := countRows(t, d, ctx, `SELECT COUNT(*) FROM chunks WHERE id = ?`, userFact); n != 1 {
+		t.Errorf("the user-scope fact was removed by an adoption in another scope")
+	}
+	res, err := d.query(ctx, userKey,
+		`SELECT coalesce(expired_at, 0), coalesce(invalid_at, 0) FROM chunk_memory_meta WHERE chunk_id = ?`,
+		userFact)
+	if err != nil || len(res.Rows) == 0 {
+		t.Fatalf("read the user fact's sidecar: %v", err)
+	}
+	if exp, _ := asInt64(res.Rows[0][0]); exp != 0 {
+		t.Errorf("the user-scope fact was RETIRED by adoption — its owner loses it from " +
+			"every fact surface, and nothing told them why")
+	}
+	if inv, _ := asInt64(res.Rows[0][1]); inv != 0 {
+		t.Errorf("adoption invalidated the user-scope fact")
+	}
+	// And it did not appear in the tenant plane, which is the disclosure half.
+	tenantKey, _, _ := d.resolveScope(grantedTenantCtx(ctx), "tenant")
+	res, err = d.query(grantedTenantCtx(ctx), tenantKey,
+		`SELECT COUNT(*) FROM chunk_memory_meta WHERE natural_key = ?`, "memory/fact/dave-runs-the-shop")
+	if err != nil {
+		t.Fatalf("read the tenant plane: %v", err)
+	}
+	if n, _ := asInt64(res.Rows[0][0]); n != 0 {
+		t.Errorf("adoption copied a user's existing fact into the TENANT plane — accepting " +
+			"a name republished that user's history to everyone in the tenant")
+	}
+
+	// The tenant dossier exists and SAYS why it is empty. A dossier that is silently
+	// empty next to a user scope that knows plenty is the failure this records against.
+	got, r := docExec(t, d, grantedTenantCtx(ctx), `{"op":"get_document","scope":"tenant","path":"/facts/dave"}`)
+	if r.IsError {
+		t.Fatalf("the adopted dossier is missing: %s", r.Text)
+	}
+	body, _ := d.readBody(grantedTenantCtx(ctx), store.MemoryScopeTenant, tenantKey.ScopeID, asStr(got["root_chunk_id"]))
+	if !strings.Contains(body.Body, "BEFORE adoption") {
+		t.Errorf("the adopted entity does not record that earlier facts stayed behind: %q", body.Body)
+	}
 }
