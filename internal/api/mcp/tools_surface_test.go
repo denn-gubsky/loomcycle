@@ -142,6 +142,13 @@ var rubricDone = []string{
 	// Run and agent cluster: one-vs-many, and scratch-vs-durable.
 	"spawn_run", "spawn_runs", "cancel_run", "get_run", "list_runs",
 	"compact_run", "register_agent", "unregister_agent", "list_agents",
+	// The def family: versioned-and-promoted, versioned-and-auto-promoted, and
+	// plain handles. An external agent does not know what a "def" is, so each
+	// says what it authors, whether it is live before promote, and which
+	// neighbour owns the job it does not.
+	"agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef",
+	"webhookdef", "a2aservercarddef", "a2aagentdef", "memorybackenddef",
+	"documentsourcedef", "volumedef", "credentialdef", "operatortokendef",
 }
 
 func TestToolSurface_ConvertedToolsStateTheirBoundaries(t *testing.T) {
@@ -176,7 +183,7 @@ func TestToolSurface_RubricListIsHonest(t *testing.T) {
 		}
 		seen[n] = true
 	}
-	if got, want := len(rubricDone), 22; got != want {
+	if got, want := len(rubricDone), 35; got != want {
 		t.Errorf("rubricDone has %d entries, expected %d — update the count deliberately when "+
 			"a cluster is converted, so the number stays a claim rather than a side effect",
 			got, want)
