@@ -70,6 +70,15 @@ type ChunkPruner interface {
 	// whole-scope reclaim needs it because dropping a SQL-Memory scope destroys the
 	// chunk ids that are the only route to the bodies in the k/v plane.
 	PruneScopeChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, dryRun bool) (int, error)
+	// PruneEmptyDossiers removes subject documents with no facts and nothing
+	// pointing at them. It returns HOW MANY and an opaque, JSON-marshalable record
+	// of them.
+	//
+	// The record is `any` deliberately: this package writes it out and never reads
+	// it, and typing it would mean importing the Document tool into the retention
+	// subsystem — which is the dependency the local ChunkPruner and SQLMemory
+	// interfaces exist to avoid.
+	PruneEmptyDossiers(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, cutoff int64, dryRun bool) (int, any, error)
 }
 
 type SQLMemory interface {
@@ -184,6 +193,29 @@ type Config struct {
 	// Document tool, which owns the chunk cascade.
 	ChunkPruner ChunkPruner
 
+	// EmptyDossierMode sweeps subject documents left with no facts and nothing
+	// pointing at them: "off" (default / ""), "prune", or "export+prune". Unknown →
+	// off. Independent of every other family.
+	//
+	// OFF BY DEFAULT, AND THAT IS THE DECISION RATHER THAN THE DEFAULT-FOR-SAFETY
+	// HABIT. An empty dossier is information — it records that the entity was once
+	// known — and it most often becomes empty as a SIDE EFFECT OF SOMEONE ELSE'S
+	// ERASURE: user B erases their scope, and an entity user A could previously see
+	// stops existing. Sweeping that automatically is a retention subsystem quietly
+	// dropping what it holds, which is the posture this whole family argues against.
+	// An operator who wants a clean entity directory can say so.
+	EmptyDossierMode string
+
+	// EmptyDossierMaxAge is the age cutoff, read against the document's updated_at:
+	// only a dossier untouched for longer is eligible. Zero = no minimum age.
+	//
+	// It exists because "empty" is a state a dossier can pass THROUGH. A subject
+	// whose first fact is mid-consolidation, or whose facts were just erased ahead
+	// of a re-derivation, is momentarily empty and not abandoned; without an age
+	// gate a sweep landing in that window deletes a record that was about to be
+	// filled.
+	EmptyDossierMaxAge time.Duration
+
 	// MemMode is the RFC BM Phase 3 memory-reclamation mode: "off" (default / ""),
 	// "prune" (reclaim a fully-retired agent's per-scope data), or "export+prune"
 	// (dump each facet to ExportDir as JSON, then reclaim). Unknown → off.
@@ -276,6 +308,13 @@ type Result struct {
 	// measure different things: Mem counts whole scopes reclaimed from dead agents,
 	// this counts rows removed from live ones.
 	MemContent int
+	// EmptyDossiers is the number of empty subject documents removed (or, under
+	// DryRun, that would be) this sweep. Its own number for the same reason
+	// MemContent has one: this removes a whole entity record from a LIVE scope,
+	// where MemContent removes retired rows and Mem removes a dead agent's scope.
+	// Folding it into either would hide the one family that deletes the last trace
+	// of an entity.
+	EmptyDossiers int
 	// Mem is the number of retired-agent reclamation UNITS this sweep (or, under
 	// DryRun, would-be). A unit is one (tenant, name) whose SQL-Memory scope
 	// and/or dirents were dropped, PLUS one per name whose globally-dead base
@@ -301,6 +340,8 @@ type Sweeper struct {
 	memMaxAge           time.Duration
 	memContentMode      string
 	memContentMaxAge    time.Duration
+	emptyDossierMode    string
+	emptyDossierMaxAge  time.Duration
 	chunkPruner         ChunkPruner
 	sqlMem              SQLMemory
 	exportDir           string
@@ -361,6 +402,8 @@ func New(st store.Store, cfg Config) *Sweeper {
 		memMode:             memMode,
 		memContentMode:      cfg.MemContentMode,
 		memContentMaxAge:    cfg.MemContentMaxAge,
+		emptyDossierMode:    cfg.EmptyDossierMode,
+		emptyDossierMaxAge:  cfg.EmptyDossierMaxAge,
 		chunkPruner:         cfg.ChunkPruner,
 		memMaxAge:           cfg.MemMaxAge,
 		sqlMem:              cfg.SQLMem,
@@ -456,6 +499,72 @@ func (s *Sweeper) sweepMemContentOnce(parent context.Context) (int, error) {
 			// One bad scope must not abort the sweep: the others are independent, and a
 			// scope whose prune failed is retried next interval.
 			s.logf("retention: mem_content: scope %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
+			continue
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// emptyDossierEnabled reports whether the empty-dossier sweep runs. Same shape as
+// memContentEnabled: a nil pruner or absent SQL Memory disables it, and
+// export+prune without an export directory is off rather than a silent prune.
+func (s *Sweeper) emptyDossierEnabled() bool {
+	if s.chunkPruner == nil || s.sqlMem == nil {
+		return false
+	}
+	switch s.emptyDossierMode {
+	case "prune":
+		return true
+	case "export+prune":
+		return s.exportDir != ""
+	}
+	return false
+}
+
+// sweepEmptyDossiersOnce removes subject documents left with no facts and nothing
+// pointing at them, across every durable scope.
+//
+// Walks scopes, like the content prune and for the same reason: a dossier lives in
+// whatever scope holds it, including a tenant scope shared by many agents, and an
+// agent-keyed walk would miss exactly the shared entity graph this is about.
+func (s *Sweeper) sweepEmptyDossiersOnce(parent context.Context) (int, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
+	defer cancel()
+
+	scopes, err := s.sqlMem.ListScopes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := s.now().Add(-s.emptyDossierMaxAge).UnixNano()
+
+	total := 0
+	for _, key := range scopes {
+		mscope, ok := memScopeFor(key.Scope)
+		if !ok {
+			continue
+		}
+		// EXPORT FIRST, and from a DRY RUN of the same query — the record has to be on
+		// disk before the rows go, and there is no second chance to read a document
+		// that has been deleted. A failed export skips the scope rather than pruning
+		// it: never delete what we were asked to preserve and could not.
+		if s.emptyDossierMode == "export+prune" && !s.dryRun {
+			n, record, perr := s.chunkPruner.PruneEmptyDossiers(ctx, key, mscope, cutoff, true)
+			if perr != nil {
+				s.logf("retention: empty_dossier: list %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
+				continue
+			}
+			if n > 0 {
+				if werr := s.writeMemExport("empty-dossiers", key.Tenant, key.Scope+"__"+key.ScopeID, record); werr != nil {
+					s.logf("retention: empty_dossier: export %s/%s/%s failed, skipping: %v", key.Tenant, key.Scope, key.ScopeID, werr)
+					continue
+				}
+			}
+		}
+		n, _, perr := s.chunkPruner.PruneEmptyDossiers(ctx, key, mscope, cutoff, s.dryRun)
+		if perr != nil {
+			// One bad scope must not abort the sweep; it is retried next interval.
+			s.logf("retention: empty_dossier: scope %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
 			continue
 		}
 		total += n
@@ -604,6 +713,13 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 			s.logf("retention: mem_content sweep: %v", err)
 		}
 		res.MemContent += n
+	}
+	if s.emptyDossierEnabled() {
+		n, err := s.sweepEmptyDossiersOnce(parent)
+		if err != nil {
+			s.logf("retention: empty_dossier sweep: %v", err)
+		}
+		res.EmptyDossiers += n
 	}
 	if s.defsPurgeEnabled() {
 		s.sweepDefsOnce(parent, &res)

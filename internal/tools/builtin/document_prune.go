@@ -14,6 +14,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -202,4 +203,131 @@ func bodyTenantsFor(sqlTenant string) []string {
 		return []string{"default", ""}
 	}
 	return []string{sqlTenant}
+}
+
+// EmptyDossier names one subject document with nothing left in it. Returned by
+// PruneEmptyDossiers so the caller can export the record before it goes and report
+// what went — an empty dossier IS a record ("this entity was once known"), which is
+// why removing it is opt-in and why what was removed has to be nameable afterwards.
+type EmptyDossier struct {
+	DocumentID  string `json:"document_id"`
+	RootChunkID string `json:"root_chunk_id"`
+	NaturalKey  string `json:"natural_key"`
+	Title       string `json:"title"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+// PruneEmptyDossiers removes subject documents left with no facts and nothing
+// pointing at them, and returns what it removed (or, under dryRun, would).
+//
+// A DOSSIER, not any empty document: the join on chunk_memory_meta is what makes
+// this an entity-tier operation. A document whose root has no sidecar row is
+// ordinary prose someone authored and happened to leave empty, and deleting that
+// because a retention interval elapsed would be a different feature with a
+// different argument.
+//
+// EMPTY IS TESTED TWO WAYS, AND THE SECOND IS THE ONE THAT MATTERS. No child
+// chunks is the obvious half. No INBOUND edges is the half a naive test misses: a
+// relation-fact homed under one of its subjects still points AT the others, so a
+// dossier with no facts of its own can be the thing another fact is about. Deleting
+// it would break the reader contract that makes such a fact reachable from every
+// subject it names.
+//
+// ⚠️ NO CHILD CHUNKS AT ALL, which is stricter than "no LIVE children". A retired
+// child is still a record — `include_retired` exists to read it back — so a dossier
+// holding only retired facts is not empty, it is historical. It becomes eligible
+// naturally once the retired-content prune reaps those children, which is the right
+// order: two independently-gated families, each doing its own job.
+//
+// ⚠️ SCOPE-LOCAL. Inbound references are counted within this scope, because a
+// cross-scope reference is not representable as an edge (per-scope schemas, no
+// scope column on chunk_edges). That is complete TODAY — cross-scope references do
+// not exist yet — and stops being complete the moment natural-key references across
+// scopes land. Whoever builds those owns re-checking this test.
+// The return is (count, record, error) rather than the slice alone so the retention
+// sweeper can consume it without importing this package — it writes the record out
+// and never reads it. Callers that want the detail type-assert to []EmptyDossier.
+func (d *Document) PruneEmptyDossiers(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, cutoff int64, dryRun bool) (int, any, error) {
+	if d.Store == nil || d.SqlMem == nil {
+		return 0, nil, fmt.Errorf("document prune: not configured")
+	}
+	// A scope that never used the entity tier has no sidecar table. Reported as
+	// "nothing to prune" rather than as a fault, and never provisioned here — the
+	// same treatment PruneRetiredChunks gives a scope the sweeper walks past.
+	res, err := d.query(ctx, key, `
+		SELECT d.id, d.root_chunk_id, COALESCE(m.natural_key, ''), d.title, d.updated_at
+		  FROM documents d
+		  JOIN chunk_memory_meta m ON m.chunk_id = d.root_chunk_id
+		 WHERE d.updated_at < ?
+		   AND (SELECT COUNT(*) FROM chunks c
+		         WHERE c.document_id = d.id AND c.id <> d.root_chunk_id) = 0
+		   AND (SELECT COUNT(*) FROM chunk_edges e WHERE e.to_id = d.root_chunk_id) = 0`,
+		cutoff)
+	if err != nil {
+		return 0, nil, nil
+	}
+	out := make([]EmptyDossier, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		if len(r) < 5 {
+			continue
+		}
+		updatedAt, _ := asInt64(r[4])
+		out = append(out, EmptyDossier{
+			DocumentID: asStr(r[0]), RootChunkID: asStr(r[1]),
+			NaturalKey: asStr(r[2]), Title: asStr(r[3]), UpdatedAt: updatedAt,
+		})
+	}
+	if len(out) == 0 || dryRun {
+		return len(out), out, nil
+	}
+
+	removed := make([]EmptyDossier, 0, len(out))
+	for _, dos := range out {
+		// The root chunk goes through the SHARED cascade, so a dossier's removal
+		// reaches the same tables a fact's removal does. Only what the cascade cannot
+		// know about — the document row, its tags, its Path name — is done here.
+		if _, err := d.cascadeDeleteChunks(ctx, key, mscope, []string{dos.RootChunkID}); err != nil {
+			return len(removed), removed, err
+		}
+		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			if err := d.execTxn(ctx, txnID, `DELETE FROM document_tags WHERE document_id = ?`, dos.DocumentID); err != nil {
+				return err
+			}
+			return d.execTxn(ctx, txnID, `DELETE FROM documents WHERE id = ?`, dos.DocumentID)
+		}); err != nil {
+			return len(removed), removed, err
+		}
+		d.deleteDossierDirent(ctx, key, dos.DocumentID)
+		removed = append(removed, dos)
+	}
+	return len(removed), removed, nil
+}
+
+// deleteDossierDirent drops the Path-tree name(s) pointing at a removed dossier.
+//
+// Best-effort, like every other dirent cleanup on a delete path: a dangling name is
+// a cosmetic defect that `ls` shows and a read resolves to nothing, where a failed
+// delete of the document would be the real loss.
+//
+// The tenant comes from the SCOPE KEY and is tried both ways. This runs under the
+// retention sweeper, which carries no RunIdentity, so direntTenant(ctx) — what every
+// in-run path uses — would yield "" and match nothing.
+func (d *Document) deleteDossierDirent(ctx context.Context, key sqlmem.ScopeKey, docID string) {
+	for _, tenant := range bodyTenantsFor(key.Tenant) {
+		rows, err := d.Store.DirentListUnder(ctx, tenant, key.Scope, direntScopeID(key), "/")
+		if err != nil {
+			continue
+		}
+		for _, r := range rows {
+			if r.Kind != "document" {
+				continue
+			}
+			var ref struct {
+				DocumentID string `json:"document_id"`
+			}
+			if json.Unmarshal(r.ResourceRef, &ref) == nil && ref.DocumentID == docID {
+				_, _ = d.Store.DirentDelete(ctx, tenant, key.Scope, direntScopeID(key), r.ParentPath, r.Name)
+			}
+		}
+	}
 }
