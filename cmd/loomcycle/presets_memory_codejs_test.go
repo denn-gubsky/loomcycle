@@ -1215,6 +1215,57 @@ func TestConsolidator_RetirementCarriesTheSurvivor(t *testing.T) {
 	}
 }
 
+// TestConsolidator_UnknownSubjectIsProposedNotJustReported — RFC CV P4.
+//
+// The curator gate refused to mint a tenant entity from a name read in one user's
+// transcript, named the subject in the pass report, and stopped. That was a dead end:
+// an operator had to go and read a pass report to learn a name was waiting, then create
+// the entity by hand. The pass now FILES it, so the ontology's existing approval surface
+// is where the decision happens.
+//
+// THE KEY AND THE PATH TRAVEL WITH THE PROPOSAL, and that is the half worth pinning:
+// slug() and entityKey() exist once, here, and the adopt path mints under exactly what
+// this records. A proposal that carried only the name would force the other side to
+// re-derive the identity across a language boundary, and a divergence there makes one
+// subject into two nodes.
+func TestConsolidator_UnknownSubjectIsProposedNotJustReported(t *testing.T) {
+	f := newFakeToolset()
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: Dave runs the shop.\nassistant: ok"
+	f.factsJSON = `[{"text":"Dave runs the shop.","class":"fact","type":"person","subject":"Dave"}]`
+	// The server's answer when the declaration says "share this" and the tenant does
+	// not know the subject yet. Driven through the fixture's own curator-gate model so
+	// the REASON TEXT the bundle matches on comes from one place.
+	f.unadoptedSubjects = map[string]bool{"Dave": true}
+
+	res := runConsolidator(t, f)
+
+	var proposal map[string]any
+	for _, c := range f.calls {
+		if c.Tool == "Document" && c.Op == "propose_subject" {
+			proposal = c.Input
+		}
+	}
+	if proposal == nil {
+		t.Fatalf("the pass reported the waiting subject and filed nothing; sequence %v", f.ops())
+	}
+	if got, _ := proposal["subject"].(string); got != "Dave" {
+		t.Errorf("proposed subject %q, want Dave", got)
+	}
+	if got, _ := proposal["natural_key"].(string); got != "person:dave" {
+		t.Errorf("natural_key = %q, want person:dave — the proposer owns the identity and "+
+			"the adopt path mints under exactly this", got)
+	}
+	if got, _ := proposal["path"].(string); got != "dave" {
+		t.Errorf("path slug = %q, want dave — without it the adopted entity lands somewhere "+
+			"the next pass will not find it", got)
+	}
+	// Still reported, because a filed proposal an operator has not seen is not progress.
+	if !strings.Contains(res.FinalText, "Dave") {
+		t.Errorf("the pass stopped naming the waiting subject: %q", res.FinalText)
+	}
+}
+
 // TestConsolidator_BusyTargetStopsWithoutReadingOrReleasing. A lease it does not
 // hold is not its to release: releasing would hand the target to a third pass
 // while the real owner is mid-flight.

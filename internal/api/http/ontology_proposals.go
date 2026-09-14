@@ -98,6 +98,25 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// A SUBJECT PROPOSAL ACCEPTS DIFFERENTLY, because accepting it means something
+	// else. A type proposal in force is a type; a subject in force would be a TYPE
+	// NAMED "Dave" — injected into the extractor's prompt, which would start typing
+	// facts as Dave. What accepting a subject means is that the tenant now knows it,
+	// and what reads that is the entity registry, not the type list. So this mints
+	// the entity and removes the suggestion; the minted entity carries the evidence.
+	if action == "accept" {
+		if isSubject, f, evidence := doc.SubjectProposal(dctx, "tenant", chunkID); isSubject {
+			docID, aerr := s.adoptSubjectProposal(dctx, doc, f, evidence, chunkID)
+			if aerr != nil {
+				writeJSONError(w, http.StatusInternalServerError, "adopt_failed", aerr.Error())
+				return
+			}
+			_ = docID
+			s.writeOntologyState(w, r.Context(), tenant)
+			return
+		}
+	}
+
 	newStatus := meminject.OntologyStatusRejected
 	if action == "accept" {
 		newStatus = "" // in force, in place
@@ -258,4 +277,23 @@ func (s *Server) writeOntologyState(w http.ResponseWriter, ctx context.Context, 
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// adoptSubjectProposal mints the tenant entity a subject proposal stands for, then
+// removes the proposal.
+//
+// MINT BEFORE REMOVE, and a failed mint leaves the proposal alone. The reverse order
+// loses the suggestion on any fault and the operator has nothing left to act on —
+// they would have to wait for the consolidator to meet the subject again to get the
+// proposal back.
+func (s *Server) adoptSubjectProposal(dctx context.Context, doc *builtin.Document, f builtin.SubjectProposalFields, evidence, chunkID string) (string, error) {
+	docID, err := doc.AdoptSubjectProposalInScope(dctx, "tenant", f, evidence)
+	if err != nil {
+		return "", err
+	}
+	// Best-effort: the entity exists, which is what the operator asked for. A proposal
+	// left behind is a duplicate suggestion, not a broken adoption, and propose_subject
+	// reports it as already-seen rather than filing it twice.
+	_ = doc.DeleteOntologyChunk(dctx, "tenant", chunkID)
+	return docID, nil
 }

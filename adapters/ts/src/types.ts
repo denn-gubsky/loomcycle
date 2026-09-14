@@ -1678,6 +1678,7 @@ export type DocumentToolInput = {
     | "verification_stats"
     | "remember"
     | "propose_entity"
+    | "propose_subject"
     | "search"
     // Remote document sources (RFC CE).
     | "set_remote"

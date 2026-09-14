@@ -545,6 +545,7 @@ components:
             - set_path
             - create_chunk
             - propose_entity
+            - propose_subject
             - upsert_chunk
             - get_chunk
             - update_chunk
