@@ -322,6 +322,13 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
 		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND coalesce(m.origin, '') = '')"
 	}
+	// Raw turns, dropped unless the caller ASKED for them. The namespace alone is the
+	// whole predicate: a trace is never anything else, so unlike the document class
+	// above there is no provenance to disambiguate.
+	if filter.ExcludeTracePrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeTracePrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
 	prefixCondition += provenanceCondition(filter.Provenance)
 	var observedCond string
 	observedCond, args = observedCondition(filter, args)
@@ -450,6 +457,13 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	if filter.ExcludeDocumentPrefix != "" {
 		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
 		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND coalesce(m.origin, '') = '')"
+	}
+	// Raw turns, dropped unless the caller ASKED for them. The namespace alone is the
+	// whole predicate: a trace is never anything else, so unlike the document class
+	// above there is no provenance to disambiguate.
+	if filter.ExcludeTracePrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeTracePrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)
 	var observedCond string
