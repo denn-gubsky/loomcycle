@@ -388,8 +388,8 @@ jobs:
       - name: Install protoc + plugins
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
           python3 -m venv adapters/python/.venv
           adapters/python/.venv/bin/pip install -q "grpcio-tools==1.81.1"
       - name: Regenerate
@@ -397,12 +397,29 @@ jobs:
           export PATH="$(go env GOPATH)/bin:$PATH"
           make proto
           make python-proto
+      # GENERATOR STAMPS ARE IGNORED, DELIBERATELY. Every generator writes its own
+      # version into the file it produces — `protoc v7.35.1`, `protoc-gen-go
+      # v1.36.12`, the Python runtime-version assertion. Those lines change when
+      # the TOOLCHAIN moves, which is not what this gate is for and not something
+      # a contributor can fix. The gate asks one question: do the committed stubs
+      # reflect the .proto? A stamp-only diff is a NO-OP that would otherwise turn
+      # the job red on every runner image bump, and a gate that cries wolf gets
+      # switched off — which is worse than not having it.
+      #
+      # Everything that encodes the SCHEMA — messages, fields, service methods,
+      # the serialized descriptor — is still compared byte for byte.
       - name: Fail if the committed stubs drifted
         run: |
-          if ! git diff --quiet; then
+          if ! git diff --exit-code --quiet \
+              -I'protoc(-gen-go(-grpc)?)?[ \t]+v?[0-9]' \
+              -I'Protobuf Python Version' \
+              -I'GRPC_GENERATED_VERSION' \
+              -I'^[ \t]*[0-9]+,$' \
+              -- internal/api/grpc/loomcyclepb adapters/python/loomcycle/_generated; then
             echo "::error::Generated stubs do not match proto/loomcycle.proto."
             echo "Run 'make proto' and 'make python-proto', then commit the result."
             git diff --stat
+            git diff | head -60
             exit 1
           fi
 
