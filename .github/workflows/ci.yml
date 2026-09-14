@@ -356,6 +356,56 @@ jobs:
       - run: npm run test
       - run: npm run build
 
+  # The .proto is the source of truth for THREE committed artifacts — the Go
+  # pb/grpc stubs and the Python pb2 pair. Nothing verified they matched it, so
+  # a proto edit that skipped `make proto` / `make python-proto` shipped stale
+  # stubs with a green build: the wire gains a field, every generated client
+  # silently cannot see it. That is the same class of gap as a runtime change
+  # landing without its adapter, one level further down.
+  #
+  # Regenerate and fail on any diff. Cheap (seconds) and it can only fail when
+  # the committed stubs genuinely disagree with the proto.
+  proto-drift:
+    name: Generated stubs match the proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # PINNED, and the pin is the whole reason this gate is usable. The Python
+      # stubs carry the generator's version in a header and a runtime-version
+      # assertion, so regenerating with a different grpcio-tools rewrites those
+      # lines and the diff check fires on toolchain drift rather than on schema
+      # drift. A gate that cries wolf on every generator bump gets disabled.
+      #
+      # 1.81.1 is what the committed stubs were generated with — verified
+      # byte-identical. Bumping it is a DELIBERATE act: change the pin, run
+      # `make python-proto`, and commit the regenerated stubs in the same PR.
+      - name: Install protoc + plugins
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          python3 -m venv adapters/python/.venv
+          adapters/python/.venv/bin/pip install -q "grpcio-tools==1.81.1"
+      - name: Regenerate
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          make proto
+          make python-proto
+      - name: Fail if the committed stubs drifted
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::Generated stubs do not match proto/loomcycle.proto."
+            echo "Run 'make proto' and 'make python-proto', then commit the result."
+            git diff --stat
+            exit 1
+          fi
+
   python-adapter:
     name: Python adapter
     runs-on: ubuntu-latest

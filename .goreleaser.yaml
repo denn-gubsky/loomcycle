@@ -81,7 +81,16 @@ release:
   # Don't overwrite manually-curated release notes if the release
   # was created ahead of time (the v0.8.20 release was; future tags
   # might be too).
-  mode: keep-existing
+  # replace, not keep-existing: a release RE-RUN is exactly what you need after
+  # a credential expiry or an infra blip, and keep-existing made it impossible —
+  # goreleaser re-uploads the same asset names, GitHub answers 422
+  # already_exists, and the run dies at the scm-releases stage BEFORE reaching
+  # the Homebrew formula. Recovering meant deleting every asset by hand, which
+  # briefly leaves a published release with nothing to download. (v1.78.0.)
+  #
+  # The config lives in the TAG, so this only helps from the next tag onward —
+  # a re-run of an older tag still needs the manual delete.
+  mode: replace
 
 # Homebrew formula — generated AND pushed to the tap repo on each
 # tag. `directory: Formula` matches the tap's layout. The token used
