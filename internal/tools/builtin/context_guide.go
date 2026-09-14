@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
 
 // execGuide renders a compact "how to call your tools" digest for THIS run's
@@ -23,10 +24,9 @@ import (
 // Read-only, like every Context op. Filtered by the ctx-attached AgentTools list,
 // exactly as op=tools is, so it reflects THIS run's effective tools.
 func (c *Context) execGuide(ctx context.Context) (tools.Result, error) {
-	allowed := tools.AgentTools(ctx)
-	allowSet := make(map[string]bool, len(allowed))
-	for _, n := range allowed {
-		allowSet[n] = true
+	allowSet, ok := agentToolSet(ctx)
+	if !ok {
+		return okJSON(map[string]any{"tools": []any{}, "count": 0})
 	}
 	type guideEntry struct {
 		Name            string   `json:"name"`
@@ -40,7 +40,7 @@ func (c *Context) execGuide(ctx context.Context) (tools.Result, error) {
 		name := t.Name()
 		// Same floor as op=tools: use the ctx allowlist when present
 		// (production), else show everything (test fixtures).
-		if len(allowSet) > 0 && !allowSet[name] {
+		if !policy.Matches(name, allowSet) {
 			continue
 		}
 		ops, required := parseSchemaDigest(t.InputSchema())

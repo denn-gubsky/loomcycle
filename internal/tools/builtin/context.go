@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
 
 // Context is the v0.8.7 built-in tool that lets an agent introspect
@@ -489,15 +490,12 @@ func (c *Context) execTime(ctx context.Context) (tools.Result, error) {
 // ---- tools ----
 
 func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
-	// The agent's effective tool name list is attached to ctx by
-	// the server at run start (tools.WithAgentTools). Filter c.Tools
-	// against it so the result reflects THIS run's allowlist
-	// (post-narrowing) — c.Tools is the runtime-wide catalog, the
-	// ctx list is the per-run subset.
-	allowed := tools.AgentTools(ctx)
-	allowSet := make(map[string]bool, len(allowed))
-	for _, n := range allowed {
-		allowSet[n] = true
+	// The agent's effective tool name list is attached to ctx by the server at
+	// run start (tools.WithAgentTools). c.Tools is the runtime-wide CATALOG, so
+	// this filter is what keeps an agent's introspection to its own grant.
+	allowSet, ok := agentToolSet(ctx)
+	if !ok {
+		return okJSON(map[string]any{"tools": []any{}, "count": 0})
 	}
 
 	type toolSummary struct {
@@ -529,11 +527,7 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 	out := make([]toolSummary, 0, len(c.Tools))
 	for _, t := range c.Tools {
 		name := t.Name()
-		// When the ctx-attached list is present (production path), use
-		// it as the floor; when absent (test fixtures, unwired test
-		// harnesses) fall back to showing everything in c.Tools so
-		// Context is still useful in unit tests.
-		if len(allowSet) > 0 && !allowSet[name] {
+		if !policy.Matches(name, allowSet) {
 			continue
 		}
 		out = append(out, toolSummary{
@@ -544,6 +538,35 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return okJSON(map[string]any{"tools": out, "count": len(out)})
+}
+
+// agentToolSet returns the caller's effective tool allowlist as a rule set, and
+// whether the runtime attached one at all.
+//
+// WHY ok=false MEANS DISCLOSE NOTHING. c.Tools is the runtime-wide catalog, so
+// every introspection op here is a disclosure decision, and "the list is
+// missing" is a runtime misconfiguration — not a licence to enumerate every
+// tool in the deployment. Inferring "unrestricted" from "unset" is the same
+// mistake a no-op-on-empty policy setter makes, and it fails in the one
+// direction a disclosure filter must not. AgentDef's create takes the same line
+// on the same ctx value: refuse rather than risk silent widening.
+//
+// The rules are matched with policy.Matches — the SAME matcher the exposure
+// layer and the substrate's tool-ceiling checks use — so "*" means unrestricted
+// and "mcp__slack__*" covers that server's tools here exactly as it does there.
+// Reading this list with a plain map lookup, as this file once did, made "*"
+// mean a tool literally named "*" and hid every tool from the operator surfaces
+// that pass it.
+func agentToolSet(ctx context.Context) (map[string]bool, bool) {
+	allowed := tools.AgentTools(ctx)
+	if allowed == nil {
+		return nil, false
+	}
+	set := make(map[string]bool, len(allowed))
+	for _, n := range allowed {
+		set[n] = true
+	}
+	return set, true
 }
 
 // sideEffectClassFor maps the closed-set classifier to a tool name.
@@ -583,16 +606,16 @@ func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, e
 	if in.Name == "" {
 		return errResult("doc: missing required field: name"), nil
 	}
-	allowed := tools.AgentTools(ctx)
-	allowSet := make(map[string]bool, len(allowed))
-	for _, n := range allowed {
-		allowSet[n] = true
+	allowSet, ok := agentToolSet(ctx)
+	if !ok {
+		return errResult("doc: caller's effective tools not on ctx (runtime misconfiguration); " +
+			"refuse rather than describe a tool the caller may not hold"), nil
 	}
 	for _, t := range c.Tools {
 		if t.Name() != in.Name {
 			continue
 		}
-		if len(allowSet) > 0 && !allowSet[in.Name] {
+		if !policy.Matches(in.Name, allowSet) {
 			// Tool exists in the runtime catalog but isn't in THIS
 			// run's effective list. Refuse with a clear message
 			// rather than leaking the docs of a tool the agent

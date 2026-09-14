@@ -439,17 +439,24 @@ func TestContextTool_ToolsSideEffectClass(t *testing.T) {
 	}
 }
 
-func TestContextTool_ToolsWithoutCtxShowsAll(t *testing.T) {
-	// No WithAgentTools attached → fallback shows the full c.Tools
-	// catalog. Useful for unit tests and dev introspection.
+func TestContextTool_ToolsWithoutCtxDisclosesNothing(t *testing.T) {
+	// c.Tools is the runtime-wide CATALOG — the server points the shared Context
+	// tool at its complete tool set. So "no allowlist on ctx" is a runtime
+	// misconfiguration, and the only safe reading of it is "disclose nothing".
+	//
+	// This test asserted the opposite until the disclosure filter was fixed: the
+	// fallback showed the full catalog, which is the wrong direction for a filter
+	// whose entire job is to keep an agent's introspection inside its own grant.
+	// Convenient in a unit test, and a silent enumeration of every tool in the
+	// deployment anywhere the stamp was ever missed.
 	tool := &Context{Tools: []tools.Tool{
 		&fakeTool{NameVal: "Read", DescVal: "x", SchemaVal: `{}`},
 		&fakeTool{NameVal: "Bash", DescVal: "x", SchemaVal: `{}`},
 	}}
 	res, _ := tool.Execute(context.Background(), json.RawMessage(`{"op":"tools"}`))
 	out := decodeResult(t, res.Text)
-	if out["count"].(float64) != 2 {
-		t.Errorf("count = %v, want 2 (no ctx filter)", out["count"])
+	if out["count"].(float64) != 0 {
+		t.Errorf("count = %v, want 0 — an unstamped ctx must not enumerate the catalog", out["count"])
 	}
 }
 
