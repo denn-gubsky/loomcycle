@@ -26,7 +26,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// --- Run lifecycle ---
 		{
 			Name:        "spawn_run",
-			Description: "Spawn an agent run. Blocks until completion; final text + usage returned. When the session opted into runEvents via initialize.capabilities.loomcycle.runEvents=true, intermediate events stream as notifications/loomcycle/run_event during the call. Exactly one of `agent` (fresh run against a registered agent) or `session_id` (continuation of an existing session) must be supplied.",
+			Description: "Run ONE agent to completion and return its final text plus token usage. BLOCKS for the whole run. Supply exactly one of `agent` (a fresh run against a registered agent) or `session_id` (continue an existing session); supplying both, or neither, is refused. Optional per-run `sampling` and `compaction` override the agent's own settings for this run only. When the session opted in via initialize.capabilities.loomcycle.runEvents=true, intermediate events arrive as notifications/loomcycle/run_event while the call is open. Do NOT call it N times in parallel to fan out \u2014 one MCP connection serializes them, so they run one after another; spawn_runs does N concurrently server-side. Do NOT use it to resume a PARKED run awaiting input \u2014 that is a session continuation via `session_id`, not a fresh `agent`. A long run holds the connection for its duration; there is no detached form of this tool.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"properties": {
@@ -56,7 +56,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "spawn_runs",
-			Description: "External fan-out: spawn up to 32 agent runs concurrently in ONE call (server-side, bounded by the per-user admission gate) and block until all settle, returning a combined index-aligned envelope. A per-child failure is captured in that child's result and never fails the batch. Prefer this over firing N parallel spawn_run calls, which serialize over a single MCP connection. Each child is a FRESH run (no session continuation). mode \"detach\" (async run handles) is reserved for a future release and rejected today.",
+			Description: "Run up to 32 agents CONCURRENTLY in one call and block until all of them settle, returning one index-aligned envelope \u2014 result[i] belongs to spawns[i]. Each child is a FRESH run; there is no session continuation here. Concurrency is server-side and still bounded by the per-user admission gate. A child that fails is reported in its own slot and never fails the batch, so always read per-child status rather than assuming success. USE THIS for any fan-out: N parallel spawn_run calls serialize over the single MCP connection and will be slower for no benefit. Do NOT use it to continue sessions, and do NOT pass mode 'detach' \u2014 async handles are reserved for a future release and rejected today. Over 32 spawns is refused rather than truncated.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["spawns"],
@@ -92,7 +92,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "cancel_run",
-			Description: "Cancel a running agent by agent_id. Cascades to sub-agents. Idempotent.",
+			Description: "Stop ONE in-flight run by agent_id, cascading to every sub-agent it spawned. Idempotent \u2014 cancelling a finished or unknown run is not an error. Takes `agent_id`, the handle spawn_run returned. Use it to stop a run that is looping, expensive or no longer wanted. Do NOT use it to stop the whole deployment \u2014 that is pause_runtime, which quiesces new admissions without killing work in flight. Do NOT expect a partial result: cancellation ends the run, it does not return what it had so far; read the transcript separately if you need that. It does not undo side effects the run already committed.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["agent_id"],
@@ -104,7 +104,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "get_run",
-			Description: "Return the latest status snapshot for a tracked agent_id.",
+			Description: "Return the current status of ONE run, by agent_id \u2014 the handle spawn_run returned. Takes `agent_id` (required). Reports status and the run's latest tracked state. Use it to poll a run you hold a handle for. Do NOT use it to browse or search runs you have no handle for \u2014 that is list_runs, which is filtered by user. It returns a status snapshot, not the conversation: for the transcript or the final text, read the run's own surfaces.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["agent_id"],
@@ -113,7 +113,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "compact_run",
-			Description: "Compact a run's conversation: summarize the history to free context and continue from the summary. Targets the run by agent_id (resolved to its run_id). A live run must be PARKED (awaiting input) — a mid-turn run is refused. Returns {compacted, before_tokens, after_tokens, applied}, where applied is \"live\" (pushed to the running loop), \"marker\" (persisted for a terminal run's next continuation), or \"noop\" (too short to compact). Honors the agent's compaction settings (keep_last_n / keep_first / target_percentage / summary model).",
+			Description: "Summarize a run's conversation so it can continue with freed context. Targets a run by `agent_id` (resolved to its run_id). Returns {compacted, before_tokens, after_tokens, applied}, where applied is 'live' (pushed into the running loop), 'marker' (persisted for a terminal run's next continuation) or 'noop' (too short to be worth compacting). Honours the agent's own compaction settings \u2014 keep_last_n, keep_first, target_percentage and the summary model. A LIVE run must be PARKED, awaiting input: a mid-turn run is refused rather than compacted underneath itself, so park it first or wait. Do NOT reach for it to shorten output \u2014 it rewrites the run's own history, not what the run returns to you. 'noop' is a normal answer, not a failure.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["agent_id"],
@@ -172,7 +172,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "list_runs",
-			Description: "Enumerate runs. user_id filter is required in v0.8.15.",
+			Description: "Enumerate a USER's runs, newest first. `user_id` is REQUIRED \u2014 there is no unfiltered listing of everything in the deployment. Optional `status` filters to running / completed / failed / cancelled, and `limit` (1\u2013200) caps the page. Use it to find runs when you do not already hold an agent_id. Do NOT use it to poll one run you already have a handle for \u2014 get_run answers that directly and more cheaply. It returns run metadata, never transcripts or final text.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["user_id"],
@@ -187,7 +187,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// --- Agent management ---
 		{
 			Name:        "register_agent",
-			Description: "Register a dynamic agent at runtime. Survives until TTL expires or unregister_agent is called. Bash/Write/Edit are stripped from tools unless the operator set LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1.",
+			Description: "Define an agent that lives in memory for a TTL \u2014 the quick, disposable way to get an agent running now. Requires `name`, `system_prompt` and `tools`; it survives until the TTL expires or unregister_agent removes it, and it does not outlive the runtime. Bash, Write and Edit are STRIPPED from the tool list unless the operator set LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1, so ask for them and you may silently get an agent without them \u2014 check what came back. Do NOT use it for an agent you want to keep, version, or hand to someone else: that is agentdef, the durable definition plane with create / fork / promote / retire and content hashes. Rule of thumb: register_agent for a scratch agent inside this session, agentdef for anything that should still exist tomorrow.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["name", "system_prompt", "tools"],
@@ -212,7 +212,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "unregister_agent",
-			Description: "Remove a dynamic agent. Cannot unregister static (yaml-defined) agents. Idempotent on missing names.",
+			Description: "Remove a dynamic agent registered with register_agent. Idempotent \u2014 removing an unknown name is not an error. Static agents defined in the operator's yaml CANNOT be removed this way and are refused. Use it to clean up a scratch agent before its TTL expires. Do NOT use it to retire a durable definition \u2014 that is agentdef op=retire, which versions the change instead of dropping it. Runs already in flight are not cancelled by this; use cancel_run for those.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["name"],
@@ -221,7 +221,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "list_agents",
-			Description: "List all agents — static (from yaml) and dynamic (TTL-active rows from dynamic_agents).",
+			Description: "List every agent this deployment can run \u2014 both static ones from the operator's yaml and dynamic ones currently alive under a TTL. No arguments. Use it to discover what `agent` values spawn_run will accept. Do NOT use it to inspect ONE agent's definition \u2014 that is agentdef op=get, which returns the versioned body and its content hash. A dynamic agent disappears from this list when its TTL expires, so a name that worked earlier in a long session may be gone.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"properties": {
@@ -242,12 +242,12 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "channel",
-			Description: "Channel tool ops (publish/subscribe/ack/peek/release/list_channels/await/broadcast). await = multi-channel fan-in barrier (any/all/at_least N or timeout; non-committing); broadcast = symmetric fan-out (one payload → N channels, atomic ACL pre-flight); release = hand over the oldest count (default 1) messages held on a hold: channel. Pass-through.",
+			Description: "Send and receive messages on an operator-declared channel \u2014 loomcycle's durable queue between agents and runs. One tool, all ops: publish, subscribe, peek, ack, release, await, broadcast, list_channels. Every op takes `channel` plus `scope` ('global' or 'user'); `scope_id` is REQUIRED and is the user_id when scope='user'. await is a multi-channel fan-in barrier (any / all / at_least N, or a timeout) and does NOT commit a cursor; broadcast sends one payload to N channels with an atomic permission pre-flight; release hands over the oldest `count` (default 1) messages held on a hold: channel. USE THIS unless you specifically want a single-purpose tool: await, broadcast and release exist ONLY here \u2014 publish_channel / subscribe_channel / peek_channel / ack_channel are narrower twins of four of these ops and nothing more. Do NOT use it to create, edit or purge a channel itself \u2014 that is channeldef. Publishing to a channel the operator never declared is refused; it does not create one.",
 			InputSchema: builtinSchema("channel"),
 		},
 		{
 			Name:        "channeldef",
-			Description: "Channel admin CRUD (create/update/delete/purge) for the channel substrate — the MCP twin of the REST /v1/_channels surface (F20). yaml-declared channels are immutable for create/update/delete (returns channel_yaml_immutable), but purge — which clears buffered messages without touching the definition — is allowed on ANY channel, yaml included.",
+			Description: "Create, update, delete or purge the channel DEFINITION \u2014 the channel substrate's admin CRUD, twin of the REST /v1/_channels surface. Ops: create, update, delete, purge. This is the plane that decides which channels exist and how they behave; it does not move messages. Channels declared in the operator's yaml are IMMUTABLE here: create, update and delete on one return channel_yaml_immutable. `purge` is the exception \u2014 it clears buffered messages without touching the definition, and is allowed on ANY channel including yaml-declared ones. Do NOT use it to publish or read messages: that is `channel`, or the publish/subscribe/peek/ack tools. Note the asymmetry before reaching for it: `purge` DISCARDS buffered messages irreversibly, while `delete` removes a runtime-declared channel entirely.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["op", "name"],
@@ -394,7 +394,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// --- Snapshot (v0.8.17 primitives, exposed via Connector in v0.8.18) ---
 		{
 			Name:        "create_snapshot",
-			Description: "Capture running-state into a per-section-semver JSON envelope (agent_defs, agent_def_active, memory, channels, evaluations, paused_runs, optional interaction_history). Returns a SnapshotDescriptor; the envelope is persisted in the snapshots table and retrievable via get_snapshot / export_snapshot.",
+			Description: "Capture the runtime's state into one versioned JSON envelope: agent definitions and which version is active, memory, channels, evaluations, paused runs, and optionally interaction history. Takes the optional section toggles; returns a descriptor (id, created_at, section versions), NOT the envelope itself \u2014 fetch that with get_snapshot or export_snapshot. ADMIN ONLY: snapshots span every tenant, so there is no confined form of this tool and a tenant or user token will not see it. Use it before a risky migration or to move state to another instance. Do NOT treat it as a backup of everything: per-run secrets and call-time overrides are deliberately excluded and are re-derived from the agent definition on restore. It captures state, not traffic \u2014 a run in flight is captured only if it is PARKED.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"properties": {
@@ -407,12 +407,12 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "list_snapshots",
-			Description: "List captured snapshots (most-recent first, capped at 200). Returns metadata only; use get_snapshot / export_snapshot to fetch the JSON envelope.",
+			Description: "List captured snapshots, most recent first, capped at 200. Returns metadata only \u2014 id, timestamps, section versions \u2014 never envelope content. ADMIN ONLY: snapshots span every tenant, so there is no confined form of this tool and a tenant or user token will not see it. Use it to find the id you want. Do NOT use it to inspect what a snapshot CONTAINS: fetch the envelope with get_snapshot, or the raw bytes with export_snapshot. There is no paging past 200; older snapshots are only reachable by id.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
 			Name:        "get_snapshot",
-			Description: "Return the full snapshot envelope including JSON content (v0.8.18+). Distinct from export_snapshot, which is operator-facing 'where did this land on the host' semantics. Returns 404-equivalent error when no snapshot matches.",
+			Description: "Fetch ONE snapshot envelope, including its full JSON content, by id. ADMIN ONLY: snapshots span every tenant, so there is no confined form of this tool and a tenant or user token will not see it. Use this when you or an agent needs to READ what a snapshot holds \u2014 inspect it, diff it, decide whether to restore it. Do NOT confuse it with export_snapshot, which returns the same envelope as canonical BYTES for writing to a file or piping to another instance; get_snapshot is the one to parse, export_snapshot is the one to move. An unknown id is an error, not an empty result.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["snapshot_id"],
@@ -421,7 +421,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "export_snapshot",
-			Description: "Return the canonical envelope bytes for a snapshot id. Transports that stream large exports (HTTP /v1/_snapshots/{id}/export) write raw_json directly to the response body. Returns 404-equivalent error when no snapshot matches.",
+			Description: "Return a snapshot's canonical envelope BYTES for one id \u2014 the exact serialization to hand to another instance. ADMIN ONLY: snapshots span every tenant, so there is no confined form of this tool and a tenant or user token will not see it. Use this to move state between deployments: export here, then restore_snapshot with the bytes as raw_json there. Do NOT use it when you want to read or reason about the contents \u2014 get_snapshot returns the same envelope as parsed JSON. Over HTTP the equivalent route streams the body directly, so very large exports need not pass through a tool result. An unknown id is an error, not an empty result.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["snapshot_id"],
@@ -430,7 +430,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "restore_snapshot",
-			Description: "Restore from a same-instance snapshot_id OR cross-instance raw_json. Idempotent: ON CONFLICT DO NOTHING per row. Counters reflect rows actually written. paused_runs reference session_ids; restore synthesizes a session row when needed (counted as synthesized_sessions). 422-equivalent error on snapshot version newer than reader supports.",
+			Description: "Write a snapshot's state back into this runtime, from a local `snapshot_id` OR from cross-instance `raw_json` bytes. ADMIN ONLY: snapshots span every tenant, so there is no confined form of this tool and a tenant or user token will not see it. Idempotent per row (existing rows are left alone), and the returned counters report what was ACTUALLY written, not what was in the envelope \u2014 a second restore of the same snapshot legitimately reports zeros. Paused runs reference sessions, so a missing session row is synthesized and counted separately as synthesized_sessions. Use snapshot_id for same-instance rollback and raw_json for a migration from another deployment. Do NOT expect it to remove anything: it only adds and fills gaps, so restoring an older snapshot does NOT roll back rows created since. An envelope whose section version is newer than this runtime understands is refused rather than partially applied.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"oneOf": [
@@ -446,7 +446,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "delete_snapshot",
-			Description: "Delete a snapshot. Idempotent — succeeds whether or not the row existed (mirrors HTTP DELETE /v1/_snapshots/{id} = 204).",
+			Description: "Delete one snapshot by id. Idempotent \u2014 it succeeds whether or not the row existed, so a repeat call is not an error. ADMIN ONLY: snapshots span every tenant, so there is no confined form of this tool and a tenant or user token will not see it. Use it to prune old captures. Do NOT expect it to touch runtime state: it removes the stored envelope only, and anything already restored from it stays exactly as it is. There is no undo, and no separate archive \u2014 export_snapshot first if the bytes still matter.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["snapshot_id"],
@@ -505,7 +505,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// v0.9.x n8n RFC Phase 0 — channel listing + run-state streaming.
 		{
 			Name:        "list_channels",
-			Description: "List every operator-declared channel with aggregate runtime stats (message_count, oldest_visible_at, newest_visible_at). Mirrors GET /v1/_channels. No arguments.",
+			Description: "List every operator-declared channel with aggregate traffic stats across ALL scopes \u2014 message_count, oldest_visible_at, newest_visible_at. No arguments. ADMIN ONLY: it aggregates over every user's scope, so it has no tenant-confined form and a tenant or user token will not see this tool at all. Use it to answer \"what channels exist and is anything backing up\". Do NOT use it to read messages \u2014 it returns counts and timestamps, never payloads; use subscribe_channel or peek_channel for those. If you hold a tenant token, use `channel` op=list_channels instead: same listing, confined to what you may see.",
 			InputSchema: rawJSON(`{"type": "object"}`),
 		},
 		{
@@ -529,7 +529,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// the cursor namespace.
 		{
 			Name:        "publish_channel",
-			Description: "Publish a message to an operator-declared channel. scope is 'global' (admin surface) or 'user' (per-user). When scope is 'user', scope_id is REQUIRED and must be the user_id; when scope is 'global', scope_id is ignored. payload is the JSON object/array/value to deliver. deliver_at (RFC3339Nano) defers the publish; subscribers wake at visible_at. Returns {msg_id, channel, created_at, visible_at?}.",
+			Description: "Put ONE message on an operator-declared channel. Takes `channel`, `scope` ('global' or 'user'), `scope_id` (REQUIRED when scope='user', ignored when 'global'), `payload` (any JSON value), and optional `deliver_at` (RFC3339Nano) to defer delivery \u2014 subscribers wake at visible_at, not before. Returns {msg_id, channel, created_at, visible_at?}. This is the single-op twin of `channel` op=publish; use whichever fits, but reach for `channel` if you also need await, broadcast or release, which exist only there. Do NOT use it to send one payload to SEVERAL channels \u2014 that is `channel` op=broadcast, which pre-flights permissions across all of them atomically instead of leaving you half-published. The channel must already be declared by the operator; publishing to an unknown name is refused rather than creating it.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope", "payload"],
@@ -544,7 +544,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "subscribe_channel",
-			Description: "Read the next batch of messages from a channel. Single-round-trip long-poll: returns immediately if messages are present, otherwise waits up to wait_ms (capped at operator's ChannelsLongPollCapMS). Auto-commits the cursor on non-empty batch (at-most-once shape). scope is 'global' or 'user'; scope_id is REQUIRED when scope=user. Returns {channel, messages: [{id, value, published_at}...], next_cursor}.",
+			Description: "Read the next batch of messages and COMMIT the cursor in one step \u2014 at-most-once delivery. Takes `channel`, `scope`, `scope_id` (REQUIRED when scope='user') and optional `wait_ms`: it returns immediately when messages are waiting, otherwise long-polls up to wait_ms (capped by the operator's limit). Returns {channel, messages:[{id, value, published_at}...], next_cursor}. The cursor advances as soon as the batch is returned, so a message you fail to process is GONE \u2014 this is the right choice when losing one is cheaper than handling it twice. Do NOT use it when processing must survive a crash: use peek_channel to read, do the durable work, then ack_channel to commit \u2014 that is at-least-once, and the pair exists for exactly this. An empty batch after wait_ms is a normal result, not an error.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope"],
@@ -560,7 +560,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "peek_channel",
-			Description: "Non-destructive read — never advances the committed cursor. Useful for at-least-once processing patterns (peek + explicit ack after durable processing). scope is 'global' or 'user'; scope_id is REQUIRED when scope=user. Returns {channel, messages: [...]}.",
+			Description: "Read messages WITHOUT committing the cursor \u2014 the read half of at-least-once processing. Takes `channel`, `scope`, `scope_id` (REQUIRED when scope='user'). Returns {channel, messages:[...]}. Nothing is consumed: the same messages come back on the next peek until you advance the cursor with ack_channel. USE THIS with ack_channel when a message must not be lost \u2014 peek, do the durable work, then ack. Do NOT use it alone as a polling loop: without an ack you will re-read the same messages forever. Do NOT use it when at-most-once is fine \u2014 subscribe_channel does the read and the commit in one round trip.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope"],
@@ -575,7 +575,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "ack_channel",
-			Description: "Advance the committed cursor for a (channel, scope, scope_id) tuple. Cursor must be monotonically forward — older cursors return a channel_cursor_regression error. scope is 'global' or 'user'; scope_id is REQUIRED when scope=user. Returns {ok: true}.",
+			Description: "Commit the cursor for a (channel, scope, scope_id) tuple \u2014 the second half of at-least-once processing. Takes `channel`, `scope`, `scope_id` (REQUIRED when scope='user') and the `cursor` you are acknowledging. Returns {ok: true}. Cursors move FORWARD only: an older cursor is refused with channel_cursor_regression rather than silently rewinding, so a late ack cannot replay messages someone else has moved past. USE THIS after peek_channel, once the work is durable. Do NOT use it after subscribe_channel \u2014 that already committed. There is no un-ack: to re-process a message, republish it.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["channel", "scope", "cursor"],
