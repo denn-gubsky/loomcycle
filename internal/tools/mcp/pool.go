@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -425,7 +426,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		lcotel.SetSpanErrorMessage(span, "mcp tool returned isError=true")
 	}
 	return tools.Result{
-		Text:    JoinTextContent(res),
+		Text:    withUpstreamStructured(JoinTextContent(res), res.StructuredContent),
 		IsError: res.IsError,
 	}, nil
 }
@@ -437,4 +438,30 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 // we mirror that. Nothing to sanitise; helper is a no-op stub for now.
 func sanitiseServerName(name string) string {
 	return strings.ReplaceAll(name, " ", "_")
+}
+
+// withUpstreamStructured appends a peer server's structuredContent to the text
+// the model sees. Until now it was dropped at decode, so a server that told us
+// "transient, retryable, wait 5s" reached the model as the bare sentence
+// "Service temporarily unavailable".
+//
+// It is surfaced as ATTRIBUTED DATA and nothing else. The categories in it are
+// the peer's claim, not this runtime's finding, so they are never parsed into
+// a tools.ErrorInfo and never drive a loomcycle-side decision — a mounted
+// server must not be able to talk this runtime into retrying by labelling its
+// own failures transient.
+func withUpstreamStructured(text string, structured json.RawMessage) string {
+	if len(structured) == 0 {
+		return text
+	}
+	// Compact it so a pretty-printed payload does not spend the model's
+	// context on indentation.
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, structured); err != nil {
+		return text // malformed: keep the text rather than forward garbage
+	}
+	if text == "" {
+		return "server-reported details: " + buf.String()
+	}
+	return text + "\n\nserver-reported details: " + buf.String()
 }
