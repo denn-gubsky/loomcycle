@@ -159,7 +159,15 @@ func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey
 	if slug == "" {
 		return "", fmt.Errorf("the proposal records no path for the subject")
 	}
-	body := "Adopted from a proposal filed by the memory consolidator.\n\n" + evidence
+	// THE BODY CARRIES THE CONSEQUENCE, because the consequence is otherwise invisible.
+	// Adoption shares this subject from now ON; it does not reach back for the facts
+	// already learned about it, which stay in the scope that learned them. So a tenant
+	// dossier adopted today can sit empty next to a user scope that knows plenty, and
+	// the only place anyone would look to understand that is here.
+	body := "Adopted from a proposal filed by the memory consolidator.\n\n" +
+		"Facts learned about this subject BEFORE adoption stay in the scope that learned " +
+		"them — adoption shares what is learned from now on, and never republishes " +
+		"someone's history as a side effect of an operator accepting a name.\n\n" + evidence
 	res, err := d.createDocument(ctx, key, mscope, docInput{
 		Scope: "tenant", Title: f.Subject, Path: "/facts/" + slug,
 		Type: f.EntityType, Subject: f.Subject, NaturalKey: f.NaturalKey, Body: body,
@@ -171,9 +179,17 @@ func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey
 		return "", fmt.Errorf("%s", res.Text)
 	}
 	var out struct {
-		DocumentID string `json:"document_id"`
+		DocumentID  string `json:"document_id"`
+		RootChunkID string `json:"root_chunk_id"`
 	}
 	_ = json.Unmarshal([]byte(res.Text), &out)
+	// create_document writes an EMPTY root body and ignores the one it was given, so the
+	// note has to be written onto the root afterwards. Best-effort: the entity existing
+	// is what the operator asked for, and a dossier with no explanatory note is worse
+	// documentation, not a failed adoption.
+	if out.RootChunkID != "" {
+		_ = d.writeBody(ctx, mscope, key, out.RootChunkID, f.EntityType, body, nil)
+	}
 	return out.DocumentID, nil
 }
 
