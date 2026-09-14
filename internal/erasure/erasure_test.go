@@ -261,3 +261,43 @@ func TestService_SQLScopeLookupIsTenantScoped(t *testing.T) {
 		t.Error("globex's SQL Memory scope was destroyed by acme's erasure")
 	}
 }
+
+// TestService_ErasureReachesIndexedTurns — RFC CI §6, the first admission criterion.
+//
+// Indexing raw turns copies personal data into a SECOND place. An index that survived
+// a deletion request would be the worst outcome available to this feature: the
+// transcript is gone, the facts are gone, and the person's own words are still
+// searchable. So this is an admission criterion rather than a follow-up.
+//
+// It holds BY CONSTRUCTION rather than by enumeration, and that is why it needs a
+// test: a trace row lives in the speaker's own user scope, and tier 1 deletes that
+// whole scope. Nothing in the erasure code mentions traces, so nothing in the erasure
+// code will remind anyone that moving the index elsewhere — a shared scope, a
+// dedicated keyspace, a second table — silently breaks this.
+func TestService_ErasureReachesIndexedTurns(t *testing.T) {
+	svc := newSvc(t)
+	ctx := context.Background()
+	const tenant, subject = "acme", "u1"
+	seed(t, svc, tenant, subject)
+
+	traceKey := store.TraceTurnKeyPrefix + "sess-a:1700000000000000000"
+	if err := svc.Store.MemorySet(ctx, tenant, store.MemoryScopeUser, subject, traceKey,
+		json.RawMessage(`{"text":"my card is 4111 1111 1111 1111","speaker":"user"}`), 0); err != nil {
+		t.Fatalf("seed trace row: %v", err)
+	}
+	// Establish the premise: asserting a row is gone proves nothing if it was never there.
+	if _, err := svc.Store.MemoryGet(ctx, tenant, store.MemoryScopeUser, subject, traceKey); err != nil {
+		t.Fatalf("the seeded trace row is not readable: %v", err)
+	}
+
+	if _, err := svc.Execute(ctx, erasure.ExecuteRequest{
+		Tenant: tenant, Subject: subject, Confirm: subject,
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if _, err := svc.Store.MemoryGet(ctx, tenant, store.MemoryScopeUser, subject, traceKey); err == nil {
+		t.Error("the subject's indexed turns survived their own erasure — their words stay " +
+			"searchable after the transcript and the facts are gone")
+	}
+}

@@ -283,7 +283,7 @@ const memoryInputSchema = `{
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
     "items":      {"type": "array", "items": {"type": "object", "properties": {"type": {"type": "string"}, "subject": {"type": "string"}}, "required": ["type","subject"]}, "description": "placement: the {type, subject} pairs you are about to store. Ask once for the whole batch — one ontology read serves all of them."},
-    "sources":    {"type": "array", "items": {"type": "string", "enum": ["facts","notes","documents"]}, "description": "search / recall: which kinds of remembered thing to return. \"facts\" = memory a consolidator distilled; \"notes\" = memory an agent wrote directly; \"documents\" = Document chunk bodies, which share the memory keyspace. recall defaults to facts+notes (document prose is not something you were told); search defaults to everything. Each result carries a matching \"kind\". Mixing documents with only ONE of facts/notes is refused — use [facts], [notes], [facts,notes], [documents], or all three. Use this instead of guessing key prefixes."},
+    "sources":    {"type": "array", "items": {"type": "string", "enum": ["facts","notes","documents","traces"]}, "description": "search / recall: which kinds of remembered thing to return. \"facts\" = memory a consolidator distilled; \"notes\" = memory an agent wrote directly; \"documents\" = Document chunk bodies, which share the memory keyspace; \"traces\" = raw conversation turns the rest were derived FROM, for when you need what was actually SAID rather than what is known. recall defaults to facts+notes (document prose is not something you were told); search defaults to everything EXCEPT traces. Each result carries a matching \"kind\". Traces must be asked for ALONE — they answer a different question and a combined query ranks a turn against the fact extracted from it. Mixing documents with only ONE of facts/notes is refused — use [facts], [notes], [facts,notes], [documents], [traces], or the first three together. Use this instead of guessing key prefixes."},
     "limit":      {"type": "integer", "description": "list: max entries returned (default 100). bounded_list: keep the N most recent items (required, >= 1). cursor_scan: max chats returned in one page (default 10, max 50)."},
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
@@ -1194,6 +1194,12 @@ func parseSources(in []string) []memrank.Source {
 			// answered `recall sources=["notes"]` with zero rows while
 			// `search sources=["notes"]` returned three.
 			out = append(out, memrank.SourceNotes)
+		case memrank.SourceTraces:
+			// Added with the class. The guard that caught it missing is the same one
+			// that caught `notes` — a schema-advertised value silently dropped turns an
+			// explicit selector into no selector, which on `search` widens to
+			// everything and looks like it worked.
+			out = append(out, memrank.SourceTraces)
 		case memrank.SourceDocuments:
 			out = append(out, memrank.SourceDocuments)
 		}
@@ -1273,6 +1279,19 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errResult(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
+	}
+	// THE TRACE NAMESPACE IS SERVER-ONLY. A row's class decides whether it reaches an
+	// unfiltered search and whether erasure has to find it, so an agent must not be
+	// able to elect its own writes into a class with different retrieval semantics —
+	// a `trace.turn:` key from a tool call would be hidden from every default search
+	// by the very exclusion that makes the class safe.
+	//
+	// Refused rather than silently re-prefixed: a write that lands somewhere other
+	// than where the caller asked is worse than one that does not land.
+	if strings.HasPrefix(in.Key, store.TraceTurnKeyPrefix) {
+		return errResult("set: the " + store.TraceTurnKeyPrefix + " namespace is written by the " +
+			"server when it indexes a conversation turn, and cannot be written through this tool — " +
+			"use an ordinary key"), nil
 	}
 	// RFC BL P1: a write to a reserved `core/<label>` key is gated by the
 	// agent's core-block config — read_only refuses the write entirely,

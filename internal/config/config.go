@@ -3202,6 +3202,23 @@ type Env struct {
 	// retired before Now()-this is eligible. Env:
 	// LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS.
 	RetentionMemContentMaxAge time.Duration
+	// MemoryTraceIndexEnabled turns on the RFC CI trace index: each USER turn is
+	// stored and embedded so conversations are searchable by what was said, not only
+	// by their auto-generated title. Env: LOOMCYCLE_MEMORY_TRACE_INDEX (default OFF).
+	//
+	// OFF BY DEFAULT because it changes posture, not just behaviour: indexing raw
+	// turns copies personal data into a second place. Assistant turns are NOT indexed
+	// at any setting — they are the bulk of the volume and the most redundant with the
+	// fact layer, since a fact distilled from a reply is already searchable.
+	MemoryTraceIndexEnabled bool
+	// MemoryTraceMaxAge is how long an indexed turn stays searchable. Env:
+	// LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS. Zero uses the 30-day default.
+	//
+	// Implemented as the row's TTL rather than as a retention family, so the window is
+	// enforced at READ (an expired row is missing before any sweeper runs), swept by
+	// the existing MemorySweep, and its embedding cascades on that delete. The
+	// transcript itself is untouched and stays complete behind the window.
+	MemoryTraceMaxAge time.Duration
 	// RetentionEmptyDossierMode sweeps subject documents left with no facts and
 	// nothing pointing at them: "off" (default), "prune", or "export+prune".
 	// Independent of every other retention family. Env:
@@ -4284,6 +4301,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.RetentionMemContentMaxAge = time.Duration(n) * time.Millisecond
+		}
+	}
+	// RFC CI trace index (opt-in; default OFF).
+	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_INDEX"); v != "" {
+		cfg.Env.MemoryTraceIndexEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.MemoryTraceMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
 	// RFC CX-5 empty-dossier sweep (opt-in; default OFF).
