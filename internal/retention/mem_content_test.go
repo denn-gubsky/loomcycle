@@ -16,6 +16,9 @@ type fakePruner struct {
 	cutoffs []int64
 	dry     []bool
 	n       int
+
+	scopeCalls []sqlmem.ScopeKey // PruneScopeChunks, the whole-scope reclaim
+	scopeDry   []bool
 }
 
 func (f *fakePruner) PruneRetiredChunks(_ context.Context, key sqlmem.ScopeKey, ms store.MemoryScope, cutoff int64, dryRun bool) (int, error) {
@@ -23,6 +26,16 @@ func (f *fakePruner) PruneRetiredChunks(_ context.Context, key sqlmem.ScopeKey, 
 	f.scopes = append(f.scopes, ms)
 	f.cutoffs = append(f.cutoffs, cutoff)
 	f.dry = append(f.dry, dryRun)
+	return f.n, nil
+}
+
+// scopeCalls records the whole-scope reclaim separately from the content prune.
+// The two share an interface and nothing else: one is age-gated and exempts
+// evidential content, the other empties a dead agent's scope outright, and a test
+// that pooled them could not tell which had fired.
+func (f *fakePruner) PruneScopeChunks(_ context.Context, key sqlmem.ScopeKey, ms store.MemoryScope, dryRun bool) (int, error) {
+	f.scopeCalls = append(f.scopeCalls, key)
+	f.scopeDry = append(f.scopeDry, dryRun)
 	return f.n, nil
 }
 

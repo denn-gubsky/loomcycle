@@ -3,6 +3,8 @@ package builtin
 import (
 	"context"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // pruneFixture builds a document with three chunks: one live, one retired, one
@@ -164,5 +166,132 @@ func TestPruneRetiredChunks_LeavesNoOrphans(t *testing.T) {
 	}
 	if n := scanCount(res.Rows); n != 0 {
 		t.Errorf("%d edge(s) still reference the pruned chunk", n)
+	}
+}
+
+// TestPruneChunks_CascadeMatchesDeleteChunk — RFC CX-3.
+//
+// This file's header states the rule: "A prune that reimplemented the delete would
+// drift from delete_chunk, and the drift would show up as orphaned edges or a body
+// left behind — invisible, because nothing reads an orphan." It had drifted. Three
+// tables were added to delete_chunk and never here, and one of them is
+// `chunk_revisions`, whose `body` column holds the chunk's text — so a prune removed
+// the fact and kept its words in a table no read path consults.
+//
+// The assertion is per-TABLE rather than "the chunk is gone", because the chunk row
+// disappearing is exactly what the drift already did.
+func TestPruneChunks_CascadeMatchesDeleteChunk(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	doc := newEntityDoc(t, d, ctx)
+	key := sidecarScope(t, d, ctx)
+
+	out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+doc+`",
+		"natural_key":"memory/fact/doomed","title":"Doomed","body":"The original wording.",
+		"type":"fact","subject":"Dave","tags":["area/one"]}`)
+	if r.IsError {
+		t.Fatalf("upsert_chunk: %s", r.Text)
+	}
+	id := asStr(out["id"])
+	// A second write makes a revision-log row: the log is append-only per body change.
+	if _, r = docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+doc+`",
+		"natural_key":"memory/fact/doomed","body":"A corrected wording."}`); r.IsError {
+		t.Fatalf("re-upsert: %s", r.Text)
+	}
+	// Retire it so the prune is eligible to take it.
+	if err := d.exec(ctx, key,
+		`UPDATE chunk_memory_meta SET expired_at = ? WHERE chunk_id = ?`, 1000, id); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+
+	for _, tbl := range []string{"chunk_tags", "chunk_revisions"} {
+		if n := chunkRowsIn(t, d, ctx, tbl, id); n == 0 {
+			t.Fatalf("%s has no row for the chunk before the prune — the test cannot prove "+
+				"the cascade reaches a table that was already empty", tbl)
+		}
+	}
+
+	if _, err := d.PruneRetiredChunks(ctx, key, store.MemoryScopeUser, 1<<62, false); err != nil {
+		t.Fatalf("PruneRetiredChunks: %v", err)
+	}
+
+	for _, tbl := range []string{"chunks", "chunk_edges", "chunk_memory_meta",
+		"chunk_tags", "chunk_revisions", "chunk_layout"} {
+		if n := chunkRowsIn(t, d, ctx, tbl, id); n != 0 {
+			t.Errorf("%s still holds %d row(s) for the pruned chunk — an orphan nothing reads "+
+				"and nothing reaps", tbl, n)
+		}
+	}
+}
+
+// TestPruneScopeChunks_EmptiesTheScopeIncludingBodies — the whole-scope reclaim's
+// half. It takes every chunk regardless of age or class: the agent is gone, so
+// there is nothing left for an evidential exemption to protect.
+func TestPruneScopeChunks_EmptiesTheScopeIncludingBodies(t *testing.T) {
+	d, ctx, st := documentFixture(t)
+	doc := newEntityDoc(t, d, ctx)
+	key := sidecarScope(t, d, ctx)
+
+	out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+doc+`",
+		"natural_key":"memory/fact/live","title":"Live","body":"Never retired.",
+		"type":"fact","subject":"Dave","class":"evidential"}`)
+	if r.IsError {
+		t.Fatalf("upsert_chunk: %s", r.Text)
+	}
+	id := asStr(out["id"])
+
+	n, err := d.PruneScopeChunks(ctx, key, store.MemoryScopeUser, false)
+	if err != nil {
+		t.Fatalf("PruneScopeChunks: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("PruneScopeChunks pruned nothing — a live, evidential chunk must still go " +
+			"when the scope itself is being reclaimed")
+	}
+	if c := chunkRowsIn(t, d, ctx, "chunks", id); c != 0 {
+		t.Errorf("the chunk row survived a whole-scope prune")
+	}
+	if _, err := st.MemoryGet(ctx, direntTenant(ctx), store.MemoryScopeUser, key.ScopeID,
+		chunkBodyKey(id)); err == nil {
+		t.Errorf("the chunk BODY survived — it is the half a scope drop cannot reach, " +
+			"which is the whole reason this method exists")
+	}
+}
+
+// TestPruneScopeChunks_DryRunCountsWithoutDeleting.
+func TestPruneScopeChunks_DryRunCountsWithoutDeleting(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	doc := newEntityDoc(t, d, ctx)
+	key := sidecarScope(t, d, ctx)
+	out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+doc+`",
+		"natural_key":"memory/fact/x","title":"X","body":"Text.","type":"fact","subject":"Dave"}`)
+	if r.IsError {
+		t.Fatalf("upsert_chunk: %s", r.Text)
+	}
+	id := asStr(out["id"])
+	n, err := d.PruneScopeChunks(ctx, key, store.MemoryScopeUser, true)
+	if err != nil {
+		t.Fatalf("PruneScopeChunks dry run: %v", err)
+	}
+	if n == 0 {
+		t.Error("dry run reported nothing to prune")
+	}
+	if c := chunkRowsIn(t, d, ctx, "chunks", id); c == 0 {
+		t.Error("the dry run deleted the chunk")
+	}
+}
+
+// chunkRowsIn counts a chunk's rows in one cascade table. The edge table is keyed
+// on both endpoints, and `chunks` on `id`, so the column varies by table — which is
+// precisely the per-table detail a drift test has to get right.
+func chunkRowsIn(t *testing.T, d *Document, ctx context.Context, table, chunkID string) int {
+	t.Helper()
+	switch table {
+	case "chunks":
+		return countRows(t, d, ctx, `SELECT COUNT(*) FROM chunks WHERE id = ?`, chunkID)
+	case "chunk_edges":
+		return countRows(t, d, ctx,
+			`SELECT COUNT(*) FROM chunk_edges WHERE from_id = ? OR to_id = ?`, chunkID, chunkID)
+	default:
+		return countRows(t, d, ctx, `SELECT COUNT(*) FROM `+table+` WHERE chunk_id = ?`, chunkID)
 	}
 }

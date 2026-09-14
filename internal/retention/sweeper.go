@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -65,6 +66,10 @@ import (
 // nil disables the family, so a deployment that wires no Document tool is unaffected.
 type ChunkPruner interface {
 	PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, cutoff int64, dryRun bool) (int, error)
+	// PruneScopeChunks removes EVERY chunk in one scope, bodies included. The
+	// whole-scope reclaim needs it because dropping a SQL-Memory scope destroys the
+	// chunk ids that are the only route to the bodies in the k/v plane.
+	PruneScopeChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, dryRun bool) (int, error)
 }
 
 type SQLMemory interface {
@@ -947,6 +952,31 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 				s.logf("retention: export sqlmem scope %s/%s failed, skipping agent: %v", tenant, name, err)
 				return false
 			}
+			// The scope dump carries the chunks and their sidecar; it does NOT carry the
+			// bodies, which live in the k/v plane. Exported separately so export+prune
+			// keeps meaning what it says for the half about to be deleted here.
+			if err := s.exportChunkBodies(ctx, tenant, name); err != nil {
+				s.logf("retention: export chunk bodies %s/%s failed, skipping agent: %v", tenant, name, err)
+				return false
+			}
+		}
+		// THE BODIES GO BEFORE THE STRUCTURE, and the order is the point.
+		//
+		// Dropping the SQL-Memory scope removes the chunks — and with them the only
+		// route from this scope to its `doc.chunk:<hex>` rows in the k/v plane. Those
+		// rows were left behind whenever the base-memory pass did not also fire, which
+		// is any agent retired in this tenant and still live in another: the
+		// globally-dead gate that guards raw memory is not the gate that guards a
+		// chunk body, and a body with no chunk is unreachable and unreapable.
+		//
+		// A failure here SKIPS the drop rather than proceeding: leaving both halves in
+		// place is recoverable on the next sweep, whereas dropping the structure after
+		// failing to remove the bodies is the exact leak this closes.
+		if s.chunkPruner != nil {
+			if _, err := s.chunkPruner.PruneScopeChunks(ctx, key, store.MemoryScopeAgent, false); err != nil {
+				s.logf("retention: prune chunk bodies %s/%s failed, skipping agent: %v", tenant, name, err)
+				return false
+			}
 		}
 		removed, err := s.sqlMem.DropScope(ctx, key)
 		if err != nil {
@@ -1028,6 +1058,28 @@ func (s *Sweeper) exportSQLMemScope(ctx context.Context, tenant, name string, ke
 		return err
 	}
 	return s.writeMemExport("sqlmem", tenant, name, dump)
+}
+
+// exportChunkBodies dumps one agent scope's chunk BODY rows before they are
+// deleted with their structure. Separate from exportBaseMemory, which runs in the
+// globally-dead base-memory pass and covers the whole k/v partition: this pass is
+// tenant-qualified and removes only the bodies, so it exports only the bodies.
+//
+// Truncation is an ERROR, never a partial export — the same rule exportBaseMemory
+// applies, and for the same reason: never delete more than was exported.
+func (s *Sweeper) exportChunkBodies(ctx context.Context, tenant, name string) error {
+	entries, truncated, err := s.store.MemoryList(ctx, tenant, store.MemoryScopeAgent, name,
+		memory.DocumentChunkKeyPrefix, memExportKeyCap)
+	if err != nil {
+		return err
+	}
+	if truncated {
+		return fmt.Errorf("agent %q (tenant %q) chunk bodies exceed the %d-key export cap — refusing to delete more than exported", name, tenant, memExportKeyCap)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.writeMemExport("chunk-bodies", tenant, name, entries)
 }
 
 // exportDirents dumps one agent scope's dirents (Path names) before they are
