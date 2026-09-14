@@ -19,6 +19,11 @@ type fakePruner struct {
 
 	scopeCalls []sqlmem.ScopeKey // PruneScopeChunks, the whole-scope reclaim
 	scopeDry   []bool
+
+	dossierCalls   []sqlmem.ScopeKey // PruneEmptyDossiers
+	dossierCutoffs []int64
+	dossierDry     []bool
+	dossierN       int
 }
 
 func (f *fakePruner) PruneRetiredChunks(_ context.Context, key sqlmem.ScopeKey, ms store.MemoryScope, cutoff int64, dryRun bool) (int, error) {
@@ -188,4 +193,11 @@ func TestMemContent_DryRunPropagates(t *testing.T) {
 	if len(p.dry) != 1 || !p.dry[0] {
 		t.Errorf("DryRun did not reach the pruner: %v", p.dry)
 	}
+}
+
+func (f *fakePruner) PruneEmptyDossiers(_ context.Context, key sqlmem.ScopeKey, _ store.MemoryScope, cutoff int64, dryRun bool) (int, any, error) {
+	f.dossierCalls = append(f.dossierCalls, key)
+	f.dossierCutoffs = append(f.dossierCutoffs, cutoff)
+	f.dossierDry = append(f.dossierDry, dryRun)
+	return f.dossierN, []string{"record"}, nil
 }

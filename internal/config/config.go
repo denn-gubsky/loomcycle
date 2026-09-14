@@ -3202,6 +3202,24 @@ type Env struct {
 	// retired before Now()-this is eligible. Env:
 	// LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS.
 	RetentionMemContentMaxAge time.Duration
+	// RetentionEmptyDossierMode sweeps subject documents left with no facts and
+	// nothing pointing at them: "off" (default), "prune", or "export+prune".
+	// Independent of every other retention family. Env:
+	// LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE.
+	//
+	// Off by default as a DECISION, not a habit. An empty dossier records that an
+	// entity was once known, and it usually becomes empty as a side effect of
+	// someone ELSE's erasure — so sweeping it automatically would make one user's
+	// erasure silently delete a record another user could see.
+	RetentionEmptyDossierMode string
+	// RetentionEmptyDossierMaxAge is the age cutoff, read against the document's
+	// updated_at: only a dossier untouched for longer is eligible. Env:
+	// LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS.
+	//
+	// "Empty" is a state a dossier passes THROUGH — mid-consolidation, or between an
+	// erasure and a re-derivation — so without an age gate a sweep landing in that
+	// window deletes a record that was about to be filled.
+	RetentionEmptyDossierMaxAge time.Duration
 	// ReplicasSweepInterval is the dead-replica reaper's tick rate.
 	// Default 60s. Tunable mostly for tests / crash-recovery load
 	// experiments — leave at default in production.
@@ -4266,6 +4284,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.RetentionMemContentMaxAge = time.Duration(n) * time.Millisecond
+		}
+	}
+	// RFC CX-5 empty-dossier sweep (opt-in; default OFF).
+	if v := os.Getenv("LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE"); v != "" {
+		cfg.Env.RetentionEmptyDossierMode = v
+	}
+	if v := os.Getenv("LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.RetentionEmptyDossierMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {

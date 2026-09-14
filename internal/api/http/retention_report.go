@@ -49,7 +49,13 @@ type retentionReportResponse struct {
 	// reasonably conclude nothing is deleting their data.
 	MemContentMode     string `json:"mem_content_mode"`
 	MemContentMaxAgeMS int64  `json:"mem_content_max_age_ms"`
-	ExportDir          string `json:"export_dir,omitempty"`
+	// EmptyDossierMode / EmptyDossierMaxAgeMS sweep subject documents left with no
+	// facts and nothing pointing at them. Reported for the same reason as the family
+	// above: a report that omits an enabled family reads as "nothing is deleting my
+	// data", and this is the family that removes an entity's last trace.
+	EmptyDossierMode     string `json:"empty_dossier_mode"`
+	EmptyDossierMaxAgeMS int64  `json:"empty_dossier_max_age_ms"`
+	ExportDir            string `json:"export_dir,omitempty"`
 	// Purgeable is the per-def-type count of versions the CURRENT age + keep-last-N
 	// settings would purge right now, plus an aged-chat-session count under "chats"
 	// and a retired-agent memory-reclamation count under "mem" (all regardless of
@@ -107,6 +113,10 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if memContentMode == "" {
 		memContentMode = "off"
 	}
+	emptyDossierMode := s.cfg().Env.RetentionEmptyDossierMode
+	if emptyDossierMode == "" {
+		emptyDossierMode = "off"
+	}
 	// 0 = inherit the global chat age (never "delete immediately"), resolved the
 	// same way retention.New resolves it.
 	chatsInternalMaxAge := s.cfg().Env.RetentionChatsInternalMaxAge
@@ -127,6 +137,8 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		MemMaxAgeMS:           s.cfg().Env.RetentionMemMaxAge.Milliseconds(),
 		MemContentMode:        memContentMode,
 		MemContentMaxAgeMS:    s.cfg().Env.RetentionMemContentMaxAge.Milliseconds(),
+		EmptyDossierMode:      emptyDossierMode,
+		EmptyDossierMaxAgeMS:  s.cfg().Env.RetentionEmptyDossierMaxAge.Milliseconds(),
 	}
 
 	if s.store == nil {

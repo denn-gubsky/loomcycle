@@ -2543,9 +2543,11 @@ func main() {
 			MemMode:   cfg.Env.RetentionMemMode,
 			MemMaxAge: cfg.Env.RetentionMemMaxAge,
 			// RFC BL P4d class-aware memory-CONTENT prune (opt-in; default OFF).
-			MemContentMode:   cfg.Env.RetentionMemContentMode,
-			MemContentMaxAge: cfg.Env.RetentionMemContentMaxAge,
-			ExportDir:        cfg.Env.RetentionExportDir,
+			MemContentMode:     cfg.Env.RetentionMemContentMode,
+			EmptyDossierMode:   cfg.Env.RetentionEmptyDossierMode,
+			EmptyDossierMaxAge: cfg.Env.RetentionEmptyDossierMaxAge,
+			MemContentMaxAge:   cfg.Env.RetentionMemContentMaxAge,
+			ExportDir:          cfg.Env.RetentionExportDir,
 		}
 		// SQL-Memory scope reclamation needs the manager; nil (SQL Memory off) is
 		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil
