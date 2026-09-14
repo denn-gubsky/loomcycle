@@ -292,6 +292,11 @@ jobs:
           cache-dependency-path: adapters/ts/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
+      # Typecheck the TESTS too. vitest transpiles with esbuild, which strips
+      # types without checking them, so until this step existed a test could
+      # read a field that does not exist on the type and still pass — leaving
+      # every adapter type unguarded and hiding a live arity bug.
+      - run: npm run typecheck:tests
       - run: npm test
 
   web-ui:

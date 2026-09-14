@@ -373,8 +373,17 @@ describe("getRunBreakpoints / setRunBreakpoints", () => {
     // An arming that silently did nothing is worse than a refusal, so the
     // client must not swallow this into an empty set.
     const { client } = makeClient([
-      errorResponse(404, { code: "no_live_walk", error: "no live team walk for that run_id" }),
+      // errorResponse takes a bodyText STRING: passing the object sent
+      // "[object Object]" as the body, so the assertion below could only ever
+      // check that something threw.
+      errorResponse(
+        404,
+        JSON.stringify({ code: "no_live_walk", error: "no live team walk for that run_id" }),
+      ),
     ]);
-    await expect(client.setRunBreakpoints("r_gone", ["wave"])).rejects.toThrow();
+    await expect(client.setRunBreakpoints("r_gone", ["wave"])).rejects.toMatchObject({
+      status: 404,
+      bodyText: expect.stringContaining("no_live_walk"),
+    });
   });
 });

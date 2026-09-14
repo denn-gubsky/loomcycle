@@ -463,7 +463,7 @@ describe("operatorTokenDef", () => {
       name: "alice",
       tenant_id: "acme",
       scopes: ["runs:create", "runs:read"],
-    } as Record<string, unknown>)) as Record<string, unknown>;
+    })) as Record<string, unknown>;
 
     expect(result.def_id).toBe("otd_abc");
     expect(result.token).toBe("lct_zN7kExample");
@@ -479,7 +479,7 @@ describe("operatorTokenDef", () => {
   it("raises AuthError on 401", async () => {
     const { client } = makeClient([errorResponse(401, "invalid token")]);
     await expect(
-      client.operatorTokenDef({ op: "list", name: "alice" } as Record<string, unknown>),
+      client.operatorTokenDef({ op: "list", name: "alice" }),
     ).rejects.toBeInstanceOf(AuthError);
   });
 });
