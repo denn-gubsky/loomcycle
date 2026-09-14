@@ -111,3 +111,38 @@ func toolDescription(t *testing.T, name string) string {
 	t.Fatalf("no %q tool in the MCP surface", name)
 	return ""
 }
+
+// Every MCP tool must meet the rubric: purpose, inputs and their constraints,
+// what it refuses or caps, and — the element this surface had ZERO of — when to
+// use THIS tool rather than the neighbour a caller would otherwise pick.
+//
+// WHY BOUNDARIES ARE THE CHECKED ELEMENT. This surface is consumed by EXTERNAL
+// agents over the MCP transport — a Claude Code session, someone else's client
+// — with no loomcycle system prompt in front of them doing the disambiguating.
+// The description is the entire briefing. The clusters are dense and the names
+// are near-synonyms: subscribe_channel vs peek_channel+ack_channel is an
+// at-most-once vs at-least-once decision; get_snapshot vs export_snapshot is
+// read vs move; register_agent vs agentdef is a scratch agent vs a durable one;
+// a2aservercarddef advertises US while a2aagentdef registers a peer WE call.
+// Picking the wrong one of those is not a formatting problem.
+//
+// NO OPT-IN LIST. This ranged over an explicit set while the 52 were being
+// converted in clusters; now that they all comply, it ranges over the surface
+// itself — so a NEW tool is held to the rubric the day it is added, rather than
+// the day somebody remembers to list it.
+
+func TestToolSurface_ConvertedToolsStateTheirBoundaries(t *testing.T) {
+	boundary := regexp.MustCompile(`(?i)\bdo not use\b|\bdo NOT\b`)
+	for _, tool := range toolDescriptors() {
+		name, desc := tool.Name, tool.Description
+		if !boundary.MatchString(desc) {
+			t.Errorf("%s: description never says what NOT to use it for. An external agent "+
+				"reads this cold, with no system prompt to disambiguate — name the neighbour "+
+				"it would otherwise pick.", name)
+		}
+		if len(desc) < 250 {
+			t.Errorf("%s: description is %d bytes, too short to carry inputs, limits AND a "+
+				"boundary", name, len(desc))
+		}
+	}
+}

@@ -97,10 +97,20 @@ describe("broadcastChannels", () => {
 
   it("surfaces an undeclared-channel refusal as a typed error", async () => {
     const { client } = makeClient([
-      errorResponse(404, "channel_not_declared", `channel "ghost" is not declared`),
+      // errorResponse takes (status, bodyText). Passing the code and message as
+      // separate arguments dropped the third and sent the bare string
+      // "channel_not_declared" as the body — so this asserted "a 404 throws",
+      // not that the refusal surfaces as a typed error carrying its reason.
+      errorResponse(
+        404,
+        JSON.stringify({ code: "channel_not_declared", error: `channel "ghost" is not declared` }),
+      ),
     ]);
     await expect(
       client.broadcastChannels({ channels: ["a", "ghost"], scope: "global", payload: { x: 1 } }),
-    ).rejects.toBeInstanceOf(LoomcycleError);
+    ).rejects.toMatchObject({
+      status: 404,
+      bodyText: expect.stringContaining("channel_not_declared"),
+    });
   });
 });

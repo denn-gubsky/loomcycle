@@ -298,7 +298,12 @@ python-proto:
 	@# rather than the relative form (`from . import loomcycle_pb2`)
 	@# Python packages need. Patch the grpc stub so it's importable
 	@# from the loomcycle._generated package without a sys.path hack.
-	@sed -i '' 's/^import loomcycle_pb2 as loomcycle__pb2$$/from . import loomcycle_pb2 as loomcycle__pb2/' $(PY_PROTO_OUT)/loomcycle_pb2_grpc.py
+	@# `-i.bak` (no space) is the ONE in-place form both GNU and BSD sed accept.
+	@# Bare `sed -i ''` is macOS-only: GNU sed reads the '' as the SCRIPT and the
+	@# real script as a filename, so this target failed on every Linux box that
+	@# ever ran it. Nothing caught that until CI regenerated the stubs.
+	@sed -i.bak 's/^import loomcycle_pb2 as loomcycle__pb2$$/from . import loomcycle_pb2 as loomcycle__pb2/' $(PY_PROTO_OUT)/loomcycle_pb2_grpc.py
+	@rm -f $(PY_PROTO_OUT)/loomcycle_pb2_grpc.py.bak
 	@touch $(PY_PROTO_OUT)/__init__.py
 	@echo "regenerated $(PY_PROTO_OUT)/*.py"
 

@@ -260,11 +260,11 @@ describe("memorySearch sources (RFC BW)", () => {
     const { client, fetchMock } = makeClient([empty(), empty(), empty()]);
 
     await client.memorySearch({ query: "q", scope: "user", scopeId: "u1" });
-    const first = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const first = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
     expect("sources" in first).toBe(false);
 
     await client.memorySearch({ query: "q", scope: "user", scopeId: "u1", sources: ["facts"] });
-    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).sources).toEqual(["facts"]);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]![1]?.body)).sources).toEqual(["facts"]);
 
     await client.memorySearch({
       query: "q",
@@ -272,7 +272,7 @@ describe("memorySearch sources (RFC BW)", () => {
       scopeId: "u1",
       sources: ["facts", "notes", "documents"],
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body)).sources).toEqual([
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1]?.body)).sources).toEqual([
       "facts",
       "notes",
       "documents",
@@ -321,7 +321,7 @@ describe("memorySearch sources (RFC BW)", () => {
     ]);
     const res = await client.memorySearch({ query: "q", scope: "user", scopeId: "u1" });
     expect(res.entries.map((e) => e.kind)).toEqual(["fact", "note", "document"]);
-    expect(res.entries[2].chunk_id).toBe("z");
-    expect(res.entries[0].chunk_id).toBeUndefined();
+    expect(res.entries[2]!.chunk_id).toBe("z");
+    expect(res.entries[0]!.chunk_id).toBeUndefined();
   });
 });

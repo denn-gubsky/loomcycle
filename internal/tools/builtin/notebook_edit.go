@@ -38,8 +38,13 @@ const notebookEditDefaultMaxBytes int64 = 8 << 20
 func (n *NotebookEdit) Name() string { return "NotebookEdit" }
 
 func (n *NotebookEdit) Description() string {
-	return "Surgically edit cells in a Jupyter .ipynb notebook (replace, insert, or delete one cell by id). " +
-		"Preserves notebook metadata and other cells; writes atomically."
+	return "Change ONE cell of a Jupyter .ipynb notebook, by cell id. " +
+		"Takes `path` to the notebook, `cell_id`, `new_source`, and `edit_mode` — replace (default), insert or delete; " +
+		"`cell_type` (code or markdown) is required when inserting. " +
+		"Every other cell, the notebook's metadata and its format version are preserved, and the file is written atomically. " +
+		"Use this for any edit to a .ipynb. " +
+		"Do NOT use Write or Edit on a notebook: they treat it as flat text, and a hand-patched cell easily produces JSON the notebook format rejects. " +
+		"It edits exactly one cell per call, and a cell_id that is not in the notebook is an error rather than an append."
 }
 
 func (n *NotebookEdit) InputSchema() json.RawMessage {

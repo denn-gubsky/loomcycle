@@ -71,7 +71,13 @@ type HTTP struct {
 
 func (h *HTTP) Name() string { return "HTTP" }
 func (h *HTTP) Description() string {
-	return "Make an HTTP request to an allowlisted host. Returns response body as text (truncated)."
+	return "Make ONE outbound HTTP request with any method, to a host on the operator's allowlist. " +
+		"Takes `method` (GET/POST/PUT/PATCH/DELETE/HEAD), `url` (absolute http(s)), optional `headers` and `body`. " +
+		"Returns the status line, response headers and body as text, truncated at 256 KiB, with a 30s timeout. " +
+		"Use this to CALL an API — post a payload, authenticate, PATCH a record. " +
+		"Do NOT use it merely to read a web page: WebFetch does the same GET and strips HTML to readable text. " +
+		"The host allowlist is enforced on every redirect hop, so a redirect off-list is refused mid-chain; " +
+		"private and loopback addresses are blocked unless the operator opted the host in."
 }
 
 func (h *HTTP) InputSchema() json.RawMessage {

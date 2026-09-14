@@ -61,7 +61,13 @@ func TestTeamDefTool_Run_LinearTeam(t *testing.T) {
 
 	var spawned []string
 	tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, defID string) (string, error) {
+		// Stand in for the SERVER, which substitutes data slots after placeholder
+		// expansion. A threaded node's Input is the {{thread.output}} marker, so a
+		// spawner reading Input raw sees the marker rather than the agent's input.
 		input := p.Input
+		for marker, content := range p.DataSlots {
+			input = strings.ReplaceAll(input, marker, content)
+		}
 
 		spawned = append(spawned, agent)
 		return agent + "(" + input + ")", nil

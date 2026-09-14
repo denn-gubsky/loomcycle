@@ -38,9 +38,14 @@ const grepDefaultMaxOutputBytes = 256 * 1024
 func (g *Grep) Name() string { return "Grep" }
 
 func (g *Grep) Description() string {
-	return "Search file contents in the sandbox root with an RE2 regex. " +
-		"Returns matching file paths, lines with optional context, or per-file counts. " +
-		"Binary files are skipped automatically."
+	return "Search file CONTENTS on a volume with an RE2 regular expression. " +
+		"Takes `pattern` (RE2 — no backreferences or lookaround); optional `path` narrows the subtree, `glob` filters which files are searched, " +
+		"`output_mode` selects paths / matching lines / per-file counts, `-i` `-n` `-A` `-B` `-C` mirror the grep flags, " +
+		"`head_limit` caps results (default 100) and `volume` picks a non-default one. " +
+		"Use this to find WHERE something appears — a symbol, an error string, a config key. " +
+		"Prefer it over reading files one by one: locate with Grep, then Read the file it names. " +
+		"Do NOT use it to match file names — that is Glob. " +
+		"Binary files are skipped, symlinks are not followed out of the volume, and output is capped at 256 KiB."
 }
 
 func (g *Grep) InputSchema() json.RawMessage {

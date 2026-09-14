@@ -35,7 +35,12 @@ func (p *Path) UsageHint() string {
 }
 
 func (p *Path) Description() string {
-	return "A Unix-like filesystem over your Memory, Volumes, and Documents. Address resources by human-readable paths (e.g. /docs/launch). Ops: resolve, ls, stat, mkdir (create an empty directory), mv, rm. Paths are scoped (agent/user/tenant, default agent) and tenant-isolated; segments are [a-zA-Z0-9._-], no \"..\"."
+	return "A Unix-like NAMING layer over your Memory, Volumes and Documents — it addresses resources by human-readable path (e.g. /docs/launch) instead of by id. " +
+		"Ops: resolve (path to the thing it names), ls, stat, mkdir, mv, rm. " +
+		"Takes `op` and `path`; paths are scoped (agent / user / tenant, default agent) and tenant-isolated, segments are [a-zA-Z0-9._-] and \"..\" is refused. " +
+		"Use this to BROWSE or reorganise — to see what exists under /docs, or to rename something without touching its content. " +
+		"Do NOT use it to read or write the content behind a name: resolve the path, then use the Document tool for a document, Memory for a memory entry, or Read/Write for a file on a volume. " +
+		"`rm` removes the NAME, not the thing it points at, so a document unlinked from the tree still exists and is still reachable by id."
 }
 
 // pathInputSchema is a package const so the LoomCycle MCP server can source

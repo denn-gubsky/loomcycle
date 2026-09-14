@@ -13,7 +13,7 @@ import (
 // returns (Walk joins all goroutines before returning).
 func recordingSpawn(mu *sync.Mutex, calls *[]string, inputs map[string]string, fn func(ctx context.Context, agent, input string) (string, error)) SpawnFunc {
 	return func(ctx context.Context, agent string, p Prompt, defID string) (string, error) {
-		input := p.Input
+		input := effectiveInput(p)
 
 		mu.Lock()
 		*calls = append(*calls, agent)
@@ -32,7 +32,7 @@ func TestAgentRunner_WalksLinearTeamViaSpawn(t *testing.T) {
 	// output threads state to state.
 	var spawned []string
 	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
-		input := p.Input
+		input := effectiveInput(p)
 
 		spawned = append(spawned, agent)
 		return fmt.Sprintf("%s(%s)", agent, input), nil

@@ -45,7 +45,14 @@ you are not certain is still in front of you. Ask in plain language for what you
 (for example "the deployment token the user gave" or "the revenue figure from the Q2
 report") — you do not need to remember the exact wording. It also transparently
 searches your durable memory, so a fact learned in an earlier session may surface too.
-Prefer recalling a specific value over guessing it.`)
+Prefer recalling a specific value over guessing it.
+
+Takes a free-text query and an optional limit; returns the matching original turns
+verbatim, newest-first, or nothing when this run has no evicted turns yet.
+
+Do NOT use it to look things up in ANOTHER conversation — it searches this run plus
+your own durable memory, nothing else; use History to find and resume a past chat.
+Do NOT use it to STORE anything: it is read-only. Writing a durable fact is Memory.`)
 }
 
 // UsageHint surfaces via Context op=guide for the agent's highest-error tools.

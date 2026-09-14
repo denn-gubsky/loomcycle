@@ -1,0 +1,22 @@
+{
+  // Typechecks the TESTS, which the main tsconfig deliberately cannot.
+  //
+  // WHY A SECOND FILE. tsconfig.json pins `rootDir: "./src"` so the emitted
+  // dist tree mirrors src/ exactly; adding tests/ to its `include` makes every
+  // build fail TS6059 (an input outside rootDir). The tests get their own
+  // no-emit config rather than the build config being bent to cover them.
+  //
+  // WHY IT MATTERS. Vitest transpiles with esbuild, which STRIPS types without
+  // checking them — so a test reading `payload.filter_walk_id` passes whether
+  // or not that field exists on the type. Until this existed, EVERY adapter
+  // type was unguarded: deleting a field from types.ts broke no build and
+  // failed no test, and the omission surfaced as a consumer's compile error
+  // after release. It also hid a live defect — see the errorResponse arity fix
+  // that landed with this file.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "tests/**/*"]
+}

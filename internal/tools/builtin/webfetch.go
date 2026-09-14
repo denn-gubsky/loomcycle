@@ -20,8 +20,16 @@ type WebFetch struct {
 	MaxOutputBytes int64 // optional override; default 256 KiB
 }
 
-func (f *WebFetch) Name() string        { return "WebFetch" }
-func (f *WebFetch) Description() string { return "Fetch a URL via GET and return text-extracted body." }
+func (f *WebFetch) Name() string { return "WebFetch" }
+func (f *WebFetch) Description() string {
+	return "GET one http(s) URL and return its body with HTML stripped to readable text. " +
+		"Takes `url` (absolute; the host must be on the operator's allowlist). " +
+		"Returns extracted text, truncated at 256 KiB. " +
+		"Use this when you already have a URL and want the page's content — documentation, an article, a JSON endpoint you only need to read. " +
+		"Do NOT use it to FIND pages: use WebSearch to discover URLs first. " +
+		"Do NOT use it when you need a method other than GET, custom headers, or a request body — that is the HTTP tool. " +
+		"A host that is not allowlisted is refused, not fetched; extraction is best-effort, so a heavily scripted page may yield little text."
+}
 
 func (f *WebFetch) InputSchema() json.RawMessage {
 	return json.RawMessage(`{

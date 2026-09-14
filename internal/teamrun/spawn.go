@@ -340,21 +340,45 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 // A METHOD rather than a free function so it can stamp the definition's
 // authorship: every prompt a walk hands out carries the flag its own templates
 // are expanded under, and no call site can construct one that forgot to.
+//
+// THREADED OUTPUT TRAVELS IN A DATA SLOT, NOT IN Input. A node that declares no
+// input_template works on what the previous state handed it — that agent's
+// OUTPUT, which may carry whatever a tool result, a fetched page or a channel
+// message put into it. Passing it as Input hands it to the placeholder
+// expander, so a `{{document:/…}}` an agent emitted would be resolved under the
+// RUNTIME's authority and inlined into the NEXT agent's prompt: one agent
+// choosing what another one reads.
+//
+// A data slot is substituted AFTER expansion and its content is never scanned,
+// which is the same reason a Starter's source message travels in one. The
+// InputAuthored flag stays false here too, but it is now the BACKSTOP rather
+// than the protection — it gates only the widened families, while the slot
+// keeps every family off this text.
 func (r *agentRunner) nodePrompt(h teamgraph.Handler, threaded string, env Env) Prompt {
-	in := threaded
-	// A node that declares an input_template states its own task in the TEAM's
-	// words. One that does not works on what the previous state handed it,
-	// which is that agent's output — see Prompt.InputAuthored.
-	inputIsTemplate := h.InputTemplate != ""
-	if inputIsTemplate {
-		in = h.InputTemplate
+	if h.InputTemplate != "" {
+		// The team's own words: expanded, and authored by whoever wrote the team.
+		return Prompt{
+			System: h.SystemPrompt, Input: h.InputTemplate, Values: env.Values(),
+			SystemAuthored: r.operatorAuthored,
+			InputAuthored:  r.operatorAuthored,
+		}
 	}
 	return Prompt{
-		System: h.SystemPrompt, Input: in, Values: env.Values(),
+		System: h.SystemPrompt, Input: ThreadedOutputSlot, Values: env.Values(),
+		DataSlots:      map[string]string{ThreadedOutputSlot: threaded},
 		SystemAuthored: r.operatorAuthored,
-		InputAuthored:  r.operatorAuthored && inputIsTemplate,
 	}
 }
+
+// ThreadedOutputSlot is where a node's threaded input is carried when the node
+// declares no input_template: the Input the agent receives is this marker, and
+// the previous state's output is substituted into it after expansion has
+// finished.
+//
+// Reserved, like the Starter's slots. It never co-occurs with those — a Starter
+// node reads from a channel and threads nothing — so no slot's content can
+// contain another slot's marker and be substituted a second time.
+const ThreadedOutputSlot = "{{thread.output}}"
 
 // envFor snapshots what the expander may read for one state's turn. Now is read
 // ONCE per state so every ${now.*} in a state's prompts and assignments agrees
@@ -509,11 +533,13 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 // system prompt (which describes that agent's role) is deliberately not applied
 // to it; it receives only the envelope.
 func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelope string) (Outcome, error) {
-	// InputAuthored is FALSE: the envelope is built from the agents' OWN
-	// OUTPUTS. It is the most obviously model-written text in a walk, and the
-	// one a consolidator is definitionally handed.
+	// The envelope is built from the agents' OWN OUTPUTS — the most obviously
+	// model-written text in a walk, and the one a consolidator is definitionally
+	// handed. It rides a data slot for the same reason threaded output does.
 	out, err := r.spawn(ctx, consolidator, Prompt{
-		Input: envelope, SystemAuthored: r.operatorAuthored,
+		Input:          ThreadedOutputSlot,
+		DataSlots:      map[string]string{ThreadedOutputSlot: envelope},
+		SystemAuthored: r.operatorAuthored,
 	}, "")
 	if err != nil {
 		return Outcome{}, err

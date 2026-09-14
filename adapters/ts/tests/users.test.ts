@@ -162,7 +162,7 @@ describe("listUserTokens", () => {
     expect(resp.subject).toBe("alice");
     expect(resp.tokens[0]!.active).toBe(true);
     // Metadata only — never the plaintext.
-    expect((resp.tokens[0] as Record<string, unknown>).token).toBeUndefined();
+    expect((resp.tokens[0] as unknown as Record<string, unknown>).token).toBeUndefined();
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("http://test-loomcycle:8787/v1/_users/alice/tokens");
     expect(init.method).toBe("GET");
