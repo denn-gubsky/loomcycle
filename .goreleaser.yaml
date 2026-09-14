@@ -92,6 +92,17 @@ release:
   # a re-run of an older tag still needs the manual delete.
   mode: replace
 
+  # `mode: replace` discards the body GitHub auto-populates from the annotated
+  # tag, and `changelog.disable` leaves goreleaser nothing to put back — so
+  # v1.79.0 published with a 2-byte release body while v1.76-v1.78 had ~4KB.
+  # Render the tag annotation explicitly instead of relying on what replace
+  # just threw away. `.TagContents` is subject + body, which is byte-for-byte
+  # what the pre-replace releases carried.
+  #
+  # Release notes therefore still live in `git tag -a -F <notes>`; this line is
+  # only what carries them across `replace`.
+  header: "{{ .TagContents }}"
+
 # Homebrew formula — generated AND pushed to the tap repo on each
 # tag. `directory: Formula` matches the tap's layout. The token used
 # to push is HOMEBREW_TAP_GITHUB_TOKEN (a separate fine-grained PAT
