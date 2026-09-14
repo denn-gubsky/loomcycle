@@ -3253,6 +3253,15 @@ type MemorySearchFilter struct {
 	// caller is unaffected.
 	Provenance MemoryProvenanceConstraint
 
+	// ExcludeTracePrefix drops indexed conversation turns.
+	//
+	// A SEPARATE FIELD rather than a second use of ExcludeKeyPrefix, because the two
+	// exclusions have to hold AT ONCE: "my notes" is neither prose nor raw turns, and
+	// one string cannot say that. It is set on every selector that does not ASK for
+	// traces, including the empty one — see the Filter comment on why the default has
+	// to exclude rather than include.
+	ExcludeTracePrefix string
+
 	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT provenance —
 	// which is exactly the document class, and nothing else.
 	//
@@ -3331,7 +3340,21 @@ const (
 	MemoryRowFact     MemoryRowClass = "fact"
 	MemoryRowNote     MemoryRowClass = "note"
 	MemoryRowDocument MemoryRowClass = "document"
+	// MemoryRowTrace is a raw conversation turn, indexed so the evidence a fact was
+	// distilled FROM is findable and not only the fact.
+	MemoryRowTrace MemoryRowClass = "trace"
 )
+
+// TraceTurnKeyPrefix namespaces an indexed conversation turn:
+// `trace.turn:<session_id>:<seq>`.
+//
+// SPELLED HERE, unlike the document prefix, which is passed in because that
+// namespace belongs to the Document tool. This one is storage's own: the class
+// decides whether a row is returned by an unfiltered search and whether erasure must
+// reach it, so the classifier must not depend on a caller remembering to say which
+// namespace means "raw turn". A class that can be mislabelled by an omission is a
+// class that leaks.
+const TraceTurnKeyPrefix = "trace.turn:"
 
 // ClassifyMemoryRow derives a row's class. ONE definition, because the filter that
 // selects a class and the label that reports it must agree — a search that returned
@@ -3351,6 +3374,16 @@ func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
 	// unforgeable: it is deliberately absent from the `Memory set` input schema
 	// precisely because it names the writer. A distilled fact carries one; prose an
 	// author typed does not.
+	// TRACES ARE TESTED BEFORE PROVENANCE, which inverts the rule below for one
+	// namespace only. The origin-first order exists because a chunk body can be
+	// either a fact or prose and only provenance tells them apart. A trace is neither
+	// — it is the raw material both were derived from — so no provenance a writer
+	// could stamp should ever be able to relabel it as a fact and pull it into an
+	// unfiltered search. The prefix is server-written and refused from the tool
+	// surface, so it means what it says.
+	if strings.HasPrefix(key, TraceTurnKeyPrefix) {
+		return MemoryRowTrace
+	}
 	if strings.TrimSpace(origin) != "" {
 		return MemoryRowFact
 	}
@@ -3374,6 +3407,7 @@ func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
 // reasoning; they are predicates like any other.
 func (f MemorySearchFilter) IsZero() bool {
 	return f.KeyPrefix == "" && f.ExcludeKeyPrefix == "" && f.ExcludeDocumentPrefix == "" &&
+		f.ExcludeTracePrefix == "" &&
 		f.Provenance == ProvenanceAny &&
 		f.ObservedFrom.IsZero() && f.ObservedTo.IsZero() && !f.RequireObserved &&
 		f.AsOf.IsZero() && !f.RequireValid

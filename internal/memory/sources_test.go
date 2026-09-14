@@ -89,6 +89,15 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Filter() error = %v", err)
 			}
+			// EVERY selector that does not ask for traces excludes them, so the
+			// invariant is asserted here once rather than restated on each `want`
+			// below — restating it would make the table about the exclusion instead
+			// of about what each selector is FOR, and a row that forgot it would read
+			// as a deliberate exception.
+			if got.ExcludeTracePrefix != store.TraceTurnKeyPrefix {
+				t.Errorf("selector did not exclude raw turns: %+v", got)
+			}
+			got.ExcludeTracePrefix = ""
 			if got != tc.want {
 				t.Errorf("Filter() = %+v, want %+v\n%s", got, tc.want, tc.comment)
 			}
@@ -108,8 +117,17 @@ func TestSearchQueryFilter_BothSourcesIsNotContradictory(t *testing.T) {
 		t.Fatal("asking for both sources produced require-and-exclude on the same prefix, " +
 			"which matches nothing — the widest request would return the narrowest result")
 	}
+	// Everything the three KNOWN classes can be, and nothing else — except the trace
+	// exclusion, which is on every selector that does not ask for traces INCLUDING
+	// this one. "All three sources" was written when three was all there was; traces
+	// are opt-in by decision, so the widest request over the derived layers still does
+	// not reach into the raw one.
+	if f.ExcludeTracePrefix != store.TraceTurnKeyPrefix {
+		t.Errorf("the widest derived-layer request did not exclude raw turns, got %+v", f)
+	}
+	f.ExcludeTracePrefix = ""
 	if !f.IsZero() {
-		t.Errorf("both sources should constrain nothing, got %+v", f)
+		t.Errorf("both sources should constrain nothing beyond the trace exclusion, got %+v", f)
 	}
 }
 
@@ -216,5 +234,79 @@ func TestSearchQueryFilter_DualWriteNeverSelectsAFactTwice(t *testing.T) {
 			t.Errorf("%v selects BOTH planes while a fact is dual-written, so every fact "+
 				"comes back twice and the effective top_k halves; got %+v", srcs, f)
 		}
+	}
+}
+
+// RFC CI §4 — traces are the one source whose DEFAULT is exclusion.
+
+// TestSearchQueryFilter_TracesAloneScopeToTheNamespace.
+func TestSearchQueryFilter_TracesAloneScopeToTheNamespace(t *testing.T) {
+	f, err := SearchQuery{Sources: []Source{SourceTraces}}.Filter()
+	if err != nil {
+		t.Fatalf("traces alone must be expressible: %v", err)
+	}
+	if f.KeyPrefix != store.TraceTurnKeyPrefix {
+		t.Errorf("KeyPrefix = %q, want the trace namespace", f.KeyPrefix)
+	}
+	if f.ExcludeTracePrefix != "" {
+		t.Errorf("asking for traces also excluded them — require-and-exclude on one " +
+			"prefix matches nothing, so the only request for this class would return empty")
+	}
+}
+
+// TestSearchQueryFilter_TracesRefuseToCombine. Raw turns and the layers derived from
+// them are independent dimensions, and a fused result ranks a turn against the fact
+// extracted from it. Refused by name rather than silently returning one of the two.
+func TestSearchQueryFilter_TracesRefuseToCombine(t *testing.T) {
+	for _, with := range [][]Source{
+		{SourceTraces, SourceFacts},
+		{SourceTraces, SourceNotes},
+		{SourceTraces, SourceDocuments},
+		{SourceTraces, SourceFacts, SourceNotes, SourceDocuments},
+	} {
+		if _, err := (SearchQuery{Sources: with}).Filter(); !errors.Is(err, ErrTracesNotCombinable) {
+			t.Errorf("Filter(%v) error = %v, want ErrTracesNotCombinable", with, err)
+		}
+	}
+}
+
+// TestSearchQueryFilter_AnUnfilteredSearchStillExcludesTraces is the compatibility
+// property RFC CI §4 turns on: the off-run search has no default sources, so an empty
+// selector means "every plane". Admitting a new class there would change every
+// existing unfiltered search silently — and traces would dominate what it changed to,
+// being far more numerous than facts and lexically overlapping them by construction.
+func TestSearchQueryFilter_AnUnfilteredSearchStillExcludesTraces(t *testing.T) {
+	f, err := SearchQuery{}.Filter()
+	if err != nil {
+		t.Fatalf("an empty selector must be expressible: %v", err)
+	}
+	if f.ExcludeTracePrefix != store.TraceTurnKeyPrefix {
+		t.Fatal("an unfiltered search would now return raw turns — every existing " +
+			"caller's results change the day the index is enabled")
+	}
+	f.ExcludeTracePrefix = ""
+	if !f.IsZero() {
+		t.Errorf("an empty selector constrains something other than traces: %+v", f)
+	}
+}
+
+// TestClassifyMemoryRow_TraceBeatsProvenance. The origin-first order exists because a
+// chunk body can be a fact or prose. A trace is neither, so no provenance should be
+// able to relabel one as a fact and pull it into an unfiltered search.
+func TestClassifyMemoryRow_TraceBeatsProvenance(t *testing.T) {
+	key := store.TraceTurnKeyPrefix + "sess-a:7"
+	if got := store.ClassifyMemoryRow(key, "consolidator", DocumentChunkKeyPrefix); got != store.MemoryRowTrace {
+		t.Errorf("a trace row carrying provenance classified as %q — it would be returned "+
+			"by sources=facts and by every unfiltered search", got)
+	}
+	if got := store.ClassifyMemoryRow(key, "", DocumentChunkKeyPrefix); got != store.MemoryRowTrace {
+		t.Errorf("plain trace row classified as %q", got)
+	}
+	// And the existing classes are untouched.
+	if got := store.ClassifyMemoryRow("memory/fact/x", "consolidator", DocumentChunkKeyPrefix); got != store.MemoryRowFact {
+		t.Errorf("fact classification regressed: %q", got)
+	}
+	if got := store.ClassifyMemoryRow(DocumentChunkKeyPrefix+"abc", "", DocumentChunkKeyPrefix); got != store.MemoryRowDocument {
+		t.Errorf("document classification regressed: %q", got)
 	}
 }

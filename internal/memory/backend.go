@@ -155,6 +155,11 @@ const (
 	// SourceDocuments is Document chunk bodies — prose written down in a document,
 	// which is NOT the same claim as something the user said.
 	SourceDocuments Source = "documents"
+	// SourceTraces is raw conversation turns — the material facts and notes were
+	// derived FROM, indexed so "what did we actually say" is answerable.
+	//
+	// OPT-IN ONLY, and it is the one source that behaves this way. See Filter.
+	SourceTraces Source = "traces"
 )
 
 // ErrSourcesNotExpressible is returned for a source set that cannot be rendered as a
@@ -164,6 +169,19 @@ var ErrSourcesNotExpressible = errors.New(
 		"The document namespace and the provenance split are independent dimensions, so " +
 		"mixing documents with only ONE of facts/notes would need a disjunction the store " +
 		"does not build. Use [facts], [notes], [facts,notes], [documents], or all three")
+
+// ErrTracesNotCombinable refuses traces alongside any other source.
+//
+// Same reason as the refusal above and a stricter case of it: the trace namespace is
+// a third independent dimension, and mixing it with any other selector needs a
+// disjunction the store does not build. It is also not a combination anyone has
+// wanted — traces answer "what was said", every other source answers "what is
+// known", and a result set fusing the two ranks raw turns against the facts
+// distilled from them.
+var ErrTracesNotCombinable = errors.New(
+	"memory: sources=[traces] must be asked for on its own. Raw turns are the material " +
+		"the other sources were derived from, so a combined query ranks a turn against " +
+		"the fact extracted from it. Ask for traces in their own query")
 
 // Filter renders the requested sources as the store-level predicate.
 //
@@ -186,7 +204,7 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 	// attaching the window at each one is how a predicate ends up honoured on some
 	// queries and silently dropped on others.
 	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix})
-	var facts, notes, docs bool
+	var facts, notes, docs, traces bool
 	for _, s := range q.Sources {
 		switch s {
 		case SourceFacts:
@@ -195,10 +213,40 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 			notes = true
 		case SourceDocuments:
 			docs = true
+		case SourceTraces:
+			traces = true
 		}
 	}
+
+	// TRACES ARE EXCLUDED UNLESS ASKED FOR, and this is the one selector whose
+	// DEFAULT is exclusion rather than inclusion.
+	//
+	// The off-run search deliberately has no default sources — an empty selector
+	// means "every plane", because it answers "where did I record this". Letting a
+	// new class into the keyspace would therefore change every existing unfiltered
+	// search silently, and traces would dominate what they changed it to: they are
+	// far more numerous than facts and lexically overlap them by construction, since
+	// the facts were extracted from them. So an unfiltered search stays byte-identical
+	// to what it returned before this class existed.
+	//
+	// The asymmetry with `documents` is deliberate: a document is authored content, a
+	// trace is raw material. The derived layer wins by default and the evidence is one
+	// query away.
+	if !traces {
+		f.ExcludeTracePrefix = store.TraceTurnKeyPrefix
+	} else if facts || notes || docs {
+		return store.MemorySearchFilter{}, ErrTracesNotCombinable
+	} else {
+		// Traces alone. An explicit prefix from the caller still wins, the same
+		// precedence the documents branch gives it.
+		if f.KeyPrefix == "" {
+			f.KeyPrefix = store.TraceTurnKeyPrefix
+		}
+		return f, nil
+	}
+
 	if !facts && !notes && !docs {
-		return f, nil // no selector: constrain nothing
+		return f, nil // no selector: constrain nothing but the traces excluded above
 	}
 	memory := facts || notes
 	if docs && memory && !(facts && notes) {

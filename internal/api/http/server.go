@@ -2650,13 +2650,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	s.publishRunState(meta, "running", "", "")
 
 	// ---- Persist input segments ----
-	if s.store != nil && runID != "" {
-		if inputJSON, err := json.Marshal(in.Segments); err == nil {
-			if err := s.store.AppendEvent(ctx, runID, "user_input", inputJSON); err != nil {
-				log.Printf("store: AppendEvent(user_input) failed: %v", err)
-			}
-		}
-	}
+	s.persistUserInput(ctx, runID, sessionID, effectiveTenantID, effectiveUserID, in.Segments)
 	// v0.9.x: persist the resolved system prompt + provenance so the
 	// transcript carries WHAT the agent received, not just WHAT the
 	// model emitted. The companion Web UI rendering surfaces this as
@@ -4260,13 +4254,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// turn — and replay couldn't reconstruct the user prompt. Persist under
 	// runCtx (not r.Context()) so an interactive run's prompt survives a
 	// client disconnect; for a normal run runCtx tracks the request anyway.
-	if s.store != nil && runID != "" {
-		if inputJSON, err := json.Marshal(req.Segments); err == nil {
-			if err := s.store.AppendEvent(runCtx, runID, "user_input", inputJSON); err != nil {
-				log.Printf("store: AppendEvent(user_input) failed: %v", err)
-			}
-		}
-	}
+	s.persistUserInput(runCtx, runID, sessionID, meta.TenantID, meta.UserID, req.Segments)
 	// v0.9.x: persist the resolved system prompt + provenance so the
 	// Web UI surfaces it as a card on the run timeline. Mirrors the
 	// emission in RunOnce + handleMessages + runSubAgent.
@@ -4901,11 +4889,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.publishRunState(meta, "running", "", "")
 
 	// Persist the new user input segments so a future replay sees them.
-	if inputJSON, err := json.Marshal(body.Segments); err == nil {
-		if err := s.store.AppendEvent(r.Context(), run.ID, "user_input", inputJSON); err != nil {
-			log.Printf("store: AppendEvent(user_input) failed: %v", err)
-		}
-	}
+	s.persistUserInput(r.Context(), run.ID, sess.ID, sess.TenantID, sess.UserID, body.Segments)
 	// v0.9.x: also persist the resolved system prompt + provenance.
 	// On a continuation run, AgentDef could have been promoted to a
 	// new version between turns — emit on EVERY run so each cycle
@@ -5469,17 +5453,15 @@ func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userI
 		UserID:    userID,
 	})
 	onSteer := func(m steer.Message) {
-		if s.store != nil {
-			seg := []loop.PromptSegment{{
-				Role:    "user",
-				Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: m.Text}},
-			}}
-			if b, err := json.Marshal(seg); err == nil {
-				if err := s.store.AppendEvent(ctx, runID, "user_input", b); err != nil {
-					log.Printf("steer: persist user_input failed (run=%s): %v", runID, err)
-				}
-			}
-		}
+		// A steer IS a user turn — a person typing mid-run — so it goes through the
+		// same writer as the other four, which is what puts it in the trace index too.
+		// It was nearly missed: a grep for the append found three sites and this was
+		// the fourth, which is the shape of writer-census bug this project has shipped
+		// before.
+		s.persistUserInput(ctx, runID, sessionID, tenantFromCtx(ctx), userID, []loop.PromptSegment{{
+			Role:    "user",
+			Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: m.Text}},
+		}})
 		emit(providers.Event{Type: providers.EventSteer, UserInput: &providers.UserInputEventInfo{
 			Text: m.Text, Source: m.Source, SeenAt: time.Now().UTC().Format(time.RFC3339Nano),
 		}})
@@ -6298,6 +6280,14 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 
 	// Persist the input segments as the first event so transcript
 	// replay reconstructs the user prompt the same way fresh runs do.
+	//
+	// ⚠️ DELIBERATELY NOT ROUTED THROUGH persistUserInput, which is the writer every
+	// other `user_input` append uses. This one is not a person's words: it is the
+	// prompt a PARENT AGENT composed for its sub-agent, stored under `user_input`
+	// because that is the role the sub-agent's loop reads it in. Indexing it would
+	// fill a user's trace index with machine-generated text they never typed and
+	// cannot recognise — and a search for "what did I say" would answer with what an
+	// agent said on their behalf.
 	if s.store != nil && subRunID != "" {
 		if inputJSON, err := json.Marshal(segs); err == nil {
 			if err := s.store.AppendEvent(ctx, subRunID, "user_input", inputJSON); err != nil {
