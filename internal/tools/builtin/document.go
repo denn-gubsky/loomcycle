@@ -109,6 +109,7 @@ const documentInputSchema = `{
 		"reason":       {"type": "string", "description": "judge_fact: one sentence on WHY, quoted back to the operator. A verdict nobody can act on is a verdict nobody trusts."},
 		"subject":      {"type": "string", "description": "upsert_chunk: the thing this entity assertion is ABOUT, paired with type — emit both or neither. type says what kind of thing it is, subject names it. A plain document chunk has no subject; passing the pair is what marks a write as an entity the ontology governs."},
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
+		"across_scopes": {"type": "boolean", "description": "get_document / list_facts about: also look for this SUBJECT in the other scopes you can read (agent, user, tenant), matching on its natural_key. A subject exists once per scope, so its facts can be split across them — this is how \"what do we know about X\" stops depending on which scope you happened to read. Off by default: it costs up to three queries, and it never reaches another USER's scope."},
 		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Omit when unknown — an undated fact is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded."},
@@ -231,6 +232,10 @@ type docInput struct {
 	// Entity-tier fields (RFC BL P4c). NaturalKey is the idempotency handle:
 	// upsert_chunk keys on it, and it is UNIQUE per scope.
 	NaturalKey string `json:"natural_key"`
+	// Across asks a subject read to look in the OTHER scopes this caller can reach,
+	// matching on natural_key. See document_cross_scope.go for why no reference has to
+	// be stored for that to work.
+	Across bool `json:"across_scopes"`
 	// SupersedesID names the chunk being retired by supersede_chunk. It is an
 	// explicitly-named field rather than a reuse of from_id/to_id on purpose: a
 	// caller who transposed those would invalidate the NEW fact and leave the stale
@@ -1809,6 +1814,16 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				resp["references_truncated"] = true
 				resp["references_note"] = subjectRefsNote(rootID)
 			}
+		}
+	}
+	// WHO ELSE KNOWS THIS SUBJECT. Counts rather than rows: a dossier read is a
+	// signpost, and a caller who wants the facts asks list_facts for them. What this
+	// answers is the question an empty tenant dossier otherwise leaves hanging — "is
+	// nothing known about Dave, or is it just not known HERE".
+	if in.Across {
+		if elsewhere := d.subjectAcrossScopes(ctx, key.Scope,
+			d.naturalKeyOf(ctx, key, rootID), subjectRefsCap, false); len(elsewhere) > 0 {
+			resp["across_scopes"] = elsewhere
 		}
 	}
 	return jsonResult(resp)
