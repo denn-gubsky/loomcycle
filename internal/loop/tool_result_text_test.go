@@ -1,9 +1,14 @@
 package loop
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -166,5 +171,97 @@ func TestRenderToolResultText_IsStableForPersistAndReplay(t *testing.T) {
 	}
 	if strings.Count(replayed, "[transient") != 1 {
 		t.Errorf("double-prefixed on replay:\n%s", replayed)
+	}
+}
+
+// --- the placement, not just the renderer ---
+
+type classifiedTool struct{ res tools.Result }
+
+func (c *classifiedTool) Name() string                 { return "failer" }
+func (c *classifiedTool) Description() string          { return "fails in a classified way" }
+func (c *classifiedTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (c *classifiedTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return c.res, nil
+}
+
+// TestExecutePendingTools_EventAndBlockCarryTheSameText covers WHERE the
+// rendering happens, which the renderer's own tests cannot see.
+//
+// A probe confirmed the gap: reverting the emitted event to the raw text left
+// every renderer test green, because they exercise the function and not its
+// two call sites. That matters more here than usual — the emitted event is
+// what gets persisted, and replayTranscript rebuilds the model's tool_result
+// block from that persisted Text. If the two diverge, a resumed run feeds the
+// model a different prompt than the original run did, and the classification
+// disappears on replay.
+func TestExecutePendingTools_EventAndBlockCarryTheSameText(t *testing.T) {
+	tool := &classifiedTool{res: tools.Result{
+		Text:    "spawn_run: backpressure",
+		IsError: true,
+		Error: &tools.ErrorInfo{
+			Category:    tools.CategoryTransient,
+			Retryable:   true,
+			Description: "The runtime is at a concurrency limit.",
+			RetryAfter:  dur(5 * time.Second),
+		},
+	}}
+
+	var emitted []providers.Event
+	blocks := executePendingTools(
+		context.Background(),
+		tools.NewDispatcher([]tools.Tool{tool}),
+		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
+		1, nil, hooks.Identity{},
+		func(ev providers.Event) { emitted = append(emitted, ev) },
+	)
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected one block, got %d", len(blocks))
+	}
+	var toolResultEvents []providers.Event
+	for _, ev := range emitted {
+		if ev.Type == providers.EventToolResult {
+			toolResultEvents = append(toolResultEvents, ev)
+		}
+	}
+	if len(toolResultEvents) != 1 {
+		t.Fatalf("expected one tool_result event, got %d", len(toolResultEvents))
+	}
+
+	blockText := blocks[0].Text
+	eventText := toolResultEvents[0].Text
+
+	if !strings.Contains(blockText, "[transient") {
+		t.Errorf("the MODEL's block is missing the classification:\n%s", blockText)
+	}
+	if eventText != blockText {
+		t.Errorf("the PERSISTED event text differs from what the model saw — a resumed run "+
+			"would replay a different prompt and lose the classification:\n event: %q\n block: %q",
+			eventText, blockText)
+	}
+}
+
+// An unclassified tool must leave both paths byte-identical to before, so this
+// phase touches only failing calls.
+func TestExecutePendingTools_UnclassifiedIsUnchangedOnBothPaths(t *testing.T) {
+	const raw = "ordinary tool output"
+	tool := &classifiedTool{res: tools.Result{Text: raw}}
+
+	var emitted []providers.Event
+	blocks := executePendingTools(
+		context.Background(),
+		tools.NewDispatcher([]tools.Tool{tool}),
+		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
+		1, nil, hooks.Identity{},
+		func(ev providers.Event) { emitted = append(emitted, ev) },
+	)
+	if blocks[0].Text != raw {
+		t.Errorf("block text altered: %q", blocks[0].Text)
+	}
+	for _, ev := range emitted {
+		if ev.Type == providers.EventToolResult && ev.Text != raw {
+			t.Errorf("event text altered: %q", ev.Text)
+		}
 	}
 }
