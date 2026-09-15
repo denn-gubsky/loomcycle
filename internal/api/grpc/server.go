@@ -1349,7 +1349,22 @@ func agentFrameJSON(agentID, runID, sessionID, parentAgentID string) string {
 // mapRunnerErr converts a runner.ErrFoo (or wrapped variant) into a
 // gRPC status error. Preserves the underlying message so adapter
 // logs can correlate with HTTP-side error bodies.
+// mapRunnerErr turns a runner error into the gRPC status a caller sees, then
+// attaches google.rpc error details so conditions that SHARE a code stay
+// distinguishable. codes.ResourceExhausted alone cannot separate a transient
+// concurrency cap from an exhausted token budget, and those want opposite
+// behaviour from the caller.
 func mapRunnerErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return withErrorDetails(status.Convert(runnerErrStatus(err)), err)
+}
+
+// runnerErrStatus is the code-and-message mapping, unchanged. Kept separate
+// from the decoration above so the codes a caller branches on stay easy to
+// read and to diff.
+func runnerErrStatus(err error) error {
 	if err == nil {
 		return nil
 	}
