@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -130,6 +131,12 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		result.Status = string(store.RunCancelled)
 		result.Error = runErr.Error()
 	case runErr != nil:
+		// Classify HERE, not in the MCP handler: this is the last point the
+		// typed error exists. The line below flattens it to a string, and a
+		// string is not something errors.Is can match.
+		if info, ok := errclassify.CategoryOf(runErr); ok {
+			result.ErrorInfo = &info
+		}
 		result.Status = string(store.RunFailed)
 		result.Error = runErr.Error()
 	case lastErrorMsg != "":
@@ -203,6 +210,14 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 				res.Status = string(store.RunFailed)
 				if res.Error == "" {
 					res.Error = err.Error()
+				}
+				// Batch children are a fourth writer of failure state; classify
+				// here too so a child refused by admission is as legible as a
+				// single spawn_run refused the same way.
+				if res.ErrorInfo == nil {
+					if info, ok := errclassify.CategoryOf(err); ok {
+						res.ErrorInfo = &info
+					}
 				}
 			}
 			results[i] = res

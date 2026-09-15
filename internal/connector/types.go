@@ -8,6 +8,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // ToolResult is the output of a builtin-tool invocation through the
@@ -136,6 +137,13 @@ type SpawnRunResult struct {
 	FinalText  string           `json:"final_text,omitempty"`
 	Usage      *providers.Usage `json:"usage,omitempty"`
 	Error      string           `json:"error,omitempty"`
+	// ErrorInfo is the machine-readable half of Error, classified at the point
+	// the TYPED error still exists. It has to be captured here because this
+	// struct is where the type is destroyed: a failed run is reported as
+	// (result, nil) with Error set to runErr.Error(), so by the time the MCP
+	// handler sees it there is nothing left to match on but a string.
+	// Nil when the failure is not one the runtime knows how to categorise.
+	ErrorInfo *tools.ErrorInfo `json:"-"`
 	// Limits carries any RFC AW per-scope token-budget crossings observed
 	// during the run (soft warnings), so an MCP spawn_run caller sees the
 	// budget banner in the tool result itself — not only on the streamed

@@ -11,8 +11,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -298,12 +300,21 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		if result.Error == "" {
 			result.Error = fmt.Sprintf("spawn_run exceeded the %dms MCP transport timeout; the run was cancelled", effectiveTimeoutMS)
 		}
-		return toolResultJSON(result), nil
+		// Hand-labelled: the transport deadline is constructed here, so there
+		// is no typed error for the classifier to match on.
+		if result.ErrorInfo == nil {
+			result.ErrorInfo = &tools.ErrorInfo{
+				Category:    tools.CategoryTransient,
+				Retryable:   true,
+				Description: "The run exceeded this MCP connection's transport timeout and was cancelled. Retrying may succeed; a shorter task or a longer timeout will help.",
+			}
+		}
+		return toolResultForRun(result), nil
 	}
 	if err != nil {
-		return toolErr("spawn_run: " + err.Error()), nil
+		return toolErrFrom("spawn_run", err), nil
 	}
-	return toolResultJSON(result), nil
+	return toolResultForRun(result), nil
 }
 
 // handleSpawnRuns is the RFC Y external fan-out tool: validate each child spec
@@ -346,7 +357,7 @@ func handleSpawnRuns(ctx context.Context, env *handlerEnv, args json.RawMessage)
 	res, err := env.connector.SpawnRunBatch(ctx, req)
 	if err != nil {
 		// Malformed batch (over-cap / unsupported mode) — a tool error.
-		return toolErr("spawn_runs: " + err.Error()), nil
+		return toolErrFrom("spawn_runs", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -462,6 +473,13 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 	case runErr != nil:
 		result.Status = "failed"
 		result.Error = runErr.Error()
+		// Second classification point. The streaming spawn path is a
+		// SEPARATE writer from connector.SpawnRun and flattens the typed
+		// error the same way, so classifying only in the connector would
+		// leave every RunEventsEnabled session unclassified.
+		if info, ok := errclassify.CategoryOf(runErr); ok {
+			result.ErrorInfo = &info
+		}
 	}
 	return result, nil
 }
@@ -476,7 +494,7 @@ func handleCancelRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 	}
 	res, err := env.connector.CancelRun(ctx, p.AgentID, p.Reason)
 	if err != nil {
-		return toolErr("cancel_run: " + err.Error()), nil
+		return toolErrFrom("cancel_run", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -490,7 +508,7 @@ func handleGetRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 	}
 	res, err := env.connector.GetRun(ctx, p.AgentID)
 	if err != nil {
-		return toolErr("get_run: " + err.Error()), nil
+		return toolErrFrom("get_run", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -512,7 +530,7 @@ func handleCompactRun(ctx context.Context, env *handlerEnv, args json.RawMessage
 	}
 	run, err := env.connector.GetRun(ctx, p.AgentID)
 	if err != nil {
-		return toolErr("compact_run: " + err.Error()), nil
+		return toolErrFrom("compact_run", err), nil
 	}
 	if run.RunID == "" {
 		return toolErr("compact_run: no run_id for agent_id " + p.AgentID), nil
@@ -521,7 +539,7 @@ func handleCompactRun(ctx context.Context, env *handlerEnv, args json.RawMessage
 	if err != nil {
 		// Includes the parked-boundary "run_busy" rejection — surfaced as a tool
 		// error so the orchestrator can retry when the run parks.
-		return toolErr("compact_run: " + err.Error()), nil
+		return toolErrFrom("compact_run", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -533,7 +551,7 @@ func handleListRuns(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	}
 	res, err := env.connector.ListRuns(ctx, f)
 	if err != nil {
-		return toolErr("list_runs: " + err.Error()), nil
+		return toolErrFrom("list_runs", err), nil
 	}
 	return toolResultJSON(struct {
 		Runs []connector.Run `json:"runs"`
@@ -549,7 +567,7 @@ func handleRegisterAgent(ctx context.Context, env *handlerEnv, args json.RawMess
 	}
 	res, err := env.connector.RegisterAgent(ctx, req)
 	if err != nil {
-		return toolErr("register_agent: " + err.Error()), nil
+		return toolErrFrom("register_agent", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -623,7 +641,7 @@ func handleUnregisterAgent(ctx context.Context, env *handlerEnv, args json.RawMe
 		return toolErr("invalid unregister_agent arguments: " + err.Error()), nil
 	}
 	if err := env.connector.UnregisterAgent(ctx, p.Name); err != nil {
-		return toolErr("unregister_agent: " + err.Error()), nil
+		return toolErrFrom("unregister_agent", err), nil
 	}
 	return toolResultJSON(map[string]any{"unregistered": true, "name": p.Name}), nil
 }
@@ -639,7 +657,7 @@ func handleListAgents(ctx context.Context, env *handlerEnv, args json.RawMessage
 	}
 	agents, err := env.connector.ListAgents(ctx, includeDyn)
 	if err != nil {
-		return toolErr("list_agents: " + err.Error()), nil
+		return toolErrFrom("list_agents", err), nil
 	}
 	return toolResultJSON(struct {
 		Agents []connector.AgentDescriptor `json:"agents"`
@@ -680,7 +698,7 @@ func handleCredentialDef(ctx context.Context, env *handlerEnv, args json.RawMess
 	}
 	res, err := env.connector.CredentialDef(mcpPrincipalCtx(ctx), args)
 	if err != nil {
-		return toolErr("credentialdef: " + err.Error()), nil
+		return toolErrFrom("credentialdef", err), nil
 	}
 	return &loommcp.CallToolResult{
 		Content: []loommcp.ContentBlock{{Type: "text", Text: res.Text}},
@@ -713,7 +731,7 @@ func handlePauseRuntime(ctx context.Context, env *handlerEnv, args json.RawMessa
 	_ = json.Unmarshal(args, &p)
 	res, err := env.connector.PauseRuntime(ctx, p.TimeoutMS)
 	if err != nil {
-		return toolErr("pause_runtime: " + err.Error()), nil
+		return toolErrFrom("pause_runtime", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -721,7 +739,7 @@ func handlePauseRuntime(ctx context.Context, env *handlerEnv, args json.RawMessa
 func handleResumeRuntime(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
 	res, err := env.connector.ResumeRuntime(ctx)
 	if err != nil {
-		return toolErr("resume_runtime: " + err.Error()), nil
+		return toolErrFrom("resume_runtime", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -729,7 +747,7 @@ func handleResumeRuntime(ctx context.Context, env *handlerEnv, _ json.RawMessage
 func handleGetRuntimeState(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
 	res, err := env.connector.GetRuntimeState(ctx)
 	if err != nil {
-		return toolErr("get_runtime_state: " + err.Error()), nil
+		return toolErrFrom("get_runtime_state", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -737,7 +755,7 @@ func handleGetRuntimeState(ctx context.Context, env *handlerEnv, _ json.RawMessa
 func handleResolveProbe(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
 	res, err := env.connector.ResolveProbe(ctx)
 	if err != nil {
-		return toolErr("resolve_probe: " + err.Error()), nil
+		return toolErrFrom("resolve_probe", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -747,7 +765,7 @@ func handleCreateSnapshot(ctx context.Context, env *handlerEnv, args json.RawMes
 	_ = json.Unmarshal(args, &req)
 	res, err := env.connector.CreateSnapshot(ctx, req)
 	if err != nil {
-		return toolErr("create_snapshot: " + err.Error()), nil
+		return toolErrFrom("create_snapshot", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -755,7 +773,7 @@ func handleCreateSnapshot(ctx context.Context, env *handlerEnv, args json.RawMes
 func handleListSnapshots(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
 	res, err := env.connector.ListSnapshots(ctx)
 	if err != nil {
-		return toolErr("list_snapshots: " + err.Error()), nil
+		return toolErrFrom("list_snapshots", err), nil
 	}
 	return toolResultJSON(struct {
 		Snapshots []connector.SnapshotDescriptor `json:"snapshots"`
@@ -771,7 +789,7 @@ func handleGetSnapshot(ctx context.Context, env *handlerEnv, args json.RawMessag
 	}
 	res, err := env.connector.GetSnapshot(ctx, p.SnapshotID)
 	if err != nil {
-		return toolErr("get_snapshot: " + err.Error()), nil
+		return toolErrFrom("get_snapshot", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -785,7 +803,7 @@ func handleExportSnapshot(ctx context.Context, env *handlerEnv, args json.RawMes
 	}
 	res, err := env.connector.ExportSnapshot(ctx, p.SnapshotID)
 	if err != nil {
-		return toolErr("export_snapshot: " + err.Error()), nil
+		return toolErrFrom("export_snapshot", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -797,7 +815,7 @@ func handleRestoreSnapshot(ctx context.Context, env *handlerEnv, args json.RawMe
 	}
 	res, err := env.connector.RestoreSnapshot(ctx, req)
 	if err != nil {
-		return toolErr("restore_snapshot: " + err.Error()), nil
+		return toolErrFrom("restore_snapshot", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -810,7 +828,7 @@ func handleDeleteSnapshot(ctx context.Context, env *handlerEnv, args json.RawMes
 		return toolErr("invalid delete_snapshot arguments: " + err.Error()), nil
 	}
 	if err := env.connector.DeleteSnapshot(ctx, p.SnapshotID); err != nil {
-		return toolErr("delete_snapshot: " + err.Error()), nil
+		return toolErrFrom("delete_snapshot", err), nil
 	}
 	return toolResultJSON(map[string]any{"deleted": true, "snapshot_id": p.SnapshotID}), nil
 }
@@ -849,6 +867,76 @@ func toolErr(msg string) *loommcp.CallToolResult {
 	}
 }
 
+// toolErrFrom is toolErr for a failure that still carries a TYPED error. The
+// human-readable text is unchanged; the machine-readable half is added when the
+// runtime knows what kind of failure this is. An unclassified error produces
+// byte-identical JSON to toolErr, which is what keeps this additive.
+func toolErrFrom(prefix string, err error) *loommcp.CallToolResult {
+	res := toolErr(prefix + ": " + err.Error())
+	if info, ok := errclassify.CategoryOf(err); ok {
+		res.StructuredContent = loommcp.StructuredErrorJSON(info)
+	}
+	return res
+}
+
+// toolErrValidation is for a refusal the handler decides ITSELF — a missing
+// field, a bad enum, an over-cap batch. There is no typed error to classify
+// because the handler is the thing that knows: the caller sent something
+// malformed and can fix it alone, which is exactly `validation`.
+//
+// `msg` stays the operator-facing text. `fix` is the next step handed to the
+// agent, and should name what to change rather than restate what broke —
+// a description that repeats the message costs tokens and carries no decision.
+func toolErrValidation(msg, fix string) *loommcp.CallToolResult {
+	res := toolErr(msg)
+	res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
+		Category:    tools.CategoryValidation,
+		Retryable:   false,
+		Description: fix,
+	})
+	return res
+}
+
+// runFailed reports whether a spawn result is a FAILED tool call.
+//
+// A cancelled run is deliberately not a failure: the caller asked for it, and
+// reporting their own request back as an error would have an agent
+// "recovering" from something it did on purpose. This mirrors the classifier,
+// which leaves context.Canceled unclassified for the same reason.
+func runFailed(r connector.SpawnRunResult) bool {
+	switch r.Status {
+	case "failed", "timeout":
+		return true
+	case "cancelled":
+		return false
+	}
+	return r.Error != ""
+}
+
+// toolResultForRun is the ONE place a spawn result becomes a tool result.
+//
+// isError is DERIVED here rather than set by each writer. A census of the
+// failure paths found seven writers — the connector's own failure and
+// cancellation branches, its event-only error path, its batch-child fallback,
+// the streaming spawner's two branches and the transport-timeout path — and
+// only one of them had been taught to classify. Deriving at the single render
+// point means a writer cannot forget, and a new one inherits it.
+//
+// Before this, a run that failed came back success-shaped: isError unset, with
+// the failure buried in an `error` string inside the JSON payload. A caller had
+// to parse the payload to learn the call had failed at all.
+func toolResultForRun(r connector.SpawnRunResult) *loommcp.CallToolResult {
+	res := toolResultJSON(r)
+	if !runFailed(r) {
+		return res
+	}
+	res.IsError = true
+	if r.ErrorInfo != nil {
+		res.StructuredContent = loommcp.StructuredErrorJSON(*r.ErrorInfo)
+	}
+	return res
+}
+
 // --- Interruption (v0.8.16) ---
 
 // handleInterruptionResolve is the 21st LoomCycle MCP meta-tool. Lets
@@ -868,7 +956,7 @@ func handleInterruptionResolve(ctx context.Context, env *handlerEnv, args json.R
 	}
 	res, err := env.connector.InterruptionResolve(ctx, req)
 	if err != nil {
-		return toolErr("interruption_resolve: " + err.Error()), nil
+		return toolErrFrom("interruption_resolve", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -891,7 +979,7 @@ func handleRegisterHook(ctx context.Context, env *handlerEnv, args json.RawMessa
 	}
 	res, err := env.connector.RegisterHook(ctx, req)
 	if err != nil {
-		return toolErr("register_hook: " + err.Error()), nil
+		return toolErrFrom("register_hook", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -902,7 +990,7 @@ func handleListHooks(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*
 	}
 	res, err := env.connector.ListHooks(ctx)
 	if err != nil {
-		return toolErr("list_hooks: " + err.Error()), nil
+		return toolErrFrom("list_hooks", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -915,7 +1003,7 @@ func handleListChannels(ctx context.Context, env *handlerEnv, _ json.RawMessage)
 	}
 	resp, err := env.connector.ListChannels(ctx)
 	if err != nil {
-		return toolErr("list_channels: " + err.Error()), nil
+		return toolErrFrom("list_channels", err), nil
 	}
 	return toolResultJSON(resp), nil
 }
@@ -992,7 +1080,7 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 		WalkID:   a.WalkID,
 	}, visit)
 	if err != nil {
-		return toolErr("stream_user_run_states: " + err.Error()), nil
+		return toolErrFrom("stream_user_run_states", err), nil
 	}
 	return toolResultJSON(struct {
 		Events []connector.RunStateEvent `json:"events"`
@@ -1014,7 +1102,7 @@ func handleDeleteHook(ctx context.Context, env *handlerEnv, args json.RawMessage
 		return toolErr("delete_hook: id required"), nil
 	}
 	if err := env.connector.DeleteHook(ctx, p.ID); err != nil {
-		return toolErr("delete_hook: " + err.Error()), nil
+		return toolErrFrom("delete_hook", err), nil
 	}
 	return toolResultJSON(map[string]any{"deleted": p.ID}), nil
 }
@@ -1039,7 +1127,7 @@ func handlePublishChannel(ctx context.Context, env *handlerEnv, args json.RawMes
 	}
 	res, err := env.connector.PublishChannel(ctx, req)
 	if err != nil {
-		return toolErr("publish_channel: " + err.Error()), nil
+		return toolErrFrom("publish_channel", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -1054,7 +1142,7 @@ func handleSubscribeChannel(ctx context.Context, env *handlerEnv, args json.RawM
 	}
 	res, err := env.connector.SubscribeChannel(ctx, req)
 	if err != nil {
-		return toolErr("subscribe_channel: " + err.Error()), nil
+		return toolErrFrom("subscribe_channel", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -1069,7 +1157,7 @@ func handlePeekChannel(ctx context.Context, env *handlerEnv, args json.RawMessag
 	}
 	res, err := env.connector.PeekChannel(ctx, req)
 	if err != nil {
-		return toolErr("peek_channel: " + err.Error()), nil
+		return toolErrFrom("peek_channel", err), nil
 	}
 	return toolResultJSON(res), nil
 }
@@ -1084,7 +1172,7 @@ func handleAckChannel(ctx context.Context, env *handlerEnv, args json.RawMessage
 	}
 	res, err := env.connector.AckChannel(ctx, req)
 	if err != nil {
-		return toolErr("ack_channel: " + err.Error()), nil
+		return toolErrFrom("ack_channel", err), nil
 	}
 	return toolResultJSON(res), nil
 }

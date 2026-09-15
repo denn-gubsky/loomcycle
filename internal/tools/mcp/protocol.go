@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // Caller is the minimum surface a transport must expose to drive the MCP
@@ -80,6 +83,62 @@ type CallToolParams struct {
 type CallToolResult struct {
 	Content []ContentBlock `json:"content"`
 	IsError bool           `json:"isError,omitempty"`
+
+	// StructuredContent is the machine-readable sibling of Content. On a
+	// failure we put the error's category, retryability and next step here,
+	// so a caller decides what to do without parsing English out of a text
+	// block.
+	//
+	// json.RawMessage in both directions on purpose. Emitting: we control the
+	// shape (StructuredError). DECODING: this arrives from someone else's
+	// server and is their claim, not ours — keeping it raw means we retain it
+	// for the model without the struct implying we validated or trusted it.
+	//
+	// omitempty is what keeps this additive: absent when we have nothing to
+	// say, so a client that has never heard of the key sees byte-identical
+	// JSON to what it saw before.
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+}
+
+// StructuredError is the failure payload carried in StructuredContent. The
+// first three fields follow the MCP structured-error convention; the fourth is
+// ours, and mirrors the Retry-After the HTTP surface already emits for the same
+// conditions so the two surfaces say one thing about how long to wait.
+type StructuredError struct {
+	ErrorCategory string `json:"errorCategory"`
+	IsRetryable   bool   `json:"isRetryable"`
+	Description   string `json:"description"`
+
+	// RetryAfterSeconds is omitted rather than zeroed when there is no hint:
+	// "wait as you judge best" and "retry immediately" are opposite
+	// instructions, and 0 would silently mean the second.
+	RetryAfterSeconds *int `json:"retryAfterSeconds,omitempty"`
+}
+
+// StructuredErrorJSON renders info as the StructuredContent payload. It
+// returns nil for a zero-category info so an unclassified failure emits no key
+// at all and keeps today's exact wire bytes.
+func StructuredErrorJSON(info tools.ErrorInfo) json.RawMessage {
+	if info.Category == "" {
+		return nil
+	}
+	se := StructuredError{
+		ErrorCategory: string(info.Category),
+		IsRetryable:   info.Retryable,
+		Description:   info.Description,
+	}
+	// A backoff hint on a non-retryable failure would tell a caller to wait
+	// and then retry something that can never succeed. Drop it rather than
+	// trust every construction site to have got the pairing right.
+	if info.Retryable && info.RetryAfter != nil {
+		secs := int((*info.RetryAfter + time.Second - 1) / time.Second) // round up: 0s would read as "retry now"
+		se.RetryAfterSeconds = &secs
+	}
+	b, err := json.Marshal(se)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // ContentBlock is one piece of tool output. v0.3 supports type=="text"; other
