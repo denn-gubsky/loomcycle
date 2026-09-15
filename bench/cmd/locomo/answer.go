@@ -80,6 +80,12 @@ var (
 	// 10 read, 24 of 376 facts written, and a 0/120 answer axis that looked like
 	// a memory result and was really 93% of the corpus never consolidated.
 	chatsReadRe = regexp.MustCompile(`chats read (\d+)`)
+	// nothingNewRe is the consolidator's THIRD report shape, and it is the clean
+	// drain: no unconsolidated chats and an empty queue. Without it the pass falls
+	// through to the unreadable-report branch, which stops correctly but announces
+	// it as "stopping rather than looping blind" — a completed drain reported as a
+	// fault the reader then goes looking for.
+	nothingNewRe = regexp.MustCompile(`(?i)nothing new:`)
 	// idleRe reads the rest of a chat-path pass: a pass that read chats but
 	// changed NOTHING. The watermark walks every chat in the tenant, not only
 	// the ones this run wrote, so on a tenant with history the cursor keeps
@@ -595,6 +601,9 @@ func consolidateDrain(ctx context.Context, mc *MCPClient, userID string, maxPass
 		// consuming when the watermark catches up. Either one reaching zero means
 		// drained — and a report carrying NEITHER is unreadable, which is not the
 		// same as finished and must not be treated as it.
+		if nothingNewRe.MatchString(rr.FinalText) {
+			return facts, passes, nil
+		}
 		if m := queuedRe.FindStringSubmatch(rr.FinalText); m != nil {
 			var queued int
 			_, _ = fmt.Sscanf(m[1], "%d", &queued)

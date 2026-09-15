@@ -25,13 +25,21 @@ memory:
     # Pinned rather than left to OLLAMA_BASE_URL: the embedder and the extractor
     # must reach the SAME host, and an env var that quietly points one of them
     # elsewhere produces a corpus embedded by one model and read by another.
-    base_url: http://100.112.7.68:11434
+    # ⚠️ A host override layer has to repin THIS TOO — moving the extractor alone
+    # is exactly the split this pin exists to prevent.
+    base_url: http://truenas.local:11434
 
-models:
-  # The base preset's local-medium globs qwen3.6*, which faults on this host with
-  # a CUDA illegal-memory-access on the extractor workload (short and 29KB
-  # prompts both, so it is not a size limit). qwen3.8 is healthy there.
-  local-medium: { provider: ollama-local, model_pattern: "qwen3.8*" }
+# NO `models:` OVERRIDE. The extractor runs on whatever the base preset's
+# local-medium glob selects — qwen3.6* — because that is what a default
+# base,memory deployment resolves to, and a benchmark measured on a model nobody
+# runs measures a deployment nobody has.
+#
+# ⚠️ One host here (the DGX at 100.112.7.68) faults on qwen3.6 with a CUDA
+# illegal-memory-access on the extractor workload — short AND 29KB prompts, so
+# it is not a size limit. Repin with an EXTRA --config layer on that host rather
+# than editing this file:
+#     models: { local-medium: { provider: ollama-local, model_pattern: "qwen3.8*" } }
+#     memory: { embedder: { base_url: "http://100.112.7.68:11434" } }
 
 agents:
   # RFC DB section 7: extraction is the only stochastic part of this benchmark,

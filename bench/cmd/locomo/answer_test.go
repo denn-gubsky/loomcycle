@@ -374,6 +374,32 @@ func TestConsolidateDrain_KeepsGoingThroughPassesThatChangeNothing(t *testing.T)
 	}
 }
 
+// The consolidator's third report shape is the clean drain, and it carries
+// neither a queue depth nor a chat count. Reported as unreadable it still stops,
+// but it tells the reader to go looking for a fault that is not there.
+func TestConsolidateDrain_RecognisesNothingNewAsADrain(t *testing.T) {
+	srv, calls := mcpStub(t, []string{
+		"chats read 3; facts written 16; updated in place 0; retired 0; watermark advanced.",
+		"nothing new: no unconsolidated chats and no queued items for this target.",
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	mc := NewMCPClient(srv.URL, "tok", 5*time.Second)
+	facts, passes, err := consolidateDrain(context.Background(), mc, "u", 30, &out)
+	if err != nil {
+		t.Fatalf("consolidateDrain: %v", err)
+	}
+	if passes != 2 || atomic.LoadInt32(calls) != 2 {
+		t.Errorf("passes = %d, calls = %d, want 2 and 2", passes, atomic.LoadInt32(calls))
+	}
+	if facts != 16 {
+		t.Errorf("facts = %d, want 16", facts)
+	}
+	if strings.Contains(out.String(), "looping blind") {
+		t.Errorf("a clean drain was reported as an unreadable report: %q", out.String())
+	}
+}
+
 func TestConsolidateDrain_ChatPathHonoursThePassCeiling(t *testing.T) {
 	// A cursor that never catches up must not loop forever.
 	srv, calls := mcpStub(t, []string{"chats read 10; facts written 1; watermark advanced."})

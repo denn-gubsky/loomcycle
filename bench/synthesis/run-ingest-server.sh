@@ -23,7 +23,7 @@ export LOOMCYCLE_SQLMEM_ENABLED=1
 export LOOMCYCLE_PG_DSN="${LOOMCYCLE_PG_DSN:-postgres://localhost:5432/loomcycle_db2?sslmode=disable}"
 # The extractor and the embedder must reach the SAME host; ingest.yaml pins the
 # embedder, this pins the provider.
-export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://100.112.7.68:11434}"
+export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://truenas.local:11434}"
 export LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX="${LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX:-32768}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8874}"
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$here/data}"
