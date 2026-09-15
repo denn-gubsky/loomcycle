@@ -109,6 +109,26 @@ class LimitInfo:
 
 
 @dataclass(frozen=True)
+class ErrorInfo:
+    """The machine-readable half of a terminal run failure.
+
+    Carried on ``type="error"`` frames. ``None`` on every other event
+    type AND on a failure the runtime cannot categorise — there is
+    deliberately no "unknown" category, because a bucket that carries
+    no decision is worse than an absent field.
+    """
+
+    category: str  # "transient" | "validation" | "business" | "permission"
+    is_retryable: bool
+    description: str = ""
+    # Optional backoff hint in milliseconds, meaningful only when
+    # is_retryable. ``None`` rather than 0 because an absent hint and a
+    # zero one are opposite instructions: "wait as you judge best"
+    # versus "retry immediately".
+    retry_after_ms: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     """One frame from a Run/Continue stream.
 
@@ -131,6 +151,7 @@ class AgentEvent:
     awaiting_input: Optional[AwaitingInput] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
+    error_info: Optional[ErrorInfo] = None
     error: str = ""
     is_error: bool = False
     stop_reason: str = ""
@@ -195,6 +216,18 @@ class AgentEvent:
                 limit=ev.limit.limit,
                 message=ev.limit.message,
             )
+        ei: Optional[ErrorInfo] = None
+        if ev.HasField("error_info"):
+            ei = ErrorInfo(
+                category=ev.error_info.category,
+                is_retryable=ev.error_info.is_retryable,
+                description=ev.error_info.description,
+                retry_after_ms=(
+                    ev.error_info.retry_after_ms
+                    if ev.error_info.HasField("retry_after_ms")
+                    else None
+                ),
+            )
         return cls(
             type=ev.type,
             text=ev.text,
@@ -205,6 +238,7 @@ class AgentEvent:
             awaiting_input=ai,
             user_input=ui,
             limit=li,
+            error_info=ei,
             error=ev.error,
             is_error=ev.is_error,
             stop_reason=ev.stop_reason,
