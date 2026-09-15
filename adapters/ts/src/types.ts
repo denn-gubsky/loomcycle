@@ -103,6 +103,27 @@ export interface HostWidening {
  *  scope stands against its ceiling — so a UI can render "tenant acme at 1.2M /
  *  1M tokens this month" without a follow-up fetch. Wire-stable; mirrors
  *  providers.LimitInfo. */
+/** The machine-readable half of a terminal run failure, carried on
+ *  `event: error` frames.
+ *
+ *  Once the SSE stream is open the HTTP status is already 200, so without this
+ *  a consumer's only signal is the event type plus an English string —
+ *  "retry shortly" and "your budget is exhausted" look identical and want
+ *  opposite responses. */
+export interface ErrorInfo {
+  /** "transient" | "validation" | "business" | "permission". */
+  category: string;
+  /** Answers only "will resending this exact call fail?" — not "should I give
+   *  up". A false here still leaves the alternatives in `description` open. */
+  is_retryable: boolean;
+  /** What went wrong AND what to do next. */
+  description?: string;
+  /** Backoff hint, meaningful only when `is_retryable`. ABSENT rather than 0
+   *  when there is no hint: an absent hint and a zero one are opposite
+   *  instructions. */
+  retry_after_ms?: number;
+}
+
 export interface LimitInfo {
   /** Which axis tripped: "operator" | "tenant" | "user". */
   scope: string;
@@ -146,6 +167,12 @@ export interface AgentEvent {
   /** Payload on `event: limit` (RFC AW) — a per-scope token-budget crossing.
    *  Nil on all other event types. */
   limit?: LimitInfo;
+  /** Payload on `event: error` — the classification of a TERMINAL run failure.
+   *  Absent on every other event type, and absent for a failure the runtime
+   *  cannot categorise: there is deliberately no "unknown" category, so a
+   *  missing `error_info` means "not classified", never "classified as
+   *  nothing in particular". */
+  error_info?: ErrorInfo;
   // v0.4 `event: agent` side-channel announces the run's tracking IDs
   // immediately after the `event: session` frame. parent_agent_id is null
   // for top-level runs.

@@ -9,6 +9,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
@@ -217,6 +219,85 @@ func TestErrorDetails_RetryInfoImpliesRetryable(t *testing.T) {
 		case v.hasRetry && v.retryIn <= 0:
 			t.Errorf("%v: RetryInfo with a %v delay — zero reads as 'retry immediately', "+
 				"which is the opposite of 'no hint'", err, v.retryIn)
+		}
+	}
+}
+
+// --- the streamed half: Event.error_info ---
+
+// A gRPC STREAM consumer sees error frames, not status codes: the RPC is still
+// open. Without error_info on the frame, a transient concurrency cap and an
+// exhausted budget look identical there — the same collision this file fixed
+// for the status, on the other half of the surface.
+func TestEventToProto_CarriesTheClassification(t *testing.T) {
+	five := 5 * time.Second
+	ev := providers.Event{
+		Type:  providers.EventError,
+		Error: "run: backpressure",
+		ErrorInfo: &errkind.Info{
+			Category:    errkind.CategoryTransient,
+			Retryable:   true,
+			Description: "At a concurrency limit.",
+			RetryAfter:  &five,
+		},
+	}
+	out := eventToProto(ev)
+	if out.GetErrorInfo() == nil {
+		t.Fatal("classification dropped crossing into the proto — a stream consumer still sees only a string")
+	}
+	if got := out.GetErrorInfo().GetCategory(); got != "transient" {
+		t.Errorf("category = %q, want transient", got)
+	}
+	if !out.GetErrorInfo().GetIsRetryable() {
+		t.Error("is_retryable lost")
+	}
+	if got := out.GetErrorInfo().GetRetryAfterMs(); got != 5000 {
+		t.Errorf("retry_after_ms = %d, want 5000", got)
+	}
+	// The human-readable half is untouched.
+	if out.GetError() != ev.Error {
+		t.Errorf("error text altered: %q", out.GetError())
+	}
+}
+
+// Absent rather than zero. proto3 `optional` gives presence, and a 0 would
+// read as "retry immediately" — the opposite of "no hint".
+func TestEventToProto_BackoffIsAbsentNotZero(t *testing.T) {
+	t.Run("retryable with no hint", func(t *testing.T) {
+		out := eventToProto(providers.Event{
+			Type: providers.EventError,
+			ErrorInfo: &errkind.Info{
+				Category: errkind.CategoryTransient, Retryable: true,
+			},
+		})
+		if out.GetErrorInfo().RetryAfterMs != nil {
+			t.Errorf("invented a backoff of %d", out.GetErrorInfo().GetRetryAfterMs())
+		}
+	})
+
+	t.Run("non-retryable never carries one", func(t *testing.T) {
+		thirty := 30 * time.Second
+		out := eventToProto(providers.Event{
+			Type: providers.EventError,
+			ErrorInfo: &errkind.Info{
+				Category: errkind.CategoryBusiness, Retryable: false, RetryAfter: &thirty,
+			},
+		})
+		if out.GetErrorInfo().RetryAfterMs != nil {
+			t.Error("a non-retryable failure carries a backoff — it tells a consumer to wait " +
+				"and then retry something that cannot succeed until a human acts")
+		}
+	})
+}
+
+// An unclassified failure, and every non-error event, must carry nothing.
+func TestEventToProto_NoClassificationIsNoMessage(t *testing.T) {
+	for _, ev := range []providers.Event{
+		{Type: providers.EventError, Error: "something nobody classified"},
+		{Type: providers.EventText, Text: "hello"},
+	} {
+		if out := eventToProto(ev); out.GetErrorInfo() != nil {
+			t.Errorf("%s event acquired a classification: %+v", ev.Type, out.GetErrorInfo())
 		}
 	}
 }

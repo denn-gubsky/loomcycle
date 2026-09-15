@@ -943,6 +943,18 @@ message Event {
   // token-budget crossing (soft warning at run start, or a soft crossing
   // mid-run). SERVER-generated. Nil on every other event type.
   LimitInfo limit = 12;
+
+  // error_info classifies a TERMINAL run failure on type=error frames: what
+  // kind of failure it is, whether resending can succeed, and any backoff.
+  //
+  // Nil on every other event type, AND nil for a failure the runtime cannot
+  // categorise — there is deliberately no "unknown" category, because a
+  // bucket that carries no decision is worse than an absent field.
+  //
+  // A consumer that branches on the gRPC status code alone cannot separate a
+  // transient concurrency cap from an exhausted budget: both are terminal,
+  // both stream an error frame, and they want opposite responses.
+  ErrorInfo error_info = 13;
 }
 
 // AwaitingInput is the type=awaiting_input payload (RFC AI). Mirrors
@@ -1015,6 +1027,30 @@ message LimitInfo {
   int64 used = 5;        // scope's month-to-date token total at the crossing
   int64 limit = 6;       // the tier that was crossed (the soft or hard ceiling)
   string message = 7;    // human-readable banner (optional)
+}
+
+// ErrorInfo is the machine-readable half of a terminal run failure, carried on
+// Event.error_info. It mirrors what the MCP surface puts in structuredContent
+// and what the gRPC status carries in google.rpc.ErrorInfo details, so one
+// condition reads the same whichever surface a consumer is on.
+message ErrorInfo {
+  // transient | validation | business | permission. Empty is never emitted:
+  // an unclassified failure omits the whole message instead.
+  string category = 1;
+
+  // Answers only "will resending this exact call fail?" — not "should the
+  // caller give up". A false here still leaves the alternatives in
+  // description open.
+  bool is_retryable = 2;
+
+  // What went wrong AND what to do next.
+  string description = 3;
+
+  // OPTIONAL backoff hint, meaningful only when is_retryable. Optional rather
+  // than a plain int64 because an absent hint and a zero one are opposite
+  // instructions: "wait as you judge best" versus "retry immediately". A
+  // non-retryable failure never carries one.
+  optional int64 retry_after_ms = 4;
 }
 
 // ========================
