@@ -3211,6 +3211,17 @@ type Env struct {
 	// at any setting — they are the bulk of the volume and the most redundant with the
 	// fact layer, since a fact distilled from a reply is already searchable.
 	MemoryTraceIndexEnabled bool
+	// MemoryTraceAssistantTurns also indexes the ASSISTANT's turns, not only the
+	// user's. Env: LOOMCYCLE_MEMORY_TRACE_ASSISTANT (default OFF, and off even when
+	// the trace index itself is on).
+	//
+	// Separately flagged because the two are different trades. Assistant text is the
+	// bulk of the volume and the most redundant with the fact layer — a fact distilled
+	// from a reply is already searchable — so a deployment that wants its own words
+	// findable should not be made to pay for the model's as well. It is indexed at run
+	// COMPLETION, where a turn boundary exists; assistant text is persisted one row per
+	// streamed delta, so anything reading raw rows would index fragments.
+	MemoryTraceAssistantTurns bool
 	// MemoryTraceMaxAge is how long an indexed turn stays searchable. Env:
 	// LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS. Zero uses the 30-day default.
 	//
@@ -4306,6 +4317,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// RFC CI trace index (opt-in; default OFF).
 	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_INDEX"); v != "" {
 		cfg.Env.MemoryTraceIndexEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_ASSISTANT"); v != "" {
+		cfg.Env.MemoryTraceAssistantTurns = v == "1" || strings.EqualFold(v, "true")
 	}
 	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
