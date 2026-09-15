@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -26,63 +26,25 @@ type Tool interface {
 	Execute(ctx context.Context, input json.RawMessage) (Result, error)
 }
 
-// ErrorCategory says what KIND of failure a tool hit, because that is the only
-// thing the caller actually has to decide from: resend this call, change it, or
-// stop. The four values are deliberately coarse — a finer taxonomy would not
-// change the decision, and a caller that has to reason about fifteen buckets
-// reasons about none of them.
-type ErrorCategory string
-
-const (
-	// CategoryTransient — the request was valid and the system was
-	// temporarily unable to serve it. The same call may succeed later.
-	CategoryTransient ErrorCategory = "transient"
-
-	// CategoryValidation — the request is malformed. The caller can fix it
-	// alone, which is what separates this from Business: a validation
-	// failure is recoverable without anyone else's involvement.
-	CategoryValidation ErrorCategory = "validation"
-
-	// CategoryBusiness — the request is well-formed and was refused by a
-	// rule. Retrying is pointless and so is rewording; the caller needs a
-	// different path. A token budget lands here rather than in Transient
-	// even though the HTTP surface renders it 429, because a budget does
-	// not refill by waiting.
-	CategoryBusiness ErrorCategory = "business"
-
-	// CategoryPermission — the caller lacks authority it could be granted.
-	// NEVER used for "this row belongs to another tenant": that stays an
-	// opaque not-found, because a permission category on a cross-tenant
-	// read confirms the row exists and turns the error into an existence
-	// oracle.
-	CategoryPermission ErrorCategory = "permission"
+// ErrorCategory and ErrorInfo are ALIASES for the errkind vocabulary, not
+// copies. They live there because internal/providers has to carry a category
+// on a run event and cannot import this package (tools imports providers), and
+// one vocabulary with two definitions is the drift this whole line exists to
+// avoid.
+//
+// Kept as aliases so every existing call site reads unchanged. See
+// internal/errkind for what each value means.
+type (
+	ErrorCategory = errkind.Category
+	ErrorInfo     = errkind.Info
 )
 
-// ErrorInfo is the optional structured half of a failed Result. It exists so a
-// caller does not have to infer control flow by reading English prose.
-//
-// Nil means "not classified" — which is the honest state for most failures
-// today and keeps their behaviour byte-identical. Nil is NOT a synonym for
-// "unknown category"; there is deliberately no such category, because a bucket
-// that carries no decision is worse than an absent field.
-type ErrorInfo struct {
-	Category ErrorCategory
-
-	// Retryable answers only "will resending this exact call fail?". It is
-	// not "should the caller give up" — a false here still leaves the
-	// alternative paths in Description open.
-	Retryable bool
-
-	// Description says what went wrong AND what to do next. Model-visible
-	// prompt text: no internal design-doc citations, no DSNs, no host names
-	// from operator config, no token suffixes.
-	Description string
-
-	// RetryAfter is an optional backoff hint, meaningful only when Retryable.
-	// A pointer because an absent hint and a zero hint are opposite
-	// instructions: "wait as you see fit" versus "retry immediately".
-	RetryAfter *time.Duration
-}
+const (
+	CategoryTransient  = errkind.CategoryTransient
+	CategoryValidation = errkind.CategoryValidation
+	CategoryBusiness   = errkind.CategoryBusiness
+	CategoryPermission = errkind.CategoryPermission
+)
 
 // Result is the output of one tool invocation. Text is the human-readable
 // payload the model will see in the next tool_result block. IsError flags a
