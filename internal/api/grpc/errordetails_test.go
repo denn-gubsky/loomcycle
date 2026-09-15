@@ -179,3 +179,44 @@ func TestErrorDetails_UnknownErrorGetsNoInventedDetails(t *testing.T) {
 		t.Error("invented a retry hint for an unclassified error")
 	}
 }
+
+// TestErrorDetails_RetryInfoImpliesRetryable is a PROPERTY over every condition
+// the runtime classifies, not a single case.
+//
+// It exists because a direct probe showed the guard in withErrorDetails is not
+// currently exercised by any real input: the one non-retryable condition that
+// could collide (a token budget) carries no RetryAfter, so dropping the
+// `Retryable &&` check changes nothing today. That makes the guard invisible to
+// a targeted test while still being the thing that stops a future classifier
+// change from telling callers to wait for something that will never clear.
+//
+// Asserting the biconditional across the whole set catches that change on the
+// day it is made, wherever it is made.
+func TestErrorDetails_RetryInfoImpliesRetryable(t *testing.T) {
+	for _, err := range []error{
+		runner.ErrBackpressure,
+		runner.ErrPerUserQuotaExhausted,
+		runner.ErrProviderConcurrencyExhausted,
+		runner.ErrRuntimePaused,
+		runner.ErrTokenLimitExceeded,
+		runner.ErrUnknownAgent,
+		runner.ErrInvalidArgument,
+		runner.ErrUnknownProvider,
+		runner.ErrSessionNotFound,
+		runner.ErrSessionRequired,
+	} {
+		v := viewOf(t, mapRunnerErr(err))
+		if v.retryable == "" {
+			continue // unclassified: nothing to check
+		}
+		retryable := v.retryable == "true"
+		switch {
+		case v.hasRetry && !retryable:
+			t.Errorf("%v: RetryInfo (%v) on a NON-retryable failure — this tells a caller to wait "+
+				"and then retry something that cannot succeed until a human acts", err, v.retryIn)
+		case v.hasRetry && v.retryIn <= 0:
+			t.Errorf("%v: RetryInfo with a %v delay — zero reads as 'retry immediately', "+
+				"which is the opposite of 'no hint'", err, v.retryIn)
+		}
+	}
+}
