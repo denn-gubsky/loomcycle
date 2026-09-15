@@ -130,7 +130,7 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 		matches = append(matches, best[sid])
 	}
 
-	return okJSON(map[string]any{
+	return okJSONCount(map[string]any{
 		"scope": scope,
 		"match": contentMatchMode,
 		"chats": chats,
@@ -139,7 +139,7 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 		"matched_turns": matches,
 		"total":         len(chats),
 		"limit":         limit,
-	})
+	}, len(chats))
 }
 
 // traceTurnRow reads back what the indexer stored. Kept here rather than shared with

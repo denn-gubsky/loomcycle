@@ -517,7 +517,7 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			out["across_scopes"] = elsewhere
 		}
 	}
-	return okJSON(out)
+	return okJSONCount(out, len(facts))
 }
 
 // writeChunkMeta upserts the sidecar row, PRESERVING every field the caller did not

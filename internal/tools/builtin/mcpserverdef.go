@@ -470,7 +470,7 @@ func (m *MCPServerDef) execList(ctx context.Context, in mcpServerDefInput) (tool
 			}
 			out = append(out, mcpServerDefRowResponseMap(r))
 		}
-		return okJSON(map[string]any{"name": in.Name, "versions": out})
+		return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 	}
 	// MCPServerDefListNames returns a TenantID per summary (it's the
 	// boot/advertising key, NOT a tenant-scoped query) — filter the
@@ -486,7 +486,7 @@ func (m *MCPServerDef) execList(ctx context.Context, in mcpServerDefInput) (tool
 		}
 		out = append(out, s)
 	}
-	return okJSON(map[string]any{"names": out})
+	return okJSONCount(map[string]any{"names": out}, len(out))
 }
 
 // ---- retire / promote ----

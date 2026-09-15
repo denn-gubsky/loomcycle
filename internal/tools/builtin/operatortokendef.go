@@ -362,7 +362,7 @@ func (s *OperatorTokenDef) execList(ctx context.Context, in operatorTokenDefInpu
 	for _, r := range rows {
 		out = append(out, operatorTokenRowResponse(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "tokens": out})
+	return okJSONCount(map[string]any{"name": in.Name, "tokens": out}, len(out))
 }
 
 // ---- helpers ----

@@ -210,7 +210,7 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 		out = append(out, skillEntry{Name: n, Description: d})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return okJSON(map[string]any{"skills": out})
+	return okJSONCount(map[string]any{"skills": out}, len(out))
 }
 
 // resolveSkill looks up a skill by name. Returns (body, tools,

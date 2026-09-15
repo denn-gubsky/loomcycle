@@ -460,7 +460,7 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, 
 		}
 		out = append(out, skillDefRowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire / promote ----

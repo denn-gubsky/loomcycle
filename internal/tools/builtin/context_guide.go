@@ -26,7 +26,7 @@ import (
 func (c *Context) execGuide(ctx context.Context) (tools.Result, error) {
 	allowSet, ok := agentToolSet(ctx)
 	if !ok {
-		return okJSON(map[string]any{"tools": []any{}, "count": 0})
+		return okJSONCount(map[string]any{"tools": []any{}, "count": 0}, 0)
 	}
 	type guideEntry struct {
 		Name            string   `json:"name"`
@@ -53,7 +53,7 @@ func (c *Context) execGuide(ctx context.Context) (tools.Result, error) {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return okJSON(map[string]any{"tools": out, "count": len(out)})
+	return okJSONCount(map[string]any{"tools": out, "count": len(out)}, len(out))
 }
 
 // parseSchemaDigest extracts the `op` enum (properties.op.enum) and the

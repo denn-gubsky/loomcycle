@@ -360,7 +360,7 @@ func (s *A2AAgentDef) execList(ctx context.Context, policy tools.A2AAgentDefPoli
 		}
 		out = append(out, a2aAgentRowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire ----

@@ -495,7 +495,7 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 	// this filter is what keeps an agent's introspection to its own grant.
 	allowSet, ok := agentToolSet(ctx)
 	if !ok {
-		return okJSON(map[string]any{"tools": []any{}, "count": 0})
+		return okJSONCount(map[string]any{"tools": []any{}, "count": 0}, 0)
 	}
 
 	type toolSummary struct {
@@ -537,7 +537,7 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return okJSON(map[string]any{"tools": out, "count": len(out)})
+	return okJSONCount(map[string]any{"tools": out, "count": len(out)}, len(out))
 }
 
 // agentToolSet returns the caller's effective tool allowlist as a rule set, and
@@ -734,7 +734,7 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 		}
 		out = append(out, s)
 	}
-	return okJSON(map[string]any{"agents": out, "count": len(out)})
+	return okJSONCount(map[string]any{"agents": out, "count": len(out)}, len(out))
 }
 
 // ---- lineage ----

@@ -519,7 +519,7 @@ func (t *TeamDef) execList(ctx context.Context, in teamDefInput) (tools.Result, 
 		}
 		out = append(out, teamDefRowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire / promote ----
