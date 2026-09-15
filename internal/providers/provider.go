@@ -9,6 +9,8 @@ package providers
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 )
 
 // Provider is one LLM endpoint. Implementations are stateless across calls;
@@ -592,6 +594,20 @@ type Event struct {
 	IsError bool `json:"is_error,omitempty"`
 	// Retry carries the retry telemetry on EventRetry. Nil otherwise.
 	Retry *RetryInfo `json:"retry,omitempty"`
+
+	// ErrorInfo classifies a TERMINAL run failure on EventError: what kind it
+	// is, whether resending can succeed, and any backoff. Nil elsewhere, and
+	// nil for a failure the runtime cannot categorise — there is deliberately
+	// no fallback bucket, because a category that carries no decision is worse
+	// than an absent field.
+	//
+	// It exists because an SSE consumer's only signal today is the event TYPE
+	// plus an English string: once the stream is open the HTTP status is
+	// already 200, so "retry in five seconds" and "your budget is gone" arrive
+	// looking identical. The admission path never had this problem — it
+	// answers before the stream opens and has always emitted a typed code and
+	// Retry-After.
+	ErrorInfo *errkind.Info `json:"error_info,omitempty"`
 
 	// Fallback carries the structured payload on EventProviderFallback
 	// (the v0.8.2 runtime provider switch). Nil on all other event

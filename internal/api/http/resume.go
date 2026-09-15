@@ -440,7 +440,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 
 		loopRes, runErr := loop.Run(loopCtx, runOpts)
 		if runErr != nil {
-			emit(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+			emit(runErrorEvent(runErr))
 		}
 		s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
 	}()

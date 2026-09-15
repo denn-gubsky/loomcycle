@@ -4499,7 +4499,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			loopRes, runErr := loop.Run(loopCtx, runOpts)
 			if runErr != nil {
 				// Persist (not stream) the failure so a tailing client sees it.
-				emit(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+				emit(runErrorEvent(runErr))
 			}
 			// WithoutCancel: the store write must not ride a runCtx that an
 			// API-cancel already cancelled (the cause is still read from runCtx).
@@ -4522,7 +4522,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// sub-agents must gate normally. No-op for uncapped/noop slots.
 	loopRes, runErr := loop.Run(s.heldSlotCtx(loopCtx, provSlot), runOpts)
 	if runErr != nil {
-		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+		stream.send(runErrorEvent(runErr))
 	}
 
 	s.finishRunWithCancel(r.Context(), runCtx, runID, loopRes, runErr, meta)
@@ -5042,7 +5042,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, body.UserTier),
 	})
 	if runErr != nil {
-		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+		stream.send(runErrorEvent(runErr))
 	}
 
 	s.finishRunWithCancel(r.Context(), runCtx, run.ID, loopRes, runErr, meta)
