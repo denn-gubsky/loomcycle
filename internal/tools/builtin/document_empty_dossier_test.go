@@ -248,3 +248,68 @@ func TestPruneEmptyDossiers_LeavesNoOrphansBehind(t *testing.T) {
 		}
 	}
 }
+
+// TestPruneEmptyDossiers_NeverTakesATenantRegistryEntry — RFC CV decision 11.
+//
+// Two things that are each correct alone compose into an un-adoption.
+//
+// Adoption mints `person:dave` in the tenant plane and deliberately does NOT backfill
+// the facts already learned about that subject (decision 10), so a freshly adopted
+// dossier has no children and no inbound edges. That is its DESIGNED state, not the
+// end of its life. The empty-dossier sweep walks tenant scopes and would read it as
+// garbage — and removing it makes subjectKnownToTenant false again, so the curator
+// gate starts refusing placement and the operator's decision is silently reversed by
+// a retention interval nobody would connect to it.
+//
+// Latent while the family ships off by default, and live the moment anyone enables it.
+func TestPruneEmptyDossiers_NeverTakesATenantRegistryEntry(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	gctx := grantedTenantCtx(ctx)
+
+	// Built the way ADOPTION builds it: the root IS the entity, carrying the pair plus
+	// the key. Seeding it any other way would test a shape the registry never holds.
+	out, r := docExec(t, d, gctx, `{"op":"create_document","scope":"tenant","title":"Dave",
+		"path":"/facts/dave","type":"person","subject":"Dave","natural_key":"person:dave"}`)
+	if r.IsError {
+		t.Fatalf("create tenant dossier: %s", r.Text)
+	}
+	docID := asStr(out["document_id"])
+	key, mscope, err := d.resolveScope(gctx, "tenant")
+	if err != nil {
+		t.Fatalf("resolveScope(tenant): %v", err)
+	}
+
+	n, _, err := d.PruneEmptyDossiers(gctx, key, mscope, 1<<62, false)
+	if err != nil {
+		t.Fatalf("PruneEmptyDossiers(tenant): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("the sweep took %d tenant registry entries — an adopted subject with no "+
+			"facts yet is EXACTLY this shape, and removing it un-adopts it", n)
+	}
+	res, err := d.query(gctx, key, `SELECT COUNT(*) FROM documents WHERE id = ?`, docID)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if got, _ := asInt64(res.Rows[0][0]); got != 1 {
+		t.Error("the adopted subject's registry entry was deleted; the curator gate will " +
+			"start refusing placement again and nothing will say why")
+	}
+}
+
+// TestPruneEmptyDossiers_StillTakesAUserScopeOne pins that the fix above is a carve-out
+// for the registry and not a blanket disable. A user's own emptied dossier is what the
+// family exists for.
+func TestPruneEmptyDossiers_StillTakesAUserScopeOne(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	docID, _ := dossierFixture(t, d, ctx, "mel", 0)
+
+	if n := pruneDossiers(t, d, ctx, key, false); n != 1 {
+		t.Fatalf("pruned %d user-scope dossiers, want 1 — the tenant carve-out disabled "+
+			"the whole family", n)
+	}
+	if countRows(t, d, ctx, `SELECT COUNT(*) FROM documents WHERE id = ?`, docID) != 0 {
+		t.Error("the user-scope empty dossier survived")
+	}
+}

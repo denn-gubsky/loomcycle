@@ -251,6 +251,24 @@ func (d *Document) PruneEmptyDossiers(ctx context.Context, key sqlmem.ScopeKey, 
 	if d.Store == nil || d.SqlMem == nil {
 		return 0, nil, fmt.Errorf("document prune: not configured")
 	}
+	// ⚠️ A TENANT DOSSIER IS NEVER EMPTY IN THE SENSE THIS SWEEP MEANS, and reading
+	// it as garbage silently reverses an operator's decision.
+	//
+	// The tenant plane holds the entity REGISTRY: an operator adopts a subject, that
+	// mints `person:dave` there, and adoption deliberately does NOT reach back for the
+	// facts already learned about it. So a freshly adopted dossier has no children and
+	// no inbound edges — empty is its DESIGNED state, not the end of its life, and it
+	// stays that way until the next pass writes a fact about that subject.
+	//
+	// Sweeping it un-adopts the subject: subjectKnownToTenant goes false, the curator
+	// gate starts refusing placement again, and an operator's decision is undone by a
+	// retention interval nobody connected to it.
+	//
+	// The asymmetry is the right way round. A wrong sweep here is silent and
+	// self-perpetuating; a missed one leaves a tidy-up an operator can do by hand.
+	if mscope == store.MemoryScopeTenant || key.Scope == string(store.MemoryScopeTenant) {
+		return 0, nil, nil
+	}
 	// A scope that never used the entity tier has no sidecar table. Reported as
 	// "nothing to prune" rather than as a fault, and never provisioned here — the
 	// same treatment PruneRetiredChunks gives a scope the sweeper walks past.
