@@ -294,7 +294,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 		st := "completed"
 		if runErr != nil {
 			st = "failed"
-			prep.Emit(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+			prep.Emit(runErrorEvent(runErr))
 		}
 		s.finishRunWithCancel(context.WithoutCancel(prep.SteerCtx), prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
 		rc.markDone(st)
