@@ -361,7 +361,7 @@ func (s *A2AServerCardDef) execList(ctx context.Context, policy tools.A2AServerC
 		}
 		out = append(out, a2aServerCardRowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire ----

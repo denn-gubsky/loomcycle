@@ -119,5 +119,5 @@ func (r *Recall) Execute(ctx context.Context, input json.RawMessage) (tools.Resu
 	for _, h := range hits {
 		recalled = append(recalled, map[string]any{"text": h.Text, "score": h.Score, "source": h.Source})
 	}
-	return okJSON(map[string]any{"recalled": recalled})
+	return okJSONCount(map[string]any{"recalled": recalled}, len(recalled))
 }

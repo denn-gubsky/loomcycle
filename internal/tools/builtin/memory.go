@@ -1630,7 +1630,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if res.RankNote != "" {
 		out["rank_note"] = res.RankNote
 	}
-	return okJSON(out)
+	return okJSONCount(out, len(entries))
 }
 
 // execAdd implements the RFC K `add` op: ingest conversation messages into a
@@ -1871,7 +1871,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		out["note"] = "this memory backend did not apply the source selector, so these " +
 			"results may include document prose rather than only your own remembered facts and notes"
 	}
-	return okJSON(out)
+	return okJSONCount(out, len(memories))
 }
 
 // RecallFallback is the persistent-memory leg of the Recall tool's silent
@@ -2445,10 +2445,10 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 			"expires_at": expiresAtRFC3339(e.ExpiresAt),
 		})
 	}
-	return okJSON(map[string]any{
+	return okJSONCount(map[string]any{
 		"entries":   out,
 		"truncated": truncated,
-	})
+	}, len(out))
 }
 
 func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
@@ -2868,6 +2868,24 @@ func okJSON(v any) (tools.Result, error) {
 		return errResult(fmt.Sprintf("encode result: %s", err)), nil
 	}
 	return tools.Result{Text: string(b)}, nil
+}
+
+// okJSONCount is okJSON for an op that returns a COLLECTION. n is how many
+// items came back, reported as structure so a caller never has to infer "zero"
+// from the absence of output.
+//
+// Zero is the value that earns this: "the query ran and matched nothing" and
+// "the query did not run" are different outcomes wanting different next moves,
+// and prose is a lossy way to tell them apart. A tool that is NOT returning a
+// collection keeps using okJSON — an absent count says "this is not a list",
+// which is a real statement and must stay distinguishable from a count of zero.
+func okJSONCount(v any, n int) (tools.Result, error) {
+	res, err := okJSON(v)
+	if err != nil || res.IsError {
+		return res, err
+	}
+	res.Count = &n
+	return res, nil
 }
 
 func errResult(msg string) tools.Result {

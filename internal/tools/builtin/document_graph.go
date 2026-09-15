@@ -86,7 +86,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		return errResult("graph_recall: seeds: " + err.Error()), nil
 	}
 	if len(seeds) == 0 {
-		return okJSON(map[string]any{"chunks": []graphChunk{}, "seeds": 0, "hops": hops, "truncated": false})
+		return okJSONCount(map[string]any{"chunks": []graphChunk{}, "seeds": 0, "hops": hops, "truncated": false}, 0)
 	}
 
 	// Breadth-first, one round trip per hop. `seen` is keyed on chunk id so a
@@ -134,9 +134,9 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		}
 		out = append(out, seen[id])
 	}
-	return okJSON(map[string]any{
+	return okJSONCount(map[string]any{
 		"chunks": out, "seeds": len(seeds), "hops": hops, "truncated": truncated,
-	})
+	}, len(out))
 }
 
 // graphSeeds resolves the starting set: explicit ids when given, else a title

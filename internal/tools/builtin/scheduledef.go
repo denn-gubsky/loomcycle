@@ -444,7 +444,7 @@ func (s *ScheduleDef) execList(ctx context.Context, policy tools.ScheduleDefPoli
 		}
 		out = append(out, scheduleRowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire ----

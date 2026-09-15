@@ -392,7 +392,7 @@ func (s *WebhookDef) execList(ctx context.Context, policy tools.WebhookDefPolicy
 		}
 		out = append(out, webhookRowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire ----

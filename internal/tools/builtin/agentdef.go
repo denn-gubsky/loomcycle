@@ -548,7 +548,7 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 		}
 		out = append(out, rowResponseMap(r))
 	}
-	return okJSON(map[string]any{"name": in.Name, "versions": out})
+	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
 
 // ---- retire / promote ----

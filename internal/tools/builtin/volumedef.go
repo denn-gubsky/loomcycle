@@ -356,7 +356,7 @@ func (v *VolumeDef) execList(ctx context.Context, _ volumeDefInput) (tools.Resul
 	for _, r := range rows {
 		out = append(out, volumeDefRowResponse(r, ""))
 	}
-	return okJSON(map[string]any{"volumes": out})
+	return okJSONCount(map[string]any{"volumes": out}, len(out))
 }
 
 // ---- delete ----
