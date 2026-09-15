@@ -60,6 +60,26 @@ agents:
     sql_scopes: [user]
     sampling:
       temperature: 0.7
+    context:
+      # On-the-fly context distillation, tier-routed. `auto` lets the RUNTIME
+      # pick: a frontier API gets L2 stateful (the conversation is replaced by a
+      # structured JSON state Σ), a local backend gets L1 recap.
+      #
+      # These agents are INTERACTIVE — unbounded_iterations, park at end_turn,
+      # steered from the /run terminal — and auto never routes an interactive run
+      # to stateful, because that loop has no steering or parking wired yet. So
+      # today this resolves to recap for all three.
+      #
+      # It is written as `auto` rather than `recap` on purpose: the day steer and
+      # park compose onto the stateful loop, these agents pick up the structured-JSON
+      # state with no bundle edit. Pinning `recap` would mean remembering to revisit.
+      mode: auto
+      # Recap keeps the preamble + the last N messages VERBATIM (snapped to a
+      # clean user-turn boundary, so a tool_use/tool_result pair is never split)
+      # and replaces the evicted assistant reasoning with a running note.
+      keep_last_n: 6
+      reasoning: recap
+      autorecap_at_pct: 80
     compaction:
       enabled: true
       # RFC BL P3: bank the turns each compaction discards onto the
@@ -125,6 +145,28 @@ agents:
     sql_scopes: [user]
     sampling:
       temperature: 0.7
+    context:
+      # On-the-fly context distillation, tier-routed. `auto` lets the RUNTIME
+      # pick: a frontier API gets L2 stateful (the conversation is replaced by a
+      # structured JSON state Σ), a local backend gets L1 recap.
+      #
+      # These agents are INTERACTIVE — unbounded_iterations, park at end_turn,
+      # steered from the /run terminal — and auto never routes an interactive run
+      # to stateful, because that loop has no steering or parking wired yet. So
+      # today this resolves to recap for all three.
+      #
+      # It is written as `auto` rather than `recap` on purpose: the day steer and
+      # park compose onto the stateful loop, these agents pick up the structured-JSON
+      # state with no bundle edit. Pinning `recap` would mean remembering to revisit.
+      mode: auto
+      # Recap keeps the preamble + the last N messages VERBATIM (snapped to a
+      # clean user-turn boundary, so a tool_use/tool_result pair is never split)
+      # and replaces the evicted assistant reasoning with a running note.
+      keep_last_n: 6
+      reasoning: recap
+      # Lower than chat/medium's 80: a local window is smaller and fills sooner,
+      # matching this agent's compaction trigger below.
+      autorecap_at_pct: 70
     compaction:
       enabled: true
       memory_flush: true                    # RFC BL P3 — see chat/medium above
@@ -178,6 +220,28 @@ agents:
     sql_scopes: [user]
     sampling:
       temperature: 0.7
+    context:
+      # On-the-fly context distillation, tier-routed. `auto` lets the RUNTIME
+      # pick: a frontier API gets L2 stateful (the conversation is replaced by a
+      # structured JSON state Σ), a local backend gets L1 recap.
+      #
+      # These agents are INTERACTIVE — unbounded_iterations, park at end_turn,
+      # steered from the /run terminal — and auto never routes an interactive run
+      # to stateful, because that loop has no steering or parking wired yet. So
+      # today this resolves to recap for all three.
+      #
+      # It is written as `auto` rather than `recap` on purpose: the day steer and
+      # park compose onto the stateful loop, these agents pick up the structured-JSON
+      # state with no bundle edit. Pinning `recap` would mean remembering to revisit.
+      mode: auto
+      # Recap keeps the preamble + the last N messages VERBATIM (snapped to a
+      # clean user-turn boundary, so a tool_use/tool_result pair is never split)
+      # and replaces the evicted assistant reasoning with a running note.
+      keep_last_n: 6
+      reasoning: recap
+      # Lower than chat/medium's 80: a local window is smaller and fills sooner,
+      # matching this agent's compaction trigger below.
+      autorecap_at_pct: 70
     compaction:
       enabled: true
       memory_flush: true                    # RFC BL P3 — see chat/medium above
