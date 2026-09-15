@@ -3311,6 +3311,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_memory/changes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryChanges))))
 	mux.Handle("GET /v1/_document/changes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentChanges))))
 	mux.Handle("POST /v1/_memory/backfill_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillEmbeddings))))
+	mux.Handle("POST /v1/_memory/backfill_traces", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillTraces))))
 	// RFC BU phase 4b — generate vision descriptions for image chunks that have
 	// none, then re-embed so they become searchable. Left on the /v1/_* catch-all
 	// (substrate:admin) DELIBERATELY, like backfill_embeddings above: both spend the
@@ -7917,6 +7918,11 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// The assistant half of the trace index, if the operator asked for it. Here
+	// because a turn boundary only exists once the run is done — assistant text is
+	// persisted one row per streamed delta. No-op when the flag is off, which is the
+	// default, so an ordinary completion does no extra work.
+	s.indexAssistantTurns(bg, runID, meta)
 	status := store.RunCompleted
 	errMsg := ""
 	if runErr != nil {

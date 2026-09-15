@@ -23,6 +23,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // traceTurnMaxBytes caps one indexed turn.
@@ -86,7 +87,8 @@ func (s *Server) persistUserInput(ctx context.Context, runID, sessionID, tenantI
 // transcript is the system of record and this index is derived from it, so losing a
 // row costs searchability and never the turn.
 func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, userID string, segments []loop.PromptSegment) {
-	if !s.cfg().Env.MemoryTraceIndexEnabled || s.store == nil {
+	conf := s.cfg()
+	if conf == nil || s.store == nil || !conf.Env.MemoryTraceIndexEnabled {
 		return
 	}
 	// A turn with no user to file it under has no scope to live in. Skipping is right
@@ -121,7 +123,7 @@ func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, 
 	// it, MemorySweep deletes it on its own schedule, and memory_embeddings cascades
 	// on that delete. A fourth retention family could have drifted from the class it
 	// prunes; a TTL cannot.
-	ttl := s.cfg().Env.MemoryTraceMaxAge
+	ttl := conf.Env.MemoryTraceMaxAge
 	if ttl <= 0 {
 		ttl = defaultTraceMaxAge
 	}
@@ -205,4 +207,94 @@ func userTurnText(segments []loop.PromptSegment) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// maxAssistantTurnsPerRun bounds what one completed run contributes to the index.
+//
+// A long tool-using run produces many short assistant turns — narration between
+// calls — and indexing all of them buys little while paying the embedder for each.
+// The cap is generous enough that an ordinary conversation is complete and tight
+// enough that a runaway loop cannot flood a scope.
+const maxAssistantTurnsPerRun = 20
+
+// indexAssistantTurns indexes a completed run's assistant turns.
+//
+// ⚠️ SEPARATELY FLAGGED, and off even when the trace index itself is on. Assistant
+// text is the bulk of the volume and the most redundant with the fact layer — a fact
+// distilled from a reply is already searchable — so a deployment that wants its own
+// words findable should not be made to pay for the model's as well.
+//
+// IT RUNS AT COMPLETION, not per event, because a turn is not an event. Assistant
+// text is persisted one row per streamed delta, so anything reading raw rows sees
+// fragments with no speaker. The boundaries come from ConversationTurns — the same
+// rule the transcript renders with, shared rather than re-derived.
+//
+// The transcript read is paid ONLY when the flag is on: a default deployment does no
+// extra work at run end.
+func (s *Server) indexAssistantTurns(ctx context.Context, runID string, meta runStateMeta) {
+	// NIL-SAFE ON THE CONFIG, because this runs from finishRun — the one path that is
+	// reached by a Server built without a config holder at all. `cfg()` returns nil
+	// there by design, and reading .Env off it panics inside the run-completion path,
+	// which is the worst place to panic: the run has already done its work.
+	conf := s.cfg()
+	if conf == nil || s.store == nil {
+		return
+	}
+	cfg := conf.Env
+	if !cfg.MemoryTraceIndexEnabled || !cfg.MemoryTraceAssistantTurns {
+		return
+	}
+	if runID == "" || strings.TrimSpace(meta.UserID) == "" {
+		return
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil || strings.TrimSpace(run.SessionID) == "" {
+		return
+	}
+	// THIS RUN'S events, not the session's. A session-wide read would re-derive every
+	// earlier run's turns on every completion — the keys are deterministic so nothing
+	// would duplicate, but the embedder would be asked to re-read the whole
+	// conversation each time a turn was added to it.
+	events, err := s.store.GetRunEventsSince(ctx, runID, 0, 0)
+	if err != nil {
+		return
+	}
+	indexed := 0
+	for _, turn := range builtin.ConversationTurns(events) {
+		if turn.Speaker != "assistant" {
+			continue
+		}
+		if indexed >= maxAssistantTurnsPerRun {
+			break
+		}
+		text := s.redactor.String(turn.Text)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if len(text) > traceTurnMaxBytes {
+			text = text[:traceTurnMaxBytes]
+		}
+		// KEYED ON THE TURN'S SEQ, unlike a user turn's timestamp. finishRun can run
+		// again — a resumed run completes twice — and a deterministic key makes the
+		// second pass overwrite the first instead of filing the same words twice.
+		// The user path cannot do this: it has no seq in hand at write time.
+		key := store.TraceTurnKeyPrefix + run.SessionID + ":a" + strconv.FormatInt(turn.Seq, 10)
+		value, err := json.Marshal(traceTurnValue{
+			Text: text, Speaker: "assistant", SessionID: run.SessionID, RunID: runID,
+			At: time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			continue
+		}
+		ttl := cfg.MemoryTraceMaxAge
+		if ttl <= 0 {
+			ttl = defaultTraceMaxAge
+		}
+		if err := s.store.MemorySet(ctx, meta.TenantID, store.MemoryScopeUser, meta.UserID, key, value, ttl); err != nil {
+			log.Printf("trace index: assistant turn %s: %v", key, err)
+			continue
+		}
+		s.embedTraceTurn(ctx, meta.TenantID, meta.UserID, key, text)
+		indexed++
+	}
 }

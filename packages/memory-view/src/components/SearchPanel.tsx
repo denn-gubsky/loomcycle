@@ -33,7 +33,8 @@ export default function SearchPanel({ scope: scopeProp = "user", scopeId: scopeI
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<MemoryScope>(scopeProp);
   const [scopeId, setScopeId] = useState(scopeIdProp);
-  // RFC BW `sources` selector (facts | notes | documents). Empty = every plane.
+  // RFC BW `sources` selector (facts | notes | documents | traces). Empty = every
+  // plane EXCEPT traces, which are opt-in by choosing them.
   // A single-value field never hits the invalid_sources 400 (which only rejects
   // mixing "documents" with just ONE of facts/notes). Free text is accepted — the
   // datalist suggests the valid values and the server drops anything unknown.
@@ -290,6 +291,12 @@ const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "facts", label: "facts" },
   { value: "notes", label: "notes" },
   { value: "documents", label: "documents" },
+  // Raw conversation turns (RFC CI). Only reachable by CHOOSING it: an empty
+  // selector means "every plane" and deliberately excludes traces, because they are
+  // far more numerous than facts and lexically overlap them by construction — the
+  // facts were extracted from them. The label says "said" rather than "traces"
+  // because that is the question it answers.
+  { value: "traces", label: "what was said (raw turns)" },
 ];
 
 // Combobox — a VISIBLE dropdown of suggested values that is also free-text

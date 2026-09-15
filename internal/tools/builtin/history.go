@@ -923,6 +923,12 @@ func renderConversationMarkdown(events []store.Event) string {
 }
 
 // conversationTurn is one speaker's turn, as the conversation rendering sees it.
+// ConversationTurn is one whole utterance by one speaker. Exported so the trace
+// index derives turns through the SAME boundary rule this file renders with — a
+// second implementation would index fragments with no speaker, which is the exact
+// shape that produced a live pass's empty extractions.
+type ConversationTurn = conversationTurn
+
 type conversationTurn struct {
 	Speaker string `json:"speaker"`
 	Text    string `json:"text"`
@@ -939,6 +945,15 @@ type conversationTurn struct {
 // turns even slightly differently would fail to find spans that are really there —
 // and the failure would look like "no source recorded" rather than like a bug.
 // One segmentation, two consumers.
+// ConversationTurns groups a transcript's events into whole utterances.
+//
+// The accumulate-and-flush rule matters more than it looks: assistant text is
+// persisted ONE ROW PER STREAMED DELTA, so anything reading raw event rows sees
+// fragments rather than turns.
+func ConversationTurns(events []store.Event) []ConversationTurn {
+	return conversationTurns(events)
+}
+
 func conversationTurns(events []store.Event) []conversationTurn {
 	var out []conversationTurn
 	var asst strings.Builder
