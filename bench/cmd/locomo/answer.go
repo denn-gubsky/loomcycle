@@ -80,7 +80,13 @@ var (
 	// 10 read, 24 of 376 facts written, and a 0/120 answer axis that looked like
 	// a memory result and was really 93% of the corpus never consolidated.
 	chatsReadRe = regexp.MustCompile(`chats read (\d+)`)
-	factsRe     = regexp.MustCompile(`facts written (\d+)`)
+	// idleRe reads the rest of a chat-path pass: a pass that read chats but
+	// changed NOTHING. The watermark walks every chat in the tenant, not only
+	// the ones this run wrote, so on a tenant with history the cursor keeps
+	// reading and reporting while producing nothing. Observed: 63 chats ingested,
+	// drained by pass 7, then seventeen more passes reading ten stale chats each.
+	idleRe  = regexp.MustCompile(`facts written (\d+); updated in place (\d+); retired (\d+)`)
+	factsRe = regexp.MustCompile(`facts written (\d+)`)
 	// busyRe matches the pass's refusal when another consolidator holds the
 	// target's lease. The bundle leases for 30 minutes, so a consolidator killed
 	// mid-pass blocks the target for that long — and every later pass returns
@@ -600,6 +606,14 @@ func consolidateDrain(ctx context.Context, mc *MCPClient, userID string, maxPass
 		if m := chatsReadRe.FindStringSubmatch(rr.FinalText); m != nil {
 			var read int
 			_, _ = fmt.Sscanf(m[1], "%d", &read)
+			// ⚠️ A RUN OF PASSES THAT CHANGE NOTHING IS NOT A DRAIN, and an earlier
+			// version of this stopped on one. The chat cursor walks every chat in the
+			// tenant, not only the ones this run wrote, so on a tenant with history it
+			// reads and reports while producing nothing — and then produces again.
+			// Measured: passes 8 through 19 wrote zero facts and pass 20 wrote 24, so
+			// a three-idle-pass cutoff would have silently dropped real work. Burning
+			// passes is visible and bounded by -consolidate-passes; skipping work is
+			// neither.
 			if read == 0 {
 				return facts, passes, nil
 			}

@@ -342,6 +342,38 @@ func TestConsolidateDrain_KeepsPassingWhileTheChatWatermarkAdvances(t *testing.T
 	}
 }
 
+// TestConsolidateDrain_KeepsGoingThroughPassesThatChangeNothing.
+//
+// A run of passes that change nothing is NOT a drain. The chat cursor walks
+// every chat in the tenant, not only the ones this run wrote, so on a tenant
+// with history it reads and reports while producing nothing — and then produces
+// again. Measured on the RFC DB-2 corpus: passes 8 through 19 wrote zero facts
+// and pass 20 wrote 24. A cutoff on consecutive idle passes, which this once
+// had, would have silently dropped that work.
+func TestConsolidateDrain_KeepsGoingThroughPassesThatChangeNothing(t *testing.T) {
+	srv, calls := mcpStub(t, []string{
+		"chats read 10; facts written 24; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 0; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 0; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 0; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 31; updated in place 0; retired 0; watermark advanced.",
+		"chats read 0; facts written 0; updated in place 0; retired 0; watermark unchanged.",
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	mc := NewMCPClient(srv.URL, "tok", 5*time.Second)
+	facts, _, err := consolidateDrain(context.Background(), mc, "u", 30, &out)
+	if err != nil {
+		t.Fatalf("consolidateDrain: %v", err)
+	}
+	if got := atomic.LoadInt32(calls); got != 6 {
+		t.Errorf("spawn calls = %d, want 6 — three idle passes must not end a drain that resumes", got)
+	}
+	if facts != 55 {
+		t.Errorf("facts = %d, want 55 (24 + 31) — the work after the idle stretch was dropped", facts)
+	}
+}
+
 func TestConsolidateDrain_ChatPathHonoursThePassCeiling(t *testing.T) {
 	// A cursor that never catches up must not loop forever.
 	srv, calls := mcpStub(t, []string{"chats read 10; facts written 1; watermark advanced."})

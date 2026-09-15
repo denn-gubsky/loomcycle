@@ -21,8 +21,8 @@ ap.add_argument("--workers", type=int, default=2)
 ap.add_argument("--out", default=os.path.join(HERE, "extractor-probe-session-results.json"))
 ARGS = ap.parse_args()
 TOKEN = os.environ["LOOMCYCLE_AUTH_TOKEN"]
-ARMS = {"shipped": "memory/extractor", "candidate": "db2/ext-candidate",
-        "fitted": "db2/ext-fitted"}
+ARMS = {"shipped": "memory/extractor", "prefix": "db2/ext-prefix",
+        "noreorder": "db2/ext-noreorder"}
 
 CORPUS = json.load(open(os.path.join(HERE, "corpus-db2.json")))
 FACT = {f["id"]: f for f in CORPUS["facts"]}

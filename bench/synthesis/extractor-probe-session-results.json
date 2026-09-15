@@ -1,0 +1,362 @@
+[
+ {
+  "arm": "shipped",
+  "session": "s1",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelhaven Textiles is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"also_about\": [\n      \"Lornshaw\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ferrane is in the Cindervale region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ferrane\",\n    \"also_about\": [\n      \"Cindervale region\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Keltrel Fabrication is based in Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Keltrel Fabrication\",\n    \"also_about\": [\n      \"Mardane\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesmara Dynamics is based in Yelby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesmara Dynamics\",\n    \"also_about\": [\n      \"Yelby\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesspire Logistics is based in Kaldby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesspire Logistics\",\n    \"also_about\": [\n      \"Kaldby\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Thornfield Holdings is based in Brinholm.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Thornfield Holdings\",\n    \"also_about\": [\n      \"Brinholm\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s1",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelhaven Textiles is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"also_about\": [\n      \"Lornshaw\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ferrane is in the Cindervale region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ferrane\",\n    \"also_about\": [\n      \"Cindervale region\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Keltrel Fabrication is based in Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Keltrel Fabrication\",\n    \"also_about\": [\n      \"Mardane\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesmara Dynamics is based in Yelby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesmara Dynamics\",\n    \"also_about\": [\n      \"Yelby\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesspire Logistics is based in Kaldby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesspire Logistics\",\n    \"also_about\": [\n      \"Kaldby\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Thornfield Holdings is based in Brinholm.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Thornfield Holdings\",\n    \"also_about\": [\n      \"Brinholm\"\n    ],\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s2",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lornshaw is in the Drenholt region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"also_about\": [\n      \"Drenholt\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ossoway Mills is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Ossoway Mills\",\n    \"also_about\": [\n      \"Ferrane\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kelgate Cartage is based in Penskirk.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"also_about\": [\n      \"Penskirk\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Quilltrel Holdings is based in Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"also_about\": [\n      \"Woldford\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brinholm is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brinholm\",\n    \"also_about\": [\n      \"Rhosgar\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Yelby is in the Xanthe region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Yelby\",\n    \"also_about\": [\n      \"Xanthe\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s2",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lornshaw is in the Drenholt region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"also_about\": [\n      \"Drenholt\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ossoway Mills is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Ossoway Mills\",\n    \"also_about\": [\n      \"Ferrane\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kelgate Cartage is based in Penskirk.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"also_about\": [\n      \"Penskirk\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Quilltrel Holdings is based in Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"also_about\": [\n      \"Woldford\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brinholm is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brinholm\",\n    \"also_about\": [\n      \"Rhosgar\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Yelby is in the Xanthe region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Yelby\",\n    \"also_about\": [\n      \"Xanthe\"\n    ],\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s3",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Penskirk is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Penskirk\",\n    \"also_about\": [\n      \"Brackmoor region\"\n    ]\n  },\n  {\n    \"text\": \"Istcombe is in the Kelmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"also_about\": [\n      \"Kelmoor region\"\n    ]\n  },\n  {\n    \"text\": \"Kaldby is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Kaldby\",\n    \"also_about\": [\n      \"Rhosgar region\"\n    ]\n  },\n  {\n    \"text\": \"Droholm is in the Zorrand region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Droholm\",\n    \"also_about\": [\n      \"Zorrand region\"\n    ]\n  },\n  {\n    \"text\": \"Zebdale Instruments is based in Mardby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Zebdale Instruments\",\n    \"also_about\": [\n      \"Mardby\"\n    ]\n  },\n  {\n    \"text\": \"Umbforge Hydraulics is based in Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Umbforge Hydraulics\",\n    \"also_about\": [\n      \"Pensbury\"\n    ]\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s3",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Penskirk is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Penskirk\",\n    \"also_about\": [\n      \"Brackmoor region\"\n    ]\n  },\n  {\n    \"text\": \"Istcombe is in the Kelmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"also_about\": [\n      \"Kelmoor region\"\n    ]\n  },\n  {\n    \"text\": \"Kaldby is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Kaldby\",\n    \"also_about\": [\n      \"Rhosgar region\"\n    ]\n  },\n  {\n    \"text\": \"Droholm is in the Zorrand region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Droholm\",\n    \"also_about\": [\n      \"Zorrand region\"\n    ]\n  },\n  {\n    \"text\": \"Zebdale Instruments is based in Mardby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Zebdale Instruments\",\n    \"also_about\": [\n      \"Mardby\"\n    ]\n  },\n  {\n    \"text\": \"Umbforge Hydraulics is based in Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Umbforge Hydraulics\",\n    \"also_about\": [\n      \"Pensbury\"\n    ]\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s4",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lumfield Textiles is based in Istcombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Lumfield Textiles\",\n    \"also_about\": [\n      \"Istcombe\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Woldford is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Woldford\",\n    \"also_about\": [\n      \"Brackmoor\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Indmoor Instruments is based in Aberton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Indmoor Instruments\",\n    \"also_about\": [\n      \"Aberton\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mardane is in the Gallowmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Mardane\",\n    \"also_about\": [\n      \"Gallowmere\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Pensbury is in the Oakmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Pensbury\",\n    \"also_about\": [\n      \"Oakmere\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ormane is in the Ashfen region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ormane\",\n    \"also_about\": [\n      \"Ashfen\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s4",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lumfield Textiles is based in Istcombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Lumfield Textiles\",\n    \"also_about\": [\n      \"Istcombe\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Woldford is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Woldford\",\n    \"also_about\": [\n      \"Brackmoor\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Indmoor Instruments is based in Aberton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Indmoor Instruments\",\n    \"also_about\": [\n      \"Aberton\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mardane is in the Gallowmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Mardane\",\n    \"also_about\": [\n      \"Gallowmere\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Pensbury is in the Oakmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Pensbury\",\n    \"also_about\": [\n      \"Oakmere\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ormane is in the Ashfen region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ormane\",\n    \"also_about\": [\n      \"Ashfen\"\n    ],\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s5",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelthorpe Dynamics is based in Kirkby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelthorpe Dynamics\",\n    \"also_about\": [\n      \"Kirkby\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Galthorpe Avionics is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Galthorpe Avionics\",\n    \"also_about\": [\n      \"Ferrane\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Vaskfield Systems is based in Selton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Vaskfield Systems\",\n    \"also_about\": [\n      \"Selton\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenwell Mills is based in Lornford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenwell Mills\",\n    \"also_about\": [\n      \"Lornford\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenhollow Systems is based in Ravncombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenhollow Systems\",\n    \"also_about\": [\n      \"Ravncombe\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenstead Works is based in Ferrstad.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenstead Works\",\n    \"also_about\": [\n      \"Ferrstad\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s5",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelthorpe Dynamics is based in Kirkby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelthorpe Dynamics\",\n    \"also_about\": [\n      \"Kirkby\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Galthorpe Avionics is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Galthorpe Avionics\",\n    \"also_about\": [\n      \"Ferrane\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Vaskfield Systems is based in Selton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Vaskfield Systems\",\n    \"also_about\": [\n      \"Selton\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenwell Mills is based in Lornford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenwell Mills\",\n    \"also_about\": [\n      \"Lornford\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenhollow Systems is based in Ravncombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenhollow Systems\",\n    \"also_about\": [\n      \"Ravncombe\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenstead Works is based in Ferrstad.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenstead Works\",\n    \"also_about\": [\n      \"Ferrstad\"\n    ],\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s6",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"object\",\n    \"subject\": \"Project Dovetail\",\n    \"also_about\": [\n      \"Kelgate Cartage\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Lornford is in the Fenmark region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornford\",\n    \"also_about\": [\n      \"Fenmark region\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Cardwell Refining\",\n    \"also_about\": [\n      \"Grimby\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Sarnhaven Refining\",\n    \"also_about\": [\n      \"Lornshaw\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Fenna Brannigan\",\n    \"also_about\": [\n      \"Quilltrel Holdings\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Mira Ubberud\",\n    \"also_about\": [\n      \"Pelhaven Textiles\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "shipped",
+  "session": "s6",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 6,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"object\",\n    \"subject\": \"Project Dovetail\",\n    \"also_about\": [\n      \"Kelgate Cartage\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Lornford is in the Fenmark region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornford\",\n    \"also_about\": [\n      \"Fenmark region\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Cardwell Refining\",\n    \"also_about\": [\n      \"Grimby\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Sarnhaven Refining\",\n    \"also_about\": [\n      \"Lornshaw\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Fenna Brannigan\",\n    \"also_about\": [\n      \"Quilltrel Holdings\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Mira Ubberud\",\n    \"also_about\": [\n      \"Pelhaven Textiles\"\n    ],\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s1",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelhaven Textiles is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ferrane is in the Cindervale region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ferrane\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Keltrel Fabrication is based in Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Keltrel Fabrication\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesmara Dynamics is based in Yelby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesmara Dynamics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesspire Logistics is based in Kaldby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesspire Logistics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Thornfield Holdings is based in Brinholm.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Thornfield Holdings\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s1",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelhaven Textiles is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ferrane is in the Cindervale region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ferrane\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Keltrel Fabrication is based in Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Keltrel Fabrication\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesmara Dynamics is based in Yelby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesmara Dynamics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesspire Logistics is based in Kaldby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesspire Logistics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Thornfield Holdings is based in Brinholm.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Thornfield Holdings\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s2",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lornshaw is in the Drenholt region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ossoway Mills is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Ossoway Mills\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kelgate Cartage is based in Penskirk.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Quilltrel Holdings is based in Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brinholm is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brinholm\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Yelby is in the Xanthe region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Yelby\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s2",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lornshaw is in the Drenholt region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ossoway Mills is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Ossoway Mills\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kelgate Cartage is based in Penskirk.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Quilltrel Holdings is based in Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brinholm is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brinholm\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Yelby is in the Xanthe region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Yelby\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s3",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Penskirk is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Penskirk\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Istcombe is in the Kelmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kaldby is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Kaldby\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Droholm is in the Zorrand region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Droholm\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Zebdale Instruments is based in Mardby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Zebdale Instruments\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Umbforge Hydraulics is based in Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Umbforge Hydraulics\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s3",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Penskirk is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Penskirk\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Istcombe is in the Kelmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kaldby is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Kaldby\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Droholm is in the Zorrand region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Droholm\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Zebdale Instruments is based in Mardby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Zebdale Instruments\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Umbforge Hydraulics is based in Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Umbforge Hydraulics\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s4",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 12,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lumfield Textiles is based in Istcombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Lumfield Textiles\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Istcombe is a location.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Woldford is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Woldford\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brackmoor is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brackmoor\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Indmoor Instruments is based in Aberton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Indmoor Instruments\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Aberton is a location.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Aberton\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mardane is in the Gallowmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Mardane\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Gallowmere is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Gallowmere\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Pensbury is in the Oakmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Pensbury\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Oakmere is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Oakmere\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ormane is in the Ashfen region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ormane\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ashfen is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ashfen\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s4",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 12,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lumfield Textiles is based in Istcombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Lumfield Textiles\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Istcombe is a location.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Woldford is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Woldford\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brackmoor is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brackmoor\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Indmoor Instruments is based in Aberton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Indmoor Instruments\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Aberton is a location.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Aberton\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mardane is in the Gallowmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Mardane\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Gallowmere is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Gallowmere\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Pensbury is in the Oakmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Pensbury\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Oakmere is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Oakmere\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ormane is in the Ashfen region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ormane\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ashfen is a region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ashfen\",\n    \"observed_at\": \"2026-01-08T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s5",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelthorpe Dynamics is based in Kirkby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelthorpe Dynamics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Galthorpe Avionics is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Galthorpe Avionics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Vaskfield Systems is based in Selton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Vaskfield Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenwell Mills is based in Lornford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenwell Mills\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenhollow Systems is based in Ravncombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenhollow Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenstead Works is based in Ferrstad.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenstead Works\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s5",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelthorpe Dynamics is based in Kirkby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelthorpe Dynamics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Galthorpe Avionics is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Galthorpe Avionics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Vaskfield Systems is based in Selton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Vaskfield Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenwell Mills is based in Lornford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenwell Mills\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenhollow Systems is based in Ravncombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenhollow Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenstead Works is based in Ferrstad.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenstead Works\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s6",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 11,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"object\",\n    \"subject\": \"Project Dovetail\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Lornford is in the Fenmark region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornford\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Grimby\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Cardwell Refining\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Sarnhaven Refining\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Fenna Brannigan\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Mira Ubberud\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "prefix",
+  "session": "s6",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 11,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"object\",\n    \"subject\": \"Project Dovetail\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Lornford is in the Fenmark region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornford\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Grimby\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Cardwell Refining\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Sarnhaven Refining\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Fenna Brannigan\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Mira Ubberud\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s1",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelhaven Textiles is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ferrane is in the Cindervale region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ferrane\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Keltrel Fabrication is based in Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Keltrel Fabrication\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesmara Dynamics is based in Yelby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesmara Dynamics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesspire Logistics is based in Kaldby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesspire Logistics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Thornfield Holdings is based in Brinholm.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Thornfield Holdings\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s1",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelhaven Textiles is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelhaven Textiles\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ferrane is in the Cindervale region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ferrane\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Keltrel Fabrication is based in Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Keltrel Fabrication\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesmara Dynamics is based in Yelby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesmara Dynamics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kesspire Logistics is based in Kaldby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kesspire Logistics\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  },\n  {\n    \"text\": \"Thornfield Holdings is based in Brinholm.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Thornfield Holdings\",\n    \"observed_at\": \"2026-01-05T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s2",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lornshaw is in the Drenholt region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ossoway Mills is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Ossoway Mills\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kelgate Cartage is based in Penskirk.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Quilltrel Holdings is based in Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brinholm is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brinholm\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Yelby is in the Xanthe region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Yelby\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s2",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lornshaw is in the Drenholt region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Ossoway Mills is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Ossoway Mills\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kelgate Cartage is based in Penskirk.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Quilltrel Holdings is based in Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Quilltrel Holdings\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Brinholm is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brinholm\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  },\n  {\n    \"text\": \"Yelby is in the Xanthe region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Yelby\",\n    \"observed_at\": \"2026-01-06T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s3",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Penskirk is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Penskirk\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Istcombe is in the Kelmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kaldby is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Kaldby\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Droholm is in the Zorrand region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Droholm\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Zebdale Instruments is based in Mardby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Zebdale Instruments\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Umbforge Hydraulics is based in Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Umbforge Hydraulics\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s3",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Penskirk is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Penskirk\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Istcombe is in the Kelmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Kaldby is in the Rhosgar region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Kaldby\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Droholm is in the Zorrand region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Droholm\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Zebdale Instruments is based in Mardby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Zebdale Instruments\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  },\n  {\n    \"text\": \"Umbforge Hydraulics is based in Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Umbforge Hydraulics\",\n    \"observed_at\": \"2026-01-07T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s4",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 12,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lumfield Textiles is based in Istcombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Lumfield Textiles\"\n  },\n  {\n    \"text\": \"Istcombe is the location of Lumfield Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\"\n  },\n  {\n    \"text\": \"Woldford is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Woldford\"\n  },\n  {\n    \"text\": \"Brackmoor is the region containing Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brackmoor\"\n  },\n  {\n    \"text\": \"Indmoor Instruments is based in Aberton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Indmoor Instruments\"\n  },\n  {\n    \"text\": \"Aberton is the location of Indmoor Instruments.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Aberton\"\n  },\n  {\n    \"text\": \"Mardane is in the Gallowmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Mardane\"\n  },\n  {\n    \"text\": \"Gallowmere is the region containing Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Gallowmere\"\n  },\n  {\n    \"text\": \"Pensbury is in the Oakmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Pensbury\"\n  },\n  {\n    \"text\": \"Oakmere is the region containing Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Oakmere\"\n  },\n  {\n    \"text\": \"Ormane is in the Ashfen region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ormane\"\n  },\n  {\n    \"text\": \"Ashfen is the region containing Ormane.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ashfen\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s4",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 12,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Lumfield Textiles is based in Istcombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Lumfield Textiles\"\n  },\n  {\n    \"text\": \"Istcombe is the location of Lumfield Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Istcombe\"\n  },\n  {\n    \"text\": \"Woldford is in the Brackmoor region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Woldford\"\n  },\n  {\n    \"text\": \"Brackmoor is the region containing Woldford.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Brackmoor\"\n  },\n  {\n    \"text\": \"Indmoor Instruments is based in Aberton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Indmoor Instruments\"\n  },\n  {\n    \"text\": \"Aberton is the location of Indmoor Instruments.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Aberton\"\n  },\n  {\n    \"text\": \"Mardane is in the Gallowmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Mardane\"\n  },\n  {\n    \"text\": \"Gallowmere is the region containing Mardane.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Gallowmere\"\n  },\n  {\n    \"text\": \"Pensbury is in the Oakmere region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Pensbury\"\n  },\n  {\n    \"text\": \"Oakmere is the region containing Pensbury.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Oakmere\"\n  },\n  {\n    \"text\": \"Ormane is in the Ashfen region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ormane\"\n  },\n  {\n    \"text\": \"Ashfen is the region containing Ormane.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Ashfen\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s5",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelthorpe Dynamics is based in Kirkby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelthorpe Dynamics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Galthorpe Avionics is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Galthorpe Avionics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Vaskfield Systems is based in Selton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Vaskfield Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenwell Mills is based in Lornford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenwell Mills\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenhollow Systems is based in Ravncombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenhollow Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenstead Works is based in Ferrstad.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenstead Works\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s5",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Pelthorpe Dynamics is based in Kirkby.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Pelthorpe Dynamics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Galthorpe Avionics is based in Ferrane.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Galthorpe Avionics\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Vaskfield Systems is based in Selton.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Vaskfield Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenwell Mills is based in Lornford.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenwell Mills\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenhollow Systems is based in Ravncombe.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenhollow Systems\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenstead Works is based in Ferrstad.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Fenstead Works\",\n    \"observed_at\": \"2026-01-09T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s6",
+  "rep": 0,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Lornford is in the Fenmark region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornford\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Grimby\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Fenna Brannigan\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Mira Ubberud\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  }\n]"
+ },
+ {
+  "arm": "noreorder",
+  "session": "s6",
+  "rep": 1,
+  "pairs": 6,
+  "chained": 0,
+  "n_facts": 6,
+  "parsed": true,
+  "raw": "[\n  {\n    \"text\": \"Project Dovetail is owned by Kelgate Cartage.\",\n    \"class\": \"fact\",\n    \"type\": \"organization\",\n    \"subject\": \"Kelgate Cartage\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Lornford is in the Fenmark region.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornford\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Cardwell Refining is based in Grimby.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Grimby\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Sarnhaven Refining is based in Lornshaw.\",\n    \"class\": \"fact\",\n    \"type\": \"location\",\n    \"subject\": \"Lornshaw\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Fenna Brannigan works at Quilltrel Holdings.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Fenna Brannigan\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  },\n  {\n    \"text\": \"Mira Ubberud works at Pelhaven Textiles.\",\n    \"class\": \"fact\",\n    \"type\": \"person\",\n    \"subject\": \"Mira Ubberud\",\n    \"observed_at\": \"2026-01-10T00:00:00Z\"\n  }\n]"
+ }
+]
