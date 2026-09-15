@@ -179,26 +179,41 @@ Recent releases are in [`REVISIONS.md`](REVISIONS.md); the roadmap is
 
 loomcycle is past its feature-complete milestone (v1.0.0) and the line since has
 been primitives plus hardening: memory, documents, teams, sandboxing, retention
-and erasure. Current direction is the agentic-memory subsystem and the document
-surfaces built on it.
+and erasure. The agentic-memory subsystem and the document surfaces built on it
+remain the main direction.
+
+The most recent line (v1.80.0) made a tool failure legible to the agent
+receiving it. A failed call used to arrive as one boolean and one English
+sentence, so "no rows matched" and "the database was unreachable" were the same
+shape — and they call for opposite next moves. A failure now carries its
+category, whether resending can succeed, what to do instead, and a backoff where
+waiting actually helps, on every surface an agent can reach: MCP
+`structuredContent`, gRPC status details and streamed frames, the SSE event, and
+the tool_result text on every provider.
 
 ## Architecture
 
 Three diagrams cover different views of the same runtime:
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="loomcycle architecture — clients at the top (app servers, CLIs, TS/Python SDKs, Claude Code & MCP orchestrators, LangChain/n8n via OpenAI-compat shim), the single Go binary in the middle (1..N replicas; five wire surfaces incl. HTTP+SSE / gRPC / Web UI / MCP server with 40 meta-tools / LLM Gateway → bearer auth + concurrency semaphore + per-user fairness → 36-method connector.Connector → agent loop → tool dispatcher with 19 built-in tools + MCP client transport + sub-agent runner → SQLite/Postgres store covering sessions, runs, events, memory, channels, substrate tables, replicas+user_quotas+runtime_state+hooks), OpenTelemetry sidecar emitting spans, and external services at the bottom (seven LLM providers including anthropic-oauth-dev, three embedders, external MCP servers cloud)" width="780" />
+  <img src="docs/assets/architecture.png" alt="loomcycle architecture — clients at the top (app servers, CLIs, TS/Python SDKs, Claude Code & MCP orchestrators, LangChain/n8n via OpenAI-compat shim), the single Go binary in the middle (1..N replicas; five wire surfaces incl. HTTP+SSE / gRPC / Web UI / MCP server with 40 meta-tools / LLM Gateway → bearer auth + concurrency semaphore + per-user fairness → 39-method connector.Connector → agent loop → tool dispatcher with 19 built-in tools + MCP client transport + sub-agent runner → SQLite/Postgres store covering sessions, runs, events, memory, channels, substrate tables, replicas+user_quotas+runtime_state+hooks), OpenTelemetry sidecar emitting spans, and external services at the bottom (seven LLM providers including anthropic-oauth-dev, three embedders, external MCP servers cloud)" width="780" />
 </p>
 
 Diagram source: [`docs/architecture.d2`](docs/architecture.d2) (regenerate with `d2 docs/architecture.d2 docs/assets/architecture.png`).
 
-**Connector detail.** The v0.8.15 `Connector` abstraction layer (the pink block in the middle of the main diagram) is the architectural anchor every wire transport dispatches through. The detail diagram enumerates all 36 methods and shows which transports IMPLEMENT, CONSUME, and MIRROR the interface:
+**Connector detail.** The v0.8.15 `Connector` abstraction layer (the pink block in the middle of the main diagram) is the architectural anchor every wire transport dispatches through. The detail diagram enumerates the interface and shows which transports IMPLEMENT, CONSUME, and MIRROR it:
 
 <p align="center">
-  <img src="docs/assets/architecture-connector.png" alt="connector.Connector interface with 36 methods grouped by domain (run lifecycle, agent registry, substrate tools, channel CRUD, pause/snapshot, hook registry) — HTTP server IMPLEMENTS as the canonical business logic, MCP and gRPC servers CONSUME via direct Go method dispatch, TypeScript and Python adapters MIRROR over the HTTP wire" width="780" />
+  <img src="docs/assets/architecture-connector.png" alt="connector.Connector interface with 39 methods grouped by domain (run lifecycle, agent registry, substrate tools, channel CRUD, pause/snapshot, hook registry) — HTTP server IMPLEMENTS as the canonical business logic, MCP and gRPC servers CONSUME via direct Go method dispatch, TypeScript and Python adapters MIRROR over the HTTP wire" width="780" />
 </p>
 
 Source: [`docs/architecture-connector.d2`](docs/architecture-connector.d2).
+
+> **Diagram vintage.** Both renders are a snapshot — the connector view is labelled
+> v0.17.x and the MCP block v0.21.0 — and the runtime has grown past them. As of
+> v1.80.0 the interface carries **65 methods** and the MCP server exposes **52
+> meta-tools**. The shapes and the relationships they show are still accurate; only
+> the counts have moved. Regenerating needs `d2` with its Chromium renderer.
 
 **Multi-replica cluster mode (v0.12.x).** When `LOOMCYCLE_REPLICA_ID` is set per process and the Postgres backend is used, loomcycle runs as a cluster behind any HTTP load balancer. The shared Postgres doubles as the LISTEN / NOTIFY backplane for cross-replica cancel, pause / resume, run-state fanout, and quota notifications. SQLite refuses cluster mode at boot.
 

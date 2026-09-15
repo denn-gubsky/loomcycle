@@ -1,8 +1,620 @@
 # LoomCycle release history
 
-Per-version release notes from v0.4.0 onward. The current and immediately previous releases are also summarised in the main [`README.md`](README.md); older releases live here.
+Per-version release notes for **v1.43.2 onward**, newest first. Earlier releases (v0.4.0 – v1.43.1) were never written up here; their notes live in the annotated git tags — `git tag -l --format='%(contents)' v1.20.0` prints one.
 
-For the **public roadmap** (planned v0.8.16 through v1.0 work — Question tool, Pause / Resume / Snapshot, distribution, operator postures), see [`docs/PLAN.md`](docs/PLAN.md).
+The current and immediately previous releases are also summarised in the main [`README.md`](README.md).
+
+Each entry is the release's tag annotation, so the tag and this file cannot disagree about what shipped.
+
+For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
+
+## What's in v1.80.0
+
+*A failed tool call now says what kind of failure it was.*
+
+Fifteen PRs. One theme dominates: a tool failure stopped being a boolean and a
+sentence, and became something an agent can act on.
+
+An agent receiving a failed tool call has exactly one decision to make —
+resend, change the call, or stop — and every failure in this runtime arrived as
+one boolean and one English string. "No rows matched" and "the database was
+unreachable" are both short sentences. Guessing wrong means retrying a call
+that can never succeed, or abandoning one that would have worked.
+
+The runtime ALREADY knew the answer and discarded it. The HTTP surface maps
+~135 typed codes and emits Retry-After; gRPC maps the same conditions onto
+ResourceExhausted and PermissionDenied; the provider layer classifies failures
+for fallback. All of it was thrown away at the boundary an agent stands on.
+
+  errorCategory   transient | validation | business | permission
+  isRetryable     will resending THIS call fail?
+  description     what went wrong AND what to do next
+  retryAfterSeconds  optional, and only where waiting actually helps
+
+The distinction that earns its keep is validation vs business: validation is
+recoverable by the agent alone, business is not. An agent that treats a policy
+refusal as a formatting mistake will loop until something stops it.
+
+ONE CLASSIFICATION, FOUR RENDERINGS. Derived from the typed errors the runtime
+already had, so the surfaces cannot drift apart:
+
+  MCP      structuredContent on the tool result
+  gRPC     google.rpc.ErrorInfo + RetryInfo on the status, AND error_info on
+           streamed error frames
+  HTTP     error_info on the SSE error event
+  in-band  a [category · retryable · retry in Ns] prefix in the tool_result
+           text, on EVERY provider
+
+That last one is not redundancy. is_error reaches the model on ANTHROPIC ONLY —
+the OpenAI dialect, Gemini and Ollama have no slot for it in their wire
+formats — so a classification living only in a field would have been an
+Anthropic-only feature, silently absent everywhere else.
+
+A TOKEN BUDGET IS NOT BACKPRESSURE. Both render 429, and both arrived as
+codes.ResourceExhausted on gRPC, indistinguishable except by string-matching
+the message. But a concurrency cap clears in seconds and a budget clears when
+an operator raises it or the month rolls over. Telling an agent to retry the
+second on the schedule of the first burns its attempts against a wall.
+
+A CROSS-TENANT MISS IS NEVER A PERMISSION ERROR. It stays an opaque not-found,
+because a permission category on such a read confirms the row exists and turns
+the error into an existence oracle. This is guarded by a test, since it is
+exactly the invariant a later "improve the error message" change reintroduces.
+
+A successful query that matched nothing now looks nothing like a failed one.
+Grep and Glob returned the bare fragment "no matches" — a fragment an agent can
+read either way — and both now state that the search completed. 27
+collection-returning ops report resultCount, and ZERO IS EMITTED, never
+omitted: omitting it is precisely what makes a successful empty query
+indistinguishable from a failed one.
+
+A tool that does not count emits no key at all. "Did not count" and "counted
+zero" are different statements.
+
+A spawn_run whose run FAILED now returns isError: true. It previously came back
+success-shaped — isError unset, the failure buried in a string inside the JSON
+payload — so a caller had to parse the payload to learn the call had failed at
+all. A cancelled run is still not an error: the caller asked for it.
+
+Event.error_info is a new proto field. Taken as a protocol change rather than
+bolted alongside, since there are no gRPC consumers yet.
+
+- a chat is searchable by what was SAID, not only by what it was called —
+  user turns first, then assistant turns, with a bounded backfill
+- one subject reads across every scope the caller can reach
+- the empty-dossier sweep could silently un-adopt a subject; fixed
+
+- release notes stopped reaching the release page. goreleaser's mode: replace
+  discards the body GitHub populates from the annotated tag, and the changelog
+  is disabled, so v1.79.0 shipped a 2-byte body. The tag annotation is now
+  rendered explicitly.
+
+@loomcycle/client 1.80.0 — ErrorInfo on RunEvent.
+loomcycle (PyPI) 1.80.0 — ErrorInfo on AgentEvent, absent-vs-zero preserved
+through HasField.
+
+## What's in v1.79.0
+
+*Every tool says what NOT to use it for, and a memory subject is proposed rather than minted.*
+
+Nine PRs. Two themes: the tool surface stopped being a list of names, and the
+memory layer learned to hand an unknown subject to an operator instead of
+guessing.
+
+A tool description is the only text that reaches a model on EVERY request. The
+material was mostly already written, in Go doc comments the model never sees:
+`Read` shipped as "Read a UTF-8 text file from disk." while its comment
+documented the 256 KiB cap, the volume sandbox and the refusal behaviour.
+
+Every tool now states its purpose, its inputs and their constraints, what it
+refuses or caps, and — the element none of them had — WHICH NEIGHBOUR OWNS THE
+JOB IT DOES NOT.
+
+  Read        not for finding files; Glob by name, Grep by content
+  Write       not for partial edits; it drops what you did not resend
+  Bash        not for work Read/Write/Edit/Glob/Grep already cover
+  WebFetch    not for discovery, and not for a non-GET method
+  subscribe_channel   at-most-once; peek+ack is the at-least-once pair
+  register_agent      a TTL scratch agent; agentdef is the durable one
+  get_snapshot        read it; export_snapshot moves it
+  a2aservercarddef    advertises US; a2aagentdef registers a peer WE call
+  path rm             removes the NAME, not the thing
+  volumedef delete    keeps the files; purge deletes the tree
+
+The MCP surface matters most here: it is read by EXTERNAL agents with no
+loomcycle system prompt doing the disambiguating, so the description is the
+entire briefing. Seven of those descriptions also claimed "Operator-admin-only"
+when the authorization map says otherwise — stale prose that told tenant
+operators they were locked out of tools they can use.
+
+Both rubrics are enforced by tests rather than convention, and the MCP one
+ranges over the tool surface itself, so a new tool is held to it the day it is
+added.
+
+INTROSPECTION LEAKED THE CATALOGUE. The Context tool is deliberately pointed at
+the runtime-wide tool set, so every introspection op is a disclosure decision.
+Its filter was a plain map lookup that failed in BOTH directions: an unstamped
+or empty allowlist disclosed EVERYTHING, while the "*" that every operator
+surface passes matched nothing and disclosed NOTHING. A grant of
+`mcp__slack__*` disclosed none of that server's tools either. All three ops now
+use the same matcher the exposure layer and the substrate tool-ceiling checks
+already agree on, and an absent list discloses nothing.
+
+ONE AGENT COULD CHOOSE WHAT ANOTHER READS. A team node's threaded input is the
+previous state's OUTPUT, and it was being handed to the placeholder expander.
+An agent ending a turn with `{{document:/secrets/…}}` had that document inlined
+into the NEXT agent's prompt, under the runtime's authority, with reach neither
+needs the Document tool to use. Threaded output now travels in a data slot —
+substituted after expansion, never scanned — the mechanism already built for a
+Starter's source message.
+
+- a fact records every subject it names, not just the first
+- an unknown subject is PROPOSED for an operator to adopt, never minted from a
+  transcript; adoption shares it from that point on and never backfills
+- retiring a fact now closes the k/v plane and the fact graph in one op
+- a reclaimed scope no longer leaves its chunk bodies behind
+- empty subject dossiers are swept, opt-in and off by default
+
+- the TS adapter's TESTS are typechecked. vitest strips types without checking
+  them, so no adapter type was guarded by anything — deleting a field from
+  types.ts broke no build and failed no test. Turning the check on surfaced two
+  live bugs where a mocked error body was never the JSON the test was named for.
+- generated stubs are gated against the .proto, ignoring generator version
+  stamps so the gate answers "do the stubs match the schema" rather than "was
+  the same binary used". It caught a `make python-proto` target that had never
+  worked on Linux.
+- goreleaser is `mode: replace`, so a release re-run no longer dies on
+  already_exists before reaching the Homebrew step.
+
+@loomcycle/client 1.79.0 — gains `propose_subject` on DocumentToolInput.
+
+loomcycle (PyPI) 1.79.0 — first publish since 1.67.0, and it carries the gRPC
+`walk_id` filter plus `parent_context` lineage: the team-walk view that reached
+HTTP, MCP and TypeScript earlier is finally reachable from Python. Released on
+its own python-v1.79.0 tag.
+
+## What's in v1.78.0
+
+*Prompt bindings that reach, behind a guard that holds.*
+
+RFC CY Track A completes the prompt-expansion families, and the walk filter
+reaches every transport. Nine PRs.
+
+An operator writing an agent's prompt could bind a document or the tool
+inventory into it, but not a memory key, not a search, and not a page. A second
+colon now turns both families into an argument form:
+
+    {{memory:key:launch}}                 one stored entry, the run's own scope
+    {{memory:search:deploy checklist}}    the top matches
+    {{tool:WebFetch:https://docs/x}}      that page, fetched once at run start
+    {{tool:WebSearch:release notes}}      that search
+
+All four fold into the SINGLE combined regex the families already share, so a
+placeholder sitting inside injected content — a fetched page, an agent-written
+memory — is still text rather than an instruction the runtime executes.
+
+GATED TWICE, and the two gates fail in different directions.
+
+  Authorship. Only a definition an OPERATOR wrote may use the argument forms.
+  The guard covers ONLY what was added: every family that worked before keeps
+  working for every definition, legacy rows included. Gating those would strip
+  expansion from working defs the moment the migration ran — a guard that
+  breaks working defs on upgrade is an outage, not a guard.
+
+  Trust rule 5d — a placeholder guard is not a NETWORK guard. The argument
+  admits ${…}, and variables bind from untrusted sources. The operator authors
+  the template; an attacker must not pick the target, and a charset check
+  cannot help because a URL charset spells any host. So a resolved value that
+  becomes a network target must be on the operator's STATIC
+  http_host_allowlist. Parameterised fetches work; choosing an unlisted host
+  does not, and the refusal names the host.
+
+Prompt assembly can now block and fail, so the network work is bounded by one
+5s budget for the WHOLE assembly and fails soft: a refused, unreachable, slow
+or empty page renders nothing and the run proceeds.
+
+Who wrote a definition is now recorded on both def planes — agent_defs and
+teamdefs — stamped from the runtime's own view of the caller, never from
+anything the caller supplies, and excluded from content_sha256 so a fork across
+deployments still verifies.
+
+IN A TEAM NODE'S PROMPT THE AUTHOR IS THE TEAM, and the two segments have
+different authors: `system` is always the team's text, `input` is the team's
+template when the node declares one and the PREVIOUS STATE'S OUTPUT when it
+does not. Threaded output is never treated as authored — otherwise an agent
+could emit {{tool:WebFetch:…}} and have the next node's assembly fetch it,
+which is 5d arriving through the back door.
+
+`?walk_id=` landed on the HTTP run-state stream in 1.77.0 but reached no typed
+client. A walk's own run id IS its walk id, so a caller that started a team
+detached filters by the handle it already holds:
+
+  TS     streamUserRunStates(userId, { walkId })  + filter_walk_id on the open
+         frame, + walk_id / wave_id / wave_index on ParentContext
+  gRPC   StreamUserRunStatesRequest.walk_id, and RunStateEvent.parent_context —
+         a new message, carrying lineage gRPC has never had
+  Python stream_user_run_states(..., walk_id=) and a parent_context key on
+         every event dict
+
+wave_id groups a fan-out and wave_index is the position inside it, so a live
+view can place an agent WITHIN a walk rather than merely inside it.
+
+- a fact references every subject it names, not just the first
+- the extractor is windowed by default — 8 turns, guarded on short sources
+- a run knows its chat, so a queued fact can be followed home
+- the evaluation gate stops being a coin flip: sampling is pinned, so the
+  suite measures the prompt instead of an unpinned sampler
+
+- operator_authored survives a snapshot. Capture/restore silently DEMOTED
+  every operator-authored definition, so an operator restoring onto a new
+  deployment found their own defs no longer resolving bindings that worked
+  before the capture.
+
+@loomcycle/client 1.78.0 · loomcycle (PyPI) 1.78.0 — both publish on this tag.
+
+## What's in v1.77.0
+
+*The TeamDef workflow substrate (RFC CY), and facts get one home (RFC CV).*
+
+Two lines land in this release.
+
+A team is no longer just a state machine you invoke. It reads its own work,
+fans it out, publishes results onward, and can be watched and stepped while it
+runs.
+
+**The `starter` primitive.** The dispatcher the design was missing: it reads
+ONE channel, fans out a wave (one run per message, dynamic N), and the RUNTIME
+publishes each result to a declared sink. One subscriber means one cursor, so
+a fan-out is correct by construction, and agents in a wave need no channel
+grant in either direction — the team is the ACL subject. Every spawned run
+emits exactly one sink message on a guaranteed path, so a downstream fan-in is
+unblocked by failure rather than hanging on it.
+
+**A walk is a run.** `TeamDef op=run` now opens a session and a `runs` row
+filed under `team:<name>`, and `mode: "detach"` returns `{run_id, status}`
+immediately with the walk continuing behind it. That run_id is also the walk's
+correlation id, stamped on the `parent_context` of every agent the walk
+spawns — one handle for the response, the run row, the event stream and the
+debugger.
+
+**Debug a workflow while it runs.** Breakpoints on a Starter pause before
+dispatch (every prompt composed, nothing spawned) or after collection (the
+wave done, nothing published). Answer `continue` / `release:<n>` / `abort`
+through the existing Interruption machinery. The armed set is read at every
+pause, not captured at dispatch, so a state can be armed AFTER a run
+started — the case you are actually in when you watch a wave go wrong.
+
+    PUT /v1/runs/{run_id}/breakpoints   {"breakpoints": ["review"]}
+    GET /v1/users/{user_id}/agents/stream?walk_id=<run_id>
+
+**Authoring catches what used to fail at run time.** create/fork preflight a
+definition's channel references and refuse an unrunnable one with the exact
+block to paste; `op=verify` reports `runnable` plus the issues a stored def has
+accumulated (a channel deleted, an ACL gap, a member retired).
+
+**Armed subscriptions** (`LOOMCYCLE_TEAM_SUBSCRIPTIONS=1`, default off) drive a
+promoted team when its source has work, one replica at a time via a per-team
+Postgres advisory lock. This is the only part of the runtime that starts agent
+runs unprompted — turning it on is a spend commitment, and it is off until you
+say otherwise.
+
+**`system-channels` bundle** (`LOOMCYCLE_PRESETS=base,system-channels`)
+declares the runtime's own channels a workflow can read — three heartbeats and
+the interruption pair. A bundle rather than a default because a ticker writes a
+row every period on every deployment, forever.
+
+**TypeScript adapter 1.77.0** carries the whole surface: `runTeam({mode:
+"detach", breakpoints})`, `getRunBreakpoints`, `setRunBreakpoints`.
+
+The memory line moves facts onto the chunk plane: a subject is its own
+document and its facts are its children, a fact is reachable from every
+subject it is about, and it can be traced back to the turn it came from. The
+tenant entity registry is curator-gated.
+
+- **The wave correlation was being dropped on write.** `ParentContext.IsZero()`
+  did not list the wave fields, so every run a Starter spawned stored a NULL
+  `parent_context`. The guard is now derived from the struct.
+- **An "open" channel ACL granted nothing.** Three def-authoring planes
+  declared `Publish: ["*"]`, which the matcher never matches — so no Starter
+  team was authorable-and-runnable over MCP, gRPC or the admin HTTP surface.
+- **Channel `hold` is honoured by every writer**, not only the two that
+  resolved the definition.
+- **A resolved `{{document:}}` ref is re-checked against its charset**, closing
+  a path where an untrusted variable could escape the frame into a system
+  prompt.
+
+Nothing is required. Every new behaviour is opt-in: a team without a `starter`
+runs exactly as before, `breakpoints` and `mode` are absent unless passed,
+armed subscriptions and the system-channels bundle are off until selected.
+
+## What's in v1.76.0
+
+*Temporal memory that answers the question, and an agent editor with no textarea.*
+
+A minor release: full build (all binary variants, multi-arch Docker, sandbox
+image). Two lines land here — the memory subsystem's temporal fields becoming
+real end to end, and the Library agent editor exposing every parameter an agent
+has. No schema migration; no wire-breaking change.
+
+The benchmark number this line is chasing: the raw-turns arm answers temporal
+questions at 0.873 while the distilled-facts arm answers them at 0.18. The
+fields meant to close that gap existed but were not being filled, not being
+selected, and not being followed.
+
+- `observed_at` is now parsed FROM THE TURN rather than asked of the model
+  (#1143). Measured across three full runs, asking for it filled it on 0 of
+  ~240 facts — the model kept dates in the fact prose instead of the field.
+- An unresolved time reference is now kept and `valid_at` resolved from it
+  (#1146). `observed_at` ("when it was said") was already saturated at 100%;
+  `valid_at` ("when it was true in the world") sat at ~19% and is what the
+  questions actually ask — 60 of 63 temporal gold answers name the EVENT's
+  date, not the utterance's.
+- `recall` now reaches through to the span a fact was distilled from (#1147).
+  The store already held that provenance and nothing at retrieval followed it.
+- The extractor is asked for the time on the path that has one (#1139), and a
+  question is no longer taken as evidence for a fact (#1153).
+- An extraction-granularity knob plus rolling fact context (#1155), with the
+  window reaching the queued path (#1156), a chat scanned WHOLE rather than
+  trimmed (#1157), and the queued batch windowed by MESSAGE rather than by
+  queued item (#1158).
+
+Three read-path fixes make those columns survive the round trip: `MemoryList`
+returns the temporal columns it was silently dropping (#1144), the remaining
+Postgres memory reads carry them too (#1148) — a read path that does not SELECT
+them hands back the zero instant, and zero is MEANINGFUL on these columns — and
+a memory snapshot round trip keeps them (#1149).
+
+`path op=ls` takes a `limit` and an opaque `cursor` (#1140). It previously
+accepted neither, so a caller could not ask for less than the whole directory —
+fine today, and not fine for a listing whose size is the tenant's entity count.
+`@loomcycle/client`'s `PathToolInput` carries both fields.
+
+The agent editor gained a second, switchable edit surface, and the raw
+JSON/YAML overlay box is deleted (#1159, #1160).
+
+An agent has 47 persisted overlay parameters. The editor gave structured
+controls to 19 and put the rest behind a free-text textarea with no validation
+until submit, no bounds, and no explanation of what any key meant. It was the
+third attempt at that idea; each failed the same way, because a textarea cannot
+explain a parameter.
+
+- **Form** — the curated layout, unchanged and still the default.
+- **All parameters** — every parameter, one row each, under collapsible groups:
+  a typed control, its bounds, its overlay key and an always-visible hint per
+  row; per-group "n set" badges so a CLOSED group still says what the def
+  overrides; groups open by default at exactly the ones holding values.
+
+Both surfaces are driven by one declarative registry, so a parameter is a
+single entry rather than a state hook plus JSX plus an overlay builder plus a
+hand-maintained covered-keys set. A drift test pins the registry against the
+persisted overlay's Go shape, so a new backend parameter cannot ship
+unreachable.
+
+The registry and the editor ship as **@loomcycle/def-fields 0.1.0**, a
+standalone package with react/react-dom as its only peers, so the loomboard
+canvas can reuse the same controls without pulling the Library UI.
+**@loomcycle/library 0.5.0** consumes it as a required peer dependency.
+
+LongMemEval added as a second corpus with abstention scored correctly (#1142),
+its non-string answers handled (#1154), and a `-answer-only` mode that grades
+the store as it stands (#1152). The retention export is pinned to carry
+`doc.chunk` body rows (#1141), coordination test replica ids now pass
+`ValidateReplicaID` (#1150), and the coordination tier is gated on the Postgres
+job (#1151). `make build-ui` installs the new package's deps (#1161) — the
+release build runs that target rather than CI's own install list, and the two
+had diverged.
+
+`@loomcycle/client` remains at 1.72.0, so the npm publish is skipped for this
+tag and the `PathToolInput` additions above are in-tree but not yet on npm.
+
+## What's in v1.75.1
+
+*The memory embedder resolves its endpoint from `providers:` yaml.*
+
+A patch on the v1.75 line. One runtime fix plus the memory-architecture guide.
+
+Repointing `ollama-local` at a new Ollama host the documented way —
+`providers: ollama-local: base_url:` in loomcycle.yaml — moved CHAT but not the
+EMBEDDER. providerbuild prefers the map entry, while the embedder read
+cfg.Env.OllamaBaseURL only, so the two halves of one provider account resolved
+independently.
+
+Observed live: chat reached a newly-installed Ollama box and billed 50 calls
+while every embed failed `dial tcp: lookup <host> on 127.0.0.11:53: no such
+host` — the env var named a Tailscale MagicDNS host, which does not resolve
+against Docker's embedded DNS inside the container.
+
+An embed failure warns but does not fail the write (by design: the k/v row is
+kept, the response carries `embedded:false` + `embed_warning`), so a caller that
+ignores that field just accumulates unembedded rows. A live scope reached 108
+fact rows with ~0 embeddings and `/v1/_memory/search` 500'd, while every write
+still reported 200.
+
+The two copies of the per-provider base-URL switch are now one shared function.
+base_url precedence, highest first:
+
+    memory.embedder.base_url > providers.<id>.base_url > the per-id env default
+
+YAML is the config home; the env var is only the floor. Chat resolution is
+unchanged — byte-identical inputs to every driver factory.
+
+Two carve-outs, both covered by tests: `anthropic` inherits NEITHER half of its
+chat entry (that embedder slot is a Voyage AI proxy, so an Anthropic proxy
+base_url would receive Voyage requests and ANTHROPIC_API_KEY would be sent to
+Voyage), and the per-id env KEY stays the last resort for a deployment with no
+`providers:` block (the openai embedder accepts an empty key at construction and
+only fails later at 401).
+
+Operators: if the embedder endpoint is set via `memory.embedder.base_url` it
+still wins by design — remove it to inherit the `providers:` entry. Either way
+the address must be one the CONTAINER can resolve; prefer a tailnet IP or a
+compose service name over a MagicDNS name. `PUT /v1/_memory/scopes/<scope>/<id>/keys/<key>?embed=true`
+returns `embed_warning` naming the endpoint and the error — the whole diagnosis
+in one call.
+
+The memory architecture guide, with structure and state diagrams, exported from
+the document store to docs/MEMORY-ARCHITECTURE.md.
+
+Tagged as a patch but released with force_full, because the fix is in the Go
+runtime: the patch tier alone builds only loomcycle-browser. Adapters are
+unchanged and their publish jobs skip clean on version mismatch (no wire change).
+
+## What's in v1.75.0
+
+*Recall the agent can actually reach; one tenant mapping; a benchmark.*
+
+that refuses a rigged partition
+
+THE RECALL TOOL IS AUTO-GRANTED WHEN RECALL IS ON (#1135)
+
+v1.73.0 shipped recall-augmented distillation: an opt-in context.recall harvests
+every evicted span into a run-scoped index. The agent could not query it. An
+empty `tools:` allowlist is default-DENY rather than default-all, and a populated
+one easily omits Recall — so a recall-enabled agent had the index and no way to
+reach it, and the docs implied a default-all toolset that does not exist.
+
+An end-to-end run found it the way these things get found: the agent, asked for a
+value distillation had evicted, CONFABULATED rather than recalled, because Recall
+was never in its toolset at all. Enabling recall now auto-grants the builtin at
+every toolset-resolution site — RunOnce, the HTTP run path, session-continue,
+sub-agent spawn and resume. Read-only over the run's own evicted spans and the
+agent's own memory scope, so it widens the allowlist and not the trust boundary;
+a no-op when recall is off or no embedder is configured.
+
+ONE TENANT MAPPING (#1136)
+
+The `"" -> "default"` mapping that turns a runtime tenant into a SQL Memory scope
+key had FOUR implementations across three packages, each with a comment naming a
+DIFFERENT one as the source of truth and nothing asserting they agreed. They did
+agree, byte for byte, which is the only reason this was latent rather than live.
+
+Divergence is not cosmetic, and the erasure call site already spelled out why: a
+DropScope built from a raw "" tenant matches nothing, so a single-tenant
+deployment's subject erasure would leave the subject's ENTIRE SQL Memory database
+in place while REPORTING SUCCESS. The rule now lives once, in internal/sqlmem —
+the package whose own constraint creates it, since pgScopeNames must reject an
+empty tenant or every single-tenant deployment would share one schema and one
+LOGIN role. Pinned by a test covering the empty case, a tenant literally NAMED
+"default", and that distinct tenants still derive distinct schemas.
+
+A BENCHMARK THAT REFUSES A RIGGED PARTITION (#1136)
+
+The answer axis already refused an EMPTY store, on the stated grounds that
+"accuracy 0.0000" is a number about the plumbing wearing the costume of a result
+about memory. That was not enough. With the corpus tenant's ontology declaring a
+tenant memory scope for its own entity types, the consolidator PLACED most facts
+into the tenant scope while the answerer recalls from the user scope only. Enough
+rows remained for the empty check to pass, the run scored 0.0216 with 95%
+abstention, and three plausible mechanisms were reasoned on top of that number
+before anyone compared the counter to the store.
+
+The guard now compares them: how many facts the pass reported writing against how
+many are reachable where the answerer looks, refusing on a shortfall of more than
+half and naming placement as the usual cause. Chunk-body rows are deliberately
+not counted — counting them is exactly what made a diverted partition look
+populated.
+
+WHAT THE MEASUREMENT SAID, since three releases served it
+
+Consolidated facts versus raw turns, same corpus, same 199 paired questions:
+0.7383 for turns against 0.1574 for facts, McNemar exact p = 2.4e-29. The
+mechanism is abstention (76% versus 15%) rather than retrieval, and not yield —
+7.2:1 and 9.0:1 compression with exact counters. Temporal is the sharpest slice:
+0.873 against 0.036, because a raw turn carries its timestamp in the text and
+distillation strips it. Consolidation's demonstrated gain on that corpus is about
+one question in 199.
+
+The operational consequence is why #1135 matters more than it looks: `Memory add`
+with the default infer=true stores no retrievable row, so a deployment's recall
+path IS the losing arm. Recall-augmented distillation is the answer to that, and
+until this release the tool was unreachable.
+
+THE SELF-GUARD LIMITATION, STATED (#1134)
+
+Placement's most reassuring promise was overstated. "It never places a fact about
+you" holds only for facts learned from that owner's OWN conversations: another
+user recording the same thing is recording a fact about a third party, so their
+copy is placed. Measured on a two-user corpus, each user published the other
+speaker's facts tenant-wide, leaving each owner's facts MORE exposed than before
+placement was enabled. Not a bug — what per-scope decisions with no global view
+produce. The shipped ontology template now says so in the place an operator reads
+while deciding, and docs/TOOLS.md documents the mechanism for the first time.
+
+VERSIONS
+
+@loomcycle/library is 0.4.0 for the capability-gates renderer (#1133) and
+publishes on its own library-v tag. The TS adapter stays at 1.72.0 and the Python
+adapter at 1.67.0, so both skip clean here. @loomcycle/memory-view 0.5.0 is
+already on npm.
+
+## What's in v1.74.0
+
+*What distillation drops can now outlive the run.*
+
+PERSISTENT-MEMORY HARVEST ACROSS DISTILLATION MODES (#1131, RFC CT P2)
+
+v1.73.0 made an evicted span recoverable WITHIN its run, through a
+run-scoped index and the Recall tool. This is the cross-run sibling: an
+opt-in per-agent `context.harvest_to_memory` banks each evicted span for the
+memory consolidator, so what a distillation drops can become a durable fact
+instead of being lost at the end of the run.
+
+It generalizes what already existed for exactly one mode. `compaction.memory_flush`
+banked the span behind a compaction cut and nothing else; banking now happens at
+the recap and stateful boundaries too — the same three places the P1 recall index
+harvests. The banking callback is installed when either flag is set, so an
+operator relying on memory_flush is unaffected.
+
+BANKING RATHER THAN INLINE EXTRACTION, and the choice was measured. Banking
+hands raw spans to the existing consolidator instead of extracting per span on
+the hot path. RFC CU Probe 2 found that per-span isolated extraction LOSES
+coreference-dependent facts — a subject named two spans earlier — that the
+consolidator's whole/batched extraction keeps: 0.75 versus 0.00 on user-project
+coreference, McNemar p=0.0010. Broader context and no model call on the
+distillation path is the right shape.
+
+A misconfiguration is now loud rather than silent: no store, no user scope, or no
+user_id surfaces as an EventError instead of a run that simply never harvests. A
+banking failure never fails the run. The banked span's metadata source
+generalizes from "compaction" to "distillation" since it now covers all three (no
+consumer branches on it). Deliberately absent on resume, which replays past
+distillations. Off by default, and content-identifying like the rest of the
+context block, so a fork that flips it mints a distinct content_sha256 while every
+pre-feature agent row stays byte-stable.
+
+The server now resolves the merged context once per run, removing three redundant
+recomputes in the run builders.
+
+RELEASE HISTORY AND THE RECALL TOOL DOCUMENTED (#1132)
+
+REVISIONS.md had stopped at v1.71.0 while three tags shipped; v1.72.0 and v1.73.0
+now have sections. The v1.72.0 entry also records what the memory-placement work
+MEASURED, including the part that does not flatter it: duplicate copies fell 30 to
+23, which is -23% and not elimination, because cross-user duplication was replaced
+by tenant-to-owner duplication. The payoff that does hold is sharing — 94 facts
+readable by both users where none were before — and the self-guard's limitation is
+stated as a limitation: it cannot protect what the counterparty also recorded.
+
+The `Recall` tool shipped in v1.73.0 appearing in no tool list at all is fixed:
+README, docs/TOOLS.md and the project guide now carry it. The TOOLS.md entry as
+first written was wrong, taken from a commit message, and reading the registration
+site corrected it — the tool is registered UNCONDITIONALLY like Memory, because
+only the run-scoped index is conditional and the durable-memory search is useful
+to any agent that grants the tool.
+
+VERSIONS
+
+The TS adapter is unchanged at 1.72.0 and the Python adapter at 1.67.0, so both
+publishes skip clean on this tag. @loomcycle/memory-view sits at 0.5.0 and
+@loomcycle/library at 0.3.0; both publish only on their own `memory-view-v` /
+`library-v` tags, and the embedded Web UI consumes both from SOURCE, so this
+binary ships their current state regardless.
+
+KNOWN DOC GAP
+
+README's capability table does not yet mention `context.harvest_to_memory`
+alongside `context.recall`; the operator reference in docs/CONFIGURATION.md
+covers it.
 
 ## What's in v1.73.0
 
@@ -151,6 +763,55 @@ more exposed than baseline, which is precisely what the guard exists to prevent.
 Not a bug — the consequence of per-scope decisions with no global view. In any
 multi-party corpus the guard's promise is defeated by the other party, and the
 narrow declarations (`organization`, `project`, `service`) are the safer default.
+
+## What's in v1.71.1
+
+*A placed fact stays reachable from its subject.*
+
+A PATCH, BUILT FULL. The fix is in the embedded memory bundle, so it ships in
+the runtime binary and image rather than the browser image a patch tag
+normally builds alone. Released with force_full.
+
+WHAT WAS WRONG (#1125)
+
+v1.71.0 made ontology-declared placement reachable for the first time. Running
+it end to end showed that a placed fact was stored in the shared plane and
+orphaned there.
+
+`mirrorEntity` threads the placed scope into every write it makes — the
+entities document, the canonical-type lookup, the subject node, the fact node
+— except the `about` edge that joins the two nodes, which used the pass's
+configured scope. So both nodes landed in the tenant plane and the edge was
+written in the caller's scope, where neither endpoint exists. The link failed,
+a counter incremented, and the pass carried on.
+
+Measured on the live store: 3 facts placed, 3 edges lost, 0 inbound edges on
+the subject node. The facts sit in the plane every user reads and a graph walk
+from the person's name reaches none of them — which is the single property the
+entity tier exists to provide. One word: the placed scope, not the configured
+one.
+
+The judge had the same defect one function over. A candidate carried its id but
+not the scope it was written in, so judge_fact looked for a placed fact in the
+configured scope and could only fail. The scope now travels with the candidate.
+
+Two silent failure sites now record the reason, matching the two that already
+did. This is why the diagnosis needed a code read: the deployed build reported
+"3 graph write(s) failed" and nothing more, while the mechanism for saying why
+was already there and simply not wired at these sites.
+
+WHY NO TEST CAUGHT IT
+
+The test double was scope-blind. Its chunk store was natural_key -> id with no
+record of where a chunk was written, so every scope answered identically, and
+the sibling test — which asserts the row, the chunks AND the entities document
+all reach the declared scope — passed throughout without ever looking at the
+link. A double has to model the dimension the feature varies. It now records
+each chunk's write scope and refuses a link naming a scope neither endpoint
+lives in, as the real store does, and reproduces the production report
+verbatim.
+
+The adapters and protos are unchanged and remain at 1.67.0.
 
 ## What's in v1.71.0
 
@@ -340,6 +1001,113 @@ mistake has already been made once in this line and corrected. The yield questio
 what gates a real answer, and it is open.
 
 The adapters are unchanged and remain at **1.67.0**.
+
+## What's in v1.68.2
+
+*A failing consolidation pass says why.*
+
+One fix. The memory consolidator counted its entity-graph failures and threw
+away the reason:
+
+    entities 0 fact(s) across 0 subject(s), 2 graph write(s) failed
+
+That is unactionable, and there is no second place to look. The consolidator
+is an `internal: true` agent, so its runs are deliberately kept out of the run
+and history surfaces and its transcript cannot be read back — confirmed with a
+404 from both /v1/runs/{id} and its events. The pass report is the only thing
+it ever gets to say, so a swallowed message is a message lost for good. A live
+two-user run on a real corpus stalled on exactly this: every entity write
+failed and the cause was unrecoverable afterwards.
+
+Three changes, none of which alter what gets stored:
+
+  - The FIRST error text is kept and reported, truncated. First only, because a
+    per-failure list would put unbounded model-adjacent text in the report, and
+    the first one is what a person acts on.
+
+  - A failed subject-type LOOKUP now has its own counter and message. It is a
+    different failure from a failed chunk WRITE — a bad lookup means the type
+    may drift, a bad write means the fact is missing from the graph entirely.
+    Sharing one counter is what made the live signal uninterpretable as soon as
+    v1.68.1's canonicalType began contributing to it.
+
+  - A reply that PARSES but carries no id is now counted. It previously
+    returned empty and incremented nothing, so a pass could lose every entity
+    write and still report a clean sheet.
+
+BUILD NOTE
+
+Tagged as a patch but built with force_full, because the fix is in the runtime
+and a patch tag otherwise builds only the loomcycle-browser image.
+
+The adapters are unchanged and remain at 1.67.0, so no python-v tag
+accompanies this.
+
+## What's in v1.68.1
+
+*The entity graph keeps one subject as one subject.*
+
+Two runtime fixes on the v1.68.0 memory line, both found by measuring a real
+store rather than by reading the code.
+
+A SUBJECT KEEPS THE TYPE IT IS ALREADY FILED UNDER
+
+A subject node's natural key is `type + ":" + slug`, so the type is part of
+the identity. Each extraction call saw one transcript and picked a type
+fresh, with no knowledge of how that subject was typed before, and nothing
+reconciled them. Measured on a benchmark store of 142 claims:
+
+    caroline -> event, location, object, organization, person  (5 nodes, 89 claims)
+    melanie  -> event, object, person                          (3 nodes, 43 claims)
+    nia      -> event, object                                  (2 nodes,  4 claims)
+
+Every subject mentioned more than once was typed inconsistently, and 94% of
+all claims hung off a multiply-typed subject. Facts about one person were
+scattered across five graph nodes, so "what else do we know about her" — the
+question the entity tier exists to answer — could reach at most a fifth of
+what was stored. It also meant ontology-declared placement would refuse 94%
+of that corpus, since it correctly declines an inconsistently typed subject.
+
+The type a subject is already filed under now wins over the current call's
+guess, for both the natural key and the type field. FIRST WRITE WINS, and
+that is the design rather than a tie-break: the first type is the only STABLE
+choice, because any rule that can change a subject's type later
+re-partitions every fact already filed under the old one.
+
+Existing multiply-typed nodes are NOT migrated — this prevents new splits.
+
+The extraction prompt also now states whose memory it is filling, as a rule
+("a fact about THEM takes the subject `user`") rather than by handing the
+model a subject id. A transcript between two other people has no fact about
+the owner, so a benchmark corpus is unaffected.
+
+IDENTITY DOCUMENTS ARE PROVISIONED ON EVERY USER-CREATION PATH
+
+v1.68.0 provisioned the user-root and tenant-root documents when a principal
+was established — for one of the three paths that establish one. The hook sat
+on the OperatorTokenDef substrate tool; `POST /v1/_users` and
+`POST /v1/_users/{subject}/tokens` write their rows directly and share no
+code with it. The Web UI drives those two, so a user created there got no
+profile, hence no Identity section, hence no way to declare their own names —
+and placement cannot tell a fact about that person from a fact about a
+colleague without them. The feature was inert for the people it was built
+for.
+
+Both paths are now hooked. A user created before this ships stays without a
+profile until a token is minted for it, or the document is created directly.
+
+ALSO
+
+A long-horizon context-retention benchmark harness (bench only, no runtime
+surface).
+
+BUILD NOTE
+
+Tagged as a patch but built with force_full, because the fixes are in the
+runtime and a patch tag otherwise builds only the loomcycle-browser image.
+
+The adapters are unchanged and remain at 1.67.0, so no python-v tag
+accompanies this.
 
 ## What's in v1.68.0
 
@@ -1760,6 +2528,26 @@ Nothing else changed: no Go code, no schema, no wire surface. `@loomcycle/client
 **A CI flake removed.** `TestProviderGate_ZeroOverheadWhenUnconfigured` asserts five runs overlap in the provider (`peak > 1`) using a bare 20 ms delay, which a loaded runner could stagger into a false `peak=1` — it failed exactly this way on a recent `Go 1.26.x` job. It now uses the harness's existing `holdUntil` rendezvous so the observed peak is deterministic; a genuine under-admit still fails (the 2 s safety valve fires, peak stays < 2).
 
 `loomcycle` (PyPI) stays 1.46.0 and `@loomcycle/explorer` 0.6.0 — neither was touched.
+
+## What's in v1.49.1
+
+*Memory search: the source filter is a visible dropdown.*
+
+Patch. UI-only — no wire, adapter, or runtime API change. The TS adapter stays at
+1.49.0, so its publish is correctly skipped (nothing to republish).
+
+The RFC BW `source` field in the @loomcycle/memory-view search panel (shipped in
+v1.49.0) rendered as a bare <input list> + <datalist>: a plain empty text box
+whose facts / notes / documents choices only surface on focus, with a
+subtle/browser-dependent dropdown affordance — so operators read it as an empty,
+non-functional field. #961 replaces it with an explicit combobox: a text input
+with a visible ▾ chevron that opens a real option list (all sources / facts /
+notes / documents) on click, closing on outside-click or Escape, and still
+free-text editable (an unknown value is dropped server-side). Same `sources`
+selector on POST /v1/_memory/search — only the control's presentation changed.
+
+@loomcycle/memory-view is versioned on its own memory-view-v* tag (0.1.0,
+unpublished); this runtime tag does not publish it.
 
 ## What's in v1.49.0
 
