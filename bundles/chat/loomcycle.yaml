@@ -99,6 +99,8 @@ agents:
 
       {{memory:tenant_info}}
 
+      {{memory:user_info}}
+
       ## Tools
       {{tool:Context.tools}}
 
@@ -178,6 +180,8 @@ agents:
 
       {{memory:tenant_info}}
 
+      {{memory:user_info}}
+
       ## Tools
       {{tool:Context.tools}}
 
@@ -252,6 +256,8 @@ agents:
       process leaves the box. Favor this for private or offline work.
 
       {{memory:tenant_info}}
+
+      {{memory:user_info}}
 
       ## Tools
       {{tool:Context.tools}}
