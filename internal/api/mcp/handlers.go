@@ -700,10 +700,7 @@ func handleCredentialDef(ctx context.Context, env *handlerEnv, args json.RawMess
 	if err != nil {
 		return toolErrFrom("credentialdef", err), nil
 	}
-	return &loommcp.CallToolResult{
-		Content: []loommcp.ContentBlock{{Type: "text", Text: res.Text}},
-		IsError: res.IsError,
-	}, nil
+	return toolResultFromConnector(res), nil
 }
 
 func wrapBuiltin(toolName string, call func(connector.Connector, context.Context, json.RawMessage) (connector.ToolResult, error)) toolHandler {
@@ -715,10 +712,7 @@ func wrapBuiltin(toolName string, call func(connector.Connector, context.Context
 		if err != nil {
 			return toolErr(toolName + ": " + err.Error()), nil
 		}
-		return &loommcp.CallToolResult{
-			Content: []loommcp.ContentBlock{{Type: "text", Text: res.Text}},
-			IsError: res.IsError,
-		}, nil
+		return toolResultFromConnector(res), nil
 	}
 }
 
@@ -1302,4 +1296,26 @@ func handleDirectory(ctx context.Context, env *handlerEnv, args json.RawMessage)
 	default:
 		return toolErr(`directory: unknown op "` + p.Op + `" (must be one of: users, inspect, tenants)`), nil
 	}
+}
+
+// toolResultFromConnector renders a builtin's result onto the MCP wire.
+//
+// resultCount is emitted whenever the tool counted, INCLUDING zero. Zero is the
+// whole point: it is what lets a caller tell "the query ran and matched
+// nothing" from "the query did not run", without reading the prose. A tool that
+// does not count emits no key at all, which is a different statement from
+// counting zero and must stay distinguishable from it.
+func toolResultFromConnector(res connector.ToolResult) *loommcp.CallToolResult {
+	out := &loommcp.CallToolResult{
+		Content: []loommcp.ContentBlock{{Type: "text", Text: res.Text}},
+		IsError: res.IsError,
+	}
+	// A count alongside a failure would describe a result set that does not
+	// exist; the error payload is the meaningful half there.
+	if res.Count != nil && !res.IsError {
+		if raw, err := json.Marshal(map[string]int{"resultCount": *res.Count}); err == nil {
+			out.StructuredContent = raw
+		}
+	}
+	return out
 }

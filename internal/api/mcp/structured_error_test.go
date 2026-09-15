@@ -299,3 +299,73 @@ func TestRunResult_PayloadSurvivesTheIsErrorChange(t *testing.T) {
 		}
 	}
 }
+
+// --- resultCount: a successful empty query must not look like a failure ---
+
+func countOf(t *testing.T, res *loommcp.CallToolResult) (int, bool) {
+	t.Helper()
+	if len(res.StructuredContent) == 0 {
+		return 0, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(res.StructuredContent, &m); err != nil {
+		t.Fatalf("structuredContent is not valid JSON: %v", err)
+	}
+	v, ok := m["resultCount"].(float64)
+	return int(v), ok
+}
+
+func TestResultCount_ZeroIsEmittedNotOmitted(t *testing.T) {
+	zero := 0
+	res := toolResultFromConnector(connector.ToolResult{
+		Text:  "no matches — the search completed successfully and the pattern was not found",
+		Count: &zero,
+	})
+
+	if res.IsError {
+		t.Error("an empty result is a success")
+	}
+	n, present := countOf(t, res)
+	if !present {
+		t.Fatal("resultCount omitted for an empty result — omitting it is exactly what makes " +
+			"a successful empty query indistinguishable from a failed one")
+	}
+	if n != 0 {
+		t.Errorf("resultCount = %d, want 0", n)
+	}
+}
+
+func TestResultCount_NonEmptyCarriesTheCount(t *testing.T) {
+	three := 3
+	res := toolResultFromConnector(connector.ToolResult{Text: "a\nb\nc", Count: &three})
+	n, present := countOf(t, res)
+	if !present || n != 3 {
+		t.Errorf("resultCount = %d present=%v, want 3", n, present)
+	}
+}
+
+// A tool that does not count must emit no key. "Did not count" and "counted
+// zero" are different statements and have to stay distinguishable.
+func TestResultCount_AbsentWhenTheToolDoesNotCount(t *testing.T) {
+	res := toolResultFromConnector(connector.ToolResult{Text: "some prose"})
+	if _, present := countOf(t, res); present {
+		t.Errorf("invented a resultCount for a tool that does not count: %s", res.StructuredContent)
+	}
+	if len(res.StructuredContent) != 0 {
+		t.Errorf("non-counting tool emitted structuredContent: %s", res.StructuredContent)
+	}
+}
+
+// A count beside a failure would describe a result set that does not exist.
+func TestResultCount_NotEmittedOnFailure(t *testing.T) {
+	zero := 0
+	res := toolResultFromConnector(connector.ToolResult{
+		Text: "grep: volume not bound", IsError: true, Count: &zero,
+	})
+	if !res.IsError {
+		t.Fatal("IsError lost")
+	}
+	if _, present := countOf(t, res); present {
+		t.Errorf("resultCount emitted alongside a failure: %s", res.StructuredContent)
+	}
+}

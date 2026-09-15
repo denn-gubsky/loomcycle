@@ -165,11 +165,14 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		before, after = args.Context, args.Context
 	}
 
-	res, err := grepWalk(root, searchRoot, re, args.Glob, mode, headLimit, maxBytes, before, after)
+	res, n, err := grepWalk(root, searchRoot, re, args.Glob, mode, headLimit, maxBytes, before, after)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	return tools.Result{Text: res}, nil
+	// Count travels as structure so a caller never has to parse prose — and
+	// 0 is the value that matters, because it is what distinguishes "searched,
+	// found nothing" from "the search did not run".
+	return tools.Result{Text: res, Count: &n}, nil
 }
 
 // grepWalk does the file iteration. Pulled out so tests can drive
@@ -177,13 +180,17 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // walked entry is re-checked against it (symlink-resolved) before being
 // opened, so an in-volume symlink pointing outside the volume can't leak
 // out-of-volume file contents.
-func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, error) {
+// grepWalk renders the matches and reports HOW MANY result items it wrote, in
+// whatever unit the mode counts in: files for files_with_matches and count,
+// matching lines for content. The caller surfaces it so a reader never has to
+// infer "zero" by noticing the absence of output.
+func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, int, error) {
 	// Resolve the sandbox root ONCE; each walked file is checked against it
 	// below. A root that can't be resolved is a misconfiguration, not a
 	// per-file skip, so fail the walk.
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", fmt.Errorf("sandbox root: %w", err)
+		return "", 0, fmt.Errorf("sandbox root: %w", err)
 	}
 
 	var (
@@ -239,7 +246,7 @@ func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, hea
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("walk: %w", err)
+		return "", 0, fmt.Errorf("walk: %w", err)
 	}
 
 	// Deterministic ordering on path. WalkDir already sorts but be
@@ -302,9 +309,13 @@ func grepWalk(root, searchRoot string, re *regexp.Regexp, glob, mode string, hea
 		out.WriteString(fmt.Sprintf("\n[truncated at head_limit=%d or max_bytes=%d]\n", headLimit, maxBytes))
 	}
 	if out.Len() == 0 {
-		return "no matches\n", nil
+		// An empty result is a SUCCESS, and has to read like one. "no matches"
+		// alone is a fragment that an agent can just as easily read as a failure;
+		// saying the search completed is what separates "nothing is there" from
+		// "the search did not run".
+		return "no matches — the search completed successfully and the pattern was not found\n", 0, nil
 	}
-	return out.String(), nil
+	return out.String(), results, nil
 }
 
 type grepMatch struct {

@@ -22,6 +22,12 @@ import (
 type ToolResult struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"is_error,omitempty"`
+
+	// Count is how many items a collection-returning tool actually returned.
+	// A pointer because 0 is the interesting value — it separates "the query
+	// ran and matched nothing" from "the query did not run" — and a plain int
+	// cannot tell either of those from a tool that never counts.
+	Count *int `json:"count,omitempty"`
 }
 
 // --- Run lifecycle types ---
