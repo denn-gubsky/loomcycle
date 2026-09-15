@@ -34,7 +34,7 @@ func TestGrepWalk_DoesNotFollowSymlinkOutsideRoot(t *testing.T) {
 	}
 
 	re := regexp.MustCompile("FINDME")
-	out, err := grepWalk(root, root, re, "", "content", 100, grepDefaultMaxOutputBytes, 0, 0)
+	out, _, err := grepWalk(root, root, re, "", "content", 100, grepDefaultMaxOutputBytes, 0, 0)
 	if err != nil {
 		t.Fatalf("grepWalk: %v", err)
 	}

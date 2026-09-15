@@ -515,7 +515,7 @@ func (s *Server) TeamDef(ctx context.Context, input json.RawMessage) (connector.
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // VolumeDef dispatches to the RFC AH Phase 2a dynamic-volume substrate
@@ -584,7 +584,7 @@ func (s *Server) MCPServerDef(ctx context.Context, input json.RawMessage) (conne
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // ScheduleDef dispatches to the v1.x dynamic scheduled-runs substrate
@@ -598,7 +598,7 @@ func (s *Server) ScheduleDef(ctx context.Context, input json.RawMessage) (connec
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // A2AServerCardDef dispatches to the v1.x RFC G A2A-server-card substrate
@@ -612,7 +612,7 @@ func (s *Server) A2AServerCardDef(ctx context.Context, input json.RawMessage) (c
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // A2AAgentDef dispatches to the v1.x RFC G A2A-agent substrate tool. Same
@@ -626,7 +626,7 @@ func (s *Server) A2AAgentDef(ctx context.Context, input json.RawMessage) (connec
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // WebhookDef dispatches to the v1.x RFC H inbound-webhook substrate tool.
@@ -640,7 +640,7 @@ func (s *Server) WebhookDef(ctx context.Context, input json.RawMessage) (connect
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // MemoryBackendDef dispatches to the RFC I MR-3a memory-backend
@@ -654,7 +654,7 @@ func (s *Server) MemoryBackendDef(ctx context.Context, input json.RawMessage) (c
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // DocumentSourceDef dispatches to the RFC CE remote-document-source
@@ -668,7 +668,7 @@ func (s *Server) DocumentSourceDef(ctx context.Context, input json.RawMessage) (
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // OperatorTokenDef dispatches to the RFC L OperatorTokenDef substrate
@@ -704,7 +704,7 @@ func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (c
 			s.ProvisionIdentityDocs(ctx, tenant, subject)
 		}
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // isTokenCreateOp is narrower than isMutatingTokenOp: rotate and retire act on a
@@ -777,7 +777,7 @@ func (s *Server) dispatchBuiltin(ctx context.Context, name string, input json.Ra
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
 // --- 4. Pause/Resume/Snapshot (real in v0.8.18; wire shapes locked v0.8.15) ---

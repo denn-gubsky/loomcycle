@@ -121,7 +121,7 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if filepath.IsAbs(pattern) {
 		rel, inRoot := relativizeToRoot(searchRoot, pattern)
 		if !inRoot {
-			return tools.Result{Text: "no matches\n"}, nil
+			return emptyGlobResult(), nil
 		}
 		pattern = rel
 	}
@@ -193,9 +193,13 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		fmt.Fprintf(&out, "\n[truncated at max_results=%d; %d total matches]\n", maxResults, len(matches))
 	}
 	if out.Len() == 0 {
-		return tools.Result{Text: "no matches\n"}, nil
+		return emptyGlobResult(), nil
 	}
-	return tools.Result{Text: out.String()}, nil
+	n := len(matches)
+	if truncated {
+		n = maxResults
+	}
+	return tools.Result{Text: out.String(), Count: &n}, nil
 }
 
 // relativizeToRoot converts an absolute glob pattern to one relative to root
@@ -249,4 +253,17 @@ func doublestarMatch(pat, path []string) bool {
 		return false
 	}
 	return doublestarMatch(pat[1:], path[1:])
+}
+
+// emptyGlobResult is the no-match success. An empty list is a legitimate
+// ANSWER to "which files match this", not a failure, and the text says so
+// explicitly — "no matches" on its own is a fragment an agent can read either
+// way. Count is 0 rather than absent: absent means "this tool does not count",
+// which is a different statement.
+func emptyGlobResult() tools.Result {
+	n := 0
+	return tools.Result{
+		Text:  "no matches — the search completed successfully and no file matched the pattern\n",
+		Count: &n,
+	}
 }
