@@ -1,0 +1,60 @@
+# RFC DB-1 feasibility rig. NO storage tier and NO memory: the oracle arm hands the
+# facts to the answerer in the prompt and the control hands it nothing, so a store
+# would only add a way for the two arms to differ by something other than the facts.
+storage:
+  backend: sqlite
+
+providers:
+  deepseek:
+    driver: deepseek
+    api_key_env: DEEPSEEK_API_KEY
+
+models:
+  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
+
+provider_priority:
+  - deepseek
+
+agents:
+  # THE ANSWERER ANSWERS FROM THE PROMPT, which is what makes the two arms
+  # comparable: the oracle arm's prompt carries the supporting facts and the control
+  # arm's carries none. It must refuse rather than reach for what it knows — the
+  # control measures parametric leakage, and an agent that guesses hides it.
+  db1/answerer:
+    provider: deepseek
+    model: deepseek-v4-flash
+    tools: []
+    skills: ["-*"]
+    max_tokens: 900
+    sampling: { temperature: 0 }
+    system_prompt: |
+      You answer a question using ONLY the facts given to you under FACTS.
+
+      If no FACTS section is present, or the facts given do not together support an
+      answer, reply with exactly NOT_FOUND and nothing else. Do not use anything you
+      know about the world: every name here is fictional, and a confident answer from
+      outside the facts is the error this is measuring.
+
+      Some questions need TWO OR MORE facts combined. Combine them. Do not refuse
+      just because no single fact states the answer.
+
+      Answer in one short sentence. No preamble, no reasoning, no restating the
+      question.
+  db1/judge:
+    provider: deepseek
+    model: deepseek-v4-flash
+    tools: []
+    skills: ["-*"]
+    max_tokens: 700
+    sampling: { temperature: 0 }
+    system_prompt: |
+      You grade one ANSWER against the GOLD answer for a QUESTION.
+
+      Reply with exactly one word on the first line: CORRECT, WRONG, or NOT_FOUND.
+      NOT_FOUND is only for an answer that is literally NOT_FOUND.
+      Then one short line of reason.
+
+      Grade on MEANING, not wording. A correct city, organisation or region named
+      with different surrounding words is CORRECT. An answer naming the right thing
+      plus extra true detail is CORRECT. An answer that hedges without committing to
+      the gold value is WRONG.
