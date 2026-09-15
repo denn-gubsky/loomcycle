@@ -427,6 +427,14 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		frag, fargs := factsAboutSubjectSQL(in.About, docID)
 		where = append(where, frag)
 		args = append(args, fargs...)
+	} else if in.Across {
+		// REFUSED rather than ignored. `across_scopes` unifies ONE SUBJECT across the
+		// scopes that know it, and without `about` there is no subject to unify — so
+		// the flag would silently do nothing and the caller would read the local answer
+		// as the wide one. That silent-downgrade shape is what a dropped source
+		// selector already cost once.
+		return errResult("list_facts: across_scopes needs `about` — it finds the SAME " +
+			"SUBJECT in your other readable scopes, so there has to be a subject to find"), nil
 	}
 	// Reuse graph_recall's temporal filter so "currently true" means the same
 	// thing on both surfaces. The INNER JOIN makes m.chunk_id non-null, so the
@@ -496,6 +504,18 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	// as a bug rather than as a working taxonomy.
 	if len(typeExpansion) > 1 {
 		out["type_expanded_to"] = typeExpansion
+	}
+	// THE SAME SUBJECT, WHEREVER ELSE IT IS KNOWN. A subject exists once per scope, so
+	// its facts split across them the moment one is placed in the tenant plane or an
+	// adoption mints a registry entry. Without this, "what do we know about X" answers
+	// with whichever half the caller happened to be reading.
+	//
+	// Present only when asked for, so every existing caller's response is unchanged.
+	if in.Across && in.About != "" {
+		if elsewhere := d.subjectAcrossScopes(ctx, key.Scope,
+			d.naturalKeyOf(ctx, key, in.About), limit, true); len(elsewhere) > 0 {
+			out["across_scopes"] = elsewhere
+		}
 	}
 	return okJSON(out)
 }
