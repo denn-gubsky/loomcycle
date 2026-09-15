@@ -2600,10 +2600,16 @@ func executePendingTools(
 	for r := range resCh {
 		// Emit in completion order so the SSE consumer sees each
 		// tool's result the moment it's done.
+		// Render ONCE, before both uses. The emitted event is what gets
+		// persisted, and replayTranscript rebuilds the model's tool_result
+		// block from that persisted Text — so prefixing only the block below
+		// would make the same tool call read differently before and after a
+		// resume, silently dropping the classification on replay.
+		text := renderToolResultText(r.res)
 		emit(providers.Event{
 			Type:    providers.EventToolResult,
 			ToolUse: &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
-			Text:    r.res.Text,
+			Text:    text,
 			IsError: r.res.IsError,
 		})
 		// Place by index so the message we hand back to the model
@@ -2617,11 +2623,64 @@ func executePendingTools(
 			Type:      "tool_result",
 			ToolUseID: r.tu.ID,
 			ToolName:  r.tu.Name,
-			Text:      r.res.Text,
+			Text:      text,
 			IsError:   r.res.IsError,
 		}
 	}
 	return results
+}
+
+// renderToolResultText puts a classified failure's category, retryability and
+// backoff in front of the tool's own output.
+//
+// WHY IN THE TEXT AT ALL: IsError reaches the model only on Anthropic. That
+// driver serializes is_error on the tool_result block; the OpenAI dialect —
+// and so DeepSeek, vLLM and llama.cpp — plus Gemini and Ollama have no slot
+// for it in their wire formats. A classification that lived only in a field
+// would therefore be an Anthropic-only feature, invisible on every other
+// provider and expensive to discover later.
+//
+// WHY UNIFORMLY, INCLUDING ANTHROPIC: one rendering path means no driver can
+// drift and one test covers every provider. Suppressing it where the flag
+// exists would make an agent's tool_result text provider-dependent, so a
+// prompt or an eval tuned on one provider could behave differently on another
+// for a reason nobody would think to look for. On Anthropic the flag and the
+// text say the same thing, which is redundant but never contradictory.
+//
+// Unclassified failures are returned untouched, so the overwhelming majority
+// of tool results are byte-identical to before.
+func renderToolResultText(res tools.Result) string {
+	if res.Error == nil || res.Error.Category == "" {
+		return res.Text
+	}
+
+	var b strings.Builder
+	b.WriteByte('[')
+	b.WriteString(string(res.Error.Category))
+	if res.Error.Retryable {
+		b.WriteString(" · retryable")
+		// Only when there is a real hint. A missing backoff and a zero one
+		// are opposite instructions, so silence beats inventing "0s".
+		if d := res.Error.RetryAfter; d != nil && *d > 0 {
+			fmt.Fprintf(&b, " · retry in %s", d.Round(time.Second))
+		}
+	} else {
+		b.WriteString(" · not retryable")
+	}
+	b.WriteString("] ")
+
+	desc := strings.TrimSpace(res.Error.Description)
+	body := strings.TrimSpace(res.Text)
+	// A description that merely restates the tool's own message costs tokens
+	// and carries no extra decision.
+	if desc != "" && desc != body {
+		b.WriteString(desc)
+		if body != "" {
+			b.WriteString("\n\n")
+		}
+	}
+	b.WriteString(res.Text)
+	return b.String()
 }
 
 // splitSegments separates "system" segments (which become provider System
