@@ -1,0 +1,95 @@
+# RFC DB-2 — the rig that ingests the synthesis corpus through the REAL
+# consolidation path.
+#
+# Layered over `LOOMCYCLE_PRESETS=base,memory`, which supplies the provider/tier
+# scaffold and the memory/extractor + memory/consolidator agents. This file adds
+# only what the bench needs: the three agents `bench/cmd/locomo` drives by name,
+# a pinned extractor, and an embedder.
+#
+# WHY NOT SEED THE FACTS DIRECTLY. RFC DB-2 requires the corpus to arrive the way
+# a real corpus does — chat turns, the extractor's own reading of them, its
+# mistakes included. A store seeded with the generator's ground-truth facts is a
+# store nobody has, and a traversal arm measured on it would be measuring a graph
+# the runtime never has to build.
+#
+#   createdb loomcycle_db2 && psql -d loomcycle_db2 -c 'CREATE EXTENSION vector'
+#   LOOMCYCLE_PRESETS=base,memory \
+#   LOOMCYCLE_STORAGE_BACKEND=postgres LOOMCYCLE_PG_AUTOMIGRATE=1 \
+#   LOOMCYCLE_PGVECTOR_ENABLED=1 LOOMCYCLE_PG_DSN=... \
+#   ./bin/loomcycle --config bench/synthesis/ingest.yaml
+
+memory:
+  embedder:
+    provider: ollama
+    model: bge-m3
+    # Pinned rather than left to OLLAMA_BASE_URL: the embedder and the extractor
+    # must reach the SAME host, and an env var that quietly points one of them
+    # elsewhere produces a corpus embedded by one model and read by another.
+    base_url: http://100.112.7.68:11434
+
+models:
+  # The base preset's local-medium globs qwen3.6*, which faults on this host with
+  # a CUDA illegal-memory-access on the extractor workload (short and 29KB
+  # prompts both, so it is not a size limit). qwen3.8 is healthy there.
+  local-medium: { provider: ollama-local, model_pattern: "qwen3.8*" }
+
+agents:
+  # RFC DB section 7: extraction is the only stochastic part of this benchmark,
+  # so it is PINNED. An unpinned extractor is what left the extraction gate stuck
+  # for weeks — the eval was measuring a coin, not a prompt.
+  memory/extractor:
+    sampling: { temperature: 0, seed: 7 }
+
+  # Carries the corpus turns under -ingest-as-chats. Its replies become assistant
+  # turns in the transcript the extractor then reads, so it must add as close to
+  # nothing as a model can: anything it invents becomes corpus.
+  locomo/scribe:
+    provider: deepseek
+    model: deepseek-v4-flash
+    tools: []
+    skills: ["-*"]
+    max_tokens: 200
+    sampling: { temperature: 0 }
+    system_prompt: |
+      Reply with exactly one word: Noted.
+
+      Never restate, summarise, question or expand on what you were told. Your
+      reply is stored as part of the conversation, so anything you add becomes
+      something a later reader can mistake for a recorded fact.
+
+  locomo/answerer:
+    provider: deepseek
+    model: deepseek-v4-flash
+    max_tokens: 1200
+    sampling: { temperature: 0 }
+    system_prompt: |
+      You answer a question using ONLY what you can retrieve from memory.
+
+      Search memory before answering. Some questions need TWO OR MORE stored
+      facts combined — combine them. Do not refuse just because no single fact
+      states the answer.
+
+      If memory does not support an answer, reply with exactly NOT_FOUND and
+      nothing else. Every name here is fictional, and a confident answer from
+      outside memory is the error this is measuring.
+
+      Answer in one short sentence. No preamble, no reasoning.
+
+  locomo/judge:
+    provider: deepseek
+    model: deepseek-v4-flash
+    tools: []
+    skills: ["-*"]
+    max_tokens: 1000
+    sampling: { temperature: 0 }
+    system_prompt: |
+      You grade one ANSWER against the GOLD answer for a QUESTION.
+
+      Reply with exactly one word on the first line: CORRECT, WRONG, or
+      NOT_FOUND. NOT_FOUND is only for an answer that is literally NOT_FOUND.
+      Then one short line of reason.
+
+      Grade on MEANING, not wording. A correct city, organisation or region named
+      with different surrounding words is CORRECT. An answer naming the right
+      thing plus extra true detail is CORRECT. An answer that hedges without
+      committing to the gold value is WRONG.

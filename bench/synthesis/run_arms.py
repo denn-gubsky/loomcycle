@@ -5,12 +5,18 @@ No store and no memory by design -- the oracle arm puts the supporting facts in
 the prompt and the control arm gives nothing, so the two arms can only differ by
 the facts.
 """
-import json, os, sys, urllib.request, concurrent.futures as cf
+import argparse, json, os, sys, urllib.request, concurrent.futures as cf
 
-BASE = os.environ.get("DB1_BASE", "http://127.0.0.1:8873")
-TOKEN = os.environ["LOOMCYCLE_AUTH_TOKEN"]          # never printed
 HERE = os.path.dirname(os.path.abspath(__file__))
-CORPUS = json.load(open(os.path.join(HERE, "corpus.json")))
+ap = argparse.ArgumentParser(description=__doc__)
+ap.add_argument("--corpus", default=os.path.join(HERE, "corpus.json"))
+ap.add_argument("--out", default=None, help="default: <corpus>-results.json")
+ap.add_argument("--workers", type=int, default=4)
+ARGS = ap.parse_args()
+
+BASE = os.environ.get("DB_BASE", "http://127.0.0.1:8873")
+TOKEN = os.environ["LOOMCYCLE_AUTH_TOKEN"]          # never printed
+CORPUS = json.load(open(ARGS.corpus))
 FACTS = {f["id"]: f for f in CORPUS["facts"]}
 
 
@@ -65,6 +71,15 @@ def ask(q, arm):
 
 
 def judge(q, answer):
+    """Grade one answer. An ABSTENTION is classified in code, not by the model.
+
+    Whether the answerer refused is a fact about the string, and DB-3 reports
+    abstention as its own signal -- so asking a model to re-derive it only adds a
+    way to get it wrong. Measured: the judge misfiled 4 of 120 literal NOT_FOUND
+    replies as WRONG, which would have understated abstention by 3pp.
+    """
+    if answer.strip().upper().rstrip(".") == "NOT_FOUND":
+        return "NOT_FOUND", "(classified in code: the answer is literally NOT_FOUND)"
     v, _ = run("db1/judge", "QUESTION: %s\nGOLD: %s\nANSWER: %s" % (q["q"], q["gold"], answer))
     first = v.strip().splitlines()[0].strip().upper()
     for tag in ("NOT_FOUND", "CORRECT", "WRONG"):
@@ -83,7 +98,7 @@ def one(q, arm):
 
 jobs = [(q, arm) for q in CORPUS["questions"] for arm in ("oracle", "nomem")]
 rows = []
-with cf.ThreadPoolExecutor(max_workers=4) as ex:
+with cf.ThreadPoolExecutor(max_workers=ARGS.workers) as ex:
     futs = {ex.submit(one, q, arm): (q["id"], arm) for q, arm in jobs}
     for f in cf.as_completed(futs):
         qid, arm = futs[f]
@@ -96,7 +111,7 @@ with cf.ThreadPoolExecutor(max_workers=4) as ex:
 print()
 
 rows.sort(key=lambda r: (int(r["qid"][1:]), r["arm"]))
-out = os.path.join(HERE, "results.json")
+out = ARGS.out or (os.path.splitext(ARGS.corpus)[0] + "-results.json")
 json.dump(rows, open(out, "w"), indent=1)
 
 bad = [r for r in rows if r["verdict"] in ("UNPARSED", "ERROR")]
@@ -108,7 +123,7 @@ for arm in ("oracle", "nomem"):
     nf = sum(1 for r in a if r["verdict"] == "NOT_FOUND")
     print("%-7s n=%2d  CORRECT=%2d (%.0f%%)  WRONG=%2d  NOT_FOUND=%2d  faults=%d"
           % (arm, n, c, 100.0 * c / n if n else 0, w, nf, n - c - w - nf))
-for h in (2, 3):
+for h in sorted({r.get("hops", 0) for r in rows} - {0}):
     for arm in ("oracle", "nomem"):
         a = [r for r in rows if r["arm"] == arm and r.get("hops") == h]
         if a:

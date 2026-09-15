@@ -10,4 +10,4 @@ cd "$root"
 set -a; [ -f .env.local ] && . ./.env.local; set +a
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8873}"
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$here/data}"
-exec ./bin/loomcycle --config "$here/db1.yaml"
+exec ./bin/loomcycle --config "$here/rig.yaml"

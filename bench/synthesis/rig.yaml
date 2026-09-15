@@ -1,4 +1,4 @@
-# RFC DB-1 feasibility rig. NO storage tier and NO memory: the oracle arm hands the
+# RFC DB answering rig (DB-1 onward). NO storage tier and NO memory: the oracle arm hands the
 # facts to the answerer in the prompt and the control hands it nothing, so a store
 # would only add a way for the two arms to differ by something other than the facts.
 storage:
@@ -25,7 +25,7 @@ agents:
     model: deepseek-v4-flash
     tools: []
     skills: ["-*"]
-    max_tokens: 900
+    max_tokens: 1200
     sampling: { temperature: 0 }
     system_prompt: |
       You answer a question using ONLY the facts given to you under FACTS.
@@ -45,7 +45,7 @@ agents:
     model: deepseek-v4-flash
     tools: []
     skills: ["-*"]
-    max_tokens: 700
+    max_tokens: 1000
     sampling: { temperature: 0 }
     system_prompt: |
       You grade one ANSWER against the GOLD answer for a QUESTION.
