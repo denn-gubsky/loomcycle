@@ -1072,7 +1072,13 @@ export interface MemoryWhen {
  *  - `facts` — memory a consolidator distilled; provenance is server-stamped.
  *  - `notes` — memory an agent wrote directly with `set`.
  *  - `documents` — Document chunk bodies, which share the memory keyspace. */
-export type MemorySource = "facts" | "notes" | "documents";
+/** Which kinds of remembered thing a search or recall may return.
+ *
+ *  `"traces"` is raw conversation turns — the material the other three were derived
+ *  FROM. It must be asked for ALONE: a combined query would rank a turn against the
+ *  fact extracted from it, and an unfiltered search excludes traces entirely so that
+ *  adding the class did not change what every existing caller gets back. */
+export type MemorySource = "facts" | "notes" | "documents" | "traces";
 
 /** One hit in a {@link MemorySearchResponse}.
  *
@@ -1842,8 +1848,16 @@ export type HistoryToolInput = {
   tag?: string;
   /** list: case-insensitive substring match on the title. */
   title_contains?: string;
-  /** search: case-insensitive title match (metadata MVP; no full-text yet). */
+  /** search: the text to match. What it is matched AGAINST depends on `match`. */
   query?: string;
+  /** search: what to match `query` against.
+   *
+   *  `"title"` (the default) is the cheap path — a case-insensitive match on the
+   *  chat's name, which is usually auto-generated and therefore often not what a
+   *  person would search for. `"content"` searches what was actually SAID, over the
+   *  turns you typed; it needs an embedder and a `user_id` on the run, and returns
+   *  each chat alongside the turn that matched it in `matched_turns`. */
+  match?: "title" | "content";
   /** list/search: restrict to pinned chats. */
   pinned_only?: boolean;
   /** list/search: include archived chats (excluded by default). */

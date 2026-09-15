@@ -1577,6 +1577,13 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 				}
 			}
 		}
+		// A TRACE HIT CARRIES WHERE IT WAS SAID, for the same reason a document hit
+		// carries its chunk: the key is an opaque address, and a page of raw turns
+		// nobody can attribute is a page nobody can act on. The session is the half
+		// that matters — it is what History resolves into the whole conversation.
+		if kind == store.MemoryRowTrace {
+			addTraceAttribution(entry, r.Value)
+		}
 		entries = append(entries, entry)
 	}
 	out := map[string]any{
@@ -2897,3 +2904,36 @@ func contains(haystack []string, needle string) bool {
 }
 
 var _ tools.Tool = (*Memory)(nil)
+
+// addTraceAttribution projects a raw turn's provenance onto a search hit.
+//
+// READ OFF THE STORED VALUE rather than parsed out of the key. The key's shape is the
+// indexer's business and has already changed once — a collision fix appended a
+// sequence to it — whereas the value's field names are what the writer actually
+// commits to. A reader that scraped the key would have broken on that fix silently.
+//
+// Absent fields are simply not projected: a row written by an older build carries
+// fewer of them, and a hit with no session is still a usable hit.
+func addTraceAttribution(entry map[string]any, value json.RawMessage) {
+	var turn struct {
+		SessionID string `json:"session_id"`
+		RunID     string `json:"run_id"`
+		Speaker   string `json:"speaker"`
+		At        string `json:"at"`
+	}
+	if json.Unmarshal(value, &turn) != nil {
+		return
+	}
+	if turn.SessionID != "" {
+		entry["session_id"] = turn.SessionID
+	}
+	if turn.RunID != "" {
+		entry["source_run_id"] = turn.RunID
+	}
+	if turn.Speaker != "" {
+		entry["speaker"] = turn.Speaker
+	}
+	if turn.At != "" {
+		entry["said_at"] = turn.At
+	}
+}
