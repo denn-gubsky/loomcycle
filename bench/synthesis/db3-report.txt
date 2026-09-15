@@ -1,0 +1,23 @@
+
+
+budget 1200 chars | seeds 5 | depth 3 | 120 questions x 2 replicates
+
+arm        accuracy correct  abstain  coverage   facts   chars
+oracle        99.6%  239/240      0.4%     1.00     2.8       0
+nomem          0.0%    0/240    100.0%     0.00     0.0       0
+single         5.8%   14/240     88.8%     0.46    28.4    1187
+traversal     58.6%  140/239     38.3%     0.81    28.5    1183
+shuffled       0.8%    2/240     92.1%     0.41    28.6    1185
+  2-hop  orac 99% nome 0% sing 12% trav 85% shuf 2%
+  3-hop  orac 100% nome 0% sing 2% trav 58% shuf 0%
+  4-hop  orac 100% nome 0% sing 0% trav 4% shuf 0%
+
+oracle     vs single: +226 / -1 discordant -> two-sided exact p = 0.000000
+nomem      vs single: +0 / -14 discordant -> two-sided exact p = 0.000122
+traversal  vs single: +130 / -4 discordant -> two-sided exact p = 0.000000
+shuffled   vs single: +2 / -14 discordant -> two-sided exact p = 0.004181
+
+INSTRUMENT FAULTS: 1
+wrote bench/synthesis/db3-results.json
+
+[exited with code 0]

@@ -19,7 +19,7 @@ own signal. An EMPTY reply is an instrument fault, not a verdict: the answerer
 is a hybrid thinking model and a tight max_tokens truncates to "" rather than to
 something short.
 """
-import argparse, collections, json, os, re, sys, urllib.request
+import argparse, collections, json, os, re, sys, time, urllib.error, urllib.request
 import concurrent.futures as cf
 from math import comb
 
@@ -73,14 +73,29 @@ def run(agent, prompt):
     return "".join(out).strip(), stop
 
 
-def ask(agent, prompt):
+def ask(agent, prompt, attempts=4):
+    """Two distinct failures, both retried, and neither is a verdict.
+
+    An EMPTY reply is the answerer's hybrid thinking trace eating max_tokens. A
+    TRANSPORT error is the provider's HTTP/2 stream dropping under concurrency
+    ("stream error ... INTERNAL_ERROR; received from peer") — measured at 20 of
+    1200 calls at 8 workers, and landing hardest on the shortest prompts, which
+    finish fastest and so run most concurrently. Letting either through would
+    score a network fault as a memory miss.
+    """
     last = ""
-    for _ in range(2):
-        text, stop = run(agent, prompt)
+    for i in range(attempts):
+        try:
+            text, stop = run(agent, prompt)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, RuntimeError) as e:
+            last = "transport: %s" % (repr(e)[:120])
+            time.sleep(1.5 * (i + 1))
+            continue
         if text:
             return text
-        last = stop
-    raise RuntimeError("empty reply after 2 attempts (stop_reason=%s)" % last)
+        last = "empty (stop_reason=%s)" % stop
+        time.sleep(0.5)
+    raise RuntimeError("no usable reply after %d attempts — last: %s" % (attempts, last))
 
 
 def judge(q, answer):
