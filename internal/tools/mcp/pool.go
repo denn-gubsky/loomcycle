@@ -228,6 +228,16 @@ func (p *Pool) GetWithRetry(ctx context.Context, name string, logf func(string, 
 		if ctx.Err() != nil {
 			return nil, nil, fmt.Errorf("mcp[%s]: gave up after %d attempt(s): %w", name, attempt, lastErr)
 		}
+		// A missing per-run credential is not a slow peer. This loop exists for
+		// the chicken-and-egg start order — a dependency still booting — and
+		// backs off up to 16s per attempt until the ctx dies. Spending that
+		// budget on a condition classified NOT RETRYABLE is the exact failure
+		// the classification exists to stop an agent doing, and it would be
+		// worse here: this is loomcycle doing it to itself, on a shared pool,
+		// while the run waits.
+		if errors.Is(err, tools.ErrRunCredentialUnavailable) {
+			return nil, nil, fmt.Errorf("mcp[%s]: %w", name, lastErr)
+		}
 		logf("mcp[%s]: handshake failed (attempt %d): %v — retrying in %s", name, attempt, err, delay)
 		select {
 		case <-ctx.Done():

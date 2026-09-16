@@ -627,6 +627,23 @@ func RunIdentity(ctx context.Context) RunIdentityValue {
 	return v
 }
 
+// HasRunIdentity reports whether ctx belongs to a RUN at all.
+//
+// It exists because "the identity is empty" and "there is no identity" are
+// different facts, and one caller has to act on the difference: a per-run
+// credential that will not resolve is a refusal when a run made the call, and
+// merely absent when nothing did. Boot-time MCP enumeration handshakes on a
+// bare context.Background() — there is no run, so "this run does not carry the
+// credential" is not a statement about anything.
+//
+// Deliberately keyed on the ctx VALUE's presence rather than on whether the
+// fields are zero: a run whose identity happens to be sparse is still a run,
+// and a zero-field check would silently re-file it as infrastructure.
+func HasRunIdentity(ctx context.Context) bool {
+	_, ok := ctx.Value(ctxKeyRunIdentity{}).(RunIdentityValue)
+	return ok
+}
+
 // ConfineIsolatedScope enforces the RFC BX P2b data-scope confinement for an
 // ISOLATED run (RunIdentity(ctx).Isolated — set from a substrate:user principal
 // at run-start, never from a wire/body/model field). An isolated member may
