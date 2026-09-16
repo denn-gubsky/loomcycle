@@ -468,7 +468,11 @@ type Run struct {
 	// Opaque to the store on purpose — internal/config imports internal/store,
 	// so the shape cannot live here, and the store's job is to persist it, not
 	// to interpret it. nil on legacy rows and on runs that overrode nothing.
-	RunConfig json.RawMessage
+	//
+	// Tagged like every sibling for consistency; no wire surface marshals a
+	// store.Run directly — HTTP, gRPC and the connector each convert to their
+	// own shape — so this is not an API addition.
+	RunConfig json.RawMessage `json:"run_config,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
