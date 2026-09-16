@@ -1232,3 +1232,74 @@ func TestRoundTrip_PreservesRunConfig(t *testing.T) {
 			"definition's settings instead of its own", have, want)
 	}
 }
+
+// TestCapture_CarriesNoPerRunSecret is RFC DD V7, and it is deliberately
+// asserted over a CAPTURED ENVELOPE rather than by reading the capture code.
+//
+// The carve-out it guards is a decision, not an oversight: a snapshot is
+// portable by design — it exists to move a run between deployments — so a
+// per-run bearer inside one is a credential that travels. The capture code
+// says so today; what nothing said was that the bytes agree with it. A future
+// field added to PausedRunEntry, or a run_config record that grew a header
+// map, would put a secret on the wire while every existing test stayed green.
+//
+// So: seed a run whose identity and configuration are full of secret-shaped
+// values, capture, and search the raw envelope for each one.
+func TestCapture_CarriesNoPerRunSecret(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	ctx := context.Background()
+
+	const (
+		bearer   = "sk-live-NOTAREALTOKEN-bearer"
+		namedTok = "ghp-NOTAREALTOKEN-named"
+	)
+
+	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_secret", UserID: "user1",
+		// The run's configuration record is the newest thing to travel in the
+		// envelope, so it is the likeliest future carrier of something secret.
+		RunConfig: json.RawMessage(`{"sampling":{"temperature":0.1}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	// A transcript turn that MENTIONS having used a credential, to prove the
+	// assertion is about the run's identity fields rather than a blanket
+	// "no token-shaped strings anywhere" that transcript text would break.
+	if err := src.AppendEvent(ctx, run.ID, "text",
+		[]byte(`{"type":"text","text":"called the peer"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-vacuity: the envelope must actually contain this run, or "no secret
+	// found" would be true of an empty capture.
+	if !strings.Contains(string(raw), run.ID) {
+		t.Fatalf("the captured envelope does not contain run %s; the search below would prove nothing", run.ID)
+	}
+
+	for _, secret := range []string{bearer, namedTok} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("the snapshot envelope carries a per-run secret (%q). The envelope is "+
+				"portable by design, so a credential in it is a credential that travels.", secret)
+		}
+	}
+	// The field NAMES are the other half: a future struct that serialises an
+	// empty user_bearer today is one assignment away from serialising a real
+	// one, and this catches the shape before it catches a value.
+	for _, field := range []string{"user_bearer", "user_credentials"} {
+		if strings.Contains(string(raw), field) {
+			t.Errorf("the snapshot envelope has a %q field. Per-run secrets are deliberately "+
+				"not captured; a field for one is where the value arrives next.", field)
+		}
+	}
+}

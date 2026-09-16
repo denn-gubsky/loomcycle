@@ -247,12 +247,22 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// the ${run.user_bearer:-FALLBACK} POSIX form) at request-build
 	// time. The Client is shared across runs (see pool.go's contract),
 	// so substitution MUST be per-request — never against c.headers
-	// in-place. drop=true means a bare ${run.user_bearer} survived
-	// without a fallback because ctx carried no bearer; we drop the
-	// header rather than send a literal placeholder downstream.
-	// The MCP server's own auth check then returns a clean 401 that
-	// the loop surfaces as a typed tool error — more debuggable than
-	// a loomcycle-side dispatch failure.
+	// in-place.
+	//
+	// An unresolved reference REFUSES THE CALL (RFC DD Gap 6). It used to drop
+	// the header and send the request anyway, on the theory that the peer's own
+	// 401 was more debuggable than a loomcycle-side failure. That holds only
+	// when the peer authenticates: one that does not simply serves the call as
+	// anonymous — same request, different identity, no error anywhere. And a
+	// 401 tells an agent it hit an auth problem it might retry past, not that
+	// this run no longer carries the credential at all.
+	//
+	// A resumed run is where this actually bites: per-run secrets are never
+	// written into a snapshot envelope (it is portable by design), so after a
+	// restore they are genuinely gone.
+	//
+	// The operator's documented opt-out is the POSIX fallback form
+	// (${run.user_bearer:-...}), which resolves and never reaches here.
 	runIdent := tools.RunIdentity(ctx)
 	for k, v := range c.headers {
 		// Two-pass substitution: legacy ${run.user_bearer} first
@@ -262,31 +272,36 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		// form is in play.
 		subV, drop := substituteRunVars(v, runIdent.UserBearer)
 		if drop {
-			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); dropping header",
+			// The log carries the operator's triage detail (which server, which
+			// run); the returned error does not — that one is model-visible.
+			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); refusing the call",
 				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer))
-			continue
+			return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
 		}
 		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runIdent.UserCredentials)
 		if credDrop {
-			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); dropping header",
+			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); refusing the call",
 				k, c.url, runIdent.AgentID, missingCreds)
-			continue
+			return nil, fmt.Errorf("header %q needs credential(s) %v, which this run does not carry: %w", k, missingCreds, tools.ErrRunCredentialUnavailable)
 		}
 		// RFC AR $cred:<name> — durable tenant/user credential store, resolved
 		// per-request from the run identity (so per-user tokens bind correctly on
-		// this pooled client). Drop the header on an unresolved ref or a resolve
-		// error rather than sending a literal "$cred:foo" downstream.
+		// this pooled client). Refuse on an unresolved ref or a resolve error,
+		// rather than sending a literal "$cred:foo" downstream — or sending
+		// nothing at all.
 		if c.credSubstitute != nil {
 			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV)
 			if cerr != nil {
-				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; dropping header",
+				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; refusing the call",
 					k, c.url, runIdent.AgentID, cerr)
-				continue
+				// The resolve error text is operator-side (it can name a store
+				// or a scope), so the model sees only that it did not resolve.
+				return nil, fmt.Errorf("header %q needs a stored credential that could not be resolved: %w", k, tools.ErrRunCredentialUnavailable)
 			}
 			if len(unresolved) > 0 {
-				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); dropping header",
+				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); refusing the call",
 					unresolved, k, c.url, runIdent.AgentID)
-				continue
+				return nil, fmt.Errorf("header %q needs stored credential(s) %v, which are not available to this run: %w", k, unresolved, tools.ErrRunCredentialUnavailable)
 			}
 			subV = resolvedV
 		}

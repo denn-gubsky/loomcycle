@@ -127,11 +127,24 @@ func TestTool_AbsentCredentialIsClearErrorNotEmptyBearer(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("expected an error result for a missing required credential")
 	}
-	if !strings.Contains(res.Text, "peer_tok") || !strings.Contains(res.Text, "absent") {
-		t.Errorf("error text %q should name the missing credential ref and say it is absent", res.Text)
+	if !strings.Contains(res.Text, "peer_tok") || !strings.Contains(res.Text, "does not carry") {
+		t.Errorf("error text %q should name the missing credential ref and say the run lacks it", res.Text)
 	}
 	if called {
 		t.Error("client factory must NOT be reached when the required credential is absent (would risk an empty bearer)")
+	}
+	// RFC DD Gap 6: the refusal was already correct; what it lacked was a
+	// CATEGORY. Without one an agent cannot tell "this run has no credential"
+	// — which no retry and no rewording fixes — from "the peer is unreachable",
+	// which a retry might.
+	if res.Error == nil {
+		t.Fatal("the refusal carries no classification, so an agent can only guess whether to retry")
+	}
+	if res.Error.Category != tools.CategoryBusiness {
+		t.Errorf("category = %q, want business", res.Error.Category)
+	}
+	if res.Error.Retryable {
+		t.Error("marked retryable — retrying cannot conjure a credential the run does not have")
 	}
 }
 

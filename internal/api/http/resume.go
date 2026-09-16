@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -535,6 +536,19 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 
 // flagRunUnresumable marks a paused run terminal so a restored-but-unresumable
 // run isn't a permanent "running" zombie (the F42 symptom). Best-effort.
+//
+// RFC DD §2: refuse LOUDLY, with a category. The terminal status and the reason
+// on the run row are only half of it — they are visible to someone already
+// looking at the runs list. The person who cares is the one RE-ATTACHING to a
+// conversation, and they read the transcript, which said nothing at all about
+// why the run stopped. So the refusal is also written there as a classified
+// error event.
+//
+// Every refusal is business / not retryable, and that is not a shortcut: none
+// of them resolves by waiting or by asking again. A missing agent, a withdrawn
+// provider, a fan-out that cannot be reconstructed, a run with no pending turn
+// — each needs an operator, and an agent or a supervisor loop that retries them
+// is burning attempts against a wall.
 func (s *Server) flagRunUnresumable(run store.Run, reason string) {
 	meta := runStateMeta{
 		RunID:         run.ID,
@@ -544,7 +558,37 @@ func (s *Server) flagRunUnresumable(run store.Run, reason string) {
 		TenantID:      run.TenantID,
 		ParentContext: run.ParentContext,
 	}
+	s.appendResumeRefusal(run, reason)
 	s.finishRunFailedReason(run.ID, "resume failed: "+reason, meta)
+}
+
+// appendResumeRefusal writes the refusal onto the run's own transcript, so it
+// is there for whoever re-attaches. Best-effort by design: a store fault here
+// must not stop the run being marked terminal, which is the part that keeps it
+// out of the zombie state.
+func (s *Server) appendResumeRefusal(run store.Run, reason string) {
+	if s.store == nil || run.ID == "" {
+		return
+	}
+	ev := providers.Event{
+		Type:  providers.EventError,
+		Error: "resume refused: " + reason,
+		ErrorInfo: &errkind.Info{
+			Category:  errkind.CategoryBusiness,
+			Retryable: false,
+			Description: "This run could not be restored and has been marked failed. " +
+				"Re-running the resume will refuse again for the same reason; an operator has to act on it.",
+		},
+	}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFn()
+	if aerr := s.store.AppendEvent(bg, run.ID, string(providers.EventError), payload); aerr != nil {
+		log.Printf("resume: could not record the refusal on run %s's transcript: %v", run.ID, aerr)
+	}
 }
 
 // endsWithPendingTurn reports whether the reconstructed conversation ends on a

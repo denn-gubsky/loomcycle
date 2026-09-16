@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,27 @@ type Result struct {
 	// plain int could not tell that apart from a tool that never set it.
 	Count *int
 }
+
+// ErrRunCredentialUnavailable reports that a call needed a PER-RUN credential
+// the run does not carry — a ${run.user_bearer}, a ${run.credentials.<name>},
+// or a $cred: reference that resolved to nothing.
+//
+// It exists so the failure is a refusal rather than a quieter request. Per-run
+// secrets are deliberately never written into a snapshot envelope (the envelope
+// is portable by design; a bearer in it is a credential that travels), so a
+// restored run genuinely does not have them. The question is only what happens
+// next, and "send the request without the header" is the wrong answer: a peer
+// that authenticates returns 401, which an agent reads as something it might
+// fix by retrying, and a peer that does NOT authenticate serves the call as
+// anonymous — the same request, a different identity, no error anywhere.
+//
+// Callers wrap this and classify it business / not retryable: no rewording of
+// the call can conjure a credential, and only an operator re-attaching can.
+//
+// The deliberate opt-out is the POSIX fallback form — ${run.user_bearer:-} and
+// friends — which is an operator saying in the config that proceeding without
+// the value is intended. That form never reaches this error.
+var ErrRunCredentialUnavailable = errors.New("run credential unavailable")
 
 // Spec converts a Tool to the providers.ToolSpec the model receives.
 func Spec(t Tool) providers.ToolSpec {

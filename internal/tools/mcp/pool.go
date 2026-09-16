@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -403,7 +404,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		if ctx.Err() != nil {
 			return tools.Result{}, err
 		}
-		return tools.Result{Text: err.Error(), IsError: true}, nil
+		return classifiedMCPFailure(err), nil
 	}
 	res, err := CallTool(ctx, caller, t.toolName, input)
 	if err != nil {
@@ -420,7 +421,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		if ctx.Err() != nil {
 			return tools.Result{}, err
 		}
-		return tools.Result{Text: err.Error(), IsError: true}, nil
+		return classifiedMCPFailure(err), nil
 	}
 	if res.IsError {
 		lcotel.SetSpanErrorMessage(span, "mcp tool returned isError=true")
@@ -429,6 +430,30 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		Text:    withUpstreamStructured(JoinTextContent(res), res.StructuredContent),
 		IsError: res.IsError,
 	}, nil
+}
+
+// classifiedMCPFailure turns an MCP call failure into a tool result, attaching
+// a category when the runtime actually knows one.
+//
+// Only ONE condition is classified here, deliberately. A missing per-run
+// credential is a fact about the RUN — it cannot be fixed by rewording the
+// call, waiting, or trying a different argument, and an agent that treats it as
+// a transport hiccup will burn its remaining turns on retries that cannot
+// succeed. Everything else stays unclassified rather than being guessed at: a
+// category invented for a failure nobody has reasoned about is worse than no
+// category, because the agent acts on it.
+func classifiedMCPFailure(err error) tools.Result {
+	res := tools.Result{Text: err.Error(), IsError: true}
+	if errors.Is(err, tools.ErrRunCredentialUnavailable) {
+		res.Error = &tools.ErrorInfo{
+			Category:  tools.CategoryBusiness,
+			Retryable: false,
+			Description: "This run does not carry the credential this server requires, so the call was refused rather than sent unauthenticated. " +
+				"Retrying will not help and neither will changing the arguments — the run needs an operator to supply it. " +
+				"Use another route if you have one, otherwise report what you were trying to do.",
+		}
+	}
+	return res
 }
 
 // sanitiseServerName replaces characters that aren't valid in tool names —
