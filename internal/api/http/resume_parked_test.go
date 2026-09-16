@@ -209,6 +209,39 @@ func TestResume_IdleInteractiveRunWithNoSteerRegistryStillRefuses(t *testing.T) 
 	}
 }
 
+// The other exit from a start-park: the operator cancels instead of replying.
+//
+// Covers the parkAbandoned branch, which nothing else reaches — deleting it
+// only broke the build, and a compile error is not coverage. The run must reach
+// a terminal state on the end_turn it had already reached before the pause,
+// WITHOUT the model ever being called: it never had a turn to answer.
+func TestResume_ParkedRunCancelledWhileWaitingEndsCleanly(t *testing.T) {
+	srv, ts, prov, run := parkedRunFixture(t, true)
+	ctx := context.Background()
+
+	if n, warns := srv.ResumePausedRuns(ctx); n != 1 {
+		t.Fatalf("resumed %d, want 1 (warnings: %v)", n, warns)
+	}
+	waitFor(t, "the resumed run to park", func() bool {
+		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), "awaiting_input")
+	})
+
+	resp, err := http.Post(ts.URL+"/v1/agents/"+run.AgentID+"/cancel", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	resp.Body.Close()
+
+	waitFor(t, "the cancelled parked run to reach a terminal state", func() bool {
+		got, err := srv.store.GetRun(ctx, run.ID)
+		return err == nil && got.Status != store.RunRunning
+	})
+	if got := prov.requests(); len(got) != 0 {
+		t.Errorf("the provider was called %d time(s) for a run that was cancelled "+
+			"while waiting and never had a turn to answer", len(got))
+	}
+}
+
 // A paused run with a PENDING turn is unaffected: it re-enters the loop and
 // answers, exactly as before. Without this the two tests above would pass on an
 // implementation that parked everything.
