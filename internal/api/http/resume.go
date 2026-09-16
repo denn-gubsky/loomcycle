@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -100,6 +101,30 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	if rerr != nil {
 		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
+	}
+	// RFC DD Gap 5: prefer the model the RUN was started with over whatever the
+	// definition resolves to now. The row records it at CreateRun, and a
+	// definition can be promoted, a pin can change, or tier availability can
+	// move between pause and restore — so re-deriving silently routes a resumed
+	// run somewhere the original never went, with nothing in the transcript
+	// saying it moved.
+	//
+	// Re-validated, never merely trusted: the restored model must still be one
+	// the CURRENT definition resolves to, so a promotion that dropped a model
+	// cannot carry it back in through a snapshot. Falling back to the re-derived
+	// value keeps legacy rows (no model recorded) working unchanged.
+	//
+	// SCOPE: run.Model is written once, at CreateRun. A mid-run provider
+	// fallback emits EventProviderFallback but does not update the row, so this
+	// restores the run's own STARTING model, not a fallback target. Recording
+	// fallbacks on the row is a hot-path write and a separate decision.
+	if run.Model != "" && run.Model != model {
+		if pid, ok := s.providerForModel(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, run.Model); ok {
+			log.Printf("resume: run %s restoring its started model %q (definition now resolves %q)", run.ID, run.Model, model)
+			providerID, model = pid, run.Model
+		} else {
+			log.Printf("resume: run %s started on model %q which the definition no longer permits; using %q", run.ID, run.Model, model)
+		}
 	}
 	provider, perr := s.providers.Get(providerID)
 	if perr != nil {
@@ -866,4 +891,48 @@ func (s *Server) childFinalText(ctx context.Context, child store.Run) string {
 		return b.String()
 	}
 	return ""
+}
+
+// providerForModel reports which provider serves `want` for this agent AS THE
+// DEFINITION STANDS NOW, or false when the definition no longer offers it.
+//
+// It exists for RFC DD Gap 5: a resumed run should come back on the model it
+// started with, but "the model it started with" is a value read off a row that
+// was written before the pause — possibly before a definition was promoted, a
+// tier re-pointed, or a provider withdrawn. Restoring it unchecked would let a
+// snapshot reintroduce a model the operator has since removed.
+//
+// So the restored value is re-validated against the SAME resolution path that
+// would pick a model today: the agent's own tier request, run through
+// resolver.Cascade. Reusing Cascade rather than matching against config means
+// this cannot drift from what Resolve would actually do — the same reason
+// GET /v1/_routing uses it.
+//
+// Returns false for a PINNED agent (no tier ⇒ no cascade): a pin means the
+// definition names the model outright, so the re-derived value already is the
+// definition's answer and there is nothing to restore.
+func (s *Server) providerForModel(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool, want string) (string, bool) {
+	if s.resolver == nil || def.Tier == "" || want == "" {
+		return "", false
+	}
+	req := resolve.AgentRequest{
+		Name:      agentName,
+		Tier:      def.Tier,
+		Effort:    def.Effort,
+		Providers: def.Providers,
+		Models:    convertConfigCandidates(def.Models, s.cfg().Models),
+		UserTier:  s.userTierOverlay(userTier),
+	}
+	// Mirror resolveAgentDef: a restricted run only sees providers the tenant
+	// can key, so a restored model on an un-keyable provider is refused here
+	// rather than reaching the driver backstop as a run-time failure.
+	if restricted {
+		req.KeyableProviders = s.keyableProvidersFor(ctx, req, tenantID, agentName, userID)
+	}
+	for _, c := range s.resolver.Cascade(req) {
+		if c.Model == want {
+			return c.Provider, true
+		}
+	}
+	return "", false
 }
