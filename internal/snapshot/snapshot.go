@@ -552,6 +552,7 @@ func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSectio
 			PauseState:    r.PauseState,
 			Interactive:   r.Interactive,           // F42: re-dispatch with correct park-vs-complete semantics
 			ParentContext: r.ParentContext.Clone(), // v0.12.x: survive pause→snapshot→restore
+			RunConfig:     r.RunConfig,             // resume on the run's own settings, not the def's current ones
 		}
 		// Read the session transcript and filter by run_id. Cost:
 		// O(events-in-session). For long-running sessions this is

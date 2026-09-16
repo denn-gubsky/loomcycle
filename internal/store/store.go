@@ -458,6 +458,13 @@ type Run struct {
 	// model absent from the pricing table). CredentialSource is the primary key
 	// source ("operator"|"tenant"|"user"); the exact per-call split lives in
 	// token_usage. All optional/nullable for back-compat with pre-RFC-AV rows.
+	// RunConfig is the run's own configuration record (RFC DD): the values this
+	// run was started with, as opposed to what its definition says today.
+	// Opaque to the store on purpose — internal/config imports internal/store,
+	// so the shape cannot live here, and the store's job is to persist it, not
+	// to interpret it. nil on legacy rows and on runs that overrode nothing.
+	RunConfig json.RawMessage
+
 	Cost              *float64 `json:"cost,omitempty"`
 	CostCurrency      string   `json:"cost_currency,omitempty"`
 	CredentialSource  string   `json:"credential_source,omitempty"`
@@ -810,6 +817,10 @@ type RunIdentity struct {
 	// original substrate:user principal on ctx. Additive; false on legacy rows +
 	// every unstamped path (fail-open).
 	Isolated bool
+	// RunConfig is the run's configuration record, stamped at CreateRun and
+	// restored verbatim on resume (RFC DD). Opaque JSON: the store persists it,
+	// the caller owns its shape. nil when the run overrode nothing.
+	RunConfig json.RawMessage
 }
 
 // ParentContext is the typed caller-tracking lineage attached to a run

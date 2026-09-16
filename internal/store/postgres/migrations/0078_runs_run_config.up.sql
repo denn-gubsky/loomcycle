@@ -1,0 +1,18 @@
+-- RFC DD Gap 1: persist the run's own CONFIGURATION — the values the run was
+-- started with, as opposed to what its agent definition says today.
+--
+-- Resume previously re-derived sampling, compaction, context and the run
+-- timeout from the definition, each marked "per-run override not snapshotted",
+-- so a paused conversation silently came back with different settings than it
+-- paused with and nothing in the transcript said so. The caller's allowed_hosts
+-- narrowing was dropped the same way, which made a resumed run WIDER than the
+-- original (the operator floor still bounded it, so contained, but a resume
+-- should never increase reach).
+--
+-- Stored as JSONB and opaque to the store on purpose: internal/config imports
+-- internal/store, so the record's shape cannot live in the store package, and
+-- persisting it is the store's job while interpreting it is the caller's.
+--
+-- Additive and nullable. NULL on every legacy row and on any run that overrode
+-- nothing, which resume treats exactly as it did before the column existed.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_config JSONB;

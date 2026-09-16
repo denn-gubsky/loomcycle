@@ -140,6 +140,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			model                 TEXT NOT NULL,
 			credential_source     TEXT NOT NULL,
 			credential_scope_id   TEXT NOT NULL DEFAULT '',
+			-- RFC DD: the run's own configuration record (opaque JSON).
+			-- NULL on a run that overrode nothing.
+			run_config            TEXT,
 			input_tokens          INTEGER NOT NULL DEFAULT 0,
 			output_tokens         INTEGER NOT NULL DEFAULT 0,
 			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1172,6 +1175,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// so a re-dispatched run keeps its data-scope confinement. 0 on legacy rows
 		// (fail-open). See internal/store/postgres/migrations/0069_runs_isolated.
 		`ALTER TABLE runs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0`,
+		// RFC DD: the run's configuration record — what this run was STARTED
+		// with, so resume restores it instead of re-deriving from a definition
+		// that may have changed since. Opaque JSON; NULL on legacy rows, which
+		// resume treats exactly as it does today (re-derive).
+		// See internal/store/postgres/migrations/0078_runs_run_config.
+		`ALTER TABLE runs ADD COLUMN run_config TEXT`,
 		// RFC BE — human/organizational chat metadata on the session row (the
 		// History tool's browse/search/annotate surface). All additive + nullable
 		// so legacy rows read the zero value. tags is a JSON array (NULL = never
@@ -1551,8 +1560,8 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, store.RunRunning, now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1567,6 +1576,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		boolToInt(identity.Interactive),
 		boolToInt(identity.OperatorKeyRestricted),
 		boolToInt(identity.Isolated),
+		nilIfEmptyRaw(identity.RunConfig),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1600,6 +1610,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		Interactive:           identity.Interactive,
 		OperatorKeyRestricted: identity.OperatorKeyRestricted,
 		Isolated:              identity.Isolated,
+		RunConfig:             identity.RunConfig,
 	}, nil
 }
 
@@ -2633,6 +2644,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var isolated sql.NullInt64
 	var cost sql.NullFloat64
 	var costCurrency, credentialSource, credentialScopeID sql.NullString
+	var runConfig sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -2645,6 +2657,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
 		&interactive, &operatorKeyRestricted, &isolated,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
+		&runConfig,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -2721,6 +2734,11 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if credentialScopeID.Valid {
 		r.CredentialScopeID = credentialScopeID.String
 	}
+	// RFC DD: NULL on legacy rows and on runs that overrode nothing; resume
+	// treats a nil record exactly as it did before the column existed.
+	if runConfig.Valid && runConfig.String != "" {
+		r.RunConfig = json.RawMessage(runConfig.String)
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -2744,6 +2762,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
 		r.interactive, r.operator_key_restricted, r.isolated,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		r.run_config,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.
@@ -3807,8 +3826,9 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated,
+			run_config
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
@@ -3816,6 +3836,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nilIfEmpty(r.UserID), lastHbNs,
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
 		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted), boolToInt(r.Isolated),
+		nilIfEmptyRaw(r.RunConfig),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)
@@ -9317,6 +9338,16 @@ func escapeLikePrefix(prefix string) string {
 // nilIfEmpty returns nil when s is empty so the SQL driver writes NULL
 // rather than an empty string. Callers should prefer NULL for "no
 // value" so that COUNT(column) and IS NULL queries behave correctly.
+// nilIfEmptyRaw stores NULL rather than an empty string for an absent JSON
+// record, so "no record" and "an empty record" stay distinguishable on read —
+// the same reason nilIfEmpty exists for strings.
+func nilIfEmptyRaw(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
+}
+
 func nilIfEmpty(s string) any {
 	if s == "" {
 		return nil

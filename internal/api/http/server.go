@@ -2572,8 +2572,22 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		agentID = newAgentID()
 	}
 
+	// The run's own resolved configuration, merged ONCE here — after agentDef
+	// has taken its final form — and used both by the loop below and by the
+	// durable run_config record, so the two cannot drift. A resumed run comes
+	// back on these values rather than on whatever the definition resolves to
+	// by then.
+	runCfg := runConfigRecord{
+		Sampling:          config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
+		Compaction:        config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
+		Context:           config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field
+		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens),
+		RunTimeoutSeconds: pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Hosts:             hostRecordOf(hostPolicy),
+	}
+
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -2733,11 +2747,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
 	// inherits the parent's effective policy (its def fills any gaps the parent
 	// left unset), overridable per-spawn by the Agent tool.
-	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, in.Compaction))
+	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
 	// same way — a sub-agent inherits the parent's effective mode; its def fills
 	// gaps the parent left unset.
-	mergedContext := config.MergeContext(agentDef.Context, in.Context) // per-run > per-agent (RFC CR); resolved once
+	mergedContext := runCfg.Context // per-run > per-agent (RFC CR); resolved once, above
 	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext)
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
@@ -2790,8 +2804,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,
-		MaxContextTokens:    config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens), // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:       agentDef.MaxIterations,                                                       // 0 → loop default (16)
+		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,  // 0 → loop default (16)
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
@@ -2804,11 +2818,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            in.Metadata,
 		PayloadMetadata:     in.PayloadMetadata,
-		RunTimeoutSeconds:   pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         in.Interactive,
-		Sampling:            config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
-		Compaction:          config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
-		Context:             mergedContext,                                              // per-run wins per field (RFC CR)
+		Sampling:            runCfg.Sampling,   // merged once, above
+		Compaction:          runCfg.Compaction, // merged once, above
+		Context:             mergedContext,     // merged once, above (RFC CR)
 		// Recall-augmented distillation: nil unless the agent set context.recall AND
 		// an embedder is configured, so an unopted run is byte-identical (RFC CT).
 		RecallIndex: s.recallIndexForRun(mergedContext),
@@ -4153,7 +4167,17 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// emitted event through the store before forwarding to SSE. With
 	// s.store == nil the recording becomes a no-op so v0.2 callers see no
 	// behaviour change.
-	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated}
+	// The run's own resolved configuration — merged once, persisted with the
+	// run, and restored on resume (see runConfigRecord).
+	runCfg := runConfigRecord{
+		Sampling:          config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
+		Compaction:        config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
+		Context:           config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field
+		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens),
+		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Hosts:             hostRecordOf(hostPolicy),
+	}
+	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
 		var nf *store.ErrNotFound
@@ -4371,9 +4395,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AllowedScopes: agentDef.SqlScopes,
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
-	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, req.Compaction))
-	mergedContext := config.MergeContext(agentDef.Context, req.Context) // per-run > per-agent (RFC CR); resolved once
-	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext)           // RFC CR
+	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
+	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
+	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext) // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 	// empty policy (the file tools fall back to the legacy jail Root);
 	// sub-agents inherit + narrow this via runSubAgent.
@@ -4419,9 +4443,9 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:            injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           agentDef.MaxTokens,                                                            // 0 → driver default
-		MaxContextTokens:    config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens), // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:       agentDef.MaxIterations,                                                        // 0 → loop default (16)
+		MaxTokens:           agentDef.MaxTokens,      // 0 → driver default
+		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,  // 0 → loop default (16)
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
@@ -4433,11 +4457,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		AgentName:           req.Agent,
 		CodeBody:            agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
-		RunTimeoutSeconds:   pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         req.Interactive,
-		Sampling:            config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
-		Compaction:          config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
-		Context:             mergedContext,                                               // per-run wins per field (RFC CR)
+		Sampling:            runCfg.Sampling,   // merged once, above
+		Compaction:          runCfg.Compaction, // merged once, above
+		Context:             mergedContext,     // merged once, above (RFC CR)
 		// Recall-augmented distillation: nil unless context.recall is set AND an
 		// embedder is configured, so an unopted run is byte-identical (RFC CT).
 		RecallIndex: s.recallIndexForRun(mergedContext),
@@ -4820,6 +4844,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// is per-request (v0.8.2) — a user upgrading mid-session sees
 	// the new tier applied immediately on this continuation.
 	// operatorKeyRestricted was computed above from the presenting principal.
+	// The continuation's own resolved configuration — merged once, persisted
+	// with the run, and restored on resume (see runConfigRecord).
+	runCfg := runConfigRecord{
+		Sampling:          config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
+		Compaction:        config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
+		Context:           config.MergeContext(agentDef.Context, body.Context),          // per-run wins per field
+		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens),
+		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Hosts:             hostRecordOf(hostPolicy),
+	}
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
 		AgentID:               agentID,
 		UserID:                sess.UserID,
@@ -4830,6 +4864,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ParentContext:         body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
+		RunConfig:             runCfg.marshal(),
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -5014,9 +5049,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,                                                             // 0 → driver default
-		MaxContextTokens:       config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens), // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:          agentDef.MaxIterations,                                                         // 0 → loop default (16)
+		MaxTokens:              agentDef.MaxTokens,      // 0 → driver default
+		MaxContextTokens:       runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:          agentDef.MaxIterations,  // 0 → loop default (16)
 		UnboundedIterations:    agentDef.UnboundedIterations,
 		SteerQueue:             steerQ,
 		OnSteer:                onSteer,
@@ -5028,13 +5063,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		AgentName:              sess.Agent,
 		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:               body.Metadata,
-		RunTimeoutSeconds:      pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		RunTimeoutSeconds:      runCfg.RunTimeoutSeconds,
 		Interactive:            body.Interactive,
-		ArmTurnCancel:          s.armTurnCancelIf(body.Interactive, run.ID),                  // RFC BH: turn-cancellable when interactive
-		Sampling:               config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
-		Compaction:             config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
-		Context:                config.MergeContext(agentDef.Context, body.Context),          // per-run wins per field (RFC CR)
-		ContextPlugins:         s.contextPlugins,                                             // RFC Z runtime-wide chain (code-js exempt in the loop)
+		ArmTurnCancel:          s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
+		Sampling:               runCfg.Sampling,                             // merged once, above
+		Compaction:             runCfg.Compaction,                           // merged once, above
+		Context:                runCfg.Context,                              // merged once, above (RFC CR)
+		ContextPlugins:         s.contextPlugins,                            // RFC Z runtime-wide chain (code-js exempt in the loop)
 		UserTier:               body.UserTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -6071,6 +6106,33 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// they're created together in openOrCreateSessionAndRun — or the tenant-gated
 	// reads (transcript / continuation via s.tenantStore) 404 the sub-agent
 	// session for its own tenant operator while the run is still visible.
+	// The sub-run's own resolved configuration, merged HERE because the run row
+	// is written a few lines below and the record travels on it.
+	//
+	// Safe to merge before the two def rewrites further down
+	// (resolveSkillBodiesForRun / applyMemoryInjection): both return a copy with
+	// only SystemPrompt changed, which
+	// TestSubRunConfig_DefRewritesLeaveTuningUntouched pins.
+	//
+	// Compaction flows DOWN the spawn tree (unlike memory/channels/sampling,
+	// which are the child's own). The parent's effective policy (on ctx) wins per
+	// field; the child def fills any field the PARENT left unset; a per-spawn
+	// Agent-tool override (also on ctx) wins over both. RFC CR's layered context
+	// inherits the same way, minus the per-spawn override knob (P4). Sampling and
+	// the timeout are the child's own — a breeder varies temperature by FORKING a
+	// def — and the host narrowing is the parent's, inherited through ctx.
+	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
+	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
+	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
+	subRunCfg := runConfigRecord{
+		Sampling:          def.Sampling,
+		Compaction:        subCompaction,
+		Context:           subContext,
+		MaxContextTokens:  def.MaxContextTokens,
+		RunTimeoutSeconds: def.RunTimeoutSeconds,
+		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
+	}
+
 	subIdentity := store.RunIdentity{
 		AgentID:       subAgentID,
 		ParentAgentID: parentIdentity.AgentID,
@@ -6095,7 +6157,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
 		// RFC BX P2b: a child INHERITS the parent's isolation confinement — it
 		// cannot escape by spawning. Persisted so a resumed sub-run keeps it.
-		Isolated: parentIdentity.Isolated,
+		Isolated:  parentIdentity.Isolated,
+		RunConfig: subRunCfg.marshal(),
 	}
 	// RFC BT P4: a board-bound `TeamDef op=run` puts the task key on ctx; stamp it
 	// onto this handler run's ParentContext so a client folding the run-state
@@ -6367,20 +6430,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		AllowedScopes: def.SqlScopes,
 		QuotaBytes:    def.SqlQuotaBytes,
 	})
-	// Compaction flows DOWN the spawn tree (unlike memory/channels/sampling,
-	// which are the child's own). The parent's effective policy (on ctx) wins per
-	// field; the child def fills any field the PARENT left unset; a per-spawn
-	// Agent-tool override (also on ctx) wins over both. The result is stamped on
-	// subCtx so the child's OWN children inherit it (recursive), and passed to
-	// the sub-loop's RunOptions for its auto-compaction.
-	subCompaction := config.MergeCompaction(def.Compaction, tools.CompactionPolicy(ctx))
-	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
+	// Stamped on subCtx so the child's OWN children inherit both recursively,
+	// and passed to the sub-loop's RunOptions. Merged above, with the run row.
 	subCtx = tools.WithCompactionPolicy(subCtx, subCompaction)
-	// RFC CR: the layered-context policy inherits the same way — the parent's
-	// effective policy fills the gaps the child def leaves unset (parent-set fields
-	// win). No per-spawn override knob yet (P4). Stamped on subCtx so grandchildren
-	// inherit recursively, and passed to the sub-loop's RunOptions.
-	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	subCtx = tools.WithContextPolicy(subCtx, subContext)
 	// RFC AH §4 — the load-bearing spawn invariant: a child's volume set is
 	// the NARROW-ONLY intersection of (child-declared) ∩ (parent's active

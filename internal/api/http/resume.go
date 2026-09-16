@@ -132,11 +132,43 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		return fmt.Errorf("provider %q: %w", providerID, perr)
 	}
 
-	// Tools + dispatcher. No per-run host narrowing: the caller's allowed_hosts
-	// was a call-time input, never snapshotted — the operator's static floor
-	// (applied inside the tools) is what remains.
+	// RFC DD Gap 1: the run's OWN configuration, persisted at run start. Resume
+	// used to rebuild each of these from the definition, so a long chat that
+	// paused and resumed silently reverted its temperature, its compaction
+	// policy and its layered-context mode mid-conversation — with nothing in the
+	// transcript saying it changed.
+	//
+	// A run with no record (started before the column existed, or an
+	// unreadable one) falls back to the definition, which is what every run did
+	// before, so legacy rows resume exactly as they do today.
+	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+	if !haveRunCfg {
+		runCfg = runConfigRecord{
+			Sampling:          agentDef.Sampling,
+			Compaction:        agentDef.Compaction,
+			Context:           agentDef.Context,
+			MaxContextTokens:  agentDef.MaxContextTokens,
+			RunTimeoutSeconds: agentDef.RunTimeoutSeconds,
+		}
+	}
+
+	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
+	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:
+	// the operator's static floor still applies inside the tools, so this makes
+	// a resumed run a subset of the original instead of handing it the bare
+	// floor back.
 	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, nil)
-	allowedTools = s.grantRecallTool(allowedTools, agentDef.Context) // RFC CT: keep Recall on a resumed recall run
+	//
+	// The MODE is operator config re-read now, not run state: whether a caller's
+	// list replaces the operator floor or intersects with it is the operator's
+	// current call, exactly as it is for a fresh run with the same inputs. Only
+	// the caller's list and filter come from the run.
+	hostPolicy := runCfg.hostPolicy()
+	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative
+	if hostPolicy.HasList || callerAuthoritative {
+		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative)
+	}
+	allowedTools = s.grantRecallTool(allowedTools, runCfg.Context) // RFC CT: keep Recall on a resumed recall run
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-derive the system prompt (skill bodies baked in) from the current
@@ -299,7 +331,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// stage-2 driver backstop (drivers import providers, not auth/tools).
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !run.OperatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
-	loopCtx = tools.WithHostPolicy(loopCtx, tools.HostPolicyValue{}) // no caller narrowing snapshotted; operator floor applies
+	// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
+	// inherit the same reach the original's did. Zero value (no record) leaves
+	// the operator floor as the only bound, exactly as before.
+	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
@@ -319,9 +354,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		AllowedScopes: agentDef.SqlScopes,
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
-	// Compaction re-derived from the agent def (per-run override not snapshotted),
-	// stamped for sub-agent inheritance.
-	loopCtx = tools.WithCompactionPolicy(loopCtx, agentDef.Compaction)
+	// Restored from the run's own record, stamped for sub-agent inheritance.
+	// The context policy is stamped too: every non-resume run path does, so
+	// without it a resumed run's children inherited a different retention mode
+	// from the original's children.
+	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
+	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	// Volume confinement re-derived from the agent def (RFC AH attach-gap fix):
@@ -370,7 +408,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,
-		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ
+		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; restored, not re-derived
 		MaxIterations:       agentDef.MaxIterations,
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
@@ -382,11 +420,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           run.Agent,
 		CodeBody:            agentDef.Code,
-		RunTimeoutSeconds:   agentDef.RunTimeoutSeconds, // per-run override not snapshotted
+		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         run.Interactive,
-		Sampling:            agentDef.Sampling,   // per-run override not snapshotted
-		Compaction:          agentDef.Compaction, // per-run override not snapshotted
-		Context:             agentDef.Context,    // per-run override not snapshotted (RFC CR)
+		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
+		Compaction:          runCfg.Compaction, // restored from the run, not re-derived
+		Context:             runCfg.Context,    // restored from the run, not re-derived (RFC CR)
 		// BankCompactedSpan is deliberately ABSENT (RFC BL P3). A resumed run
 		// replays a compaction that already happened, and its span was banked when
 		// it first ran — wiring it here would re-bank the same conversation on
