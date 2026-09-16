@@ -8,6 +8,82 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.81.0
+
+*A fact naming two things was stored joined to neither, and the benchmark built to catch that also answered whether graph traversal is worth building.*
+
+Five PRs, two themes: the memory graph got its edges back, and a resumed run
+comes back as the run that paused.
+
+THE EXTRACTOR'S OUTPUT SCHEMA OMITTED A FIELD, AND THE GRAPH HAD NO CHAINS. A
+fact naming two entities — "Dave works at the shop" — was stored with one
+`about` edge, to its own subject, and nothing joining it to the other. The store
+filled with spokes and no chains, so a question needing A→B and B→C had no path
+to walk.
+
+Nothing failed while this was true. The pass succeeds, the facts are written,
+recall returns them. Only the structure was missing, which is why it survived.
+
+The cause was the JSON template at the end of the extractor prompt — the shape
+the model copies, and deliberately the last thing it reads before the
+transcript. `also_about` was named in the prose above it and absent from the
+template. Measured paired, pinned, on a corpus where every fact names two
+entities:
+
+  pre-fix prompt                      0/72
+  pre-fix template + the new prose    0/72
+  this prompt                        72/72    two-sided exact p = 0.00049
+
+The middle arm is the one that settles it: rewording the prose changes nothing.
+The template is the whole effect. End to end on a full corpus, facts carrying
+both entities went 36% -> 93%, and consolidation recall 352/376 -> 376/376.
+
+THE MINIMAL FORM LEADS THE TEMPLATE FOR A REASON. Adding the field with the full
+shape first cost the invented-entity guarantee: on a transcript naming no
+person, service or organisation, the extractor invented one. The subject rate
+rose 0.60 -> 0.80 and the eval gate refused the baseline. Leading with the
+no-entity shape restores it — 0 violations at three seeds — and a test now holds
+the invariant: every field the prose names in backticks must appear in the
+template.
+
+AND THE BENCHMARK THAT FOUND IT ANSWERED ITS OWN QUESTION. RFC DB asked whether
+following typed relations beats retrieval at all, or whether the idea is
+unmeasurable. On 120 synthesis questions over 63 sessions, every arm capped at
+the same content budget:
+
+  oracle              99.6%   the ceiling; the answerer is not the bottleneck
+  traversal           58.6%   +130/-4 vs single-hop, two-sided exact p < 1e-6
+  single-hop           5.8%   today's retrieval
+  shuffled-relation    0.8%   the same walk over randomly rewired edges
+  no-memory            0.0%   nothing leaks from training
+
+The shuffled arm is what makes the win mean something. Same code, same depth,
+same budget, the same 28 facts in the prompt; only the edge targets permuted. It
+does not merely fail to beat single-hop — it loses to it. The gain is the
+relations, not the volume.
+
+Bounded honestly: that is a corpus BUILT to contain relational structure, and it
+measures the mechanism with retrieval done by the harness. Whether real corpora
+carry chains, and whether an agent handed the tool would invoke it, are both
+still open.
+
+A RESUMED RUN COMES BACK AS THE RUN THAT PAUSED. Every call-time value a run
+started with — temperature, compaction policy, layered-context mode, context
+window, run timeout — was rebuilt from the AGENT DEFINITION on resume, so a run
+that started with a per-run override came back without it and never said so. It
+now restores from itself, or refuses and says why.
+
+A CHAT THAT WAS WAITING COMES BACK WAITING, NOT FAILED. A run parked awaiting
+its operator ends on an assistant turn, and re-entering the loop would hand the
+provider a trailing assistant message. Resume refused it and marked the run
+FAILED — an operator's idle chat, destroyed by a restart. It now comes back
+parked, which is what it was.
+
+- the chat agents inject what is true of the PERSON, not only of the deployment
+
+@loomcycle/client 1.81.0 — no wire change; version parity for the release.
+loomcycle (PyPI) 1.81.0 — no wire change; version parity for the release.
+
 ## What's in v1.80.0
 
 *A failed tool call now says what kind of failure it was.*
