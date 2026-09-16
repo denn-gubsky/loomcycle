@@ -247,13 +247,32 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	// the ${run.user_bearer:-FALLBACK} POSIX form) at request-build
 	// time. The Client is shared across runs (see pool.go's contract),
 	// so substitution MUST be per-request — never against c.headers
-	// in-place. drop=true means a bare ${run.user_bearer} survived
-	// without a fallback because ctx carried no bearer; we drop the
-	// header rather than send a literal placeholder downstream.
-	// The MCP server's own auth check then returns a clean 401 that
-	// the loop surfaces as a typed tool error — more debuggable than
-	// a loomcycle-side dispatch failure.
+	// in-place.
+	//
+	// An unresolved reference REFUSES THE CALL (RFC DD Gap 6). It used to drop
+	// the header and send the request anyway, on the theory that the peer's own
+	// 401 was more debuggable than a loomcycle-side failure. That holds only
+	// when the peer authenticates: one that does not simply serves the call as
+	// anonymous — same request, different identity, no error anywhere. And a
+	// 401 tells an agent it hit an auth problem it might retry past, not that
+	// this run no longer carries the credential at all.
+	//
+	// A resumed run is where this actually bites: per-run secrets are never
+	// written into a snapshot envelope (it is portable by design), so after a
+	// restore they are genuinely gone.
+	//
+	// The operator's documented opt-out is the POSIX fallback form
+	// (${run.user_bearer:-...}), which resolves and never reaches here.
+	//
+	// SCOPE: only when a RUN made the call. This same method also serves the
+	// boot-time enumeration handshake, which runs on a bare context.Background()
+	// — there is no run, so "this run does not carry the credential" is not a
+	// statement about anything, and refusing would fail every static MCP server
+	// whose headers use a per-run credential before any run exists. Those keep
+	// the old drop-and-warn: nothing is authenticated yet, and the per-call
+	// refusal below is what actually protects the request that carries data.
 	runIdent := tools.RunIdentity(ctx)
+	refuseUnresolved := tools.HasRunIdentity(ctx)
 	for k, v := range c.headers {
 		// Two-pass substitution: legacy ${run.user_bearer} first
 		// (v0.8.x single-bearer form), then RFC F ${run.credentials.<n>}.
@@ -262,30 +281,48 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		// form is in play.
 		subV, drop := substituteRunVars(v, runIdent.UserBearer)
 		if drop {
-			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); dropping header",
-				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer))
+			// The log carries the operator's triage detail (which server, which
+			// run); the returned error does not — that one is model-visible.
+			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); %s",
+				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer), unresolvedAction(refuseUnresolved))
+			if refuseUnresolved {
+				return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
+			}
 			continue
 		}
 		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runIdent.UserCredentials)
 		if credDrop {
-			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); dropping header",
-				k, c.url, runIdent.AgentID, missingCreds)
+			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); %s",
+				k, c.url, runIdent.AgentID, missingCreds, unresolvedAction(refuseUnresolved))
+			if refuseUnresolved {
+				return nil, fmt.Errorf("header %q needs credential(s) %v, which this run does not carry: %w", k, missingCreds, tools.ErrRunCredentialUnavailable)
+			}
 			continue
 		}
 		// RFC AR $cred:<name> — durable tenant/user credential store, resolved
 		// per-request from the run identity (so per-user tokens bind correctly on
-		// this pooled client). Drop the header on an unresolved ref or a resolve
-		// error rather than sending a literal "$cred:foo" downstream.
+		// this pooled client). Refuse on an unresolved ref or a resolve error,
+		// rather than sending a literal "$cred:foo" downstream — or sending
+		// nothing at all.
 		if c.credSubstitute != nil {
 			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV)
 			if cerr != nil {
-				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; dropping header",
-					k, c.url, runIdent.AgentID, cerr)
+				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; %s",
+					k, c.url, runIdent.AgentID, cerr, unresolvedAction(refuseUnresolved))
+				if refuseUnresolved {
+					// The resolve error text is operator-side (it can name a
+					// store or a scope), so the model sees only that it did not
+					// resolve.
+					return nil, fmt.Errorf("header %q needs a stored credential that could not be resolved: %w", k, tools.ErrRunCredentialUnavailable)
+				}
 				continue
 			}
 			if len(unresolved) > 0 {
-				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); dropping header",
-					unresolved, k, c.url, runIdent.AgentID)
+				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); %s",
+					unresolved, k, c.url, runIdent.AgentID, unresolvedAction(refuseUnresolved))
+				if refuseUnresolved {
+					return nil, fmt.Errorf("header %q needs stored credential(s) %v, which are not available to this run: %w", k, unresolved, tools.ErrRunCredentialUnavailable)
+				}
 				continue
 			}
 			subV = resolvedV
@@ -349,4 +386,13 @@ func extractSSEData(body []byte) ([]byte, bool) {
 		// `event:`, `id:`, `retry:` and unknown fields are ignored.
 	}
 	return out, found
+}
+
+// unresolvedAction names what happened for the operator log, so a run's refusal
+// and a run-less handshake's dropped header are never confused in triage.
+func unresolvedAction(refusing bool) string {
+	if refusing {
+		return "refusing the call"
+	}
+	return "dropping header (no run on this request)"
 }

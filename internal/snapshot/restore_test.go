@@ -1232,3 +1232,87 @@ func TestRoundTrip_PreservesRunConfig(t *testing.T) {
 			"definition's settings instead of its own", have, want)
 	}
 }
+
+// TestCapture_CarriesNoPerRunSecret is RFC DD V7, asserted over a CAPTURED
+// ENVELOPE rather than by reading the capture code.
+//
+// The carve-out it guards is a decision, not an oversight: a snapshot exists to
+// move a run between deployments, so a per-run bearer inside one is a
+// credential that travels. The capture code says so today; nothing said the
+// BYTES agree, and nothing would notice a future field that changed the answer.
+//
+// It asserts on the SHAPE, not on planted secret values. A value search would
+// be vacuous here — store.RunIdentity has no bearer field to plant one in, so
+// searching a captured envelope for a token nobody stored proves only that
+// nobody stored it. The shape is what can actually regress: a PausedRunEntry
+// that grows a user_bearer serialises an empty one today and a real one on the
+// first line that populates it.
+func TestCapture_CarriesNoPerRunSecret(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_secret", UserID: "user1",
+		// The run's configuration record is the newest thing to travel in the
+		// envelope and so the likeliest future carrier of something secret.
+		RunConfig: json.RawMessage(`{"sampling":{"temperature":0.1}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-vacuity: the envelope must actually contain this run, or every
+	// absence below is the absence of a capture rather than of a secret.
+	if !strings.Contains(string(raw), run.ID) {
+		t.Fatalf("the captured envelope does not contain run %s; the checks below would prove nothing", run.ID)
+	}
+
+	// 1. No field for a per-run secret, anywhere in the envelope.
+	for _, field := range []string{"user_bearer", "user_credentials", "credential_value", "bearer_token"} {
+		if strings.Contains(string(raw), field) {
+			t.Errorf("the snapshot envelope has a %q field. Per-run secrets are deliberately not "+
+				"captured; a field for one is where the value arrives next.", field)
+		}
+	}
+
+	// 2. A paused run's captured key set is EXACTLY what it is supposed to be.
+	// This is the part that catches a new field on the way in, rather than
+	// after someone has already populated it with a token.
+	var envelope struct {
+		Sections struct {
+			PausedRuns struct {
+				Entries []map[string]json.RawMessage `json:"entries"`
+			} `json:"paused_runs"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	entries := envelope.Sections.PausedRuns.Entries
+	if len(entries) != 1 {
+		t.Fatalf("captured %d paused-run entries, want 1 — the key check below needs one to read", len(entries))
+	}
+	allowed := map[string]bool{
+		"run_id": true, "agent_id": true, "parent_agent_id": true, "user_id": true,
+		"user_tier": true, "agent": true, "agent_def_id": true, "session_id": true,
+		"started_at": true, "model": true, "pause_state": true, "interactive": true,
+		"parent_context": true, "run_config": true, "transcript_events": true,
+		"transcript_error": true,
+	}
+	for k := range entries[0] {
+		if !allowed[k] {
+			t.Errorf("a paused-run entry carries an unreviewed field %q. Add it to the allowed "+
+				"set only after deciding it is safe to put in a PORTABLE envelope — that is the "+
+				"question this test exists to force.", k)
+		}
+	}
+}

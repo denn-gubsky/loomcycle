@@ -175,7 +175,13 @@ Three properties to notice:
 
 1. **The substitution is per-request, never against `c.headers` in-place.** `c.headers` is shared across all concurrent runs that go through this Client (the Client is per-server, not per-run). If we mutated it, run A's bearer would leak into run B's request milliseconds later. The local-copy invariant is load-bearing.
 
-2. **`drop=true` means "the operator declared `${run.user_bearer}` strictly, but the run carried no bearer."** Rather than send a literal `Bearer ${run.user_bearer}` downstream (which would look like a 200-with-wrong-user from the server's perspective and produce confusing errors), loomcycle drops the header entirely. The MCP server's own auth check then returns a clean 401, which surfaces as a typed tool error — far more debuggable.
+2. **`drop=true` means "the operator declared `${run.user_bearer}` strictly, but the run carried no bearer."** loomcycle **refuses the call** — it sends neither the literal `Bearer ${run.user_bearer}` nor a request with the header omitted.
+
+   It used to drop the header and let the peer's own 401 surface. That is only equivalent when the peer authenticates: one that does not serves the call **anonymously**, which is the same request under a different identity with no error anywhere. And a 401 tells an agent it hit an auth problem it might retry past, rather than that this run no longer carries the credential at all. A resumed run is the common case, because per-run secrets are deliberately never written into a snapshot envelope.
+
+   The refusal reaches the model classified `business` / not retryable. The opt-out is the fallback form below, which is the operator saying in config that proceeding without the value is intended.
+
+   **Only when a run made the call.** The same code path serves loomcycle's boot-time enumeration handshake, which has no run on its context — there, "this run does not carry the credential" describes nothing, so the header is dropped and a WARN is logged exactly as before. Otherwise every static server using a per-run credential would fail to enumerate at startup, before any run exists. The operator log distinguishes the two (`refusing the call` vs `dropping header (no run on this request)`).
 
 3. **The log line uses `tokenPrefix()`** (`internal/tools/mcp/http/substitute.go:61`) — only the first 4 chars + ellipsis. **Full tokens are never logged**, even on the WARN path. This is the only place a bearer touches logs.
 
@@ -240,7 +246,7 @@ Both work in any header value, anywhere in operator yaml:
 
 | Form | Behaviour when `user_bearer` is empty |
 |---|---|
-| `${run.user_bearer}` | **Header dropped.** Logged at WARN with a 4-char token prefix. MCP server returns 401, model sees a typed tool error. |
+| `${run.user_bearer}` | **Call refused.** Nothing is sent. Logged at WARN with a 4-char token prefix; the model sees a `business` / not-retryable tool error naming what is missing. |
 | `${run.user_bearer:-FALLBACK}` | Replaces with the literal text `FALLBACK`. Useful for static-token fallback during rollout. |
 
 Both forms work inline anywhere in a header value, not just as the whole value. So `"Authorization: Bearer ${run.user_bearer}"` and `"X-Custom-Header: prefix-${run.user_bearer}-suffix"` both work. The matcher is the regex at `internal/tools/mcp/http/substitute.go:19`:

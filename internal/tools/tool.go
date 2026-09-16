@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,27 @@ type Result struct {
 	// plain int could not tell that apart from a tool that never set it.
 	Count *int
 }
+
+// ErrRunCredentialUnavailable reports that a call needed a PER-RUN credential
+// the run does not carry — a ${run.user_bearer}, a ${run.credentials.<name>},
+// or a $cred: reference that resolved to nothing.
+//
+// It exists so the failure is a refusal rather than a quieter request. Per-run
+// secrets are deliberately never written into a snapshot envelope (the envelope
+// is portable by design; a bearer in it is a credential that travels), so a
+// restored run genuinely does not have them. The question is only what happens
+// next, and "send the request without the header" is the wrong answer: a peer
+// that authenticates returns 401, which an agent reads as something it might
+// fix by retrying, and a peer that does NOT authenticate serves the call as
+// anonymous — the same request, a different identity, no error anywhere.
+//
+// Callers wrap this and classify it business / not retryable: no rewording of
+// the call can conjure a credential, and only an operator re-attaching can.
+//
+// The deliberate opt-out is the POSIX fallback form — ${run.user_bearer:-} and
+// friends — which is an operator saying in the config that proceeding without
+// the value is intended. That form never reaches this error.
+var ErrRunCredentialUnavailable = errors.New("run credential unavailable")
 
 // Spec converts a Tool to the providers.ToolSpec the model receives.
 func Spec(t Tool) providers.ToolSpec {
@@ -603,6 +625,23 @@ func WithRunIdentity(ctx context.Context, ident RunIdentityValue) context.Contex
 func RunIdentity(ctx context.Context) RunIdentityValue {
 	v, _ := ctx.Value(ctxKeyRunIdentity{}).(RunIdentityValue)
 	return v
+}
+
+// HasRunIdentity reports whether ctx belongs to a RUN at all.
+//
+// It exists because "the identity is empty" and "there is no identity" are
+// different facts, and one caller has to act on the difference: a per-run
+// credential that will not resolve is a refusal when a run made the call, and
+// merely absent when nothing did. Boot-time MCP enumeration handshakes on a
+// bare context.Background() — there is no run, so "this run does not carry the
+// credential" is not a statement about anything.
+//
+// Deliberately keyed on the ctx VALUE's presence rather than on whether the
+// fields are zero: a run whose identity happens to be sparse is still a run,
+// and a zero-field check would silently re-file it as infrastructure.
+func HasRunIdentity(ctx context.Context) bool {
+	_, ok := ctx.Value(ctxKeyRunIdentity{}).(RunIdentityValue)
+	return ok
 }
 
 // ConfineIsolatedScope enforces the RFC BX P2b data-scope confinement for an

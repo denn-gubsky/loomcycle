@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -239,6 +240,59 @@ func TestResume_ParkedRunCancelledWhileWaitingEndsCleanly(t *testing.T) {
 	if got := prov.requests(); len(got) != 0 {
 		t.Errorf("the provider was called %d time(s) for a run that was cancelled "+
 			"while waiting and never had a turn to answer", len(got))
+	}
+}
+
+// RFC DD §2 corollary 3: refuse LOUDLY, with a category.
+//
+// A terminal status and a reason on the run row are visible to someone already
+// looking at the runs list. The person who cares is the one RE-ATTACHING to the
+// conversation, and they read the TRANSCRIPT — which said nothing at all about
+// why the run stopped. Asserted on the transcript for that reason, not on the
+// helper that writes it.
+func TestResume_RefusalIsRecordedOnTheTranscriptWithACategory(t *testing.T) {
+	srv, _, _, run := parkedRunFixture(t, false) // non-interactive → refused
+	ctx := context.Background()
+
+	if n, _ := srv.ResumePausedRuns(ctx); n != 0 {
+		t.Fatalf("expected the refusal path, got %d resumed", n)
+	}
+
+	transcript := runTranscriptText(t, srv.store, run.SessionID, run.ID)
+	if !strings.Contains(transcript, "resume refused") {
+		t.Fatalf("the refusal left nothing on the transcript, so a re-attaching "+
+			"operator sees a stopped conversation with no reason:\n%s", transcript)
+	}
+
+	// The category is the half an automated consumer acts on: without it a
+	// supervisor loop cannot tell this apart from a transient failure worth
+	// retrying, and every retry refuses again for the same reason.
+	var found bool
+	events, err := srv.store.GetTranscript(ctx, run.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.RunID != run.ID || e.Type != string(providers.EventError) {
+			continue
+		}
+		var ev providers.Event
+		if err := json.Unmarshal(e.Payload, &ev); err != nil {
+			t.Fatalf("refusal event is not a providers.Event: %v", err)
+		}
+		if ev.ErrorInfo == nil {
+			t.Fatal("the refusal was recorded with no classification")
+		}
+		if ev.ErrorInfo.Category != errkind.CategoryBusiness {
+			t.Errorf("category = %q, want business", ev.ErrorInfo.Category)
+		}
+		if ev.ErrorInfo.Retryable {
+			t.Error("marked retryable — re-running the resume refuses again for the same reason")
+		}
+		found = true
+	}
+	if !found {
+		t.Error("no error event on the transcript carried the refusal")
 	}
 }
 

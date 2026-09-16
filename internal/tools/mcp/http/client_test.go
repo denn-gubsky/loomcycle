@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -173,17 +174,24 @@ func TestCredSubstitute_PerRequestAndDrop(t *testing.T) {
 	if _, err := mcp.CallTool(ctxB, c, "search", json.RawMessage(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	// No user id → the mock reports the ref unresolved → the header is dropped.
+	// No user id → the mock reports the ref unresolved → the call is REFUSED
+	// (RFC DD Gap 6). It used to send the request with the header dropped,
+	// which reaches the peer as an anonymous call rather than a failure.
 	ctxNone := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t"})
-	if _, err := mcp.CallTool(ctxNone, c, "search", json.RawMessage(`{}`)); err != nil {
-		t.Fatal(err)
+	_, err := mcp.CallTool(ctxNone, c, "search", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("an unresolved $cred sent the request anyway; the peer saw an unauthenticated call")
+	}
+	if !errors.Is(err, tools.ErrRunCredentialUnavailable) {
+		t.Errorf("error = %v, want one wrapping ErrRunCredentialUnavailable so it can be classified", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"Bearer TOK-uA", "Bearer TOK-uB", ""}
-	if len(authSeen) != 3 || authSeen[0] != want[0] || authSeen[1] != want[1] || authSeen[2] != want[2] {
-		t.Errorf("per-request auth headers = %q, want %q (per-user binding + unresolved drop)", authSeen, want)
+	// Two requests, not three: the refused one never left.
+	want := []string{"Bearer TOK-uA", "Bearer TOK-uB"}
+	if len(authSeen) != 2 || authSeen[0] != want[0] || authSeen[1] != want[1] {
+		t.Errorf("per-request auth headers = %q, want %q (per-user binding, and no third request at all)", authSeen, want)
 	}
 }
 
@@ -754,7 +762,7 @@ func TestMcpHttpClient_ConcurrentRunsSendDistinctBearers(t *testing.T) {
 // + ctx with empty UserBearer → header is DROPPED, NOT shipped as
 // literal placeholder. A WARN log line is emitted with the agent_id
 // and triage-safe bearer prefix.
-func TestMcpHttpClient_MissingBearerDropsHeader(t *testing.T) {
+func TestMcpHttpClient_MissingBearerRefusesTheCall(t *testing.T) {
 	rec := &recordingHeaderServer{}
 	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
 	defer srv.Close()
@@ -774,17 +782,18 @@ func TestMcpHttpClient_MissingBearerDropsHeader(t *testing.T) {
 		AgentID: "a_test",
 		// UserBearer left empty intentionally.
 	})
-	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("CallTool: %v", err)
+	_, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("the call was sent without its bearer; a peer that does not authenticate would have served it anonymously")
+	}
+	if !errors.Is(err, tools.ErrRunCredentialUnavailable) {
+		t.Errorf("error = %v, want one wrapping ErrRunCredentialUnavailable", err)
 	}
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.requests) != 1 {
-		t.Fatalf("got %d requests, want 1", len(rec.requests))
-	}
-	if got := rec.requests[0].Get("Authorization"); got != "" {
-		t.Errorf("Authorization = %q, want empty (header dropped)", got)
+	if len(rec.requests) != 0 {
+		t.Errorf("got %d outbound request(s), want 0 — a refused call must not reach the peer", len(rec.requests))
 	}
 
 	logLine := logBuf.String()
@@ -874,12 +883,15 @@ func TestMcpHttpClient_MultipleCredentialsInOneClient(t *testing.T) {
 	}
 }
 
-// TestMcpHttpClient_MissingCredentialDropsHeader covers the loud-
-// failure path: header value `Bearer ${run.credentials.missing}` +
-// ctx with UserCredentials lacking the key → outbound request omits
-// the entire Authorization header. The MCP server's auth layer then
-// returns its own 401 (more debuggable than a substrate-side error).
-func TestMcpHttpClient_MissingCredentialDropsHeader(t *testing.T) {
+// TestMcpHttpClient_MissingCredentialRefusesTheCall covers the loud-failure
+// path: header value `Bearer ${run.credentials.missing}` + ctx with
+// UserCredentials lacking the key → the call is refused and NOTHING is sent.
+//
+// It used to send the request with the header omitted and lean on the peer's
+// own 401. That only works when the peer authenticates; one that does not
+// serves the call as anonymous, which is the same request under a different
+// identity with no error anywhere (RFC DD Gap 6).
+func TestMcpHttpClient_MissingCredentialRefusesTheCall(t *testing.T) {
 	rec := &recordingHeaderServer{}
 	srv := httptest.NewServer(http.HandlerFunc(rec.handler))
 	defer srv.Close()
@@ -893,14 +905,18 @@ func TestMcpHttpClient_MissingCredentialDropsHeader(t *testing.T) {
 		AgentID:         "a_test",
 		UserCredentials: map[string]string{"other_key": "ignored"},
 	})
-	if _, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`)); err != nil {
-		t.Fatalf("CallTool: %v", err)
+	_, err := mcp.CallTool(ctx, c, "search", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("the call was sent without the credential it declares")
+	}
+	if !errors.Is(err, tools.ErrRunCredentialUnavailable) {
+		t.Errorf("error = %v, want one wrapping ErrRunCredentialUnavailable", err)
 	}
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if got := rec.requests[0].Get("Authorization"); got != "" {
-		t.Errorf("Authorization = %q, want empty (header dropped)", got)
+	if len(rec.requests) != 0 {
+		t.Errorf("got %d outbound request(s), want 0", len(rec.requests))
 	}
 }
 

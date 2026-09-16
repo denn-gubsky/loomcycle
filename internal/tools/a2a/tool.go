@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -115,7 +116,16 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		// tracing event, never a silent empty bearer (slice contract).
 		t.trace("a2a: peer=%q skill=%q credential resolution failed: %v", t.peer, t.skill, err)
 		t.emitToolEvent(ctx, true, err.Error())
-		return tools.Result{Text: fmt.Sprintf("a2a: %s", err), IsError: true}, nil
+		res := tools.Result{Text: fmt.Sprintf("a2a: %s", err), IsError: true}
+		if errors.Is(err, tools.ErrRunCredentialUnavailable) {
+			res.Error = &tools.ErrorInfo{
+				Category:  tools.CategoryBusiness,
+				Retryable: false,
+				Description: "This run does not carry the credential this peer requires, so the call was refused rather than sent unauthenticated. " +
+					"Retrying will not help and neither will changing the arguments — the run needs an operator to supply it.",
+			}
+		}
+		return res, nil
 	}
 
 	peer, err := t.newPeer(ctx, def, bearer)
@@ -169,7 +179,11 @@ func (t *Tool) resolveBearer(ctx context.Context, def config.A2AAgent) (string, 
 	ident := tools.RunIdentity(ctx)
 	v := ident.UserCredentials[ref]
 	if v == "" {
-		return "", fmt.Errorf("peer %q requires credential %q but it is absent from this run's identity", t.peer, ref)
+		// Already a refusal rather than an empty bearer — what it lacked was a
+		// CATEGORY, so an agent could tell "this run has no credential" apart
+		// from "the peer is unreachable". Wraps the shared sentinel (RFC DD
+		// Gap 6) for the same reason the MCP client does.
+		return "", fmt.Errorf("peer %q requires credential %q, which this run does not carry: %w", t.peer, ref, tools.ErrRunCredentialUnavailable)
 	}
 	return v, nil
 }

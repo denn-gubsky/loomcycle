@@ -130,8 +130,9 @@ real dev — clone/push a **private** repo, use `gh` — inject a GitHub token:
    session env. `dev/exec` runs `gh auth setup-git` at session open, so `git` over
    HTTPS uses it too.
 
-Unresolved (no such credential, or injection disabled) → the header is dropped →
-git runs unauthenticated, public repos still work. Because the token lives in the
+Unresolved (no such credential, or injection disabled) → the session-open call is
+refused rather than sent without the header, so a missing token surfaces as a
+classified failure instead of a sandbox that silently has no git auth. Because the token lives in the
 session env with egress on, prefer a **short-lived, repo-scoped GitHub App token**
 (`$ghapp:` — overlay the header value to `$ghapp:sandbox_github_app`) over a broad
 PAT. Full mechanism + caps:
