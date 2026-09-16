@@ -181,6 +181,8 @@ Three properties to notice:
 
    The refusal reaches the model classified `business` / not retryable. The opt-out is the fallback form below, which is the operator saying in config that proceeding without the value is intended.
 
+   **Only when a run made the call.** The same code path serves loomcycle's boot-time enumeration handshake, which has no run on its context — there, "this run does not carry the credential" describes nothing, so the header is dropped and a WARN is logged exactly as before. Otherwise every static server using a per-run credential would fail to enumerate at startup, before any run exists. The operator log distinguishes the two (`refusing the call` vs `dropping header (no run on this request)`).
+
 3. **The log line uses `tokenPrefix()`** (`internal/tools/mcp/http/substitute.go:61`) — only the first 4 chars + ellipsis. **Full tokens are never logged**, even on the WARN path. This is the only place a bearer touches logs.
 
 ### 2.5 MCP server responds
