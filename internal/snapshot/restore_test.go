@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1170,5 +1171,64 @@ func TestSnapshotRestore_MemoryWithoutTemporalFieldsRestoresUndated(t *testing.T
 	}
 	if !got.CreatedAt.UTC().Equal(mustParseTime(t, "2023-01-01T00:00:00Z")) {
 		t.Errorf("CreatedAt = %v, want the archive's value", got.CreatedAt.UTC())
+	}
+}
+
+// TestRoundTrip_PreservesRunConfig pins RFC DD Gap 1 across the snapshot
+// boundary: a paused run's OWN configuration — the sampling, compaction,
+// context and timeout values it started with, plus the caller's host narrowing
+// — survives pause→snapshot→restore on another instance.
+//
+// The envelope is checked as JSON, not just via the store, because the snapshot
+// is the portable artefact: a field that lives only in Go and never reaches the
+// wire would restore on this instance and silently vanish on the next version.
+func TestRoundTrip_PreservesRunConfig(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	// Opaque here by design — the snapshot package does not decode it, exactly
+	// as it does not decode a transcript payload.
+	cfg := json.RawMessage(`{"sampling":{"temperature":0.11},"run_timeout_seconds":45,"hosts":{"allowed_hosts":["api.example"],"has_list":true}}`)
+
+	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cfg", UserID: "user1", RunConfig: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"run_config"`) {
+		t.Fatal("the captured envelope carries no run_config; the record never reaches the wire")
+	}
+	if !strings.Contains(string(raw), `api.example`) {
+		t.Error("the captured envelope lost the run's host narrowing")
+	}
+
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	got, err := dst.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	var want, have map[string]any
+	if err := json.Unmarshal(cfg, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(got.RunConfig, &have); err != nil {
+		t.Fatalf("restored run_config is not valid JSON (%q): %v", got.RunConfig, err)
+	}
+	if !reflect.DeepEqual(want, have) {
+		t.Errorf("restored run_config = %#v, want %#v — the run would resume on its "+
+			"definition's settings instead of its own", have, want)
 	}
 }
