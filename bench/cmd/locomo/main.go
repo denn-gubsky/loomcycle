@@ -96,7 +96,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	var (
 		mode          = fs.String("mode", "convert", "convert | ingest | search | all | purge | answer")
 		data          = fs.String("data", "", "path to the dataset json (required; not vendored — see README)")
-		dataset       = fs.String("dataset", "locomo", "which corpus the -data file is: locomo | longmemeval")
+		dataset       = fs.String("dataset", "locomo", "which corpus the -data file is: locomo | longmemeval | synthesis")
 		instance      = fs.String("loomcycle", "http://127.0.0.1:8787", "base URL of the running loomcycle")
 		scope         = fs.String("scope", "agent", "memory scope to write/read (agent|user|tenant)")
 		topK          = fs.Int("top-k", 10, "retrieval depth metrics are computed at")
@@ -201,6 +201,18 @@ func loadConversations(opts options) (convs []Conversation, defects *Defects, in
 	// paired joiner — has to know which corpus it is scoring. Its defect counts
 	// have a different shape (per-instance, not per-query), so they are reported
 	// on their own line rather than forced into Defects.
+	if strings.EqualFold(opts.dataset, "synthesis") {
+		var d SynthDefects
+		convs, d, err = LoadSynthesis(opts.data, opts.conversations)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		fmt.Fprintf(os.Stdout, "synthesis: %s\n", d)
+		// -conversations bounds QUESTIONS here, not conversations: the corpus is
+		// one conversation by construction (the supports live in different
+		// sessions of the SAME memory), so the flag has nothing else to bound.
+		return convs, &Defects{}, len(convs), nil
+	}
 	if strings.EqualFold(opts.dataset, "longmemeval") {
 		var d LMEDefects
 		convs, d, err = LoadLongMemEval(opts.data, 0)

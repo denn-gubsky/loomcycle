@@ -73,7 +73,26 @@ var (
 	jsonObjectRe = regexp.MustCompile(`(?s)\{.*?\}`)
 	// queuedRe reads the consolidator's own report of what is left to drain.
 	queuedRe = regexp.MustCompile(`queued items (\d+), acked (\d+)`)
-	factsRe  = regexp.MustCompile(`facts written (\d+)`)
+	// chatsReadRe reads the OTHER progress marker. Under -ingest-as-chats the
+	// consolidator drains a watermark cursor over chats rather than a queue, and
+	// its report carries no queue depth at all — so a run that keyed only on
+	// queuedRe stopped after ONE pass however much was left. Measured: 63 chats,
+	// 10 read, 24 of 376 facts written, and a 0/120 answer axis that looked like
+	// a memory result and was really 93% of the corpus never consolidated.
+	chatsReadRe = regexp.MustCompile(`chats read (\d+)`)
+	// nothingNewRe is the consolidator's THIRD report shape, and it is the clean
+	// drain: no unconsolidated chats and an empty queue. Without it the pass falls
+	// through to the unreadable-report branch, which stops correctly but announces
+	// it as "stopping rather than looping blind" — a completed drain reported as a
+	// fault the reader then goes looking for.
+	nothingNewRe = regexp.MustCompile(`(?i)nothing new:`)
+	// idleRe reads the rest of a chat-path pass: a pass that read chats but
+	// changed NOTHING. The watermark walks every chat in the tenant, not only
+	// the ones this run wrote, so on a tenant with history the cursor keeps
+	// reading and reporting while producing nothing. Observed: 63 chats ingested,
+	// drained by pass 7, then seventeen more passes reading ten stale chats each.
+	idleRe  = regexp.MustCompile(`facts written (\d+); updated in place (\d+); retired (\d+)`)
+	factsRe = regexp.MustCompile(`facts written (\d+)`)
 	// busyRe matches the pass's refusal when another consolidator holds the
 	// target's lease. The bundle leases for 30 minutes, so a consolidator killed
 	// mid-pass blocks the target for that long — and every later pass returns
@@ -575,18 +594,43 @@ func consolidateDrain(ctx context.Context, mc *MCPClient, userID string, maxPass
 		if busyRe.MatchString(rr.FinalText) {
 			return facts, passes, &ErrConsolidatorBusy{Report: rr.FinalText}
 		}
-		m := queuedRe.FindStringSubmatch(rr.FinalText)
-		if m == nil {
-			fmt.Fprintf(stdout, "  pass %d: no queue depth in the pass report, treating as drained — %s\n",
-				passes, truncate(rr.FinalText, 120))
-			return facts, passes, nil
-		}
-		var queued int
-		_, _ = fmt.Sscanf(m[1], "%d", &queued)
 		fmt.Fprintf(stdout, "  pass %d: %s\n", passes, truncate(rr.FinalText, 160))
-		if queued == 0 {
+
+		// Two drain paths, two progress markers. The queue path reports what is
+		// still queued; the chat path reports what this pass consumed and stops
+		// consuming when the watermark catches up. Either one reaching zero means
+		// drained — and a report carrying NEITHER is unreadable, which is not the
+		// same as finished and must not be treated as it.
+		if nothingNewRe.MatchString(rr.FinalText) {
 			return facts, passes, nil
 		}
+		if m := queuedRe.FindStringSubmatch(rr.FinalText); m != nil {
+			var queued int
+			_, _ = fmt.Sscanf(m[1], "%d", &queued)
+			if queued == 0 {
+				return facts, passes, nil
+			}
+			continue
+		}
+		if m := chatsReadRe.FindStringSubmatch(rr.FinalText); m != nil {
+			var read int
+			_, _ = fmt.Sscanf(m[1], "%d", &read)
+			// ⚠️ A RUN OF PASSES THAT CHANGE NOTHING IS NOT A DRAIN, and an earlier
+			// version of this stopped on one. The chat cursor walks every chat in the
+			// tenant, not only the ones this run wrote, so on a tenant with history it
+			// reads and reports while producing nothing — and then produces again.
+			// Measured: passes 8 through 19 wrote zero facts and pass 20 wrote 24, so
+			// a three-idle-pass cutoff would have silently dropped real work. Burning
+			// passes is visible and bounded by -consolidate-passes; skipping work is
+			// neither.
+			if read == 0 {
+				return facts, passes, nil
+			}
+			continue
+		}
+		fmt.Fprintf(stdout, "  pass %d: the report names neither a queue depth nor a chat count; "+
+			"stopping rather than looping blind — %s\n", passes, truncate(rr.FinalText, 120))
+		return facts, passes, nil
 	}
 	fmt.Fprintf(stdout, "  stopped after %d passes with work still queued — raise -consolidate-passes\n", maxPasses)
 	return facts, passes - 1, nil

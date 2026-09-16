@@ -1,0 +1,61 @@
+{
+  "note": "RFC DB-1 feasibility corpus. Entities are INVENTED so the no-memory arm measures leakage rather than world knowledge. Every fact is stated in exactly one session; no fact states a question's answer.",
+  "facts": [
+    {"id": "f1",  "session": "s1",  "text": "Ines Farrow works at Velmara Instruments."},
+    {"id": "f2",  "session": "s2",  "text": "Odo Brannigan works at Thornbeck Labs."},
+    {"id": "f3",  "session": "s3",  "text": "Petra Voss works at Kestrel Freight."},
+    {"id": "f4",  "session": "s4",  "text": "Marek Dulaney works at Velmara Instruments."},
+    {"id": "f5",  "session": "s5",  "text": "Suri Anand works at Halloway Mills."},
+
+    {"id": "f6",  "session": "s6",  "text": "Velmara Instruments is based in Aldbury."},
+    {"id": "f7",  "session": "s7",  "text": "Thornbeck Labs is based in Pellmoor."},
+    {"id": "f8",  "session": "s8",  "text": "Kestrel Freight is based in Corvane."},
+    {"id": "f9",  "session": "s9",  "text": "Halloway Mills is based in Aldbury."},
+
+    {"id": "f10", "session": "s10", "text": "Thornbeck Labs was acquired by Velmara Instruments."},
+    {"id": "f11", "session": "s11", "text": "Halloway Mills was acquired by Kestrel Freight."},
+
+    {"id": "f12", "session": "s12", "text": "Ines Farrow manages Project Larkspur."},
+    {"id": "f13", "session": "s13", "text": "Odo Brannigan manages Project Wren."},
+    {"id": "f14", "session": "s14", "text": "Petra Voss manages Project Ferrule."},
+
+    {"id": "f15", "session": "s15", "text": "Project Larkspur is owned by Velmara Instruments."},
+    {"id": "f16", "session": "s16", "text": "Project Wren is owned by Thornbeck Labs."},
+    {"id": "f17", "session": "s17", "text": "Project Ferrule is owned by Kestrel Freight."},
+
+    {"id": "f18", "session": "s18", "text": "Aldbury is in the Ostrel region."},
+    {"id": "f19", "session": "s19", "text": "Pellmoor is in the Ostrel region."},
+    {"id": "f20", "session": "s20", "text": "Corvane is in the Marren region."},
+
+    {"id": "f21", "session": "s21", "text": "Marek Dulaney moved to Corvane last spring."},
+    {"id": "f22", "session": "s22", "text": "Suri Anand moved to Pellmoor last spring."}
+  ],
+  "questions": [
+    {"id": "q1",  "hops": 2, "q": "Which city does Ines Farrow work in?",  "gold": "Aldbury",  "supports": ["f1", "f6"]},
+    {"id": "q2",  "hops": 2, "q": "Which city does Odo Brannigan work in?", "gold": "Pellmoor", "supports": ["f2", "f7"]},
+    {"id": "q3",  "hops": 2, "q": "Which city does Petra Voss work in?",    "gold": "Corvane",  "supports": ["f3", "f8"]},
+    {"id": "q4",  "hops": 2, "q": "Which city does Marek Dulaney work in?", "gold": "Aldbury",  "supports": ["f4", "f6"]},
+    {"id": "q5",  "hops": 2, "q": "Which city does Suri Anand work in?",    "gold": "Aldbury",  "supports": ["f5", "f9"]},
+
+    {"id": "q6",  "hops": 2, "q": "Which company ultimately employs Odo Brannigan now?", "gold": "Velmara Instruments", "supports": ["f2", "f10"]},
+    {"id": "q7",  "hops": 2, "q": "Which company ultimately employs Suri Anand now?",    "gold": "Kestrel Freight",     "supports": ["f5", "f11"]},
+
+    {"id": "q8",  "hops": 2, "q": "Which organisation owns the project Ines Farrow manages?",   "gold": "Velmara Instruments", "supports": ["f12", "f15"]},
+    {"id": "q9",  "hops": 2, "q": "Which organisation owns the project Odo Brannigan manages?", "gold": "Thornbeck Labs",      "supports": ["f13", "f16"]},
+    {"id": "q10", "hops": 2, "q": "Which organisation owns the project Petra Voss manages?",    "gold": "Kestrel Freight",     "supports": ["f14", "f17"]},
+
+    {"id": "q11", "hops": 2, "q": "Which region is Velmara Instruments in?", "gold": "the Ostrel region", "supports": ["f6", "f18"]},
+    {"id": "q12", "hops": 2, "q": "Which region is Thornbeck Labs in?",      "gold": "the Ostrel region", "supports": ["f7", "f19"]},
+    {"id": "q13", "hops": 2, "q": "Which region is Kestrel Freight in?",     "gold": "the Marren region", "supports": ["f8", "f20"]},
+
+    {"id": "q14", "hops": 3, "q": "Which region does Ines Farrow work in?",  "gold": "the Ostrel region", "supports": ["f1", "f6", "f18"]},
+    {"id": "q15", "hops": 3, "q": "Which region does Petra Voss work in?",   "gold": "the Marren region", "supports": ["f3", "f8", "f20"]},
+    {"id": "q16", "hops": 3, "q": "Which region does Odo Brannigan work in?","gold": "the Ostrel region", "supports": ["f2", "f7", "f19"]},
+
+    {"id": "q17", "hops": 2, "q": "In which city is the owner of Project Larkspur based?", "gold": "Aldbury", "supports": ["f15", "f6"]},
+    {"id": "q18", "hops": 2, "q": "In which city is the owner of Project Ferrule based?",  "gold": "Corvane", "supports": ["f17", "f8"]},
+
+    {"id": "q19", "hops": 3, "q": "Does Marek Dulaney live in the same city as his employer is based in? Answer yes or no and name both cities.", "gold": "No — he lives in Corvane and Velmara Instruments is based in Aldbury", "supports": ["f4", "f6", "f21"]},
+    {"id": "q20", "hops": 3, "q": "Does Suri Anand live in the same city as her employer is based in? Answer yes or no and name both cities.",    "gold": "No — she lives in Pellmoor and Halloway Mills is based in Aldbury", "supports": ["f5", "f9", "f22"]}
+  ]
+}

@@ -291,7 +291,10 @@ func TestConsolidateDrain_ReportsALeasedTargetAsItsOwnError(t *testing.T) {
 // TestConsolidateDrain_TreatsAReportWithoutAQueueDepthAsDrained — a pass with
 // nothing to do says so in prose. That is a legitimate stop, distinct from the
 // leased case above, and must not be an error.
-func TestConsolidateDrain_TreatsAReportWithoutAQueueDepthAsDrained(t *testing.T) {
+func TestConsolidateDrain_StopsOnAReportItCannotRead(t *testing.T) {
+	// Neither a queue depth nor a chat count. Looping blind on an unreadable
+	// report would burn the whole pass ceiling, so it stops — but it says why,
+	// because "unreadable" is not the same claim as "finished".
 	srv, _ := mcpStub(t, []string{"nothing to consolidate for this target"})
 	defer srv.Close()
 	var out bytes.Buffer
@@ -301,8 +304,116 @@ func TestConsolidateDrain_TreatsAReportWithoutAQueueDepthAsDrained(t *testing.T)
 	} else if passes != 1 {
 		t.Errorf("passes = %d, want 1", passes)
 	}
-	if !strings.Contains(out.String(), "treating as drained") {
+	if !strings.Contains(out.String(), "neither a queue depth nor a chat count") {
 		t.Errorf("stop reason not explained: %q", out.String())
+	}
+}
+
+// TestConsolidateDrain_KeepsPassingWhileTheChatWatermarkAdvances guards the
+// OTHER drain path.
+//
+// Under -ingest-as-chats the consolidator walks a watermark cursor over chats
+// and its report carries no queue depth at all. Keying the stop on queue depth
+// alone ended the drain after ONE pass however much was left: measured on a
+// 63-chat corpus, 10 chats read, 24 of 376 facts written, and an answer axis
+// that reported 0/120 as though it were a memory result when 93% of the corpus
+// had never been consolidated.
+func TestConsolidateDrain_KeepsPassingWhileTheChatWatermarkAdvances(t *testing.T) {
+	srv, calls := mcpStub(t, []string{
+		"chats read 10; facts written 24; watermark advanced to s_a @ t1.",
+		"chats read 10; facts written 31; watermark advanced to s_b @ t2.",
+		"chats read 0; facts written 0; watermark unchanged.",
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	mc := NewMCPClient(srv.URL, "tok", 5*time.Second)
+	facts, passes, err := consolidateDrain(context.Background(), mc, "u", 12, &out)
+	if err != nil {
+		t.Fatalf("consolidateDrain: %v", err)
+	}
+	if passes != 3 {
+		t.Errorf("passes = %d, want 3 — it must keep going while chats are still being read", passes)
+	}
+	if facts != 55 {
+		t.Errorf("facts = %d, want 55 (24+31+0)", facts)
+	}
+	if got := atomic.LoadInt32(calls); got != 3 {
+		t.Errorf("spawn calls = %d, want 3", got)
+	}
+}
+
+// TestConsolidateDrain_KeepsGoingThroughPassesThatChangeNothing.
+//
+// A run of passes that change nothing is NOT a drain. The chat cursor walks
+// every chat in the tenant, not only the ones this run wrote, so on a tenant
+// with history it reads and reports while producing nothing — and then produces
+// again. Measured on the RFC DB-2 corpus: passes 8 through 19 wrote zero facts
+// and pass 20 wrote 24. A cutoff on consecutive idle passes, which this once
+// had, would have silently dropped that work.
+func TestConsolidateDrain_KeepsGoingThroughPassesThatChangeNothing(t *testing.T) {
+	srv, calls := mcpStub(t, []string{
+		"chats read 10; facts written 24; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 0; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 0; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 0; updated in place 0; retired 0; watermark advanced.",
+		"chats read 10; facts written 31; updated in place 0; retired 0; watermark advanced.",
+		"chats read 0; facts written 0; updated in place 0; retired 0; watermark unchanged.",
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	mc := NewMCPClient(srv.URL, "tok", 5*time.Second)
+	facts, _, err := consolidateDrain(context.Background(), mc, "u", 30, &out)
+	if err != nil {
+		t.Fatalf("consolidateDrain: %v", err)
+	}
+	if got := atomic.LoadInt32(calls); got != 6 {
+		t.Errorf("spawn calls = %d, want 6 — three idle passes must not end a drain that resumes", got)
+	}
+	if facts != 55 {
+		t.Errorf("facts = %d, want 55 (24 + 31) — the work after the idle stretch was dropped", facts)
+	}
+}
+
+// The consolidator's third report shape is the clean drain, and it carries
+// neither a queue depth nor a chat count. Reported as unreadable it still stops,
+// but it tells the reader to go looking for a fault that is not there.
+func TestConsolidateDrain_RecognisesNothingNewAsADrain(t *testing.T) {
+	srv, calls := mcpStub(t, []string{
+		"chats read 3; facts written 16; updated in place 0; retired 0; watermark advanced.",
+		"nothing new: no unconsolidated chats and no queued items for this target.",
+	})
+	defer srv.Close()
+	var out bytes.Buffer
+	mc := NewMCPClient(srv.URL, "tok", 5*time.Second)
+	facts, passes, err := consolidateDrain(context.Background(), mc, "u", 30, &out)
+	if err != nil {
+		t.Fatalf("consolidateDrain: %v", err)
+	}
+	if passes != 2 || atomic.LoadInt32(calls) != 2 {
+		t.Errorf("passes = %d, calls = %d, want 2 and 2", passes, atomic.LoadInt32(calls))
+	}
+	if facts != 16 {
+		t.Errorf("facts = %d, want 16", facts)
+	}
+	if strings.Contains(out.String(), "looping blind") {
+		t.Errorf("a clean drain was reported as an unreadable report: %q", out.String())
+	}
+}
+
+func TestConsolidateDrain_ChatPathHonoursThePassCeiling(t *testing.T) {
+	// A cursor that never catches up must not loop forever.
+	srv, calls := mcpStub(t, []string{"chats read 10; facts written 1; watermark advanced."})
+	defer srv.Close()
+	var out bytes.Buffer
+	mc := NewMCPClient(srv.URL, "tok", 5*time.Second)
+	if _, _, err := consolidateDrain(context.Background(), mc, "u", 4, &out); err != nil {
+		t.Fatalf("consolidateDrain: %v", err)
+	}
+	if got := atomic.LoadInt32(calls); got != 4 {
+		t.Errorf("spawn calls = %d, want 4 (the ceiling)", got)
+	}
+	if !strings.Contains(out.String(), "raise -consolidate-passes") {
+		t.Errorf("ceiling stop not explained: %q", out.String())
 	}
 }
 
