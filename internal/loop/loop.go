@@ -118,6 +118,24 @@ type RunOptions struct {
 	// bound it. Set an explicit MaxIterations to cap an interactive session.
 	Interactive bool
 
+	// StartParked makes an interactive run park BEFORE its first model call
+	// instead of after it.
+	//
+	// It exists for resume. A run that was idle awaiting the operator when it
+	// paused has a conversation ending on an ASSISTANT turn, and there is no
+	// pending turn for the model to answer — re-entering the loop normally
+	// would send the provider a trailing assistant message. So such a run used
+	// to be refused and marked failed, which is a poor answer for the chat
+	// someone was in the middle of.
+	//
+	// Parking first restores the run to exactly what it was doing when it
+	// paused: waiting. The operator's next turn continues it, through the same
+	// steer queue and the same park code every live interactive run uses.
+	//
+	// Requires Interactive + SteerQueue; ignored otherwise, because a
+	// non-interactive run has no operator to wait for.
+	StartParked bool
+
 	// ArmTurnCancel, when non-nil, makes THIS run turn-cancellable (RFC BH). At
 	// the start of each turn the loop calls it with the turn's CancelCauseFunc to
 	// register the run's currently-armed per-turn cancel token; the returned
@@ -1759,6 +1777,26 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		disarmTurn()
 		turnCancelFn(nil)
 	}()
+
+	// A resumed run that was parked when it paused waits HERE, before the first
+	// model call, rather than being handed a conversation with nothing to answer.
+	// When the operator's turn arrives the loop proceeds normally with it
+	// appended; when it never does (ctx cancelled), the run ends the way any
+	// parked run that is cancelled ends — on the end_turn it had already
+	// reached before the pause.
+	if opts.StartParked && opts.Interactive && opts.SteerQueue != nil {
+		var resumedWithInput bool
+		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, opts, messages, 0, lastCtxTokens, emit)
+		if !resumedWithInput {
+			stopReason = "end_turn"
+			emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})
+			return RunResult{
+				StopReason: stopReason,
+				Iterations: iterationCount(messages),
+				Usage:      totalUsage,
+			}, nil
+		}
+	}
 
 outerLoop:
 	for iter := 0; iter < iterCap; iter++ {
