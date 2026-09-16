@@ -189,3 +189,14 @@ func configuredTierNames(tiers map[string][]config.TierCandidate) string {
 	sort.Strings(out)
 	return strings.Join(out, ", ")
 }
+
+// persistedRouting drops an all-empty override so a run that chose no routing
+// records none. "No override" and "an override that says nothing" are the same
+// fact, and storing the second shape would make every run's record non-empty
+// for no gain.
+func persistedRouting(ov *routingOverride) *routingOverride {
+	if ov.isZero() {
+		return nil
+	}
+	return ov
+}

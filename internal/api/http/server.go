@@ -1363,7 +1363,7 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 // has a user_tiers block; otherwise the resolver operates without an
 // overlay (v0.7.x behaviour). Unknown names are rejected upstream
 // before this is called.
-func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, userTier string, restricted bool) (providerID, model, effort string, err error) {
+func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, userTier string, restricted bool, routing *routingOverride) (providerID, model, effort string, err error) {
 	// RFC N: resolve at the RUN's authoritative tenant (threaded by the
 	// caller — effectiveTenantID / req.TenantID / sess.TenantID), NOT a
 	// ctx-derived or empty tenant. This is the provider/model resolution +
@@ -1374,6 +1374,12 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, 
 	def, ok := s.lookupAgent(ctx, tenantID, agentName)
 	if !ok {
 		return "", "", "", fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
+	}
+	// RFC DC P1: resolve against the RUN's routing, not the definition's, when
+	// the caller chose one. nil is every caller that has no run to speak for.
+	def, oerr := s.applyRoutingOverride(ctx, def, routing)
+	if oerr != nil {
+		return "", "", "", oerr
 	}
 	return s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
 }
@@ -1398,7 +1404,9 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, 
 // through would fix it; until then LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY is the
 // operator's throttle. See dispatchSerially.
 func (s *Server) ResolveAgentProvider(ctx context.Context, tenantID, userID, agentName, userTier string) (string, error) {
-	providerID, _, _, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, false)
+	// No run here — this asks where a run WOULD land, so there is no override
+	// to speak for. See the KNOWN GAP note above for the sibling shortcut.
+	providerID, _, _, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, false, nil)
 	return providerID, err
 }
 
@@ -2236,7 +2244,7 @@ func (s *Server) ChannelHeld(ctx context.Context, channel string) bool {
 // gate counters track the provider actually in use. nil for runs that hold no
 // swappable slot (sub-agents — they never take a provider slot — and
 // interactive-detached runs, which release their slots at hand-off).
-func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool, slot *providerSlot) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
+func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, restricted bool, slot *providerSlot, routing *routingOverride) (loop.FallbackPolicy, func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error)) {
 	overlay := s.userTierOverlay(userTier)
 	if overlay == nil || !overlay.FallbackOnError {
 		return loop.FallbackPolicy{}, nil
@@ -2261,7 +2269,11 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		// next non-stalled candidate in the user_tier's priority is what
 		// we get back. RFC AX: carry the SAME restriction so a restricted run
 		// can't fall back to a provider it can't key.
-		newProviderID, newModel, newEffort, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, restricted)
+		// RFC DC P1: re-resolve against the run's OWN routing. Without this a
+		// fallback re-derives from the definition and silently drops the
+		// caller's override — the same silent divergence RFC DD existed to
+		// close, arriving here through a different door.
+		newProviderID, newModel, newEffort, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, restricted, routing)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -2453,7 +2465,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// from the v0.8.15 fallback above are NOT in that map. Pass the
 	// already-resolved AgentDef through resolveAgentDef instead (same
 	// path the v0.8.5 sub-agent overlay uses).
-	providerID, model, effort, err := s.resolveAgentDef(ctx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	// RFC DC P1: this run's own routing, if the caller chose one. Applied to a
+	// COPY of the definition, so the stored def and its content hash are
+	// untouched (D2).
+	runRouting := &routingOverride{Model: in.Model, Provider: in.Provider, Tier: in.Tier, Effort: in.Effort}
+	routedDef, rerr := s.applyRoutingOverride(ctx, agentDef, runRouting)
+	if rerr != nil {
+		return rerr
+	}
+	providerID, model, effort, err := s.resolveAgentDef(ctx, routedDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
 	}
@@ -2583,6 +2603,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Context:           config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Routing:           persistedRouting(runRouting),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -2792,7 +2813,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// carve-out) while still gating on any OTHER provider. No-op for an
 	// uncapped/noop slot, so uncapped runs stay zero-overhead.
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
-	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot)
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot, runRouting)
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -3829,6 +3850,24 @@ type runRequest struct {
 	// (and 0 there falls through to the provider/driver default). Distinct from
 	// max_tokens (the output cap). Primarily for local (Ollama) inference.
 	MaxContextTokens int `json:"max_context_tokens,omitempty"`
+
+	// Model / Provider / Tier / Effort are the per-run ROUTING override (RFC DC
+	// P1): this run's own answer to which model serves it, instead of the
+	// definition's. Flat like the sibling per-run overrides above rather than
+	// nested, because that is the vocabulary this endpoint already has.
+	//
+	// Bounded by the definition, never widening it: the operator declares which
+	// providers and models an agent may reach and these select within that set,
+	// so WHICH VENDOR sees the conversation stays an operator decision. Naming
+	// a model PINS (the tier is dropped); naming only a provider narrows the
+	// cascade and keeps it. Persisted with the run, so it survives a pause.
+	//
+	// Deliberately absent from the untrusted trigger surfaces — a webhook, A2A
+	// or schedule payload cannot pick the model, mirroring user_tier (#623).
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Tier     string `json:"tier,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -4013,7 +4052,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// (req.TenantID / req.UserID were made authoritative above via
 	// applyPrincipal — fairness key, session tenant, run-row attribution,
 	// and threaded RunIdentity all derive from them.)
-	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
+	runRouting := &routingOverride{Model: req.Model, Provider: req.Provider, Tier: req.Tier, Effort: req.Effort}
+	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runRouting)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -4171,6 +4211,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Context:           config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Routing:           persistedRouting(runRouting),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -4435,7 +4476,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if req.Interactive && s.store != nil {
 		fbSlot = nil
 	}
-	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, fbSlot)
+	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, fbSlot, runRouting)
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -4621,6 +4662,24 @@ type messagesRequest struct {
 	// MaxContextTokens: per-RUN context-WINDOW override for this continuation
 	// turn (RFC CJ). Same semantics as runRequest.MaxContextTokens.
 	MaxContextTokens int `json:"max_context_tokens,omitempty"`
+
+	// Model / Provider / Tier / Effort are the per-run ROUTING override (RFC DC
+	// P1): this run's own answer to which model serves it, instead of the
+	// definition's. Flat like the sibling per-run overrides above rather than
+	// nested, because that is the vocabulary this endpoint already has.
+	//
+	// Bounded by the definition, never widening it: the operator declares which
+	// providers and models an agent may reach and these select within that set,
+	// so WHICH VENDOR sees the conversation stays an operator decision. Naming
+	// a model PINS (the tier is dropped); naming only a provider narrows the
+	// cascade and keeps it. Persisted with the run, so it survives a pause.
+	//
+	// Deliberately absent from the untrusted trigger surfaces — a webhook, A2A
+	// or schedule payload cannot pick the model, mirroring user_tier (#623).
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Tier     string `json:"tier,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -4726,7 +4785,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// RFC BX P2b: recompute isolation from the PRESENTING principal (the current
 	// token is authority on a continuation, mirroring operatorKeyRestricted).
 	isolated := s.isolatedForCtx(r.Context())
-	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
+	runRouting := &routingOverride{Model: body.Model, Provider: body.Provider, Tier: body.Tier, Effort: body.Effort}
+	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runRouting)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -4848,6 +4908,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Context:           config.MergeContext(agentDef.Context, body.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
+		Routing:           persistedRouting(runRouting),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -5044,7 +5105,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// sub-agents skip the gate for the SAME provider (deadlock carve-out). No-op
 	// for uncapped/noop slots.
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
-	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot)
+	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot, runRouting)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:               provider,
 		Model:                  model,
@@ -6503,7 +6564,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	if interactive {
 		fbSlot = nil
 	}
-	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, fbSlot)
+	// nil routing: inheritance is RFC DC P5. A child resolves from its own
+	// definition today, which is what it did before this phase.
+	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, fbSlot, nil)
 	// RFC BF P2c: publish the sub-agent's provider into the ancestor-held set on
 	// its OWN loop ctx (copy-on-add) so grandchildren it spawns take the carve-out
 	// for the same provider. No-op for a carve-out/uncapped subSlot.

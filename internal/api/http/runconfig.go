@@ -29,6 +29,12 @@ type runConfigRecord struct {
 	MaxContextTokens  int                `json:"max_context_tokens,omitempty"`
 	RunTimeoutSeconds int                `json:"run_timeout_seconds,omitempty"`
 
+	// Routing is the run's own answer to which model serves it (RFC DC P1).
+	// It lives here rather than beside it on the run row for the same reason
+	// everything else here does: it must survive a pause, and resume must
+	// restore it instead of re-deriving from a definition that may have moved.
+	Routing *routingOverride `json:"routing,omitempty"`
+
 	// Hosts is the caller-authoritative host narrowing. Restoring it makes a
 	// resumed run no WIDER than the original: without it the run came back on
 	// the bare operator floor, the one case where losing an override weakened
