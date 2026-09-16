@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -101,17 +102,73 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
 	}
+	// RFC DD Gap 5: prefer the model the RUN was started with over whatever the
+	// definition resolves to now. The row records it at CreateRun, and a
+	// definition can be promoted, a pin can change, or tier availability can
+	// move between pause and restore — so re-deriving silently routes a resumed
+	// run somewhere the original never went, with nothing in the transcript
+	// saying it moved.
+	//
+	// Re-validated, never merely trusted: the restored model must still be one
+	// the CURRENT definition resolves to, so a promotion that dropped a model
+	// cannot carry it back in through a snapshot. Falling back to the re-derived
+	// value keeps legacy rows (no model recorded) working unchanged.
+	//
+	// SCOPE: run.Model is written once, at CreateRun. A mid-run provider
+	// fallback emits EventProviderFallback but does not update the row, so this
+	// restores the run's own STARTING model, not a fallback target. Recording
+	// fallbacks on the row is a hot-path write and a separate decision.
+	if run.Model != "" && run.Model != model {
+		if pid, ok := s.providerForModel(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, run.Model); ok {
+			log.Printf("resume: run %s restoring its started model %q (definition now resolves %q)", run.ID, run.Model, model)
+			providerID, model = pid, run.Model
+		} else {
+			log.Printf("resume: run %s started on model %q which the definition no longer permits; using %q", run.ID, run.Model, model)
+		}
+	}
 	provider, perr := s.providers.Get(providerID)
 	if perr != nil {
 		s.flagRunUnresumable(run, fmt.Sprintf("provider %q unavailable: %v", providerID, perr))
 		return fmt.Errorf("provider %q: %w", providerID, perr)
 	}
 
-	// Tools + dispatcher. No per-run host narrowing: the caller's allowed_hosts
-	// was a call-time input, never snapshotted — the operator's static floor
-	// (applied inside the tools) is what remains.
+	// RFC DD Gap 1: the run's OWN configuration, persisted at run start. Resume
+	// used to rebuild each of these from the definition, so a long chat that
+	// paused and resumed silently reverted its temperature, its compaction
+	// policy and its layered-context mode mid-conversation — with nothing in the
+	// transcript saying it changed.
+	//
+	// A run with no record (started before the column existed, or an
+	// unreadable one) falls back to the definition, which is what every run did
+	// before, so legacy rows resume exactly as they do today.
+	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+	if !haveRunCfg {
+		runCfg = runConfigRecord{
+			Sampling:          agentDef.Sampling,
+			Compaction:        agentDef.Compaction,
+			Context:           agentDef.Context,
+			MaxContextTokens:  agentDef.MaxContextTokens,
+			RunTimeoutSeconds: agentDef.RunTimeoutSeconds,
+		}
+	}
+
+	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
+	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:
+	// the operator's static floor still applies inside the tools, so this makes
+	// a resumed run a subset of the original instead of handing it the bare
+	// floor back.
+	//
+	// The MODE is operator config re-read now, not run state: whether a caller's
+	// list replaces the operator floor or intersects with it is the operator's
+	// current call, exactly as it is for a fresh run with the same inputs. Only
+	// the caller's list and filter come from the run.
 	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, nil)
-	allowedTools = s.grantRecallTool(allowedTools, agentDef.Context) // RFC CT: keep Recall on a resumed recall run
+	hostPolicy := runCfg.hostPolicy()
+	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative
+	if hostPolicy.HasList || callerAuthoritative {
+		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative)
+	}
+	allowedTools = s.grantRecallTool(allowedTools, runCfg.Context) // RFC CT: keep Recall on a resumed recall run
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-derive the system prompt (skill bodies baked in) from the current
@@ -274,7 +331,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// stage-2 driver backstop (drivers import providers, not auth/tools).
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !run.OperatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
-	loopCtx = tools.WithHostPolicy(loopCtx, tools.HostPolicyValue{}) // no caller narrowing snapshotted; operator floor applies
+	// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
+	// inherit the same reach the original's did. Zero value (no record) leaves
+	// the operator floor as the only bound, exactly as before.
+	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
 		AllowedScopes: agentDef.MemoryScopes,
@@ -294,9 +354,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		AllowedScopes: agentDef.SqlScopes,
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
-	// Compaction re-derived from the agent def (per-run override not snapshotted),
-	// stamped for sub-agent inheritance.
-	loopCtx = tools.WithCompactionPolicy(loopCtx, agentDef.Compaction)
+	// Restored from the run's own record, stamped for sub-agent inheritance.
+	// The context policy is stamped too: every non-resume run path does, so
+	// without it a resumed run's children inherited a different retention mode
+	// from the original's children.
+	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
+	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	// Volume confinement re-derived from the agent def (RFC AH attach-gap fix):
@@ -345,7 +408,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,
-		MaxContextTokens:    agentDef.MaxContextTokens, // RFC CJ
+		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; restored, not re-derived
 		MaxIterations:       agentDef.MaxIterations,
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
@@ -357,11 +420,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           run.Agent,
 		CodeBody:            agentDef.Code,
-		RunTimeoutSeconds:   agentDef.RunTimeoutSeconds, // per-run override not snapshotted
+		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         run.Interactive,
-		Sampling:            agentDef.Sampling,   // per-run override not snapshotted
-		Compaction:          agentDef.Compaction, // per-run override not snapshotted
-		Context:             agentDef.Context,    // per-run override not snapshotted (RFC CR)
+		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
+		Compaction:          runCfg.Compaction, // restored from the run, not re-derived
+		Context:             runCfg.Context,    // restored from the run, not re-derived (RFC CR)
 		// BankCompactedSpan is deliberately ABSENT (RFC BL P3). A resumed run
 		// replays a compaction that already happened, and its span was banked when
 		// it first ran — wiring it here would re-bank the same conversation on
@@ -866,4 +929,48 @@ func (s *Server) childFinalText(ctx context.Context, child store.Run) string {
 		return b.String()
 	}
 	return ""
+}
+
+// providerForModel reports which provider serves `want` for this agent AS THE
+// DEFINITION STANDS NOW, or false when the definition no longer offers it.
+//
+// It exists for RFC DD Gap 5: a resumed run should come back on the model it
+// started with, but "the model it started with" is a value read off a row that
+// was written before the pause — possibly before a definition was promoted, a
+// tier re-pointed, or a provider withdrawn. Restoring it unchecked would let a
+// snapshot reintroduce a model the operator has since removed.
+//
+// So the restored value is re-validated against the SAME resolution path that
+// would pick a model today: the agent's own tier request, run through
+// resolver.Cascade. Reusing Cascade rather than matching against config means
+// this cannot drift from what Resolve would actually do — the same reason
+// GET /v1/_routing uses it.
+//
+// Returns false for a PINNED agent (no tier ⇒ no cascade): a pin means the
+// definition names the model outright, so the re-derived value already is the
+// definition's answer and there is nothing to restore.
+func (s *Server) providerForModel(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool, want string) (string, bool) {
+	if s.resolver == nil || def.Tier == "" || want == "" {
+		return "", false
+	}
+	req := resolve.AgentRequest{
+		Name:      agentName,
+		Tier:      def.Tier,
+		Effort:    def.Effort,
+		Providers: def.Providers,
+		Models:    convertConfigCandidates(def.Models, s.cfg().Models),
+		UserTier:  s.userTierOverlay(userTier),
+	}
+	// Mirror resolveAgentDef: a restricted run only sees providers the tenant
+	// can key, so a restored model on an un-keyable provider is refused here
+	// rather than reaching the driver backstop as a run-time failure.
+	if restricted {
+		req.KeyableProviders = s.keyableProvidersFor(ctx, req, tenantID, agentName, userID)
+	}
+	for _, c := range s.resolver.Cascade(req) {
+		if c.Model == want {
+			return c.Provider, true
+		}
+	}
+	return "", false
 }

@@ -121,6 +121,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunInteractiveRoundTrip", testCreateRunInteractiveRoundTrip},
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
+		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},
@@ -3202,6 +3203,78 @@ func testCreateRunIsolatedRoundTrip(t *testing.T, s store.Store) {
 	got, _ := s.GetRun(ctx, isolated.ID)
 	if !got.Isolated {
 		t.Errorf("isolated run Isolated=false on read-back (did not persist)")
+	}
+}
+
+// RFC DD Gap 1: the run_config column round-trips on both backends, BYTE FOR
+// BYTE. The store never interprets the record — internal/config imports
+// internal/store, so it cannot name those types — which makes "the bytes come
+// back unchanged" the store's entire contract here.
+//
+// The absent case matters as much as the present one: a run with no record must
+// read back NULL, not an empty JSON object, because resume distinguishes "no
+// record, fall back to the definition" from "a record that says nothing".
+func testCreateRunConfigRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	bare, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cfg_absent"})
+	if err != nil {
+		t.Fatalf("CreateRun(no config): %v", err)
+	}
+	if got, _ := s.GetRun(ctx, bare.ID); len(got.RunConfig) != 0 {
+		t.Errorf("a run with no config read back %q, want empty — resume would "+
+			"treat it as a record and stop falling back to the definition", got.RunConfig)
+	}
+
+	cfg := json.RawMessage(`{"sampling":{"temperature":0.11},"hosts":{"has_list":true}}`)
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cfg_present", RunConfig: cfg})
+	if err != nil {
+		t.Fatalf("CreateRun(with config): %v", err)
+	}
+	if string(run.RunConfig) != string(cfg) {
+		t.Errorf("CreateRun returned config %q, want %q", run.RunConfig, cfg)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	// Compare semantically: Postgres stores JSONB and may reorder keys or
+	// normalise whitespace, so a byte compare would fail there for reasons that
+	// have nothing to do with fidelity.
+	var want, have map[string]any
+	if err := json.Unmarshal(cfg, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(got.RunConfig, &have); err != nil {
+		t.Fatalf("stored config is not valid JSON on read-back (%q): %v", got.RunConfig, err)
+	}
+	if !reflect.DeepEqual(want, have) {
+		t.Errorf("run_config read back as %#v, want %#v", have, want)
+	}
+
+	// It must survive the listing reads too — ListPausedRuns is how the
+	// snapshot and the boot-time resume sweep both find a paused run.
+	if err := s.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatalf("SetRunPauseState: %v", err)
+	}
+	paused, err := s.ListPausedRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListPausedRuns: %v", err)
+	}
+	var seen bool
+	for _, r := range paused {
+		if r.ID != run.ID {
+			continue
+		}
+		seen = true
+		if len(r.RunConfig) == 0 {
+			t.Error("ListPausedRuns dropped run_config — the snapshot would capture " +
+				"a paused run with no configuration to restore")
+		}
+	}
+	if !seen {
+		t.Fatalf("run %s not returned by ListPausedRuns", run.ID)
 	}
 }
 

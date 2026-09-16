@@ -419,8 +419,16 @@ type PausedRunEntry struct {
 	// ParentContext is the run's opaque caller-tracking lineage (v0.12.x),
 	// carried through the snapshot so a paused run's parent_context
 	// survives pause→snapshot→restore. Omitted when the run had none.
-	ParentContext    *store.ParentContext `json:"parent_context,omitempty"`
-	TranscriptEvents []TranscriptEvent    `json:"transcript_events"`
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// RunConfig is the run's own resolved configuration — the sampling,
+	// compaction, context and timeout values it STARTED with, plus the
+	// caller's host narrowing. Carried so a restored run resumes on its
+	// own settings rather than silently reverting to whatever the agent
+	// definition resolves to now. Opaque here: the snapshot package does
+	// not decode it, exactly as it does not decode a transcript payload.
+	// Omitted for runs started before this field existed.
+	RunConfig        json.RawMessage   `json:"run_config,omitempty"`
+	TranscriptEvents []TranscriptEvent `json:"transcript_events"`
 	// TranscriptError records a per-run transcript-read failure. Set
 	// when GetTranscript returned an error during capture; the entry
 	// is otherwise included in the snapshot (RunID, AgentID etc.

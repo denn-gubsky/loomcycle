@@ -462,6 +462,17 @@ type Run struct {
 	CostCurrency      string   `json:"cost_currency,omitempty"`
 	CredentialSource  string   `json:"credential_source,omitempty"`
 	CredentialScopeID string   `json:"credential_scope_id,omitempty"`
+
+	// RunConfig is the run's own configuration record (RFC DD): the values this
+	// run was started with, as opposed to what its definition says today.
+	// Opaque to the store on purpose — internal/config imports internal/store,
+	// so the shape cannot live here, and the store's job is to persist it, not
+	// to interpret it. nil on legacy rows and on runs that overrode nothing.
+	//
+	// Tagged like every sibling for consistency; no wire surface marshals a
+	// store.Run directly — HTTP, gRPC and the connector each convert to their
+	// own shape — so this is not an API addition.
+	RunConfig json.RawMessage `json:"run_config,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -810,6 +821,10 @@ type RunIdentity struct {
 	// original substrate:user principal on ctx. Additive; false on legacy rows +
 	// every unstamped path (fail-open).
 	Isolated bool
+	// RunConfig is the run's configuration record, stamped at CreateRun and
+	// restored verbatim on resume (RFC DD). Opaque JSON: the store persists it,
+	// the caller owns its shape. nil when the run overrode nothing.
+	RunConfig json.RawMessage
 }
 
 // ParentContext is the typed caller-tracking lineage attached to a run
