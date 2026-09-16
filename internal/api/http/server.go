@@ -4163,10 +4163,6 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		agentID = newAgentID()
 	}
 
-	// Persistence: resolve or create a session, create a run, route every
-	// emitted event through the store before forwarding to SSE. With
-	// s.store == nil the recording becomes a no-op so v0.2 callers see no
-	// behaviour change.
 	// The run's own resolved configuration — merged once, persisted with the
 	// run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
@@ -4177,6 +4173,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
+
+	// Persistence: resolve or create a session, create a run, route every
+	// emitted event through the store before forwarding to SSE. With
+	// s.store == nil the recording becomes a no-op so v0.2 callers see no
+	// behaviour change.
 	identity := store.RunIdentity{AgentID: agentID, UserID: req.UserID, TenantID: req.TenantID, UserTier: req.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: req.ParentContext, Interactive: req.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
 	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(r.Context(), req.SessionID, req.Agent, req.TenantID, req.UserID, identity)
 	if sessErr != nil {
@@ -4839,11 +4840,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		agentID = newAgentID()
 	}
 
-	// Create a new run inside the existing session. user_id is
-	// inherited from the session (set at original creation). user_tier
-	// is per-request (v0.8.2) — a user upgrading mid-session sees
-	// the new tier applied immediately on this continuation.
-	// operatorKeyRestricted was computed above from the presenting principal.
 	// The continuation's own resolved configuration — merged once, persisted
 	// with the run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
@@ -4854,6 +4850,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
+
+	// Create a new run inside the existing session. user_id is
+	// inherited from the session (set at original creation). user_tier
+	// is per-request (v0.8.2) — a user upgrading mid-session sees
+	// the new tier applied immediately on this continuation.
+	// operatorKeyRestricted was computed above from the presenting principal.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
 		AgentID:               agentID,
 		UserID:                sess.UserID,
@@ -6101,11 +6103,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// callers can't override (the sub is loomcycle-controlled).
 	subAgentID := newAgentID()
 
-	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
-	// session row's tenant_id must match the run's (subIdentity.TenantID below) —
-	// they're created together in openOrCreateSessionAndRun — or the tenant-gated
-	// reads (transcript / continuation via s.tenantStore) 404 the sub-agent
-	// session for its own tenant operator while the run is still visible.
 	// The sub-run's own resolved configuration, merged HERE because the run row
 	// is written a few lines below and the record travels on it.
 	//
@@ -6133,6 +6130,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
 	}
 
+	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
+	// session row's tenant_id must match the run's (subIdentity.TenantID below) —
+	// they're created together in openOrCreateSessionAndRun — or the tenant-gated
+	// reads (transcript / continuation via s.tenantStore) 404 the sub-agent
+	// session for its own tenant operator while the run is still visible.
 	subIdentity := store.RunIdentity{
 		AgentID:       subAgentID,
 		ParentAgentID: parentIdentity.AgentID,

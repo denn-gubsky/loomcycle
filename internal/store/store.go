@@ -458,17 +458,17 @@ type Run struct {
 	// model absent from the pricing table). CredentialSource is the primary key
 	// source ("operator"|"tenant"|"user"); the exact per-call split lives in
 	// token_usage. All optional/nullable for back-compat with pre-RFC-AV rows.
+	Cost              *float64 `json:"cost,omitempty"`
+	CostCurrency      string   `json:"cost_currency,omitempty"`
+	CredentialSource  string   `json:"credential_source,omitempty"`
+	CredentialScopeID string   `json:"credential_scope_id,omitempty"`
+
 	// RunConfig is the run's own configuration record (RFC DD): the values this
 	// run was started with, as opposed to what its definition says today.
 	// Opaque to the store on purpose — internal/config imports internal/store,
 	// so the shape cannot live here, and the store's job is to persist it, not
 	// to interpret it. nil on legacy rows and on runs that overrode nothing.
 	RunConfig json.RawMessage
-
-	Cost              *float64 `json:"cost,omitempty"`
-	CostCurrency      string   `json:"cost_currency,omitempty"`
-	CredentialSource  string   `json:"credential_source,omitempty"`
-	CredentialScopeID string   `json:"credential_scope_id,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.

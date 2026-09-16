@@ -157,12 +157,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// the operator's static floor still applies inside the tools, so this makes
 	// a resumed run a subset of the original instead of handing it the bare
 	// floor back.
-	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, nil)
 	//
 	// The MODE is operator config re-read now, not run state: whether a caller's
 	// list replaces the operator floor or intersects with it is the operator's
 	// current call, exactly as it is for a fresh run with the same inputs. Only
 	// the caller's list and filter come from the run.
+	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, nil)
 	hostPolicy := runCfg.hostPolicy()
 	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative
 	if hostPolicy.HasList || callerAuthoritative {

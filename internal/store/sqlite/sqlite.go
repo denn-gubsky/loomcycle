@@ -9338,21 +9338,21 @@ func escapeLikePrefix(prefix string) string {
 // nilIfEmpty returns nil when s is empty so the SQL driver writes NULL
 // rather than an empty string. Callers should prefer NULL for "no
 // value" so that COUNT(column) and IS NULL queries behave correctly.
-// nilIfEmptyRaw stores NULL rather than an empty string for an absent JSON
-// record, so "no record" and "an empty record" stay distinguishable on read —
-// the same reason nilIfEmpty exists for strings.
-func nilIfEmptyRaw(b []byte) any {
-	if len(b) == 0 {
-		return nil
-	}
-	return string(b)
-}
-
 func nilIfEmpty(s string) any {
 	if s == "" {
 		return nil
 	}
 	return s
+}
+
+// nilIfEmptyRaw is nilIfEmpty for a JSON record: NULL rather than an empty
+// string for an absent one, so "no record" and "a record that says nothing"
+// stay distinguishable on read.
+func nilIfEmptyRaw(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
 }
 
 // nullableInt64 returns nil when p is nil so the SQL driver writes NULL — for
