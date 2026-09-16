@@ -19,6 +19,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +49,10 @@ const (
 	// the model attend to them, so restating whole descriptions would double the
 	// token cost of every request to say nothing new.
 	toolSummaryMaxDesc = 120
+	// The boundary clause gets its own, larger budget: it is a whole
+	// sentence naming another tool, and truncating it mid-name ("use
+	// Gl…") would be worse than omitting it.
+	toolBoundaryMaxDesc = 160
 
 	// toolGuideMaxHint caps each per-tool usage hint in the guide. Hints are
 	// hand-written and already short; this is a backstop against a long one, and
@@ -333,12 +338,65 @@ func formatToolLine(name, desc, class string) string {
 	if summary := firstSentence(desc, toolSummaryMaxDesc); summary != "" {
 		line += " — " + summary
 	}
+	// The boundary rides on a continuation line rather than extending the
+	// summary: which tool to reach for INSTEAD is a different question from
+	// what this one does, and running them together is what made the hand-
+	// written "choosing among them" sections necessary in the first place.
+	if b := boundarySentence(desc, toolBoundaryMaxDesc); b != "" {
+		line += "\n  " + b
+	}
 	return line
 }
 
 // firstSentence reduces a tool description to its opening claim: the first
 // non-empty LINE, cut at the first sentence end, then hard-capped at maxBytes on
 // a rune boundary. Deterministic — same description, same bytes.
+// boundaryMarker finds the sentence that says what a tool is NOT for.
+//
+// "do not use" is a reliable anchor rather than a guess: BOTH description
+// rubrics — internal/tools/builtin/description_rubric_test.go for the in-band
+// tools and internal/api/mcp/tools_surface_test.go for the MCP surface —
+// require every description to contain it. A tool cannot ship without one, so
+// extraction cannot silently degrade into finding nothing.
+var boundaryMarker = regexp.MustCompile(`(?i)\bdo not use\b`)
+
+// boundarySentence returns the description's boundary clause VERBATIM, or "".
+//
+// Verbatim on purpose: the clause already names the neighbour to use instead
+// ("Do NOT use it to match file names — that is Glob."), and paraphrasing it
+// into a house format would be this layer inventing guidance the tool author
+// did not write. The injected line quotes; it does not rewrite.
+func boundarySentence(desc string, maxBytes int) string {
+	desc = strings.TrimSpace(desc)
+	loc := boundaryMarker.FindStringIndex(desc)
+	if loc == nil {
+		return ""
+	}
+	// Walk back to the start of the sentence the marker sits in, so a clause
+	// mid-paragraph is not clipped to begin at "do not use".
+	start := 0
+	if i := strings.LastIndex(desc[:loc[0]], ". "); i >= 0 {
+		start = i + 2
+	}
+	if i := strings.LastIndexByte(desc[:loc[0]], '\n'); i >= 0 && i+1 > start {
+		start = i + 1
+	}
+	clause := desc[start:]
+	if i := strings.IndexByte(clause, '\n'); i >= 0 {
+		clause = clause[:i]
+	}
+	if i := strings.Index(clause, ". "); i >= 0 {
+		clause = clause[:i+1]
+	}
+	clause = strings.TrimSpace(clause)
+	// Too long to trust to truncation — a half-sentence naming half a tool is
+	// worse than no guidance.
+	if len(clause) > maxBytes {
+		return ""
+	}
+	return clause
+}
+
 func firstSentence(desc string, maxBytes int) string {
 	desc = strings.TrimSpace(desc)
 	if desc == "" {
