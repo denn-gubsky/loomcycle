@@ -2,7 +2,13 @@ package http
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -99,5 +105,95 @@ func TestResume_ProviderForModelHandlesEmptyInputs(t *testing.T) {
 	noResolver := &Server{}
 	if _, ok := noResolver.providerForModel(ctx, def, "", "alice", "router", "", false, "model-b"); ok {
 		t.Error("a server with no resolver reported a match")
+	}
+}
+
+// --- the call site, not just the helper ---
+
+// modelRecordingProvider captures the Model the loop actually asked for, which
+// is the only way to observe which model a RESUMED run is running on.
+type modelRecordingProvider struct {
+	lastModel atomic.Value // string
+}
+
+func (p *modelRecordingProvider) ID() string                    { return "rec" }
+func (p *modelRecordingProvider) Probe(_ context.Context) error { return nil }
+func (p *modelRecordingProvider) ListModels(_ context.Context) ([]string, error) {
+	return []string{"model-a", "model-b"}, nil
+}
+func (p *modelRecordingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{}
+}
+func (p *modelRecordingProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.lastModel.Store(req.Model)
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "resumed"}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+
+// TestResumeRun_ActuallyUsesTheRestoredModel covers WHERE the restore happens.
+//
+// A probe confirmed the gap: disabling the restore in resumeRun with `if false`
+// left every helper test green, because those exercise providerForModel and
+// not its call site. That is the sixth time in this codebase that a threaded
+// value's CROSSING was uncovered while both ends were tested — so this asserts
+// the model the provider was actually called with, not the helper's return.
+func TestResumeRun_ActuallyUsesTheRestoredModel(t *testing.T) {
+	rec := &modelRecordingProvider{}
+	cfg := &config.Config{
+		Agents: map[string]config.AgentDef{
+			"router": {Tier: "middle", SystemPrompt: "p", Tools: []string{}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	srv, _ := makeServer(t, rec, cfg)
+	res := resolve.NewResolver([]string{"primary", "secondary"}, map[string][]resolve.Candidate{
+		"middle": {
+			{Provider: "primary", Model: "model-a"},
+			{Provider: "secondary", Model: "model-b"},
+		},
+	})
+	res.SetReachable("primary", true, []string{"model-a"}, "")
+	res.SetReachable("secondary", true, []string{"model-b"}, "")
+	srv.SetResolver(res)
+
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "router", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Started on the SECOND candidate; the definition's own answer is model-a.
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_resume", UserID: "alice", Model: "model-b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendResumeEvent(t, srv, run.ID, "user_input", []loop.PromptSegment{
+		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "carry on"}}},
+	})
+	if err := srv.store.SetRunPauseState(ctx, run.ID, "paused"); err != nil {
+		t.Fatal(err)
+	}
+
+	n, warns := srv.ResumePausedRuns(ctx)
+	if n == 0 {
+		t.Fatalf("nothing resumed (warnings: %v)", warns)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for rec.lastModel.Load() == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rec.lastModel.Load() == nil {
+		t.Fatal("provider was never called; the resume did not reach a model call")
+	}
+
+	got, _ := rec.lastModel.Load().(string)
+	if got != "model-b" {
+		t.Errorf("resumed run called the provider with model %q, want model-b — "+
+			"the run's started model was not restored and it silently moved", got)
 	}
 }
