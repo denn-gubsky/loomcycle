@@ -1784,22 +1784,22 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// appended; when it never does (ctx cancelled), the run ends the way any
 	// parked run that is cancelled ends — on the end_turn it had already
 	// reached before the pause.
+	parkAbandoned := false
 	if opts.StartParked && opts.Interactive && opts.SteerQueue != nil {
 		var resumedWithInput bool
 		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, opts, messages, 0, lastCtxTokens, emit)
 		if !resumedWithInput {
+			// Cancelled while waiting. The run ends on the end_turn it had
+			// already reached before the pause; skipping the loop entirely lets
+			// the shared terminal block below emit it, so there is one
+			// EventDone site rather than two that can drift.
 			stopReason = "end_turn"
-			emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})
-			return RunResult{
-				StopReason: stopReason,
-				Iterations: iterationCount(messages),
-				Usage:      totalUsage,
-			}, nil
+			parkAbandoned = true
 		}
 	}
 
 outerLoop:
-	for iter := 0; iter < iterCap; iter++ {
+	for iter := 0; !parkAbandoned && iter < iterCap; iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
 		// under the caller-opened loomcycle.run span (api/http opens
 		// the run span at each of the 4 run-creation sites). The
