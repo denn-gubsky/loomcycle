@@ -214,15 +214,37 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		return fmt.Errorf("not auto-resumable (mixed fan-out tool turn)")
 	}
 
-	// Auto-resume only when there's a pending turn for the model to answer
-	// (the conversation ends on a user/tool_result message). A conversation
-	// ending on an assistant turn means the run was idle awaiting operator
-	// input when paused — re-entering the loop would send the provider a
-	// trailing assistant message. Flag it for manual re-attach instead. A
-	// detected fan-out parent is exempt: its tool_result is synthesized below.
+	// A conversation ending on an ASSISTANT turn has nothing for the model to
+	// answer: the run was idle awaiting the operator when it paused, and
+	// re-entering the loop would send the provider a trailing assistant
+	// message. A detected fan-out parent is exempt — its tool_result is
+	// synthesized below.
+	//
+	// RFC DD Gap 3: an INTERACTIVE run in that state is restored to what it was
+	// actually doing — parked, waiting — instead of being marked failed. It
+	// re-registers in the steer registry like any resumed run, so the operator
+	// re-attaches and continues on their next turn. This is the case that
+	// mattered: a parked chat is the run an operator most expects to survive a
+	// restart, and "your conversation is marked failed, re-attach and steer" was
+	// a poor answer for it.
+	//
+	// A NON-interactive run stays refused. It has no operator to wait for, so
+	// parking it would replace a loud failure with a run that idles forever
+	// holding a concurrency slot.
+	//
+	// The steer registry is part of the condition, not an implementation
+	// detail: parking means blocking on the steer queue, and makeSteer returns
+	// a NIL queue when no registry is wired. The loop skips a park it has no
+	// queue for, so claiming startParked without one would send the provider
+	// the trailing assistant turn this whole branch exists to prevent — a
+	// silent degrade into the exact malformed request. Refuse loudly instead.
+	startParked := false
 	if !isFanout && !endsWithPendingTurn(priorMessages) {
-		s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
-		return fmt.Errorf("not auto-resumable (no pending turn)")
+		if !run.Interactive || s.steerReg == nil {
+			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
+			return fmt.Errorf("not auto-resumable (no pending turn)")
+		}
+		startParked = true
 	}
 
 	// System prompt segment (the conversation itself is in priorMessages).
@@ -422,6 +444,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         run.Interactive,
+		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
 		Compaction:          runCfg.Compaction, // restored from the run, not re-derived
 		Context:             runCfg.Context,    // restored from the run, not re-derived (RFC CR)
