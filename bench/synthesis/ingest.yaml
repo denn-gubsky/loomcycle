@@ -48,22 +48,30 @@ agents:
   memory/extractor:
     sampling: { temperature: 0, seed: 7 }
 
-  # Carries the corpus turns under -ingest-as-chats. Its replies become assistant
-  # turns in the transcript the extractor then reads, so it must add as close to
-  # nothing as a model can: anything it invents becomes corpus.
+  # Carries the corpus turns under -ingest-as-chats. ORCHESTRATION IS CODE: its
+  # whole job is to acknowledge a turn so the transcript has an assistant side,
+  # which is mechanism, not judgement — so it is `code-js` and costs no tokens.
+  # A 419-turn conversation was spending ~210 paid calls per ingest to say
+  # "Noted." 210 times.
+  #
+  # DETERMINISM IS THE REAL REASON, though. These replies become assistant turns
+  # in the transcript the EXTRACTOR then reads, so a model that occasionally
+  # phrases it differently edits the corpus between runs — and this benchmark's
+  # premise (RFC DB section 7) is that extraction is the only stochastic part.
+  # Measured before the swap: 40 of 40 replies were exactly "Noted.", so the
+  # transcript is byte-identical and nothing being measured moves.
+  #
+  # Needs LOOMCYCLE_CODE_AGENTS_ENABLED=1; a code-js agent without it is a fatal
+  # boot error.
   locomo/scribe:
-    provider: deepseek
-    model: deepseek-v4-flash
+    provider: code-js
     tools: []
     skills: ["-*"]
-    max_tokens: 200
-    sampling: { temperature: 0 }
-    system_prompt: |
-      Reply with exactly one word: Noted.
-
-      Never restate, summarise, question or expand on what you were told. Your
-      reply is stored as part of the conversation, so anything you add becomes
-      something a later reader can mistake for a recorded fact.
+    code: |
+      // The entire agent. Anything it invented would become corpus.
+      function run() {
+        return { final_text: "Noted." };
+      }
 
   locomo/answerer:
     provider: deepseek

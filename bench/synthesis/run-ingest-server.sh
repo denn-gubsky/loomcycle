@@ -7,6 +7,8 @@ root=$(cd "$here/../.." && pwd)
 cd "$root"
 set -a; [ -f .env.local ] && . ./.env.local; set +a
 export LOOMCYCLE_PRESETS=base,memory
+# the scribe is a code-js agent; without this it is a fatal boot error
+export LOOMCYCLE_CODE_AGENTS_ENABLED=1
 export LOOMCYCLE_STORAGE_BACKEND=postgres
 export LOOMCYCLE_PG_AUTOMIGRATE=1
 export LOOMCYCLE_PGVECTOR_ENABLED=1
