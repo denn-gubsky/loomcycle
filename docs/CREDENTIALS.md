@@ -64,7 +64,10 @@ mcp_servers:
 Now an agent run **on behalf of user A** resolves A's `telegram_bot_token` and
 posts to A's channel; user B's run resolves B's — the same pooled server, each
 request bound to its own user's token, with zero plaintext in the transcript. An
-unresolved `$cred:` ref drops the header (no literal token is ever sent).
+unresolved `$cred:` ref **refuses the call** — no literal token is ever sent, and
+neither is an unauthenticated request. The tool result is classified `business`
+and not retryable, so an agent stops instead of retrying a call that cannot
+succeed.
 
 > **Per-user tokens require http/streamable-http MCP servers.** A stdio MCP
 > server is a pooled, long-lived process whose env is set once at spawn, so it
@@ -107,8 +110,10 @@ headers:
   Authorization: "Bearer $ghapp:my_github_app"   # or X-Loom-Sandbox-Env-Gh-Token for the dev sandbox
 ```
 
-An unresolved ref — or a mint failure (bad key, network) — **drops the header**
-(no literal token is ever sent).
+An unresolved ref — or a mint failure (bad key, network) — **refuses the call**.
+No literal token is ever sent, and neither is a request without it: a peer that
+does not authenticate would otherwise serve it anonymously, which is the same
+request under a different identity with no error anywhere.
 
 ## Overriding a provider / tool API key by its env-var name
 
