@@ -4857,13 +4857,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// the new tier applied immediately on this continuation.
 	// operatorKeyRestricted was computed above from the presenting principal.
 	run, err := s.store.CreateRun(r.Context(), id, store.RunIdentity{
-		AgentID:               agentID,
-		UserID:                sess.UserID,
-		TenantID:              sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
-		UserTier:              body.UserTier,
-		Model:                 model,
-		ReplicaID:             s.replicaID,
-		ParentContext:         body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
+		AgentID:       agentID,
+		UserID:        sess.UserID,
+		TenantID:      sess.TenantID, // RFC L: continuation inherits the session's authoritative tenant
+		UserTier:      body.UserTier,
+		Model:         model,
+		ReplicaID:     s.replicaID,
+		ParentContext: body.ParentContext, // v0.12.x: tracking lineage for this continuation + its sub-agents
+		// F42: an interactive continuation PARKS at end_turn, and resume reads
+		// this column to decide park-vs-complete. Without it a restored
+		// interactive conversation comes back as a batch run.
+		Interactive:           body.Interactive,
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 		RunConfig:             runCfg.marshal(),

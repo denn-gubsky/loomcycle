@@ -433,3 +433,55 @@ func TestSubRunConfig_DefRewritesLeaveTuningUntouched(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+// --- adjacent: the continuation path never recorded that it was interactive ---
+
+// An interactive run PARKS at end_turn waiting for the operator instead of
+// completing, and resume reads runs.interactive to decide which of the two a
+// re-dispatched run should do (F42 / RFC X Phase 2). POST /v1/runs writes the
+// column; POST /v1/sessions/{id}/messages passes `interactive` to the loop but
+// never to the run row, and no other write sets it.
+//
+// So an interactive conversation continued through the messages endpoint — the
+// terminal's own continuation path — came back from a snapshot as a BATCH run:
+// it would run to completion and end the session instead of parking for the
+// next operator turn. Same defect class as the configuration the rest of this
+// change restores, on a field that was already being captured.
+func TestMessages_RecordsThatTheRunIsInteractive(t *testing.T) {
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{
+		"chatty": {Model: "stub-model", Tools: []string{}, SystemPrompt: "you chat"},
+	}
+	prov := &recordingScriptedProvider{defaultS: endTurn()}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "msg_interactive.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	sess, err := st.CreateSession(context.Background(), "", "chatty", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/sessions/"+sess.ID+"/messages", "application/json", strings.NewReader(
+		`{"interactive":true,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"hello"}]}]}`,
+	))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+
+	run := onlyRun(t, st, sess.ID)
+	if !run.Interactive {
+		t.Error("an interactive continuation was recorded as a batch run; restored " +
+			"from a snapshot it would run to completion instead of parking for the " +
+			"operator's next turn")
+	}
+}
