@@ -4089,7 +4089,18 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// applyPrincipal — fairness key, session tenant, run-row attribution,
 	// and threaded RunIdentity all derive from them.)
 	runRouting := &routingOverride{Model: req.Model, Provider: req.Provider, Tier: req.Tier, Effort: req.Effort}
+	runResources := &resourceOverride{
+		MaxTokens: req.MaxTokens, MaxIterations: req.MaxIterations,
+		UnboundedIterations: req.UnboundedIterations, MaxConcurrentChildren: req.MaxConcurrentChildren,
+	}
 	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runRouting)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	// RFC DC P2: the run's budget, on a COPY — the stored definition and its
+	// content hash are untouched.
+	budgetedDef, err := applyResourceOverride(agentDef, runResources)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -4248,6 +4259,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
+		Resources:         persistedResources(runResources),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -4474,6 +4486,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
+	// RFC DC P2: the run's own fan-out width (see RunOnce).
+	loopCtx = tools.WithFanoutCap(loopCtx, budgetedDef.MaxConcurrentChildren)
 	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
 	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext) // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
@@ -4521,10 +4535,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:            injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           agentDef.MaxTokens,      // 0 → driver default
-		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:       agentDef.MaxIterations,  // 0 → loop default (16)
-		UnboundedIterations: agentDef.UnboundedIterations,
+		MaxTokens:           budgetedDef.MaxTokens,     // 0 → driver default
+		MaxContextTokens:    runCfg.MaxContextTokens,   // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:       budgetedDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations: budgetedDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		Effort:              effort,
@@ -4836,6 +4850,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// token is authority on a continuation, mirroring operatorKeyRestricted).
 	isolated := s.isolatedForCtx(r.Context())
 	runRouting := &routingOverride{Model: body.Model, Provider: body.Provider, Tier: body.Tier, Effort: body.Effort}
+	runResources := &resourceOverride{
+		MaxTokens: body.MaxTokens, MaxIterations: body.MaxIterations,
+		UnboundedIterations: body.UnboundedIterations, MaxConcurrentChildren: body.MaxConcurrentChildren,
+	}
+	budgetedDef, berr := applyResourceOverride(agentDef, runResources)
+	if berr != nil {
+		writeResolveError(w, berr)
+		return
+	}
 	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runRouting)
 	if err != nil {
 		writeResolveError(w, err)
@@ -4959,6 +4982,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
+		Resources:         persistedResources(runResources),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -5166,10 +5190,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,      // 0 → driver default
-		MaxContextTokens:       runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:          agentDef.MaxIterations,  // 0 → loop default (16)
-		UnboundedIterations:    agentDef.UnboundedIterations,
+		MaxTokens:              budgetedDef.MaxTokens,     // 0 → driver default
+		MaxContextTokens:       runCfg.MaxContextTokens,   // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:          budgetedDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations:    budgetedDef.UnboundedIterations,
 		SteerQueue:             steerQ,
 		OnSteer:                onSteer,
 		Effort:                 effort,
