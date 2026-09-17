@@ -1821,7 +1821,11 @@ func (s *Server) emitSystemPromptEvent(
 // scope:tenant already spans everything — while ensuring a resumed tenant run
 // can never silently regain cross-tenant reach.
 func (s *Server) historyPolicyForAgent(ctx context.Context, agentDef config.AgentDef) tools.HistoryPolicyValue {
-	return tools.HistoryPolicyValue{Scopes: normalizeHistoryScopes(agentDef.HistoryScope, historyGlobalAllowed(ctx))}
+	// The default (an absent gate resolves to the caller's own chats) is applied
+	// BEFORE normalisation, so a defaulted scope is subject to the same
+	// legacy-alias mapping and admin stripping as a declared one.
+	declared := tools.EffectiveHistoryScopes(ctx, agentDef.HistoryScope)
+	return tools.HistoryPolicyValue{Scopes: normalizeHistoryScopes(declared, historyGlobalAllowed(ctx))}
 }
 
 // historyGlobalAllowed reports whether the ctx principal may resolve the
@@ -2774,7 +2778,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// `user` scope).
 	loopCtx = tools.WithAgentName(loopCtx, effectiveAgentName)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: agentDef.MemoryScopes,
+		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 		Consolidation: agentDef.MemoryConsolidation,
@@ -4512,7 +4516,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, req.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: agentDef.MemoryScopes,
+		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 		Consolidation: agentDef.MemoryConsolidation,
@@ -5203,7 +5207,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, sess.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: agentDef.MemoryScopes,
+		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 		Consolidation: agentDef.MemoryConsolidation,
@@ -6631,7 +6635,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// both list `user` (or `agent` keyed by a shared name) in their
 	// memory_scopes.
 	subCtx = tools.WithMemoryPolicy(subCtx, tools.MemoryPolicyValue{
-		AllowedScopes: def.MemoryScopes,
+		AllowedScopes: tools.EffectiveMemoryScopes(subCtx, def.MemoryScopes),
 		QuotaBytes:    def.MemoryQuotaBytes,
 		Backend:       def.MemoryBackend,
 		Consolidation: def.MemoryConsolidation,

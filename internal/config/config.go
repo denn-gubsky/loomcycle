@@ -1133,12 +1133,22 @@ type AgentDef struct {
 	// must stay on Anthropic for sensitive paths).
 	Models map[string][]TierCandidate `yaml:"models"`
 
-	// MemoryScopes is the v0.8.0 Memory tool scope allowlist. Empty
-	// = no Memory access (the default-deny invariant — even if
-	// `Memory` is in Tools, agents without an explicit
-	// memory_scopes list see refused calls). Currently accepts
-	// "agent" and "user"; forward-compatible for "session" / "tenant"
-	// when those scopes ship.
+	// MemoryScopes is the Memory tool scope allowlist. Accepts
+	// "agent", "user", "run" and "tenant".
+	//
+	// UNSET IS NO LONGER DENY. It used to be: an agent holding Memory with no
+	// memory_scopes had every call refused, and nothing said so until the model
+	// tried. An unset gate now resolves to what the caller already OWNS — `user`,
+	// plus `tenant` for a non-isolated member — via tools.EffectiveMemoryScopes.
+	// A declared list is still authoritative and is never widened.
+	//
+	// To grant nothing, say so: `memory_scopes: ["-*"]`. An empty list cannot
+	// mean that, because the substrate's agent shape tags this `omitempty` and a
+	// stored `[]` reads back indistinguishable from never having been set.
+	//
+	// The default is applied at POLICY-RESOLUTION time, never written here: this
+	// field is content-identifying, so materialising a default would change
+	// content_sha256 and fork every agent that never set it.
 	MemoryScopes []string `yaml:"memory_scopes"`
 
 	// MemoryQuotaBytes overrides the global per-(scope, scope_id)
@@ -1368,8 +1378,12 @@ type AgentDef struct {
 	// configs keep working); the never-implemented "siblings"/"descendants"/
 	// "named:<n>" values are retired and rejected at config-load.
 	//
-	// Empty / unset = default-deny. Mirror of the substrate-scope pattern
-	// (agent_def_scopes, evaluation_scopes).
+	// UNSET IS NO LONGER DENY: it resolves to ["user"] — a user always has access
+	// to their own chats — via tools.EffectiveHistoryScopes. Note `self` is the
+	// AGENT's chats across every user, which is wider than the caller's own, so
+	// it is not part of the default. To grant nothing: `history_scope: ["-*"]`.
+	// Resolved at policy-resolution time; this field is content-identifying and a
+	// materialised default would fork every agent's content_sha256.
 	HistoryScope []string `yaml:"history_scope"`
 
 	// DisableContext opts the agent OUT of the v0.8.7 default-add
