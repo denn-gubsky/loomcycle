@@ -1905,8 +1905,9 @@ def _build_run_request(
     max_concurrent_children: int = 0,
     # The tuning row is proto3 `optional` because each has a meaningful zero —
     # 0 retries, inject nothing, omit the guide. None means "the caller said
-    # nothing" and must reach the wire as an UNSET field, not as that zero,
-    # which is what _optional_overrides is for.
+    # nothing" and must reach the wire as an UNSET field, not as that zero.
+    # (The protobuf runtime already drops a None kwarg; _optional_overrides makes
+    # that independent of a runtime detail rather than supplying it.)
     unbounded_iterations: Optional[bool] = None,
     retry_attempts: Optional[int] = None,
     memory_inject_max_tokens: Optional[int] = None,
@@ -2261,10 +2262,20 @@ def _directory_user(u: Any) -> Mapping[str, Any]:
 def _optional_overrides(**kwargs: Any) -> dict[str, Any]:
     """Drops the None-valued per-run overrides before they reach the proto.
 
-    These fields are proto3 ``optional`` precisely because each has a MEANINGFUL
-    zero — 0 retries, inject nothing, omit the guide. Passing ``None`` through
-    would set them to their zero and silently turn the feature off; omitting the
-    keyword leaves the field unset, which is what "the caller said nothing"
-    means on the wire.
+    These fields are proto3 ``optional`` because each has a MEANINGFUL zero — 0
+    retries, inject nothing, omit the guide — so "the caller said nothing" has to
+    reach the wire as an UNSET field rather than as that zero.
+
+    NOTE ON WHAT THIS DOES *NOT* DO. It was documented as the thing that prevents
+    ``None`` being written as the field's zero. That is not what happens: the
+    protobuf runtime already treats a ``None`` keyword as absent (upb skips it;
+    the pure-Python implementation does ``if field_value is None: continue``), so
+    ``pb.RunRequest(retry_attempts=None)`` leaves ``HasField`` False on its own.
+
+    What this filter actually buys is independence from that behaviour, which is
+    a runtime detail rather than a documented part of the message API. It is
+    cheap, and it keeps the call sites reading as "pass only what was supplied".
+    Do not delete it on the grounds that it is redundant today, and do not trust
+    the old claim that removing it would silently disable the feature.
     """
     return {k: v for k, v in kwargs.items() if v is not None}
