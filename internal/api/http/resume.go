@@ -382,7 +382,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: agentDef.MemoryScopes,
+		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
 		QuotaBytes:    agentDef.MemoryQuotaBytes,
 		Backend:       agentDef.MemoryBackend,
 		Consolidation: agentDef.MemoryConsolidation,
