@@ -7,7 +7,7 @@ import (
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
-// spawnOverrideProps is the JSON-schema fragment for every per-run knob the
+// spawnPerRunProps is the JSON-schema fragment for every per-run knob the
 // shared spawn shape (connector.SpawnRunRequest) accepts. It is spliced into
 // BOTH spawn_run and spawn_runs.
 //
@@ -19,7 +19,7 @@ import (
 //
 // Flat indentation is deliberate: it is spliced in at two different nesting
 // depths and cannot align with both. Carries no leading or trailing comma.
-const spawnOverrideProps = `
+const spawnPerRunProps = `
 	"metadata": {"type": "object", "description": "Non-secret structured metadata handed to the run (repo name, review policy, and the like). A code-js agent reads it as input.metadata; an LLM agent receives it as a trusted prompt block. NOT a place for credentials — those are user_credentials."},
 	"sampling": {"type": "object", "description": "Optional per-run LLM sampling override, merged per-field over the agent's own block (unset fields inherit; omit to inherit entirely). temperature 0 is deterministic, which is not the same as unset. Each provider maps only what it supports.", "properties": {"temperature": {"type": "number", "minimum": 0, "maximum": 2}, "top_p": {"type": "number", "minimum": 0, "maximum": 1}, "top_k": {"type": "integer", "minimum": 1}, "frequency_penalty": {"type": "number", "minimum": -2, "maximum": 2}, "presence_penalty": {"type": "number", "minimum": -2, "maximum": 2}, "seed": {"type": "integer"}, "stop": {"type": "array", "items": {"type": "string"}}}},
 	"compaction":       {"type": "object", "description": "Optional per-run context-compaction override, merged per-field over the agent's own block. Trigger compaction mid-run with the compact_run tool.", "properties": {"enabled": {"type": "boolean", "description": "Turn AUTO-compaction on for this run."}, "target_percentage": {"type": "integer", "minimum": 10, "maximum": 50, "description": "Summary aims for ~N% of the compacted span (default 10)."}, "keep_last_n": {"type": "integer", "minimum": 0, "description": "Keep the last N messages verbatim (default 4; 0 = summarize all)."}, "keep_first": {"type": "boolean", "description": "Pin the first user message (the task) verbatim (default true)."}, "autocompact_at_pct": {"type": "integer", "minimum": 50, "maximum": 95, "description": "Auto-compact when used/window ≥ N% (default 80; only when enabled + the provider reports a window)."}, "model": {"type": "string", "description": "Optional cheaper/faster summary model served by the same provider."}}},
@@ -75,7 +75,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
 					"parent_context":   {"type": "object", "description": "v0.12.x opaque caller-tracking lineage carried verbatim, inherited by every sub-agent, and echoed on the per-agent report surfaces so a consumer can attribute a child sub-agent's usage to the user-initiated request.", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}},
 					"timeout_ms":       {"type": "integer", "minimum": 1, "description": "Optional transport timeout: max milliseconds this spawn_run call may block before loomcycle cancels the run and returns status:\"timeout\" instead of hanging. Narrows the operator default (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) — it can shorten but not exceed it. Omit to block until the run finishes on its own run_timeout_seconds budget. This is a transport bound, NOT the run's wall-clock budget."},
-					` + spawnOverrideProps + `
+					` + spawnPerRunProps + `
 				},
 				"anyOf": [
 					{"required": ["agent"]},
@@ -85,7 +85,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "spawn_runs",
-			Description: "Run up to 32 agents CONCURRENTLY in one call and block until all of them settle, returning one index-aligned envelope \u2014 result[i] belongs to spawns[i]. Each child is a FRESH run; there is no session continuation here. Concurrency is server-side and still bounded by the per-user admission gate. A child that fails is reported in its own slot and never fails the batch, so always read per-child status rather than assuming success. USE THIS for any fan-out: N parallel spawn_run calls serialize over the single MCP connection and will be slower for no benefit. Do NOT use it to continue sessions, and do NOT pass mode 'detach' \u2014 async handles are reserved for a future release and rejected today. Over 32 spawns is refused rather than truncated.",
+			Description: "Run up to 32 agents CONCURRENTLY in one call and block until all of them settle, returning one index-aligned envelope \u2014 result[i] belongs to spawns[i]. Each child is a FRESH run; there is no session continuation here. Each child spec takes the same per-run overrides spawn_run does \u2014 sampling, compaction, context and the routing/budget knobs \u2014 so one batch can fan the same agent out across different models or budgets. Concurrency is server-side and still bounded by the per-user admission gate. A child that fails is reported in its own slot and never fails the batch, so always read per-child status rather than assuming success. USE THIS for any fan-out: N parallel spawn_run calls serialize over the single MCP connection and will be slower for no benefit. Do NOT use it to continue sessions, and do NOT pass mode 'detach' \u2014 async handles are reserved for a future release and rejected today. Over 32 spawns is refused rather than truncated.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["spawns"],
@@ -110,7 +110,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 								"tools":    {"type": "array", "items": {"type": "string"}},
 								"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing; [] denies all outbound HTTP; non-empty intersects the operator list."},
 								"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
-								"parent_context":   {"type": "object", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}, "description": "Set a shared root_agent_run_id across the spawns to group the batch for cost attribution."},` + spawnOverrideProps + `
+								"parent_context":   {"type": "object", "properties": {"root_agent_run_id": {"type": "string"}, "function_key": {"type": "string"}, "tier_at_run": {"type": "string"}}, "description": "Set a shared root_agent_run_id across the spawns to group the batch for cost attribution."},` + spawnPerRunProps + `
 							}
 						}
 					},
