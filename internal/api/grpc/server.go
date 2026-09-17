@@ -1283,6 +1283,17 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 	}
 	// RFC AW — the token-budget crossing payload on type=limit frames. Type is
 	// already set to "limit" from ev.Type above (mirrors how Usage is mapped).
+	// RFC DC: a typed gRPC client must see a retune as a retune. A field that
+	// stops at the Go struct is invisible here, which is the exact way RFC DA
+	// shipped a field its TypeScript client could not read.
+	if ev.Override != nil {
+		out.Override = &loomcyclepb.OverrideInfo{
+			Source:    ev.Override.Source,
+			FromModel: ev.Override.FromModel,
+			ToModel:   ev.Override.ToModel,
+			Fields:    ev.Override.Fields,
+		}
+	}
 	if ev.Limit != nil {
 		out.Limit = &loomcyclepb.LimitInfo{
 			Scope:    ev.Limit.Scope,

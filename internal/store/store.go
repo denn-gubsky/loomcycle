@@ -1583,6 +1583,27 @@ type Store interface {
 	// cancelled}) — the pause column is only meaningful while a run
 	// could still be resumed; the column on terminal runs records what
 	// state they were in when the loop exited.
+	// SetRunModel records what the run is CURRENTLY resolved to.
+	//
+	// runs.model was write-once at CreateRun, which was fine while nothing could
+	// change a run's routing after it started. RFC DC P3 can: an operator retunes
+	// a parked chat. Leaving the row stale would make a restart silently undo the
+	// retune, because resume restores the model the row names (RFC DD Gap 5).
+	//
+	// NOT wired to provider FALLBACK, which is the other thing that moves a run's
+	// model mid-flight — that stays unrecorded, and RFC DD's V4 stays unmet. This
+	// is the mechanism V4 would need, not V4.
+	SetRunModel(ctx context.Context, runID, providerID, model string) error
+
+	// SetRunConfig replaces the run's configuration record.
+	//
+	// The record is written at CreateRun and was immutable until RFC DC P3 made a
+	// PARKED run retunable: an operator changes the model on a waiting chat, and
+	// the run must both act on it next turn and still have it after a restart.
+	// Opaque here, like the column — the store persists it, the caller owns its
+	// shape.
+	SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error
+
 	SetRunPauseState(ctx context.Context, runID, state string) error
 
 	// ListPausedRuns returns runs whose pause_state is "paused" (the

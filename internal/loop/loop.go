@@ -118,6 +118,25 @@ type RunOptions struct {
 	// bound it. Set an explicit MaxIterations to cap an interactive session.
 	Interactive bool
 
+	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
+	// receives its operator's next message — and only then.
+	//
+	// It exists because a parked run can be RETUNED: an operator changes the
+	// model on a chat that is sitting waiting, and the next turn has to honour
+	// it. RunOptions.Provider is a resolved provider held for the run's
+	// lifetime, and parking happens INSIDE the loop, so without this the run
+	// would keep using whatever it resolved to when it started, however long it
+	// waits and whatever the operator changes.
+	//
+	// It returns changed=false when nothing moved, which is the overwhelmingly
+	// common case — an ordinary conversational turn costs one store read, and
+	// the provider is swapped only when the answer actually differs.
+	//
+	// An error is logged and ignored rather than failing the turn: a run that
+	// cannot re-read its own configuration should continue on the settings it
+	// has, not stop mid-conversation.
+	ReResolveOnOperatorTurn func(ctx context.Context) (provider providers.Provider, model, effort string, changed bool, err error)
+
 	// StartParked makes an interactive run park BEFORE its first model call
 	// instead of after it.
 	//
@@ -875,7 +894,7 @@ func cancelledToolResults(pending []providers.ToolUse) []providers.ContentBlock 
 // loop) or false to terminate — ctx cancelled during the park, or a
 // non-interactive run (the handler 409s that case, so it is only a safety net:
 // stopping a non-interactive run's only turn would terminate it).
-func finishTurnCancel(ctx context.Context, opts RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, reason string, emit func(providers.Event), disarm func()) ([]providers.Message, int, bool) {
+func finishTurnCancel(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, reason string, emit func(providers.Event), disarm func()) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventTurnCancelled,
 		TurnCancelled: &providers.TurnCancelledEventInfo{Reason: reason, SinceTurn: sinceTurn}})
 	disarm()
@@ -922,7 +941,7 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 // the refreshed context footprint (changed only when a compaction ran), and
 // whether a real operator turn arrived — false ⇒ ctx cancelled / queue closed ⇒
 // the caller terminates the run.
-func parkForOperatorTurn(ctx context.Context, opts RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
+func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
 	for {
@@ -946,8 +965,61 @@ func parkForOperatorTurn(ctx context.Context, opts RunOptions, messages []provid
 		if opts.OnSteer != nil {
 			opts.OnSteer(m)
 		}
+		// RFC DC P3: a real operator turn is the ONE moment a parked run's
+		// routing may have been retuned while it waited. Done here rather than
+		// at each of the three park call sites so there is one place it can be
+		// forgotten from, and none where it can disagree.
+		reResolveForOperatorTurn(ctx, opts, emit)
 		return messages, lastCtxTokens, true
 	}
+}
+
+// reResolveForOperatorTurn swaps the run's live provider/model/effort when the
+// operator retuned it while it was parked.
+//
+// It mutates opts through the same seam tryProviderFallback uses — that path
+// already replaces these three mid-run, so a retune reaches an existing
+// mutation point from an operator trigger instead of a failure.
+//
+// Silent on no-op, loud on change: an unchanged run is byte-identical to before
+// this existed, and a changed one says so on the transcript, because a model
+// that swaps mid-conversation with no trace makes the transcript a misleading
+// record of what produced what.
+func reResolveForOperatorTurn(ctx context.Context, opts *RunOptions, emit func(providers.Event)) {
+	if opts.ReResolveOnOperatorTurn == nil {
+		return
+	}
+	provider, model, effort, changed, err := opts.ReResolveOnOperatorTurn(ctx)
+	if err != nil {
+		// Continue on the settings we have. A run that cannot re-read its own
+		// configuration should not stop mid-conversation over it.
+		log.Printf("loop: could not re-resolve routing for the operator's turn: %v", err)
+		return
+	}
+	if !changed || provider == nil {
+		return
+	}
+	from := ""
+	if opts.Provider != nil {
+		from = opts.Provider.ID() + "/" + opts.Model
+	}
+	to := provider.ID() + "/" + model
+	opts.Provider, opts.Model, opts.Effort = provider, model, effort
+
+	// EventOverride, NOT EventProviderFallback. A fallback means the runtime
+	// moved the run because something failed; this means a person chose to. A
+	// reader who cannot tell them apart will read a deliberate retune as an
+	// outage — and the two want opposite responses.
+	emit(providers.Event{
+		Type: providers.EventOverride,
+		Text: "routing changed by operator: " + from + " → " + to,
+		Override: &providers.OverrideInfo{
+			Source:    "operator",
+			FromModel: from,
+			ToModel:   to,
+			Fields:    []string{"model"},
+		},
+	})
 }
 
 // CompactionMessages builds the replacement conversation for a compaction: an
@@ -1787,7 +1859,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	parkAbandoned := false
 	if opts.StartParked && opts.Interactive && opts.SteerQueue != nil {
 		var resumedWithInput bool
-		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, opts, messages, 0, lastCtxTokens, emit)
+		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, 0, lastCtxTokens, emit)
 		if !resumedWithInput {
 			// Cancelled while waiting. The run ends on the end_turn it had
 			// already reached before the pause; skipping the loop entirely lets
@@ -2335,7 +2407,7 @@ outerLoop:
 				messages = append(messages, providers.Message{Role: "user", Content: cancelledToolResults(pendingTools)})
 			}
 			var resumed bool
-			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
 			iterSpan.End()
 			if !resumed {
 				break
@@ -2356,7 +2428,7 @@ outerLoop:
 				// finds nothing armed → the handler 409s it).
 				disarmTurn()
 				var resumedWithInput bool
-				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, opts, messages, iter, lastCtxTokens, emit)
+				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, iter, lastCtxTokens, emit)
 				iterSpan.End()
 				if !resumedWithInput {
 					break
@@ -2402,7 +2474,7 @@ outerLoop:
 		// another model turn. Run-cancel is checked first (ctx.Err()==nil).
 		if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
 			var resumed bool
-			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
 			iterSpan.End()
 			if !resumed {
 				break

@@ -1783,6 +1783,38 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 // affects 1 row but the value doesn't change). Does NOT clear
 // pause_state for terminal runs; the column on terminal runs records
 // what state they were in when the loop exited.
+// SetRunModel implements store.Store.
+func (s *Store) SetRunModel(ctx context.Context, runID, providerID, model string) error {
+	if runID == "" {
+		return fmt.Errorf("set run model: run_id required")
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET provider = $1, model = $2 WHERE id = $3`,
+		nullableText(providerID), nullableText(model), runID)
+	if err != nil {
+		return fmt.Errorf("set run model: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
+// SetRunConfig implements store.Store.
+func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error {
+	if runID == "" {
+		return fmt.Errorf("set run config: run_id required")
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET run_config = $1::jsonb WHERE id = $2`,
+		nullableJSONArg(cfg), runID)
+	if err != nil {
+		return fmt.Errorf("set run config: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
 func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error {
 	switch state {
 	case store.PauseStateRunning, store.PauseStatePausing, store.PauseStatePaused:

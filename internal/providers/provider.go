@@ -567,6 +567,23 @@ const (
 	// crossing), so the /run terminal + chat render a budget banner.
 	EventLimit EventType = "limit"
 
+	// EventOverride records that a RUN's own configuration changed while it was
+	// running — an operator retuned a parked chat (RFC DC P3/D8).
+	//
+	// It exists because an override is run STATE with a lifetime, not a request
+	// parameter: it can change on turn 12, and a model that swaps mid-
+	// conversation with no trace makes the transcript a misleading record of
+	// what produced what. A reader seeing the answers get better after turn 12
+	// should be able to see why.
+	//
+	// SERVER-generated, like EventLimit and for the same reason — the loop's
+	// per-iteration switch needs no case for it. Carried to consumers and
+	// persisted as a transcript row through makeRecordingEmit.
+	//
+	// It reports a CHANGE, not a setting. A run that starts with an override
+	// emits nothing: there is nothing to explain until something moves.
+	EventOverride EventType = "override"
+
 	// EventTurnCancelled is emitted by the loop when an operator cancels the
 	// CURRENT TURN of an interactive run (RFC BH) — the in-flight generation +
 	// the tool calls it started are stopped, but the run is NOT terminated: it
@@ -670,6 +687,10 @@ type Event struct {
 	// Limit carries the structured payload on EventLimit (a per-scope
 	// token-budget crossing, RFC AW). Nil on all other event types.
 	Limit *LimitInfo `json:"limit,omitempty"`
+
+	// Override carries the structured payload on EventOverride (a run's
+	// configuration changed mid-run, RFC DC). Nil on all other event types.
+	Override *OverrideInfo `json:"override,omitempty"`
 
 	// StopReason is set on the final assistant Event of a provider call:
 	// "end_turn" | "tool_use" | "max_tokens" | "stop_sequence".
@@ -968,6 +989,35 @@ type MemoryBankedInfo struct {
 	// Error names why banking did not happen. Its presence is NOT a failed
 	// compaction: the compaction completed either way, which is the invariant.
 	Error string `json:"error,omitempty"`
+}
+
+// OverrideInfo is the structured payload on EventOverride (RFC DC — a run's own
+// configuration changed while it was running).
+//
+// It names WHAT MOVED and what it moved to, because "the configuration changed"
+// answers nothing for the reader who is trying to explain a change in
+// behaviour. From/To on the routing pair specifically, since that is the change
+// most likely to show up as different output.
+//
+// DISCLOSURE: every field here is operator-chosen configuration that the model
+// already sees the effects of — a model name, a token budget. It carries no
+// credential, no host from operator config, and no token suffix. A future field
+// on this payload is a disclosure decision, not a formatting one: the event
+// goes to the transcript, to SSE, to gRPC, and into snapshots.
+type OverrideInfo struct {
+	// Source says who changed it. "operator" is the only value today (the
+	// steer endpoint); it is here so a later automatic retune is
+	// distinguishable from a human one rather than indistinguishable.
+	Source string `json:"source"`
+
+	// FromModel / ToModel are the routing pair, formatted "provider/model".
+	// Empty when the change did not move routing.
+	FromModel string `json:"from_model,omitempty"`
+	ToModel   string `json:"to_model,omitempty"`
+
+	// Fields lists the override keys the request actually set, so a reader can
+	// see a budget or tuning change that moved no model at all.
+	Fields []string `json:"fields,omitempty"`
 }
 
 // LimitInfo is the structured payload on EventLimit (RFC AW — per-scope token

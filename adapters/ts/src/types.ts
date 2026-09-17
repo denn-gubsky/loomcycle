@@ -41,6 +41,13 @@ export type EventType =
   // crossing (a soft warning at run start, or a soft crossing mid-run). The
   // structured payload rides `AgentEvent.limit`.
   | "limit"
+  // RFC DC per-run overrides. `override` = a server-generated notice that the
+  // RUN's own configuration changed while it was running, because an operator
+  // retuned it. Distinct from a provider fallback on purpose: a fallback means
+  // the runtime moved the run because something FAILED, this means a person
+  // chose to, and a UI should not render a deliberate model change as an
+  // outage. The structured payload rides `AgentEvent.override`.
+  | "override"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -103,6 +110,29 @@ export interface HostWidening {
  *  scope stands against its ceiling — so a UI can render "tenant acme at 1.2M /
  *  1M tokens this month" without a follow-up fetch. Wire-stable; mirrors
  *  providers.LimitInfo. */
+/** OverrideInfo accompanies an `event: override` frame (RFC DC per-run
+ *  overrides): a run's own configuration changed mid-run because an operator
+ *  retuned it.
+ *
+ *  It names what MOVED rather than what the settings now are, because "the
+ *  configuration changed" answers nothing for someone trying to explain why the
+ *  answers got different after turn 12.
+ *
+ *  Carries only operator-chosen configuration whose effects are already visible
+ *  — a model name, a budget. No credential, no operator host. */
+export interface OverrideInfo {
+  /** Who changed it. "operator" today; present so a later automatic retune is
+   *  distinguishable rather than indistinguishable. */
+  source: string;
+  /** "provider/model" before the change. Absent when routing did not move. */
+  from_model?: string;
+  /** "provider/model" after the change. */
+  to_model?: string;
+  /** The override keys the request actually set — so a budget or tuning change
+   *  that moved no model is still legible. */
+  fields?: string[];
+}
+
 /** The machine-readable half of a terminal run failure, carried on
  *  `event: error` frames.
  *
@@ -167,6 +197,9 @@ export interface AgentEvent {
   /** Payload on `event: limit` (RFC AW) — a per-scope token-budget crossing.
    *  Nil on all other event types. */
   limit?: LimitInfo;
+  /** Set on `event: override` frames — what the operator changed, and from
+   *  what to what. */
+  override?: OverrideInfo;
   /** Payload on `event: error` — the classification of a TERMINAL run failure.
    *  Absent on every other event type, and absent for a failure the runtime
    *  cannot categorise: there is deliberately no "unknown" category, so a
