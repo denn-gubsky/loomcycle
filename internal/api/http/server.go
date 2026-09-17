@@ -601,6 +601,13 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// next call without restart. Returns 0 = no override; the
 		// tool falls back to DefaultMaxConcurrentChildren.
 		CapLookup: func(ctx context.Context, callingAgent string) int {
+			// RFC DC P2: a RUN's own cap wins, and it can only ever be NARROWER
+			// than the definition's — applyResourceOverride refuses to raise it.
+			// The lookup below resolves by agent NAME, which a per-run value has
+			// no path through, so it rides ctx instead.
+			if n := tools.FanoutCap(ctx); n > 0 {
+				return n
+			}
 			// RFC N: resolve within the calling run's tenant (carried via
 			// ctx RunIdentity for in-loop callers).
 			def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenantFromCtx(ctx), callingAgent)
@@ -2469,10 +2476,20 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// COPY of the definition, so the stored def and its content hash are
 	// untouched (D2).
 	runRouting := &routingOverride{Model: in.Model, Provider: in.Provider, Tier: in.Tier, Effort: in.Effort}
+	runResources := &resourceOverride{
+		MaxTokens: in.MaxTokens, MaxIterations: in.MaxIterations,
+		UnboundedIterations: in.UnboundedIterations, MaxConcurrentChildren: in.MaxConcurrentChildren,
+	}
 	routedDef, rerr := s.applyRoutingOverride(ctx, agentDef, runRouting)
 	if rerr != nil {
 		return rerr
 	}
+	if routedDef, rerr = applyResourceOverride(routedDef, runResources); rerr != nil {
+		return rerr
+	}
+	// The loop reads its budget from this copy, not from agentDef.
+	agentDef.MaxTokens, agentDef.MaxIterations = routedDef.MaxTokens, routedDef.MaxIterations
+	agentDef.UnboundedIterations = routedDef.UnboundedIterations
 	providerID, model, effort, err := s.resolveAgentDef(ctx, routedDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
@@ -2604,6 +2621,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens),
 		RunTimeoutSeconds: pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
+		Resources:         persistedResources(runResources),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -2769,6 +2787,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// inherits the parent's effective policy (its def fills any gaps the parent
 	// left unset), overridable per-spawn by the Agent tool.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
+	// RFC DC P2: the run's own fan-out width. It is otherwise resolved from the
+	// calling agent's NAME at spawn time, which a per-run value cannot reach.
+	// Inheriting it down the tree is safe because it can only have been LOWERED.
+	loopCtx = tools.WithFanoutCap(loopCtx, routedDef.MaxConcurrentChildren)
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
 	// same way — a sub-agent inherits the parent's effective mode; its def fills
 	// gaps the parent left unset.
@@ -3868,6 +3890,20 @@ type runRequest struct {
 	Provider string `json:"provider,omitempty"`
 	Tier     string `json:"tier,omitempty"`
 	Effort   string `json:"effort,omitempty"`
+
+	// The per-run RESOURCE override (RFC DC P2). max_tokens, max_iterations and
+	// unbounded_iterations may be RAISED — both are bounded in practice by the
+	// per-scope token budget. max_concurrent_children may only be LOWERED: it is
+	// the only bound on sub-agent fan-out that exists anywhere, because a child
+	// takes no admission slot, is not budget-checked at spawn, and skips the
+	// per-provider gate for its parent's provider.
+	//
+	// unbounded_iterations is a pointer so a caller can turn it OFF as well as
+	// on; a plain bool could only raise the cap.
+	MaxTokens             int   `json:"max_tokens,omitempty"`
+	MaxIterations         int   `json:"max_iterations,omitempty"`
+	UnboundedIterations   *bool `json:"unbounded_iterations,omitempty"`
+	MaxConcurrentChildren int   `json:"max_concurrent_children,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -4680,6 +4716,20 @@ type messagesRequest struct {
 	Provider string `json:"provider,omitempty"`
 	Tier     string `json:"tier,omitempty"`
 	Effort   string `json:"effort,omitempty"`
+
+	// The per-run RESOURCE override (RFC DC P2). max_tokens, max_iterations and
+	// unbounded_iterations may be RAISED — both are bounded in practice by the
+	// per-scope token budget. max_concurrent_children may only be LOWERED: it is
+	// the only bound on sub-agent fan-out that exists anywhere, because a child
+	// takes no admission slot, is not budget-checked at spawn, and skips the
+	// per-provider gate for its parent's provider.
+	//
+	// unbounded_iterations is a pointer so a caller can turn it OFF as well as
+	// on; a plain bool could only raise the cap.
+	MaxTokens             int   `json:"max_tokens,omitempty"`
+	MaxIterations         int   `json:"max_iterations,omitempty"`
+	UnboundedIterations   *bool `json:"unbounded_iterations,omitempty"`
+	MaxConcurrentChildren int   `json:"max_concurrent_children,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
