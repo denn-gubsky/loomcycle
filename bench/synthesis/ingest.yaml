@@ -78,34 +78,95 @@ agents:
     model: deepseek-v4-flash
     max_tokens: 1200
     sampling: { temperature: 0 }
+    # ⚠️ AN EXPLICIT TOOL SET, AND A LEGIBLE ONE — the two are separate problems
+    # and both were measured on this store.
+    #
+    # Leaving `tools` unset grants every builtin, and that is not a neutral
+    # default: the answerer spent calls on unrelated tools and on the wrong
+    # scope, and accuracy went 0.4033 -> 0.0000 with abstention 43% -> 86%.
+    # Narrowing to Memory alone recovered it.
+    #
+    # But narrow is not the same as correct. RFC DB's DB-4 measured an agent
+    # holding a retrieval tool it was never told about: it used it 0 times in 20.
+    # So the set is explicit AND the prompt renders the inventory, which is what
+    # the bundled chat agents already do.
+    tools: [Memory, History, Document]
+    skills: ["-*"]
+    # Context stays ENABLED: {{tool:Context.tools}} renders the inventory below.
+    #
+    # ⚠️ WITHOUT A SCOPE GRANT the Memory tool defaults to AGENT scope while every
+    # consolidated fact lives in USER scope — the answerer searches an empty
+    # keyspace and abstains on everything, which is indistinguishable from a real
+    # memory miss and was once read as a single-hop baseline of 0 out of 120.
+    # TENANT is here too because a type may DECLARE that facts about it belong in
+    # the shared plane (`@memory_scope tenant`); recall takes ONE scope per call,
+    # so reading both is two calls rather than a wider one.
+    memory_scopes: [user, tenant]
+    sql_scopes: [user, tenant]
+    # ⚠️ THE TOOL GRANT IS NOT THE READ GRANT. `tools: [History]` only puts the
+    # tool on the agent; History's read is a SEPARATE default-deny policy, and
+    # without this line every call returns "no history_scope policy
+    # (default-deny)". Measured on this rig: an arm holding History made 123
+    # window/search calls and had ALL 123 refused while the run still looked
+    # healthy — the model absorbs the error and answers anyway, so the accuracy
+    # was real but measured an agent that had never read a turn.
+    # `user` owns the ingested corpus chats; `self` is the answerer's own runs,
+    # which hold none of them.
+    history_scope: [user]
     system_prompt: |
-      You answer a question using ONLY what you can retrieve from memory.
+      You answer a question from stored memory, and only from what you retrieve.
+      Never answer from what you already know: every name here is fictional, and
+      a confident answer from outside memory is the error this measures.
 
-      Search memory before answering. Some questions need TWO OR MORE stored
-      facts combined — combine them. Do not refuse just because no single fact
-      states the answer.
+      ## Tools
+      {{tool:Context.tools}}
 
-      If memory does not support an answer, reply with exactly NOT_FOUND and
-      nothing else. Every name here is fictional, and a confident answer from
-      outside memory is the error this is measuring.
+      {{tool:Context.guide}}
 
-      Answer in one short sentence. No preamble, no reasoning.
+      Three things the generated list above cannot tell you:
+      - `Memory op=recall` is the semantic search over remembered facts. Start
+        there. Both `scope` and `query` are required, and facts live in scope
+        `user` — try `tenant` as well when a question is about something shared.
+      - `History op=window` opens the ORIGINAL turns a fact was distilled from.
+        Reach for it when a fact is nearly an answer but drops the specific the
+        question asks for — a date, a number, a name. You MUST pass
+        `scope: "user"`: it defaults to `self`, which holds none of these
+        conversations and is refused.
+      - `Document op=graph_recall` starts from facts matching the question and
+        FOLLOWS THE RELATIONS between the things they name. Use it when the answer
+        is about something the question does not name directly — "which region
+        does X work in" when X's employer, not X, carries the region. Pass
+        `query`, `hops` (4 is usually enough) and `budget_chars` (1200).
 
+      Some questions need TWO OR MORE stored facts combined. Combine them.
+
+      Answer in one short sentence. No preamble, no reasoning shown. If memory
+      does not support an answer, reply with exactly NOT_FOUND and nothing else.
+
+  # ⚠️ The Go harness parses this reply as JSON — ParseVerdict looks for
+  # {"verdict": correct|partial|wrong, "why": ...} and calls anything else
+  # `unparsed`. A plain-text verdict therefore grades every substantive answer as
+  # unparsed while abstentions (scored without the judge) come through as wrong,
+  # which reads as 0% accuracy on a store that is answering fine.
   locomo/judge:
     provider: deepseek
     model: deepseek-v4-flash
     tools: []
     skills: ["-*"]
+    disable_context: true
     max_tokens: 1000
     sampling: { temperature: 0 }
     system_prompt: |
       You grade one ANSWER against the GOLD answer for a QUESTION.
 
-      Reply with exactly one word on the first line: CORRECT, WRONG, or
-      NOT_FOUND. NOT_FOUND is only for an answer that is literally NOT_FOUND.
-      Then one short line of reason.
+      Your ENTIRE reply is one JSON object and nothing else — no prose, no code
+      fences:
+      {"verdict": "correct", "why": "one short sentence"}
 
-      Grade on MEANING, not wording. A correct city, organisation or region named
-      with different surrounding words is CORRECT. An answer naming the right
-      thing plus extra true detail is CORRECT. An answer that hedges without
-      committing to the gold value is WRONG.
+      verdict is exactly one of: correct, partial, wrong.
+        correct — names the gold value, in any wording; extra true detail is fine.
+        partial — names part of it, or hedges toward it without committing.
+        wrong   — names something else, or refuses when the gold is answerable.
+
+      Grade on MEANING, not wording. A date, city, organisation or name expressed
+      differently but identifying the same thing is correct.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -182,6 +183,50 @@ var ErrTracesNotCombinable = errors.New(
 	"memory: sources=[traces] must be asked for on its own. Raw turns are the material " +
 		"the other sources were derived from, so a combined query ranks a turn against " +
 		"the fact extracted from it. Ask for traces in their own query")
+
+// ErrSourcesUnrecognised is returned when a caller named sources and NONE of them
+// were understood.
+//
+// Unknown values on their own are still dropped — see ParseSources — but dropping
+// ALL of them is different in kind. `sources` NARROWS, so its empty value means "no
+// selector", and every op treats that as its default: `search` widens to every plane
+// and `recall` falls back to facts. A caller who typed one wrong name therefore does
+// not get a smaller result set, it gets the DEFAULT one, while believing it filtered.
+// That has now cost two live investigations (notes, then traces), so it is refused.
+var ErrSourcesUnrecognised = errors.New(
+	"memory: none of the requested sources were recognised. Valid values are " +
+		"facts, notes, documents and traces — a misspelt selector would otherwise be " +
+		"dropped and silently widen the query to its default instead of narrowing it")
+
+// ParseSources maps wire strings onto the typed selector, for EVERY surface.
+//
+// ⚠️ ONE PARSER, DELIBERATELY. This mapping used to be hand-copied into the in-band
+// Memory tool and into POST /v1/_memory/search, and the two drifted twice: `notes`
+// was absent from the tool's copy, and `traces` was never added to the HTTP one, so
+// the same selector meant different things depending on which surface a caller used
+// and a trace search came back quietly full of facts. Two copies of a predicate that
+// decides which rows get DROPPED is the shape of that bug, so there is now one.
+//
+// Unknown values are DROPPED when at least one value IS understood, which keeps a
+// newer caller's additive value from breaking an older runtime. When nothing is
+// understood the call is refused instead — see ErrSourcesUnrecognised for why those
+// two cases differ.
+func ParseSources(in []string) ([]Source, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]Source, 0, len(in))
+	for _, v := range in {
+		switch s := Source(strings.ToLower(strings.TrimSpace(v))); s {
+		case SourceFacts, SourceNotes, SourceDocuments, SourceTraces:
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil, ErrSourcesUnrecognised
+	}
+	return out, nil
+}
 
 // Filter renders the requested sources as the store-level predicate.
 //

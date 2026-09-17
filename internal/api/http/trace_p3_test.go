@@ -293,3 +293,82 @@ func TestBackfillTraces_SaysWhenItStoppedAtTheLimit(t *testing.T) {
 		t.Errorf("stop_reason = %q on a sweep that saw everything", full.StopReason)
 	}
 }
+
+// seedRunWithTurnsAs is seedRunWithTurns with the serving agent named, so a test
+// can build a store whose sessions do not all come from the same source.
+func seedRunWithTurnsAs(t *testing.T, st store.Store, tenant, agent, user, text string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, tenant, agent, user)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	seg, _ := json.Marshal([]map[string]any{{"role": "user",
+		"content": []map[string]any{{"type": "trusted-text", "text": text}}}})
+	if err := st.AppendEvent(ctx, run.ID, "user_input", seg); err != nil {
+		t.Fatalf("append user_input: %v", err)
+	}
+	d, _ := json.Marshal(map[string]any{"stop_reason": "end_turn"})
+	if err := st.AppendEvent(ctx, run.ID, "done", d); err != nil {
+		t.Fatalf("append done: %v", err)
+	}
+	return sess.ID
+}
+
+// TestBackfillTraces_AgentSelectsWhichChats.
+//
+// `limit` bounds the WORK but cannot choose the SUBJECT: ListSessions orders
+// newest-first, so a bounded run walks into the operator's most recent chats —
+// the opposite of "make my archive searchable", which is what this endpoint is
+// for. Without a selector the only reachable behaviour is all-or-newest.
+//
+// It is a correctness problem wherever a store mixes real conversations with
+// machine-generated sessions. The case that found this: a benchmark store held
+// 1627 sessions for one user, 19 of them conversations and 1608 evaluation runs
+// whose prompts quote the answer key — so an unfiltered backfill embedded those
+// answers into the index the evaluation then searched, and the arm would have
+// scored by retrieving its own gold answers.
+func TestBackfillTraces_AgentSelectsWhichChats(t *testing.T) {
+	s, st := traceServer(t, true)
+	seedRunWithTurnsAs(t, st, "acme", "corpus-scribe", "u1", "the database moved to Postgres 18")
+	seedRunWithTurnsAs(t, st, "acme", "grader", "u1", "Gold answer: Postgres 18")
+
+	_, rep := backfillReq(t, s, "tenant=acme&user_id=u1&agent=corpus-scribe&dry_run=false")
+	if rep.Agent != "corpus-scribe" {
+		t.Errorf("the report does not echo the filter it applied: %+v", rep)
+	}
+	if rep.Sessions != 1 {
+		t.Fatalf("scanned %d sessions, want only the 1 served by corpus-scribe — an "+
+			"unfiltered scan is what embeds the grader's answer key", rep.Sessions)
+	}
+	for _, k := range traceKeys(t, st, "acme", "u1") {
+		e, err := st.MemoryGet(context.Background(), "acme", store.MemoryScopeUser, "u1", k)
+		if err != nil {
+			t.Fatalf("MemoryGet %s: %v", k, err)
+		}
+		if strings.Contains(string(e.Value), "Gold answer") {
+			t.Errorf("a session the filter excluded was indexed anyway: %s", e.Value)
+		}
+	}
+}
+
+// TestBackfillTraces_NoAgentStillScansEverything pins that the selector is
+// OPTIONAL — omitting it must keep the existing whole-user sweep rather than
+// silently narrowing to nothing.
+func TestBackfillTraces_NoAgentStillScansEverything(t *testing.T) {
+	s, st := traceServer(t, true)
+	seedRunWithTurnsAs(t, st, "acme", "corpus-scribe", "u1", "one")
+	seedRunWithTurnsAs(t, st, "acme", "grader", "u1", "two")
+
+	_, rep := backfillReq(t, s, "tenant=acme&user_id=u1&dry_run=false")
+	if rep.Agent != "" {
+		t.Errorf("Agent = %q with no filter passed", rep.Agent)
+	}
+	if rep.Sessions != 2 {
+		t.Errorf("scanned %d sessions, want both when no agent is named", rep.Sessions)
+	}
+}

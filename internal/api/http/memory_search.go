@@ -25,28 +25,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
-// parseMemorySources maps the wire strings onto the typed selector. Unknown values are
-// dropped rather than rejected, matching the in-band tool: the enum is documented, and
-// rejecting an unrecognised value would make a future source name break an older
-// runtime.
-func parseMemorySources(in []string) []memrank.Source {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]memrank.Source, 0, len(in))
-	for _, v := range in {
-		switch memrank.Source(strings.ToLower(strings.TrimSpace(v))) {
-		case memrank.SourceFacts:
-			out = append(out, memrank.SourceFacts)
-		case memrank.SourceNotes:
-			out = append(out, memrank.SourceNotes)
-		case memrank.SourceDocuments:
-			out = append(out, memrank.SourceDocuments)
-		}
-	}
-	return out
-}
-
 // docChunkKeyPrefix is the Memory keyspace namespace the Document tool writes
 // chunk bodies under (builtin.chunkBodyKey). A hit on such a key is a document
 // chunk, not a plain memory entry — kept as a literal here to avoid importing
@@ -177,17 +155,23 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_when", werr.Error())
 		return
 	}
+	sources, serr := memrank.ParseSources(body.Sources)
+	if serr != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_sources", serr.Error())
+		return
+	}
 	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID,
 		memrank.SearchQuery{
 			QueryText: body.Query, Prefix: "", TopK: topK,
-			Sources: parseMemorySources(body.Sources),
+			Sources: sources,
 			When:    when,
 		}, rankCfg, dedupCfg)
 	if err != nil {
 		// The three typed refusals are operator-actionable (no embedder / no
 		// vector index / a model swap left the stored dimension stale), so surface
 		// them verbatim as a 400 rather than a blind 500.
-		if errors.Is(err, memrank.ErrSourcesNotExpressible) {
+		if errors.Is(err, memrank.ErrSourcesNotExpressible) ||
+			errors.Is(err, memrank.ErrTracesNotCombinable) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_sources", err.Error())
 			return
 		}
