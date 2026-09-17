@@ -301,6 +301,15 @@ type RunInput struct {
 	Tier     string
 	Effort   string
 
+	// MaxTokens / MaxIterations / UnboundedIterations / MaxConcurrentChildren are
+	// the per-run RESOURCE override (RFC DC P2). Trusted callers only, exactly as
+	// the routing fields above. MaxConcurrentChildren may only LOWER the agent's
+	// fan-out ceiling; the other three may raise.
+	MaxTokens             int
+	MaxIterations         int
+	UnboundedIterations   *bool
+	MaxConcurrentChildren int
+
 	OperatorKeyRestricted bool
 
 	// Isolated is the RFC BX P2b confinement bit for the NON-principal trigger

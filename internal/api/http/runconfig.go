@@ -35,6 +35,11 @@ type runConfigRecord struct {
 	// restore it instead of re-deriving from a definition that may have moved.
 	Routing *routingOverride `json:"routing,omitempty"`
 
+	// Resources is the run's own budget (RFC DC P2) — here for the same reason
+	// Routing is: it must survive a pause, and a resumed run must not quietly
+	// go back to the definition's limits.
+	Resources *resourceOverride `json:"resources,omitempty"`
+
 	// Hosts is the caller-authoritative host narrowing. Restoring it makes a
 	// resumed run no WIDER than the original: without it the run came back on
 	// the bare operator floor, the one case where losing an override weakened

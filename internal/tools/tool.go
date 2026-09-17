@@ -627,6 +627,33 @@ func RunIdentity(ctx context.Context) RunIdentityValue {
 	return v
 }
 
+// ctxKeyFanoutCap carries a RUN's own sub-agent fan-out cap.
+type ctxKeyFanoutCap struct{}
+
+// WithFanoutCap stamps the run's fan-out width onto ctx.
+//
+// The cap is normally resolved from the calling agent's DEFINITION, by name, at
+// spawn time. A per-run value has no path through a name lookup, so it travels
+// on ctx like every other per-run policy — and, like them, it reaches sub-agents
+// through the ctx chain.
+//
+// Inheriting it is correct BECAUSE the value can only ever have been lowered: a
+// descendant of a run narrowed to 1 is narrowed too, and no spawn anywhere in
+// the tree can widen what an ancestor gave up.
+func WithFanoutCap(ctx context.Context, n int) context.Context {
+	if n <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyFanoutCap{}, n)
+}
+
+// FanoutCap returns the run's own fan-out cap, or 0 when the run set none and
+// the caller should fall back to the definition.
+func FanoutCap(ctx context.Context) int {
+	n, _ := ctx.Value(ctxKeyFanoutCap{}).(int)
+	return n
+}
+
 // HasRunIdentity reports whether ctx belongs to a RUN at all.
 //
 // It exists because "the identity is empty" and "there is no identity" are

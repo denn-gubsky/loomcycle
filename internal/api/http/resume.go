@@ -113,6 +113,19 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 			log.Printf("resume: run %s had a routing override the definition no longer permits (%v); resolving from the definition", run.ID, oerr)
 		}
 	}
+	// RFC DC P2: and the run's own budget. A record the definition no longer
+	// permits — a fan-out ceiling lowered since the run started — falls back to
+	// the definition rather than failing the resume, matching the routing case
+	// above. Note the direction: a stale record can only ever have asked for
+	// LESS fan-out than the definition allows, so falling back is the wider of
+	// the two and is reported.
+	if runCfg.Resources != nil {
+		if bd, berr := applyResourceOverride(resumeDef, runCfg.Resources); berr == nil {
+			resumeDef = bd
+		} else {
+			log.Printf("resume: run %s had a resource override the definition no longer permits (%v); resolving from the definition", run.ID, berr)
+		}
+	}
 	providerID, model, effort, rerr := s.resolveAgentDef(ctx, resumeDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
 		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
@@ -396,6 +409,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// without it a resumed run's children inherited a different retention mode
 	// from the original's children.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
+	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
+	// as the original's were.
+	loopCtx = tools.WithFanoutCap(loopCtx, resumeDef.MaxConcurrentChildren)
 	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
@@ -444,10 +460,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		PriorMessages:       priorMessages,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           agentDef.MaxTokens,
+		MaxTokens:           resumeDef.MaxTokens,     // RFC DC P2: restored, not re-derived
 		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; restored, not re-derived
-		MaxIterations:       agentDef.MaxIterations,
-		UnboundedIterations: agentDef.UnboundedIterations,
+		MaxIterations:       resumeDef.MaxIterations,
+		UnboundedIterations: resumeDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		Effort:              effort,
