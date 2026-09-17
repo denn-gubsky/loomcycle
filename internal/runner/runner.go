@@ -310,6 +310,13 @@ type RunInput struct {
 	UnboundedIterations   *bool
 	MaxConcurrentChildren int
 
+	// The per-run TUNING override (RFC DC §4's tuning row). Trusted callers
+	// only, like the routing and resource fields above.
+	RetryAttempts         *int
+	MemoryInjectMaxTokens *int
+	MemoryIndexMaxBytes   *int
+	InjectToolGuide       *bool
+
 	OperatorKeyRestricted bool
 
 	// Isolated is the RFC BX P2b confinement bit for the NON-principal trigger

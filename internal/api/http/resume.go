@@ -105,28 +105,23 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// the definition and says so, rather than failing a run that is otherwise
 	// fine: refusing to resume is a heavier answer than resolving normally.
 	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
-	resumeDef := agentDef
-	if runCfg.Routing != nil {
-		if rd, oerr := s.applyRoutingOverride(ctx, agentDef, runCfg.Routing); oerr == nil {
-			resumeDef = rd
-		} else {
-			log.Printf("resume: run %s had a routing override the definition no longer permits (%v); resolving from the definition", run.ID, oerr)
-		}
+	// ONE effective definition, restored from the run's own record. A record the
+	// definition no longer permits — a model withdrawn, a fan-out ceiling
+	// lowered since the run started — falls back to the definition and says so
+	// rather than failing the resume: refusing is a heavier answer than
+	// resolving normally, and the run is otherwise fine.
+	//
+	// Note the direction on the fan-out ceiling: a stale record can only ever
+	// have asked for LESS width than the definition allows, so the fallback is
+	// the WIDER of the two, which is why it is reported.
+	if ed, oerr := s.effectiveDef(ctx, agentDef, runOverrides{
+		Routing: runCfg.Routing, Resources: runCfg.Resources, Tuning: runCfg.Tuning,
+	}); oerr == nil {
+		agentDef = ed
+	} else {
+		log.Printf("resume: run %s had an override the definition no longer permits (%v); resolving from the definition", run.ID, oerr)
 	}
-	// RFC DC P2: and the run's own budget. A record the definition no longer
-	// permits — a fan-out ceiling lowered since the run started — falls back to
-	// the definition rather than failing the resume, matching the routing case
-	// above. Note the direction: a stale record can only ever have asked for
-	// LESS fan-out than the definition allows, so falling back is the wider of
-	// the two and is reported.
-	if runCfg.Resources != nil {
-		if bd, berr := applyResourceOverride(resumeDef, runCfg.Resources); berr == nil {
-			resumeDef = bd
-		} else {
-			log.Printf("resume: run %s had a resource override the definition no longer permits (%v); resolving from the definition", run.ID, berr)
-		}
-	}
-	providerID, model, effort, rerr := s.resolveAgentDef(ctx, resumeDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	providerID, model, effort, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
 		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
@@ -411,7 +406,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
 	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
 	// as the original's were.
-	loopCtx = tools.WithFanoutCap(loopCtx, resumeDef.MaxConcurrentChildren)
+	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
 	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
@@ -460,10 +455,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		PriorMessages:       priorMessages,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           resumeDef.MaxTokens,     // RFC DC P2: restored, not re-derived
+		MaxTokens:           agentDef.MaxTokens,      // RFC DC P2: restored, not re-derived
 		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; restored, not re-derived
-		MaxIterations:       resumeDef.MaxIterations,
-		UnboundedIterations: resumeDef.UnboundedIterations,
+		MaxIterations:       agentDef.MaxIterations,
+		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		Effort:              effort,
