@@ -1892,6 +1892,26 @@ def _build_run_request(
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
     interactive: bool = False,
+    # Per-run overrides. Routing selects WITHIN what the agent's definition
+    # declares; the budget knobs are raisable except max_concurrent_children,
+    # which may only be LOWERED. These are plain proto3 fields, so "" / 0 IS
+    # unset and needs no special handling.
+    model: str = "",
+    provider: str = "",
+    tier: str = "",
+    effort: str = "",
+    max_tokens: int = 0,
+    max_iterations: int = 0,
+    max_concurrent_children: int = 0,
+    # The tuning row is proto3 `optional` because each has a meaningful zero —
+    # 0 retries, inject nothing, omit the guide. None means "the caller said
+    # nothing" and must reach the wire as an UNSET field, not as that zero,
+    # which is what _optional_overrides is for.
+    unbounded_iterations: Optional[bool] = None,
+    retry_attempts: Optional[int] = None,
+    memory_inject_max_tokens: Optional[int] = None,
+    memory_index_max_bytes: Optional[int] = None,
+    inject_tool_guide: Optional[bool] = None,
 ) -> "pb.RunRequest":
     """Construct a pb.RunRequest from the run params. Shared by
     run_streaming + the batch builder so the field-mapping lives in one
@@ -1910,6 +1930,20 @@ def _build_run_request(
         user_bearer=user_bearer,
         max_context_tokens=max_context_tokens,
         interactive=interactive,
+        model=model,
+        provider=provider,
+        tier=tier,
+        effort=effort,
+        max_tokens=max_tokens,
+        max_iterations=max_iterations,
+        max_concurrent_children=max_concurrent_children,
+        **_optional_overrides(
+            unbounded_iterations=unbounded_iterations,
+            retry_attempts=retry_attempts,
+            memory_inject_max_tokens=memory_inject_max_tokens,
+            memory_index_max_bytes=memory_index_max_bytes,
+            inject_tool_guide=inject_tool_guide,
+        ),
     )
     if allowed_hosts is not None:
         req.allowed_hosts.list.extend(allowed_hosts)
@@ -1922,8 +1956,9 @@ def _build_run_request(
 
 def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
     """Build a pb.RunRequest from a spawn dict (the per-child shape of
-    spawn_run_batch). Keys mirror run_streaming's kwargs; unknown keys
-    are ignored."""
+    spawn_run_batch). Keys mirror run_streaming's kwargs, per-run overrides
+    included, so one batch can fan the same agent out across different models
+    or budgets; unknown keys are ignored."""
     return _build_run_request(
         agent=spawn.get("agent", ""),
         segments=spawn.get("segments", ()),
@@ -1939,6 +1974,20 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         sampling=spawn.get("sampling"),
         compaction=spawn.get("compaction"),
         max_context_tokens=spawn.get("max_context_tokens", 0),
+        model=spawn.get("model", ""),
+        provider=spawn.get("provider", ""),
+        tier=spawn.get("tier", ""),
+        effort=spawn.get("effort", ""),
+        max_tokens=spawn.get("max_tokens", 0),
+        max_iterations=spawn.get("max_iterations", 0),
+        max_concurrent_children=spawn.get("max_concurrent_children", 0),
+        # .get with no default returns None for an absent key, which is exactly
+        # what these mean: unset, not zero. Do NOT give them a 0/False default.
+        unbounded_iterations=spawn.get("unbounded_iterations"),
+        retry_attempts=spawn.get("retry_attempts"),
+        memory_inject_max_tokens=spawn.get("memory_inject_max_tokens"),
+        memory_index_max_bytes=spawn.get("memory_index_max_bytes"),
+        inject_tool_guide=spawn.get("inject_tool_guide"),
     )
 
 
