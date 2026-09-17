@@ -407,6 +407,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
 	// as the original's were.
 	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
+	// RFC DC P5: offer this run's overrides to its children. Only a child of the
+	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
+	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
+		Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent,
+	})
+
 	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)

@@ -2796,6 +2796,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// calling agent's NAME at spawn time, which a per-run value cannot reach.
 	// Inheriting it down the tree is safe because it can only have been LOWERED.
 	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
+	// RFC DC P5: offer this run's overrides to its children. Only a child of the
+	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
+	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
+		Record: runCfg.marshal(),
+		// A top-level run pins no def_id (RunInput does not carry one), so
+		// identity here is the agent NAME. See SameDefinitionAs.
+		DefID: "", AgentName: effectiveAgentName,
+	})
+
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
 	// same way — a sub-agent inherits the parent's effective mode; its def fills
 	// gaps the parent left unset.
@@ -4518,6 +4527,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
 	// RFC DC P2: the run's own fan-out width (see RunOnce).
 	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
+	// RFC DC P5: offer this run's overrides to its children. Only a child of the
+	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
+	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
+		Record: runCfg.marshal(),
+		DefID:  "", AgentName: req.Agent,
+	})
+
 	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
 	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext) // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
@@ -6321,6 +6337,15 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
 		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
 	}
+
+	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is
+	// the SAME DEFINITION. Across definitions the parent's model may not even be
+	// one this agent is allowed — and a cheap summariser child silently
+	// inheriting a frontier model is a cost decision nobody made.
+	//
+	// Identity is the substrate def_id, falling back to the agent NAME for
+	// static (yaml) agents, which have no def row.
+	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
 
 	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
 	// session row's tenant_id must match the run's (subIdentity.TenantID below) —

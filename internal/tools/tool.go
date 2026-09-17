@@ -654,6 +654,86 @@ func FanoutCap(ctx context.Context) int {
 	return n
 }
 
+// RunOverridesValue carries a run's own override record DOWN the spawn tree,
+// together with the identity of the definition it was authored against.
+//
+// The identity travels with the record because the record alone is not enough
+// to know whether a child may use it: an override names a model valid for ONE
+// definition's declared set, and a different agent has a different set. See
+// WithRunOverrides.
+type RunOverridesValue struct {
+	// Record is the parent's configuration record, opaque here — internal/tools
+	// cannot name the shape without importing the HTTP layer.
+	Record []byte
+
+	// DefID is the substrate def_id the parent run was pinned to. Empty for a
+	// STATIC (yaml) agent, which has no def row.
+	DefID string
+
+	// AgentName is the parent's agent name, and the identity fallback for a
+	// static agent. Named explicitly rather than left implicit: "same
+	// definition" meaning "same row" for one class of agent and "same name" for
+	// another is the kind of asymmetry that surfaces as a bug report.
+	AgentName string
+}
+
+// SameDefinitionAs reports whether a child spawning as (defID, name) is the
+// same definition this override was authored against.
+//
+// A def_id match on BOTH sides is exact and wins. Otherwise it falls back to
+// the agent NAME.
+//
+// The fallback is not the edge case RFC DC assumed. D9 says identity is
+// runs.agent_def_id and is therefore "exact rather than heuristic", naming
+// static yaml agents as the one exception — but a TOP-LEVEL run carries no
+// def_id at all (RunInput does not pin one; see the comment at the
+// emitSystemPromptEvent call site). So the commonest shape by far — a top-level
+// parent spawning a child of the same agent — has a def_id on the child and
+// none on the parent, and an id-only comparison would refuse to inherit in
+// exactly the case the feature is for.
+//
+// Comparing names there is sound because RE-VALIDATION is the real guard: a
+// name that now resolves to a promoted definition still has its override
+// checked against that definition's declared set at spawn, and is dropped if it
+// no longer fits. Identity decides whether to OFFER the override; validation
+// decides whether it may be used.
+func (v RunOverridesValue) SameDefinitionAs(defID, name string) bool {
+	if v.DefID != "" && defID != "" {
+		return v.DefID == defID
+	}
+	return v.AgentName != "" && v.AgentName == name
+}
+
+// WithRunOverrides stamps the run's override record onto ctx so its children
+// can inherit it — but only children of the SAME definition (RFC DC D9).
+//
+// Why not blanket inheritance: an override names a model or provider valid for
+// the definition it was authored against, because that definition's declared
+// set bounds what it may name. A different agent has a different set, so
+// inheriting across definitions can produce a value that agent may not use — a
+// refusal the caller never asked for and cannot easily explain. It is also
+// surprising in the other direction: a cheap summariser child silently
+// inheriting a frontier model is a cost decision nobody made.
+//
+// This keeps the spawn-tree behaviour coherent with sampling / compaction /
+// context, which already flow down: they flow WITHIN a definition and stop at
+// its boundary.
+func WithRunOverrides(ctx context.Context, v RunOverridesValue) context.Context {
+	if len(v.Record) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyRunOverrides{}, v)
+}
+
+// RunOverrides returns the parent's override record, or the zero value when
+// there is none to inherit.
+func RunOverrides(ctx context.Context) RunOverridesValue {
+	v, _ := ctx.Value(ctxKeyRunOverrides{}).(RunOverridesValue)
+	return v
+}
+
+type ctxKeyRunOverrides struct{}
+
 // HasRunIdentity reports whether ctx belongs to a RUN at all.
 //
 // It exists because "the identity is empty" and "there is no identity" are
