@@ -40,6 +40,10 @@ type runConfigRecord struct {
 	// go back to the definition's limits.
 	Resources *resourceOverride `json:"resources,omitempty"`
 
+	// Tuning is the run's own shaping (RFC DC §4's tuning row), here for the
+	// same reason its siblings are: it must survive a pause.
+	Tuning *tuningOverride `json:"tuning,omitempty"`
+
 	// Hosts is the caller-authoritative host narrowing. Restoring it makes a
 	// resumed run no WIDER than the original: without it the run came back on
 	// the bare operator floor, the one case where losing an override weakened

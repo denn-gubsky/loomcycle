@@ -2480,17 +2480,21 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxTokens: in.MaxTokens, MaxIterations: in.MaxIterations,
 		UnboundedIterations: in.UnboundedIterations, MaxConcurrentChildren: in.MaxConcurrentChildren,
 	}
-	routedDef, rerr := s.applyRoutingOverride(ctx, agentDef, runRouting)
+	runTuning := &tuningOverride{
+		RetryAttempts: in.RetryAttempts, MemoryInjectMaxTokens: in.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes: in.MemoryIndexMaxBytes, InjectToolGuide: in.InjectToolGuide,
+	}
+	// ONE effective definition from here on. A second name beside agentDef has
+	// already cost twice: it let this function build its loop options from the
+	// un-overridden one unnoticed, AND made the fail-before probe for that gap
+	// pass, because both names held the same value.
+	agentDef, rerr := s.effectiveDef(ctx, agentDef, runOverrides{
+		Routing: runRouting, Resources: runResources, Tuning: runTuning,
+	})
 	if rerr != nil {
 		return rerr
 	}
-	if routedDef, rerr = applyResourceOverride(routedDef, runResources); rerr != nil {
-		return rerr
-	}
-	// The loop reads its budget from this copy, not from agentDef.
-	agentDef.MaxTokens, agentDef.MaxIterations = routedDef.MaxTokens, routedDef.MaxIterations
-	agentDef.UnboundedIterations = routedDef.UnboundedIterations
-	providerID, model, effort, err := s.resolveAgentDef(ctx, routedDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
+	providerID, model, effort, err := s.resolveAgentDef(ctx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	if err != nil {
 		return err // already wrapped with runner.Err* sentinel
 	}
@@ -2622,6 +2626,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RunTimeoutSeconds: pickRunTimeout(in.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
 		Resources:         persistedResources(runResources),
+		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -2790,7 +2795,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC DC P2: the run's own fan-out width. It is otherwise resolved from the
 	// calling agent's NAME at spawn time, which a per-run value cannot reach.
 	// Inheriting it down the tree is safe because it can only have been LOWERED.
-	loopCtx = tools.WithFanoutCap(loopCtx, routedDef.MaxConcurrentChildren)
+	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
 	// RFC CR: the resolved layered-context policy flows down the spawn tree the
 	// same way — a sub-agent inherits the parent's effective mode; its def fills
 	// gaps the parent left unset.
@@ -2846,10 +2851,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PauseGate:           gate,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           routedDef.MaxTokens,     // RFC DC P2: the run's budget, raisable
+		MaxTokens:           agentDef.MaxTokens,      // RFC DC: the run's own budget
 		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:       routedDef.MaxIterations, // 0 → loop default (16)
-		UnboundedIterations: routedDef.UnboundedIterations,
+		MaxIterations:       agentDef.MaxIterations,  // 0 → loop default (16)
+		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		Effort:              effort,
@@ -3904,6 +3909,20 @@ type runRequest struct {
 	MaxIterations         int   `json:"max_iterations,omitempty"`
 	UnboundedIterations   *bool `json:"unbounded_iterations,omitempty"`
 	MaxConcurrentChildren int   `json:"max_concurrent_children,omitempty"`
+
+	// The per-run TUNING override (RFC DC §4's tuning row): how hard the
+	// runtime retries a stumbling provider, how much memory it injects, and
+	// whether it injects the generated tool guide. None of these changes what
+	// the agent may REACH, which is why they are free in either direction.
+	//
+	// Pointers because each has a meaningful zero — 0 retries, inject nothing,
+	// omit the guide — so a plain value could raise them but never turn them
+	// off, and turning one off for a single run is the commonest reason to
+	// reach for these.
+	RetryAttempts         *int  `json:"retry_attempts,omitempty"`
+	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
+	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
+	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -4744,6 +4763,20 @@ type messagesRequest struct {
 	MaxIterations         int   `json:"max_iterations,omitempty"`
 	UnboundedIterations   *bool `json:"unbounded_iterations,omitempty"`
 	MaxConcurrentChildren int   `json:"max_concurrent_children,omitempty"`
+
+	// The per-run TUNING override (RFC DC §4's tuning row): how hard the
+	// runtime retries a stumbling provider, how much memory it injects, and
+	// whether it injects the generated tool guide. None of these changes what
+	// the agent may REACH, which is why they are free in either direction.
+	//
+	// Pointers because each has a meaningful zero — 0 retries, inject nothing,
+	// omit the guide — so a plain value could raise them but never turn them
+	// off, and turning one off for a single run is the commonest reason to
+	// reach for these.
+	RetryAttempts         *int  `json:"retry_attempts,omitempty"`
+	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
+	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
+	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
