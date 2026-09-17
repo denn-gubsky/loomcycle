@@ -17,9 +17,15 @@ package builtin
 // vector stack at all.
 //
 // NO GRAPH DATABASE. Expansion is a bounded breadth-first walk in SQL over
-// chunk_edges, one round trip per hop, capped at two hops. Two is not arbitrary:
-// each hop multiplies the frontier by the average degree, and past two the result
-// stops being "related to what you asked" and becomes "most of the graph".
+// chunk_edges, one round trip per hop, bounded on three axes: how DEEP it goes
+// (graphMaxHops), how many nodes each hop may expand FROM (graphFrontierCap), and
+// how many rows one hop may return (graphHopRowCap). The three are separate
+// because bounding only the first two still leaves the row count as the product
+// of frontier size and degree — see graphHopRowCap.
+//
+// What bounds DRIFT is none of those, though: it is the content budget, which caps
+// what actually reaches the reader. A hop count caps the wrong thing, since one hop
+// into a hub is worse than six along a chain.
 
 import (
 	"context"
@@ -51,10 +57,30 @@ const (
 	graphDefaultHops  = 1
 	graphDefaultLimit = 50
 	graphMaxLimit     = 200
-	// graphFrontierCap bounds ONE hop's frontier. Without it a single
-	// heavily-connected entity turns hop 2 into a scan of the scope's edges, and
-	// the caller sees a slow recall rather than a truncated one.
+	// graphFrontierCap bounds how many nodes ONE hop expands FROM. Without it a
+	// single heavily-connected entity turns hop 2 into a scan of the scope's edges,
+	// and the caller sees a slow recall rather than a truncated one.
 	graphFrontierCap = 500
+	// graphHopRowCap bounds how many rows ONE hop may RETURN, which the frontier cap
+	// does not: it bounds nodes, and the row count is nodes × degree.
+	//
+	// Degree is not small in practice. On a 304-chunk benchmark store the maximum
+	// in-degree was 162 — one hub entity with 162 facts pointing at it — so a single
+	// frontier node can return 162 rows and a full frontier can return five figures.
+	// Unbounded, those rows are materialised in memory AND accumulated into `order`,
+	// which graphIdentityNodes then turns into one placeholder per id; past the
+	// driver's parameter ceiling that query fails, and it fails SILENTLY (it returns
+	// an empty set by design), so the assertion-first budget ordering reverts to the
+	// behaviour it was added to fix — on exactly the dense graphs where it matters.
+	//
+	// Generous rather than tight: the content budget is what decides what reaches
+	// the reader, so this only has to stop the pathological case.
+	graphHopRowCap = 2000
+	// graphIDBatch bounds one IN(...) list. Keeps every id-set query under the
+	// driver ceilings (SQLite 32766 params, Postgres 65535) regardless of how the
+	// caller got there, so a future change to the caps above cannot reintroduce the
+	// silent failure described on graphHopRowCap.
+	graphIDBatch = 500
 	// graphSeedTopK is how many ranked facts semantic seeding considers. The walk
 	// starts from the best few and the rest are held for the backfill below.
 	graphSeedTopK = 50
@@ -140,9 +166,12 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 			frontier = frontier[:graphFrontierCap]
 			truncated = true
 		}
-		next, nerr := d.graphNeighbours(ctx, key, frontier, hop, in)
+		next, hopFull, nerr := d.graphNeighbours(ctx, key, frontier, hop, in, graphHopRowCap)
 		if nerr != nil {
 			return errResult("graph_recall: hop " + fmt.Sprint(hop) + ": " + nerr.Error()), nil
+		}
+		if hopFull {
+			truncated = true
 		}
 		frontier = frontier[:0]
 		for _, c := range next {
@@ -202,8 +231,21 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		}
 		passes = [][]string{facts, entities}
 	}
+	// ⚠️ `limit` BOUNDS BOTH MODES. It used to sit in the `else` of the budget test,
+	// so a caller that passed both got the row cap silently dropped — accepted,
+	// ignored, and no signal that it had not applied. That is the same shape as the
+	// `sources` selector that decoded and was discarded, and as `limit` vs `top_k`
+	// on the search path before it; a parameter a caller can set and cannot observe
+	// is worse than one that is refused.
+	//
+	// The two bounds compose rather than replace: budget caps what reaches the
+	// reader by CONTENT, limit caps it by ROWS, and whichever binds first wins.
 	for _, pass := range passes {
 		for _, id := range pass {
+			if len(out) >= limit {
+				truncated = true
+				break
+			}
 			c := seen[id]
 			if budget > 0 {
 				if used+len(c.Title) > budget {
@@ -211,19 +253,25 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 					continue
 				}
 				used += len(c.Title)
-			} else if len(out) >= limit {
-				truncated = true
-				break
 			}
 			out = append(out, c)
 		}
 	}
 	if budget > 0 && seedInfo.How == "semantic" {
+		pending := make([]string, 0, len(seedInfo.Ranked))
 		for _, id := range seedInfo.Ranked {
-			if _, dup := seen[id]; dup {
-				continue
+			if _, dup := seen[id]; !dup {
+				pending = append(pending, id)
 			}
-			row, ok := d.graphChunkByID(ctx, key, id)
+		}
+		rows := d.graphChunksByID(ctx, key, pending)
+		// Walked in RANK order, not the order the batch read returned them.
+		for _, id := range pending {
+			if len(out) >= limit {
+				truncated = true
+				break
+			}
+			row, ok := rows[id]
 			if !ok {
 				continue
 			}
@@ -262,42 +310,85 @@ func (d *Document) graphIdentityNodes(ctx context.Context, key sqlmem.ScopeKey, 
 	if len(ids) == 0 {
 		return out
 	}
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	res, err := d.query(ctx, key,
-		`SELECT DISTINCT to_id FROM chunk_edges WHERE kind = 'about' AND to_id IN (`+
-			placeholders(len(ids))+`)`, args...)
-	if err != nil {
-		return out
-	}
-	for _, row := range res.Rows {
-		if len(row) > 0 {
-			if id, ok := row[0].(string); ok && id != "" {
-				out[id] = true
+	// BATCHED. A walk's `order` is unbounded by node count, and one placeholder per
+	// id runs into the driver ceiling (SQLite 32766, Postgres 65535) on a dense
+	// graph. The failure is silent — the error path below returns an empty set on
+	// purpose — so an over-long list would quietly disable assertion-first ordering
+	// instead of reporting anything.
+	for _, batch := range batchIDs(ids, graphIDBatch) {
+		args := make([]any, 0, len(batch))
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		res, err := d.query(ctx, key,
+			`SELECT DISTINCT to_id FROM chunk_edges WHERE kind = 'about' AND to_id IN (`+
+				placeholders(len(batch))+`)`, args...)
+		if err != nil {
+			return out
+		}
+		for _, row := range res.Rows {
+			if len(row) > 0 {
+				if id, ok := row[0].(string); ok && id != "" {
+					out[id] = true
+				}
 			}
 		}
 	}
 	return out
 }
 
-// graphChunkByID reads one chunk for the backfill. Separate from the seed query
-// because a backfilled row is NOT a seed: it was reached by rank, never by an
-// edge, and conflating the two would let a caller read an association as a path.
-func (d *Document) graphChunkByID(ctx context.Context, key sqlmem.ScopeKey, id string) (graphChunk, bool) {
-	res, err := d.query(ctx, key,
-		`SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
-		   FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
-		  WHERE c.id = ? LIMIT 1`, id)
-	if err != nil || len(res.Rows) == 0 {
-		return graphChunk{}, false
+// batchIDs splits ids into chunks of at most size.
+func batchIDs(ids []string, size int) [][]string {
+	if size <= 0 || len(ids) <= size {
+		return [][]string{ids}
 	}
-	rows := scanGraphRows(res.Rows, 0, "", "")
-	if len(rows) == 0 {
-		return graphChunk{}, false
+	out := make([][]string, 0, (len(ids)+size-1)/size)
+	for start := 0; start < len(ids); start += size {
+		end := start + size
+		if end > len(ids) {
+			end = len(ids)
+		}
+		out = append(out, ids[start:end])
 	}
-	return rows[0], true
+	return out
+}
+
+// graphChunksByID reads the backfill candidates in ONE round trip per batch, keyed
+// by id so the caller can walk them in RANK order rather than the order SQL
+// happened to return.
+//
+// Separate from the seed query because a backfilled row is NOT a seed: it was
+// reached by rank, never by an edge, and conflating the two would let a caller read
+// an association as a path.
+//
+// It reads the whole candidate set up front rather than one row at a time. The
+// per-id version issued one query per ranked id — up to graphSeedTopK of them — and
+// issued them BEFORE testing the budget, so a walk whose budget was already full
+// still paid for every remaining round trip and threw each result away.
+func (d *Document) graphChunksByID(ctx context.Context, key sqlmem.ScopeKey, ids []string) map[string]graphChunk {
+	out := make(map[string]graphChunk, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	for _, batch := range batchIDs(ids, graphIDBatch) {
+		args := make([]any, 0, len(batch))
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		res, err := d.query(ctx, key,
+			`SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
+			   FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+			  WHERE c.id IN (`+placeholders(len(batch))+`)`, args...)
+		if err != nil {
+			return out
+		}
+		for _, row := range scanGraphRows(res.Rows, 0, "", "") {
+			if row.ID != "" {
+				out[row.ID] = row
+			}
+		}
+	}
+	return out
 }
 
 // graphSemanticSeeds ranks fact bodies against the query by VECTOR similarity and
@@ -335,14 +426,6 @@ func (d *Document) graphSemanticSeeds(ctx context.Context, key sqlmem.ScopeKey, 
 		}
 	}
 	return out
-}
-
-// graphSeeds resolves the starting set: explicit ids when given, else a title
-// match. Both go through the same temporal filter as the expansion, so a
-// superseded fact cannot enter as a seed while being excluded as a neighbour.
-func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docInput, limit int) ([]graphChunk, error) {
-	ids, _, err := d.graphSeedIDs(ctx, key, in, limit)
-	return ids, err
 }
 
 // graphSeedIDs is graphSeeds plus the two things the caller needs to report and
@@ -514,7 +597,15 @@ func hasWordEdges(q string) bool {
 // points at it as to the ones it points at, and a forward-only walk would answer
 // half the question. The reverse leg is what PR 1's chunk_edges(to_id, kind) index
 // exists for.
-func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, frontier []string, hop int, in docInput) ([]graphChunk, error) {
+// Returns the rows, and whether the hop hit rowCap — a truncated hop is reported
+// rather than silently returning a smaller graph than the one that exists.
+//
+// rowCap is a PARAMETER rather than a reach for graphHopRowCap, so the bound is
+// visible at the call site and a test can exercise it without building a fixture
+// the size of the production cap. That is not a hypothetical: the first version of
+// this test needed 2001 chunks and 2001 edges and cost 95s under -race, on a
+// package that already runs close to its CI timeout.
+func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, frontier []string, hop int, in docInput, rowCap int) ([]graphChunk, bool, error) {
 	marks := placeholders(len(frontier))
 	temporal, targs := graphTemporalClause(in)
 	extra := ""
@@ -555,10 +646,18 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.from_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
-	          WHERE e.to_id IN (` + marks + `)` + extra
+	          WHERE e.to_id IN (` + marks + `)` + extra + `
+	         LIMIT ?`
+	// One over the cap, so the caller can tell "exactly full" from "there was more"
+	// without a second query. Trimmed back to the cap below.
+	args = append(args, rowCap+1)
 	res, err := d.query(ctx, key, stmt, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	over := len(res.Rows) > rowCap
+	if over {
+		res.Rows = res.Rows[:rowCap]
 	}
 	out := make([]graphChunk, 0, len(res.Rows))
 	for _, r := range res.Rows {
@@ -572,7 +671,7 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 		}
 		out = append(out, c)
 	}
-	return out, nil
+	return out, over, nil
 }
 
 // graphTemporalClause builds the time filter.
