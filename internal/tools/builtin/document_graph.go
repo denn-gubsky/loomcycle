@@ -135,6 +135,14 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 	if len(in.SeedIDs) == 0 && strings.TrimSpace(in.Query) == "" {
 		return errResult("graph_recall: give either seed_ids (chunks to start from) or query (match starting chunks by title)"), nil
 	}
+	// REFUSED, not truncated. Seeds go into one IN(...), so an unbounded list also
+	// walks into the driver's placeholder ceiling; and silently starting from a
+	// subset of the chunks a caller named is the failure this op just fixed one
+	// layer down. Naming the number back is what lets a caller split the walk.
+	if len(in.SeedIDs) > graphFrontierCap {
+		return errResult(fmt.Sprintf("graph_recall: %d seed_ids is more than the %d a single walk starts from — "+
+			"split them across calls rather than have some silently dropped", len(in.SeedIDs), graphFrontierCap)), nil
+	}
 
 	seeds, seedInfo, err := d.graphSeedIDs(ctx, key, in, limit)
 	if err != nil {
@@ -520,6 +528,14 @@ func (d *Document) graphSeedIDs(ctx context.Context, key sqlmem.ScopeKey, in doc
 		if fetch = limit * seedPrefilterFactor; fetch > graphFrontierCap {
 			fetch = graphFrontierCap
 		}
+	} else {
+		// EXPLICIT IDS ARE FETCHED IN FULL. `limit` used to bound this query too, so
+		// handing in 60 ids with the default limit of 50 silently walked from 50 of
+		// them — accepted, dropped, and indistinguishable from "the graph holds
+		// nothing else". Naming a chunk is an assertion about where to START; what
+		// `limit` bounds is what comes BACK, and the budget/limit pass already applies
+		// it to the result.
+		fetch = len(in.SeedIDs)
 	}
 	stmt := `SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
 	           FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
