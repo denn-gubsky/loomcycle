@@ -141,6 +141,12 @@ func TestMigrateFactObservation_ReachesAnExistingScope(t *testing.T) {
 		t.Fatal("rewind did not take — the test would pass against the unmigrated code")
 	}
 
+	// ensureSchema is memoised per process, so re-running it on a scope this process
+	// already provisioned is a no-op by design. What this test is really about is a
+	// NEW PROCESS meeting an OLD scope — which is exactly a dropped memo — so drop it
+	// and re-run. The guard is unchanged: does the migration reach a scope that
+	// already holds data?
+	d.SqlMem.ForgetEnsured(key)
 	if err := d.ensureSchema(ctx, key); err != nil {
 		t.Fatalf("ensureSchema: %v", err)
 	}
