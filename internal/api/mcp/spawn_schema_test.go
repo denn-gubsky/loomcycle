@@ -22,12 +22,21 @@ import (
 // twelve per-run overrides satisfied it while spawn_runs carried none of them —
 // and neither tool had ever advertised `sampling` or `metadata`.
 func TestSpawnSchemas_AdvertiseEveryFieldTheyAccept(t *testing.T) {
-	accepted := jsonFieldNames(t, reflect.TypeOf(connector.SpawnRunRequest{}))
-	// A floor, so a renamed struct or a broken tag parse fails loudly instead of
-	// passing vacuously against an empty expectation.
-	if len(accepted) < 25 {
-		t.Fatalf("only derived %d json fields from connector.SpawnRunRequest (%v) — the shape "+
-			"probably changed, and a vacuous pass here is how the schema drifts", len(accepted), accepted)
+	typ := reflect.TypeOf(connector.SpawnRunRequest{})
+	accepted := jsonFieldNames(t, typ)
+	// EXACT, not a floor. A floor of 25 against a real count of 30 let five
+	// fields quietly lose their tags — to a bad merge, or a `json:"-"` added by
+	// mistake — and drop out of the expectation without tripping anything. The
+	// count is the thing a stale expectation shows up in, so pin it: a field
+	// added to the shape fails HERE, next to the sentence explaining why, rather
+	// than silently going unchecked.
+	if want := typ.NumField(); len(accepted) != want {
+		t.Fatalf("derived %d wire names from connector.SpawnRunRequest's %d fields (%v).\n\n"+
+			"Every field on this struct is part of the accepted wire shape, so an untagged one "+
+			"is still populated by encoding/json from its GO name — accepted by the handler and "+
+			"absent from the schema, which is exactly the failure this test exists to prevent. "+
+			"Give it a json tag, or `json:\"-\"` if it genuinely is not wire state.",
+			len(accepted), want, accepted)
 	}
 
 	for _, tc := range []struct {
@@ -83,7 +92,12 @@ func TestSpawnSchemas_EveryToolSchemaIsValidJSON(t *testing.T) {
 }
 
 // jsonFieldNames returns the wire names of a struct's json-tagged fields,
-// skipping the ones marked `json:"-"` (not part of the wire shape).
+// skipping the ones marked `json:"-"` (genuinely not wire state).
+//
+// A field with NO tag at all is also skipped here, but that is not a safe
+// omission: encoding/json still populates it from its Go name, so the handler
+// would accept a field this list never requires the schema to advertise. The
+// caller's exact-count assertion is what closes that — do not relax it.
 func jsonFieldNames(t *testing.T, typ reflect.Type) []string {
 	t.Helper()
 	var names []string
