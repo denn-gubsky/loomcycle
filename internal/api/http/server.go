@@ -4112,14 +4112,22 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		MaxTokens: req.MaxTokens, MaxIterations: req.MaxIterations,
 		UnboundedIterations: req.UnboundedIterations, MaxConcurrentChildren: req.MaxConcurrentChildren,
 	}
-	providerID, model, effort, err := s.resolveAgent(r.Context(), req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, runRouting)
-	if err != nil {
-		writeResolveError(w, err)
+	runTuning := &tuningOverride{
+		RetryAttempts: req.RetryAttempts, MemoryInjectMaxTokens: req.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes: req.MemoryIndexMaxBytes, InjectToolGuide: req.InjectToolGuide,
+	}
+	// ONE effective definition, on a COPY — the stored definition and its
+	// content hash are untouched. Resolving from the def this handler already
+	// looked up also drops a second lookup: resolveAgent re-fetched the same
+	// row to apply the same routing.
+	agentDef, oerr := s.effectiveDef(r.Context(), agentDef, runOverrides{
+		Routing: runRouting, Resources: runResources, Tuning: runTuning,
+	})
+	if oerr != nil {
+		writeResolveError(w, oerr)
 		return
 	}
-	// RFC DC P2: the run's budget, on a COPY — the stored definition and its
-	// content hash are untouched.
-	budgetedDef, err := applyResourceOverride(agentDef, runResources)
+	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -4279,6 +4287,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds: pickRunTimeout(req.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
 		Resources:         persistedResources(runResources),
+		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -4506,7 +4515,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
 	// RFC DC P2: the run's own fan-out width (see RunOnce).
-	loopCtx = tools.WithFanoutCap(loopCtx, budgetedDef.MaxConcurrentChildren)
+	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
 	mergedContext := runCfg.Context                           // per-run > per-agent (RFC CR); resolved once, above
 	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext) // RFC CR
 	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
@@ -4554,10 +4563,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Segments:            injectMetadataSegments(req.Segments, provider.Capabilities().MetadataViaInput, req.Metadata, nil),
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           budgetedDef.MaxTokens,     // 0 → driver default
-		MaxContextTokens:    runCfg.MaxContextTokens,   // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:       budgetedDef.MaxIterations, // 0 → loop default (16)
-		UnboundedIterations: budgetedDef.UnboundedIterations,
+		MaxTokens:           agentDef.MaxTokens,      // 0 → driver default
+		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:       agentDef.MaxIterations,  // 0 → loop default (16)
+		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		Effort:              effort,
@@ -4887,12 +4896,18 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		MaxTokens: body.MaxTokens, MaxIterations: body.MaxIterations,
 		UnboundedIterations: body.UnboundedIterations, MaxConcurrentChildren: body.MaxConcurrentChildren,
 	}
-	budgetedDef, berr := applyResourceOverride(agentDef, runResources)
-	if berr != nil {
-		writeResolveError(w, berr)
+	runTuning := &tuningOverride{
+		RetryAttempts: body.RetryAttempts, MemoryInjectMaxTokens: body.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes: body.MemoryIndexMaxBytes, InjectToolGuide: body.InjectToolGuide,
+	}
+	agentDef, oerr := s.effectiveDef(r.Context(), agentDef, runOverrides{
+		Routing: runRouting, Resources: runResources, Tuning: runTuning,
+	})
+	if oerr != nil {
+		writeResolveError(w, oerr)
 		return
 	}
-	providerID, model, effort, err := s.resolveAgent(r.Context(), sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, runRouting)
+	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
 		return
@@ -5016,6 +5031,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds: pickRunTimeout(body.RunTimeoutSeconds, agentDef.RunTimeoutSeconds),
 		Routing:           persistedRouting(runRouting),
 		Resources:         persistedResources(runResources),
+		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
 	}
 
@@ -5223,10 +5239,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		PauseGate:              gate,
 		OnEvent:                emit,
 		OnHeartbeat:            heartbeat,
-		MaxTokens:              budgetedDef.MaxTokens,     // 0 → driver default
-		MaxContextTokens:       runCfg.MaxContextTokens,   // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:          budgetedDef.MaxIterations, // 0 → loop default (16)
-		UnboundedIterations:    budgetedDef.UnboundedIterations,
+		MaxTokens:              agentDef.MaxTokens,      // 0 → driver default
+		MaxContextTokens:       runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:          agentDef.MaxIterations,  // 0 → loop default (16)
+		UnboundedIterations:    agentDef.UnboundedIterations,
 		SteerQueue:             steerQ,
 		OnSteer:                onSteer,
 		Effort:                 effort,
