@@ -117,16 +117,34 @@ func TestConfidence_WidensAPreExistingRealColumn(t *testing.T) {
 		t.Fatalf("fixture: column type = %q, want real", got)
 	}
 
-	// Any Document op re-runs ensureSchema, which is where the widening lives.
-	if _, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"trigger"}`); r.IsError {
-		t.Fatalf("second create_document: %s", r.Text)
+	// A SECOND PROCESS is what repairs a pre-existing scope, and this stands in for
+	// one: a fresh Manager has an empty provisioning memo, so the first Document op
+	// against it provisions — and the migrations run.
+	//
+	// This used to reuse the same Manager, because schema provisioning ran in full on
+	// EVERY op and any second call re-ran the widening. Provisioning is now once per
+	// process (16 CREATEs and 9 migration probes ahead of every call was 71% of a
+	// get_chunk), so re-narrowing the column mid-process and expecting the next call
+	// to notice tests a mechanism that no longer exists — not the behaviour that
+	// matters. The behaviour that matters is unchanged: an upgrade restarts the
+	// process, the memo starts empty, and the first op against an old scope widens it.
+	mgr2, err := sqlmem.NewPostgres(context.Background(),
+		sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000})
+	if err != nil {
+		t.Fatalf("NewPostgres (restart stand-in): %v", err)
+	}
+	t.Cleanup(func() { _ = mgr2.Close() })
+	d2 := &Document{Store: st, SqlMem: mgr2, Bus: channels.NewBus()}
+
+	if _, r := docExec(t, d2, ctx, `{"op":"create_document","scope":"user","title":"trigger"}`); r.IsError {
+		t.Fatalf("create_document after the restart stand-in: %s", r.Text)
 	}
 
-	if got := confidenceColumnType(t, mgr, key); got != "double precision" {
+	if got := confidenceColumnType(t, mgr2, key); got != "double precision" {
 		t.Errorf("confidence column = %q, want double precision — a pre-existing scope keeps losing precision", got)
 	}
 	// And it round-trips after the widening.
-	assertConfidenceRoundTrip(t, d, ctx, 0.9)
+	assertConfidenceRoundTrip(t, d2, ctx, 0.9)
 }
 
 func assertConfidenceRoundTrip(t *testing.T, d *Document, ctx context.Context, want float64) {
