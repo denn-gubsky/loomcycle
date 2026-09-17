@@ -1410,6 +1410,23 @@ class LoomcycleClient:
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
+        # RFC DC per-run overrides. Routing selects WITHIN what the agent's
+        # definition declares; the budget knobs are raisable except
+        # max_concurrent_children, which may only be LOWERED. The tuning
+        # arguments are Optional because each has a meaningful zero, so
+        # "turn it off" has to be distinguishable from "unset".
+        model: str = "",
+        provider: str = "",
+        tier: str = "",
+        effort: str = "",
+        max_tokens: int = 0,
+        max_iterations: int = 0,
+        unbounded_iterations: Optional[bool] = None,
+        max_concurrent_children: int = 0,
+        retry_attempts: Optional[int] = None,
+        memory_inject_max_tokens: Optional[int] = None,
+        memory_index_max_bytes: Optional[int] = None,
+        inject_tool_guide: Optional[bool] = None,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Drive one agent run end-to-end, yielding each
@@ -1467,6 +1484,20 @@ class LoomcycleClient:
             compaction=compaction,
             max_context_tokens=max_context_tokens,
             interactive=interactive,
+            model=model,
+            provider=provider,
+            tier=tier,
+            effort=effort,
+            max_tokens=max_tokens,
+            max_iterations=max_iterations,
+            max_concurrent_children=max_concurrent_children,
+            **_optional_overrides(
+                unbounded_iterations=unbounded_iterations,
+                retry_attempts=retry_attempts,
+                memory_inject_max_tokens=memory_inject_max_tokens,
+                memory_index_max_bytes=memory_index_max_bytes,
+                inject_tool_guide=inject_tool_guide,
+            ),
         )
         return self._drive_stream(
             self._stub.Run(req, metadata=self._auth_metadata()),
@@ -1488,6 +1519,23 @@ class LoomcycleClient:
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
+        # RFC DC per-run overrides. Routing selects WITHIN what the agent's
+        # definition declares; the budget knobs are raisable except
+        # max_concurrent_children, which may only be LOWERED. The tuning
+        # arguments are Optional because each has a meaningful zero, so
+        # "turn it off" has to be distinguishable from "unset".
+        model: str = "",
+        provider: str = "",
+        tier: str = "",
+        effort: str = "",
+        max_tokens: int = 0,
+        max_iterations: int = 0,
+        unbounded_iterations: Optional[bool] = None,
+        max_concurrent_children: int = 0,
+        retry_attempts: Optional[int] = None,
+        memory_inject_max_tokens: Optional[int] = None,
+        memory_index_max_bytes: Optional[int] = None,
+        inject_tool_guide: Optional[bool] = None,
         on_handle: Optional[Callable[["RunHandle"], None]] = None,
     ) -> AsyncIterator[AgentEvent]:
         """Continue an existing session. Same yield shape as
@@ -1515,6 +1563,20 @@ class LoomcycleClient:
             user_bearer=user_bearer,
             max_context_tokens=max_context_tokens,
             interactive=interactive,
+            model=model,
+            provider=provider,
+            tier=tier,
+            effort=effort,
+            max_tokens=max_tokens,
+            max_iterations=max_iterations,
+            max_concurrent_children=max_concurrent_children,
+            **_optional_overrides(
+                unbounded_iterations=unbounded_iterations,
+                retry_attempts=retry_attempts,
+                memory_inject_max_tokens=memory_inject_max_tokens,
+                memory_index_max_bytes=memory_index_max_bytes,
+                inject_tool_guide=inject_tool_guide,
+            ),
         )
         if allowed_hosts is not None:
             req.allowed_hosts.list.extend(allowed_hosts)
@@ -2145,3 +2207,15 @@ def _directory_user(u: Any) -> Mapping[str, Any]:
     if u.last_started_at:
         out["last_started_at"] = u.last_started_at
     return out
+
+
+def _optional_overrides(**kwargs: Any) -> dict[str, Any]:
+    """Drops the None-valued per-run overrides before they reach the proto.
+
+    These fields are proto3 ``optional`` precisely because each has a MEANINGFUL
+    zero — 0 retries, inject nothing, omit the guide. Passing ``None`` through
+    would set them to their zero and silently turn the feature off; omitting the
+    keyword leaves the field unset, which is what "the caller said nothing"
+    means on the wire.
+    """
+    return {k: v for k, v in kwargs.items() if v is not None}

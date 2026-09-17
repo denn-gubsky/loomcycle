@@ -799,6 +799,21 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(),           // RFC AI
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
+		// RFC DC per-run overrides. One helper for all three call sites, so a
+		// typed gRPC caller and an HTTP one get the same answer from the same
+		// validation — and so adding a field means editing one place.
+		Model:                 req.GetModel(),
+		Provider:              req.GetProvider(),
+		Tier:                  req.GetTier(),
+		Effort:                req.GetEffort(),
+		MaxTokens:             int(req.GetMaxTokens()),
+		MaxIterations:         int(req.GetMaxIterations()),
+		UnboundedIterations:   req.UnboundedIterations,
+		MaxConcurrentChildren: int(req.GetMaxConcurrentChildren()),
+		RetryAttempts:         int32PtrToInt(req.RetryAttempts),
+		MemoryInjectMaxTokens: int32PtrToInt(req.MemoryInjectMaxTokens),
+		MemoryIndexMaxBytes:   int32PtrToInt(req.MemoryIndexMaxBytes),
+		InjectToolGuide:       req.InjectToolGuide,
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -833,6 +848,21 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(),           // RFC AI
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-continuation context-window override
+		// RFC DC per-run overrides. One helper for all three call sites, so a
+		// typed gRPC caller and an HTTP one get the same answer from the same
+		// validation — and so adding a field means editing one place.
+		Model:                 req.GetModel(),
+		Provider:              req.GetProvider(),
+		Tier:                  req.GetTier(),
+		Effort:                req.GetEffort(),
+		MaxTokens:             int(req.GetMaxTokens()),
+		MaxIterations:         int(req.GetMaxIterations()),
+		UnboundedIterations:   req.UnboundedIterations,
+		MaxConcurrentChildren: int(req.GetMaxConcurrentChildren()),
+		RetryAttempts:         int32PtrToInt(req.RetryAttempts),
+		MemoryInjectMaxTokens: int32PtrToInt(req.MemoryInjectMaxTokens),
+		MemoryIndexMaxBytes:   int32PtrToInt(req.MemoryIndexMaxBytes),
+		InjectToolGuide:       req.InjectToolGuide,
 	})
 	return s.driveStream(stream.Context(), stream, in)
 }
@@ -963,6 +993,21 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		Sampling:         samplingFromProto(req.GetSampling()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
+		// RFC DC per-run overrides. One helper for all three call sites, so a
+		// typed gRPC caller and an HTTP one get the same answer from the same
+		// validation — and so adding a field means editing one place.
+		Model:                 req.GetModel(),
+		Provider:              req.GetProvider(),
+		Tier:                  req.GetTier(),
+		Effort:                req.GetEffort(),
+		MaxTokens:             int(req.GetMaxTokens()),
+		MaxIterations:         int(req.GetMaxIterations()),
+		UnboundedIterations:   req.UnboundedIterations,
+		MaxConcurrentChildren: int(req.GetMaxConcurrentChildren()),
+		RetryAttempts:         int32PtrToInt(req.RetryAttempts),
+		MemoryInjectMaxTokens: int32PtrToInt(req.MemoryInjectMaxTokens),
+		MemoryIndexMaxBytes:   int32PtrToInt(req.MemoryIndexMaxBytes),
+		InjectToolGuide:       req.InjectToolGuide,
 	}
 	if hosts := req.GetAllowedHosts(); hosts != nil {
 		list := hosts.GetList()
@@ -1117,27 +1162,57 @@ type runInputProtoArgs struct {
 	Compaction       *config.Compaction // v0.32.0 per-run compaction override
 	Interactive      bool               // RFC AI — park at end_turn for steering
 	MaxContextTokens int                // RFC CJ per-run context-window override (0 = inherit agent def)
+
+	// RFC DC per-run overrides. Routing selects within what the definition
+	// declares; the budget knobs are raisable except MaxConcurrentChildren,
+	// which may only be lowered; the tuning pointers keep "turn it off"
+	// expressible. Validation lives in the HTTP layer both transports share, so
+	// a gRPC caller is refused for exactly the same reasons.
+	Model                 string
+	Provider              string
+	Tier                  string
+	Effort                string
+	MaxTokens             int
+	MaxIterations         int
+	UnboundedIterations   *bool
+	MaxConcurrentChildren int
+	RetryAttempts         *int
+	MemoryInjectMaxTokens *int
+	MemoryIndexMaxBytes   *int
+	InjectToolGuide       *bool
 }
 
 // runInputFromProto maps the proto request fields into the
 // runner.RunInput shared between Run and Continue.
 func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 	in := runner.RunInput{
-		Agent:            a.Agent,
-		SessionID:        a.SessionID,
-		Segments:         segmentsFromProto(a.Segments),
-		Tools:            a.Tools,
-		WebSearchFilter:  a.WebSearchFilter,
-		UserID:           a.UserID,
-		AgentID:          a.AgentID,
-		TenantID:         a.TenantID,
-		UserTier:         a.UserTier,
-		UserBearer:       a.UserBearer,
-		UserCredentials:  a.UserCredentials,  // v1.x RFC F per-tool named credentials
-		Sampling:         a.Sampling,         // v0.28.0 per-run sampling override
-		Compaction:       a.Compaction,       // v0.32.0 per-run compaction override
-		Interactive:      a.Interactive,      // RFC AI — park at end_turn for steering
-		MaxContextTokens: a.MaxContextTokens, // RFC CJ per-run context-window override
+		Model:                 a.Model,
+		Provider:              a.Provider,
+		Tier:                  a.Tier,
+		Effort:                a.Effort,
+		MaxTokens:             a.MaxTokens,
+		MaxIterations:         a.MaxIterations,
+		UnboundedIterations:   a.UnboundedIterations,
+		MaxConcurrentChildren: a.MaxConcurrentChildren,
+		RetryAttempts:         a.RetryAttempts,
+		MemoryInjectMaxTokens: a.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
+		InjectToolGuide:       a.InjectToolGuide,
+		Agent:                 a.Agent,
+		SessionID:             a.SessionID,
+		Segments:              segmentsFromProto(a.Segments),
+		Tools:                 a.Tools,
+		WebSearchFilter:       a.WebSearchFilter,
+		UserID:                a.UserID,
+		AgentID:               a.AgentID,
+		TenantID:              a.TenantID,
+		UserTier:              a.UserTier,
+		UserBearer:            a.UserBearer,
+		UserCredentials:       a.UserCredentials,  // v1.x RFC F per-tool named credentials
+		Sampling:              a.Sampling,         // v0.28.0 per-run sampling override
+		Compaction:            a.Compaction,       // v0.32.0 per-run compaction override
+		Interactive:           a.Interactive,      // RFC AI — park at end_turn for steering
+		MaxContextTokens:      a.MaxContextTokens, // RFC CJ per-run context-window override
 	}
 	if a.AllowedHosts != nil {
 		// Proto3 message-type field present → caller did supply a
@@ -1646,4 +1721,16 @@ func directoryUserToProto(r directory.UserRow) *loomcyclepb.DirectoryUser {
 		TotalCount:    int32(r.TotalCount),
 		LastStartedAt: r.LastStartedAt,
 	}
+}
+
+// int32PtrToInt converts a proto3 optional int32 to the *int the RunInput
+// overrides use. nil stays nil: for every field that takes one, the ZERO is
+// meaningful (no retries, inject nothing), so absence and zero must not
+// collapse.
+func int32PtrToInt(p *int32) *int {
+	if p == nil {
+		return nil
+	}
+	v := int(*p)
+	return &v
 }

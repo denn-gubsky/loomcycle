@@ -230,8 +230,38 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
   if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
   if (opts.interactive !== undefined) body.interactive = opts.interactive;
+  applyOverridesToWire(body, opts);
   return body;
 }
+
+/** Serializes the RFC DC per-run overrides onto a request body.
+ *
+ *  One function rather than two copies of the list, because this file already
+ *  serializes RunOptions field-by-field at two call sites — and a field added
+ *  to the TYPE but to only one of those lists is invisible on the wire from one
+ *  of them, silently. That is the shape of the bug RFC DA shipped.
+ */
+function applyOverridesToWire(body: Record<string, unknown>, opts: {
+  model?: string; provider?: string; tier?: string; effort?: string;
+  maxTokens?: number; maxIterations?: number; unboundedIterations?: boolean;
+  maxConcurrentChildren?: number; retryAttempts?: number;
+  memoryInjectMaxTokens?: number; memoryIndexMaxBytes?: number;
+  injectToolGuide?: boolean;
+}): void {
+  if (opts.model !== undefined) body.model = opts.model;
+  if (opts.provider !== undefined) body.provider = opts.provider;
+  if (opts.tier !== undefined) body.tier = opts.tier;
+  if (opts.effort !== undefined) body.effort = opts.effort;
+  if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+  if (opts.maxIterations !== undefined) body.max_iterations = opts.maxIterations;
+  if (opts.unboundedIterations !== undefined) body.unbounded_iterations = opts.unboundedIterations;
+  if (opts.maxConcurrentChildren !== undefined) body.max_concurrent_children = opts.maxConcurrentChildren;
+  if (opts.retryAttempts !== undefined) body.retry_attempts = opts.retryAttempts;
+  if (opts.memoryInjectMaxTokens !== undefined) body.memory_inject_max_tokens = opts.memoryInjectMaxTokens;
+  if (opts.memoryIndexMaxBytes !== undefined) body.memory_index_max_bytes = opts.memoryIndexMaxBytes;
+  if (opts.injectToolGuide !== undefined) body.inject_tool_guide = opts.injectToolGuide;
+}
+
 
 export class LoomcycleClient {
   private ctx: _FetchContext;
@@ -308,6 +338,7 @@ export class LoomcycleClient {
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
     if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
     if (opts.interactive !== undefined) body.interactive = opts.interactive;
+    applyOverridesToWire(body, opts);
     yield* this.streamSSE(
       `/v1/sessions/${encodeURIComponent(opts.sessionId)}/messages`,
       body,

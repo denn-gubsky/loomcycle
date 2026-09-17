@@ -407,6 +407,21 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		Compaction:       req.Compaction,       // per-run context-compaction override (was dropped on this streaming path)
 		Context:          req.Context,          // per-run layered-context override (RFC CR)
 		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override
+		// RFC DC P6: the MCP spawn surfaces carry the per-run overrides too, so
+		// an agent spawning a child can choose its model — and is refused by
+		// exactly the same validation an HTTP caller meets.
+		Model:                 req.Model,
+		Provider:              req.Provider,
+		Tier:                  req.Tier,
+		Effort:                req.Effort,
+		MaxTokens:             req.MaxTokens,
+		MaxIterations:         req.MaxIterations,
+		UnboundedIterations:   req.UnboundedIterations,
+		MaxConcurrentChildren: req.MaxConcurrentChildren,
+		RetryAttempts:         req.RetryAttempts,
+		MemoryInjectMaxTokens: req.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes:   req.MemoryIndexMaxBytes,
+		InjectToolGuide:       req.InjectToolGuide,
 	}
 
 	var (

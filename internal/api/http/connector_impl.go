@@ -66,6 +66,20 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		Compaction:       req.Compaction,       // per-run context-compaction override
 		Context:          req.Context,          // per-run layered-context override (RFC CR)
 		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override
+		// RFC DC P6: the spawn surfaces reach the SAME validation the HTTP
+		// endpoint uses, because they hand RunOnce the same RunInput.
+		Model:                 req.Model,
+		Provider:              req.Provider,
+		Tier:                  req.Tier,
+		Effort:                req.Effort,
+		MaxTokens:             req.MaxTokens,
+		MaxIterations:         req.MaxIterations,
+		UnboundedIterations:   req.UnboundedIterations,
+		MaxConcurrentChildren: req.MaxConcurrentChildren,
+		RetryAttempts:         req.RetryAttempts,
+		MemoryInjectMaxTokens: req.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes:   req.MemoryIndexMaxBytes,
+		InjectToolGuide:       req.InjectToolGuide,
 	}
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;

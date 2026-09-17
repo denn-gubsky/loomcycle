@@ -115,8 +115,37 @@ type RunRequest struct {
 	// A plain scalar (not `optional`) because 0 is never a meaningful window,
 	// so absence and "zero" coincide. Mirrors POST /v1/runs `max_context_tokens`.
 	MaxContextTokens int32 `protobuf:"varint,16,opt,name=max_context_tokens,json=maxContextTokens,proto3" json:"max_context_tokens,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// RFC DC per-run OVERRIDES. Flat, mirroring POST /v1/runs, which groups them
+	// under `overrides` only on the steer endpoint (that one has no flat
+	// vocabulary to be consistent with).
+	//
+	// Routing selects WITHIN what the agent's definition declares and cannot
+	// widen it, so which vendor sees the conversation stays an operator decision.
+	// Naming a model PINS it (the tier is dropped); naming only a provider
+	// narrows the cascade and keeps it.
+	Model    string `protobuf:"bytes,17,opt,name=model,proto3" json:"model,omitempty"`
+	Provider string `protobuf:"bytes,18,opt,name=provider,proto3" json:"provider,omitempty"`
+	Tier     string `protobuf:"bytes,19,opt,name=tier,proto3" json:"tier,omitempty"`
+	Effort   string `protobuf:"bytes,20,opt,name=effort,proto3" json:"effort,omitempty"` // low | medium | high; anything else is refused
+	// Budget. max_tokens / max_iterations / unbounded_iterations may be RAISED —
+	// both are bounded in practice by the per-scope token budget.
+	// max_concurrent_children may ONLY be LOWERED: it is the only bound on
+	// sub-agent fan-out that exists, because a child takes no admission slot, is
+	// not budget-checked at spawn, and skips the per-provider gate for its
+	// parent's provider. Raising it is refused, not clamped.
+	MaxTokens             int32 `protobuf:"varint,21,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
+	MaxIterations         int32 `protobuf:"varint,22,opt,name=max_iterations,json=maxIterations,proto3" json:"max_iterations,omitempty"`
+	UnboundedIterations   *bool `protobuf:"varint,23,opt,name=unbounded_iterations,json=unboundedIterations,proto3,oneof" json:"unbounded_iterations,omitempty"` // optional: turning it OFF must be expressible
+	MaxConcurrentChildren int32 `protobuf:"varint,24,opt,name=max_concurrent_children,json=maxConcurrentChildren,proto3" json:"max_concurrent_children,omitempty"`
+	// Tuning — how the run is shaped, never what it may reach. `optional`
+	// throughout because each has a MEANINGFUL zero (no retries, inject nothing,
+	// omit the guide), so a plain scalar could raise them but never turn them off.
+	RetryAttempts         *int32 `protobuf:"varint,25,opt,name=retry_attempts,json=retryAttempts,proto3,oneof" json:"retry_attempts,omitempty"`
+	MemoryInjectMaxTokens *int32 `protobuf:"varint,26,opt,name=memory_inject_max_tokens,json=memoryInjectMaxTokens,proto3,oneof" json:"memory_inject_max_tokens,omitempty"`
+	MemoryIndexMaxBytes   *int32 `protobuf:"varint,27,opt,name=memory_index_max_bytes,json=memoryIndexMaxBytes,proto3,oneof" json:"memory_index_max_bytes,omitempty"`
+	InjectToolGuide       *bool  `protobuf:"varint,28,opt,name=inject_tool_guide,json=injectToolGuide,proto3,oneof" json:"inject_tool_guide,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *RunRequest) Reset() {
@@ -261,6 +290,90 @@ func (x *RunRequest) GetMaxContextTokens() int32 {
 	return 0
 }
 
+func (x *RunRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *RunRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *RunRequest) GetTier() string {
+	if x != nil {
+		return x.Tier
+	}
+	return ""
+}
+
+func (x *RunRequest) GetEffort() string {
+	if x != nil {
+		return x.Effort
+	}
+	return ""
+}
+
+func (x *RunRequest) GetMaxTokens() int32 {
+	if x != nil {
+		return x.MaxTokens
+	}
+	return 0
+}
+
+func (x *RunRequest) GetMaxIterations() int32 {
+	if x != nil {
+		return x.MaxIterations
+	}
+	return 0
+}
+
+func (x *RunRequest) GetUnboundedIterations() bool {
+	if x != nil && x.UnboundedIterations != nil {
+		return *x.UnboundedIterations
+	}
+	return false
+}
+
+func (x *RunRequest) GetMaxConcurrentChildren() int32 {
+	if x != nil {
+		return x.MaxConcurrentChildren
+	}
+	return 0
+}
+
+func (x *RunRequest) GetRetryAttempts() int32 {
+	if x != nil && x.RetryAttempts != nil {
+		return *x.RetryAttempts
+	}
+	return 0
+}
+
+func (x *RunRequest) GetMemoryInjectMaxTokens() int32 {
+	if x != nil && x.MemoryInjectMaxTokens != nil {
+		return *x.MemoryInjectMaxTokens
+	}
+	return 0
+}
+
+func (x *RunRequest) GetMemoryIndexMaxBytes() int32 {
+	if x != nil && x.MemoryIndexMaxBytes != nil {
+		return *x.MemoryIndexMaxBytes
+	}
+	return 0
+}
+
+func (x *RunRequest) GetInjectToolGuide() bool {
+	if x != nil && x.InjectToolGuide != nil {
+		return *x.InjectToolGuide
+	}
+	return false
+}
+
 type ContinueRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	SessionId       string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -287,8 +400,37 @@ type ContinueRequest struct {
 	// max_context_tokens (RFC CJ) — per-continuation context-WINDOW override.
 	// Same semantics as RunRequest.max_context_tokens.
 	MaxContextTokens int32 `protobuf:"varint,13,opt,name=max_context_tokens,json=maxContextTokens,proto3" json:"max_context_tokens,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// RFC DC per-run OVERRIDES. Flat, mirroring POST /v1/runs, which groups them
+	// under `overrides` only on the steer endpoint (that one has no flat
+	// vocabulary to be consistent with).
+	//
+	// Routing selects WITHIN what the agent's definition declares and cannot
+	// widen it, so which vendor sees the conversation stays an operator decision.
+	// Naming a model PINS it (the tier is dropped); naming only a provider
+	// narrows the cascade and keeps it.
+	Model    string `protobuf:"bytes,14,opt,name=model,proto3" json:"model,omitempty"`
+	Provider string `protobuf:"bytes,15,opt,name=provider,proto3" json:"provider,omitempty"`
+	Tier     string `protobuf:"bytes,16,opt,name=tier,proto3" json:"tier,omitempty"`
+	Effort   string `protobuf:"bytes,17,opt,name=effort,proto3" json:"effort,omitempty"` // low | medium | high; anything else is refused
+	// Budget. max_tokens / max_iterations / unbounded_iterations may be RAISED —
+	// both are bounded in practice by the per-scope token budget.
+	// max_concurrent_children may ONLY be LOWERED: it is the only bound on
+	// sub-agent fan-out that exists, because a child takes no admission slot, is
+	// not budget-checked at spawn, and skips the per-provider gate for its
+	// parent's provider. Raising it is refused, not clamped.
+	MaxTokens             int32 `protobuf:"varint,18,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
+	MaxIterations         int32 `protobuf:"varint,19,opt,name=max_iterations,json=maxIterations,proto3" json:"max_iterations,omitempty"`
+	UnboundedIterations   *bool `protobuf:"varint,20,opt,name=unbounded_iterations,json=unboundedIterations,proto3,oneof" json:"unbounded_iterations,omitempty"` // optional: turning it OFF must be expressible
+	MaxConcurrentChildren int32 `protobuf:"varint,21,opt,name=max_concurrent_children,json=maxConcurrentChildren,proto3" json:"max_concurrent_children,omitempty"`
+	// Tuning — how the run is shaped, never what it may reach. `optional`
+	// throughout because each has a MEANINGFUL zero (no retries, inject nothing,
+	// omit the guide), so a plain scalar could raise them but never turn them off.
+	RetryAttempts         *int32 `protobuf:"varint,22,opt,name=retry_attempts,json=retryAttempts,proto3,oneof" json:"retry_attempts,omitempty"`
+	MemoryInjectMaxTokens *int32 `protobuf:"varint,23,opt,name=memory_inject_max_tokens,json=memoryInjectMaxTokens,proto3,oneof" json:"memory_inject_max_tokens,omitempty"`
+	MemoryIndexMaxBytes   *int32 `protobuf:"varint,24,opt,name=memory_index_max_bytes,json=memoryIndexMaxBytes,proto3,oneof" json:"memory_index_max_bytes,omitempty"`
+	InjectToolGuide       *bool  `protobuf:"varint,25,opt,name=inject_tool_guide,json=injectToolGuide,proto3,oneof" json:"inject_tool_guide,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *ContinueRequest) Reset() {
@@ -410,6 +552,90 @@ func (x *ContinueRequest) GetMaxContextTokens() int32 {
 		return x.MaxContextTokens
 	}
 	return 0
+}
+
+func (x *ContinueRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *ContinueRequest) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ContinueRequest) GetTier() string {
+	if x != nil {
+		return x.Tier
+	}
+	return ""
+}
+
+func (x *ContinueRequest) GetEffort() string {
+	if x != nil {
+		return x.Effort
+	}
+	return ""
+}
+
+func (x *ContinueRequest) GetMaxTokens() int32 {
+	if x != nil {
+		return x.MaxTokens
+	}
+	return 0
+}
+
+func (x *ContinueRequest) GetMaxIterations() int32 {
+	if x != nil {
+		return x.MaxIterations
+	}
+	return 0
+}
+
+func (x *ContinueRequest) GetUnboundedIterations() bool {
+	if x != nil && x.UnboundedIterations != nil {
+		return *x.UnboundedIterations
+	}
+	return false
+}
+
+func (x *ContinueRequest) GetMaxConcurrentChildren() int32 {
+	if x != nil {
+		return x.MaxConcurrentChildren
+	}
+	return 0
+}
+
+func (x *ContinueRequest) GetRetryAttempts() int32 {
+	if x != nil && x.RetryAttempts != nil {
+		return *x.RetryAttempts
+	}
+	return 0
+}
+
+func (x *ContinueRequest) GetMemoryInjectMaxTokens() int32 {
+	if x != nil && x.MemoryInjectMaxTokens != nil {
+		return *x.MemoryInjectMaxTokens
+	}
+	return 0
+}
+
+func (x *ContinueRequest) GetMemoryIndexMaxBytes() int32 {
+	if x != nil && x.MemoryIndexMaxBytes != nil {
+		return *x.MemoryIndexMaxBytes
+	}
+	return 0
+}
+
+func (x *ContinueRequest) GetInjectToolGuide() bool {
+	if x != nil && x.InjectToolGuide != nil {
+		return *x.InjectToolGuide
+	}
+	return false
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -8366,7 +8592,8 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe9\x05\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xcc\n" +
+	"\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
@@ -8389,10 +8616,29 @@ const file_loomcycle_proto_rawDesc = "" +
 	"compaction\x18\x0e \x01(\v2\x18.loomcycle.v1.CompactionR\n" +
 	"compaction\x12 \n" +
 	"\vinteractive\x18\x0f \x01(\bR\vinteractive\x12,\n" +
-	"\x12max_context_tokens\x18\x10 \x01(\x05R\x10maxContextTokens\x1aB\n" +
+	"\x12max_context_tokens\x18\x10 \x01(\x05R\x10maxContextTokens\x12\x14\n" +
+	"\x05model\x18\x11 \x01(\tR\x05model\x12\x1a\n" +
+	"\bprovider\x18\x12 \x01(\tR\bprovider\x12\x12\n" +
+	"\x04tier\x18\x13 \x01(\tR\x04tier\x12\x16\n" +
+	"\x06effort\x18\x14 \x01(\tR\x06effort\x12\x1d\n" +
+	"\n" +
+	"max_tokens\x18\x15 \x01(\x05R\tmaxTokens\x12%\n" +
+	"\x0emax_iterations\x18\x16 \x01(\x05R\rmaxIterations\x126\n" +
+	"\x14unbounded_iterations\x18\x17 \x01(\bH\x00R\x13unboundedIterations\x88\x01\x01\x126\n" +
+	"\x17max_concurrent_children\x18\x18 \x01(\x05R\x15maxConcurrentChildren\x12*\n" +
+	"\x0eretry_attempts\x18\x19 \x01(\x05H\x01R\rretryAttempts\x88\x01\x01\x12<\n" +
+	"\x18memory_inject_max_tokens\x18\x1a \x01(\x05H\x02R\x15memoryInjectMaxTokens\x88\x01\x01\x128\n" +
+	"\x16memory_index_max_bytes\x18\x1b \x01(\x05H\x03R\x13memoryIndexMaxBytes\x88\x01\x01\x12/\n" +
+	"\x11inject_tool_guide\x18\x1c \x01(\bH\x04R\x0finjectToolGuide\x88\x01\x01\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa7\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +
+	"\x15_unbounded_iterationsB\x11\n" +
+	"\x0f_retry_attemptsB\x1b\n" +
+	"\x19_memory_inject_max_tokensB\x19\n" +
+	"\x17_memory_index_max_bytesB\x14\n" +
+	"\x12_inject_tool_guide\"\x8a\n" +
+	"\n" +
 	"\x0fContinueRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x127\n" +
@@ -8411,10 +8657,28 @@ const file_loomcycle_proto_rawDesc = "" +
 	"compaction\x18\v \x01(\v2\x18.loomcycle.v1.CompactionR\n" +
 	"compaction\x12 \n" +
 	"\vinteractive\x18\f \x01(\bR\vinteractive\x12,\n" +
-	"\x12max_context_tokens\x18\r \x01(\x05R\x10maxContextTokens\x1aB\n" +
+	"\x12max_context_tokens\x18\r \x01(\x05R\x10maxContextTokens\x12\x14\n" +
+	"\x05model\x18\x0e \x01(\tR\x05model\x12\x1a\n" +
+	"\bprovider\x18\x0f \x01(\tR\bprovider\x12\x12\n" +
+	"\x04tier\x18\x10 \x01(\tR\x04tier\x12\x16\n" +
+	"\x06effort\x18\x11 \x01(\tR\x06effort\x12\x1d\n" +
+	"\n" +
+	"max_tokens\x18\x12 \x01(\x05R\tmaxTokens\x12%\n" +
+	"\x0emax_iterations\x18\x13 \x01(\x05R\rmaxIterations\x126\n" +
+	"\x14unbounded_iterations\x18\x14 \x01(\bH\x00R\x13unboundedIterations\x88\x01\x01\x126\n" +
+	"\x17max_concurrent_children\x18\x15 \x01(\x05R\x15maxConcurrentChildren\x12*\n" +
+	"\x0eretry_attempts\x18\x16 \x01(\x05H\x01R\rretryAttempts\x88\x01\x01\x12<\n" +
+	"\x18memory_inject_max_tokens\x18\x17 \x01(\x05H\x02R\x15memoryInjectMaxTokens\x88\x01\x01\x128\n" +
+	"\x16memory_index_max_bytes\x18\x18 \x01(\x05H\x03R\x13memoryIndexMaxBytes\x88\x01\x01\x12/\n" +
+	"\x11inject_tool_guide\x18\x19 \x01(\bH\x04R\x0finjectToolGuide\x88\x01\x01\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +
+	"\x15_unbounded_iterationsB\x11\n" +
+	"\x0f_retry_attemptsB\x1b\n" +
+	"\x19_memory_inject_max_tokensB\x19\n" +
+	"\x17_memory_index_max_bytesB\x14\n" +
+	"\x12_inject_tool_guide\"\xcc\x02\n" +
 	"\bSampling\x12%\n" +
 	"\vtemperature\x18\x01 \x01(\x01H\x00R\vtemperature\x88\x01\x01\x12\x18\n" +
 	"\x05top_p\x18\x02 \x01(\x01H\x01R\x04topP\x88\x01\x01\x12\x18\n" +
@@ -9496,6 +9760,8 @@ func file_loomcycle_proto_init() {
 	if File_loomcycle_proto != nil {
 		return
 	}
+	file_loomcycle_proto_msgTypes[0].OneofWrappers = []any{}
+	file_loomcycle_proto_msgTypes[1].OneofWrappers = []any{}
 	file_loomcycle_proto_msgTypes[2].OneofWrappers = []any{}
 	file_loomcycle_proto_msgTypes[3].OneofWrappers = []any{}
 	file_loomcycle_proto_msgTypes[11].OneofWrappers = []any{}

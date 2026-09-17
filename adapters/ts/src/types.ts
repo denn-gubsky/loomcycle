@@ -339,6 +339,51 @@ export interface RunOptions {
    *  defers to the provider/driver default). Distinct from a model's output
    *  cap; primarily for local inference (Ollama num_ctx). */
   maxContextTokens?: number;
+
+  // --- Per-run overrides (RFC DC). A run's own answer to how it should run,
+  // instead of its agent definition's. Persisted with the run, so they survive
+  // a pause; a parked run can also be retuned via `sendRunInput`.
+
+  /** Run on a specific model. Must be one the agent's definition already
+   *  allows — an override selects WITHIN that set and cannot widen it, so
+   *  which vendor sees the conversation stays an operator decision. Naming a
+   *  model PINS it: the tier stops choosing and stops falling back. */
+  model?: string;
+  /** Run on a specific provider. Must be one the definition already allows.
+   *  Unlike `model` this NARROWS rather than pins — the tier still chooses the
+   *  model within that vendor and still falls back within it. */
+  provider?: string;
+  /** Route through a different configured tier. */
+  tier?: string;
+  /** Reasoning-effort hint. Any value outside low|medium|high is REFUSED
+   *  rather than ignored: "effort was dropped" and "effort was applied" look
+   *  identical from the outside. */
+  effort?: "low" | "medium" | "high";
+
+  /** Per-reply output cap. May be RAISED above the agent's own. */
+  maxTokens?: number;
+  /** Loop bound. May be RAISED above the agent's own. */
+  maxIterations?: number;
+  /** Lift or restore the loop bound. `false` bounds an otherwise-unbounded
+   *  agent for this run only — which is why it is a boolean you can set rather
+   *  than a flag you can only turn on. */
+  unboundedIterations?: boolean;
+  /** How wide this run may fan out into sub-agents. May only be LOWERED below
+   *  what the definition allows; raising it is refused, because a child takes
+   *  no admission slot and is not budget-checked at spawn, so this is the only
+   *  bound on fan-out that exists. */
+  maxConcurrentChildren?: number;
+
+  /** How many times to retry the same provider before falling back. 0 disables
+   *  retrying for this run. */
+  retryAttempts?: number;
+  /** Token budget for memory injected into the prompt. 0 injects none. */
+  memoryInjectMaxTokens?: number;
+  /** Byte budget for the memory index. 0 omits it. */
+  memoryIndexMaxBytes?: number;
+  /** Whether to inject the generated tool guide into the prompt. */
+  injectToolGuide?: boolean;
+
   /** RFC AI — start a PERSISTENT interactive run that parks at end_turn
    *  awaiting operator steering instead of terminating. The stream emits an
    *  `awaiting_input` frame when it parks; drive it with
