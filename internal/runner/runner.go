@@ -291,6 +291,16 @@ type RunInput struct {
 	// on the trigger def and pass it here so RunOnce can stamp the run without a
 	// live token. false = allowed (fail-open); the principal-on-ctx paths ignore
 	// this field and compute restriction from the live principal instead.
+	// Model / Provider / Tier / Effort are the per-run ROUTING override (RFC DC
+	// P1). Set only by TRUSTED first-party callers: the HTTP /v1/runs handler and
+	// its gRPC/MCP twins. The webhook, A2A and schedule paths leave them empty —
+	// an untrusted payload may not choose the model, exactly as it may not choose
+	// user_tier (#623). Safety here is a property of (parameter x caller).
+	Model    string
+	Provider string
+	Tier     string
+	Effort   string
+
 	OperatorKeyRestricted bool
 
 	// Isolated is the RFC BX P2b confinement bit for the NON-principal trigger

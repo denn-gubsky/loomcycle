@@ -98,7 +98,22 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	}
 	// RFC AX: restore the operator-key restriction from the runs row so a resumed
 	// run's credential-aware routing matches the original admission.
-	providerID, model, effort, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	//
+	// RFC DC P1: resume on the run's OWN routing. Decoded before the resolve,
+	// because the definition is not the authority here — the run is. A record
+	// the definition no longer permits (a model dropped since) falls back to
+	// the definition and says so, rather than failing a run that is otherwise
+	// fine: refusing to resume is a heavier answer than resolving normally.
+	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+	resumeDef := agentDef
+	if runCfg.Routing != nil {
+		if rd, oerr := s.applyRoutingOverride(ctx, agentDef, runCfg.Routing); oerr == nil {
+			resumeDef = rd
+		} else {
+			log.Printf("resume: run %s had a routing override the definition no longer permits (%v); resolving from the definition", run.ID, oerr)
+		}
+	}
+	providerID, model, effort, rerr := s.resolveAgentDef(ctx, resumeDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
 		s.flagRunUnresumable(run, fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
@@ -142,7 +157,6 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// A run with no record (started before the column existed, or an
 	// unreadable one) falls back to the definition, which is what every run did
 	// before, so legacy rows resume exactly as they do today.
-	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
 	if !haveRunCfg {
 		runCfg = runConfigRecord{
 			Sampling:          agentDef.Sampling,
@@ -416,7 +430,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// blocks on a full gate. Create the holder empty here so fallbackForRun's
 	// reResolve closure can capture it; it's populated before loop.Run runs.
 	provSlot := &providerSlot{}
-	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, provSlot)
+	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, provSlot, runCfg.Routing)
 	gate, deregGate := s.newPauseGate(run.ID)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
