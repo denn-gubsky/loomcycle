@@ -86,6 +86,45 @@ class Graph:
         g._index(g.edges)
         return g
 
+    def thinned(self, keep_rate, seed):
+        """A graph where only `keep_rate` of facts keep their SECOND subject edge.
+
+        Natural corpora are sparser than a corpus built to contain chains: LoCoMo
+        carries 18.3% chain links against the synthesis corpus's 93%. Thinning
+        answers whether traversal still pays when most facts are spokes, by
+        varying ONE thing — every fact, body, seed and budget is identical, and
+        only the second edge of a sampled fraction survives.
+
+        Removing rather than adding is deliberate: a fact reduced to one subject
+        is exactly what an extractor that captured only the grammatical subject
+        produces, which is the failure mode natural density represents.
+        """
+        rng = random.Random(seed)
+        by_fact = {}
+        for a, b in self.edges:
+            by_fact.setdefault(a, []).append(b)
+        kept = []
+        for a, tos in by_fact.items():
+            if len(tos) > 1 and rng.random() > keep_rate:
+                kept.append((a, tos[0]))          # keep the home subject only
+            else:
+                kept.extend((a, t) for t in tos)
+        g = object.__new__(Graph)
+        g.bodies, g.titles, g.kind = self.bodies, self.titles, self.kind
+        g.edges = kept
+        g._index(kept)
+        return g
+
+    def link_density(self):
+        """Fraction of facts carrying two or more subject edges — the number
+        LoCoMo measures 18.3% on and the synthesis corpus 93%."""
+        n = {}
+        for a, _ in self.edges:
+            n[a] = n.get(a, 0) + 1
+        facts = [f for f in self.bodies]
+        multi = sum(1 for f in facts if n.get(f, 0) >= 2)
+        return multi / len(facts) if facts else 0.0
+
     def expand(self, seed_facts, depth):
         """Facts reachable from the seeds, fact -> entity -> fact, in BFS order.
 

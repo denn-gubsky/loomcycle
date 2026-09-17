@@ -36,6 +36,8 @@ ap.add_argument("--budget-chars", type=int, default=1200)
 ap.add_argument("--seeds", type=int, default=5, help="seed facts the traversal arms expand from")
 ap.add_argument("--depth", type=int, default=3)
 ap.add_argument("--shuffle-seed", type=int, default=11)
+ap.add_argument("--thin-keep", type=float, default=1.0,
+                help="fraction of facts that keep their SECOND subject edge. 1.0 = the graph as\n                      built. Natural corpora are sparser -- LoCoMo measures 18.3%% link density\n                      against this corpus's 93%% -- and traversal's margin scales with it.")
 ap.add_argument("--replicates", type=int, default=2)
 ap.add_argument("--questions", type=int, default=0, help="0 = all")
 ap.add_argument("--workers", type=int, default=6)
@@ -111,6 +113,8 @@ def judge(q, answer):
 
 # ---------------------------------------------------------------- retrieval
 GRAPH = R.Graph(R.busiest_scope_schema())
+if A.thin_keep < 1.0:
+    GRAPH = GRAPH.thinned(A.thin_keep, A.shuffle_seed)
 SHUF = GRAPH.shuffled(A.shuffle_seed)
 # One search per question, shared by every arm and replicate: it is identical
 # across them, and re-running it would add latency and a chance of drift.
@@ -187,8 +191,8 @@ def acc(rs):
     return c / len(graded), c, len(graded)
 
 
-print("\nbudget %d chars | seeds %d | depth %d | %d questions x %d replicates"
-      % (A.budget_chars, A.seeds, A.depth, len(QS), A.replicates))
+print("\nbudget %d chars | seeds %d | depth %d | %d questions x %d replicates | link density %.1f%%"
+      % (A.budget_chars, A.seeds, A.depth, len(QS), A.replicates, 100 * GRAPH.link_density()))
 print("\n%-10s %8s %7s %8s %9s %7s %7s" %
       ("arm", "accuracy", "correct", "abstain", "coverage", "facts", "chars"))
 for arm in ARMS:

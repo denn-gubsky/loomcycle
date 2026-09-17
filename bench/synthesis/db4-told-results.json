@@ -1,0 +1,264 @@
+[
+ {
+  "qid": "q1",
+  "hops": 2,
+  "q": "Which city does Joska Wexley work in?",
+  "gold": "Kirkby",
+  "answer": "Joska Wexley works at Pelthorpe Dynamics, which is based in Kirkby.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q2",
+  "hops": 2,
+  "q": "Which region is Lumfield Textiles in?",
+  "gold": "the Kelmoor region",
+  "answer": "Lumfield Textiles is in the Kelmoor region (based in Istcombe).",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q3",
+  "hops": 2,
+  "q": "Which region is Pelbeck Ceramics in?",
+  "gold": "the Ashfen region",
+  "answer": "Pelbeck Ceramics is in the Ashfen region (based in Ormane).",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q4",
+  "hops": 2,
+  "q": "Which city does Rhys Marchetti work in?",
+  "gold": "Mardby",
+  "answer": "Rhys Marchetti works at Zebdale Instruments, which is based in Mardby.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q5",
+  "hops": 2,
+  "q": "Which company ultimately employs Imke Ubberud now?",
+  "gold": "Pelhaven Textiles",
+  "answer": "Imke Ubberud works at Thornoway Works.",
+  "verdict": "WRONG",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q6",
+  "hops": 2,
+  "q": "Which city does Orla Stavropoulos work in?",
+  "gold": "Kirkby",
+  "answer": "Orla Stavropoulos works at Pelthorpe Dynamics, which is based in Kirkby.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q7",
+  "hops": 2,
+  "q": "Which company ultimately employs Vidar Zabala now?",
+  "gold": "Keltrel Fabrication",
+  "answer": "Vidar Zabala is ultimately employed by Brackmont Fabrication (which acquired Keltrel Fabrication, which in turn acquired Quilltrel Holdings, where he works).",
+  "verdict": "WRONG",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q8",
+  "hops": 2,
+  "q": "Which city does Joska Dunmore work in?",
+  "gold": "Kaldby",
+  "answer": "Joska Dunmore works at Kesspire Logistics, which is based in Kaldby.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q9",
+  "hops": 2,
+  "q": "Which region is Cardwell Refining in?",
+  "gold": "the Xanthe region",
+  "answer": "Cardwell Refining is in the Xanthe region (based in Grimby).",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q10",
+  "hops": 2,
+  "q": "Which organisation owns the project Emrys Ivarsson manages?",
+  "gold": "Fenstead Works",
+  "answer": "Fenstead Works owns Project Lintel, the project Emrys Ivarsson manages.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q11",
+  "hops": 2,
+  "q": "Which company ultimately employs Fenna Brannigan now?",
+  "gold": "Keltrel Fabrication",
+  "answer": "Fenna Brannigan ultimately works at Keltrel Fabrication, which acquired Quilltrel Holdings.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q12",
+  "hops": 2,
+  "q": "Which region is Cirrhollow Works in?",
+  "gold": "the Gallowmere region",
+  "answer": "Cirrhollow Works is in the Gallowmere region (it's based in Belcombe, which is in Gallowmere).",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q13",
+  "hops": 2,
+  "q": "Which region is Zebdale Instruments in?",
+  "gold": "the Weyrmarch region",
+  "answer": "Zebdale Instruments is in the Weyrmarch region (based in Mardby).",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q14",
+  "hops": 2,
+  "q": "Which organisation owns the project Nerea Rothery manages?",
+  "gold": "Kesmara Dynamics",
+  "answer": "Kesmara Dynamics owns Project Groin, the project Nerea Rothery manages.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q15",
+  "hops": 2,
+  "q": "Which organisation owns the project Fenna Underwood manages?",
+  "gold": "Sarnhaven Refining",
+  "answer": "Sarnhaven Refining owns Project Wainscot, the project Fenna Underwood manages.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q16",
+  "hops": 2,
+  "q": "Which organisation owns the project Delphine Ottoline manages?",
+  "gold": "Ossoway Mills",
+  "answer": "Ossoway Mills owns Project Zenith, the project Delphine Ottoline manages.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q17",
+  "hops": 2,
+  "q": "Which company ultimately employs Suri Sandoval now?",
+  "gold": "Indmoor Instruments",
+  "answer": "Suri Sandoval works at Kesmara Dynamics, which was acquired by Indmoor Instruments \u2014 so she is ultimately employed by Indmoor Instruments.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q18",
+  "hops": 2,
+  "q": "Which region is Vaskfield Systems in?",
+  "gold": "the Elmsworth region",
+  "answer": "Vaskfield Systems is in the Elmsworth region (based in Selton).",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall",
+   "Memory.search"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q19",
+  "hops": 2,
+  "q": "Which city does Lars Brannigan work in?",
+  "gold": "Pryane",
+  "answer": "Lars Brannigan works at Pelgate Textiles, which is based in Pryane.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ },
+ {
+  "qid": "q20",
+  "hops": 2,
+  "q": "Which city does Kesia Ashgrove work in?",
+  "gold": "Mardane",
+  "answer": "Kesia Ashgrove works at Keltrel Fabrication, which is based in Mardane.",
+  "verdict": "CORRECT",
+  "tools": [
+   "Memory.search",
+   "Document.graph_recall",
+   "Document.graph_recall"
+  ],
+  "used_graph": true
+ }
+]

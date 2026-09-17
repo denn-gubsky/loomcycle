@@ -29,11 +29,25 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 const (
-	graphMaxHops      = 2
+	// graphMaxHops bounds the walk. A hop is ONE edge in either direction, so a
+	// fact -> entity -> fact cycle costs two: at 2 the walk answered a two-hop
+	// question and nothing deeper, which is what RFC CV's P5 exists to lift.
+	// Three-hop chains need four and four-hop need six.
+	//
+	// The old cap's reason — "past two hops a result stops describing what you
+	// asked about" — is a real worry about drift, and it is now measured rather
+	// than assumed: at this depth traversal scored 100% on two-hop and 66% on
+	// three-hop chains while the shuffled-relation control LOST to plain search,
+	// so the walk was following relations rather than wandering. What actually
+	// bounds drift is the CONTENT BUDGET below, which caps what reaches the
+	// reader; a hop count caps the wrong thing, since one hop into a hub is
+	// worse than six along a chain.
+	graphMaxHops      = 6
 	graphDefaultHops  = 1
 	graphDefaultLimit = 50
 	graphMaxLimit     = 200
@@ -41,7 +55,22 @@ const (
 	// heavily-connected entity turns hop 2 into a scan of the scope's edges, and
 	// the caller sees a slow recall rather than a truncated one.
 	graphFrontierCap = 500
+	// graphSeedTopK is how many ranked facts semantic seeding considers. The walk
+	// starts from the best few and the rest are held for the backfill below.
+	graphSeedTopK = 50
+	// graphDefaultSeeds is how many of those ranked facts actually seed the walk.
+	// Seeding from ALL of them spends the whole budget before the walk contributes
+	// anything — measured: with 50 seeds and room for 28 facts, traversal and
+	// plain search returned an identical set.
+	graphDefaultSeeds = 5
 )
+
+// graphSeedInfo records how a walk started. A caller that cannot tell a semantic
+// seeding from a title match cannot tell why a recall came back thin.
+type graphSeedInfo struct {
+	How    string   // "ids" | "semantic" | "title"
+	Ranked []string // semantic only: the full ranked list, for the backfill
+}
 
 // graphChunk is one row of the answer, carrying HOW it was reached. A caller that
 // cannot tell a seed from a two-hop neighbour cannot tell a direct answer from an
@@ -66,7 +95,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		hops = *in.Hops
 	}
 	if hops < 0 || hops > graphMaxHops {
-		return errResult(fmt.Sprintf("graph_recall: hops must be 0..%d (got %d) — past two hops a result stops describing what you asked about", graphMaxHops, hops)), nil
+		return errResult(fmt.Sprintf("graph_recall: hops must be 0..%d (got %d) — a hop is one edge, so a fact→entity→fact step costs two; bound a long walk with budget_chars rather than by stopping it short", graphMaxHops, hops)), nil
 	}
 	// docInput.Limit is shared with the other list-shaped ops (a plain int, 0 =
 	// unset), so it is reused rather than shadowed with a second limit field.
@@ -81,7 +110,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		return errResult("graph_recall: give either seed_ids (chunks to start from) or query (match starting chunks by title)"), nil
 	}
 
-	seeds, err := d.graphSeeds(ctx, key, in, limit)
+	seeds, seedInfo, err := d.graphSeedIDs(ctx, key, in, limit)
 	if err != nil {
 		return errResult("graph_recall: seeds: " + err.Error()), nil
 	}
@@ -126,23 +155,201 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		}
 	}
 
+	// ⚠️ THE BUDGET IS ON CONTENT, NOT ROWS, AND THE BACKFILL IS WHY.
+	//
+	// A walk fetches more rows than a search by construction, so a row limit lets
+	// traversal win on volume rather than on the relations — the trap the
+	// shuffled-relation control exists to catch. Worse, on a SPARSE graph the walk
+	// runs dry and under-fills: measured at natural link density it returned 587 of
+	// 1200 characters, and pure traversal then scored BELOW plain search, because
+	// the unspent budget was free accuracy it declined to take.
+	//
+	// So spend the walk first, then give whatever is left to the ranked facts the
+	// semantic seeding already produced. Measured across link densities, that never
+	// loses to either the walk or the search alone, and at the sparse end it is 8%
+	// where the bare walk is 2%.
 	out := make([]graphChunk, 0, len(order))
-	for _, id := range order {
-		if len(out) >= limit {
-			truncated = true
-			break
+	used, backfilled := 0, 0
+	budget := in.BudgetChars
+	// ⚠️ SPEND THE BUDGET ON ASSERTIONS FIRST. An entity node's title is a NAME
+	// ("Yelby", "Imke Zoltan"); it carries no claim, and a reader handed one
+	// learns nothing it can answer from. Charging names at the same priority as
+	// facts cost a live walk the middle link of a three-relation chain: 17 of 42
+	// rows were entity nodes, the budget filled at 1194 of 1200, and
+	// "Lumfield Textiles is based in Istcombe" — the hop that joins the two ends
+	// the walk DID find — was pushed out by names.
+	//
+	// Entity nodes still come back, because they are how a caller sees the path
+	// the walk took; they simply queue behind the facts rather than ahead of them.
+	// BFS order is preserved inside each pass, so a nearer fact still beats a
+	// further one.
+	passes := [][]string{order}
+	if budget > 0 {
+		// WHY THE EDGE AND NOT THE CHUNK TYPE. A distilled fact's type is the
+		// constant "fact", which makes `type = 'fact'` the obvious test — but
+		// `remember` stamps the CALLER's type, so that filter demotes an
+		// operator-remembered fact to a name. Being the TARGET of an `about` edge
+		// is what an identity node structurally is, which is the same test the
+		// verification-coverage query settled on for the same reason.
+		identity := d.graphIdentityNodes(ctx, key, order)
+		facts, entities := make([]string, 0, len(order)), make([]string, 0, len(order))
+		for _, id := range order {
+			if identity[id] {
+				entities = append(entities, id)
+			} else {
+				facts = append(facts, id)
+			}
 		}
-		out = append(out, seen[id])
+		passes = [][]string{facts, entities}
 	}
-	return okJSONCount(map[string]any{
+	for _, pass := range passes {
+		for _, id := range pass {
+			c := seen[id]
+			if budget > 0 {
+				if used+len(c.Title) > budget {
+					truncated = true
+					continue
+				}
+				used += len(c.Title)
+			} else if len(out) >= limit {
+				truncated = true
+				break
+			}
+			out = append(out, c)
+		}
+	}
+	if budget > 0 && seedInfo.How == "semantic" {
+		for _, id := range seedInfo.Ranked {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			row, ok := d.graphChunkByID(ctx, key, id)
+			if !ok {
+				continue
+			}
+			if used+len(row.Title) > budget {
+				continue
+			}
+			used += len(row.Title)
+			row.Hop = -1 // reached by rank, not by an edge: never claim a path
+			out = append(out, row)
+			seen[id] = row
+			backfilled++
+		}
+	}
+	payload := map[string]any{
 		"chunks": out, "seeds": len(seeds), "hops": hops, "truncated": truncated,
-	}, len(out))
+		"seeded_by": seedInfo.How,
+	}
+	if budget > 0 {
+		// An arm that cannot fill its budget says so, rather than leaving the
+		// reader to infer a thin result from a short list.
+		payload["budget_chars"] = budget
+		payload["chars_used"] = used
+		payload["backfilled"] = backfilled
+	}
+	return okJSONCount(payload, len(out))
+}
+
+// graphIdentityNodes reports which of these chunks are identity nodes — the
+// targets of an `about` edge. One round trip for the whole set.
+//
+// A miss is safe in the direction that matters: an unreadable store returns an
+// empty set, every chunk is then treated as an assertion, and the budget spends
+// exactly as it did before this existed.
+func (d *Document) graphIdentityNodes(ctx context.Context, key sqlmem.ScopeKey, ids []string) map[string]bool {
+	out := map[string]bool{}
+	if len(ids) == 0 {
+		return out
+	}
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	res, err := d.query(ctx, key,
+		`SELECT DISTINCT to_id FROM chunk_edges WHERE kind = 'about' AND to_id IN (`+
+			placeholders(len(ids))+`)`, args...)
+	if err != nil {
+		return out
+	}
+	for _, row := range res.Rows {
+		if len(row) > 0 {
+			if id, ok := row[0].(string); ok && id != "" {
+				out[id] = true
+			}
+		}
+	}
+	return out
+}
+
+// graphChunkByID reads one chunk for the backfill. Separate from the seed query
+// because a backfilled row is NOT a seed: it was reached by rank, never by an
+// edge, and conflating the two would let a caller read an association as a path.
+func (d *Document) graphChunkByID(ctx context.Context, key sqlmem.ScopeKey, id string) (graphChunk, bool) {
+	res, err := d.query(ctx, key,
+		`SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
+		   FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+		  WHERE c.id = ? LIMIT 1`, id)
+	if err != nil || len(res.Rows) == 0 {
+		return graphChunk{}, false
+	}
+	rows := scanGraphRows(res.Rows, 0, "", "")
+	if len(rows) == 0 {
+		return graphChunk{}, false
+	}
+	return rows[0], true
+}
+
+// graphSemanticSeeds ranks fact bodies against the query by VECTOR similarity and
+// returns their chunk ids, best first.
+//
+// The title match graphSeeds falls back to requires the caller to already know the
+// entity's NAME, which is the thing a question usually does not supply: "which
+// region does Toma Zoltan work in" names a person and wants a region. Seeding from
+// the fact bodies instead is what lets a walk start from the question — RFC CV's
+// P5 named this as its candidate, and the benchmark that cleared P5's gate did
+// exactly this.
+//
+// Returns nil (not an error) when semantic seeding is unavailable — no embedder,
+// no vector support — so the caller falls back to the title match rather than
+// failing a recall that used to work.
+func (d *Document) graphSemanticSeeds(ctx context.Context, key sqlmem.ScopeKey, query string, topK int) []string {
+	if d.Embedder == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	vec, err := d.Embedder.Embed(ctx, []string{query})
+	if err != nil || len(vec) == 0 {
+		return nil
+	}
+	mscope := store.MemoryScope(key.Scope)
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
+		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK)
+	if err != nil {
+		// A store with no vector index answers the title way rather than not at all.
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if cid := ChunkIDFromBodyKey(e.Key); cid != "" {
+			out = append(out, cid)
+		}
+	}
+	return out
 }
 
 // graphSeeds resolves the starting set: explicit ids when given, else a title
 // match. Both go through the same temporal filter as the expansion, so a
 // superseded fact cannot enter as a seed while being excluded as a neighbour.
 func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docInput, limit int) ([]graphChunk, error) {
+	ids, _, err := d.graphSeedIDs(ctx, key, in, limit)
+	return ids, err
+}
+
+// graphSeedIDs is graphSeeds plus the two things the caller needs to report and
+// to backfill with: HOW the seeds were found, and the full ranked list semantic
+// seeding produced (of which only the first few actually seed the walk).
+func (d *Document) graphSeedIDs(ctx context.Context, key sqlmem.ScopeKey, in docInput, limit int) ([]graphChunk, graphSeedInfo, error) {
+	info := graphSeedInfo{How: "ids"}
 	where := []string{}
 	args := []any{}
 	if len(in.SeedIDs) > 0 {
@@ -150,7 +357,25 @@ func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docIn
 		for _, id := range in.SeedIDs {
 			args = append(args, id)
 		}
+	} else if ranked := d.graphSemanticSeeds(ctx, key, in.Query, graphSeedTopK); len(ranked) > 0 {
+		// SEMANTIC FIRST when a query was given and the store can answer it. The
+		// title match below stays as the fallback, and as the only path when there
+		// is no embedder — a recall that worked before must not start failing.
+		info.How = "semantic"
+		info.Ranked = ranked
+		n := graphDefaultSeeds
+		if in.Seeds > 0 {
+			n = in.Seeds
+		}
+		if n > len(ranked) {
+			n = len(ranked)
+		}
+		where = append(where, "c.id IN ("+placeholders(n)+")")
+		for _, id := range ranked[:n] {
+			args = append(args, id)
+		}
 	} else {
+		info.How = "title"
 		// Case-insensitive contains, as a COARSE PREFILTER only — the word-boundary
 		// check happens in Go below, because portable SQL has no word boundary and
 		// faking one with padded LIKE breaks on punctuation. LOWER on both sides
@@ -220,13 +445,17 @@ func (d *Document) graphSeeds(ctx context.Context, key sqlmem.ScopeKey, in docIn
 	args = append(args, fetch)
 	res, err := d.query(ctx, key, stmt, args...)
 	if err != nil {
-		return nil, err
+		return nil, info, err
 	}
 	rows := scanGraphRows(res.Rows, 0, "", "")
-	if len(in.SeedIDs) > 0 {
-		return rows, nil
+	if info.How != "title" {
+		// Explicit ids and semantic seeds are both already the chosen set; the
+		// whole-word filter exists to survive the LIKE prefilter and would drop a
+		// semantically-ranked fact whose body does not contain the query's words,
+		// which is the entire point of ranking it semantically.
+		return rows, info, nil
 	}
-	return filterWholeWord(rows, in.Query, limit), nil
+	return filterWholeWord(rows, in.Query, limit), info, nil
 }
 
 // seedPrefilterFactor is how many LIKE candidates to consider per requested seed.
