@@ -2763,35 +2763,47 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			}
 			frontier = next
 		}
-		for _, cid := range ids {
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`, cid, cid); err != nil {
-				return err
+		// BATCHED, and it matters most here of all the cascades. This ran SEVEN
+		// statements per chunk over the whole descendant set, inside one transaction
+		// — at the cascade's own 10k-per-level cap that is ~70k statements holding a
+		// transaction open, and on postgres each is a round trip. Batched it is seven
+		// per 500 chunks.
+		//
+		// The ORDER is unchanged and load-bearing: every dependent row goes before
+		// the chunk row it hangs off, so an interrupted cascade cannot leave a
+		// sidecar/revision/layout row pointing at a chunk that is gone. The
+		// transaction makes that moot on commit, but the order is what keeps the
+		// intent readable.
+		for _, batch := range batchIDs(ids, graphIDBatch) {
+			if len(batch) == 0 {
+				continue
 			}
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_assets WHERE chunk_id = ?`, cid); err != nil {
-				return err
+			marks := placeholders(len(batch))
+			args := make([]any, 0, len(batch))
+			for _, cid := range batch {
+				args = append(args, cid)
 			}
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_tags WHERE chunk_id = ?`, cid); err != nil {
+			// chunk_edges is the one that matches on EITHER endpoint, so it takes the
+			// id list twice.
+			edgeArgs := append(append(make([]any, 0, len(batch)*2), args...), args...)
+			if err := d.execTxn(ctx, txnID,
+				`DELETE FROM chunk_edges WHERE from_id IN (`+marks+`) OR to_id IN (`+marks+`)`,
+				edgeArgs...); err != nil {
 				return err
 			}
 			// The sidecar's SECOND cascade site. Both are required: delete_document
 			// walks by document, this walks the descendant set of one chunk, and a
 			// sidecar row reachable only through the path that was missed is an orphan
-			// nothing can see.
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, cid); err != nil {
-				return err
+			// nothing can see. chunk_revisions is the body-change log (RFC BS Phase
+			// 3a) and chunk_layout the canvas row — both orphan the same way.
+			for _, tbl := range []string{"chunk_assets", "chunk_tags", "chunk_memory_meta",
+				"chunk_revisions", "chunk_layout"} {
+				if err := d.execTxn(ctx, txnID,
+					`DELETE FROM `+tbl+` WHERE chunk_id IN (`+marks+`)`, args...); err != nil {
+					return err
+				}
 			}
-			// The body-change log for this chunk (RFC BS Phase 3a). Before the chunk
-			// row goes, like the other per-chunk cascades — an orphaned revision row
-			// is invisible dead data nothing reaps.
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_revisions WHERE chunk_id = ?`, cid); err != nil {
-				return err
-			}
-			// The canvas layout row for this chunk — the descendant-walk cascade site
-			// (delete_document walks by document; this walks one chunk's subtree).
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_layout WHERE chunk_id = ?`, cid); err != nil {
-				return err
-			}
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id = ?`, cid); err != nil {
+			if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE id IN (`+marks+`)`, args...); err != nil {
 				return err
 			}
 		}
