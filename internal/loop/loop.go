@@ -1003,10 +1003,22 @@ func reResolveForOperatorTurn(ctx context.Context, opts *RunOptions, emit func(p
 	if opts.Provider != nil {
 		from = opts.Provider.ID() + "/" + opts.Model
 	}
+	to := provider.ID() + "/" + model
 	opts.Provider, opts.Model, opts.Effort = provider, model, effort
+
+	// EventOverride, NOT EventProviderFallback. A fallback means the runtime
+	// moved the run because something failed; this means a person chose to. A
+	// reader who cannot tell them apart will read a deliberate retune as an
+	// outage — and the two want opposite responses.
 	emit(providers.Event{
-		Type: providers.EventProviderFallback,
-		Text: "routing changed by operator: " + from + " → " + provider.ID() + "/" + model,
+		Type: providers.EventOverride,
+		Text: "routing changed by operator: " + from + " → " + to,
+		Override: &providers.OverrideInfo{
+			Source:    "operator",
+			FromModel: from,
+			ToModel:   to,
+			Fields:    []string{"model"},
+		},
 	})
 }
 

@@ -955,6 +955,27 @@ message Event {
   // transient concurrency cap from an exhausted budget: both are terminal,
   // both stream an error frame, and they want opposite responses.
   ErrorInfo error_info = 13;
+
+  // override carries the payload on type=override frames (RFC DC) — a run's
+  // own configuration changed while it was running, because an operator
+  // retuned it. Distinct from a provider fallback on purpose: a fallback means
+  // the runtime moved the run because something failed, this means a person
+  // chose to, and the two want opposite responses.
+  OverrideInfo override = 14;
+}
+
+// OverrideInfo is the type=override payload (RFC DC). Mirrors
+// providers.OverrideInfo.
+//
+// Every field is operator-chosen configuration whose effects the model already
+// sees — a model name, a budget. No credential, no operator host, no token
+// suffix. Adding a field here is a disclosure decision: these frames reach
+// gRPC clients, the transcript, and snapshots.
+message OverrideInfo {
+  string source = 1;      // who changed it; "operator" today
+  string from_model = 2;  // "provider/model" before the change, when routing moved
+  string to_model = 3;    // "provider/model" after
+  repeated string fields = 4;  // the override keys the request actually set
 }
 
 // AwaitingInput is the type=awaiting_input payload (RFC AI). Mirrors

@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -167,5 +168,83 @@ func TestRetune_UnknownRunIsOpaque(t *testing.T) {
 	code, _ := postInput(t, ts, "r_doesnotexist", `{"text":"go","overrides":{"model":"model-b"}}`)
 	if code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 — the same answer a steer for an unknown run gets", code)
+	}
+}
+
+// RFC DC V9 on the HTTP side: the retune reaches the TRANSCRIPT as a typed
+// event, so a reader can explain why the answers changed after turn N.
+//
+// Asserted on the persisted JSON — the consumer's view — rather than on the
+// struct the loop built, because a missing json tag or an un-persisted event
+// type would leave every Go-side test green and every reader with nothing.
+func TestRetune_EmitsATypedOverrideEventOnTheTranscript(t *testing.T) {
+	srv, ts, prov, run := parkedRoutedRun(t)
+
+	if code, b := postInput(t, ts, run.ID, `{"text":"go","overrides":{"model":"model-b"}}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+	prov.waitForRequests(t, 1)
+
+	waitFor(t, "the override event to reach the transcript", func() bool {
+		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), `"override"`)
+	})
+
+	events, err := srv.store.GetTranscript(context.Background(), run.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range events {
+		if e.RunID != run.ID || e.Type != string(providers.EventOverride) {
+			continue
+		}
+		var ev providers.Event
+		if err := json.Unmarshal(e.Payload, &ev); err != nil {
+			t.Fatalf("the persisted override event is not a providers.Event: %v", err)
+		}
+		if ev.Override == nil {
+			t.Fatal("the override event persisted with no payload — a reader sees that " +
+				"something changed and not what")
+		}
+		// The pair is "provider/model". This fixture's stub reports one provider
+		// id for every candidate, so the MODEL half is what carries the signal
+		// here; asserting the provider half would only pin the stub.
+		if !strings.HasSuffix(ev.Override.ToModel, "/model-b") {
+			t.Errorf("to_model = %q, want it to end /model-b", ev.Override.ToModel)
+		}
+		if !strings.HasSuffix(ev.Override.FromModel, "/model-a") {
+			t.Errorf("from_model = %q, want it to end /model-a — without the FROM the reader "+
+				"cannot tell what changed", ev.Override.FromModel)
+		}
+		if ev.Override.FromModel == ev.Override.ToModel {
+			t.Error("from and to are identical, so the event reports a change that did not happen")
+		}
+		if ev.Override.Source != "operator" {
+			t.Errorf("source = %q, want operator", ev.Override.Source)
+		}
+		found = true
+	}
+	if !found {
+		t.Error("no override event on the transcript")
+	}
+}
+
+// It must NOT be an EventProviderFallback. A fallback means the runtime moved
+// the run because something failed; this means a person chose to. A consumer
+// that cannot tell them apart renders a deliberate retune as an outage.
+func TestRetune_IsNotReportedAsAProviderFallback(t *testing.T) {
+	srv, ts, prov, run := parkedRoutedRun(t)
+
+	if code, b := postInput(t, ts, run.ID, `{"text":"go","overrides":{"model":"model-b"}}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+	prov.waitForRequests(t, 1)
+	waitFor(t, "the override event", func() bool {
+		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), `"override"`)
+	})
+
+	if got := runTranscriptText(t, srv.store, run.SessionID, run.ID); strings.Contains(got, "provider_fallback") {
+		t.Error("the retune was reported as a provider fallback; a reader would see an " +
+			"outage where an operator made a choice")
 	}
 }

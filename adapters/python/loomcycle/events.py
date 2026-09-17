@@ -109,6 +109,27 @@ class LimitInfo:
 
 
 @dataclass(frozen=True)
+class OverrideInfo:
+    """Structured payload on ``override`` events (RFC DC per-run overrides).
+
+    A run's own configuration changed WHILE IT WAS RUNNING, because an operator
+    retuned it. Distinct from a provider fallback on purpose: a fallback means
+    the runtime moved the run because something failed, this means a person
+    chose to, and the two want opposite responses from a consumer.
+
+    Names what MOVED rather than what the settings now are — "the configuration
+    changed" answers nothing for someone trying to explain why the answers got
+    different after turn 12. Carries only operator-chosen configuration whose
+    effects are already visible: a model name, a budget. No credential, no
+    operator host. Mirrors ``providers.OverrideInfo`` on the Go side."""
+
+    source: str  # who changed it; "operator" today
+    from_model: str = ""  # "provider/model" before, when routing moved
+    to_model: str = ""  # "provider/model" after
+    fields: tuple[str, ...] = ()  # the override keys the request actually set
+
+
+@dataclass(frozen=True)
 class ErrorInfo:
     """The machine-readable half of a terminal run failure.
 
@@ -151,6 +172,7 @@ class AgentEvent:
     awaiting_input: Optional[AwaitingInput] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
+    override: Optional[OverrideInfo] = None
     error_info: Optional[ErrorInfo] = None
     error: str = ""
     is_error: bool = False
@@ -216,6 +238,14 @@ class AgentEvent:
                 limit=ev.limit.limit,
                 message=ev.limit.message,
             )
+        ov: Optional[OverrideInfo] = None
+        if ev.HasField("override"):
+            ov = OverrideInfo(
+                source=ev.override.source,
+                from_model=ev.override.from_model,
+                to_model=ev.override.to_model,
+                fields=tuple(ev.override.fields),
+            )
         ei: Optional[ErrorInfo] = None
         if ev.HasField("error_info"):
             ei = ErrorInfo(
@@ -238,6 +268,7 @@ class AgentEvent:
             awaiting_input=ai,
             user_input=ui,
             limit=li,
+            override=ov,
             error_info=ei,
             error=ev.error,
             is_error=ev.is_error,
