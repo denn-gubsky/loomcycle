@@ -26,6 +26,7 @@ import (
 type traceBackfillReport struct {
 	Tenant     string `json:"tenant"`
 	UserID     string `json:"user_id"`
+	Agent      string `json:"agent,omitempty"`
 	Sessions   int    `json:"sessions_scanned"`
 	TurnsFound int    `json:"turns_found"`
 	Indexed    int    `json:"indexed"`
@@ -91,9 +92,23 @@ func (s *Server) handleMemoryBackfillTraces(w http.ResponseWriter, r *http.Reque
 	withAssistant := r.URL.Query().Get("assistant") == "1" ||
 		strings.EqualFold(r.URL.Query().Get("assistant"), "true")
 
-	rep := traceBackfillReport{Tenant: tenant, UserID: userID, DryRun: dryRun, StopReason: "complete"}
+	// WHICH chats, not just how many. `limit` bounds the work but cannot choose
+	// the subject: ListSessions orders newest-first, so a bounded run walks into
+	// an operator's most RECENT chats — the exact opposite of "make my archive
+	// searchable", which is what this endpoint is for.
+	//
+	// It is also a correctness concern for anyone whose store mixes conversations with
+	// machine-generated sessions. A benchmark store here held 1627 sessions for
+	// one user, of which 19 were real conversations and 1608 were evaluation runs
+	// whose prompts quote the answer key; an unfiltered backfill would have
+	// embedded those answers into the very index the evaluation then searches.
+	// The serving agent separates them exactly, so expose it.
+	//
+	// SessionFilter already carries AgentName; this only stops discarding it.
+	agent := strings.TrimSpace(r.URL.Query().Get("agent"))
+	rep := traceBackfillReport{Tenant: tenant, UserID: userID, Agent: agent, DryRun: dryRun, StopReason: "complete"}
 	sessions, _, err := s.store.ListSessions(r.Context(),
-		store.SessionFilter{TenantID: tenant, UserID: userID}, limit, 0)
+		store.SessionFilter{TenantID: tenant, UserID: userID, AgentName: agent}, limit, 0)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
