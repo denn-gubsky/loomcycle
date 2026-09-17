@@ -2883,6 +2883,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
+		// RFC DC P3: a parked run adopts a retune on its next operator turn.
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
 	})
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr, meta)
 	return nil
@@ -4587,13 +4589,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		RecallIndex: s.recallIndexForRun(mergedContext),
 		// RFC BL P3 + RFC CT P2: installed when compaction.memory_flush OR
 		// context.harvest_to_memory is set, else nil (unopted path byte-identical).
-		BankCompactedSpan:      s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(mergedContext), rid.TenantID, req.UserID, req.Agent, runID, sessionID),
-		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
-		UserTier:               req.UserTier,
-		FallbackPolicy:         fbPolicy,
-		ReResolve:              fbReResolve,
-		Hooks:                  s.hookDispatcher,
-		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, req.UserTier),
+		BankCompactedSpan:       s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(mergedContext), rid.TenantID, req.UserID, req.Agent, runID, sessionID),
+		ContextPlugins:          s.contextPlugins, // RFC Z runtime-wide chain (code-js exempt in the loop)
+		UserTier:                req.UserTier,
+		FallbackPolicy:          fbPolicy,
+		ReResolve:               fbReResolve,
+		Hooks:                   s.hookDispatcher,
+		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
 	}
 
 	// Cooperative pause quiesce (RFC X / F41): the loop parks at an iteration
@@ -5230,41 +5233,42 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot, runRouting)
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
-		Provider:               provider,
-		Model:                  model,
-		Tools:                  allowedTools,
-		Dispatcher:             dispatcher,
-		Segments:               injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
-		PriorMessages:          priorMessages,
-		PauseGate:              gate,
-		OnEvent:                emit,
-		OnHeartbeat:            heartbeat,
-		MaxTokens:              agentDef.MaxTokens,      // 0 → driver default
-		MaxContextTokens:       runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:          agentDef.MaxIterations,  // 0 → loop default (16)
-		UnboundedIterations:    agentDef.UnboundedIterations,
-		SteerQueue:             steerQ,
-		OnSteer:                onSteer,
-		Effort:                 effort,
-		MarkStalled:            s.markStalledFn(providerID, model),
-		MarkRateLimited:        s.markRateLimitedFn(body.UserTier),
-		ClearStall:             s.clearStallFn(providerID, model),
-		ToolParallelism:        s.cfg().Env.ToolParallelism,
-		AgentName:              sess.Agent,
-		CodeBody:               agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
-		Metadata:               body.Metadata,
-		RunTimeoutSeconds:      runCfg.RunTimeoutSeconds,
-		Interactive:            body.Interactive,
-		ArmTurnCancel:          s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
-		Sampling:               runCfg.Sampling,                             // merged once, above
-		Compaction:             runCfg.Compaction,                           // merged once, above
-		Context:                runCfg.Context,                              // merged once, above (RFC CR)
-		ContextPlugins:         s.contextPlugins,                            // RFC Z runtime-wide chain (code-js exempt in the loop)
-		UserTier:               body.UserTier,
-		FallbackPolicy:         fbPolicy,
-		ReResolve:              fbReResolve,
-		Hooks:                  s.hookDispatcher,
-		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, body.UserTier),
+		Provider:                provider,
+		Model:                   model,
+		Tools:                   allowedTools,
+		Dispatcher:              dispatcher,
+		Segments:                injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
+		PriorMessages:           priorMessages,
+		PauseGate:               gate,
+		OnEvent:                 emit,
+		OnHeartbeat:             heartbeat,
+		MaxTokens:               agentDef.MaxTokens,      // 0 → driver default
+		MaxContextTokens:        runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
+		MaxIterations:           agentDef.MaxIterations,  // 0 → loop default (16)
+		UnboundedIterations:     agentDef.UnboundedIterations,
+		SteerQueue:              steerQ,
+		OnSteer:                 onSteer,
+		Effort:                  effort,
+		MarkStalled:             s.markStalledFn(providerID, model),
+		MarkRateLimited:         s.markRateLimitedFn(body.UserTier),
+		ClearStall:              s.clearStallFn(providerID, model),
+		ToolParallelism:         s.cfg().Env.ToolParallelism,
+		AgentName:               sess.Agent,
+		CodeBody:                agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
+		Metadata:                body.Metadata,
+		RunTimeoutSeconds:       runCfg.RunTimeoutSeconds,
+		Interactive:             body.Interactive,
+		ArmTurnCancel:           s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
+		Sampling:                runCfg.Sampling,                             // merged once, above
+		Compaction:              runCfg.Compaction,                           // merged once, above
+		Context:                 runCfg.Context,                              // merged once, above (RFC CR)
+		ContextPlugins:          s.contextPlugins,                            // RFC Z runtime-wide chain (code-js exempt in the loop)
+		UserTier:                body.UserTier,
+		FallbackPolicy:          fbPolicy,
+		ReResolve:               fbReResolve,
+		Hooks:                   s.hookDispatcher,
+		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
 	})
 	if runErr != nil {
 		stream.send(runErrorEvent(runErr))
@@ -7210,6 +7214,20 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 // runInputRequest is the JSON body for POST /v1/runs/{run_id}/input.
 type runInputRequest struct {
 	Text string `json:"text"`
+
+	// Overrides retunes the run (RFC DC P3). Merged into the run's stored
+	// configuration and adopted on the turn this request starts, so an operator
+	// can change the model on a chat that has been sitting parked.
+	//
+	// MERGED, not replaced: changing the model must not silently drop the
+	// temperature set at run start. Validated against the agent's current
+	// definition before it is stored, so a refusal lands here rather than
+	// surfacing as a surprise next turn.
+	//
+	// Authorisation is deliberately unchanged: this endpoint is already
+	// tenant-gated and scope-gated at runs:create, and a caller who may not
+	// steer a run may not retune it.
+	Overrides *runOverridesWire `json:"overrides,omitempty"`
 }
 
 // handleRunInput serves POST /v1/runs/{run_id}/input — inject an operator
@@ -7237,6 +7255,27 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	if text == "" {
 		http.Error(w, "text is required", http.StatusUnprocessableEntity)
 		return
+	}
+
+	// RFC DC P3: apply the retune BEFORE delivering the text. The loop re-reads
+	// the run's configuration when the operator's turn arrives, so the record
+	// has to be in the store by the time the message wakes it — the other order
+	// would apply the change one turn late, which is exactly the silent
+	// off-by-one an operator would read as "it ignored me".
+	//
+	// The tenant gate lives in SteerRun below and folds a cross-tenant run into
+	// an opaque 404, so the read here is gated the same way: a run the caller
+	// may not steer produces the same 404 it always did, before any retune.
+	if !req.Overrides.isZero() {
+		run, rerr := s.runForSteer(r.Context(), runID)
+		if rerr != nil {
+			http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+			return
+		}
+		if oerr := s.retuneRun(r.Context(), run, req.Overrides); oerr != nil {
+			writeResolveError(w, oerr)
+			return
+		}
 	}
 
 	// Resolve the authoritative source at the HTTP auth boundary (cookie →

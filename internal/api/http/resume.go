@@ -485,7 +485,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		ReResolve:              fbReResolve,
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, run.UserTier),
-		PauseGate:              gate,
+		// RFC DC P3: a RESTORED parked chat is the case this matters most for —
+		// it is the one an operator comes back to and retunes.
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
+		PauseGate:               gate,
 	}
 
 	go func() {

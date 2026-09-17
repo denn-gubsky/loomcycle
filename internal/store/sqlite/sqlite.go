@@ -3000,6 +3000,38 @@ func (s *Store) SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, erro
 // SetRunPauseState implements store.Store. Validates the state at the
 // boundary (refuses anything outside the PauseState* constants) and
 // writes runs.pause_state. Returns *ErrNotFound when no row matches.
+// SetRunModel implements store.Store.
+func (s *Store) SetRunModel(ctx context.Context, runID, providerID, model string) error {
+	if runID == "" {
+		return fmt.Errorf("set run model: run_id required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET provider = ?, model = ? WHERE id = ?`,
+		nilIfEmpty(providerID), nilIfEmpty(model), runID)
+	if err != nil {
+		return fmt.Errorf("set run model: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
+// SetRunConfig implements store.Store.
+func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error {
+	if runID == "" {
+		return fmt.Errorf("set run config: run_id required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET run_config = ? WHERE id = ?`,
+		nilIfEmptyRaw(cfg), runID)
+	if err != nil {
+		return fmt.Errorf("set run config: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
 func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error {
 	switch state {
 	case store.PauseStateRunning, store.PauseStatePausing, store.PauseStatePaused:
