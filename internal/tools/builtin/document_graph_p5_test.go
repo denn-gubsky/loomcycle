@@ -165,3 +165,61 @@ func TestGraphRecall_HopCeilingMessageNamesTheBudget(t *testing.T) {
 		t.Errorf("the refusal should point at what actually bounds a walk, got %q", r.Text)
 	}
 }
+
+// TestGraphRecall_BudgetBuysAssertionsBeforeNames.
+//
+// An identity node's title is a NAME ("Yelby"); it asserts nothing, and a reader
+// handed one learns nothing it can answer from. Charging names at the same
+// priority as facts wastes the budget on them: measured live, 17 of 42 returned
+// rows were names and the budget filled at 1194 of 1200, buying 25 facts where
+// assertion-first buys 30 for the same spend.
+//
+// ⚠️ The classifier is the `about` EDGE, not `type = 'fact'`. A distilled fact's
+// type is the constant "fact", but `remember` stamps the CALLER's type — so the
+// type test would demote an operator-remembered fact to a name, which is the
+// same reasoning the verification-coverage query records.
+func TestGraphRecall_BudgetBuysAssertionsBeforeNames(t *testing.T) {
+	d, ctx, docID, _ := entityFixture(t)
+	mk := func(title, typ, key string) string {
+		out, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+
+			`","title":"`+title+`","type":"`+typ+`","natural_key":"`+key+`"}`)
+		if r.IsError {
+			t.Fatalf("upsert %s: %s", title, r.Text)
+		}
+		return asStr(out["id"])
+	}
+	// One short NAME, and one long assertion about it, joined by an `about` edge —
+	// the shape the consolidator actually writes.
+	name := mk("Zog", "person", "person:Zog")
+	fact := mk("Zog works at the Analytical Engine Company in London.", "fact", "fact:zog-works")
+	if _, r := docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","document_id":"`+docID+
+		`","from_id":"`+fact+`","to_id":"`+name+`","kind":"about"}`); r.IsError {
+		t.Fatalf("link about: %s", r.Text)
+	}
+
+	// A budget big enough for the assertion but not for both.
+	got, r := docExec(t, d, ctx, `{"op":"graph_recall","scope":"user","seed_ids":["`+name+
+		`"],"hops":1,"budget_chars":54}`)
+	if r.IsError {
+		t.Fatalf("graph_recall: %s", r.Text)
+	}
+	titles := map[string]bool{}
+	for _, c := range graphTitles(got) {
+		titles[c] = true
+	}
+	if !titles["Zog works at the Analytical Engine Company in London."] {
+		t.Errorf("the assertion lost the budget to a name; got %v", titles)
+	}
+}
+
+// graphTitles lists the titles a recall returned.
+func graphTitles(out map[string]any) []string {
+	rows, _ := out["chunks"].([]any)
+	titles := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if m, ok := r.(map[string]any); ok {
+			titles = append(titles, asStr(m["title"]))
+		}
+	}
+	return titles
+}

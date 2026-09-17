@@ -171,19 +171,52 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 	out := make([]graphChunk, 0, len(order))
 	used, backfilled := 0, 0
 	budget := in.BudgetChars
-	for _, id := range order {
-		c := seen[id]
-		if budget > 0 {
-			if used+len(c.Title) > budget {
-				truncated = true
-				continue
+	// ⚠️ SPEND THE BUDGET ON ASSERTIONS FIRST. An entity node's title is a NAME
+	// ("Yelby", "Imke Zoltan"); it carries no claim, and a reader handed one
+	// learns nothing it can answer from. Charging names at the same priority as
+	// facts cost a live walk the middle link of a three-relation chain: 17 of 42
+	// rows were entity nodes, the budget filled at 1194 of 1200, and
+	// "Lumfield Textiles is based in Istcombe" — the hop that joins the two ends
+	// the walk DID find — was pushed out by names.
+	//
+	// Entity nodes still come back, because they are how a caller sees the path
+	// the walk took; they simply queue behind the facts rather than ahead of them.
+	// BFS order is preserved inside each pass, so a nearer fact still beats a
+	// further one.
+	passes := [][]string{order}
+	if budget > 0 {
+		// WHY THE EDGE AND NOT THE CHUNK TYPE. A distilled fact's type is the
+		// constant "fact", which makes `type = 'fact'` the obvious test — but
+		// `remember` stamps the CALLER's type, so that filter demotes an
+		// operator-remembered fact to a name. Being the TARGET of an `about` edge
+		// is what an identity node structurally is, which is the same test the
+		// verification-coverage query settled on for the same reason.
+		identity := d.graphIdentityNodes(ctx, key, order)
+		facts, entities := make([]string, 0, len(order)), make([]string, 0, len(order))
+		for _, id := range order {
+			if identity[id] {
+				entities = append(entities, id)
+			} else {
+				facts = append(facts, id)
 			}
-			used += len(c.Title)
-		} else if len(out) >= limit {
-			truncated = true
-			break
 		}
-		out = append(out, c)
+		passes = [][]string{facts, entities}
+	}
+	for _, pass := range passes {
+		for _, id := range pass {
+			c := seen[id]
+			if budget > 0 {
+				if used+len(c.Title) > budget {
+					truncated = true
+					continue
+				}
+				used += len(c.Title)
+			} else if len(out) >= limit {
+				truncated = true
+				break
+			}
+			out = append(out, c)
+		}
 	}
 	if budget > 0 && seedInfo.How == "semantic" {
 		for _, id := range seedInfo.Ranked {
@@ -216,6 +249,37 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		payload["backfilled"] = backfilled
 	}
 	return okJSONCount(payload, len(out))
+}
+
+// graphIdentityNodes reports which of these chunks are identity nodes — the
+// targets of an `about` edge. One round trip for the whole set.
+//
+// A miss is safe in the direction that matters: an unreadable store returns an
+// empty set, every chunk is then treated as an assertion, and the budget spends
+// exactly as it did before this existed.
+func (d *Document) graphIdentityNodes(ctx context.Context, key sqlmem.ScopeKey, ids []string) map[string]bool {
+	out := map[string]bool{}
+	if len(ids) == 0 {
+		return out
+	}
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	res, err := d.query(ctx, key,
+		`SELECT DISTINCT to_id FROM chunk_edges WHERE kind = 'about' AND to_id IN (`+
+			placeholders(len(ids))+`)`, args...)
+	if err != nil {
+		return out
+	}
+	for _, row := range res.Rows {
+		if len(row) > 0 {
+			if id, ok := row[0].(string); ok && id != "" {
+				out[id] = true
+			}
+		}
+	}
+	return out
 }
 
 // graphChunkByID reads one chunk for the backfill. Separate from the seed query
