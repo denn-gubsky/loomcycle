@@ -144,6 +144,12 @@ type Manager struct {
 	reaperStop chan struct{}
 	reaperDone chan struct{} // closed by the reaper goroutine on exit (nil if none)
 
+	// Schema-provisioning memo — see EnsureOnce. Keyed on the scope triple, and
+	// lives on the MANAGER rather than on a caller because the callers are many
+	// short-lived structs sharing one Manager pointer.
+	ensuredMu sync.Mutex
+	ensured   map[string]struct{}
+
 	// Durable-scope GC (Phase 3d). touch debounce + the sweeper goroutine.
 	touchMu   sync.Mutex
 	lastTouch map[string]time.Time
@@ -206,7 +212,8 @@ func New(cfg Config) (*Manager, error) {
 // newManager wires the facade + the explicit-transaction registry and starts
 // the abandoned-txn reaper. Shared by New (sqlite) and NewPostgres.
 func newManager(d dialect, cfg Config, b backend) *Manager {
-	m := &Manager{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(), lastTouch: make(map[string]time.Time)}
+	m := &Manager{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(),
+		lastTouch: make(map[string]time.Time), ensured: make(map[string]struct{})}
 	m.startReaper()
 	m.startGC()
 	return m
@@ -269,6 +276,72 @@ func ScopeTenant(tenant string) string {
 // key. Named rather than inlined so the three call sites cannot disagree by
 // typo, and so a change here is a change everywhere.
 const defaultTenantKey = "default"
+
+// memoID is the provisioning memo's key. Callers validate() first — the separator
+// is what makes this unambiguous, and a component carrying it would alias scopes.
+func (k ScopeKey) memoID() string {
+	return k.Tenant + string(scopeKeySep) + k.Scope + string(scopeKeySep) + k.ScopeID
+}
+
+// EnsureOnce runs fn the first time a scope is seen and skips it thereafter.
+//
+// WHY THIS EXISTS. A consumer that provisions its own tables had no way to say
+// "already done", so it re-asserted the whole schema on every call. Measured on the
+// Document tool: 16 CREATE … IF NOT EXISTS statements, an asset DDL and 9 migration
+// probes ran ahead of every op, and on the sqlite tier that was 322µs of a 453µs
+// get_chunk — 71% of the call doing nothing. On postgres each of those is a network
+// round trip against one statement of real work.
+//
+// It memoises SUCCESS only: a failed fn is not recorded, so a transient provisioning
+// error is retried rather than cached as done.
+//
+// ⚠️ PROCESS-LIFETIME, so it is a claim about this process and not about the
+// database. A schema dropped underneath a running server — an operator reset, a GC
+// sweep of a durable scope — leaves the memo asserting tables that are gone, and the
+// next statement fails with "no schema has been selected to create in". That is what
+// ForgetEnsured is for, and why the consumer must call it on that error rather than
+// treat the memo as permanent.
+func (m *Manager) EnsureOnce(key ScopeKey, fn func() error) error {
+	// VALIDATED, because the memo id is the three components joined by the reserved
+	// separator: a component carrying that byte could make two distinct scopes derive
+	// the SAME id, and one scope's provisioning would then mark the other as done.
+	// Same argument the storage-name derivations make, which is why the entry-point
+	// test insists on it here too.
+	if err := key.validate(); err != nil {
+		return err
+	}
+	id := key.memoID()
+	m.ensuredMu.Lock()
+	_, done := m.ensured[id]
+	m.ensuredMu.Unlock()
+	if done {
+		return nil
+	}
+	// fn runs OUTSIDE the lock: it issues DDL, and holding a process-wide mutex
+	// across that would serialise every scope's first call behind the slowest one.
+	// Two callers racing on the same new scope both run it, which is exactly what
+	// happened before the memo existed and is what CREATE … IF NOT EXISTS is for.
+	if err := fn(); err != nil {
+		return err
+	}
+	m.ensuredMu.Lock()
+	m.ensured[id] = struct{}{}
+	m.ensuredMu.Unlock()
+	return nil
+}
+
+// ForgetEnsured drops a scope's memo so the next EnsureOnce provisions again.
+func (m *Manager) ForgetEnsured(key ScopeKey) {
+	// An invalid key can never have been recorded (EnsureOnce refuses it), so there
+	// is nothing to forget and no reason to derive an id that could alias a real one.
+	if key.validate() != nil {
+		return
+	}
+	id := key.memoID()
+	m.ensuredMu.Lock()
+	delete(m.ensured, id)
+	m.ensuredMu.Unlock()
+}
 
 func (k ScopeKey) validate() error {
 	for _, part := range []struct{ name, val string }{

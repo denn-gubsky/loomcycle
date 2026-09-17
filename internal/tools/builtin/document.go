@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -667,7 +668,57 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 // uses "default"; both consistently represent the single/default tenant.
 func direntTenant(ctx context.Context) string { return tools.RunIdentity(ctx).TenantID }
 
+// ensureSchema provisions the document tables for a scope, ONCE per process.
+//
+// It used to run in full on every op: 16 CREATE … IF NOT EXISTS statements, an
+// asset DDL and 9 migration probes ahead of the actual work. Measured on the sqlite
+// tier that was 322µs of a 453µs get_chunk — 71% of the call — and on postgres each
+// statement is a network round trip. A single benchmark run issued 915 Document
+// calls, so ~24k round trips existed only to re-assert a schema already there.
+//
+// The memo lives on the sqlmem Manager, not on this struct: &Document{} is built
+// ad-hoc in a dozen places (the Memory tool's placement helpers, Context, the HTTP
+// describe handler) and they all share one Manager pointer, so a per-struct cache
+// would miss every one of them.
 func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error {
+	return d.SqlMem.EnsureOnce(key, func() error { return d.provisionSchema(provisioning(ctx), key) })
+}
+
+// provisioningCtxKey marks a context as already inside schema provisioning.
+//
+// ⚠️ WITHOUT THIS THE RETRY BELOW IS INFINITELY RECURSIVE, and the shape is not
+// obvious: the migrations probe for a column with `SELECT col FROM t WHERE 1=0` and
+// read the ERROR as the answer — "no such column" IS how tableHasColumn says no. The
+// staleness retry treats that same error as a stale memo, re-provisions, which runs
+// the migrations, which probe again. One statement whose failure is expected turns
+// into a loop that never terminates.
+type provisioningCtxKey struct{}
+
+func provisioning(ctx context.Context) context.Context {
+	return context.WithValue(ctx, provisioningCtxKey{}, true)
+}
+
+func isProvisioning(ctx context.Context) bool {
+	v, _ := ctx.Value(provisioningCtxKey{}).(bool)
+	return v
+}
+
+// reensureSchema re-provisions after the memo has been invalidated. See the call
+// site in query/exec: a scope dropped underneath a running process leaves the memo
+// asserting tables that are gone.
+func (d *Document) reensureSchema(ctx context.Context, key sqlmem.ScopeKey) error {
+	if isProvisioning(ctx) {
+		return errAlreadyProvisioning
+	}
+	d.SqlMem.ForgetEnsured(key)
+	return d.ensureSchema(ctx, key)
+}
+
+// errAlreadyProvisioning short-circuits the staleness retry for statements issued
+// BY provisioning itself. Returned rather than nil so the caller does not retry.
+var errAlreadyProvisioning = errors.New("document: already provisioning")
+
+func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) error {
 	for _, ddl := range docSchemaDDL {
 		if _, err := d.SqlMem.Exec(ctx, key, ddl, nil, 0); err != nil {
 			return err
@@ -901,8 +952,12 @@ func (d *Document) documentsHasColumn(ctx context.Context, key sqlmem.ScopeKey, 
 // tableHasColumn is documentsHasColumn for any table. Both interpolate their
 // arguments, which is safe ONLY because every caller passes a literal — a probe
 // built from caller-supplied text would be an injection. Keep it that way.
+// ⚠️ Deliberately NOT d.query: this probe's ERROR is its answer ("no such column"
+// means no), and d.query reads that same error as a stale schema memo and
+// re-provisions. Going through the retry path here is what makes the migrations
+// call themselves. The raw call has no retry and no recursion.
 func (d *Document) tableHasColumn(ctx context.Context, key sqlmem.ScopeKey, table, col string) bool {
-	_, err := d.query(ctx, key, `SELECT `+col+` FROM `+table+` WHERE 1=0`)
+	_, err := d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(`SELECT `+col+` FROM `+table+` WHERE 1=0`), nil)
 	return err == nil
 }
 
@@ -1293,17 +1348,65 @@ func (d *Document) recordRevision(ctx context.Context, key sqlmem.ScopeKey, chun
 
 // --- SQL helpers ---
 
+// schemaMissing reports the errors that mean "the tables this statement needs are
+// not there", which is what a stale provisioning memo looks like from a statement.
+//
+// ⚠️ NARROW ON PURPOSE. Its only job is to decide whether re-provisioning and
+// retrying ONCE is worth it; anything broader would retry real failures and turn a
+// clear error into a slow one. The retry is safe precisely because these errors mean
+// the statement did nothing — there is no half-applied write to repeat.
+//
+// Both tiers, and three shapes: postgres raises 3F000 when the SCHEMA is gone (the
+// search_path names nothing), 42P01 when the schema exists but the TABLE does not,
+// and 42703 for a missing COLUMN; sqlite says "no such table" / "no such column".
+//
+// ⚠️ THE COLUMN CASE IS THE ONE THE MEMO NEEDS MOST. `CREATE TABLE IF NOT EXISTS`
+// leaves an existing table alone, so a column added by a later release arrives only
+// through the ALTER in provisionSchema — and memoising provisioning means that ALTER
+// runs once per process. If anything leaves a scope on the old shape after that
+// point, every write of the new column fails forever. Treating "no such column" as
+// staleness makes the memo SELF-HEALING: the statement fails, provisioning re-runs
+// (migrations included), and the retry succeeds. Without it the memo would convert a
+// recoverable pending migration into a permanent failure.
+func schemaMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"no schema has been selected", // postgres 3F000
+		"3f000",
+		"does not exist", // postgres 42P01 relation / 42703 column ... does not exist
+		"42p01",
+		"42703",
+		"no such table",  // sqlite
+		"no such column", // sqlite — a column a migration adds, not yet applied
+	} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 // exec/query run the tool's OWN statements (written with portable `?`
 // placeholders) — Rebind converts `?`→`$N` on the postgres tier. The raw `sql:`
 // escape hatch does NOT go through these (it calls the Manager directly with
 // the model's dialect-native SQL).
 func (d *Document) exec(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) error {
 	_, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
+	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
+		_, err = d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
+	}
 	return err
 }
 
 func (d *Document) query(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) (*sqlmem.QueryResult, error) {
-	return d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
+	res, err := d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
+	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
+		return d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
+	}
+	return res, err
 }
 
 // withSqlTxn runs fn inside a FRESH, independent SQL Memory transaction —
@@ -2329,6 +2432,14 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if in.Data == "" {
 		return errResult("set_asset: missing required field: data (base64 image bytes)"), nil
 	}
+	// Bound the ENCODED length before decoding. base64 expands 3 bytes into 4, so
+	// len(data)*3/4 is an exact upper bound on what the decode will allocate —
+	// checking after the fact means materialising an oversize image in order to
+	// reject it.
+	if maxB := d.maxAssetBytes(); len(in.Data)/4*3 > maxB {
+		return errResult(fmt.Sprintf("set_asset: image is at least %d bytes, exceeds the %d-byte cap",
+			len(in.Data)/4*3, maxB)), nil
+	}
 	raw, err := base64.StdEncoding.DecodeString(in.Data)
 	if err != nil {
 		return errResult("set_asset: data must be valid standard base64 (no data: prefix): " + err.Error()), nil
@@ -3071,12 +3182,26 @@ func (d *Document) backlinks(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.ID == "" {
 		return errResult("backlinks: missing required field: id"), nil
 	}
+	// BOUNDED, and it takes `limit` like its siblings. Inbound degree is the one
+	// direction that concentrates: on a 304-chunk benchmark store the maximum
+	// in-degree was 162, because a hub entity collects every fact written about it,
+	// and that grows with the corpus. Unbounded, backlinks on such a node returns
+	// the whole pile; it was also the only list-shaped op that read no limit at all,
+	// so a caller had no way to ask for less.
+	limit := graphDefaultLimit
+	if in.Limit > 0 {
+		limit = in.Limit
+	}
+	if limit > graphMaxLimit {
+		limit = graphMaxLimit
+	}
 	res, err := d.query(ctx, key, `SELECT e.from_id AS from_id, e.kind AS kind, e.auto AS auto,
        cf.title AS from_title, cf.type AS from_type, cf.status AS from_status, cf.document_id AS from_document_id
 FROM chunk_edges e
 LEFT JOIN chunks cf ON cf.id = e.from_id
 WHERE e.to_id = ?
-ORDER BY e.kind, e.created_at`, in.ID)
+ORDER BY e.kind, e.created_at
+LIMIT ?`, in.ID, limit)
 	if err != nil {
 		return errResult("backlinks: " + err.Error()), nil
 	}
@@ -4665,9 +4790,48 @@ func (d *Document) replaceDocumentTags(ctx context.Context, key sqlmem.ScopeKey,
 // style). table/keyCol are hardcoded literals ("chunk_tags"/"chunk_id" or
 // "document_tags"/"document_id"), never caller input.
 func (d *Document) addTagRows(ctx context.Context, key sqlmem.ScopeKey, table, keyCol, id string, tags []string) error {
-	for _, t := range sanitizeTags(tags) {
-		stmt := `INSERT INTO ` + table + ` (` + keyCol + `, tag) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM ` + table + ` WHERE ` + keyCol + ` = ? AND tag = ?)`
-		if err := d.exec(ctx, key, stmt, id, t, id, t); err != nil {
+	want := sanitizeTags(tags)
+	if len(want) == 0 {
+		return nil
+	}
+	// READ THEN WRITE, rather than one guarded INSERT per tag. The guard
+	// (`WHERE NOT EXISTS`) is portable idempotence, not a correctness barrier — the
+	// table's PRIMARY KEY (id, tag) is what actually enforces uniqueness — so the
+	// same idempotence comes from filtering in Go against one read. Set-a-tag-set is
+	// a routine call and this turns N round trips into 2.
+	//
+	// The race is UNCHANGED, not introduced: two concurrent adders could both pass
+	// the old per-row NOT EXISTS and collide on the primary key just the same.
+	res, err := d.query(ctx, key, `SELECT tag FROM `+table+` WHERE `+keyCol+` = ?`, id)
+	if err != nil {
+		return err
+	}
+	have := make(map[string]bool, len(res.Rows))
+	for _, r := range res.Rows {
+		if len(r) > 0 {
+			have[asStr(r[0])] = true
+		}
+	}
+	missing := make([]string, 0, len(want))
+	for _, t := range want {
+		if !have[t] {
+			missing = append(missing, t)
+		}
+	}
+	// Chunked so a caller handing in a very large tag set cannot build a statement
+	// with more placeholders than the driver accepts.
+	for _, batch := range batchIDs(missing, graphIDBatch) {
+		if len(batch) == 0 {
+			continue
+		}
+		vals := make([]string, 0, len(batch))
+		args := make([]any, 0, len(batch)*2)
+		for _, t := range batch {
+			vals = append(vals, "(?, ?)")
+			args = append(args, id, t)
+		}
+		stmt := `INSERT INTO ` + table + ` (` + keyCol + `, tag) VALUES ` + strings.Join(vals, ", ")
+		if err := d.exec(ctx, key, stmt, args...); err != nil {
 			return err
 		}
 	}
@@ -4677,8 +4841,21 @@ func (d *Document) addTagRows(ctx context.Context, key sqlmem.ScopeKey, table, k
 // removeTagRows deletes the given tags from a target (see addTagRows for the
 // hardcoded-identifier note).
 func (d *Document) removeTagRows(ctx context.Context, key sqlmem.ScopeKey, table, keyCol, id string, tags []string) error {
-	for _, t := range sanitizeTags(tags) {
-		if err := d.exec(ctx, key, `DELETE FROM `+table+` WHERE `+keyCol+` = ? AND tag = ?`, id, t); err != nil {
+	drop := sanitizeTags(tags)
+	if len(drop) == 0 {
+		return nil
+	}
+	for _, batch := range batchIDs(drop, graphIDBatch) {
+		if len(batch) == 0 {
+			continue
+		}
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, id)
+		for _, t := range batch {
+			args = append(args, t)
+		}
+		stmt := `DELETE FROM ` + table + ` WHERE ` + keyCol + ` = ? AND tag IN (` + placeholders(len(batch)) + `)`
+		if err := d.exec(ctx, key, stmt, args...); err != nil {
 			return err
 		}
 	}
