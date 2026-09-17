@@ -8,6 +8,85 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.82.0
+
+*A run can now choose how it runs — and a tool an agent was granted but could never use now works.*
+
+Eighteen PRs. Two features worth the version, plus the memory-graph work
+continuing underneath them.
+
+A RUN CHOOSES ITS OWN MODEL, BUDGET AND TUNING — WITHIN WHAT THE DEFINITION
+ALLOWS. Everything about how an agent ran used to be fixed at the definition: to
+try one question on a bigger model, or give one job a longer leash, you forked
+the agent. A run now carries its own `model` / `provider` / `tier` / `effort`,
+its own `max_tokens` / `max_iterations` / `unbounded_iterations`, and the tuning
+row (`retry_attempts`, the memory budgets, `inject_tool_guide`).
+
+Three rules make it safe rather than a hole in the definition:
+
+  - naming a model PINS it, clearing the tier — a cascade that may route
+    elsewhere does not answer "use this model";
+  - naming a provider NARROWS and keeps the tier, because collapsing it would
+    trade away fallback the caller never gave up;
+  - an unknown `effort` is REFUSED, not dropped. Ignored and applied look
+    identical from outside, and that is the whole problem with silent defaults.
+
+The budget knobs are raisable except `max_concurrent_children`, which may only
+be LOWERED — it is the only bound on sub-agent fan-out that exists, since a
+child takes no admission slot and is not budget-checked at spawn. Raising it is
+refused rather than clamped.
+
+The overrides survive the places a per-run value usually dies: a provider
+fallback re-resolves WITH them rather than from the definition, a paused run
+comes back carrying them, a parked run can be RETUNED mid-conversation, and a
+child inherits them only when it is the same definition (re-validated at spawn,
+and dropped rather than refused when it does not fit, because inheritance is
+offered rather than requested). They reach gRPC, the MCP spawn tools, and both
+adapters.
+
+Untrusted triggers cannot route: webhook, A2A and scheduled runs build their
+input from the definition, and an AST test over the input literals keeps it that
+way.
+
+A GRANTED TOOL THAT COULD NOT WORK NOW WORKS. An agent could hold `Memory` in
+its tools and be unable to use it, because `memory_scopes` was default-deny when
+empty and nothing said so — the refusal arrived when the model called the tool,
+mid-task. An unset `memory_scopes` now resolves to what the caller already OWNS:
+`user`, plus `tenant` for a non-isolated member. An unset `history_scope`
+resolves to `user`, since a user always has access to their own chats. A
+declared list stays authoritative and is never widened.
+
+⚠️ UPGRADE: an agent holding `Memory` or `History` with NO scope list gains
+user-scope access it did not have before. That is the intent — the grant was
+meant to work — but it is a posture change, so it is stated here rather than
+left to be discovered. To grant nothing, say so: `memory_scopes: ["-*"]`, the
+same spelling `skills: [-*]` already uses. An empty list cannot carry that
+meaning, because the stored agent shape omits empty lists and one reads back
+indistinguishable from never having been set.
+
+The default is applied at policy-resolution time, never written into the
+definition: these fields are content-identifying, so materialising a default
+would change every affected agent's `content_sha256` and fork it on upgrade.
+
+A MISSING PER-RUN CREDENTIAL NOW REFUSES THE CALL instead of dropping the header
+and sending it anyway. An unresolved `${run.user_bearer}` / `${run.credentials.
+<name>}` used to go out as an anonymous request — and a peer that does not
+authenticate served it. It is a business failure, not a retryable one, and the
+distinction matters: the retry path was previously spending 30 seconds of
+backoff on a request that could never succeed.
+
+GRAPH RECALL SEEDS SEMANTICALLY AND WALKS FAR ENOUGH. Traversal now starts from
+a semantic match rather than a title hit, bounds its hops, batches its id
+queries, and honours `limit`. Provisioning a scope's schema moved to once per
+process rather than once per call.
+
+Also: the MCP batch spawn tool advertises the per-run knobs it already accepted
+(it was accepting them and documenting none of them, which for a model-facing
+tool is the same as not having them), the Python adapter's override inputs reach
+the generated stubs and both request builders, and the transport-parity guard
+now checks each SURFACE rather than each file — it had been satisfied by one
+spawn tool on behalf of a sibling that carried nothing.
+
 ## What's in v1.81.0
 
 *A fact naming two things was stored joined to neither, and the benchmark built to catch that also answered whether graph traversal is worth building.*
