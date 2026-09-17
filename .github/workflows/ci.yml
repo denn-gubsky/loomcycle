@@ -148,9 +148,25 @@ jobs:
         # `FAIL ... 600.6s` with ZERO `--- FAIL` lines reads like a hung test rather
         # than an exhausted deadline. Every case still passed given time.
         #
-        # 1800s because this suite is inherently slow (a per-test schema, migrated
+        # 3600s because this suite is inherently slow (a per-test schema, migrated
         # from scratch, against a real database) and CI contention makes it slower
         # still. A genuinely hung test fails, just later.
+        #
+        # RAISED FROM 1800s after it tripped on main at 0f57ad96, on a commit whose
+        # entire diff was three files in internal/api — this job runs only
+        # ./internal/store/..., so the code under test was byte-identical to the run
+        # that passed 20 minutes earlier. It was contention: that merge and the one
+        # before it started 13 SECONDS apart, so two runs raced with a Postgres
+        # service container each.
+        #
+        # The measured spread is the argument. Typical is 9-11 min, but 40b6ced3 took
+        # 28 and 0f57ad96 blew past 30 — roughly 3x variance on shared runners against
+        # a cap with no headroom left. 3600s is ~2x the worst observed, and a real
+        # deadlock still fails within the hour.
+        #
+        # Note the timeout is PER PACKAGE BINARY, not per step: what hit the cap is
+        # internal/store/postgres alone (`FAIL ... 1800.007s`). Raising it does not
+        # slow a green run by one second — nothing waits on this number.
         #
         # A timeout here is also WORSE than a normal failure, which is the real
         # argument for the headroom: the deadline kills tests mid-flight so their
@@ -160,7 +176,7 @@ jobs:
         # same names and dies on "schema already exists" — a timeout does not just
         # fail, it poisons the database for the following run in a way that looks
         # like an unrelated bug.
-        run: go test -count=1 -timeout 1800s ./internal/store/...
+        run: go test -count=1 -timeout 3600s ./internal/store/...
 
       # COORDINATION TIER (multi-replica): cancel/steer coordinators, the
       # Postgres backplane, the replica store + heartbeat, the replicas sweeper
