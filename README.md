@@ -182,14 +182,21 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.80.0) made a tool failure legible to the agent
-receiving it. A failed call used to arrive as one boolean and one English
-sentence, so "no rows matched" and "the database was unreachable" were the same
-shape — and they call for opposite next moves. A failure now carries its
-category, whether resending can succeed, what to do instead, and a backoff where
-waiting actually helps, on every surface an agent can reach: MCP
-`structuredContent`, gRPC status details and streamed frames, the SSE event, and
-the tool_result text on every provider.
+The most recent line (v1.82.0) moved two decisions to where they belong. A RUN
+now chooses its own model, provider, tier, effort and budgets — within what its
+definition already allows, so it selects rather than widens — instead of needing
+a forked agent to try one question on a bigger model. And a tool an agent was
+GRANTED but could never use now works: an unset `memory_scopes` / `history_scope`
+resolves to what the caller already owns rather than denying by default and
+saying nothing until the model called the tool. (That second one is a posture
+change on upgrade; see [`REVISIONS.md`](REVISIONS.md).)
+
+Before it, v1.80.0 made a tool failure legible to the agent receiving it. A
+failed call used to arrive as one boolean and one English sentence, so "no rows
+matched" and "the database was unreachable" were the same shape — and they call
+for opposite next moves. A failure now carries its category, whether resending
+can succeed, what to do instead, and a backoff where waiting actually helps, on
+every surface an agent can reach.
 
 ## Architecture
 
