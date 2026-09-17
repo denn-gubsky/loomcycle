@@ -262,8 +262,10 @@ func TestGraphRecall_RefusesNonsense(t *testing.T) {
 	d, ctx, docID, ids := graphFixture(t)
 	for _, tc := range []struct{ name, body, want string }{
 		{"no seed", `{"op":"graph_recall","scope":"user","document_id":"` + docID + `"}`, "seed_ids"},
-		{"too many hops", `{"op":"graph_recall","scope":"user","seed_ids":["` + ids["Ada"] + `"],"hops":3}`, "0..2"},
-		{"negative hops", `{"op":"graph_recall","scope":"user","seed_ids":["` + ids["Ada"] + `"],"hops":-1}`, "0..2"},
+		// 6 is the cap: a four-hop chain is fact→entity→fact three times over.
+		// What bounds a long walk is budget_chars, not a short hop ceiling.
+		{"too many hops", `{"op":"graph_recall","scope":"user","seed_ids":["` + ids["Ada"] + `"],"hops":7}`, "0..6"},
+		{"negative hops", `{"op":"graph_recall","scope":"user","seed_ids":["` + ids["Ada"] + `"],"hops":-1}`, "0..6"},
 	} {
 		_, r := docExec(t, d, ctx, tc.body)
 		if !r.IsError {

@@ -96,7 +96,9 @@ const documentInputSchema = `{
 		"body":        {"type": "string", "description": "Markdown body."},
 		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
 		"query":     {"type": "string", "description": "search: free text matched semantically against chunk BODIES — the way into a document when you do not know where to look. graph_recall: find starting chunks whose title matches this text (use seed_ids instead when you already know where to start)."},
-		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. 0 = the starting chunks only, 1 = their neighbours (default), 2 = the maximum."},
+		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. A hop is ONE edge, so a fact→entity→fact step costs two: a two-hop question needs 2, a three-hop needs 4. 0 = the starting chunks only, 1 = their neighbours (default), 6 = the maximum. What bounds a long walk is budget_chars, not this."},
+		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
+		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"limit":     {"type": "integer", "description": "graph_recall: maximum chunks returned (default 50)."},
@@ -278,11 +280,21 @@ type docInput struct {
 	Class string `json:"class"`
 
 	// graph_recall inputs.
-	SeedIDs        []string `json:"seed_ids"`
-	Query          string   `json:"query"`
-	Hops           *int     `json:"hops"`
-	AsOf           *int64   `json:"as_of"`
-	IncludeRetired bool     `json:"include_retired"`
+	SeedIDs []string `json:"seed_ids"`
+	Query   string   `json:"query"`
+	Hops    *int     `json:"hops"`
+	// Seeds is how many of the ranked facts start a graph_recall walk. Small on
+	// purpose: seeding from every hit spends the budget before the walk
+	// contributes anything. 0 = the default.
+	Seeds int `json:"seeds"`
+	// BudgetChars caps graph_recall on the CONTENT handed back rather than on the
+	// row count, and turns on the backfill. A walk fetches more rows than a search
+	// by construction, so a row limit lets a walk win on volume; and when the graph
+	// runs dry the walk under-fills, which is worse than not walking. 0 = the
+	// old row-limited behaviour, unchanged.
+	BudgetChars    int    `json:"budget_chars"`
+	AsOf           *int64 `json:"as_of"`
+	IncludeRetired bool   `json:"include_retired"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
 	// is standard base64 (no data: prefix); it is decoded to raw bytes and stored
 	// in the chunk_assets BYTEA/BLOB table.
