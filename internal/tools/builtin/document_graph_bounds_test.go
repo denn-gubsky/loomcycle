@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,57 @@ func TestGraphNeighbours_CapsRowsPerHop(t *testing.T) {
 	}
 	if over || len(rows) != cap+1 {
 		t.Errorf("with room for all, got %d rows over=%v, want %d and false", len(rows), over, cap+1)
+	}
+}
+
+// TestGraphRecall_ExplicitSeedIDsAreNotTruncatedByLimit.
+//
+// `limit` used to bound the SEED query as well as the result, so handing in more ids
+// than the limit walked from a subset of them — accepted, dropped, and
+// indistinguishable from "the graph holds nothing else". Naming a chunk is an
+// assertion about where to START; limit bounds what comes BACK.
+func TestGraphRecall_ExplicitSeedIDsAreNotTruncatedByLimit(t *testing.T) {
+	d, ctx, docID, root := entityFixture(t)
+	ids := make([]string, 0, 8)
+	for i := 0; i < 8; i++ {
+		n := fmt.Sprint(i)
+		o, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+
+			`","parent_id":"`+root+`","title":"seed `+n+`","type":"fact","natural_key":"fact:s`+n+`"}`)
+		if r.IsError {
+			t.Fatalf("upsert %d: %s", i, r.Text)
+		}
+		ids = append(ids, `"`+asStr(o["id"])+`"`)
+	}
+	// limit BELOW the seed count: every id must still be walked from, and the cap
+	// must show up on the result instead.
+	got, r := docExec(t, d, ctx, `{"op":"graph_recall","scope":"user","seed_ids":[`+
+		strings.Join(ids, ",")+`],"hops":0,"limit":3}`)
+	if r.IsError {
+		t.Fatalf("graph_recall: %s", r.Text)
+	}
+	if n := asInt(got["seeds"]); n != 8 {
+		t.Errorf("seeds = %d, want all 8 — a caller that NAMED its starting chunks had "+
+			"some silently dropped, which reads as an empty graph", n)
+	}
+	chunks, _ := got["chunks"].([]any)
+	if len(chunks) > 3 {
+		t.Errorf("returned %d chunks under limit=3 — limit must still bound the RESULT", len(chunks))
+	}
+}
+
+// TestGraphRecall_TooManySeedIDsIsRefusedNotTruncated. The seeds go into one
+// IN(...), so an unbounded list also walks into the driver's placeholder ceiling.
+func TestGraphRecall_TooManySeedIDsIsRefusedNotTruncated(t *testing.T) {
+	d, ctx, _, _ := entityFixture(t)
+	ids := make([]string, 0, graphFrontierCap+1)
+	for i := 0; i < graphFrontierCap+1; i++ {
+		ids = append(ids, `"c`+fmt.Sprint(i)+`"`)
+	}
+	_, r := docExec(t, d, ctx, `{"op":"graph_recall","scope":"user","seed_ids":[`+strings.Join(ids, ",")+`]}`)
+	if !r.IsError {
+		t.Fatal("an over-cap seed list must be refused, not quietly cut down")
+	}
+	if !strings.Contains(r.Text, "split them across calls") {
+		t.Errorf("the refusal should tell the caller what to do instead, got %q", r.Text)
 	}
 }
