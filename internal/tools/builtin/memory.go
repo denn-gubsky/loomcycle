@@ -1167,46 +1167,6 @@ func (m *Memory) originAvailable(ctx context.Context, tenant string, prov store.
 	return false
 }
 
-// parseSources maps the wire strings onto the typed selector (RFC BW).
-//
-// UNKNOWN VALUES ARE DROPPED rather than rejected. The selector narrows what comes
-// back, so the failure mode of a typo is a caller believing it filtered when it did
-// not — but rejecting the whole call would make a future value name break an older
-// runtime, and each op's default already covers the empty result. The enum in the
-// input schema is where a caller learns the spelling.
-func parseSources(in []string) []memrank.Source {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]memrank.Source, 0, len(in))
-	for _, s := range in {
-		switch memrank.Source(strings.ToLower(strings.TrimSpace(s))) {
-		case memrank.SourceFacts:
-			out = append(out, memrank.SourceFacts)
-		case memrank.SourceNotes:
-			// WAS MISSING, and the failure was silent in two opposite directions.
-			// "notes" is in this op's own input-schema enum, so a caller had every
-			// reason to pass it — and an unknown value is DROPPED by design (see the
-			// doc above), which turned an explicit selector into no selector. On
-			// `search` that widened the result set to everything and looked like it
-			// worked; on `recall` it fell through to the facts-only default and
-			// returned nothing at all. Measured: a scope holding 419 embedded notes
-			// answered `recall sources=["notes"]` with zero rows while
-			// `search sources=["notes"]` returned three.
-			out = append(out, memrank.SourceNotes)
-		case memrank.SourceTraces:
-			// Added with the class. The guard that caught it missing is the same one
-			// that caught `notes` — a schema-advertised value silently dropped turns an
-			// explicit selector into no selector, which on `search` widens to
-			// everything and looks like it worked.
-			out = append(out, memrank.SourceTraces)
-		case memrank.SourceDocuments:
-			out = append(out, memrank.SourceDocuments)
-		}
-	}
-	return out
-}
-
 // coreBlockKeyPrefix is the reserved KV namespace for RFC BL P1 core memory
 // blocks (single source of truth in the memrank package, shared with the HTTP
 // injection reader): a block labeled <label> is stored at `core/<label>`.
@@ -1500,10 +1460,14 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if werr != nil {
 		return errResult(fmt.Sprintf("search: %s", werr)), nil
 	}
+	sources, serr := memrank.ParseSources(in.Sources)
+	if serr != nil {
+		return errResult(fmt.Sprintf("search: %s", serr)), nil
+	}
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
-		Sources:   parseSources(in.Sources),
+		Sources:   sources,
 		TopK:      topK,
 		When:      when,
 	}, rankCfg, dedupCfg)
@@ -1518,7 +1482,13 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 			errors.Is(err, store.ErrEmbedderNotConfigured) {
 			return errResult(err.Error()), nil
 		}
-		if errors.Is(err, memrank.ErrSourcesNotExpressible) {
+		// Both source refusals are caller-actionable and say what to ask for
+		// instead, so they are surfaced verbatim rather than wrapped. ErrTraces
+		// NotCombinable became reachable here only once `traces` was wired
+		// through the shared parser — before that it was unreachable from any
+		// surface that could not name the source at all.
+		if errors.Is(err, memrank.ErrSourcesNotExpressible) ||
+			errors.Is(err, memrank.ErrTracesNotCombinable) {
 			return errResult(err.Error()), nil
 		}
 		return errResult(fmt.Sprintf("search: %s", err)), nil
@@ -1711,11 +1681,15 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if werr != nil {
 		return errResult(fmt.Sprintf("recall: %s", werr)), nil
 	}
+	sources, serr := memrank.ParseSources(in.Sources)
+	if serr != nil {
+		return errResult(fmt.Sprintf("recall: %s", serr)), nil
+	}
 	res, err := layer.Recall(ctx, scope, scopeID, memrank.RecallQuery{
 		Query:     in.Query,
 		TopK:      topK,
 		Threshold: in.Threshold,
-		Sources:   parseSources(in.Sources),
+		Sources:   sources,
 		When:      when,
 	})
 	if err != nil {
