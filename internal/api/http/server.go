@@ -2846,10 +2846,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PauseGate:           gate,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
-		MaxTokens:           agentDef.MaxTokens,
+		MaxTokens:           routedDef.MaxTokens,     // RFC DC P2: the run's budget, raisable
 		MaxContextTokens:    runCfg.MaxContextTokens, // RFC CJ; per-run wins, 0 → provider/driver default
-		MaxIterations:       agentDef.MaxIterations,  // 0 → loop default (16)
-		UnboundedIterations: agentDef.UnboundedIterations,
+		MaxIterations:       routedDef.MaxIterations, // 0 → loop default (16)
+		UnboundedIterations: routedDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		Effort:              effort,

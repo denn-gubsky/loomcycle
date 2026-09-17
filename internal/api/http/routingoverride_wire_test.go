@@ -2,6 +2,10 @@ package http
 
 import (
 	"context"
+	"errors"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -239,5 +243,51 @@ func TestResourceOverride_CapLookupPrefersTheRunsOwnCap(t *testing.T) {
 	if strings.Index(body, "tools.FanoutCap(ctx)") > strings.Index(body, "lookup.Agent(") {
 		t.Error("CapLookup consults the definition BEFORE the run's own cap; the run's value " +
 			"must win, and it can only ever be narrower")
+	}
+}
+
+// RunOnce is the UNIVERSAL run path — every trigger surface routes through it,
+// and it is the one the gRPC and MCP twins will use in P6. It is also the path
+// no HTTP test reaches, which is how its budget wiring was left reading the
+// un-overridden definition while handleRuns worked perfectly.
+//
+// Found by a fail-before probe, not by review: the probe aimed at handleRuns
+// could not even find the line it meant to break in RunOnce.
+func TestResourceOverride_RunOnceAppliesTheBudget(t *testing.T) {
+	srv, _, prov, _ := routedServer(t)
+
+	err := srv.RunOnce(context.Background(), runner.RunInput{
+		Agent:     "router",
+		MaxTokens: 777,
+		Segments: []loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}},
+		},
+	}, runner.RunCallbacks{OnEvent: func(providers.Event) {}})
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := prov.waitForRequests(t, 1)[0].MaxTokens; got != 777 {
+		t.Errorf("provider was asked for max_tokens=%d, want 777 — RunOnce recorded the "+
+			"override and then resolved the loop's budget from the definition", got)
+	}
+}
+
+// The same path refuses a raise, so every trigger surface inherits the ceiling
+// rather than only the two HTTP handlers.
+func TestResourceOverride_RunOnceRefusesARaisedCeiling(t *testing.T) {
+	srv, _, prov, _ := routedServer(t)
+
+	err := srv.RunOnce(context.Background(), runner.RunInput{
+		Agent:                 "router",
+		MaxConcurrentChildren: 99,
+		Segments: []loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}},
+		},
+	}, runner.RunCallbacks{OnEvent: func(providers.Event) {}})
+	if !errors.Is(err, runner.ErrInvalidArgument) {
+		t.Errorf("err = %v, want ErrInvalidArgument", err)
+	}
+	if got := prov.requests(); len(got) != 0 {
+		t.Errorf("the provider was called %d time(s) for a refused override", len(got))
 	}
 }
