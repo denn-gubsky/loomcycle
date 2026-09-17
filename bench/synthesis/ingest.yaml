@@ -103,6 +103,16 @@ agents:
     # so reading both is two calls rather than a wider one.
     memory_scopes: [user, tenant]
     sql_scopes: [user, tenant]
+    # ⚠️ THE TOOL GRANT IS NOT THE READ GRANT. `tools: [History]` only puts the
+    # tool on the agent; History's read is a SEPARATE default-deny policy, and
+    # without this line every call returns "no history_scope policy
+    # (default-deny)". Measured on this rig: an arm holding History made 123
+    # window/search calls and had ALL 123 refused while the run still looked
+    # healthy — the model absorbs the error and answers anyway, so the accuracy
+    # was real but measured an agent that had never read a turn.
+    # `user` owns the ingested corpus chats; `self` is the answerer's own runs,
+    # which hold none of them.
+    history_scope: [user]
     system_prompt: |
       You answer a question from stored memory, and only from what you retrieve.
       Never answer from what you already know: every name here is fictional, and
@@ -119,7 +129,9 @@ agents:
         `user` — try `tenant` as well when a question is about something shared.
       - `History op=window` opens the ORIGINAL turns a fact was distilled from.
         Reach for it when a fact is nearly an answer but drops the specific the
-        question asks for — a date, a number, a name.
+        question asks for — a date, a number, a name. You MUST pass
+        `scope: "user"`: it defaults to `self`, which holds none of these
+        conversations and is refused.
       - `Document op=graph_recall` starts from facts matching the question and
         FOLLOWS THE RELATIONS between the things they name. Use it when the answer
         is about something the question does not name directly — "which region

@@ -1,0 +1,152 @@
+# P-A — does REACH-THROUGH to the original turns beat answering from the
+# distilled facts alone?
+#
+# The research this comes from found two large, separately-measured wins that
+# were NEVER run in one arm: the w8 windowing sweep (+23.6pp) ran on a
+# QUEUE-ingested store whose facts carried no session pointer, so there was
+# nothing for a reach-through to follow; the reach-through itself (+10.7pp,
+# abstention 0.557 -> 0.161) ran on a 67-fact whole-chat store built before
+# windowing shipped. Neither result transfers to the other's store.
+#
+# Layer this OVER bench/synthesis/ingest.yaml and select an arm with -answerer:
+#   ./bin/loomcycle --config bench/synthesis/ingest.yaml --config bench/synthesis/pa_arms.yaml
+#   ./bin/locomo -mode=answer -answer-only -answerer locomo/pa-control -out /tmp/pa-control
+#
+# ⚠️ THE ARMS ARE DELIBERATELY NEAR-IDENTICAL IN WORDING. Adding a tool AND a
+# paragraph telling the agent to use it changes two things at once, and the
+# LoCoMo re-baseline measured how much the telling alone is worth: it moved 20
+# questions from abstention to an answer (p=0.00002) while accuracy stayed flat
+# (McNemar p=1.000). So every arm renders the SAME inventory via
+# {{tool:Context.tools}}, carries the SAME preamble and closing instruction, and
+# differs in exactly one bullet and one tool. What is being compared is the
+# MECHANISM behind that bullet, not the presence of a bullet.
+#
+# ⚠️ EACH ARM NEEDS ITS OWN -out. The harness overwrites answer-report.json, and
+# an overwritten arm cannot be paired — that is how the intermediate arm of the
+# previous run was lost.
+
+agents:
+  # ARM A — CONTROL. Facts only. This is the floor the other two must beat, and
+  # it is NOT the same as the committed answerer: it carries the inventory too,
+  # so the control already includes the willingness effect and the other arms
+  # cannot bank it a second time.
+  locomo/pa-control:
+    provider: deepseek
+    model: deepseek-v4-flash
+    max_tokens: 1200
+    sampling: { temperature: 0 }
+    tools: [Memory]
+    skills: ["-*"]
+    memory_scopes: [user, tenant]
+    sql_scopes: [user, tenant]
+    system_prompt: |
+      You answer a question from stored memory, and only from what you retrieve.
+      Never answer from what you already know: every name here is fictional, and
+      a confident answer from outside memory is the error this measures.
+
+      ## Tools
+      {{tool:Context.tools}}
+
+      {{tool:Context.guide}}
+
+      What the generated list above cannot tell you:
+      - `Memory op=recall` is the semantic search over remembered facts. Start
+        there. Both `scope` and `query` are required, and facts live in scope
+        `user` — try `tenant` as well when a question is about something shared.
+
+      Some questions need TWO OR MORE stored facts combined. Combine them.
+
+      Answer in one short sentence. No preamble, no reasoning shown. If memory
+      does not support an answer, reply with exactly NOT_FOUND and nothing else.
+
+  # ARM B — REACH-THROUGH by session pointer. Verified viable on this store
+  # before the arm was written: 263 of 303 fact-meta rows carry a session_id,
+  # across 19 distinct sessions, and all 19 resolve to sessions that still hold
+  # their turn events. On a queue-ingested store every one of those is null and
+  # this arm silently degenerates into the control.
+  locomo/pa-window:
+    provider: deepseek
+    model: deepseek-v4-flash
+    max_tokens: 1200
+    sampling: { temperature: 0 }
+    tools: [Memory, History]
+    skills: ["-*"]
+    memory_scopes: [user, tenant]
+    sql_scopes: [user, tenant]
+    # ⚠️ HISTORY IS DEFAULT-DENY AND THE TOOL GRANT IS NOT THE READ GRANT.
+    # `tools: [History]` only puts the tool on the agent; without history_scope
+    # every call returns "no history_scope policy (default-deny)". Measured: an
+    # earlier arm holding History made 123 window/search calls and had ALL 123
+    # refused, while the run still looked healthy — the agent narrates around a
+    # refusal and answers anyway. `user` is the corpus chats' owner; `self`
+    # would scope it to the answerer's own runs, which hold no corpus turns.
+    history_scope: [user]
+    system_prompt: |
+      You answer a question from stored memory, and only from what you retrieve.
+      Never answer from what you already know: every name here is fictional, and
+      a confident answer from outside memory is the error this measures.
+
+      ## Tools
+      {{tool:Context.tools}}
+
+      {{tool:Context.guide}}
+
+      What the generated list above cannot tell you:
+      - `Memory op=recall` is the semantic search over remembered facts. Start
+        there. Both `scope` and `query` are required, and facts live in scope
+        `user` — try `tenant` as well when a question is about something shared.
+      - `History op=window` opens the ORIGINAL turns a fact was distilled from.
+        Reach for it when a fact is nearly an answer but drops the specific the
+        question asks for — a date, a number, a name. You MUST pass
+        `scope: "user"` — it defaults to `self`, which holds none of these
+        conversations and is refused. Pass the `session_id` the fact came from
+        and a `quote` from it; widen with `context` to see surrounding turns.
+
+      Some questions need TWO OR MORE stored facts combined. Combine them.
+
+      Answer in one short sentence. No preamble, no reasoning shown. If memory
+      does not support an answer, reply with exactly NOT_FOUND and nothing else.
+
+  # ARM C — REACH-THROUGH by trace search. Same destination as arm B (the
+  # original turns), different route: question -> turn directly, rather than
+  # question -> fact -> that fact's session.
+  #
+  # ⚠️ REQUIRES A POPULATED TRACE INDEX. It is forward-only by design, so a store
+  # ingested before the flag was on holds ZERO trace rows and this arm measures
+  # an empty keyspace while looking exactly like a capability result. Verified 0
+  # rows on this store; populate with
+  #   POST /v1/_memory/backfill_traces?tenant=&user_id=&dry_run=false
+  # (needs LOOMCYCLE_MEMORY_TRACE_INDEX=1) and re-check the count BEFORE running.
+  locomo/pa-traces:
+    provider: deepseek
+    model: deepseek-v4-flash
+    max_tokens: 1200
+    sampling: { temperature: 0 }
+    tools: [Memory]
+    skills: ["-*"]
+    memory_scopes: [user, tenant]
+    sql_scopes: [user, tenant]
+    system_prompt: |
+      You answer a question from stored memory, and only from what you retrieve.
+      Never answer from what you already know: every name here is fictional, and
+      a confident answer from outside memory is the error this measures.
+
+      ## Tools
+      {{tool:Context.tools}}
+
+      {{tool:Context.guide}}
+
+      What the generated list above cannot tell you:
+      - `Memory op=recall` is the semantic search over remembered facts. Start
+        there. Both `scope` and `query` are required, and facts live in scope
+        `user` — try `tenant` as well when a question is about something shared.
+      - `Memory op=search` with `sources: ["traces"]` searches the ORIGINAL
+        conversation turns instead of the distilled facts. Reach for it when a
+        fact is nearly an answer but drops the specific the question asks for —
+        a date, a number, a name. `sources` takes traces ALONE, never combined
+        with facts, so this is a second call rather than a wider one.
+
+      Some questions need TWO OR MORE stored facts combined. Combine them.
+
+      Answer in one short sentence. No preamble, no reasoning shown. If memory
+      does not support an answer, reply with exactly NOT_FOUND and nothing else.
