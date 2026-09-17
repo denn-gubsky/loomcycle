@@ -143,3 +143,84 @@ func childSpecProperties(t *testing.T, schema map[string]json.RawMessage) map[st
 	}
 	return topLevelProperties(t, schemaObject(t, items))
 }
+
+// Advertising a field is only half of it: the batch handler must also carry it
+// to the connector. Testing the schema and testing SpawnRun's field copy both
+// pass while the leg BETWEEN them — unmarshal, per-child validation, the batch
+// loop — drops everything, so this asserts the crossing itself.
+//
+// Every value here is one the schema newly advertises, and the meaningful zeros
+// are deliberate: retry_attempts 0, inject_tool_guide false and
+// unbounded_iterations false are pointers precisely so "off" survives, and a
+// non-pointer would silently read as unset right here.
+func TestSpawnRuns_CarriesEveryAdvertisedFieldToTheConnector(t *testing.T) {
+	child := map[string]any{
+		"agent":                    "rev",
+		"segments":                 []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "trusted-text", "text": "hi"}}}},
+		"metadata":                 map[string]any{"repo": "loomcycle"},
+		"sampling":                 map[string]any{"temperature": 0.25, "top_p": 0.9, "seed": float64(7), "stop": []any{"END"}},
+		"compaction":               map[string]any{"enabled": true, "keep_last_n": float64(2)},
+		"context":                  map[string]any{"mode": "recap", "keep_last_n": float64(3)},
+		"max_context_tokens":       float64(131072),
+		"model":                    "some-model",
+		"provider":                 "some-provider",
+		"tier":                     "middle",
+		"effort":                   "high",
+		"max_tokens":               float64(4096),
+		"max_iterations":           float64(12),
+		"unbounded_iterations":     false,
+		"max_concurrent_children":  float64(2),
+		"retry_attempts":           float64(0),
+		"memory_inject_max_tokens": float64(0),
+		"memory_index_max_bytes":   float64(0),
+		"inject_tool_guide":        false,
+	}
+	args, err := json.Marshal(map[string]any{"spawns": []any{child}})
+	if err != nil {
+		t.Fatalf("marshal arguments: %v", err)
+	}
+
+	mc := &mockConnector{batchResult: connector.BatchSpawnResult{Spawned: 1}}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":` + string(args) + `}}`,
+	}, "\n") + "\n"
+	driveServer(t, srv, in)
+
+	stored, _ := mc.batchReq.Load().(connector.BatchSpawnRequest)
+	if len(stored.Spawns) != 1 {
+		t.Fatalf("connector saw %d spawns, want 1 — the call was refused before dispatch", len(stored.Spawns))
+	}
+	// Round-trip the child the connector actually received, so the comparison is
+	// against what the Go shape held rather than against the bytes we sent.
+	got := map[string]any{}
+	b, err := json.Marshal(stored.Spawns[0])
+	if err != nil {
+		t.Fatalf("marshal recorded spawn: %v", err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal recorded spawn: %v", err)
+	}
+	var dropped []string
+	for name, want := range child {
+		if name == "segments" {
+			continue // shape is normalised by loop.PromptSegment; covered elsewhere
+		}
+		if !reflect.DeepEqual(got[name], want) {
+			dropped = append(dropped, name+": got "+describe(got[name])+", want "+describe(want))
+		}
+	}
+	sort.Strings(dropped)
+	if len(dropped) > 0 {
+		t.Errorf("spawn_runs did not carry to the connector:\n  %s", strings.Join(dropped, "\n  "))
+	}
+}
+
+func describe(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "<unmarshalable>"
+	}
+	return string(b)
+}
