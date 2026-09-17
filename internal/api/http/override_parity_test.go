@@ -94,6 +94,55 @@ func TestOverrideParity_EveryTransportEnumeratesEveryOverride(t *testing.T) {
 	}
 }
 
+// The TS adapter has TWO halves and the guard above only checked one.
+//
+// The serializer lists every field, so that check passed — while ContinueOptions,
+// the type handed to it on the continuation path, carried none of them. The
+// build failed with a type error; had the signature been looser it would have
+// compiled and silently dropped every override on that path.
+//
+// So: the OPTION TYPES must carry them too, and both request paths must share
+// one declaration rather than keeping two lists in step by hand.
+func TestOverrideParity_TypeScriptOptionTypesShareOneDeclaration(t *testing.T) {
+	b, err := os.ReadFile("../../../adapters/ts/src/types.ts")
+	if err != nil {
+		t.Skipf("TS types not readable from here: %v", err)
+	}
+	src := string(b)
+
+	if !strings.Contains(src, "export interface RunOverrideOptions {") {
+		t.Fatal("no shared RunOverrideOptions interface; the override fields are declared " +
+			"per-request-type, which is how one path silently loses them")
+	}
+	for _, iface := range []string{"RunOptions", "ContinueOptions"} {
+		if !strings.Contains(src, "export interface "+iface+" extends RunOverrideOptions {") {
+			t.Errorf("%s does not extend RunOverrideOptions, so a caller on that path cannot "+
+				"supply an override the serializer would happily write", iface)
+		}
+	}
+
+	// And the shared interface really does name them all.
+	decl := src[strings.Index(src, "export interface RunOverrideOptions {"):]
+	decl = decl[:strings.Index(decl, "\n}\n")]
+	camel := map[string]string{
+		"model": "model", "provider": "provider", "tier": "tier", "effort": "effort",
+		"max_tokens": "maxTokens", "max_iterations": "maxIterations",
+		"unbounded_iterations": "unboundedIterations", "max_concurrent_children": "maxConcurrentChildren",
+		"retry_attempts": "retryAttempts", "memory_inject_max_tokens": "memoryInjectMaxTokens",
+		"memory_index_max_bytes": "memoryIndexMaxBytes", "inject_tool_guide": "injectToolGuide",
+	}
+	var missing []string
+	for _, wire := range overrideWireNames {
+		if !strings.Contains(decl, camel[wire]+"?:") {
+			missing = append(missing, camel[wire])
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("RunOverrideOptions does not declare: %s", strings.Join(missing, ", "))
+	}
+}
+
 // Non-vacuity: a list that names nothing passes every check above.
 func TestOverrideParity_TheListItselfIsPopulated(t *testing.T) {
 	if len(overrideWireNames) < 12 {
