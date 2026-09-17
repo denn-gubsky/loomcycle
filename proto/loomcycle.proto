@@ -570,6 +570,38 @@ message RunRequest {
   // A plain scalar (not `optional`) because 0 is never a meaningful window,
   // so absence and "zero" coincide. Mirrors POST /v1/runs `max_context_tokens`.
   int32 max_context_tokens = 16;
+
+  // RFC DC per-run OVERRIDES. Flat, mirroring POST /v1/runs, which groups them
+  // under `overrides` only on the steer endpoint (that one has no flat
+  // vocabulary to be consistent with).
+  //
+  // Routing selects WITHIN what the agent's definition declares and cannot
+  // widen it, so which vendor sees the conversation stays an operator decision.
+  // Naming a model PINS it (the tier is dropped); naming only a provider
+  // narrows the cascade and keeps it.
+  string model = 17;
+  string provider = 18;
+  string tier = 19;
+  string effort = 20;      // low | medium | high; anything else is refused
+
+  // Budget. max_tokens / max_iterations / unbounded_iterations may be RAISED —
+  // both are bounded in practice by the per-scope token budget.
+  // max_concurrent_children may ONLY be LOWERED: it is the only bound on
+  // sub-agent fan-out that exists, because a child takes no admission slot, is
+  // not budget-checked at spawn, and skips the per-provider gate for its
+  // parent's provider. Raising it is refused, not clamped.
+  int32 max_tokens = 21;
+  int32 max_iterations = 22;
+  optional bool unbounded_iterations = 23;  // optional: turning it OFF must be expressible
+  int32 max_concurrent_children = 24;
+
+  // Tuning — how the run is shaped, never what it may reach. `optional`
+  // throughout because each has a MEANINGFUL zero (no retries, inject nothing,
+  // omit the guide), so a plain scalar could raise them but never turn them off.
+  optional int32 retry_attempts = 25;
+  optional int32 memory_inject_max_tokens = 26;
+  optional int32 memory_index_max_bytes = 27;
+  optional bool inject_tool_guide = 28;
 }
 
 message ContinueRequest {
@@ -602,6 +634,38 @@ message ContinueRequest {
   // max_context_tokens (RFC CJ) — per-continuation context-WINDOW override.
   // Same semantics as RunRequest.max_context_tokens.
   int32 max_context_tokens = 13;
+
+  // RFC DC per-run OVERRIDES. Flat, mirroring POST /v1/runs, which groups them
+  // under `overrides` only on the steer endpoint (that one has no flat
+  // vocabulary to be consistent with).
+  //
+  // Routing selects WITHIN what the agent's definition declares and cannot
+  // widen it, so which vendor sees the conversation stays an operator decision.
+  // Naming a model PINS it (the tier is dropped); naming only a provider
+  // narrows the cascade and keeps it.
+  string model = 14;
+  string provider = 15;
+  string tier = 16;
+  string effort = 17;      // low | medium | high; anything else is refused
+
+  // Budget. max_tokens / max_iterations / unbounded_iterations may be RAISED —
+  // both are bounded in practice by the per-scope token budget.
+  // max_concurrent_children may ONLY be LOWERED: it is the only bound on
+  // sub-agent fan-out that exists, because a child takes no admission slot, is
+  // not budget-checked at spawn, and skips the per-provider gate for its
+  // parent's provider. Raising it is refused, not clamped.
+  int32 max_tokens = 18;
+  int32 max_iterations = 19;
+  optional bool unbounded_iterations = 20;  // optional: turning it OFF must be expressible
+  int32 max_concurrent_children = 21;
+
+  // Tuning — how the run is shaped, never what it may reach. `optional`
+  // throughout because each has a MEANINGFUL zero (no retries, inject nothing,
+  // omit the guide), so a plain scalar could raise them but never turn them off.
+  optional int32 retry_attempts = 22;
+  optional int32 memory_inject_max_tokens = 23;
+  optional int32 memory_index_max_bytes = 24;
+  optional bool inject_tool_guide = 25;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.

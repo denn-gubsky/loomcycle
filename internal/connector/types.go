@@ -129,6 +129,28 @@ type SpawnRunRequest struct {
 	// MCP spawn_run / fan-out child reaches the same per-run knob. Carried
 	// verbatim to runner.RunInput.
 	MaxContextTokens int `json:"max_context_tokens,omitempty"`
+
+	// RFC DC per-run OVERRIDES — the shared shape for gRPC SpawnRun and the MCP
+	// spawn_run / spawn_runs tools, so both reach the same validation the HTTP
+	// endpoint uses and are refused for the same reasons.
+	//
+	// Routing selects WITHIN what the agent's definition declares and cannot
+	// widen it. The budget knobs are raisable except MaxConcurrentChildren,
+	// which may only be LOWERED — it is the only bound on sub-agent fan-out
+	// that exists. The tuning pointers exist so "turn it off" stays
+	// expressible; each has a meaningful zero.
+	Model                 string `json:"model,omitempty"`
+	Provider              string `json:"provider,omitempty"`
+	Tier                  string `json:"tier,omitempty"`
+	Effort                string `json:"effort,omitempty"`
+	MaxTokens             int    `json:"max_tokens,omitempty"`
+	MaxIterations         int    `json:"max_iterations,omitempty"`
+	UnboundedIterations   *bool  `json:"unbounded_iterations,omitempty"`
+	MaxConcurrentChildren int    `json:"max_concurrent_children,omitempty"`
+	RetryAttempts         *int   `json:"retry_attempts,omitempty"`
+	MemoryInjectMaxTokens *int   `json:"memory_inject_max_tokens,omitempty"`
+	MemoryIndexMaxBytes   *int   `json:"memory_index_max_bytes,omitempty"`
+	InjectToolGuide       *bool  `json:"inject_tool_guide,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned
