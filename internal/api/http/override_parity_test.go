@@ -60,6 +60,14 @@ func TestOverrideParity_GoShapesCarryEveryOverride(t *testing.T) {
 // Each transport ENUMERATES. Asserted over the source of each list, because the
 // failure is a field present in one list and absent from another — which no
 // amount of Go-side testing sees.
+//
+// MCP IS DELIBERATELY NOT IN THIS TABLE. It was, as a grep of internal/api/mcp/
+// tools.go — and that file declares TWO spawn tools, so spawn_run carrying every
+// override satisfied the check while spawn_runs carried none of them. A file is
+// not a surface. The MCP schemas are Go values in their own package, so they are
+// checked there, per tool and derived from connector.SpawnRunRequest rather than
+// from a list: TestSpawnSchemas_AdvertiseEveryFieldTheyAccept. Do not reinstate a
+// whole-file grep here; it cannot tell the two tools apart.
 func TestOverrideParity_EveryTransportEnumeratesEveryOverride(t *testing.T) {
 	for _, tc := range []struct {
 		what string
@@ -68,7 +76,6 @@ func TestOverrideParity_EveryTransportEnumeratesEveryOverride(t *testing.T) {
 		form func(wire string) string
 	}{
 		{"the gRPC proto", "../../../proto/loomcycle.proto", func(w string) string { return " " + w + " = " }},
-		{"the MCP spawn schema", "../mcp/tools.go", func(w string) string { return `"` + w + `": {` }},
 		{"the TS serializer", "../../../adapters/ts/src/client.ts", func(w string) string { return "body." + w + " =" }},
 		{"the Python client", "../../../adapters/python/loomcycle/client.py", func(w string) string { return w + "=" + w }},
 	} {
