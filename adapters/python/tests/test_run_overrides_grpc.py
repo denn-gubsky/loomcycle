@@ -15,6 +15,8 @@ internal/api/grpc/server_test.go.
 
 from __future__ import annotations
 
+import json
+
 import grpc.aio
 import pytest
 
@@ -203,3 +205,74 @@ async def test_run_input_without_overrides_leaves_them_unset():
         assert not req.HasField(name), f"{name} was set without the caller asking"
     for name in ROUTING_AND_BUDGET:
         assert not getattr(req, name), f"{name} was set without the caller asking"
+
+
+@pytest.mark.asyncio
+async def test_metadata_context_and_lineage_reach_both_request_paths():
+    """These three were absent from the gRPC wire entirely, so a Python caller
+    could not send agent metadata, set the per-run context block, or carry
+    cost-attribution lineage — all reachable from HTTP since they shipped.
+
+    Both paths, because they are built DIFFERENTLY: run_streaming goes through
+    _build_run_request and continue_session constructs pb.ContinueRequest
+    directly. That asymmetry is what left the steer path without overrides, so
+    it is asserted rather than assumed.
+    """
+    meta = {"repo": "loomcycle", "reviewers": 2}
+    ctx = {"mode": "stateful", "keep_last_n": 6, "state_schema": {"type": "object"}}
+    lineage = {"root_agent_run_id": "r_root", "function_key": "cv", "tier_at_run": "pro"}
+
+    for path in ("run", "continue"):
+        stub = _CaptureStub()
+        client = _make_client()
+        client._stub = stub  # type: ignore[assignment]
+        kwargs = dict(metadata=meta, context=ctx, parent_context=lineage)
+        if path == "run":
+            async for _ in client.run_streaming(agent="default", segments=[], **kwargs):
+                pass
+        else:
+            async for _ in client.continue_session(session_id="s_1", segments=[], **kwargs):
+                pass
+
+        req = stub.req
+        assert json.loads(req.metadata) == meta, path
+        assert req.context.mode == "stateful", path
+        assert req.context.keep_last_n == 6, path
+        assert json.loads(req.context.state_schema) == {"type": "object"}, path
+        assert req.parent_context.root_agent_run_id == "r_root", path
+        assert req.parent_context.function_key == "cv", path
+
+
+@pytest.mark.asyncio
+async def test_an_absent_context_key_stays_unset_rather_than_zero():
+    """Every Context scalar is proto3 `optional` because each has a meaningful
+    zero: keep_last_n 0 means keep none, not 'unset'."""
+    stub = _CaptureStub()
+    client = _make_client()
+    client._stub = stub  # type: ignore[assignment]
+    async for _ in client.run_streaming(agent="default", segments=[], context={"mode": "recap"}):
+        pass
+
+    req = stub.req
+    assert req.context.mode == "recap"
+    assert not req.context.HasField("keep_last_n")
+    assert not req.context.HasField("recap_max_chars")
+    assert req.context.state_schema == b""
+
+
+@pytest.mark.asyncio
+async def test_a_zero_context_value_is_sent_not_dropped():
+    """The other half: an explicit 0 must reach the wire as a set field."""
+    stub = _CaptureStub()
+    client = _make_client()
+    client._stub = stub  # type: ignore[assignment]
+    async for _ in client.run_streaming(
+        agent="default", segments=[], context={"keep_last_n": 0, "recall": False}
+    ):
+        pass
+
+    req = stub.req
+    assert req.context.HasField("keep_last_n"), "an explicit 0 was dropped as falsy"
+    assert req.context.keep_last_n == 0
+    assert req.context.HasField("recall")
+    assert req.context.recall is False

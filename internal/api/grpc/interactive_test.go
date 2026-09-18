@@ -248,3 +248,76 @@ func TestGrpcRunInput_WithoutOverridesDoesNotRetune(t *testing.T) {
 		t.Errorf("a steer with no overrides called RetuneRun %d times", mc.retuneCalls)
 	}
 }
+
+// metadata, context and parent_context were absent from the gRPC wire entirely,
+// so a gRPC or Python caller could not send agent metadata, could not set the
+// per-run context block, and could not carry cost-attribution lineage — all
+// three reachable from HTTP since they shipped.
+func TestRunInputFromProto_CarriesMetadataContextAndLineage(t *testing.T) {
+	schema := []byte(`{"type":"object","properties":{"step":{"type":"integer"}}}`)
+	keep := int32(6)
+	mode := "stateful"
+
+	in := runInputFromProto(runInputProtoArgs{
+		Agent:    "a",
+		Metadata: metadataFromProto([]byte(`{"repo":"loomcycle","reviewers":2}`)),
+		Context: contextFromProto(&loomcyclepb.Context{
+			Mode: &mode, KeepLastN: &keep, StateSchema: schema,
+		}),
+		ParentContext: parentContextFromProto(&loomcyclepb.ParentContext{
+			RootAgentRunId: "r_root", FunctionKey: "cv", TierAtRun: "pro",
+		}),
+	})
+
+	if in.Metadata["repo"] != "loomcycle" {
+		t.Errorf("metadata = %v, want repo=loomcycle", in.Metadata)
+	}
+	if in.Context == nil || in.Context.Mode == nil || *in.Context.Mode != "stateful" {
+		t.Fatalf("context = %+v, want mode=stateful", in.Context)
+	}
+	if in.Context.KeepLastN == nil || *in.Context.KeepLastN != 6 {
+		t.Errorf("keep_last_n = %v, want 6", in.Context.KeepLastN)
+	}
+	// The one free-form field: a stateful run validates every patch against it,
+	// so losing it turns a validated mode into an unvalidated one.
+	if in.Context.StateSchema["type"] != "object" {
+		t.Errorf("state_schema = %v, want the decoded JSON-Schema", in.Context.StateSchema)
+	}
+	if in.ParentContext == nil || in.ParentContext.RootAgentRunID != "r_root" {
+		t.Errorf("parent_context = %+v, want root r_root", in.ParentContext)
+	}
+}
+
+// nil in, nil out. "The caller said nothing" has to reach the runner as
+// inherit-the-agent's-block, never as a zero-valued Context that overrides it
+// with emptiness — the meaningful-zero problem in object form.
+func TestRunInputFromProto_AbsentBlocksStayNil(t *testing.T) {
+	in := runInputFromProto(runInputProtoArgs{
+		Agent:         "a",
+		Metadata:      metadataFromProto(nil),
+		Context:       contextFromProto(nil),
+		ParentContext: parentContextFromProto(nil),
+	})
+	if in.Metadata != nil {
+		t.Errorf("metadata = %v, want nil", in.Metadata)
+	}
+	if in.Context != nil {
+		t.Errorf("context = %+v, want nil", in.Context)
+	}
+	if in.ParentContext != nil {
+		t.Errorf("parent_context = %+v, want nil", in.ParentContext)
+	}
+	// An all-empty lineage block normalises to nil too, so the echo surfaces
+	// omit it rather than reporting an empty object — matching handleRuns.
+	if got := parentContextFromProto(&loomcyclepb.ParentContext{}); got != nil {
+		t.Errorf("an all-empty parent_context = %+v, want nil", got)
+	}
+}
+
+// Malformed metadata must not fail an otherwise-valid run: it is an advisory
+// prompt block, and refusing the run over it is the worse trade.
+func TestMetadataFromProto_MalformedIsDroppedNotFatal(t *testing.T) {
+	if got := metadataFromProto([]byte(`not json`)); got != nil {
+		t.Errorf("malformed metadata = %v, want nil (dropped)", got)
+	}
+}

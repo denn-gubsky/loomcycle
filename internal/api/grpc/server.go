@@ -799,6 +799,9 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		Sampling:         samplingFromProto(req.GetSampling()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
+		Metadata:         metadataFromProto(req.GetMetadata()),
+		Context:          contextFromProto(req.GetContext()),
+		ParentContext:    parentContextFromProto(req.GetParentContext()),
 		Interruption:     interruptionFromProto(req.GetInterruption()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		// RFC DC per-run overrides. One helper for all three call sites, so a
@@ -849,6 +852,9 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		Sampling:         samplingFromProto(req.GetSampling()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
+		Metadata:         metadataFromProto(req.GetMetadata()),
+		Context:          contextFromProto(req.GetContext()),
+		ParentContext:    parentContextFromProto(req.GetParentContext()),
 		Interruption:     interruptionFromProto(req.GetInterruption()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-continuation context-window override
 		// RFC DC per-run overrides. One helper for all three call sites, so a
@@ -1165,6 +1171,9 @@ type runInputProtoArgs struct {
 	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
 	Interactive      bool                         // RFC AI — park at end_turn for steering
 	Interruption     *config.AgentInterruptionACL // per-run override of whether the agent may ask a human
+	Metadata         map[string]any               // non-secret structured metadata handed to the run
+	Context          *config.Context              // per-run layered-context / retention override
+	ParentContext    *store.ParentContext         // opaque caller-tracking lineage
 	MaxContextTokens int                          // RFC CJ per-run context-window override (0 = inherit agent def)
 
 	// RFC DC per-run overrides. Routing selects within what the definition
@@ -1216,6 +1225,9 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		Sampling:              a.Sampling,        // v0.28.0 per-run sampling override
 		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
 		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
+		Metadata:              a.Metadata,
+		Context:               a.Context,
+		ParentContext:         a.ParentContext,
 		Interruption:          a.Interruption,
 		MaxContextTokens:      a.MaxContextTokens, // RFC CJ per-run context-window override
 	}
@@ -1752,4 +1764,88 @@ func interruptionFromProto(in *loomcyclepb.Interruption) *config.AgentInterrupti
 		Kinds:      in.GetKinds(),
 		MaxPending: int(in.GetMaxPending()),
 	}
+}
+
+// metadataFromProto decodes the run's non-secret structured metadata.
+//
+// BYTES carrying canonical JSON, because the value is map[string]any by
+// definition. A malformed body is DROPPED rather than failing the run: this is
+// an advisory channel an agent reads as a prompt block, and refusing an
+// otherwise-valid run over it would be a worse trade than starting without it.
+// The decode error is logged so it is not invisible.
+func metadataFromProto(b []byte) map[string]any {
+	if len(b) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		log.Printf("grpc: run metadata is not a JSON object and was dropped: %v", err)
+		return nil
+	}
+	return m
+}
+
+// contextFromProto maps the per-run layered-context block.
+//
+// nil in stays nil out — "the caller said nothing" must reach the runner as
+// inherit-the-agent's-block, never as a zero-valued Context that would override
+// it with emptiness. Each scalar is a pointer on both sides for the same reason:
+// keep_last_n 0 means keep none, which is not the same as unset.
+func contextFromProto(in *loomcyclepb.Context) *config.Context {
+	if in == nil {
+		return nil
+	}
+	out := &config.Context{
+		Mode:            in.Mode,
+		KeepLastN:       intPtrFrom32(in.KeepLastN),
+		Reasoning:       in.Reasoning,
+		RecapMaxChars:   intPtrFrom32(in.RecapMaxChars),
+		AutoRecapAtPct:  intPtrFrom32(in.AutorecapAtPct),
+		OnInvalidPatch:  in.OnInvalidPatch,
+		MaxPatchRetries: intPtrFrom32(in.MaxPatchRetries),
+		Recall:          in.Recall,
+		HarvestToMemory: in.HarvestToMemory,
+	}
+	if len(in.StateSchema) > 0 {
+		var sch map[string]any
+		if err := json.Unmarshal(in.StateSchema, &sch); err != nil {
+			// Unlike metadata, this one MATTERS: a stateful run validates every
+			// patch against it, so silently dropping it would turn a validated
+			// mode into an unvalidated one. Left nil and logged; the loop's own
+			// handling of an absent schema then applies.
+			log.Printf("grpc: context.state_schema is not a JSON object and was dropped: %v", err)
+		} else {
+			out.StateSchema = sch
+		}
+	}
+	return out
+}
+
+func intPtrFrom32(p *int32) *int {
+	if p == nil {
+		return nil
+	}
+	v := int(*p)
+	return &v
+}
+
+// parentContextFromProto maps the caller's opaque tracking lineage. It reuses
+// the EXISTING ParentContext message rather than a second one: the lineage a
+// caller sends and the lineage an event echoes are the same thing, and two
+// declarations of it would be free to drift.
+func parentContextFromProto(in *loomcyclepb.ParentContext) *store.ParentContext {
+	if in == nil {
+		return nil
+	}
+	out := &store.ParentContext{
+		RootAgentRunID: in.GetRootAgentRunId(),
+		FunctionKey:    in.GetFunctionKey(),
+		TierAtRun:      in.GetTierAtRun(),
+	}
+	// Normalise an all-empty block to nil so the echo surfaces omit it, matching
+	// handleRuns and handleSpawnRun.
+	if out.IsZero() {
+		return nil
+	}
+	return out
 }
