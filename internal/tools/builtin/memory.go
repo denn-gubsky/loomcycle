@@ -309,6 +309,7 @@ const memoryInputSchema = `{
     "provenance":    {"type": "object", "description": "set-only: where this fact came from, recorded alongside the row. class is a short label for the kind of fact (e.g. preference, fact, decision, correction); source_session_id / source_run_id name the chat and run it was distilled from (relay them from pending_drain or the transcript you read). Descriptive only — it never changes what the write can reach. The writer identity is stamped server-side.", "properties": {"class": {"type": "string"}, "source_session_id": {"type": "string"}, "source_run_id": {"type": "string"}}, "additionalProperties": false},
     "superseded_by": {"type": "string", "description": "supersede-only: the natural key of the fact that REPLACES the one being retired. Pass it when this is a correction and the graph will record which fact replaced which; omit it when the row is merely displaced (rewritten under the same key elsewhere), so no replacement is asserted. A key that resolves to nothing is ignored and the retirement still happens."},
     "from_pending":  {"type": "string", "description": "set-only: the id of a pending item you drained, so this fact records what produced it. Pass the id and the server fills in the origin and source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds. Prefer this over filling source_session_id / source_run_id by hand when the fact came from a drained item."},
+    "include_turns": {"type": "boolean", "description": "recall-only: attach the conversation TURN each fact was distilled from, not just the one-sentence span (default FALSE). A distilled fact is tenseless — \"Caroline went to a support group\" — while its turn opens with its own timestamp and keeps the specifics the summary dropped. Use it when questions turn on WHEN or on exact wording; it makes the response materially larger, which is why it is off by default."},
     "include_source": {"type": "boolean", "description": "recall-only: include the verbatim source span each fact was distilled from, plus source_run_id — the run it came from, which History can resolve to the whole conversation (default TRUE). The span carries the original wording and its own leading timestamp, so a fact whose summary dropped \"last week\" is still datable through it; the run id is where to go when one sentence is not enough. Pass false for a smaller payload."},
     "include_provenance": {"type": "boolean", "description": "get-only: also return where the fact came from, and whether that origin is still readable (origin_available). A false origin_available means the chat has since been deleted — the fact is still valid, you just cannot go re-read its source."}
   },
@@ -435,6 +436,10 @@ type memoryInput struct {
 	// the payload. A plain bool would make every caller that never heard of the
 	// field opt out silently.
 	IncludeSource *bool `json:"include_source,omitempty"`
+	// IncludeTurns attaches the conversation turn each fact was distilled from
+	// (RFC DF). A plain bool, not a pointer: absent and false mean the same thing,
+	// because the default is OFF and there is no third state to distinguish.
+	IncludeTurns bool `json:"include_turns,omitempty"`
 }
 
 // memoryProvenanceInput is the model-supplied half of store.MemoryProvenance.
@@ -1814,6 +1819,20 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		}
 		memories = append(memories, mem)
 	}
+	// RFC DF: the turn each fact came from, when the caller asked for it. Attached
+	// HERE rather than left to a second tool call, because the measurement is that
+	// most models will not make that call — see memory_recall_turns.go.
+	turnsAttached, turnsDropped := 0, 0
+	// THE OPERATOR'S GRANT OR THE CALLER'S PARAMETER, either alone. The grant is the
+	// one that matters: a tool parameter is a decision the model makes, and measured
+	// across three local models they do not make it — this run's own earlier arm had
+	// qwen3.6 passing include_turns on 51 of 128 calls despite being told to pass it
+	// every time. An operator who wants the turns should not be relying on that.
+	wantTurns := in.IncludeTurns || tools.MemoryPolicy(ctx).RecallIncludeTurns
+	if wantTurns {
+		turnsAttached, turnsDropped = m.attachSourceTurns(ctx, scope, memories, spans)
+	}
+
 	// THE ARRAY IS "memories", NOT "facts" (it used to be "facts").
 	//
 	// Recall's default admits notes as well as distilled facts, and on a corpus of
@@ -1831,6 +1850,15 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// both names would leave the misleading one in front of the model, which is the
 	// whole thing being fixed.
 	out := map[string]any{"memories": memories}
+	// REPORTED, not inferred from a short list. A caller that asked for turns and got
+	// none needs to tell "no fact had a resolvable turn" apart from "the budget ran
+	// out" — the same reason graph_recall reports chars_used alongside its cap.
+	if wantTurns {
+		out["turns_attached"] = turnsAttached
+		if turnsDropped > 0 {
+			out["turns_dropped_for_budget"] = turnsDropped
+		}
+	}
 	// Same shape as search reports it, so an agent learns one vocabulary.
 	if res.TimeFilter != nil {
 		out["time_filter"] = res.TimeFilter

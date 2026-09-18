@@ -93,6 +93,13 @@ var agentDefOverridability = map[string]overridability{
 	// A caller-chosen backend base URL is an exfiltration surface — the mem9
 	// SSRF class. Never per-run.
 	"MemoryBackend": notOverridable,
+	// RECALL-ATTACHED TURNS ARE HISTORY REACH WEARING A MEMORY HAT. Setting it
+	// causes chat transcript to be returned through the memory path, so a run that
+	// could set it would obtain words the operator may have declined to grant via
+	// history_scope. The tool enforces history_scope as well — both must say yes —
+	// but the DECLARATION of whether turns are offered is the operator's, like every
+	// other reach field here.
+	"RecallIncludeTurns": notOverridable,
 
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---

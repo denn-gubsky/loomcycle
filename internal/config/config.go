@@ -1257,6 +1257,22 @@ type AgentDef struct {
 	// identifying (a fork that toggles it mints a distinct content_sha256).
 	MemoryConsolidation bool `yaml:"memory_consolidation"`
 
+	// RecallIncludeTurns makes `Memory op=recall` attach the conversation turn each
+	// fact was distilled from, for THIS agent, without the model asking (RFC DF).
+	//
+	// OPERATOR-SET, and that is the entire point. The parameter exists on the tool
+	// too, but a tool parameter is a decision the model makes — and measured across
+	// three local models, they do not make it: handed the same prompt and tool,
+	// deepseek issued 214 trace retrievals across 150 questions where qwen3.6 issued
+	// 7 and an agentic-tuned ornith-1.5:35b issued 17. Instructing the model harder
+	// is worse, not better: an imperative procedure took compliance to 100% and
+	// accuracy to 0.0034 of 1.0.
+	//
+	// So an operator who wants the turns declares it once here, and the runtime sets
+	// it on every recall that agent makes. Same trust posture as memory_scopes:
+	// resolved operator-side, never model-supplied.
+	RecallIncludeTurns bool `yaml:"recall_include_turns"`
+
 	// MemoryIndexMaxBytes is the soft size cap the memory protocol surfaces to
 	// the agent for its /memory/index document — the agent is asked to keep the
 	// index under it and move detail into /memory/topics/<slug>. 0 = the

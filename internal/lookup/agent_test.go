@@ -309,6 +309,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"inject_tool_guide":        true, // auto tool-guide/capabilities injection (content-identifying; mirror mergedDef)
 		"memory_protocol":          true,
 		"memory_consolidation":     true, // RFC BL P2 — consolidation control-ops grant (content-identifying)
+		"recall_include_turns":     true, // RFC DF — recall attaches source turns (content-identifying; gated by history_scope too)
 		"memory_index_max_bytes":   true, // RFC BL P1 — /memory/index soft cap surfaced to the agent
 		"memory_roots":             true, // RFC BL P1 — user-root provisioning control (lazy|force|suppress)
 		"retry_attempts":           true,

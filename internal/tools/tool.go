@@ -823,6 +823,11 @@ type MemoryPolicyValue struct {
 	// operator-side from the agent def — never model-supplied, same trust posture
 	// as AllowedScopes.
 	Consolidation bool
+	// RecallIncludeTurns is the RFC DF `recall_include_turns` grant: recall attaches
+	// each fact's originating turn for this agent without the model requesting it.
+	// Operator-resolved from the agent def — never model-supplied, same posture as
+	// AllowedScopes.
+	RecallIncludeTurns bool
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.

@@ -183,6 +183,11 @@ type AgentContent struct {
 	// invariant (declaration order = JSON emit order = the hash input); omitempty
 	// keeps an agent that never sets it byte-stable against pre-feature rows.
 	MemoryConsolidation bool `json:"memory_consolidation,omitempty"`
+	// RecallIncludeTurns is the RFC DF grant: recall attaches each fact's
+	// originating turn for this agent, without the model asking. Content-identifying
+	// like MemoryConsolidation — it changes what the agent SEES on every recall, so
+	// two agents differing only in this are not the same agent.
+	RecallIncludeTurns bool `json:"recall_include_turns,omitempty"`
 	// MemoryIndexMaxBytes / MemoryInjectMaxTokens / MemoryProtocol / MemoryRoots
 	// (RFC BL P1) are content-identifying. Tags are kept in alphabetical order:
 	// memory_index_max_bytes < memory_inject_max_tokens < memory_protocol, and
@@ -413,6 +418,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MemoryInjectMaxTokens: a.MemoryInjectMaxTokens,
 		MemoryProtocol:        a.MemoryProtocol,
 		MemoryConsolidation:   a.MemoryConsolidation,
+		RecallIncludeTurns:    a.RecallIncludeTurns,
 		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
 		MemoryRoots:           a.MemoryRoots,
 	}

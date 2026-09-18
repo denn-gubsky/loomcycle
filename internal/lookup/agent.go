@@ -252,6 +252,7 @@ type SubstrateAgentDef struct {
 	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
 	Internal              bool               `json:"internal,omitempty"`             // maintenance plumbing; content-identifying
 	MemoryConsolidation   bool               `json:"memory_consolidation,omitempty"` // RFC BL P2 grant
+	RecallIncludeTurns    bool               `json:"recall_include_turns,omitempty"` // RFC DF grant
 	MemoryIndexMaxBytes   int                `json:"memory_index_max_bytes,omitempty"`
 	MemoryRoots           string             `json:"memory_roots,omitempty"`
 	// RetryAttempts mirrors config.AgentDef.RetryAttempts — per-agent
@@ -338,6 +339,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		MemoryProtocol:         def.MemoryProtocol,
 		Internal:               def.Internal,
 		MemoryConsolidation:    def.MemoryConsolidation,
+		RecallIncludeTurns:     def.RecallIncludeTurns,
 		MemoryIndexMaxBytes:    def.MemoryIndexMaxBytes,
 		MemoryRoots:            def.MemoryRoots,
 		RetryAttempts:          def.RetryAttempts,
@@ -392,6 +394,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		MemoryProtocol:        s.MemoryProtocol,
 		Internal:              s.Internal,
 		MemoryConsolidation:   s.MemoryConsolidation,
+		RecallIncludeTurns:    s.RecallIncludeTurns,
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
