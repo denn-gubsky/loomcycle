@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b L3",
+  "note": "tool-free; {{memory:recalled_context}} pre-retrieved into the prompt",
+  "arm": "locomo/orn-l3-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T18:51:26Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 150,
+  "accuracy": 0.5933,
+  "strict": 0.4933,
+  "correct": 74,
+  "partial": 30,
+  "wrong": 46,
+  "unparsed": 0,
+  "not_found": 28,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.4219,
+      "not_found": 8
+    },
+    "2": {
+      "graded": 37,
+      "accuracy": 0.5405,
+      "not_found": 5
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.3182,
+      "not_found": 6
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.7429,
+      "not_found": 9
+    }
+  }
+}

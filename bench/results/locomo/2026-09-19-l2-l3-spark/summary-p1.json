@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b P1",
+  "note": "recall_include_turns: the turn each FACT was distilled from",
+  "arm": "locomo/orn-p1-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T18:40:11Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 149,
+  "accuracy": 0.4799,
+  "strict": 0.3758,
+  "correct": 56,
+  "partial": 31,
+  "wrong": 62,
+  "unparsed": 1,
+  "not_found": 43,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.4375,
+      "not_found": 4
+    },
+    "2": {
+      "graded": 36,
+      "accuracy": 0.3472,
+      "not_found": 14
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.5,
+      "not_found": 4
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.5643,
+      "not_found": 21
+    }
+  }
+}

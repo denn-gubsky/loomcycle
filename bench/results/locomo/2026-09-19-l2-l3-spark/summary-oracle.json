@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b oracle (ceiling)",
+  "note": "gold evidence in prompt, no store, no tools",
+  "arm": "locomo/orn-oracle-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T18:33:27Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 146,
+  "accuracy": 0.8048,
+  "strict": 0.7397,
+  "correct": 108,
+  "partial": 19,
+  "wrong": 19,
+  "unparsed": 4,
+  "not_found": 13,
+  "per_category": {
+    "1": {
+      "graded": 31,
+      "accuracy": 0.7581,
+      "not_found": 2
+    },
+    "2": {
+      "graded": 34,
+      "accuracy": 0.6618,
+      "not_found": 4
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.5,
+      "not_found": 5
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.9429,
+      "not_found": 2
+    }
+  }
+}
