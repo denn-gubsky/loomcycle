@@ -44,6 +44,30 @@ type runConfigRecord struct {
 	// same reason its siblings are: it must survive a pause.
 	Tuning *tuningOverride `json:"tuning,omitempty"`
 
+	// Interactive PROMOTES a run to parking at its turn boundaries instead of
+	// finishing — set while the run is already going, so an operator can take
+	// hold of an agent mid-flight and correct it.
+	//
+	// A POINTER because the three states differ: absent means "the run keeps
+	// whatever it started as", true promotes, and false demotes a run that was
+	// started interactive so it finishes at its next boundary. A bool could not
+	// express the first, and "never retuned" is the common case.
+	//
+	// It lives here rather than only on the runs.interactive column because the
+	// column is the run's ORIGINAL shape and this is its current one; keeping
+	// them apart is what lets a resume restore a promoted run as promoted.
+	Interactive *bool `json:"interactive,omitempty"`
+
+	// Interruption is the run's own answer to whether the agent may ASK a human
+	// a question, overriding the definition's block.
+	//
+	// The definition's classification used to be notOverridable, filed under
+	// "reach". That was wrong: an interruption touches no data and no host — it
+	// blocks and waits for a person. The real exposure is LIVENESS, which puts
+	// it beside unbounded_iterations rather than beside memory_scopes, and which
+	// run_timeout_seconds and the interruption's own timeout already bound.
+	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
+
 	// Hosts is the caller-authoritative host narrowing. Restoring it makes a
 	// resumed run no WIDER than the original: without it the run came back on
 	// the bare operator floor, the one case where losing an override weakened

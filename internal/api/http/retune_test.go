@@ -298,6 +298,61 @@ func TestRetuneEndpoint_RefusesABodyWithNoOverrides(t *testing.T) {
 	}
 }
 
+// The crossing: a retune writes the record, and the callback the loop holds must
+// read that record back as its park decision. Both halves are unit-tested and
+// both pass while the value never travels between them — the failure class this
+// project keeps meeting.
+//
+// Driven through /retune, which is the whole point: taking hold of a run should
+// not require putting a message in its transcript that the operator never wanted
+// to send. (The same fields ride /input's `overrides` for the atomic case — they
+// share runOverridesWire.)
+func TestRetune_PromotingARunIsVisibleToTheLoopsParkDecision(t *testing.T) {
+	srv, ts, prov, run := parkedRoutedRun(t)
+	ctx := context.Background()
+
+	// The callback a run-start site installs, for a run that started PLAIN.
+	decide := srv.interactiveNowFn(run.ID, false)
+	if decide(ctx) {
+		t.Fatal("a run that started non-interactive already reads as interactive")
+	}
+
+	before := len(prov.requests())
+	if code, b := postRetune(t, ts, run.ID, `{"interactive":true}`); code != 200 {
+		t.Fatalf("promote: %d %s", code, strings.TrimSpace(b))
+	}
+	// No turn was spent taking hold of it.
+	if got := len(prov.requests()); got != before {
+		t.Errorf("promoting the run cost %d extra provider request(s)", got-before)
+	}
+
+	if !decide(ctx) {
+		t.Error("after the retune the loop still reads NOT interactive — the promotion " +
+			"reached the store and not the decision, so the run would finish instead of parking")
+	}
+
+	// And back, or `interactive` is a one-way door: a run started interactive
+	// could never be released.
+	if code, b := postRetune(t, ts, run.ID, `{"interactive":false}`); code != 200 {
+		t.Fatalf("demote: %d %s", code, strings.TrimSpace(b))
+	}
+	waitFor(t, "the loop to read the demotion", func() bool { return !decide(ctx) })
+}
+
+// The callback must FAIL TO THE START-TIME ANSWER. A read that did not work must
+// not change whether a run terminates.
+func TestRetune_AnUnreadableRunKeepsWhatItStartedAs(t *testing.T) {
+	srv, _, _, _ := parkedRoutedRun(t)
+	ctx := context.Background()
+
+	for _, started := range []bool{true, false} {
+		if got := srv.interactiveNowFn("r_does_not_exist", started)(ctx); got != started {
+			t.Errorf("an unreadable run answered %v, want the start-time %v — a failed read "+
+				"must never flip a run between parking and finishing", got, started)
+		}
+	}
+}
+
 // Same refusal the /input retune gives, at the same moment — the shared half is
 // s.retuneRun, so the two routes cannot disagree about what a retune permits.
 func TestRetuneEndpoint_RefusesAnOverrideTheDefinitionForbids(t *testing.T) {
@@ -319,5 +374,78 @@ func TestRetuneEndpoint_UnknownRunIsTheSame404AsAForbiddenOne(t *testing.T) {
 	_, ts, _, _ := parkedRoutedRun(t)
 	if code, _ := postRetune(t, ts, "r_does_not_exist", `{"model":"model-b"}`); code != 404 {
 		t.Errorf("unknown run → %d, want 404", code)
+	}
+}
+
+// Promoting must not disturb what else the run carries.
+func TestRetune_PromotingKeepsTheRestOfTheConfiguration(t *testing.T) {
+	srv, ts, _, run := parkedRoutedRun(t)
+	ctx := context.Background()
+
+	seed := runConfigRecord{Resources: &resourceOverride{MaxTokens: 4321}}
+	if err := srv.store.SetRunConfig(ctx, run.ID, seed.marshal()); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := postRetune(t, ts, run.ID, `{"interactive":true}`); code != 200 {
+		t.Fatalf("promote: %d %s", code, strings.TrimSpace(b))
+	}
+
+	rec, ok := decodeRunConfig(mustGetRun(t, srv.store, run.ID).RunConfig)
+	if !ok || rec.Interactive == nil || !*rec.Interactive {
+		t.Fatalf("interactive did not persist: %+v", rec)
+	}
+	if rec.Resources == nil || rec.Resources.MaxTokens != 4321 {
+		t.Errorf("max_tokens = %+v, want the run's own 4321 kept", rec.Resources)
+	}
+}
+
+// An agent whose definition does not enable interruptions can be granted them
+// for one run — the operator watching it go wrong could not previously let it
+// ask a question, because that was frozen into the definition before the run.
+func TestRetune_InterruptionCanBeEnabledForOneRun(t *testing.T) {
+	srv, ts, _, run := parkedRoutedRun(t)
+
+	body := `{"interruption":{"enabled":true,"max_pending":2}}`
+	if code, b := postRetune(t, ts, run.ID, body); code != 200 {
+		t.Fatalf("enable interruption: %d %s", code, strings.TrimSpace(b))
+	}
+
+	rec, ok := decodeRunConfig(mustGetRun(t, srv.store, run.ID).RunConfig)
+	if !ok || rec.Interruption == nil || !rec.Interruption.Enabled {
+		t.Fatalf("interruption did not persist as enabled: %+v", rec)
+	}
+	if rec.Interruption.MaxPending != 2 {
+		t.Errorf("max_pending = %d, want 2", rec.Interruption.MaxPending)
+	}
+}
+
+// isZero is hand-written now: the struct holds a pointer to a slice-bearing type,
+// so the `*w == runOverridesWire{}` it used to be no longer compiles. A body
+// naming only a NEW field must not read as empty.
+func TestRetune_ABodyNamingOnlyTheNewFieldsIsNotEmpty(t *testing.T) {
+	for _, body := range []string{`{"interactive":true}`, `{"interruption":{"enabled":true}}`} {
+		var w runOverridesWire
+		if err := json.Unmarshal([]byte(body), &w); err != nil {
+			t.Fatalf("unmarshal %s: %v", body, err)
+		}
+		if w.isZero() {
+			t.Errorf("%s read as an empty override set — a real call would be dropped", body)
+		}
+	}
+}
+
+// A storeless server has nowhere to have recorded a promotion — and the callback
+// runs at EVERY turn boundary, so a missing nil check is a panic on every run
+// rather than a missing feature. The suite caught this; review did not.
+func TestRetune_AStorelessServerDoesNotPanicAtTheBoundary(t *testing.T) {
+	var s *Server
+	for _, started := range []bool{true, false} {
+		if got := s.interactiveNowFn("r_1", started)(context.Background()); got != started {
+			t.Errorf("nil server answered %v, want the start-time %v", got, started)
+		}
+	}
+	empty := &Server{}
+	if got := empty.interactiveNowFn("r_1", true)(context.Background()); !got {
+		t.Error("a server with no store answered false for a run that started interactive")
 	}
 }

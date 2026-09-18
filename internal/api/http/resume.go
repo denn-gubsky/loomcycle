@@ -476,6 +476,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         run.Interactive,
+		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
 		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
 		Compaction:          runCfg.Compaction, // restored from the run, not re-derived

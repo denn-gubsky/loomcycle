@@ -118,6 +118,25 @@ type RunOptions struct {
 	// bound it. Set an explicit MaxIterations to cap an interactive session.
 	Interactive bool
 
+	// InteractiveNow, when non-nil, is consulted at each PARK DECISION instead of
+	// the static Interactive flag — so a run that started non-interactive can be
+	// PROMOTED while it is already running, and park at its next end_turn rather
+	// than finishing.
+	//
+	// WHY A CALLBACK AND NOT A MUTABLE FIELD. The decision has to be read at the
+	// boundary, not captured: the whole point is that it changes after the loop
+	// started, from another goroutine and possibly another replica. A bool the
+	// server writes would be a data race; this is a read the server owns.
+	//
+	// It does NOT override the two start-time uses of Interactive — the
+	// unbounded-iteration lift and the auto context-mode choice. Promoting a run
+	// so an operator can correct it should not also silently remove its iteration
+	// bound or rewrite how its history is kept; max_iterations is separately
+	// overridable for the caller who wants that.
+	//
+	// nil = use the static flag, which is every run that was never retuned.
+	InteractiveNow func(ctx context.Context) bool
+
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
 	//
@@ -898,7 +917,7 @@ func finishTurnCancel(ctx context.Context, opts *RunOptions, messages []provider
 	emit(providers.Event{Type: providers.EventTurnCancelled,
 		TurnCancelled: &providers.TurnCancelledEventInfo{Reason: reason, SinceTurn: sinceTurn}})
 	disarm()
-	if opts.Interactive && opts.SteerQueue != nil {
+	if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil {
 		return parkForOperatorTurn(ctx, opts, messages, sinceTurn, lastCtxTokens, emit)
 	}
 	return messages, lastCtxTokens, false
@@ -2422,7 +2441,7 @@ outerLoop:
 			// its concurrency slot while idle — the documented fairness
 			// trade-off of an always-on terminal agent (bounded by the
 			// existing per-user / global run caps).
-			if opts.Interactive && opts.SteerQueue != nil {
+			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil {
 				// RFC BH: the turn ended and the run is about to park — no longer
 				// mid-turn, so disarm the turn-cancel token (a cancel while parked
 				// finds nothing armed → the handler 409s it).
@@ -2939,3 +2958,18 @@ func iterationCount(messages []providers.Message) int {
 }
 
 var _ = json.Valid // keep encoding/json in deps for json.RawMessage docs above
+
+// interactiveAtBoundary reports whether this run should PARK at a turn boundary
+// rather than finish.
+//
+// Read at the boundary rather than captured at start, because a run can be
+// promoted to interactive while it is already running — the operator who wants
+// to correct an agent mid-flight has no way to have asked for that when the run
+// began. The static flag remains the answer for every run that was never
+// retuned, which is almost all of them.
+func (o *RunOptions) interactiveAtBoundary(ctx context.Context) bool {
+	if o.InteractiveNow != nil {
+		return o.InteractiveNow(ctx)
+	}
+	return o.Interactive
+}
