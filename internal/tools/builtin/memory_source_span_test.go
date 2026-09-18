@@ -8,6 +8,7 @@ import (
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RFC CV P1 — a recalled fact reaches through to the span it came from.
@@ -97,5 +98,120 @@ func TestMemoryTool_Recall_SourceSurvivesAnUnclassifiedRow(t *testing.T) {
 	}
 	if strings.Contains(res.Text, `"kind"`) {
 		t.Errorf("an unclassified row asserted a kind: %s", res.Text)
+	}
+}
+
+// TestSourceSpansFor_CarriesTheObservationDate.
+//
+// recall returned no date at all. The span was believed to supply one — its own
+// comment claims it "carries the turn's own leading timestamp" — but a turn split on
+// sentence punctuation keeps the stamp on its FIRST sentence and strips it from every
+// later one. Measured on a live store: 36 of 111 spans (32%) had a date, against 263
+// of 303 facts (87%) carrying observed_at, which was being dropped at this boundary.
+//
+// So a "when did X happen" question had nothing to answer from on two thirds of hits,
+// which is what sent the answerer to a second retrieval for a date already in hand.
+func TestSourceSpansFor_CarriesTheObservationDate(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	const nk = "memory/fact/when-it-happened"
+	const at int64 = 1683554160000000000 // 2023-05-08T13:56:00Z
+
+	if err := d.exec(ctx, key,
+		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, source_quote, session_id, observed_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"c-when", nk, "I went to the support group", "s-1", at); err != nil {
+		t.Skipf("fixture insert not supported on this tier: %v", err)
+	}
+
+	got := SourceSpansFor(ctx, d.SqlMem, tools.RunIdentity(ctx).TenantID,
+		store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, []string{nk})
+	src, ok := got[nk]
+	if !ok {
+		t.Fatalf("no source row returned for %q (got %v)", nk, got)
+	}
+	if src.ObservedAt != at {
+		t.Errorf("ObservedAt = %d, want %d — the date is on the row and was being "+
+			"discarded at the read boundary", src.ObservedAt, at)
+	}
+}
+
+// TestSourceSpansFor_ADateAloneIsStillWorthReturning.
+//
+// The old drop test required a span or a pointer, so a fact whose span was never
+// derived but whose observation time WAS recorded got dropped entirely — the exact
+// row this change exists to surface.
+func TestSourceSpansFor_ADateAloneIsStillWorthReturning(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	const nk = "memory/fact/date-only"
+	const at int64 = 1683554160000000000
+
+	if err := d.exec(ctx, key,
+		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, observed_at) VALUES (?, ?, ?)`,
+		"c-dateonly", nk, at); err != nil {
+		t.Skipf("fixture insert not supported on this tier: %v", err)
+	}
+	got := SourceSpansFor(ctx, d.SqlMem, tools.RunIdentity(ctx).TenantID,
+		store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, []string{nk})
+	if _, ok := got[nk]; !ok {
+		t.Errorf("a row carrying only a date was dropped — it is the row a "+
+			"\"when did X happen\" question needs most (got %v)", got)
+	}
+}
+
+// TestSourceSpansFor_CarriesTheEventTimeSeparately.
+//
+// valid_at was SET-ONLY: the Memory schema accepts it on a write and recall never
+// returned it, so the one field that answers "when did it HAPPEN" — as opposed to
+// when it was said — was unreachable to the reader that needs it.
+//
+// "Yesterday I met them in Boston", said on the 4th, is observed_at the 4th and
+// valid_at the 3rd. A probe on the live rig showed exactly this failure: handed only
+// observed_at, the answerer replied "May 8, 2023" where the gold was 7 May — the day
+// the remark was made, not the day of the event.
+func TestSourceSpansFor_CarriesTheEventTimeSeparately(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	const nk = "memory/fact/said-then-happened-earlier"
+	const said int64 = 1683554160000000000     // 2023-05-08
+	const happened int64 = 1683467760000000000 // 2023-05-07
+
+	if err := d.exec(ctx, key,
+		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, observed_at, valid_at)
+		 VALUES (?, ?, ?, ?)`, "c-evt", nk, said, happened); err != nil {
+		t.Skipf("fixture insert not supported on this tier: %v", err)
+	}
+	got := SourceSpansFor(ctx, d.SqlMem, tools.RunIdentity(ctx).TenantID,
+		store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, []string{nk})
+	src, ok := got[nk]
+	if !ok {
+		t.Fatalf("no source row for %q", nk)
+	}
+	if src.ValidAt != happened {
+		t.Errorf("ValidAt = %d, want %d — the event time is on the row and was "+
+			"unreachable through recall", src.ValidAt, happened)
+	}
+	if src.ObservedAt != said {
+		t.Errorf("ObservedAt = %d, want %d — the two must not be conflated", src.ObservedAt, said)
+	}
+}
+
+// TestSourceSpansFor_AnEventTimeAloneIsStillWorthReturning. A fact whose span was
+// never derived but whose EVENT time was recorded is exactly the row a temporal
+// question needs; the row-keeping test must not drop it.
+func TestSourceSpansFor_AnEventTimeAloneIsStillWorthReturning(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	const nk = "memory/fact/event-time-only"
+	const happened int64 = 1683467760000000000
+	if err := d.exec(ctx, key,
+		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, valid_at) VALUES (?, ?, ?)`,
+		"c-evtonly", nk, happened); err != nil {
+		t.Skipf("fixture insert not supported on this tier: %v", err)
+	}
+	if _, ok := SourceSpansFor(ctx, d.SqlMem, tools.RunIdentity(ctx).TenantID,
+		store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, []string{nk})[nk]; !ok {
+		t.Error("a row carrying only an event time was dropped")
 	}
 }
