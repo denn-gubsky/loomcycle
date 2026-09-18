@@ -58,7 +58,7 @@ func TestScopeDefaultCensus_EveryDefinitionReadUsesTheResolver(t *testing.T) {
 					return true
 				}
 				sel, ok := lit.Type.(*ast.SelectorExpr)
-				if !ok || sel.Sel == nil || sel.Sel.Name != "MemoryPolicyValue" {
+				if !ok || sel.Sel == nil || (sel.Sel.Name != "MemoryPolicyValue" && sel.Sel.Name != "SqlMemPolicyValue") {
 					return true
 				}
 				for _, elt := range lit.Elts {
@@ -72,7 +72,7 @@ func TestScopeDefaultCensus_EveryDefinitionReadUsesTheResolver(t *testing.T) {
 					// A definition read looks like `<x>.MemoryScopes`. Anything
 					// else (a literal grant) is a session policy, not agent policy.
 					vs, ok := kv.Value.(*ast.SelectorExpr)
-					if !ok || vs.Sel == nil || vs.Sel.Name != "MemoryScopes" {
+					if !ok || vs.Sel == nil || (vs.Sel.Name != "MemoryScopes" && vs.Sel.Name != "SqlScopes") {
 						continue
 					}
 					missing = append(missing, finding{path, exprText(src, vs)})
@@ -88,11 +88,11 @@ func TestScopeDefaultCensus_EveryDefinitionReadUsesTheResolver(t *testing.T) {
 		for _, m := range missing {
 			b.WriteString("\n  " + m.file + ": AllowedScopes: " + m.detail)
 		}
-		t.Errorf("these sites read an agent definition's memory_scopes RAW, bypassing "+
-			"tools.EffectiveMemoryScopes:%s\n\nA scope default applied at some construction "+
+		t.Errorf("these sites read an agent definition's scope list RAW, bypassing "+
+			"the matching Effective…Scopes resolver:%s\n\nA scope default applied at some construction "+
 			"sites and not others is worse than no default: the same agent behaves "+
 			"differently depending on which transport started the run. Wrap the value in "+
-			"tools.EffectiveMemoryScopes(ctx, …).", b.String())
+			"tools.EffectiveMemoryScopes / EffectiveSqlScopes(ctx, …).", b.String())
 	}
 }
 
@@ -118,11 +118,11 @@ func TestScopeDefaultCensus_TheCensusSeesTheSites(t *testing.T) {
 			if err != nil {
 				continue
 			}
-			seen += strings.Count(string(src), "MemoryPolicyValue{")
+			seen += strings.Count(string(src), "MemoryPolicyValue{") + strings.Count(string(src), "SqlMemPolicyValue{")
 		}
 	}
-	if seen < 10 {
+	if seen < 20 {
 		t.Fatalf("the census found only %d MemoryPolicyValue construction sites; it is meant "+
-			"to cover every one of them (12 at the time of writing) and has stopped doing so", seen)
+			"to cover every one of them (12 memory + 13 sql at the time of writing) and has stopped doing so", seen)
 	}
 }
