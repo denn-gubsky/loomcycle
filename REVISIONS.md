@@ -12,10 +12,11 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *The run controls that shipped write-only can now be read back — and a granted tool that could never work says so at run start.*
 
-Eleven PRs. Two lines finishing at once — the per-run override surface gets its
-reads, its last two transports and its interactive fields, and the
+Eighteen PRs. Two lines finishing at once — the per-run override surface gets
+its reads, its last two transports and its interactive fields, and the
 capability-gate work gets its defaults, its warning and its correction — plus
-the first phase of the recall-provenance work.
+three phases of recall provenance, which turned into a dating fix once the
+measurements came back.
 
 A RUN'S CONFIGURATION CAN BE READ, NOT JUST WRITTEN. The previous release let a
 run carry its own model, budgets and tuning; every bit of it was write-only. A
@@ -148,6 +149,64 @@ READ; both must say yes. The field is `notOverridable` per-run for the same
 reason — a run that could set it would obtain transcript through the memory path,
 which is exactly what an operator declines when they narrow `history_scope`.
 
+RECALL NOW RETURNS WHEN A FACT WAS OBSERVED. `Memory op=recall` returned no
+date on a hit, so "when did X happen" had nothing to answer from — the distilled
+sentence is tenseless. The date was believed to arrive with the source span, and
+measured on a live store that is true of a third of them: of 150 hits, 111
+carried a span and only 36 of those (32%) carried a date. The cause is in span
+derivation — a turn reads `[1:56 pm on 8 May, 2023] Caroline: …` and spans are
+cut on sentence punctuation as well as line breaks, so the FIRST sentence keeps
+the stamp and every later one loses it.
+
+Meanwhile `observed_at` is populated on 87% of facts and was being discarded at
+this boundary: the date the question needs was already on the row, one column
+away from the projection that read it. It is returned as RFC3339 rather than the
+stored unix nanos, because this field is read by a model answering "when" and a
+nanosecond integer is not an answer it can give. A row carrying ONLY a date is
+now kept — the old rule required a span or a pointer, so a fact whose span was
+never derived but whose observation time WAS recorded was dropped entirely, the
+exact row this change exists to surface.
+
+⚠️ WHAT IT DELIBERATELY DOES NOT DO is prepend the turn's stamp to the span.
+That was the first attempt and it breaks a load-bearing invariant: the span must
+be a verbatim substring of the transcript, which is what makes fabrication
+impossible rather than merely unlikely, and what a verification judge checks
+against. Synthesising a span that never appeared in the source would trade a
+retrieval problem for an evidence one.
+
+AND AN `observed_at` LATER THAN ITS OWN TURN IS THE INGESTION DATE, NOT THE
+EVENT. Measured on the same store, 5 of 263 facts carried a 2026 `observed_at`
+on a 2023 corpus — two of them while their own span still read
+`[7:55 pm on 9 June, 2023]`. Not a parse failure: the stamping is gap-filling by
+design and a model-supplied value always wins, so when the extractor emits the
+date it is RUNNING on, nothing corrects it. `observed_at` is when it was SAID,
+and a turn cannot have been said after its own timestamp, so that one direction
+is now corrected to the span. The model-wins rule is otherwise intact — a value
+EARLIER than the turn is exactly the relative date ("last month") the parser
+cannot resolve, which is why the rule exists.
+
+⚠️ 2% WOULD HAVE BEEN COSMETIC WHILE THE FIELD WAS WRITE-ONLY. Recall returns
+`observed_at` as of this release, so a wrong date now reaches the reader AS AN
+ANSWER — and a confidently wrong date is worse than a missing one.
+
+THE TS AGENT-DEF MIRROR STOPS DRIFTING. The substrate carries an agent def as an
+overlay whose shape the in-process tool owns; gRPC declares it as opaque bytes
+and the Python adapter takes a plain mapping, so both already passed any key
+through. TypeScript is the exception — `AgentDefOverlay` is a hand-written
+mirror with no index signature, so excess-property checking REFUSES any key it
+does not declare, and a field absent there is not a documentation gap but a
+field a typed TS caller cannot set at all. `recall_include_turns` is added.
+
+⚠️ THE MIRROR IS ALREADY 30 FIELDS BEHIND the Go overlay's 48 —
+`memory_consolidation`, `sampling`, `compaction`, `history_scope`, `volumes` and
+the entire `*_def_scopes` family are unreachable from a typed TS caller. That is
+pre-existing and is NOT fixed here: which of them the adapter should expose is a
+decision about its surface, not about this feature. What IS fixed is that it
+stops growing — the 29 remaining gaps are frozen in a register that may only
+SHRINK, so a 31st unmirrored field fails, and an entry that later gets mirrored
+must be removed or it fails the other way. The drift reached 30 precisely
+because nothing objected as it grew.
+
 **Upgrade notes.** `sql_scopes` and `evaluation_scopes` change posture on
 upgrade, the same way `memory_scopes` and `history_scope` did in v1.82.0: an
 agent that holds `Memory`/`Evaluation` with the scope list unset previously had
@@ -156,6 +215,10 @@ only when the run carries a user id). Set the list explicitly to widen or
 narrow, or `["-*"]` to grant none — the same deny-all sentinel `skills` uses.
 Existing agent rows stay byte-stable: the defaults resolve at policy time, not
 by materialising into the definition, so `content_sha256` does not fork.
+
+`Memory op=recall` hits now carry an `observed_at` they did not before — additive,
+but a consumer that pins the response shape should expect the field. Turn
+attachment stays off unless an operator grants `recall_include_turns`.
 
 Adapters: `@loomcycle/client` **1.83.0**, `loomcycle` (PyPI) **1.83.0**.
 
