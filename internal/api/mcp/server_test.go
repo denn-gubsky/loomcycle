@@ -916,9 +916,16 @@ func TestServer_ResolveProbe_DispatchesThroughConnector(t *testing.T) {
 type fakeRunner struct {
 	agentID, runID, sessionID string
 	events                    []providers.Event
+	// lastInput is what spawnRunStreaming actually built. It was discarded
+	// (`_ runner.RunInput`), which left that function's thirty-field hand-copy
+	// covered by nothing: a field added to connector.SpawnRunRequest and to the
+	// tool schema but missed in that literal is dropped for every streaming
+	// caller, with every test still green.
+	lastInput runner.RunInput
 }
 
-func (f *fakeRunner) RunOnce(_ context.Context, _ runner.RunInput, cb runner.RunCallbacks) error {
+func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	f.lastInput = in
 	if cb.OnRegistered != nil {
 		cb.OnRegistered(f.agentID, f.runID, f.sessionID, "")
 	}

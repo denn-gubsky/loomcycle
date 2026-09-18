@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"sort"
@@ -237,4 +238,82 @@ func describe(v any) string {
 		return "<unmarshalable>"
 	}
 	return string(b)
+}
+
+// spawnRunStreaming builds runner.RunInput by hand from connector.SpawnRunRequest
+// — thirty fields, copied one by one — and NOTHING covered it: both fake runners
+// declared `_ runner.RunInput` and threw the value away.
+//
+// That is the branch a session takes when it opts into run events
+// (initialize.capabilities.loomcycle.runEvents=true), which Claude Code does. So
+// a field added to the accepted shape and to the schema, but missed in that
+// literal, is dropped for every streaming caller while the schema test, the
+// crossing test and the connector's own field copy all stay green.
+//
+// Derived from the struct for the same reason the schema check is: a hand list
+// here would be one more enumeration to forget.
+func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
+	fr := &fakeRunner{agentID: "a_1", runID: "r_1", sessionID: "s_1"}
+	sess := NewSession()
+	sess.MarkInitialized()
+	sess.SetRunEventsEnabled(true) // the branch Claude Code takes
+	env := &handlerEnv{connector: &mockConnector{}, runner: fr, session: sess}
+
+	args := `{"agent":"rev","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],
+	          "user_id":"u1","tenant_id":"t1","user_tier":"pro","user_bearer":"tok",
+	          "user_credentials":{"github":"g"},"tools":["Read"],
+	          "max_context_tokens":4096,"model":"m","provider":"p","tier":"middle","effort":"high",
+	          "max_tokens":100,"max_iterations":9,"max_concurrent_children":2,
+	          "retry_attempts":0,"memory_inject_max_tokens":0,"memory_index_max_bytes":0,
+	          "inject_tool_guide":false,"unbounded_iterations":false}`
+	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
+		t.Fatalf("handleSpawnRun: %v", err)
+	}
+
+	in := fr.lastInput
+	for _, tc := range []struct {
+		field string
+		got   any
+		want  any
+	}{
+		{"Agent", in.Agent, "rev"},
+		{"UserID", in.UserID, "u1"},
+		{"TenantID", in.TenantID, "t1"},
+		{"UserTier", in.UserTier, "pro"},
+		{"UserBearer", in.UserBearer, "tok"},
+		{"MaxContextTokens", in.MaxContextTokens, 4096},
+		{"Model", in.Model, "m"},
+		{"Provider", in.Provider, "p"},
+		{"Tier", in.Tier, "middle"},
+		{"Effort", in.Effort, "high"},
+		{"MaxTokens", in.MaxTokens, 100},
+		{"MaxIterations", in.MaxIterations, 9},
+		{"MaxConcurrentChildren", in.MaxConcurrentChildren, 2},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %v, want %v — dropped by the streaming path's hand-copy", tc.field, tc.got, tc.want)
+		}
+	}
+	if len(in.Segments) == 0 {
+		t.Error("Segments were dropped — the run would reach the model with an empty prompt")
+	}
+	if in.UserCredentials["github"] != "g" {
+		t.Errorf("UserCredentials = %v, want github=g", in.UserCredentials)
+	}
+	// The meaningful zeros: pointers precisely so "off" survives, and exactly
+	// what a hand-copy that tests only non-zero values would miss.
+	for _, tc := range []struct {
+		field string
+		set   bool
+	}{
+		{"RetryAttempts", in.RetryAttempts != nil},
+		{"MemoryInjectMaxTokens", in.MemoryInjectMaxTokens != nil},
+		{"MemoryIndexMaxBytes", in.MemoryIndexMaxBytes != nil},
+		{"InjectToolGuide", in.InjectToolGuide != nil},
+		{"UnboundedIterations", in.UnboundedIterations != nil},
+	} {
+		if !tc.set {
+			t.Errorf("%s is nil — its meaningful zero was dropped on the streaming path", tc.field)
+		}
+	}
 }
