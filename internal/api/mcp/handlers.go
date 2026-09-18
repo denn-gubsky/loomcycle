@@ -48,6 +48,7 @@ var handlersByName = map[string]toolHandler{
 	"cancel_run":  handleCancelRun,
 	"get_run":     handleGetRun,
 	"compact_run": handleCompactRun,
+	"retune_run":  handleRetuneRun,
 	"directory":   handleDirectory,
 	"erasure":     handleErasure,
 	"list_runs":   handleListRuns,
@@ -1333,4 +1334,48 @@ func toolResultFromConnector(res connector.ToolResult) *loommcp.CallToolResult {
 		}
 	}
 	return out
+}
+
+// handleRetuneRun changes a RUNNING agent's settings without sending it a turn —
+// the MCP twin of POST /v1/runs/{run_id}/retune and the RetuneRun RPC, and the
+// fifth and last surface the retune reaches.
+//
+// It answers with the run's MERGED configuration rather than an acknowledgement,
+// because a caller cannot recompute it: naming a model clears the provider and
+// naming a tier clears the model, so echoing the request back would show
+// something the run does not hold.
+func handleRetuneRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("retune_run: no connector wired")
+	}
+	var p struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErr("invalid retune_run arguments: " + err.Error()), nil
+	}
+	if p.AgentID == "" {
+		return toolErr("retune_run: agent_id is required"), nil
+	}
+	var ov connector.RunOverrides
+	if err := json.Unmarshal(args, &ov); err != nil {
+		return toolErr("invalid retune_run overrides: " + err.Error()), nil
+	}
+	if ov.IsZero() {
+		// Not an absorbed no-op: an empty set means the field names were
+		// misspelled, and reporting success for a call that changed nothing is
+		// how that mistake stays invisible.
+		return toolErr("retune_run: at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide, interactive, interruption)"), nil
+	}
+	run, err := env.connector.GetRun(ctx, p.AgentID)
+	if err != nil {
+		return toolErrFrom("retune_run", err), nil
+	}
+	if run.RunID == "" {
+		return toolErr("retune_run: no run_id for agent_id " + p.AgentID), nil
+	}
+	if err := env.connector.RetuneRun(ctx, run.RunID, ov); err != nil {
+		return toolErrFrom("retune_run", err), nil
+	}
+	return toolResultJSON(map[string]any{"run_id": run.RunID, "retuned": true}), nil
 }

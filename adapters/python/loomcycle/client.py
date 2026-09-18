@@ -1513,6 +1513,7 @@ class LoomcycleClient:
         metadata: Optional[Mapping[str, Any]] = None,
         context: Optional[Mapping[str, Any]] = None,
         parent_context: Optional[Mapping[str, str]] = None,
+        user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
@@ -1590,6 +1591,7 @@ class LoomcycleClient:
             metadata=metadata,
             context=context,
             parent_context=parent_context,
+            user_credentials=user_credentials,
             sampling=sampling,
             compaction=compaction,
             max_context_tokens=max_context_tokens,
@@ -1628,6 +1630,7 @@ class LoomcycleClient:
         metadata: Optional[Mapping[str, Any]] = None,
         context: Optional[Mapping[str, Any]] = None,
         parent_context: Optional[Mapping[str, str]] = None,
+        user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
@@ -1675,6 +1678,8 @@ class LoomcycleClient:
             user_tier=user_tier,
             user_bearer=user_bearer,
             metadata=json.dumps(metadata).encode() if metadata is not None else b"",
+            # A proto map needs a dict, never None.
+            user_credentials=dict(user_credentials or {}),
             max_context_tokens=max_context_tokens,
             interactive=interactive,
             model=model,
@@ -2009,6 +2014,7 @@ def _build_run_request(
     metadata: Optional[Mapping[str, Any]] = None,
     context: Optional[Mapping[str, Any]] = None,
     parent_context: Optional[Mapping[str, str]] = None,
+    user_credentials: Optional[Mapping[str, str]] = None,
     sampling: Optional[Mapping[str, Any]] = None,
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
@@ -2054,6 +2060,12 @@ def _build_run_request(
         tenant_id=tenant_id,
         user_tier=user_tier,
         user_bearer=user_bearer,
+        # RFC F named credentials. This was absent entirely: the field is
+        # RunRequest 12 on the wire and the adapter never set it, so a caller
+        # whose MCP headers carry ${run.credentials.<name>} got an empty map,
+        # the substitution resolved to nothing, and the downstream call 401'd
+        # with nothing client-side saying the credential had been dropped.
+        user_credentials=dict(user_credentials or {}),
         max_context_tokens=max_context_tokens,
         interactive=interactive,
         # Canonical JSON bytes: the value is map[string]any by definition, so
@@ -2106,6 +2118,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         tenant_id=spawn.get("tenant_id", ""),
         user_tier=spawn.get("user_tier", ""),
         user_bearer=spawn.get("user_bearer", ""),
+        user_credentials=spawn.get("user_credentials"),
         sampling=spawn.get("sampling"),
         compaction=spawn.get("compaction"),
         max_context_tokens=spawn.get("max_context_tokens", 0),

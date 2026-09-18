@@ -276,3 +276,43 @@ async def test_a_zero_context_value_is_sent_not_dropped():
     assert req.context.keep_last_n == 0
     assert req.context.HasField("recall")
     assert req.context.recall is False
+
+
+@pytest.mark.asyncio
+async def test_user_credentials_reach_the_wire_on_both_request_paths():
+    """Named credentials were absent from this adapter ENTIRELY.
+
+    The field is RunRequest 12 / ContinueRequest 9 on the wire and the client
+    never set it, so a caller whose MCP server headers carry
+    ``${run.credentials.<name>}`` got an empty map: the substitution resolved to
+    nothing and the downstream call 401'd, with nothing client-side saying the
+    credential had been dropped. A silent-failure path, not a missing feature.
+    """
+    creds = {"github": "tok-a", "slack": "tok-b"}
+
+    for path in ("run", "continue"):
+        stub = _CaptureStub()
+        client = _make_client()
+        client._stub = stub  # type: ignore[assignment]
+        if path == "run":
+            async for _ in client.run_streaming(
+                agent="default", segments=[], user_credentials=creds
+            ):
+                pass
+        else:
+            async for _ in client.continue_session(
+                session_id="s_1", segments=[], user_credentials=creds
+            ):
+                pass
+        assert dict(stub.req.user_credentials) == creds, path
+
+
+@pytest.mark.asyncio
+async def test_omitting_user_credentials_sends_an_empty_map_not_an_error():
+    """A proto map needs a dict; None raises. Omission is the common path."""
+    stub = _CaptureStub()
+    client = _make_client()
+    client._stub = stub  # type: ignore[assignment]
+    async for _ in client.run_streaming(agent="default", segments=[]):
+        pass
+    assert dict(stub.req.user_credentials) == {}
