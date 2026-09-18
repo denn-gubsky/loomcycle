@@ -50,6 +50,7 @@ var tenantConfinableTools = map[string]bool{
 	"cancel_run":  true,
 	"get_run":     true,
 	"compact_run": true,
+	"retune_run":  true,
 	"list_runs":   true,
 
 	// Agent management.

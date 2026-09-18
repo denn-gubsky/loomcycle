@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -39,6 +40,44 @@ const spawnPerRunProps = `
 	"inject_tool_guide": {"type": "boolean", "description": "Whether to inject the generated tool guide into this child's prompt."},
 	"interactive": {"type": "boolean", "description": "Park this child at its turn boundaries instead of finishing, so an operator can steer it. Also settable on a run that is ALREADY GOING \u2014 that is the point, since nobody knows at start that they will need to correct it. false releases a run that was started interactive."},
 	"interruption": {"type": "object", "description": "Let this child ASK a human a question, overriding what its definition allows. It blocks and waits for a person, so the cost is the run stopping until someone answers \u2014 bounded by the run timeout and the interruption's own.", "properties": {"enabled": {"type": "boolean"}, "kinds": {"type": "array", "items": {"type": "string"}}, "max_pending": {"type": "integer", "minimum": 0}}}`
+
+// retuneProps is the JSON-schema fragment for a RETUNE, which accepts a
+// strictly smaller set than a spawn: the twelve per-run overrides plus
+// interactive and interruption, and NOT sampling / compaction / context /
+// max_context_tokens / metadata.
+//
+// Spliced from spawnPerRunProps' own entries rather than rewritten, so the two
+// tools cannot end up describing the same field differently — but filtered,
+// because advertising a field the endpoint ignores is the same defect as hiding
+// one that works, pointed the other way.
+var retuneProps = filterProps(spawnPerRunProps, []string{
+	"model", "provider", "tier", "effort",
+	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
+	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes",
+	"inject_tool_guide", "interactive", "interruption",
+})
+
+// filterProps keeps the named entries of a schema-property fragment, in the
+// fragment's own order. Each entry is one line, which is what makes this safe;
+// TestRetuneSchema_MatchesWhatTheEndpointAccepts fails if that stops being true.
+func filterProps(fragment string, keep []string) string {
+	want := make(map[string]bool, len(keep))
+	for _, k := range keep {
+		want[k] = true
+	}
+	var out []string
+	for _, line := range strings.Split(fragment, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, `"`) {
+			continue
+		}
+		name := strings.SplitN(strings.TrimPrefix(t, `"`), `"`, 2)[0]
+		if want[name] {
+			out = append(out, "\t"+strings.TrimSuffix(t, ","))
+		}
+	}
+	return strings.Join(out, ",\n")
+}
 
 // toolDescriptors returns the MCP tool catalogue. Count is asserted
 // by TestServer_ToolsList in server_test.go — let that test be the
@@ -151,6 +190,18 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"properties": {
 					"agent_id": {"type": "string"},
 					"reason":   {"type": "string", "description": "Optional free-text note (audit only)."}
+				}
+			}`),
+		},
+		{
+			Name:        "retune_run",
+			Description: "Change a RUNNING agent's settings without sending it a turn. Targets a run by `agent_id`. Use it to take hold of a run that is going the wrong way: move it to a different model, raise its iteration bound, or park it at its next turn boundary so a person can correct it (`interactive`). Returns the run's merged configuration, which is what it now holds — not an echo of what you sent, because the merge is not a field-wise union: naming a model clears the provider, and naming a tier clears the model. Overrides select WITHIN what the agent's definition already allows and cannot widen it; one it forbids is REFUSED here rather than applied and discovered later. Do NOT use it to send the agent a message — that is spawn_run with the run's session_id, and a retune deliberately writes nothing to the transcript that the operator did not say. At least one field is required: an empty call is refused rather than reported as a no-op change.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["agent_id"],
+				"properties": {
+					"agent_id": {"type": "string", "description": "The handle spawn_run returned."},
+					` + retuneProps + `
 				}
 			}`),
 		},

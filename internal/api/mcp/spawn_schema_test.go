@@ -317,3 +317,56 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 		}
 	}
 }
+
+// retune_run accepts a strictly SMALLER set than a spawn: the twelve per-run
+// overrides plus interactive and interruption, and no sampling / compaction /
+// context / max_context_tokens / metadata.
+//
+// Both directions are failures, and the second is the one that nearly shipped:
+// a field the endpoint takes and the tool hides is unreachable, and a field the
+// tool advertises and the endpoint ignores is a promise it does not keep. The
+// first draft of this tool spliced the SPAWN fragment and would have advertised
+// four fields that go nowhere.
+//
+// Derived from connector.RunOverrides, which is what the endpoint unmarshals.
+func TestRetuneSchema_MatchesWhatTheEndpointAccepts(t *testing.T) {
+	accepted := jsonFieldNames(t, reflect.TypeOf(connector.RunOverrides{}))
+	if len(accepted) < 12 {
+		t.Fatalf("derived only %d fields from connector.RunOverrides (%v) — the shape changed "+
+			"and a vacuous pass here is how the tool drifts", len(accepted), accepted)
+	}
+
+	props := topLevelProperties(t, schemaObject(t, toolInputSchema(t, "retune_run")))
+	advertised := make(map[string]bool, len(props))
+	for name := range props {
+		advertised[name] = true
+	}
+
+	var missing []string
+	for _, name := range accepted {
+		if !advertised[name] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("retune_run accepts but does not advertise: %s", strings.Join(missing, ", "))
+	}
+
+	// And nothing extra, beyond the handle itself.
+	acc := make(map[string]bool, len(accepted))
+	for _, n := range accepted {
+		acc[n] = true
+	}
+	var extra []string
+	for name := range advertised {
+		if name != "agent_id" && !acc[name] {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) > 0 {
+		t.Errorf("retune_run advertises fields the endpoint does not accept: %s\n\nThey are "+
+			"silently ignored, which is a promise the tool does not keep.", strings.Join(extra, ", "))
+	}
+}
