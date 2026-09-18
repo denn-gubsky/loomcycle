@@ -134,8 +134,14 @@ func TestMakeHeartbeat_TolerantOfPoolSaturation(t *testing.T) {
 	if elapsed > 4*time.Second {
 		t.Errorf("heartbeat took too long: %v — should complete around the 2 s delay", elapsed)
 	}
-	if got := logOf(); strings.Contains(got, "UpdateHeartbeat") {
-		t.Errorf("unexpected log output (deadline shouldn't have fired): %q", got)
+	// Scoped to THIS run's id, not any "UpdateHeartbeat" mention. The logger
+	// is process-wide, and sibling tests in this package leave heartbeat
+	// ticker closures running past their own cleanup — those fire against a
+	// closed DB and log `UpdateHeartbeat(r_other) failed: sql: database is
+	// closed` into whichever capture happens to be installed. An unscoped
+	// substring check reads another test's noise as this test's failure.
+	if got := logOf(); strings.Contains(got, "UpdateHeartbeat("+runID+")") {
+		t.Errorf("unexpected log output for %s (deadline shouldn't have fired): %q", runID, got)
 	}
 }
 
@@ -163,8 +169,12 @@ func TestMakeHeartbeat_LogsOnDeadlineExceeded(t *testing.T) {
 	if elapsed > 6*time.Second {
 		t.Errorf("heartbeat took too long: %v — deadline should fire near the 5 s budget", elapsed)
 	}
-	if got := logOf(); !strings.Contains(got, "UpdateHeartbeat") {
-		t.Errorf("expected timeout log line, got: %q", got)
+	// Same reason as the sibling test above, pointed the other way: an
+	// unscoped check here could be SATISFIED by another test's leaked
+	// heartbeat line and pass without this run ever logging anything.
+	want := "UpdateHeartbeat(" + runID + ")"
+	if got := logOf(); !strings.Contains(got, want) {
+		t.Errorf("expected timeout log line for %s, got: %q", runID, got)
 	}
 	if got := logOf(); !strings.Contains(got, "context deadline exceeded") {
 		t.Errorf("expected deadline-exceeded reason in log, got: %q", got)
