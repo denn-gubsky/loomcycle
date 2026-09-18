@@ -119,6 +119,11 @@ type Query struct {
 	// Answer is the gold answer, kept for the later answer-accuracy phase. Empty
 	// for the adversarial category.
 	Answer string
+	// Evidence is the gold supporting turns rendered into the prompt for the ORACLE
+	// arm (§7b L1) — empty in every other mode. It is the reading-ceiling measurement:
+	// the reader is handed what a perfect retriever would have found, so whatever it
+	// scores here bounds what any retrieval work can reach with that model.
+	Evidence string
 	// Abstain marks a question whose gold behaviour is to REFUSE — the history
 	// does not contain the answer, so NOT_FOUND is CORRECT. Always false for
 	// LoCoMo, where every included category is answerable; set by the

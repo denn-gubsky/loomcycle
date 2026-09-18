@@ -644,7 +644,10 @@ func answerOne(ctx context.Context, mc *MCPClient, userID string, q Query, answe
 	// ignored the instruction on every question tried; handed one, it passes it
 	// through faithfully. Supplying it measures the PREDICATE rather than whether a
 	// particular model remembers to construct a window.
-	askPrompt := q.Question
+	// ORACLE ARM (§7b L1): the gold turns are already in the query, so the prompt is
+	// evidence-then-question and the answerer holds no tools. Empty in every other
+	// mode, so this costs nothing when the arm is not running.
+	askPrompt := oraclePrompt(q)
 	if injectWhen {
 		if from, to, ok := ResolveWhen(q.Question, 2023, 3); ok {
 			askPrompt += WhenInstruction(from, to)
@@ -910,6 +913,18 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 		if len(qs) == 0 {
 			fmt.Fprintf(stdout, "  no questions selected for this conversation\n")
 			continue
+		}
+		if opts.oracle {
+			var cov OracleCoverage
+			qs, cov = AttachOracleEvidence(conv, qs, opts.oracleWindow)
+			// REPORTED, not silently answered from nothing: a question whose evidence
+			// will not resolve would otherwise read as a reading failure when it is a
+			// dataset one. PARTIAL resolution is reported separately — it hands the
+			// reader less evidence than the answer key claims, and used to be invisible.
+			fmt.Fprintf(stdout, "  oracle: evidence attached at window=%d (%d questions, "+
+				"%d unresolvable, %d partial, %d turns rendered, max %d chars)\n",
+				opts.oracleWindow, len(qs)-cov.Unresolved, cov.Unresolved, cov.Partial,
+				cov.Turns, cov.MaxChars)
 		}
 		fmt.Fprintf(stdout, "  grading %d of %d questions\n", len(qs), len(conv.Queries))
 		results, err := gradeQueries(ctx, mc, userID, qs, opts, stdout)

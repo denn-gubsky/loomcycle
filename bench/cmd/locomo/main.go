@@ -66,6 +66,8 @@ type options struct {
 	// by half a point.
 	onlyDated         bool
 	injectWhen        bool
+	oracle            bool
+	oracleWindow      int
 	allowSharedTenant bool
 	timeout           time.Duration
 	answerer          string
@@ -110,6 +112,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		dated         = fs.Bool("dated", false, "stamp observed_at from each row's session date (RFC CL)")
 		onlyDated     = fs.Bool("only-date-questions", false, "grade ONLY questions naming an absolute date/window (RFC CL slice)")
 		injectWhen    = fs.Bool("inject-when", false, "resolve the question date phrase and hand the answerer a when window")
+		oracleArm     = fs.Bool("oracle", false, "READING CEILING arm: put each question's gold evidence turns in the prompt and answer with no store and no tools (research 7b L1)")
+		oracleWin     = fs.Int("oracle-window", 2, "turns of context rendered either side of each annotated evidence turn. LoCoMo's annotation often names the turn that ASKS rather than the one that ANSWERS, so 0 measures the annotation rather than the reader; 0 is kept to make that measurable")
 		allowShared   = fs.Bool("allow-shared-tenant", false, "permit writing into the default/legacy tenant (NOT isolated)")
 		timeout       = fs.Duration("timeout", 60*time.Second, "per-request timeout")
 		answerer      = fs.String("answerer", "locomo/answerer", "agent that answers from memory (answer axis)")
@@ -136,7 +140,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		mode: *mode, data: *data, dataset: *dataset, instance: *instance, scope: *scope,
 		topK: *topK, categories: cats, conversations: *convLimit,
 		concurrency: *concurrency, out: *out, dryRun: *dryRun, noEmbed: *noEmbed,
-		unit: *unit, dated: *dated, onlyDated: *onlyDated, injectWhen: *injectWhen,
+		unit: *unit, dated: *dated, onlyDated: *onlyDated, injectWhen: *injectWhen, oracle: *oracleArm, oracleWindow: *oracleWin,
 		allowSharedTenant: *allowShared, timeout: *timeout,
 		answerer: *answerer, judge: *judge, sampleQuestions: *sampleQ,
 		consolidatePasses: *consPasses, runTimeout: *runTimeout, seedTurns: *seedTurns,
