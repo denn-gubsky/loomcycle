@@ -183,3 +183,78 @@ describe("retuning a parked run", () => {
     ]);
   });
 });
+
+// The typed path a panel needs: what a run overrides, what it will actually
+// use, and what a retune left it holding. The endpoints shipped server-side and
+// the adapter exposed none of them, so a consumer had to drop to raw fetch.
+describe("reading a run's configuration", () => {
+  it("getRunConfig GETs /config and returns what the RUN overrides", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        run_id: "r_abc",
+        agent: "chat",
+        model: "claude-x",
+        config: { routing: { model: "claude-x" }, resources: { max_iterations: 40 } },
+      }),
+    ]);
+    const out = await client.getRunConfig("r_abc");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(String(call[0])).toContain("/v1/runs/r_abc/config");
+    expect(call[1]?.method ?? "GET").toBe("GET");
+    expect(out.config.routing?.model).toBe("claude-x");
+    expect(out.config.resources?.max_iterations).toBe(40);
+  });
+
+  it("an un-retuned run comes back with an empty config, not an error", async () => {
+    const { client } = makeClient([
+      jsonResponse({ run_id: "r_abc", agent: "chat", model: "claude-x", config: {} }),
+    ]);
+    const out = await client.getRunConfig("r_abc");
+    expect(out.config).toEqual({});
+    expect(out.config.routing).toBeUndefined();
+  });
+
+  it("getEffectiveConfig returns each field with the layer that decided it", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        run_id: "r_abc",
+        agent: "chat",
+        fields: {
+          max_iterations: { value: 16, source: "default" },
+          tier: { value: "middle", source: "definition" },
+          model: { value: "claude-x", source: "resolved" },
+          retry_attempts: { value: 0, source: "user_tier" },
+          max_tokens: { value: null, source: "resolved" },
+        },
+      }),
+    ]);
+    const out = await client.getEffectiveConfig("r_abc");
+
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("/v1/runs/r_abc/effective-config");
+    // The source is the point: 16 alone cannot distinguish a deliberate setting
+    // from a default nobody chose, and those call for opposite actions.
+    expect(out.fields.max_iterations!.source).toBe("default");
+    expect(out.fields.tier!.source).toBe("definition");
+    expect(out.fields.model!.source).toBe("resolved");
+    expect(out.fields.retry_attempts!.source).toBe("user_tier");
+    // A resolved field with no value is an honest answer, not a missing one.
+    expect(out.fields.max_tokens!.value).toBeNull();
+  });
+
+  it("retuneRun returns the MERGED config, which the caller cannot recompute", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        run_id: "r_abc",
+        retuned: true,
+        // The server cleared `provider` because a model was named. Echoing the
+        // request back would have shown a provider the run no longer has.
+        config: { routing: { model: "claude-x" } },
+      }),
+    ]);
+    const out = await client.retuneRun("r_abc", { model: "claude-x" });
+    expect(out.retuned).toBe(true);
+    expect(out.config.routing?.model).toBe("claude-x");
+    expect(out.config.routing?.provider).toBeUndefined();
+  });
+});

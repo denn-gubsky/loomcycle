@@ -358,6 +358,12 @@ export type {
   UsageReportResponse,
   // RFC AW per-scope token budgets
   LimitInfo,
+  EffectiveConfigResponse,
+  EffectiveConfigSource,
+  EffectiveValue,
+  RetuneRunResponse,
+  RunConfigRecord,
+  RunConfigResponse,
   TokenLimit,
   TokenLimitsResponse,
   ConfigResponse,
