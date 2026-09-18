@@ -2,8 +2,10 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -257,4 +259,61 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 		}
 		return provider, model, effort, true, nil
 	}
+}
+
+// retuneRequest is the JSON body for POST /v1/runs/{run_id}/retune.
+//
+// The overrides are INLINE here, not nested under `overrides` as they are on
+// /input. On that endpoint the object names what the group is doing, because the
+// request's other job is sending a message; here changing the settings IS the
+// request, and a wrapper would be ceremony.
+type retuneRequest struct {
+	runOverridesWire
+}
+
+// handleRetuneRun serves POST /v1/runs/{run_id}/retune — change a run's
+// settings WITHOUT sending it a turn.
+//
+// WHY THIS IS NOT A FLAG ON /input. The retune already rides that endpoint, and
+// it stays there: retuning and speaking in one atomic call is a real operation.
+// But `text` is required there, so the only way to change a parked chat's model
+// was to put a message in the transcript the operator never wanted to send —
+// reported from a consumer that wanted exactly this and could not express it.
+//
+// Relaxing the 422 would have made an endpoint whose body is `{"text": …}` also
+// mean "and change the model". These are two different acts and they get two
+// different routes; the shared half is s.retuneRun, so they cannot diverge in
+// what a retune actually does.
+//
+// The tenant gate is the same one /input uses, for the same reason: a run the
+// caller may not touch answers 404 exactly as an unknown one does, so the gate
+// never becomes an existence oracle for run_ids that are not secrets.
+func (s *Server) handleRetuneRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	var req retuneRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
+		return
+	}
+	// An empty body is a caller mistake, not a no-op to absorb: it means the
+	// override names were misspelled or nested, and answering 200 would report
+	// success for a call that changed nothing.
+	if req.runOverridesWire.isZero() {
+		http.Error(w, "at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide)", http.StatusUnprocessableEntity)
+		return
+	}
+	run, rerr := s.runForSteer(r.Context(), runID)
+	if rerr != nil {
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	}
+	if err := s.retuneRun(r.Context(), run, &req.runOverridesWire); err != nil {
+		writeResolveError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "retuned": true})
 }

@@ -59,6 +59,7 @@ import type {
   AgentDefOverlay,
   AgentDefRowResponse,
   ContinueOptions,
+  RunOverrideOptions,
   CreateSnapshotOptions,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
@@ -360,12 +361,51 @@ export class LoomcycleClient {
   async sendRunInput(
     runId: string,
     text: string,
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; overrides?: RunOverrideOptions },
   ): Promise<{ run_id: string; delivered: boolean }> {
+    const body: Record<string, unknown> = { text };
+    if (opts?.overrides) {
+      // The wire nests these under `overrides` on THIS endpoint (unlike the flat
+      // fields on /v1/runs), because the request's other job is sending a turn
+      // and the group needs a name.
+      const o: Record<string, unknown> = {};
+      applyOverridesToWire(o, opts.overrides);
+      if (Object.keys(o).length > 0) body.overrides = o;
+    }
     return postJSON<{ run_id: string; delivered: boolean }>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/input`,
-      { text },
+      body,
+      opts,
+    );
+  }
+
+  /** Change a run's settings WITHOUT sending it a turn. Mirrors
+   *  `POST /v1/runs/{run_id}/retune`.
+   *
+   *  Use this to retune a PARKED chat — switch it to a different model, raise
+   *  its iteration bound — when you do not also want a message in the
+   *  transcript. `sendRunInput(runId, text, { overrides })` is the other half:
+   *  retune and speak in one atomic call.
+   *
+   *  The overrides select WITHIN what the agent's definition already allows and
+   *  cannot widen it; an override the definition forbids is REFUSED here rather
+   *  than silently dropped, so a rejected retune is visible at the call.
+   *
+   *  Raises {@link NotFoundError} (404, no in-flight run — which is also what a
+   *  run belonging to another tenant returns, deliberately), and 422 when no
+   *  override is supplied at all. */
+  async retuneRun(
+    runId: string,
+    overrides: RunOverrideOptions,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ run_id: string; retuned: boolean }> {
+    const body: Record<string, unknown> = {};
+    applyOverridesToWire(body, overrides);
+    return postJSON<{ run_id: string; retuned: boolean }>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/retune`,
+      body,
       opts,
     );
   }
@@ -402,7 +442,8 @@ export class LoomcycleClient {
   interactiveSession(opts: Omit<RunOptions, "interactive">): InteractiveSession {
     const source = this.runStreaming({ ...opts, interactive: true });
     return new InteractiveSession(source, {
-      sendRunInput: (rid, t) => this.sendRunInput(rid, t),
+      sendRunInput: (rid, t, o) => this.sendRunInput(rid, t, o),
+      retuneRun: (rid, ov) => this.retuneRun(rid, ov),
       cancelAgent: (aid) => this.cancelAgent(aid),
     });
   }
@@ -417,7 +458,8 @@ export class LoomcycleClient {
   ): InteractiveSession {
     const source = this.streamRunByID(runId, opts);
     const session = new InteractiveSession(source, {
-      sendRunInput: (rid, t) => this.sendRunInput(rid, t),
+      sendRunInput: (rid, t, o) => this.sendRunInput(rid, t, o),
+      retuneRun: (rid, ov) => this.retuneRun(rid, ov),
       cancelAgent: (aid) => this.cancelAgent(aid),
     });
     session.runId = runId;

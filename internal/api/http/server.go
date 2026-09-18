@@ -3430,6 +3430,10 @@ func (s *Server) Mux() http.Handler {
 	// PR 2 / interactive terminal: inject an operator "steering" instruction
 	// into an in-flight run (appended to the live conversation mid-turn).
 	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
+	// Change a run's settings WITHOUT sending it a turn. The retune also rides
+	// /input, and stays there; this exists because `text` is required there, so
+	// retuning a parked chat otherwise means writing a message nobody wanted to send.
+	mux.Handle("POST /v1/runs/{run_id}/retune", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetuneRun))))
 	mux.Handle("GET /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunBreakpoints))))
 	mux.Handle("PUT /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutRunBreakpoints))))
 	mux.Handle("POST /v1/runs/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelTurn))))

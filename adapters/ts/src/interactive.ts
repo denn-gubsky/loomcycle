@@ -1,10 +1,18 @@
-import type { AgentEvent } from "./types.js";
+import type { AgentEvent, RunOverrideOptions } from "./types.js";
 
 /** The client-side operations an {@link InteractiveSession} routes through.
  *  Supplied by LoomcycleClient.interactiveSession / attachInteractiveSession —
  *  the session itself holds no transport logic. */
 export interface InteractiveSessionOps {
-  sendRunInput: (runId: string, text: string) => Promise<{ delivered: boolean }>;
+  sendRunInput: (
+    runId: string,
+    text: string,
+    opts?: { overrides?: RunOverrideOptions },
+  ) => Promise<{ delivered: boolean }>;
+  retuneRun: (
+    runId: string,
+    overrides: RunOverrideOptions,
+  ) => Promise<{ retuned: boolean }>;
   cancelAgent: (agentId: string) => Promise<unknown>;
 }
 
@@ -62,15 +70,37 @@ export class InteractiveSession {
    *  flag. Throws if the run_id isn't known yet — for a fresh session, consume
    *  `events()` until the `agent` frame (or the first `awaiting_input`) first;
    *  a re-attached session has the run_id up front. */
-  async send(text: string): Promise<boolean> {
+  async send(
+    text: string,
+    opts?: { overrides?: RunOverrideOptions },
+  ): Promise<boolean> {
     if (!this.runId) {
       throw new Error(
         "loomcycle: run_id not known yet — consume events() until the `agent` frame before send()",
       );
     }
-    const { delivered } = await this.ops.sendRunInput(this.runId, text);
+    const { delivered } = await this.ops.sendRunInput(this.runId, text, opts);
     this.awaitingInput = false;
     return delivered;
+  }
+
+  /** Change this run's settings WITHOUT sending it a turn — switch a parked
+   *  chat to another model, raise its iteration bound.
+   *
+   *  `send(text, { overrides })` is the other half: retune and speak in one
+   *  atomic call. Use THIS one when a message in the transcript would be an
+   *  artefact of changing a setting rather than something the operator said.
+   *
+   *  Does not clear `awaitingInput`: a parked run is still parked after a
+   *  retune, because nothing was delivered for it to answer. */
+  async retune(overrides: RunOverrideOptions): Promise<boolean> {
+    if (!this.runId) {
+      throw new Error(
+        "loomcycle: run_id not known yet — consume events() until the `agent` frame before retune()",
+      );
+    }
+    const { retuned } = await this.ops.retuneRun(this.runId, overrides);
+    return retuned;
   }
 
   /** Cancel the run (and its sub-agents). No-op if the agent_id isn't known

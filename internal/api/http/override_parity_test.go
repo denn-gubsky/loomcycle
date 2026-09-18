@@ -238,3 +238,66 @@ func TestOverrideParity_TheListItselfIsPopulated(t *testing.T) {
 			"override and has stopped doing so", len(overrideWireNames))
 	}
 }
+
+// The RETUNE surface, which the table above does not and cannot cover.
+//
+// This is the third time the same shape has bitten: a parity guard that knows
+// one list of names, checked against the file or the path its author had in
+// mind, reports parity for a surface it never looked at. P6 wired the overrides
+// into the run-start and continuation serialisers and called it "every
+// transport"; the STEER path carries the identical field set on the wire and got
+// none of it, so a consumer could not retune a parked run through either SDK.
+//
+// The wire names are the same, so the guard cannot be "does client.ts mention
+// model" — it does, twice, in the run paths. What distinguishes a surface here
+// is the METHOD, so that is what this iterates.
+func TestOverrideParity_TheSteerAndRetuneSurfacesCarryOverridesToo(t *testing.T) {
+	b, err := os.ReadFile("../../../adapters/ts/src/client.ts")
+	if err != nil {
+		t.Skipf("TS client not readable from here: %v", err)
+	}
+	src := string(b)
+
+	// Each of these must route through the shared serialiser. Checking for the
+	// CALL rather than for the field names is deliberate: a hand-rolled copy of
+	// the twelve assignments would satisfy a name grep and then drift on the
+	// thirteenth field, which is the failure this whole file exists for.
+	for _, m := range []struct{ method, why string }{
+		{"async sendRunInput(", "retune while sending a turn — the field the HTTP endpoint has always accepted"},
+		{"async retuneRun(", "retune a parked run WITHOUT sending a turn"},
+	} {
+		t.Run(strings.TrimSuffix(strings.TrimPrefix(m.method, "async "), "("), func(t *testing.T) {
+			i := strings.Index(src, m.method)
+			if i < 0 {
+				t.Fatalf("no %s in the TS client — this guard is checking a method that no "+
+					"longer exists and has stopped checking anything", m.method)
+			}
+			// The method body, to its closing brace at method indentation.
+			rest := src[i:]
+			end := strings.Index(rest, "\n  }\n")
+			if end < 0 {
+				t.Fatalf("could not delimit %s's body; the file's shape changed", m.method)
+			}
+			if !strings.Contains(rest[:end], "applyOverridesToWire") {
+				t.Errorf("%s does not call applyOverridesToWire, so it cannot carry the per-run "+
+					"overrides (%s).\n\nThe wire accepts them on this path; an adapter method that "+
+					"does not send them makes the capability unreachable, and the run-path checks "+
+					"above all still pass.", m.method, m.why)
+			}
+		})
+	}
+
+	// InteractiveSession is the high-level driver most callers actually hold, and
+	// a gap there is as total as a gap in the client.
+	ib, err := os.ReadFile("../../../adapters/ts/src/interactive.ts")
+	if err != nil {
+		t.Skipf("TS interactive not readable: %v", err)
+	}
+	isrc := string(ib)
+	for _, want := range []string{"retuneRun:", "async retune(", "RunOverrideOptions"} {
+		if !strings.Contains(isrc, want) {
+			t.Errorf("InteractiveSession does not carry %q — the session driver cannot retune, "+
+				"so a caller holding one has to drop to the raw client", want)
+		}
+	}
+}

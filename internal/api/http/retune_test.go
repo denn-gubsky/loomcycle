@@ -248,3 +248,76 @@ func TestRetune_IsNotReportedAsAProviderFallback(t *testing.T) {
 			"outage where an operator made a choice")
 	}
 }
+
+func postRetune(t *testing.T, ts *httptest.Server, runID, body string) (int, string) {
+	t.Helper()
+	resp, err := http.Post(ts.URL+"/v1/runs/"+runID+"/retune", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post retune: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// The endpoint exists because `text` is required on /input, so retuning a parked
+// chat meant writing a message the operator never wanted to send. Reported by a
+// consumer that wanted exactly this and could not express it.
+func TestRetuneEndpoint_ChangesTheRunWithoutSendingATurn(t *testing.T) {
+	srv, ts, prov, run := parkedRoutedRun(t)
+	ctx := context.Background()
+
+	before := len(prov.requests())
+
+	if code, b := postRetune(t, ts, run.ID, `{"model":"model-b"}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+
+	rec, ok := decodeRunConfig(mustGetRun(t, srv.store, run.ID).RunConfig)
+	if !ok || rec.Routing == nil || rec.Routing.Model != "model-b" {
+		t.Fatalf("the retune did not reach the run's configuration: %+v", rec)
+	}
+	// The whole point: no turn was delivered, so the run is still parked and the
+	// transcript carries no message the operator did not write.
+	if got := len(prov.requests()); got != before {
+		t.Errorf("the provider saw %d requests, was %d — a retune woke the run and spent a "+
+			"turn, which is the behaviour this endpoint exists to avoid", got, before)
+	}
+	_ = ctx
+}
+
+// An empty body is a caller mistake — misspelled or mis-nested override names —
+// and answering 200 would report success for a call that changed nothing.
+func TestRetuneEndpoint_RefusesABodyWithNoOverrides(t *testing.T) {
+	_, ts, _, run := parkedRoutedRun(t)
+	for _, body := range []string{`{}`, `{"overrides":{"model":"model-b"}}`} {
+		code, b := postRetune(t, ts, run.ID, body)
+		if code != 422 {
+			t.Errorf("body %s → %d %s, want 422", body, code, strings.TrimSpace(b))
+		}
+	}
+}
+
+// Same refusal the /input retune gives, at the same moment — the shared half is
+// s.retuneRun, so the two routes cannot disagree about what a retune permits.
+func TestRetuneEndpoint_RefusesAnOverrideTheDefinitionForbids(t *testing.T) {
+	srv, ts, _, run := parkedRoutedRun(t)
+
+	code, _ := postRetune(t, ts, run.ID, `{"model":"model-the-agent-cannot-use"}`)
+	if code == 200 {
+		t.Fatal("a model outside the definition's allowlist was accepted")
+	}
+	if rec, ok := decodeRunConfig(mustGetRun(t, srv.store, run.ID).RunConfig); ok && rec.Routing != nil {
+		t.Errorf("a refused retune still wrote routing %+v — the stored record must stay one "+
+			"the run could actually adopt", rec.Routing)
+	}
+}
+
+// run_ids are returned to callers and shown in the UI, so the tenant gate must
+// not become an existence oracle: unknown and forbidden answer alike.
+func TestRetuneEndpoint_UnknownRunIsTheSame404AsAForbiddenOne(t *testing.T) {
+	_, ts, _, _ := parkedRoutedRun(t)
+	if code, _ := postRetune(t, ts, "r_does_not_exist", `{"model":"model-b"}`); code != 404 {
+		t.Errorf("unknown run → %d, want 404", code)
+	}
+}
