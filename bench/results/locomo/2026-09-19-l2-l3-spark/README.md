@@ -1,4 +1,31 @@
-# L2 and L3 on ornith-1.5 — the gate clears on a local model
+# L2 and L3 on ornith-1.5 — +31pp from runtime-supplied retrieval
+
+> ## ⚠️ RETRACTION (replicate, 2026-09-19)
+>
+> An earlier version of this file claimed L2 was "the first local answerer to clear
+> the gate". **It is not, and the claim is withdrawn.** A replicate of the identical
+> arm was run because draw 1's strict sat 0.0014 above the 0.60 floor — 89 correct
+> of 148, where one question flips it:
+>
+> | draw | accuracy | strict | correct | gate |
+> |---|---|---|---|---|
+> | L2 draw 1 | 0.6858 | 0.6014 | 89/148 | PASS |
+> | **L2 draw 2** | **0.6588** | **0.5878** | **87/148** | **FAIL** |
+> | **mean** | **0.6723** (+0.0023) | **0.5946** (−0.0054) | — | **FAIL** |
+>
+> Accuracy clears on the mean; **strict misses**. The gate needs both, and also asks
+> for two conversations, which no local arm has attempted.
+>
+> **The lever is unaffected** — control→L2 is +54/−0 (p=1.1e-16) on draw 1 and
+> +51/−4 (p=2.1e-11) on draw 2. L2 moves ornith 0.3758 → 0.66–0.69, captures 66–72%
+> of the headroom to its ceiling, and cuts abstention 0.387 → 0.11–0.15. The
+> L2-vs-L3, temporal and host-transfer results are all unchanged.
+>
+> The honest headline: **L2 is worth ~+31pp on a local answerer and lands ON the
+> strict criterion rather than over it.** A threshold claim needs a different
+> standard of evidence from an effect claim: +31pp is safe on one draw, a 0.0014
+> margin is one question. Report a threshold as a mean over draws with its spread,
+> or do not report it as met.
 
 Run 2026-09-18/19. LoCoMo conv-26, categories 1–4, 150 questions, one judge
 (`deepseek-v4-flash`, temperature 0). **All five arms on DGX Spark** (Ollama 0.34.2),
@@ -11,7 +38,8 @@ reader *and* embedder, so no arm depends on another host.
 | control — facts only | 0.3758 | 0.2953 | 0.387 | 6.8s | 151 | fail |
 | P1 — fact-anchored turns (`recall_include_turns`) | 0.4799 | 0.3758 | 0.287 | 7.7s | 150 | fail |
 | L3 — tool-free, pre-retrieved (`{{memory:recalled_context}}`) | 0.5933 | 0.4933 | 0.187 | **1.7s** | **0** | fail |
-| **L2 — + question-anchored turns (`recall_attach_traces`)** | **0.6858** | **0.6014** | 0.113 | 8.3s | 150 | **PASS** |
+| **L2 — + question-anchored turns (`recall_attach_traces`)** | **0.6858** | **0.6014** | 0.113 | 8.3s | 150 | see retraction |
+| L2 — draw 2 (replicate) | 0.6588 | 0.5878 | 0.147 | 8.1s | 150 | fail |
 | oracle — reading ceiling | 0.8048 | 0.7397 | 0.087 | 1.0s | 0 | — |
 
 Every step is significant, and the ladder is strict:
@@ -24,10 +52,10 @@ Every step is significant, and the ladder is strict:
 | P1 → L2 | +43/−5 | 1.4e-08 |
 | **control → L2** | **+54/−0** | **1.1e-16** |
 
-**The gate clears on a local answerer for the first time** — accuracy ≥ 0.67 *and*
-strict ≥ 0.60. L2 captures **72.3%** of the headroom between control and ceiling and
-lands at **85.2%** of the ceiling. Against control it is strictly dominant: 54
-questions won, **zero lost**.
+L2 captures **72.3%** of the headroom between control and ceiling on draw 1 (66% on
+draw 2) and lands at **85.2%** of the ceiling. Against control it is strictly
+dominant: 54 questions won, **zero lost**. On the gate itself, see the retraction
+above — it clears accuracy on the mean of two draws and misses strict by 0.0054.
 
 ### What it says
 
