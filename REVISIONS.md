@@ -8,6 +8,121 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.83.0
+
+*The run controls that shipped write-only can now be read back — and a granted tool that could never work says so at run start.*
+
+Ten PRs. Two lines finishing at once: the per-run override surface gets its
+reads, its last two transports and its interactive fields, and the
+capability-gate work gets its defaults, its warning and its correction.
+
+A RUN'S CONFIGURATION CAN BE READ, NOT JUST WRITTEN. The previous release let a
+run carry its own model, budgets and tuning; every bit of it was write-only. A
+caller could set an override and had no way to read it back, and a retune that
+moved no model left no trace at all. Three reads close that:
+
+  - `GET /v1/runs/{run_id}/config` reports what the RUN overrides. There was
+    nothing to extend — there is no `GET /v1/runs/{run_id}` at all. Absent means
+    "not overridden", which at this layer beats a resolved value, and a run that
+    was never retuned is a 200 with an empty config: "this run overrides
+    nothing" is an answer, not a 404.
+  - `GET /v1/runs/{run_id}/effective-config` reports what it will ACTUALLY use,
+    field by field, with the layer that decided each — `run` / `definition` /
+    `user_tier` / `operator` / `resolved` / `default`. The SOURCE is the point.
+    `max_iterations: 16` cannot distinguish a deliberate setting from a default
+    nobody chose, and those call for opposite actions.
+  - `POST /v1/runs/{run_id}/retune` now answers with the merged record it
+    already computed and threw away. A caller cannot recompute it: naming a
+    `model` clears the `provider` so a previous choice cannot linger and
+    contradict the new pin, and naming a `tier` clears the `model`. A panel
+    echoing its own request back would display something the run does not hold.
+
+AN OVERRIDE EVENT THAT COULD NEVER FIRE, NOW TWO THAT DO. `OverrideInfo.Fields`
+documented itself as carrying the keys a request actually set — "so a reader can
+see a budget or tuning change that moved no model at all" — and was hardcoded to
+`{"model"}`. Worse than a wrong value: the loop returns early unless ROUTING
+changed, so a retune of only `max_tokens` emitted nothing whatsoever. A consumer
+had built a branch against a documented capability that could not run.
+
+Making the loop report more would have been the wrong fix. The loop cannot see a
+request; it sees a re-resolved routing outcome. So there are now two events
+answering different questions — the server says WHAT WAS ASKED FOR at retune
+time, the loop says WHAT THE RUN IS NOW USING once it knows, with the from/to
+pair the server could not yet have. A `from`/`to` pair present is the
+discriminator, and the doc comment that misled the consumer now says so.
+
+A RUNNING AGENT CAN BE PROMOTED TO INTERACTIVE. An override could change how a
+run was routed and budgeted but not whether it could be TALKED TO, so a long
+autonomous run that needed a correction could not be given one — it had to be
+cancelled and restarted. `interactive` and `interruption` are now override
+fields, evaluated at the turn boundary rather than only at start, so a run
+already in flight parks for input from the next boundary on.
+
+RETUNE REACHES ALL FIVE SURFACES. gRPC gained `RetuneRun`, and a steer over gRPC
+can carry overrides with its text. MCP gained `retune_run` — it has no steer
+tool at all and never got one. The TS adapter gained `getRunConfig`,
+`getEffectiveConfig` and a `retuneRun` whose return type is no longer stale,
+plus the source union as a type so a consumer switching on it cannot misspell a
+case. And `metadata`, the per-run layered-`context` block and cost-attribution
+lineage reached the gRPC wire, all three reachable from HTTP since they shipped
+and all three silently absent rather than refused.
+
+A TOOL THE AGENT CANNOT USE NOW SAYS SO, AT RUN START. `tools` and the
+capability gates are two independent grants, and the second silently voids the
+first: an agent granted `AgentDef` with no `agent_def_scopes` was refused
+mid-task, and the operator saw "the agent didn't do it" rather than "the agent
+could not". A server-generated `capability_inert` event now rides the run's own
+event channel at start — the path the budget warnings take, for the same reason
+— reaching a live SSE or gRPC consumer and persisted. Once per run, not per
+call: the condition belongs to the definition, not to any invocation. The
+payload carries the FIX as well as the fact, because a reader told "AgentDef is
+inert" still has to work out which yaml key governs it.
+
+ONLY GENUINELY INERT GRANTS ARE REPORTED, which is the part that needed thought
+rather than typing. `sql_scopes` and `evaluation_scopes` now join
+`memory_scopes` and `history_scope` in resolving to what the caller already owns
+— `sql_scopes` to `["user"]` and `evaluation_scopes` to `["submit_self"]` — so
+an unset one is no longer inert, and an event for it would fire on nearly every
+run of most agents. That is how a signal becomes noise and then gets ignored,
+taking the real warnings with it. What remains reportable: the def-authoring
+gates, the two A2A gates, and Channel with neither side of its ACL.
+
+⚠️ THE SCOPE DEFAULTS MADE EXISTING WARNINGS FALSE. `agentGateWarnings` has
+warned about empty capability gates since F21, and two of its lines stopped
+being true the moment those gates gained defaults: "every Memory op will
+default-deny" and "every Evaluation op will default-deny". A warning that states
+the wrong consequence sends an operator to fix what is not broken and teaches
+them the channel is noise — which costs the warnings that ARE right. The text
+now distinguishes what RESOLVES from what still grants nothing. The core-blocks
+and consolidation advisories needed more than a reword: their default is the
+WRONG SCOPE for them, so they name the scope to set instead.
+
+Those advisories also gained REACH. They were logged once at boot, where an
+operator debugging a week later never sees them. `doctor` inspected no agents at
+all — so the most common "why is my agent not doing that" went unmentioned by
+the command people run precisely to be told what is wrong — and `validate` did
+not print them either. Both now do.
+
+TWO SILENT-FAILURE PATHS FIXED. A fan-out child with no prompt reached the model
+as a null user turn: it got the system prompt, answered whatever that implied,
+and COMPLETED, so the caller read a green envelope and the emptiness was visible
+only in the thinking trace. The same caller mistake was already a 422 on the
+single-spawn path. And the Python adapter could not send `user_credentials` at
+all — absent from all three enumerations — so a caller whose MCP headers carry
+`${run.credentials.<name>}` got an empty map and a downstream 401, with nothing
+client-side saying the credential had been dropped.
+
+**Upgrade notes.** `sql_scopes` and `evaluation_scopes` change posture on
+upgrade, the same way `memory_scopes` and `history_scope` did in v1.82.0: an
+agent that holds `Memory`/`Evaluation` with the scope list unset previously had
+every such call refused and now resolves to the caller's own data (`sql_scopes`
+only when the run carries a user id). Set the list explicitly to widen or
+narrow, or `["-*"]` to grant none — the same deny-all sentinel `skills` uses.
+Existing agent rows stay byte-stable: the defaults resolve at policy time, not
+by materialising into the definition, so `content_sha256` does not fork.
+
+Adapters: `@loomcycle/client` **1.83.0**, `loomcycle` (PyPI) **1.83.0**.
+
 ## What's in v1.82.0
 
 *A run can now choose how it runs — and a tool an agent was granted but could never use now works.*
