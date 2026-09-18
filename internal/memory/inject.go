@@ -64,6 +64,23 @@ const (
 	// VariantSearchRequest renders an LLM-free retrieval against the run's
 	// initial user input.
 	VariantSearchRequest Variant = "search_request"
+	// VariantRecalledContext renders the retrieval an answering agent would have
+	// issued for itself, run by the RUNTIME before the model's first token: the
+	// facts its initial input matches, and — separately — the raw conversation turns
+	// that input matches, each with its own budget.
+	//
+	// WHY A SIBLING OF search_request RATHER THAN A CHANGE TO IT. search_request is
+	// lexical-only (full-text, top 5, no embedder, no turns) and agents depend on
+	// exactly that; widening it in place would change what every existing prompt
+	// renders. This is the mechanism search_request only sketches.
+	//
+	// WHY IT EXISTS AT ALL. The retrieval a small model will not elect is worth more
+	// than the tool it declines to call: handed the trace tool and told when to use
+	// it, one local reader issued 7 retrievals across 150 questions and another 17,
+	// while mandating it in the prompt collapsed accuracy to 0.0034. A block rendered
+	// before the first token asks the model for no decisions at all, and lets an
+	// answerer hold no tools — which is what makes the reader interchangeable.
+	VariantRecalledContext Variant = "recalled_context"
 	// VariantConsolidationBands renders the configured duplicate-detection
 	// similarity bands. Unlike every other variant this is NOT stored memory
 	// data — it is loomcycle's own configuration, so it renders UNFRAMED
@@ -79,6 +96,7 @@ var knownVariants = map[Variant]bool{
 	VariantTenantInfo:         true,
 	VariantOntology:           true,
 	VariantSearchRequest:      true,
+	VariantRecalledContext:    true,
 	VariantConsolidationBands: true,
 }
 
@@ -120,7 +138,7 @@ func AllVariants() []string {
 	return []string{
 		string(VariantCoreBlocks), string(VariantUserInfo), string(VariantTenantInfo),
 		string(VariantOntology), string(VariantSearchRequest),
-		string(VariantConsolidationBands),
+		string(VariantRecalledContext), string(VariantConsolidationBands),
 	}
 }
 

@@ -159,6 +159,7 @@ Expands to the agent's stored memory, framed as data:
 | `core_blocks` | every attached core memory block's value |
 | `user_info` | the operator-authored user-root document + the learned `human` block |
 | `search_request` | an LLM-free retrieval against the run's initial user input |
+| `recalled_context` | the same retrieval an answerer would run for itself, before its first token: a **FACTS** block (what is known) and a separate **TURNS** block (what was actually said, with their own timestamps). Needs the trace index enabled and backfilled for the TURNS half — an empty index renders facts only |
 | `consolidation_bands` | the deployment's duplicate-detection similarity bands |
 | `tenant_info`, `ontology` | accepted; resolve to empty today |
 
