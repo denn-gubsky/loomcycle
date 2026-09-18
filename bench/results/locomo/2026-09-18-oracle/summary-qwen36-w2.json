@@ -1,0 +1,39 @@
+{
+  "label": "qwen3.6:latest w2",
+  "note": "local reader, TrueNAS, effort low / 16K",
+  "arm": "locomo/oracle-qwen36",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T15:59:16Z",
+  "model": "ollama-local/qwen3.6:latest",
+  "asked": 150,
+  "graded": 145,
+  "accuracy": 0.7138,
+  "strict": 0.6207,
+  "correct": 90,
+  "partial": 27,
+  "wrong": 28,
+  "unparsed": 5,
+  "not_found": 19,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.6719,
+      "not_found": 4
+    },
+    "2": {
+      "graded": 32,
+      "accuracy": 0.5312,
+      "not_found": 4
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.1364,
+      "not_found": 9
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.9071,
+      "not_found": 2
+    }
+  }
+}
