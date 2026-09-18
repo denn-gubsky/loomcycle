@@ -1011,12 +1011,32 @@ type OverrideInfo struct {
 	Source string `json:"source"`
 
 	// FromModel / ToModel are the routing pair, formatted "provider/model".
-	// Empty when the change did not move routing.
+	//
+	// THEY ARE ALSO HOW THE TWO OVERRIDE EVENTS ARE TOLD APART, and a consumer
+	// needs to: a single retune can produce both. The server emits one when the
+	// operator acts, listing the keys the request set and carrying NO pair —
+	// nothing has been re-resolved yet, so there is no honest "to" to report.
+	// The loop emits one when the run adopts a routing change, and that one
+	// always carries both halves.
+	//
+	// So: a pair present means "the run is now using this"; a pair absent means
+	// "an operator asked for these fields". A reader that wants only the second
+	// kind filters on FromModel == "".
 	FromModel string `json:"from_model,omitempty"`
 	ToModel   string `json:"to_model,omitempty"`
 
-	// Fields lists the override keys the request actually set, so a reader can
-	// see a budget or tuning change that moved no model at all.
+	// Fields lists the override keys this event is reporting.
+	//
+	// TWO SITES FILL IT IN, AND THEY KNOW DIFFERENT THINGS. The server emits one
+	// event when the operator retunes, listing the keys the REQUEST actually set
+	// — that is the event that shows a budget or tuning change which moved no
+	// model. The loop emits one when a parked run wakes and its routing has
+	// MOVED, and there the only key that moved is the routing itself, so it says
+	// so and carries the FromModel/ToModel pair the server could not yet know.
+	//
+	// This comment used to promise the request's keys unconditionally, while the
+	// only site filling it in was the loop's — which cannot see a request. A
+	// consumer wrote a branch for "max_tokens changed" that could never run.
 	Fields []string `json:"fields,omitempty"`
 }
 

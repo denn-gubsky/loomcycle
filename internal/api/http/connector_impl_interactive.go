@@ -332,5 +332,6 @@ func (s *Server) RetuneRun(ctx context.Context, runID string, ov connector.RunOv
 		MemoryIndexMaxBytes: ov.MemoryIndexMaxBytes, InjectToolGuide: ov.InjectToolGuide,
 		Interactive: ov.Interactive, Interruption: ov.Interruption,
 	}
-	return s.retuneRun(ctx, run, &wire)
+	_, err = s.retuneRun(ctx, run, &wire)
+	return err
 }

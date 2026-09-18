@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -61,16 +62,47 @@ func makeHeartbeatTestServer(t *testing.T) (*Server, *delayingHeartbeatStore, st
 
 // captureLog redirects log output to a buffer for the duration of the
 // test. Returns a snapshot accessor + a restore closure.
+//
+// THE BUFFER IS MUTEX-GUARDED, and that is not belt-and-braces. `log` is a
+// process-wide global: while this test holds the writer, EVERY other goroutine
+// in the binary that logs writes into this buffer — including background
+// goroutines other tests leaked, which under -race is a genuine data race
+// between their log.Printf and this test's read, not a theoretical one.
+//
+// It was an unguarded strings.Builder and the race was latent for as long as
+// nothing happened to be logging during this test. Adding tests that use the
+// pause/resume harness made it reproducible: a resumed run's heartbeat keeps
+// logging after its own test returns. The fix is here rather than in those
+// tests, because any test that logs from a goroutine can trip this one.
 func captureLog(t *testing.T) (func() string, func()) {
 	t.Helper()
-	var buf strings.Builder
+	buf := &syncBuffer{}
 	prev := log.Writer()
 	flags := log.Flags()
-	log.SetOutput(&buf)
-	return func() string { return buf.String() }, func() {
+	log.SetOutput(buf)
+	return buf.String, func() {
 		log.SetOutput(prev)
 		log.SetFlags(flags)
 	}
+}
+
+// syncBuffer is a strings.Builder that survives concurrent writers, which the
+// process-wide logger always has.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestMakeHeartbeat_TolerantOfPoolSaturation — the canonical x5000

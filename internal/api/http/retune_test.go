@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -196,6 +198,13 @@ func TestRetune_EmitsATypedOverrideEventOnTheTranscript(t *testing.T) {
 	var found bool
 	for _, e := range events {
 		if e.RunID != run.ID || e.Type != string(providers.EventOverride) {
+			continue
+		}
+		// A retune now produces TWO override events: the server's, recording what
+		// the operator asked for, and the loop's, recording the routing the run
+		// adopted. This test is about the second, and the routing pair is what
+		// distinguishes them (see OverrideInfo.FromModel).
+		if !strings.Contains(string(e.Payload), `"from_model"`) {
 			continue
 		}
 		var ev providers.Event
@@ -447,5 +456,254 @@ func TestRetune_AStorelessServerDoesNotPanicAtTheBoundary(t *testing.T) {
 	empty := &Server{}
 	if got := empty.interactiveNowFn("r_1", true)(context.Background()); !got {
 		t.Error("a server with no store answered false for a run that started interactive")
+	}
+}
+
+// The reported gap: a consumer could set a run's overrides and never read them
+// back, so after a retune a panel could not confirm what the run holds — and
+// could not recompute it either, because the merge is not a field-wise union.
+func TestRetune_AnswersWithTheMergedRecord(t *testing.T) {
+	_, ts, _, run := parkedRoutedRun(t)
+
+	code, body := postRetune(t, ts, run.ID, `{"model":"model-b","max_tokens":4321}`)
+	if code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(body))
+	}
+	var resp struct {
+		RunID   string          `json:"run_id"`
+		Retuned bool            `json:"retuned"`
+		Config  runConfigRecord `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if !resp.Retuned || resp.RunID != run.ID {
+		t.Errorf("resp = %+v", resp)
+	}
+	if resp.Config.Routing == nil || resp.Config.Routing.Model != "model-b" {
+		t.Errorf("config.routing = %+v, want model-b", resp.Config.Routing)
+	}
+	if resp.Config.Resources == nil || resp.Config.Resources.MaxTokens != 4321 {
+		t.Errorf("config.resources = %+v, want max_tokens 4321", resp.Config.Resources)
+	}
+}
+
+// The merge is NOT a field-wise union, which is exactly why echoing the request
+// back would be wrong: naming a model CLEARS the provider, because a
+// previously-chosen provider must not linger and contradict the new pin.
+func TestRetune_TheAnsweredRecordShowsTheMergeTheCallerCannotRecompute(t *testing.T) {
+	srv, ts, _, run := parkedRoutedRun(t)
+
+	seed := runConfigRecord{Routing: &routingOverride{Provider: "stub"}}
+	if err := srv.store.SetRunConfig(context.Background(), run.ID, seed.marshal()); err != nil {
+		t.Fatal(err)
+	}
+	_, body := postRetune(t, ts, run.ID, `{"model":"model-b"}`)
+	var resp struct {
+		Config runConfigRecord `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if resp.Config.Routing == nil || resp.Config.Routing.Model != "model-b" {
+		t.Fatalf("routing = %+v", resp.Config.Routing)
+	}
+	if resp.Config.Routing.Provider != "" {
+		t.Errorf("provider = %q, want cleared — naming a model pins it, and a caller "+
+			"echoing its own request back would show a provider the run no longer has",
+			resp.Config.Routing.Provider)
+	}
+}
+
+func getRunConfig(t *testing.T, ts *httptest.Server, runID string) (int, string) {
+	t.Helper()
+	resp, err := http.Get(ts.URL + "/v1/runs/" + runID + "/config")
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// What a panel needs when it OPENS a chat, rather than only after it writes.
+func TestRunConfig_IsReadableWithoutHavingJustWrittenIt(t *testing.T) {
+	_, ts, _, run := parkedRoutedRun(t)
+
+	// A run that was never retuned answers 200 with an empty config — "this run
+	// overrides nothing" is an answer, not a 404.
+	code, body := getRunConfig(t, ts, run.ID)
+	if code != 200 {
+		t.Fatalf("un-retuned run: %d %s", code, strings.TrimSpace(body))
+	}
+	if strings.Contains(body, `"routing"`) {
+		t.Errorf("an un-retuned run reported routing: %s", body)
+	}
+
+	if c, b := postRetune(t, ts, run.ID, `{"max_iterations":40}`); c != 200 {
+		t.Fatalf("retune: %d %s", c, strings.TrimSpace(b))
+	}
+	code, body = getRunConfig(t, ts, run.ID)
+	if code != 200 {
+		t.Fatalf("after retune: %d %s", code, strings.TrimSpace(body))
+	}
+	var resp struct {
+		RunID  string          `json:"run_id"`
+		Config runConfigRecord `json:"config"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if resp.RunID != run.ID {
+		t.Errorf("run_id = %q", resp.RunID)
+	}
+	if resp.Config.Resources == nil || resp.Config.Resources.MaxIterations != 40 {
+		t.Errorf("config.resources = %+v, want max_iterations 40", resp.Config.Resources)
+	}
+}
+
+// run_ids are not secrets, so the gate must not become an existence oracle.
+func TestRunConfig_UnknownRunIsTheSame404AsAForbiddenOne(t *testing.T) {
+	_, ts, _, _ := parkedRoutedRun(t)
+	if code, _ := getRunConfig(t, ts, "r_does_not_exist"); code != 404 {
+		t.Errorf("unknown run → %d, want 404", code)
+	}
+}
+
+// A retune that moves NO model must still be legible on the transcript.
+//
+// The reported bug: OverrideInfo.Fields promised "the keys the request actually
+// set, so a reader can see a budget or tuning change that moved no model at
+// all", and the only site filling it in was the loop's — which is gated on
+// routing having moved and hardcoded {"model"}. A retune of nothing but a budget
+// produced no event whatsoever, so a consumer's branch for it could never run.
+func TestRetune_ABudgetOnlyChangeIsRecordedOnTheTranscript(t *testing.T) {
+	srv, ts, _, run := parkedRoutedRun(t)
+	ctx := context.Background()
+
+	if code, b := postRetune(t, ts, run.ID, `{"max_tokens":4321,"effort":"high"}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+
+	evs, err := srv.store.GetRunEventsSince(ctx, run.ID, 0, 1000)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	var got *providers.OverrideInfo
+	for _, e := range evs {
+		if e.Type != string(providers.EventOverride) {
+			continue
+		}
+		var ev providers.Event
+		if err := json.Unmarshal(e.Payload, &ev); err != nil {
+			t.Fatalf("decode event: %v", err)
+		}
+		if ev.Override != nil && len(ev.Override.Fields) > 0 && ev.Override.FromModel == "" {
+			got = ev.Override
+		}
+	}
+	if got == nil {
+		t.Fatal("a budget-only retune left NO override event on the transcript — the exact " +
+			"gap reported: the change happened and the record does not say so")
+	}
+	want := []string{"effort", "max_tokens"}
+	sort.Strings(got.Fields)
+	if !reflect.DeepEqual(got.Fields, want) {
+		t.Errorf("fields = %v, want %v — Fields must name what the request SET, not a "+
+			"hardcoded routing key", got.Fields, want)
+	}
+	if got.Source != "operator" {
+		t.Errorf("source = %q, want operator", got.Source)
+	}
+}
+
+// setFields is what makes the event honest; a field added to the wire struct and
+// not to it is a change that happens silently.
+func TestRetune_SetFieldsNamesEveryOverrideTheBodyCarried(t *testing.T) {
+	var w runOverridesWire
+	body := `{"model":"m","provider":"p","tier":"t","effort":"high","max_tokens":1,
+	          "max_iterations":2,"unbounded_iterations":false,"max_concurrent_children":3,
+	          "retry_attempts":0,"memory_inject_max_tokens":0,"memory_index_max_bytes":0,
+	          "inject_tool_guide":false,"interactive":true,"interruption":{"enabled":true}}`
+	if err := json.Unmarshal([]byte(body), &w); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := w.setFields()
+	sort.Strings(got)
+	want := []string{
+		"effort", "inject_tool_guide", "interactive", "interruption",
+		"max_concurrent_children", "max_iterations", "max_tokens",
+		"memory_index_max_bytes", "memory_inject_max_tokens", "model",
+		"provider", "retry_attempts", "tier", "unbounded_iterations",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("setFields() = %v\nwant %v\n\nEvery override the wire struct carries must be "+
+			"nameable, or a retune of it is invisible on the transcript.", got, want)
+	}
+	// The meaningful zeros are the ones a naive truthiness check drops.
+	for _, z := range []string{"retry_attempts", "inject_tool_guide", "unbounded_iterations"} {
+		found := false
+		for _, f := range got {
+			if f == z {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s was set to its meaningful zero and setFields did not name it", z)
+		}
+	}
+}
+
+// A single retune of a ROUTING field produces two override events, and a
+// consumer has to be able to tell them apart — the pair is the discriminator.
+//
+// This is the case the pre-existing routing test stopped covering the moment a
+// second event appeared: it took the last match and got whichever was written
+// later. Asserting the SHAPE of both is what stops that recurring.
+func TestRetune_ARoutingChangeProducesBothEventsAndTheyAreDistinguishable(t *testing.T) {
+	srv, ts, prov, run := parkedRoutedRun(t)
+
+	if code, b := postInput(t, ts, run.ID, `{"text":"go","overrides":{"model":"model-b"}}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+	prov.waitForRequests(t, 1)
+	waitFor(t, "the routing event to reach the transcript", func() bool {
+		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), `"from_model"`)
+	})
+
+	events, err := srv.store.GetTranscript(context.Background(), run.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requested, applied int
+	for _, e := range events {
+		if e.RunID != run.ID || e.Type != string(providers.EventOverride) {
+			continue
+		}
+		var ev providers.Event
+		if err := json.Unmarshal(e.Payload, &ev); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if ev.Override == nil {
+			t.Fatal("an override event persisted with no payload")
+		}
+		if ev.Override.FromModel == "" {
+			requested++
+			if len(ev.Override.Fields) == 0 {
+				t.Error("the operator-request event named no fields, which is the only thing " +
+					"it carries that the routing event does not")
+			}
+		} else {
+			applied++
+			if ev.Override.ToModel == "" {
+				t.Error("the routing event carried a from with no to")
+			}
+		}
+	}
+	if requested != 1 {
+		t.Errorf("operator-request events = %d, want 1", requested)
+	}
+	if applied != 1 {
+		t.Errorf("routing-applied events = %d, want 1", applied)
 	}
 }
