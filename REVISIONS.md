@@ -12,9 +12,10 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *The run controls that shipped write-only can now be read back — and a granted tool that could never work says so at run start.*
 
-Ten PRs. Two lines finishing at once: the per-run override surface gets its
+Eleven PRs. Two lines finishing at once — the per-run override surface gets its
 reads, its last two transports and its interactive fields, and the
-capability-gate work gets its defaults, its warning and its correction.
+capability-gate work gets its defaults, its warning and its correction — plus
+the first phase of the recall-provenance work.
 
 A RUN'S CONFIGURATION CAN BE READ, NOT JUST WRITTEN. The previous release let a
 run carry its own model, budgets and tuning; every bit of it was write-only. A
@@ -111,6 +112,41 @@ single-spawn path. And the Python adapter could not send `user_credentials` at
 all — absent from all three enumerations — so a caller whose MCP headers carry
 `${run.credentials.<name>}` got an empty map and a downstream 401, with nothing
 client-side saying the credential had been dropped.
+
+RECALL CAN ATTACH THE TURN A FACT CAME FROM — ON THE OPERATOR'S SAY-SO. A
+distilled fact is tenseless; the turn it came from opens with a timestamp. On
+LoCoMo conv-26 reaching the turns moved accuracy 0.396 → 0.788 (McNemar +61/-3,
+p=4.7e-15), almost all of it in temporal questions (0.176 → 0.797).
+
+⚠️ BUT THE SECOND RETRIEVAL ONLY HAPPENS IF THE ANSWERER ELECTS IT, AND MOST DO
+NOT. Same tool, same prompt, same store: deepseek issued 214 trace retrievals
+across 150 questions; qwen3.6 issued 7; an agentic-tuned ornith-1.5:35b issued
+17, for +2.4pp (p=0.508). And it cannot be fixed by insisting — replacing the
+advisory prompt with an imperative procedure took qwen3.6 to 100% compliance and
+accuracy to 0.0034 of 1.0, emitting tool-call JSON into the answer field. On a
+small model a mandatory protocol competes with the task for attention.
+
+So the retrieval happens in the RUNTIME, where nothing has to elect it. A
+`recall_include_turns` grant on the agent def — operator-resolved, never
+model-supplied, the same trust posture as `memory_scopes` — makes every recall
+that agent issues carry provenance. The `include_turns` tool parameter stays;
+either alone is enough.
+
+Turns are resolved through `source_session_id` rather than the trace index (the
+index is forward-only and empty unless an operator backfilled it;
+`source_session_id` is populated on 87% of facts in the reference store and needs
+no flag), and nothing is re-ranked — the fact list is chosen exactly as today and
+each chosen fact is EXPANDED, so turns never compete for a slot. Default off,
+bounded per turn and per response, with `turns_attached` / `turns_dropped_for_budget`
+so a caller can tell "nothing resolvable" from "budget spent".
+
+⚠️ AND IT ENFORCES `history_scope`, NOT ONLY THE GRANT. Recall-attached turns are
+history reach wearing a memory hat: without the second gate an agent denied
+History could read the same words by asking for facts. `recall_include_turns`
+decides whether turns are OFFERED; `history_scope` decides whether they may be
+READ; both must say yes. The field is `notOverridable` per-run for the same
+reason — a run that could set it would obtain transcript through the memory path,
+which is exactly what an operator declines when they narrow `history_scope`.
 
 **Upgrade notes.** `sql_scopes` and `evaluation_scopes` change posture on
 upgrade, the same way `memory_scopes` and `history_scope` did in v1.82.0: an
