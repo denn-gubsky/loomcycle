@@ -109,6 +109,7 @@ type Agent struct {
 	InjectToolGuide       bool
 	MemoryProtocol        bool
 	MemoryConsolidation   bool
+	RecallIncludeTurns    bool
 	MemoryIndexMaxBytes   int
 	MemoryRoots           string
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
@@ -366,6 +367,7 @@ type frontmatter struct {
 	InjectToolGuide       bool                       `yaml:"inject_tool_guide"`        // auto tool-guide/capabilities injection
 	MemoryProtocol        bool                       `yaml:"memory_protocol"`          // RFC BL P1
 	MemoryConsolidation   bool                       `yaml:"memory_consolidation"`     // RFC BL P2
+	RecallIncludeTurns    bool                       `yaml:"recall_include_turns"`     // RFC DF
 	MemoryIndexMaxBytes   int                        `yaml:"memory_index_max_bytes"`   // RFC BL P1
 	MemoryRoots           string                     `yaml:"memory_roots"`             // RFC BL P1
 	Channels              AgentChannelACL            `yaml:"channels"`
@@ -444,6 +446,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.InjectToolGuide = fm.InjectToolGuide
 	a.MemoryProtocol = fm.MemoryProtocol
 	a.MemoryConsolidation = fm.MemoryConsolidation
+	a.RecallIncludeTurns = fm.RecallIncludeTurns
 	a.MemoryIndexMaxBytes = fm.MemoryIndexMaxBytes
 	a.MemoryRoots = fm.MemoryRoots
 	a.Channels = fm.Channels

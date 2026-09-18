@@ -54,6 +54,21 @@ func (m *Memory) attachSourceTurns(ctx context.Context, scope store.MemoryScope,
 	if m.Store == nil || len(memories) == 0 || len(spans) == 0 {
 		return 0, 0
 	}
+	// ⚠️ HISTORY REACH IS GOVERNED BY history_scope, NOT BY THIS FEATURE.
+	//
+	// A turn is chat transcript. `history_scope` is the operator's declaration about
+	// whether this agent may read that, and attaching turns through the memory path
+	// would route around it — an agent denied History could read the same words by
+	// asking for facts. `recall_include_turns` decides whether turns are OFFERED;
+	// history_scope decides whether they may be READ, and both must say yes.
+	//
+	// EffectiveHistoryScopes applies the same unset-means-what-the-caller-owns
+	// default the History tool itself uses, so an ordinary agent is unaffected and
+	// only an explicit denial (`history_scope: ["-*"]`) bites.
+	histScopes := tools.EffectiveHistoryScopes(ctx, tools.HistoryPolicy(ctx).Scopes)
+	if !historyScopeAllowsOwnChats(histScopes) {
+		return 0, 0
+	}
 	ident := tools.RunIdentity(ctx)
 	// ONE TRANSCRIPT LOAD PER SESSION, not per hit. Ten hits from one chat is the
 	// common shape, and loading that chat ten times is the N+1 this cache exists to
@@ -122,4 +137,18 @@ func trimTurnText(s string) string {
 		return s
 	}
 	return strings.TrimSpace(s[:recallTurnMaxChars])
+}
+
+// historyScopeAllowsOwnChats reports whether the resolved history gate permits
+// reading the caller's own chats, which is the narrowest scope a source turn can sit
+// in. `user`, `tenant` and `global` all include it; `self` does not, because a fact
+// distilled from a USER's chat is not the agent's own run.
+func historyScopeAllowsOwnChats(scopes []string) bool {
+	for _, s := range scopes {
+		switch s {
+		case "user", "tenant", "global":
+			return true
+		}
+	}
+	return false
 }

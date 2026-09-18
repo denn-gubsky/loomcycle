@@ -1053,6 +1053,7 @@ type mergedDef struct {
 	Internal              bool               `json:"internal,omitempty"`          // maintenance plumbing; content-identifying
 	MemoryProtocol        bool               `json:"memory_protocol,omitempty"`
 	MemoryConsolidation   bool               `json:"memory_consolidation,omitempty"` // RFC BL P2 grant; content-identifying
+	RecallIncludeTurns    bool               `json:"recall_include_turns,omitempty"` // RFC DF grant; content-identifying
 	MemoryIndexMaxBytes   int                `json:"memory_index_max_bytes,omitempty"`
 	MemoryRoots           string             `json:"memory_roots,omitempty"`
 	Description           string             `json:"description,omitempty"`
@@ -1206,6 +1207,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	}
 	if ov.MemoryConsolidation {
 		d.MemoryConsolidation = true
+	}
+	if ov.RecallIncludeTurns {
+		d.RecallIncludeTurns = true
 	}
 	if ov.MemoryIndexMaxBytes != 0 {
 		d.MemoryIndexMaxBytes = ov.MemoryIndexMaxBytes
@@ -1373,6 +1377,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Internal:              s.Internal,
 		MemoryProtocol:        s.MemoryProtocol,
 		MemoryConsolidation:   s.MemoryConsolidation,
+		RecallIncludeTurns:    s.RecallIncludeTurns,
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
@@ -1473,6 +1478,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 		Internal:              def.Internal,
 		MemoryProtocol:        def.MemoryProtocol,
 		MemoryConsolidation:   def.MemoryConsolidation,
+		RecallIncludeTurns:    def.RecallIncludeTurns,
 		MemoryIndexMaxBytes:   def.MemoryIndexMaxBytes,
 		MemoryRoots:           def.MemoryRoots,
 		// RFC BA: skills: is the agent's pattern-allowlist ACL (authority, not
