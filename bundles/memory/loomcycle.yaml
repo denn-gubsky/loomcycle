@@ -1869,8 +1869,33 @@ agents:
           else if (only !== all[k]) { only = ""; break; }
         }
         for (var i = 0; i < facts.length; i++) {
-          if (facts[i].observed_at) { continue; }   // the model DID emit one: leave it
           var own = facts[i].quote ? collectStamps(facts[i].quote) : [];
+          // ⚠️ A MODEL VALUE LATER THAN THE TURN'S OWN STAMP IS IMPOSSIBLE, and it is
+          // the one case where the model does NOT win.
+          //
+          // observed_at is WHEN IT WAS SAID. A turn cannot have been said after its
+          // own timestamp, so a later value is not a reading of the sentence — it is
+          // the extractor emitting the date it is running on. Measured on a live
+          // store: 5 of 263 facts carried an observed_at in 2026 on a 2023 corpus,
+          // two of them while their own span still read "[7:55 pm on 9 June, 2023]".
+          //
+          // The model-wins rule is otherwise intact, and deliberately so: a value
+          // EARLIER than the turn is exactly the relative date ("last month") the
+          // parser cannot resolve, and TestConsolidator_AModelSuppliedTimeIsNot
+          // Overwritten pins it. Only the impossible direction is corrected.
+          //
+          // It matters more than 2% suggests now that recall RETURNS observed_at:
+          // a wrong date reaches the reader as an answer, where a missing one does
+          // not.
+          if (facts[i].observed_at && own.length === 1) {
+            var mv = nanosOfStamp(tsOrEmpty(facts[i].observed_at));
+            var tv = nanosOfStamp(own[0]);
+            if (mv !== null && tv !== null && mv > tv) {
+              facts[i].observed_at = own[0];
+              continue;
+            }
+          }
+          if (facts[i].observed_at) { continue; }   // the model DID emit one: leave it
           if (own.length === 1) { facts[i].observed_at = own[0]; continue; }
           if (own.length > 1) { continue; }         // ambiguous within one span
           if (only) { facts[i].observed_at = only; }
