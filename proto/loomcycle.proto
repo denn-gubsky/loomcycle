@@ -618,6 +618,17 @@ message RunRequest {
 
   // Per-run interruption override — see the Interruption message.
   optional Interruption interruption = 29;
+
+  // Non-secret structured metadata handed to the run — the same trusted channel
+  // the HTTP /v1/runs `metadata` field feeds. BYTES carrying a canonical JSON
+  // object, because the value is map[string]any by definition.
+  //
+  // These three were absent entirely, so a gRPC or Python caller could not send
+  // agent metadata, could not set the per-run context block, and could not carry
+  // cost-attribution lineage — all three reachable from HTTP since they shipped.
+  bytes metadata = 30;
+  Context context = 31;
+  ParentContext parent_context = 32;
 }
 
 message ContinueRequest {
@@ -685,6 +696,17 @@ message ContinueRequest {
 
   // Per-run interruption override — see the Interruption message.
   optional Interruption interruption = 26;
+
+  // Non-secret structured metadata handed to the run — the same trusted channel
+  // the HTTP /v1/runs `metadata` field feeds. BYTES carrying a canonical JSON
+  // object, because the value is map[string]any by definition.
+  //
+  // These three were absent entirely, so a gRPC or Python caller could not send
+  // agent metadata, could not set the per-run context block, and could not carry
+  // cost-attribution lineage — all three reachable from HTTP since they shipped.
+  bytes metadata = 27;
+  Context context = 28;
+  ParentContext parent_context = 29;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -697,6 +719,28 @@ message ContinueRequest {
 // Overridable because an interruption touches no data and no host — it blocks
 // and waits for a person. The exposure is liveness, which run_timeout_seconds
 // and the interruption's own timeout already bound.
+// Context is the per-run layered-context / retention override.
+//
+// Every scalar is `optional` because each has a MEANINGFUL zero — keep_last_n 0
+// means keep none, not "unset" — the same reason the tuning row is optional.
+//
+// state_schema is BYTES carrying canonical JSON rather than a typed message:
+// it is a caller-supplied JSON-Schema of arbitrary shape, and modelling it would
+// mean modelling all of JSON-Schema. Mirrors the snapshot envelope's
+// json_content, which carries arbitrary JSON the same way.
+message Context {
+  optional string mode = 1;
+  optional int32 keep_last_n = 2;
+  optional string reasoning = 3;
+  optional int32 recap_max_chars = 4;
+  optional int32 autorecap_at_pct = 5;
+  bytes state_schema = 6;
+  optional string on_invalid_patch = 7;
+  optional int32 max_patch_retries = 8;
+  optional bool recall = 9;
+  optional bool harvest_to_memory = 10;
+}
+
 message Interruption {
   bool enabled = 1;
   repeated string kinds = 2;

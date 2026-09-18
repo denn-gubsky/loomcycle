@@ -1510,6 +1510,9 @@ class LoomcycleClient:
         tenant_id: str = "",
         user_tier: str = "",
         user_bearer: str = "",
+        metadata: Optional[Mapping[str, Any]] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        parent_context: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
@@ -1584,6 +1587,9 @@ class LoomcycleClient:
             tenant_id=tenant_id,
             user_tier=user_tier,
             user_bearer=user_bearer,
+            metadata=metadata,
+            context=context,
+            parent_context=parent_context,
             sampling=sampling,
             compaction=compaction,
             max_context_tokens=max_context_tokens,
@@ -1619,6 +1625,9 @@ class LoomcycleClient:
         agent_id: str = "",
         user_tier: str = "",
         user_bearer: str = "",
+        metadata: Optional[Mapping[str, Any]] = None,
+        context: Optional[Mapping[str, Any]] = None,
+        parent_context: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
@@ -1665,6 +1674,7 @@ class LoomcycleClient:
             agent_id=agent_id,
             user_tier=user_tier,
             user_bearer=user_bearer,
+            metadata=json.dumps(metadata).encode() if metadata is not None else b"",
             max_context_tokens=max_context_tokens,
             interactive=interactive,
             model=model,
@@ -1688,6 +1698,10 @@ class LoomcycleClient:
             req.sampling.CopyFrom(_build_sampling(sampling))
         if compaction is not None:
             req.compaction.CopyFrom(_build_compaction(compaction))
+        if context is not None:
+            req.context.CopyFrom(_build_context(context))
+        if parent_context is not None:
+            req.parent_context.CopyFrom(_build_parent_context(parent_context))
 
         return self._drive_stream(
             self._stub.Continue(req, metadata=self._auth_metadata()),
@@ -1992,6 +2006,9 @@ def _build_run_request(
     tenant_id: str = "",
     user_tier: str = "",
     user_bearer: str = "",
+    metadata: Optional[Mapping[str, Any]] = None,
+    context: Optional[Mapping[str, Any]] = None,
+    parent_context: Optional[Mapping[str, str]] = None,
     sampling: Optional[Mapping[str, Any]] = None,
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
@@ -2039,6 +2056,9 @@ def _build_run_request(
         user_bearer=user_bearer,
         max_context_tokens=max_context_tokens,
         interactive=interactive,
+        # Canonical JSON bytes: the value is map[string]any by definition, so
+        # there is no typed message to map it onto.
+        metadata=json.dumps(metadata).encode() if metadata is not None else b"",
         model=model,
         provider=provider,
         tier=tier,
@@ -2056,6 +2076,10 @@ def _build_run_request(
     )
     if interruption is not None:
         req.interruption.CopyFrom(_build_interruption(interruption))
+    if context is not None:
+        req.context.CopyFrom(_build_context(context))
+    if parent_context is not None:
+        req.parent_context.CopyFrom(_build_parent_context(parent_context))
     if allowed_hosts is not None:
         req.allowed_hosts.list.extend(allowed_hosts)
     if sampling is not None:
@@ -2368,6 +2392,41 @@ def _directory_user(u: Any) -> Mapping[str, Any]:
     if u.last_started_at:
         out["last_started_at"] = u.last_started_at
     return out
+
+
+def _build_context(d: Mapping[str, Any]) -> "pb.Context":
+    """Build pb.Context from a plain dict.
+
+    Every scalar is proto3 ``optional`` because each has a MEANINGFUL zero —
+    ``keep_last_n: 0`` means keep none, not "unset" — so a key that is absent is
+    left unset rather than written as its zero.
+
+    ``state_schema`` is bytes carrying canonical JSON: it is a caller-supplied
+    JSON-Schema of arbitrary shape, and a stateful run validates every patch
+    against it.
+    """
+    out = pb.Context()
+    for key in ("mode", "reasoning", "on_invalid_patch"):
+        if d.get(key) is not None:
+            setattr(out, key, str(d[key]))
+    for key in ("keep_last_n", "recap_max_chars", "autorecap_at_pct", "max_patch_retries"):
+        if d.get(key) is not None:
+            setattr(out, key, int(d[key]))
+    for key in ("recall", "harvest_to_memory"):
+        if d.get(key) is not None:
+            setattr(out, key, bool(d[key]))
+    if d.get("state_schema") is not None:
+        out.state_schema = json.dumps(d["state_schema"]).encode()
+    return out
+
+
+def _build_parent_context(d: Mapping[str, str]) -> "pb.ParentContext":
+    """Build pb.ParentContext — the caller's opaque cost-attribution lineage."""
+    return pb.ParentContext(
+        root_agent_run_id=str(d.get("root_agent_run_id", "") or ""),
+        function_key=str(d.get("function_key", "") or ""),
+        tier_at_run=str(d.get("tier_at_run", "") or ""),
+    )
 
 
 def _build_interruption(d: Mapping[str, Any]) -> "pb.Interruption":
