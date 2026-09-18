@@ -182,14 +182,21 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.82.0) moved two decisions to where they belong. A RUN
-now chooses its own model, provider, tier, effort and budgets — within what its
-definition already allows, so it selects rather than widens — instead of needing
-a forked agent to try one question on a bigger model. And a tool an agent was
-GRANTED but could never use now works: an unset `memory_scopes` / `history_scope`
-resolves to what the caller already owns rather than denying by default and
-saying nothing until the model called the tool. (That second one is a posture
-change on upgrade; see [`REVISIONS.md`](REVISIONS.md).)
+The most recent line (v1.83.0) gave the run controls their READS. v1.82.0 let a
+run carry its own model, budgets and tuning, and all of it was write-only: a
+caller could set an override and had no way to read it back. A run's
+configuration can now be read, and separately its EFFECTIVE configuration —
+field by field, with the layer that decided each, because `max_iterations: 16`
+cannot distinguish a deliberate setting from a default nobody chose. Retune
+reaches all five surfaces, and a running agent can be promoted to interactive,
+so a long autonomous run that needs a correction no longer has to be cancelled
+and restarted.
+
+The same release finished the capability-gate work: a tool an agent was GRANTED
+but could never use now says so at run start, on the run's own event channel,
+carrying the yaml key that fixes it. `sql_scopes` and `evaluation_scopes` joined
+`memory_scopes` / `history_scope` in resolving to what the caller already owns —
+a posture change on upgrade; see [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.80.0 made a tool failure legible to the agent receiving it. A
 failed call used to arrive as one boolean and one English sentence, so "no rows
