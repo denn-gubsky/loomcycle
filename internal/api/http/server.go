@@ -2755,6 +2755,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
 	}
 
+	// A tool the agent holds and cannot use, said once here rather than
+	// discovered by the model being refused mid-task.
+	emitInertCapabilityWarnings(agentDef, emit)
+
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(ctx, runID, agentID, sessionID, effectiveUserID, emit)
 	defer deregSteer()
@@ -4500,6 +4504,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
 	}
 
+	// A tool the agent holds and cannot use, said once here rather than
+	// discovered by the model being refused mid-task.
+	emitInertCapabilityWarnings(agentDef, emit)
+
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
 	deferDeregSteer := func() {
@@ -5196,6 +5204,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	for _, info := range limitDec.Soft {
 		emit(providers.Event{Type: providers.EventLimit, Limit: &info})
 	}
+
+	// A tool the agent holds and cannot use, said once here rather than
+	// discovered by the model being refused mid-task.
+	emitInertCapabilityWarnings(agentDef, emit)
 
 	// PR 2: operator steering queue for this continuation run.
 	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), run.ID, agentID, id, sess.UserID, emit)
@@ -8394,3 +8406,27 @@ func filterTools(all []tools.Tool, agentAllowed, callerAllowed []string) []tools
 
 // Logger is the package-level logger; cmd/loomcycle may swap it out.
 var Logger = log.Default()
+
+// emitInertCapabilityWarnings reports every tool this agent holds and cannot
+// use, once, at run start.
+//
+// It rides the run's own event channel rather than being appended to the
+// transcript directly, so it reaches a live SSE or gRPC consumer AND is
+// persisted — the same path the budget warnings take, for the same reason: a
+// condition an operator needs at the moment the run begins is no use only in a
+// transcript they have to go and fetch.
+//
+// Once per RUN, not per call. The condition is a property of the definition
+// rather than of any invocation, and repeating it each time the model reached
+// for the tool would bury it under itself.
+func emitInertCapabilityWarnings(def config.AgentDef, emit func(providers.Event)) {
+	for _, g := range config.InertToolGrants(def) {
+		emit(providers.Event{
+			Type: providers.EventCapabilityInert,
+			Text: g.Message,
+			CapabilityInert: &providers.CapabilityInertInfo{
+				Tool: g.Tool, Gate: g.Gate, Message: g.Message,
+			},
+		})
+	}
+}

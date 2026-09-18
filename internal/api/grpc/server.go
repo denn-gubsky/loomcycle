@@ -1397,6 +1397,13 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Message:  ev.Limit.Message,
 		}
 	}
+	if ev.CapabilityInert != nil {
+		out.CapabilityInert = &loomcyclepb.CapabilityInertInfo{
+			Tool:    ev.CapabilityInert.Tool,
+			Gate:    ev.CapabilityInert.Gate,
+			Message: ev.CapabilityInert.Message,
+		}
+	}
 	if ev.HostWidening != nil {
 		out.HostWidening = &loomcyclepb.HostWidening{
 			ToolCallId: ev.HostWidening.ToolCallID,
