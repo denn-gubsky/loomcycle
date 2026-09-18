@@ -60,6 +60,9 @@ import type {
   AgentDefRowResponse,
   ContinueOptions,
   RunOverrideOptions,
+  EffectiveConfigResponse,
+  RetuneRunResponse,
+  RunConfigResponse,
   CreateSnapshotOptions,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
@@ -401,13 +404,61 @@ export class LoomcycleClient {
     runId: string,
     overrides: RunOverrideOptions,
     opts?: { signal?: AbortSignal },
-  ): Promise<{ run_id: string; retuned: boolean }> {
+  ): Promise<RetuneRunResponse> {
     const body: Record<string, unknown> = {};
     applyOverridesToWire(body, overrides);
-    return postJSON<{ run_id: string; retuned: boolean }>(
+    return postJSON<RetuneRunResponse>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/retune`,
       body,
+      opts,
+    );
+  }
+
+  /** Read a run's own stored overrides. Mirrors `GET /v1/runs/{run_id}/config`.
+   *
+   *  This is what the RUN overrides, not what it will effectively use: a field
+   *  absent from `config` means "this run does not override it", and the
+   *  definition, the tier or a driver still decides. {@link getEffectiveConfig}
+   *  is the resolved view.
+   *
+   *  A run that was never retuned answers with an empty `config` — "this run
+   *  overrides nothing" is an answer, not a 404.
+   *
+   *  Raises {@link NotFoundError} (404), which is also what a run belonging to
+   *  another tenant returns — deliberately, so the gate is not an existence
+   *  oracle for run ids that are not secrets. */
+  async getRunConfig(
+    runId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<RunConfigResponse> {
+    return jsonFetch<RunConfigResponse>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/config`,
+      opts,
+    );
+  }
+
+  /** Read what a run will ACTUALLY use, field by field, with the layer that
+   *  decided each. Mirrors `GET /v1/runs/{run_id}/effective-config`.
+   *
+   *  Nothing else assembles this: a definition is a sparse overlay, the tier and
+   *  driver defaults are published nowhere else, and a field no layer set
+   *  resolves later somewhere the caller cannot see. The `source` on each field
+   *  is the point — `max_iterations: 16` cannot tell a deliberate setting from a
+   *  default nobody chose, and those call for opposite actions.
+   *
+   *  Keys are wire names (`max_tokens`, not `maxTokens`), so the result joins
+   *  directly against a definition from the library endpoints.
+   *
+   *  Raises {@link NotFoundError} (404) for an unknown or cross-tenant run. */
+  async getEffectiveConfig(
+    runId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<EffectiveConfigResponse> {
+    return jsonFetch<EffectiveConfigResponse>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/effective-config`,
       opts,
     );
   }

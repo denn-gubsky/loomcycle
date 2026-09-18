@@ -359,6 +359,12 @@ export type {
   // RFC AW per-scope token budgets
   CapabilityInertInfo,
   LimitInfo,
+  EffectiveConfigResponse,
+  EffectiveConfigSource,
+  EffectiveValue,
+  RetuneRunResponse,
+  RunConfigRecord,
+  RunConfigResponse,
   TokenLimit,
   TokenLimitsResponse,
   ConfigResponse,

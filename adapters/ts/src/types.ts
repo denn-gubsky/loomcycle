@@ -111,13 +111,124 @@ export interface HostWidening {
  *  scope stands against its ceiling — so a UI can render "tenant acme at 1.2M /
  *  1M tokens this month" without a follow-up fetch. Wire-stable; mirrors
  *  providers.LimitInfo. */
+/** A run's own stored overrides — what the RUN set, not what it will
+ *  effectively use. Mirrors the `config` object on `GET /v1/runs/{id}/config`
+ *  and on the `retuneRun` reply.
+ *
+ *  A field absent here means "this run does not override it", which is a
+ *  different and more useful answer at this layer than a resolved value would
+ *  be: it says the definition, the tier or a driver still decides. Use
+ *  {@link LoomcycleClient.getEffectiveConfig} for the resolved view. */
+export interface RunConfigRecord {
+  sampling?: Record<string, unknown>;
+  compaction?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  max_context_tokens?: number;
+  run_timeout_seconds?: number;
+  routing?: {
+    provider?: string;
+    model?: string;
+    tier?: string;
+    effort?: string;
+  };
+  resources?: {
+    max_tokens?: number;
+    max_iterations?: number;
+    unbounded_iterations?: boolean;
+    max_concurrent_children?: number;
+  };
+  tuning?: {
+    retry_attempts?: number;
+    memory_inject_max_tokens?: number;
+    memory_index_max_bytes?: number;
+    inject_tool_guide?: boolean;
+  };
+  interactive?: boolean;
+  interruption?: { enabled?: boolean; kinds?: string[]; max_pending?: number };
+  hosts?: Record<string, unknown>;
+}
+
+/** Which layer decided an effective value.
+ *
+ *  This is the half that makes the report worth fetching. `max_iterations: 16`
+ *  cannot distinguish a deliberate setting from a default nobody chose, and
+ *  those call for opposite actions — so every field carries where it came from.
+ *
+ *  - `run`        — a per-run override set it
+ *  - `definition` — the agent definition set it
+ *  - `user_tier`  — operator tier policy (e.g. retry_attempts)
+ *  - `operator`   — operator env / global configuration
+ *  - `resolved`   — decided at runtime: the tier cascade, the driver, the model.
+ *                   A `resolved` field with a null value means the runtime
+ *                   settles it somewhere this report cannot see, which is a
+ *                   more honest answer than omitting the field.
+ *  - `default`    — a fixed constant in the runtime */
+export type EffectiveConfigSource =
+  | "run"
+  | "definition"
+  | "user_tier"
+  | "operator"
+  | "resolved"
+  | "default";
+
+/** One field's effective value plus the layer that decided it. */
+export interface EffectiveValue {
+  value: unknown;
+  source: EffectiveConfigSource;
+}
+
+/** The reply from `GET /v1/runs/{run_id}/config` — what the RUN overrides. */
+export interface RunConfigResponse {
+  run_id: string;
+  agent: string;
+  /** The model the run last resolved to, as recorded on the run row. */
+  model: string;
+  config: RunConfigRecord;
+}
+
+/** The reply from `GET /v1/runs/{run_id}/effective-config` — for every
+ *  overridable field, the value this run will actually use and which layer
+ *  decided it.
+ *
+ *  Keyed by the wire name the rest of the API uses (`max_tokens`, not
+ *  `maxTokens`), so it joins directly against a definition from
+ *  `/v1/_library/agents`. */
+export interface EffectiveConfigResponse {
+  run_id: string;
+  agent: string;
+  fields: Record<string, EffectiveValue>;
+}
+
+/** The reply from `retuneRun` — the run's MERGED configuration, not an echo of
+ *  the request.
+ *
+ *  A caller cannot recompute it: the merge is not a field-wise union. Naming a
+ *  `model` clears the `provider` so a previous choice cannot contradict the new
+ *  pin, and naming a `tier` clears the `model`. */
+export interface RetuneRunResponse {
+  run_id: string;
+  retuned: boolean;
+  config: RunConfigRecord;
+}
+
 /** OverrideInfo accompanies an `event: override` frame (RFC DC per-run
  *  overrides): a run's own configuration changed mid-run because an operator
  *  retuned it.
  *
- *  It names what MOVED rather than what the settings now are, because "the
- *  configuration changed" answers nothing for someone trying to explain why the
- *  answers got different after turn 12.
+ *  TWO EVENTS CARRY THIS TYPE, and a consumer needs to tell them apart because
+ *  one retune can produce both. The server emits one when the operator acts,
+ *  listing in `fields` the keys the REQUEST set and carrying NO from/to pair —
+ *  nothing has been re-resolved yet, so there is no honest "to" to report. The
+ *  runtime emits one when the run ADOPTS a routing change, and that one always
+ *  carries both halves of the pair.
+ *
+ *  So: a pair present means "the run is now using this"; a pair absent means
+ *  "an operator asked for these fields". Filter on `from_model === undefined`
+ *  for the second kind.
+ *
+ *  `fields` used to be documented as the request's keys unconditionally while
+ *  the only site filling it in was the runtime's, which cannot see a request —
+ *  so a branch written for "max_tokens changed" could never run.
  *
  *  Carries only operator-chosen configuration whose effects are already visible
  *  — a model name, a budget. No credential, no operator host. */
