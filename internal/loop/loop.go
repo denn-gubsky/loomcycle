@@ -929,6 +929,13 @@ func finishTurnCancel(ctx context.Context, opts *RunOptions, messages []provider
 // per-iteration heartbeat is suspended during the block). Matches the
 // interruption tool's blocked-heartbeat cadence. A var (not const) so tests
 // can lower it; not an operator knob.
+// DefaultMaxIterations is the loop bound an agent gets when it names none.
+//
+// Exported because it is now reported to callers as the answer to "what will
+// this run actually use", and a report that restated the number would be free to
+// drift from the loop that enforces it. One constant, two readers.
+const DefaultMaxIterations = 16
+
 var parkHeartbeatInterval = 30 * time.Second
 
 // parkForInput blocks a persistent interactive run until an operator steering
@@ -1653,7 +1660,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	interactiveUnbounded := opts.Interactive && opts.SteerQueue != nil && opts.MaxIterations == 0
 
 	if opts.MaxIterations == 0 {
-		opts.MaxIterations = 16
+		opts.MaxIterations = DefaultMaxIterations
 	}
 	if opts.ToolParallelism <= 0 {
 		opts.ToolParallelism = 8

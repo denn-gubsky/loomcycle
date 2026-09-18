@@ -884,6 +884,8 @@ func requiredScopeFor(method, path string) string {
 	// Reading a run's own configuration is a READ, not a mutation.
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/config"):
 		return auth.ScopeRunsRead
+	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/effective-config"):
+		return auth.ScopeRunsRead
 	// RFC BH turn-cancel: stop the current turn of an interactive run + park it —
 	// a run-state mutation, same scope as steer/resolve/compact. Distinct path
 	// from whole-run cancel (POST /v1/agents/{id}/cancel). Without this case the

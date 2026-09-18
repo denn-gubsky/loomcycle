@@ -3438,6 +3438,10 @@ func (s *Server) Mux() http.Handler {
 	// Read back what a run holds. Its sibling above is the write; without this
 	// the overrides were write-only — settable and never readable.
 	mux.Handle("GET /v1/runs/{run_id}/config", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunConfig))))
+	// The assembled answer: every overridable field, the value this run will
+	// actually use, and WHICH layer decided it. Its sibling above reports only
+	// what the run itself overrode.
+	mux.Handle("GET /v1/runs/{run_id}/effective-config", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEffectiveConfig))))
 	mux.Handle("GET /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunBreakpoints))))
 	mux.Handle("PUT /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutRunBreakpoints))))
 	mux.Handle("POST /v1/runs/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelTurn))))
