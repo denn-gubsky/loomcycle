@@ -382,10 +382,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:    agentDef.MemoryQuotaBytes,
-		Backend:       agentDef.MemoryBackend,
-		Consolidation: agentDef.MemoryConsolidation,
+		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
+		QuotaBytes:         agentDef.MemoryQuotaBytes,
+		Backend:            agentDef.MemoryBackend,
+		Consolidation:      agentDef.MemoryConsolidation,
+		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 	})
 	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
 	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.

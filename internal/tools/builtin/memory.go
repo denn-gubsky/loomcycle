@@ -1823,7 +1823,13 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// HERE rather than left to a second tool call, because the measurement is that
 	// most models will not make that call — see memory_recall_turns.go.
 	turnsAttached, turnsDropped := 0, 0
-	if in.IncludeTurns {
+	// THE OPERATOR'S GRANT OR THE CALLER'S PARAMETER, either alone. The grant is the
+	// one that matters: a tool parameter is a decision the model makes, and measured
+	// across three local models they do not make it — this run's own earlier arm had
+	// qwen3.6 passing include_turns on 51 of 128 calls despite being told to pass it
+	// every time. An operator who wants the turns should not be relying on that.
+	wantTurns := in.IncludeTurns || tools.MemoryPolicy(ctx).RecallIncludeTurns
+	if wantTurns {
 		turnsAttached, turnsDropped = m.attachSourceTurns(ctx, scope, memories, spans)
 	}
 
@@ -1847,7 +1853,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// REPORTED, not inferred from a short list. A caller that asked for turns and got
 	// none needs to tell "no fact had a resolvable turn" apart from "the budget ran
 	// out" — the same reason graph_recall reports chars_used alongside its cap.
-	if in.IncludeTurns {
+	if wantTurns {
 		out["turns_attached"] = turnsAttached
 		if turnsDropped > 0 {
 			out["turns_dropped_for_budget"] = turnsDropped

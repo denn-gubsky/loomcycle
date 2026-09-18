@@ -2778,10 +2778,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// `user` scope).
 	loopCtx = tools.WithAgentName(loopCtx, effectiveAgentName)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:    agentDef.MemoryQuotaBytes,
-		Backend:       agentDef.MemoryBackend,
-		Consolidation: agentDef.MemoryConsolidation,
+		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
+		QuotaBytes:         agentDef.MemoryQuotaBytes,
+		Backend:            agentDef.MemoryBackend,
+		Consolidation:      agentDef.MemoryConsolidation,
+		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 	})
 	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
 	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
@@ -4528,10 +4529,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, req.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:    agentDef.MemoryQuotaBytes,
-		Backend:       agentDef.MemoryBackend,
-		Consolidation: agentDef.MemoryConsolidation,
+		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
+		QuotaBytes:         agentDef.MemoryQuotaBytes,
+		Backend:            agentDef.MemoryBackend,
+		Consolidation:      agentDef.MemoryConsolidation,
+		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -5220,10 +5222,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, sess.Agent)
 	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes: tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:    agentDef.MemoryQuotaBytes,
-		Backend:       agentDef.MemoryBackend,
-		Consolidation: agentDef.MemoryConsolidation,
+		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
+		QuotaBytes:         agentDef.MemoryQuotaBytes,
+		Backend:            agentDef.MemoryBackend,
+		Consolidation:      agentDef.MemoryConsolidation,
+		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -6649,10 +6652,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// both list `user` (or `agent` keyed by a shared name) in their
 	// memory_scopes.
 	subCtx = tools.WithMemoryPolicy(subCtx, tools.MemoryPolicyValue{
-		AllowedScopes: tools.EffectiveMemoryScopes(subCtx, def.MemoryScopes),
-		QuotaBytes:    def.MemoryQuotaBytes,
-		Backend:       def.MemoryBackend,
-		Consolidation: def.MemoryConsolidation,
+		AllowedScopes:      tools.EffectiveMemoryScopes(subCtx, def.MemoryScopes),
+		QuotaBytes:         def.MemoryQuotaBytes,
+		Backend:            def.MemoryBackend,
+		Consolidation:      def.MemoryConsolidation,
+		RecallIncludeTurns: def.RecallIncludeTurns,
 	})
 	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
 	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory

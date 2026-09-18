@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -49,5 +50,36 @@ func TestRecallTurns_TurnTextIsCapped(t *testing.T) {
 	short := "a short turn"
 	if got := trimTurnText(short); got != short {
 		t.Errorf("a turn under the cap was altered: %q", got)
+	}
+}
+
+// TestRecallTurns_GrantIsCarriedByEveryPolicyConstructionSite.
+//
+// ⚠️ A STRUCT-LITERAL SWEEP, not a name search. MemoryPolicyValue is assembled at
+// several places (the run path, resume, and the substrate/MCP entrypoints), and a
+// field added to the struct but missed at one of them is silently zero there —
+// which for a grant means "denied", on exactly the path nobody tested. The same
+// shape cost this codebase its `*_def_scopes` overlay round-trip once already.
+//
+// Driven off the file text rather than a hand-written list of call sites, because a
+// hand-written list is the second copy that drifts.
+func TestRecallTurns_GrantIsCarriedByEveryPolicyConstructionSite(t *testing.T) {
+	for _, f := range []string{
+		"../../api/http/server.go",
+		"../../api/http/resume.go",
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		src := string(b)
+		// Every site that carries the sibling grant must carry this one too.
+		sibling := strings.Count(src, "Consolidation: ")
+		mine := strings.Count(src, "RecallIncludeTurns: ")
+		if sibling != mine {
+			t.Errorf("%s builds MemoryPolicyValue %d times carrying Consolidation but only "+
+				"%d carrying RecallIncludeTurns — a missed site resolves to false, which for "+
+				"a grant means DENIED on that path alone", f, sibling, mine)
+		}
 	}
 }
