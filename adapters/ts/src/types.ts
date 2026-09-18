@@ -250,15 +250,21 @@ export interface PromptSegment {
 
 /** The per-run overrides (RFC DC) — a run's own answer to how it should run,
  *  instead of its agent definition's. Persisted with the run, so they survive a
- *  pause; a parked run can also be retuned via `sendRunInput`.
+ *  pause. A parked run is retuned with `retuneRun()` — or with
+ *  `sendRunInput(id, text, { overrides })` when you also want to say something.
+ *
+ *  This line used to say "can also be retuned via `sendRunInput`", which was
+ *  true of the WIRE and not of the method: the adapter sent a bare `{text}`, so
+ *  the sentence described a capability no caller could reach through it. A
+ *  comment that names the transport instead of the API is how a gap reads as
+ *  closed.
  *
  *  Declared ONCE and extended by both {@link RunOptions} and
  *  {@link ContinueOptions}, because the serializer that writes them is shared
  *  by both paths — a copy on one interface and not the other compiles as a type
  *  error at best and drops the caller's value at worst.
  */
-export interface RunOverrideOptions {  // instead of its agent definition's. Persisted with the run, so they survive
-  // a pause; a parked run can also be retuned via `sendRunInput`.
+export interface RunOverrideOptions {
 
   /** Run on a specific model. Must be one the agent's definition already
    *  allows — an override selects WITHIN that set and cannot widen it, so

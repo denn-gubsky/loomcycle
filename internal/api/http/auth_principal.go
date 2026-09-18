@@ -878,6 +878,9 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeRunsCreate
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/compact"):
 		return auth.ScopeRunsCreate
+	// Retune: a run-state write, same scope as steer / resolve / compact.
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/retune"):
+		return auth.ScopeRunsCreate
 	// RFC BH turn-cancel: stop the current turn of an interactive run + park it —
 	// a run-state mutation, same scope as steer/resolve/compact. Distinct path
 	// from whole-run cancel (POST /v1/agents/{id}/cancel). Without this case the

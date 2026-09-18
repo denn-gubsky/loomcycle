@@ -110,3 +110,76 @@ describe("InteractiveSession", () => {
     await expect(session.send("hi")).resolves.toBe(true);
   });
 });
+
+// The gap a consumer reported at v1.82.0: the wire accepted per-run overrides on
+// the steer path and on a dedicated retune route, and neither was reachable from
+// this adapter — sendRunInput sent a bare {text} and retuneRun did not exist.
+describe("retuning a parked run", () => {
+  it("retuneRun POSTs the overrides to /retune, flat and without a turn", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_abc", retuned: true })]);
+    const out = await client.retuneRun("r_abc", { model: "claude-x", maxIterations: 40 });
+    expect(out).toEqual({ run_id: "r_abc", retuned: true });
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(String(call[0])).toContain("/v1/runs/r_abc/retune");
+    const body = JSON.parse(call[1]!.body as string);
+    expect(body).toEqual({ model: "claude-x", max_iterations: 40 });
+    // No turn rides along: a retune must not put a message in the transcript.
+    expect(body.text).toBeUndefined();
+  });
+
+  it("sendRunInput nests overrides beside the text, matching that endpoint's shape", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_abc", delivered: true })]);
+    await client.sendRunInput("r_abc", "carry on", { overrides: { model: "claude-x" } });
+
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.text).toBe("carry on");
+    // Nested here, flat on /retune — the two endpoints differ and the adapter
+    // has to match each, which is why this asserts the SHAPE and not just the value.
+    expect(body.overrides).toEqual({ model: "claude-x" });
+  });
+
+  it("sendRunInput still sends a bare body when no overrides are given", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_abc", delivered: true })]);
+    await client.sendRunInput("r_abc", "hello");
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body).toEqual({ text: "hello" });
+  });
+
+  it("the meaningful zeros survive — 0 and false are sent, not dropped as falsy", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_abc", retuned: true })]);
+    await client.retuneRun("r_abc", {
+      retryAttempts: 0,
+      injectToolGuide: false,
+      unboundedIterations: false,
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.retry_attempts).toBe(0);
+    expect(body.inject_tool_guide).toBe(false);
+    expect(body.unbounded_iterations).toBe(false);
+  });
+
+  it("InteractiveSession.retune() drives it, and send() can carry overrides", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const sess = new InteractiveSession((async function* () {})(), {
+      sendRunInput: async (runId, text, opts) => {
+        calls.push({ kind: "send", runId, text, overrides: opts?.overrides });
+        return { delivered: true };
+      },
+      retuneRun: async (runId, overrides) => {
+        calls.push({ kind: "retune", runId, overrides });
+        return { retuned: true };
+      },
+      cancelAgent: async () => ({}),
+    });
+    sess.runId = "r_abc";
+
+    expect(await sess.retune({ model: "claude-x" })).toBe(true);
+    expect(await sess.send("go", { overrides: { tier: "middle" } })).toBe(true);
+
+    expect(calls).toEqual([
+      { kind: "retune", runId: "r_abc", overrides: { model: "claude-x" } },
+      { kind: "send", runId: "r_abc", text: "go", overrides: { tier: "middle" } },
+    ]);
+  });
+});
