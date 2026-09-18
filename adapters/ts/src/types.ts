@@ -2776,6 +2776,12 @@ export interface AgentDefOverlay {
   tools?: string[];
   skills?: string[];
   memory_scopes?: string[];
+  /** RFC DF: recall attaches the conversation TURN each fact was distilled from,
+   *  for this agent, WITHOUT the model asking for it. Operator-set on purpose — a
+   *  tool parameter is a decision the model makes, and measured across three local
+   *  models they do not make it. Also gated by `history_scope`: this decides whether
+   *  turns are OFFERED, history_scope whether they may be READ. */
+  recall_include_turns?: boolean;
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;
