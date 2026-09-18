@@ -83,7 +83,21 @@ internal/webui/dist/*
 # lc-bench sweep outputs (matrix.md + traces) — regenerated on every
 # run; large + dated. The case YAMLs + agent prompts under bench/ ARE
 # committed.
-bench/results/
+# Raw per-question reports carry corpus text whose licence does not travel, so the
+# data stays out. The SUMMARIES are the record: the research this repo cites has been
+# recoverable only from commit prose, and the reproducibility item asks for derived
+# summaries and their analysis scripts under version control beside the data.
+#
+# ⚠️ Ignore the CONTENTS, not the directory. Negating `bench/results/` itself makes
+# git descend into every result directory and treat each file as un-ignored unless
+# something re-matches it — which exposed years of old raw traces. `**` ignores the
+# files, `**/` lets git descend, and the allowlist is by filename so a raw
+# `answer-report.json` dropped alongside a summary is still ignored.
+bench/results/**
+!bench/results/**/
+!bench/results/**/README.md
+!bench/results/**/summary-*.json
+!bench/results/**/*.py
 
 # Playwright MCP session logs (per-snapshot YAML + per-page console
 # logs). Created when an agent drives a headless browser via the

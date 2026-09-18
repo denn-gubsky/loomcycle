@@ -1,0 +1,39 @@
+{
+  "label": "deepseek-v4-flash w0",
+  "note": "annotation verbatim: measures LoCoMo's evidence annotation, NOT the reader",
+  "arm": "locomo/oracle-deepseek",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T15:50:53Z",
+  "model": "deepseek/deepseek-flash",
+  "asked": 150,
+  "graded": 146,
+  "accuracy": 0.6747,
+  "strict": 0.6164,
+  "correct": 90,
+  "partial": 17,
+  "wrong": 39,
+  "unparsed": 4,
+  "not_found": 33,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.625,
+      "not_found": 4
+    },
+    "2": {
+      "graded": 34,
+      "accuracy": 0.8088,
+      "not_found": 3
+    },
+    "3": {
+      "graded": 10,
+      "accuracy": 0.25,
+      "not_found": 7
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.6929,
+      "not_found": 19
+    }
+  }
+}

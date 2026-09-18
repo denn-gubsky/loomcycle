@@ -1,0 +1,39 @@
+{
+  "label": "deepseek-v4-flash w2",
+  "note": "instrument check: must land at or above its traces arm 0.7877",
+  "arm": "locomo/oracle-deepseek",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T15:57:15Z",
+  "model": "deepseek/deepseek-flash",
+  "asked": 150,
+  "graded": 146,
+  "accuracy": 0.8288,
+  "strict": 0.7808,
+  "correct": 114,
+  "partial": 14,
+  "wrong": 18,
+  "unparsed": 4,
+  "not_found": 14,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.7812,
+      "not_found": 3
+    },
+    "2": {
+      "graded": 33,
+      "accuracy": 0.8333,
+      "not_found": 1
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.2727,
+      "not_found": 7
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.9357,
+      "not_found": 3
+    }
+  }
+}

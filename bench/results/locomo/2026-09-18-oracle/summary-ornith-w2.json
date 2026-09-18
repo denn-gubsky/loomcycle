@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b w2",
+  "note": "local reader, TrueNAS, effort low / 16K",
+  "arm": "locomo/oracle-ornith",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T16:07:39Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 149,
+  "accuracy": 0.8087,
+  "strict": 0.7383,
+  "correct": 110,
+  "partial": 21,
+  "wrong": 18,
+  "unparsed": 1,
+  "not_found": 15,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.75,
+      "not_found": 2
+    },
+    "2": {
+      "graded": 36,
+      "accuracy": 0.7639,
+      "not_found": 6
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.4545,
+      "not_found": 5
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.9143,
+      "not_found": 2
+    }
+  }
+}
