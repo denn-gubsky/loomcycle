@@ -1015,8 +1015,18 @@ type OverrideInfo struct {
 	FromModel string `json:"from_model,omitempty"`
 	ToModel   string `json:"to_model,omitempty"`
 
-	// Fields lists the override keys the request actually set, so a reader can
-	// see a budget or tuning change that moved no model at all.
+	// Fields lists the override keys this event is reporting.
+	//
+	// TWO SITES FILL IT IN, AND THEY KNOW DIFFERENT THINGS. The server emits one
+	// event when the operator retunes, listing the keys the REQUEST actually set
+	// — that is the event that shows a budget or tuning change which moved no
+	// model. The loop emits one when a parked run wakes and its routing has
+	// MOVED, and there the only key that moved is the routing itself, so it says
+	// so and carries the FromModel/ToModel pair the server could not yet know.
+	//
+	// This comment used to promise the request's keys unconditionally, while the
+	// only site filling it in was the loop's — which cannot see a request. A
+	// consumer wrote a branch for "max_tokens changed" that could never run.
 	Fields []string `json:"fields,omitempty"`
 }
 

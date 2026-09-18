@@ -1036,7 +1036,10 @@ func reResolveForOperatorTurn(ctx context.Context, opts *RunOptions, emit func(p
 			Source:    "operator",
 			FromModel: from,
 			ToModel:   to,
-			Fields:    []string{"model"},
+			// Routing is what THIS event reports — the server emits a separate
+			// one at retune time listing the keys the request set. See
+			// OverrideInfo.Fields.
+			Fields: []string{"model"},
 		},
 	})
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -129,13 +130,21 @@ func (s *Server) runForSteer(ctx context.Context, runID string) (store.Run, erro
 // override the definition would refuse is a 400 at the moment it is sent rather
 // than a surprise on the next turn — and so a stored record is always one the
 // run could actually adopt.
-func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesWire) error {
+// retuneRun merges an override into a live run's stored configuration and
+// returns the RESULT.
+//
+// It returns the merged record because the caller cannot recompute it: the merge
+// is not a field-wise union. Setting `model` clears the tier and setting `tier`
+// clears the model, so a panel that echoed back what it sent would display
+// something the run does not hold. The function already had the answer and threw
+// it away, which left a client with no way to confirm its own write.
+func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesWire) (runConfigRecord, error) {
 	if in.isZero() {
-		return nil
+		return runConfigRecord{}, nil
 	}
 	agentDef, ok := s.lookupAgent(ctx, run.TenantID, run.Agent)
 	if !ok {
-		return fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)
+		return runConfigRecord{}, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)
 	}
 
 	cur, _ := decodeRunConfig(run.RunConfig)
@@ -167,9 +176,15 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	if _, err := s.effectiveDef(ctx, agentDef, runOverrides{
 		Routing: merged.Routing, Resources: merged.Resources, Tuning: merged.Tuning,
 	}); err != nil {
-		return err
+		return runConfigRecord{}, err
 	}
-	return s.store.SetRunConfig(ctx, run.ID, merged.marshal())
+	if err := s.store.SetRunConfig(ctx, run.ID, merged.marshal()); err != nil {
+		return runConfigRecord{}, err
+	}
+	// After the write, never before: a transcript line about a change that did
+	// not persist is worse than no line.
+	s.appendRetuneEvent(ctx, run.ID, in.setFields())
+	return merged, nil
 }
 
 func mergeRouting(cur, next *routingOverride) *routingOverride {
@@ -349,11 +364,18 @@ func (s *Server) handleRetuneRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
 		return
 	}
-	if err := s.retuneRun(r.Context(), run, &req.runOverridesWire); err != nil {
+	merged, err := s.retuneRun(r.Context(), run, &req.runOverridesWire)
+	if err != nil {
 		writeResolveError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "retuned": true})
+	// The merged record, not an acknowledgement. A caller cannot recompute it —
+	// setting `model` clears the tier and setting `tier` clears the model — so
+	// answering {retuned:true} left a panel unable to confirm its own write
+	// against anything but a guess.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run_id": runID, "retuned": true, "config": merged,
+	})
 }
 
 // interactiveNowFn returns the callback the loop consults at each turn boundary
@@ -388,4 +410,119 @@ func (s *Server) interactiveNowFn(runID string, startedInteractive bool) func(co
 		}
 		return *rec.Interactive
 	}
+}
+
+// setFields returns the override keys this request actually set, in a stable
+// order, so a reader can see WHAT an operator changed.
+//
+// It is the honest answer to a question the wire type has always claimed to
+// answer and could not: OverrideInfo.Fields documents itself as "the override
+// keys the request actually set, so a reader can see a budget or tuning change
+// that moved no model at all", and the only site that filled it in was inside
+// the loop — which sees a re-resolved ROUTING outcome, not a request. It
+// therefore hardcoded {"model"}, and a retune of nothing but max_tokens put
+// nothing on the transcript at all. A consumer built a branch against a
+// documented capability that could never fire.
+func (w *runOverridesWire) setFields() []string {
+	if w == nil {
+		return nil
+	}
+	var f []string
+	add := func(name string, set bool) {
+		if set {
+			f = append(f, name)
+		}
+	}
+	add("model", w.Model != "")
+	add("provider", w.Provider != "")
+	add("tier", w.Tier != "")
+	add("effort", w.Effort != "")
+	add("max_tokens", w.MaxTokens != 0)
+	add("max_iterations", w.MaxIterations != 0)
+	add("unbounded_iterations", w.UnboundedIterations != nil)
+	add("max_concurrent_children", w.MaxConcurrentChildren != 0)
+	add("retry_attempts", w.RetryAttempts != nil)
+	add("memory_inject_max_tokens", w.MemoryInjectMaxTokens != nil)
+	add("memory_index_max_bytes", w.MemoryIndexMaxBytes != nil)
+	add("inject_tool_guide", w.InjectToolGuide != nil)
+	add("interactive", w.Interactive != nil)
+	add("interruption", w.Interruption != nil)
+	return f
+}
+
+// appendRetuneEvent records a retune on the run's transcript AT THE MOMENT THE
+// OPERATOR MADE IT.
+//
+// WHY HERE AND NOT ONLY IN THE LOOP. The loop emits an EventOverride when a
+// parked run wakes and its routing has MOVED, carrying the from/to pair — real
+// information, and the only place the post-resolution model is known. But it is
+// gated on routing: a run whose budget changed and whose model did not resolves
+// to the same model, reports no change, and leaves the transcript silent about
+// an operator action that definitely happened.
+//
+// So the two events answer different questions and both are worth having: this
+// one says WHAT WAS ASKED FOR and when; the loop's says WHAT THE RUN IS NOW
+// USING, once it knows.
+//
+// Best-effort: a retune that succeeded must not be reported as failed because
+// its transcript line could not be written.
+func (s *Server) appendRetuneEvent(ctx context.Context, runID string, fields []string) {
+	if s.store == nil || runID == "" || len(fields) == 0 {
+		return
+	}
+	ev := providers.Event{
+		Type: providers.EventOverride,
+		Text: "run settings changed by operator: " + strings.Join(fields, ", "),
+		Override: &providers.OverrideInfo{
+			Source: "operator",
+			Fields: fields,
+		},
+	}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		log.Printf("retune: could not encode the override event for run %s: %v", runID, err)
+		return
+	}
+	if aerr := s.store.AppendEvent(ctx, runID, string(providers.EventOverride), payload); aerr != nil {
+		log.Printf("retune: run %s was retuned but the transcript line was not written: %v", runID, aerr)
+	}
+}
+
+// handleGetRunConfig serves GET /v1/runs/{run_id}/config — the run's own stored
+// overrides.
+//
+// WHY THIS EXISTS. There is no GET /v1/runs/{run_id} at all, and runs.run_config
+// is serialised nowhere, so a run's overrides were write-only: a client could
+// set them and never read them back. /retune now answers with the merged record,
+// but that only helps a caller that just wrote. A panel OPENING an existing chat
+// had no way to learn what the run was already carrying.
+//
+// It reports what the RUN holds, not what the run will effectively use — a field
+// no override set is absent here and resolves later from the definition, the
+// tier, or the driver. Saying so is the point: absent means "not overridden",
+// which is a different and more useful answer than a resolved value would be at
+// this layer.
+//
+// The tenant gate is runForSteer's, so a run the caller may not touch answers
+// the same 404 an unknown one does.
+func (s *Server) handleGetRunConfig(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, "run_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+		return
+	}
+	run, err := s.runForSteer(r.Context(), runID)
+	if err != nil {
+		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		return
+	}
+	// A run that was never retuned has no record, and that is a 200 with an
+	// empty config — not a 404. "This run overrides nothing" is an answer.
+	cfg, _ := decodeRunConfig(run.RunConfig)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"run_id": runID,
+		"agent":  run.Agent,
+		"model":  run.Model,
+		"config": cfg,
+	})
 }

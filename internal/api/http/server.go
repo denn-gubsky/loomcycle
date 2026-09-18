@@ -3435,6 +3435,9 @@ func (s *Server) Mux() http.Handler {
 	// /input, and stays there; this exists because `text` is required there, so
 	// retuning a parked chat otherwise means writing a message nobody wanted to send.
 	mux.Handle("POST /v1/runs/{run_id}/retune", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetuneRun))))
+	// Read back what a run holds. Its sibling above is the write; without this
+	// the overrides were write-only — settable and never readable.
+	mux.Handle("GET /v1/runs/{run_id}/config", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunConfig))))
 	mux.Handle("GET /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunBreakpoints))))
 	mux.Handle("PUT /v1/runs/{run_id}/breakpoints", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutRunBreakpoints))))
 	mux.Handle("POST /v1/runs/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCancelTurn))))
@@ -7308,7 +7311,7 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
 			return
 		}
-		if oerr := s.retuneRun(r.Context(), run, req.Overrides); oerr != nil {
+		if _, oerr := s.retuneRun(r.Context(), run, req.Overrides); oerr != nil {
 			writeResolveError(w, oerr)
 			return
 		}
