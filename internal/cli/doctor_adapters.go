@@ -19,6 +19,8 @@ type realConfig struct {
 
 func (r *realConfig) ProviderPriorityList() []string { return r.cfg.ProviderPriority }
 
+func (r *realConfig) ConfigWarnings() []string { return r.cfg.Warnings }
+
 func (r *realConfig) AgentProviderHints() []string {
 	out := []string{}
 	for _, def := range r.cfg.Agents {

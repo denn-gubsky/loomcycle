@@ -6180,6 +6180,14 @@ func validateAgentChannelEntry(declared map[string]Channel, entry string) error 
 // easy to miss (it looks like the agent "chose" not to use the tool). Pure +
 // deterministic order (Memory, Evaluation, Channel, Interruption) so it is
 // unit-testable; the caller (validate) accumulates these onto Config.Warnings.
+// agentGateWarnings reports tools an agent holds whose capability gate is empty.
+//
+// ⚠️ NOT EVERY EMPTY GATE DENIES ANY MORE. memory_scopes, history_scope,
+// sql_scopes and evaluation_scopes resolve to what the caller already owns; the
+// def-authoring gates and Channel still grant nothing. The warnings below say
+// which, because a warning that states the wrong consequence sends an operator
+// to fix what is not broken and teaches them to ignore the channel — and these
+// said "will default-deny" for a while after that stopped being true.
 func agentGateWarnings(name string, a AgentDef) []string {
 	has := func(tool string) bool {
 		for _, t := range a.Tools {
@@ -6191,14 +6199,14 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	}
 	var w []string
 	if has("Memory") && len(a.MemoryScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: tools includes Memory but memory_scopes is empty — every Memory op will default-deny; add memory_scopes: [agent] and/or [user]", name))
+		w = append(w, fmt.Sprintf("agent %q: tools includes Memory but memory_scopes is empty — it will resolve to the caller's own data (user, plus tenant for a non-isolated member) and to NOTHING for a run with no user id; set memory_scopes explicitly to widen or narrow, or [\"-*\"] to grant none", name))
 	}
 	// RFC BL P1: core blocks / the memory protocol need Memory in tools AND a
 	// matching memory_scopes, or the blocks can neither be read for injection
 	// nor written by the agent — a silent no-op like the F21 traps above.
 	if len(a.CoreBlocks) > 0 || a.MemoryProtocol {
 		if !has("Memory") || len(a.MemoryScopes) == 0 {
-			w = append(w, fmt.Sprintf("agent %q: core_blocks/memory_protocol is set but Memory is not in tools (or memory_scopes is empty) — core blocks won't be readable/writable and {{memory:...}} will render empty; add Memory to tools and memory_scopes: [agent] and/or [user]", name))
+			w = append(w, fmt.Sprintf("agent %q: core_blocks/memory_protocol is set but Memory is not in tools (or memory_scopes is empty) — core blocks won't be readable/writable and {{memory:...}} will render empty; add Memory to tools, and set memory_scopes explicitly (it defaults to the caller's own data, which is NOT the agent scope core blocks live in)", name))
 		}
 	}
 	// RFC BL P2: the consolidation control ops need Memory in tools AND a
@@ -6206,11 +6214,11 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	// default-denies) — a silent no-op like the core_blocks trap above.
 	if a.MemoryConsolidation {
 		if !has("Memory") || len(a.MemoryScopes) == 0 {
-			w = append(w, fmt.Sprintf("agent %q: memory_consolidation is set but Memory is not in tools (or memory_scopes is empty) — the consolidation control ops will default-deny; add Memory to tools and memory_scopes: [agent] and/or [user]", name))
+			w = append(w, fmt.Sprintf("agent %q: memory_consolidation is set but Memory is not in tools (or memory_scopes is empty) — the consolidation control ops will not reach the agent scope; add Memory to tools, and set memory_scopes: [agent] (the default is the caller's own data, not the agent's)", name))
 		}
 	}
 	if has("Evaluation") && len(a.EvaluationScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: tools includes Evaluation but evaluation_scopes is empty — every Evaluation op will default-deny; add evaluation_scopes", name))
+		w = append(w, fmt.Sprintf("agent %q: tools includes Evaluation but evaluation_scopes is empty — it will resolve to [submit_self], so the agent may evaluate its OWN run and nothing else; set evaluation_scopes to widen, or [\"-*\"] to grant none", name))
 	}
 	if has("Channel") && len(a.Channels.Publish) == 0 && len(a.Channels.Subscribe) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes Channel but channels.publish and channels.subscribe are both empty — every Channel op will default-deny", name))

@@ -85,6 +85,22 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Capability gates. `validate` is where an operator looks BEFORE starting
+	// anything, so this is the earliest point the answer can be given — earlier
+	// than doctor, and far earlier than the model being refused mid-task.
+	//
+	// Both kinds are listed, because they are different facts: an inert grant is
+	// a defect, and a defaulted one works but resolves to something the yaml
+	// does not say, which an operator reading that yaml cannot see.
+	if len(cfg.Warnings) > 0 {
+		fmt.Fprintln(stdout)
+		fmt.Fprintf(stdout, "Advisories       : %d\n", len(cfg.Warnings))
+		for _, w := range cfg.Warnings {
+			fmt.Fprintf(stdout, "  - %s\n", w)
+		}
+	}
+	fmt.Fprintln(stdout)
+
 	if len(cfg.MCPServers) > 0 {
 		fmt.Fprintf(stdout, "MCP servers      : %d\n", len(cfg.MCPServers))
 		mcpNames := make([]string, 0, len(cfg.MCPServers))

@@ -22,9 +22,11 @@ type stubConfig struct {
 	pgDSN          string
 	dataDir        string
 	listen         string
+	configWarnings []string
 }
 
 func (s *stubConfig) ProviderPriorityList() []string  { return s.providers }
+func (s *stubConfig) ConfigWarnings() []string        { return s.configWarnings }
 func (s *stubConfig) AgentProviderHints() []string    { return s.agentProviders }
 func (s *stubConfig) UserTierProviderHints() []string { return s.tierProviders }
 func (s *stubConfig) ProviderAPIKeyEnv(id string) string {
