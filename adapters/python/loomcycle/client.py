@@ -1148,7 +1148,24 @@ class LoomcycleClient:
         :meth:`resolve_interrupt` with ``disposition="declined"``."""
         return await self.resolve_interrupt(run_id, interrupt_id, disposition="declined")
 
-    async def run_input(self, run_id: str, text: str) -> Mapping[str, Any]:
+    async def run_input(
+        self,
+        run_id: str,
+        text: str,
+        *,
+        model: str = "",
+        provider: str = "",
+        tier: str = "",
+        effort: str = "",
+        max_tokens: int = 0,
+        max_iterations: int = 0,
+        max_concurrent_children: int = 0,
+        unbounded_iterations: Optional[bool] = None,
+        retry_attempts: Optional[int] = None,
+        memory_inject_max_tokens: Optional[int] = None,
+        memory_index_max_bytes: Optional[int] = None,
+        inject_tool_guide: Optional[bool] = None,
+    ) -> Mapping[str, Any]:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
         be in-flight — parked at end_turn awaiting input, or mid-turn (the
@@ -1156,13 +1173,90 @@ class LoomcycleClient:
         ``{run_id, delivered}``. An unknown / cross-tenant run_id maps to
         :class:`AgentNotFoundError` (NotFound); a full steer queue to
         :class:`BackpressureError` (ResourceExhausted). The injected source
-        is server-stamped (``"api"``), never sent from here."""
-        req = pb.RunInputRequest(run_id=run_id, text=text)
+        is server-stamped (``"api"``), never sent from here.
+
+        The per-run overrides are applied BEFORE the text is delivered —
+        retune and speak in one call. Use :meth:`retune_run` when you want
+        to change a parked run's settings WITHOUT putting a message in its
+        transcript. They select within what the agent's definition already
+        allows and cannot widen it; one it forbids is refused here rather
+        than stored and discovered on the next turn."""
+        req = pb.RunInputRequest(
+            run_id=run_id,
+            text=text,
+            model=model,
+            provider=provider,
+            tier=tier,
+            effort=effort,
+            max_tokens=max_tokens,
+            max_iterations=max_iterations,
+            max_concurrent_children=max_concurrent_children,
+            **_optional_overrides(
+                unbounded_iterations=unbounded_iterations,
+                retry_attempts=retry_attempts,
+                memory_inject_max_tokens=memory_inject_max_tokens,
+                memory_index_max_bytes=memory_index_max_bytes,
+                inject_tool_guide=inject_tool_guide,
+            ),
+        )
         try:
             resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
         return {"run_id": resp.run_id, "delivered": resp.delivered}
+
+    async def retune_run(
+        self,
+        run_id: str,
+        *,
+        model: str = "",
+        provider: str = "",
+        tier: str = "",
+        effort: str = "",
+        max_tokens: int = 0,
+        max_iterations: int = 0,
+        max_concurrent_children: int = 0,
+        unbounded_iterations: Optional[bool] = None,
+        retry_attempts: Optional[int] = None,
+        memory_inject_max_tokens: Optional[int] = None,
+        memory_index_max_bytes: Optional[int] = None,
+        inject_tool_guide: Optional[bool] = None,
+    ) -> Mapping[str, Any]:
+        """Change a run's settings WITHOUT sending it a turn (mirror of
+        ``POST /v1/runs/{run_id}/retune``).
+
+        Use this to retune a PARKED chat — switch it to another model, raise
+        its iteration bound — when a message in the transcript would be an
+        artefact of changing a setting rather than something the operator
+        said. :meth:`run_input` is the other half: retune and speak at once.
+
+        The overrides select WITHIN what the agent's definition allows and
+        cannot widen it. Returns ``{run_id, retuned}``. An unknown or
+        cross-tenant run_id maps to :class:`AgentNotFoundError` (NotFound) —
+        the same answer for both, so the gate is not an existence oracle —
+        and supplying no override at all is an ``InvalidArgumentError``."""
+        req = pb.RetuneRunRequest(
+            run_id=run_id,
+            model=model,
+            provider=provider,
+            tier=tier,
+            effort=effort,
+            max_tokens=max_tokens,
+            max_iterations=max_iterations,
+            max_concurrent_children=max_concurrent_children,
+            **_optional_overrides(
+                unbounded_iterations=unbounded_iterations,
+                retry_attempts=retry_attempts,
+                memory_inject_max_tokens=memory_inject_max_tokens,
+                memory_index_max_bytes=memory_index_max_bytes,
+                inject_tool_guide=inject_tool_guide,
+            ),
+        )
+        try:
+            resp = await self._stub.RetuneRun(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {"run_id": resp.run_id, "retuned": resp.retuned}
 
     def stream_run(self, run_id: str, *, from_seq: int = 0) -> AsyncIterator[AgentEvent]:
         """Re-attach to a run's event stream by ``run_id`` (RFC AI; mirror

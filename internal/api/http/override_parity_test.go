@@ -107,6 +107,12 @@ func TestOverrideParity_EveryTransportEnumeratesEveryOverride(t *testing.T) {
 				return map[string]string{
 					"RunRequest":      protoMessageBody(src, "RunRequest"),
 					"ContinueRequest": protoMessageBody(src, "ContinueRequest"),
+					// The STEER surfaces. They carry the same twelve fields and
+					// were missing all of them while the two above passed — the
+					// gap a consumer reported, which no name-based check over the
+					// file could have distinguished.
+					"RunInputRequest":  protoMessageBody(src, "RunInputRequest"),
+					"RetuneRunRequest": protoMessageBody(src, "RetuneRunRequest"),
 				}
 			},
 			form: func(w string) string { return " " + w + " = " },

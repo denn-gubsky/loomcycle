@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -26,6 +27,11 @@ type interactiveMock struct {
 	steerDelivered bool
 	steerErr       error
 
+	gotRetuneRunID string
+	gotRetuneOv    connector.RunOverrides
+	retuneCalls    int
+	retuneErr      error
+
 	gotStreamRunID string
 	gotStreamFrom  int64
 	streamEvents   []providers.Event
@@ -35,6 +41,12 @@ type interactiveMock struct {
 func (m *interactiveMock) SteerRun(_ context.Context, runID, text, source string) (bool, error) {
 	m.gotSteerRunID, m.gotSteerText, m.gotSteerSource = runID, text, source
 	return m.steerDelivered, m.steerErr
+}
+
+func (m *interactiveMock) RetuneRun(_ context.Context, runID string, ov connector.RunOverrides) error {
+	m.gotRetuneRunID, m.gotRetuneOv = runID, ov
+	m.retuneCalls++
+	return m.retuneErr
 }
 
 func (m *interactiveMock) StreamRunEvents(_ context.Context, runID string, fromSeq int64, visit connector.RunEventVisitor) error {
@@ -143,5 +155,96 @@ func TestGrpcStreamRun_StreamsInteractiveEvents(t *testing.T) {
 	}
 	if got[2].GetType() != "steer" || got[2].GetUserInput().GetText() != "ship it" || got[2].GetUserInput().GetSource() != "replay" {
 		t.Errorf("steer frame wrong: %+v", got[2].GetUserInput())
+	}
+}
+
+// The gap a consumer reported: RunInputRequest carried run_id/text/source only,
+// so a gRPC or Python caller could not retune a run at all — and RunInput
+// requires text, so even once the fields existed a retune could only ride a
+// turn. These cover both halves.
+func TestGrpcRetuneRun_ChangesTheRunWithoutDeliveringATurn(t *testing.T) {
+	mc := &interactiveMock{}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	yes, n := true, int32(7)
+	resp, err := client.RetuneRun(context.Background(), &loomcyclepb.RetuneRunRequest{
+		RunId: "r_abc", Model: "model-b", MaxIterations: 40,
+		// The meaningful zeros: proto3 optional precisely so "off" is
+		// expressible, and a non-pointer would read as unset right here.
+		RetryAttempts: proto.Int32(0), InjectToolGuide: proto.Bool(false),
+		UnboundedIterations: &yes, MemoryInjectMaxTokens: &n,
+	})
+	if err != nil {
+		t.Fatalf("RetuneRun: %v", err)
+	}
+	if !resp.GetRetuned() || resp.GetRunId() != "r_abc" {
+		t.Errorf("resp = %+v, want retuned=true run_id=r_abc", resp)
+	}
+	if mc.gotRetuneOv.Model != "model-b" || mc.gotRetuneOv.MaxIterations != 40 {
+		t.Errorf("connector got %+v, want model-b / 40", mc.gotRetuneOv)
+	}
+	if mc.gotRetuneOv.RetryAttempts == nil || *mc.gotRetuneOv.RetryAttempts != 0 {
+		t.Errorf("retry_attempts = %v, want a set 0 — the meaningful zero was dropped",
+			mc.gotRetuneOv.RetryAttempts)
+	}
+	if mc.gotRetuneOv.InjectToolGuide == nil || *mc.gotRetuneOv.InjectToolGuide {
+		t.Errorf("inject_tool_guide = %v, want a set false", mc.gotRetuneOv.InjectToolGuide)
+	}
+	// No turn: the whole reason this RPC is separate from RunInput.
+	if mc.gotSteerText != "" {
+		t.Errorf("a retune delivered the turn %q — it must not steer", mc.gotSteerText)
+	}
+}
+
+func TestGrpcRetuneRun_RefusesAnEmptyOverrideSet(t *testing.T) {
+	mc := &interactiveMock{}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	_, err := client.RetuneRun(context.Background(), &loomcyclepb.RetuneRunRequest{RunId: "r_abc"})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("empty override set → %v, want InvalidArgument (the HTTP 422)", status.Code(err))
+	}
+	if mc.retuneCalls != 0 {
+		t.Error("the connector was called for a request carrying no override")
+	}
+}
+
+// Retune-and-speak in one call, and the ORDER matters: the loop re-reads the
+// run's configuration when the operator's turn arrives, so a retune applied
+// after the text lands one turn late.
+func TestGrpcRunInput_AppliesOverridesBeforeDeliveringTheText(t *testing.T) {
+	mc := &interactiveMock{steerDelivered: true}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	if _, err := client.RunInput(context.Background(), &loomcyclepb.RunInputRequest{
+		RunId: "r_abc", Text: "carry on", Model: "model-b",
+	}); err != nil {
+		t.Fatalf("RunInput: %v", err)
+	}
+	if mc.gotRetuneOv.Model != "model-b" {
+		t.Errorf("the retune did not reach the connector: %+v", mc.gotRetuneOv)
+	}
+	if mc.gotSteerText != "carry on" {
+		t.Errorf("the text was not delivered: %q", mc.gotSteerText)
+	}
+}
+
+// A steer with no overrides must not call the retune path at all — otherwise
+// every ordinary steer pays a store write for a change nobody asked for.
+func TestGrpcRunInput_WithoutOverridesDoesNotRetune(t *testing.T) {
+	mc := &interactiveMock{steerDelivered: true}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	if _, err := client.RunInput(context.Background(), &loomcyclepb.RunInputRequest{
+		RunId: "r_abc", Text: "plain steer",
+	}); err != nil {
+		t.Fatalf("RunInput: %v", err)
+	}
+	if mc.retuneCalls != 0 {
+		t.Errorf("a steer with no overrides called RetuneRun %d times", mc.retuneCalls)
 	}
 }

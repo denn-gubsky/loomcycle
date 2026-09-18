@@ -154,6 +154,13 @@ func (m *httpMockConnector) ListChannels(context.Context) (connector.ListChannel
 func (m *httpMockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
 	return errors.New("not implemented")
 }
+
+// RetuneRun: the base mock satisfies the interface; the tests that care
+// override it.
+func (m *httpMockConnector) RetuneRun(context.Context, string, connector.RunOverrides) error {
+	return nil
+}
+
 func (m *httpMockConnector) SteerRun(context.Context, string, string, string) (bool, error) {
 	return false, errors.New("not implemented")
 }

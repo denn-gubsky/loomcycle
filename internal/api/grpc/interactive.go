@@ -36,6 +36,23 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 	if strings.TrimSpace(req.GetText()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "text is required")
 	}
+	// Apply the retune BEFORE delivering the text: the loop re-reads the run's
+	// configuration when the operator's turn arrives, so the record has to be in
+	// the store by the time the message wakes it. The other order applies the
+	// change one turn late, which an operator reads as "it ignored me".
+	if ov := overridesFromProto(
+		req.GetModel(), req.GetProvider(), req.GetTier(), req.GetEffort(),
+		req.GetMaxTokens(), req.GetMaxIterations(), req.GetMaxConcurrentChildren(),
+		req.UnboundedIterations, req.InjectToolGuide,
+		req.RetryAttempts, req.MemoryInjectMaxTokens, req.MemoryIndexMaxBytes,
+	); !ov.IsZero() {
+		switch err := s.connector.RetuneRun(ctx, runID, ov); {
+		case errors.Is(err, connector.ErrRunNotInFlight):
+			return nil, status.Error(codes.NotFound, err.Error())
+		case err != nil:
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
 	delivered, err := s.connector.SteerRun(ctx, runID, req.GetText(), store.InterruptResolvedByAPI)
 	switch {
 	case errors.Is(err, connector.ErrRunNotInFlight):
@@ -151,4 +168,63 @@ func (s *Server) StreamRun(req *loomcyclepb.StreamRunRequest, stream loomcyclepb
 		return status.Error(codes.Internal, err.Error())
 	}
 	return nil
+}
+
+// overridesFromProto maps the wire override fields onto the connector shape.
+//
+// ONE function for both RunInput and RetuneRun. They carry the same twelve
+// fields at different numbers, and two hand-written mappings of one list is the
+// exact shape that left the steer path with none of them in the first place.
+func overridesFromProto(
+	model, provider, tier, effort string,
+	maxTokens, maxIterations, maxConcurrentChildren int32,
+	unbounded, injectToolGuide *bool,
+	retryAttempts, memInject, memIndex *int32,
+) connector.RunOverrides {
+	toInt := func(p *int32) *int {
+		if p == nil {
+			return nil
+		}
+		v := int(*p)
+		return &v
+	}
+	return connector.RunOverrides{
+		Model: model, Provider: provider, Tier: tier, Effort: effort,
+		MaxTokens: int(maxTokens), MaxIterations: int(maxIterations),
+		UnboundedIterations: unbounded, MaxConcurrentChildren: int(maxConcurrentChildren),
+		RetryAttempts: toInt(retryAttempts), MemoryInjectMaxTokens: toInt(memInject),
+		MemoryIndexMaxBytes: toInt(memIndex), InjectToolGuide: injectToolGuide,
+	}
+}
+
+// RetuneRun changes a run's per-run overrides without delivering a turn — the
+// gRPC twin of POST /v1/runs/{run_id}/retune. Error mapping mirrors the HTTP
+// codes: NotFound (no in-flight run, and equally a cross-tenant one),
+// InvalidArgument (no override supplied — the HTTP 422).
+func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunRequest) (*loomcyclepb.RetuneRunResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	runID := req.GetRunId()
+	if runID == "" {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+	ov := overridesFromProto(
+		req.GetModel(), req.GetProvider(), req.GetTier(), req.GetEffort(),
+		req.GetMaxTokens(), req.GetMaxIterations(), req.GetMaxConcurrentChildren(),
+		req.UnboundedIterations, req.InjectToolGuide,
+		req.RetryAttempts, req.MemoryInjectMaxTokens, req.MemoryIndexMaxBytes,
+	)
+	if ov.IsZero() {
+		return nil, status.Error(codes.InvalidArgument, "at least one override is required")
+	}
+	switch err := s.connector.RetuneRun(ctx, runID, ov); {
+	case errors.Is(err, connector.ErrRunNotInFlight):
+		return nil, status.Error(codes.NotFound, err.Error())
+	case err != nil:
+		// A refused override (outside what the definition allows) is the
+		// caller's mistake, not the server's.
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	return &loomcyclepb.RetuneRunResponse{RunId: runID, Retuned: true}, nil
 }

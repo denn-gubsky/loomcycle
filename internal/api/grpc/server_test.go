@@ -850,6 +850,13 @@ func (m *mockConnector) ListChannels(context.Context) (connector.ListChannelsRes
 func (m *mockConnector) StreamUserRunStates(context.Context, connector.StreamUserRunStatesRequest, connector.RunStateVisitor) error {
 	return nil
 }
+
+// RetuneRun: the base mock satisfies the interface; the tests that care
+// override it.
+func (m *mockConnector) RetuneRun(context.Context, string, connector.RunOverrides) error {
+	return nil
+}
+
 func (m *mockConnector) SteerRun(context.Context, string, string, string) (bool, error) {
 	return false, connector.ErrRunNotInFlight
 }

@@ -142,3 +142,64 @@ async def test_omitted_overrides_stay_unset():
         assert not stub.req.HasField(name), f"{name} was set without the caller asking for it"
     for name in ROUTING_AND_BUDGET:
         assert not getattr(stub.req, name), f"{name} was set without the caller asking for it"
+
+
+@pytest.mark.asyncio
+async def test_retune_run_carries_every_override_and_sends_no_text():
+    """The gap a consumer reported: a parked chat could not be retuned through
+    the SDK at all. `run_input` took text only, and the proto had no override
+    fields, so there was nothing to send them on."""
+    client = _make_client()
+    captured: dict = {}
+
+    async def fake(req, metadata=None):
+        captured["req"] = req
+        return pb.RetuneRunResponse(run_id="r_1", retuned=True)
+
+    client._stub.RetuneRun = fake  # type: ignore[attr-defined]
+
+    out = await client.retune_run("r_1", **ROUTING_AND_BUDGET, **TUNING_ZEROS)
+    assert out == {"run_id": "r_1", "retuned": True}
+    _assert_carries_everything(captured["req"])
+    assert captured["req"].run_id == "r_1"
+    # No turn rides along — that is the entire point of the separate RPC.
+    assert not hasattr(captured["req"], "text")
+
+
+@pytest.mark.asyncio
+async def test_run_input_carries_every_override_beside_the_text():
+    """The other half: retune and speak in one call."""
+    client = _make_client()
+    captured: dict = {}
+
+    async def fake(req, metadata=None):
+        captured["req"] = req
+        return pb.RunInputResponse(run_id="r_1", delivered=True)
+
+    client._stub.RunInput = fake  # type: ignore[attr-defined]
+
+    await client.run_input("r_1", "carry on", **ROUTING_AND_BUDGET, **TUNING_ZEROS)
+    req = captured["req"]
+    assert req.text == "carry on"
+    _assert_carries_everything(req)
+
+
+@pytest.mark.asyncio
+async def test_run_input_without_overrides_leaves_them_unset():
+    """Non-vacuity, and the contract: saying nothing must reach the wire as an
+    UNSET field, never as the zero that means 'no retries' / 'inject nothing'."""
+    client = _make_client()
+    captured: dict = {}
+
+    async def fake(req, metadata=None):
+        captured["req"] = req
+        return pb.RunInputResponse(run_id="r_1", delivered=True)
+
+    client._stub.RunInput = fake  # type: ignore[attr-defined]
+
+    await client.run_input("r_1", "hello")
+    req = captured["req"]
+    for name in TUNING_ZEROS:
+        assert not req.HasField(name), f"{name} was set without the caller asking"
+    for name in ROUTING_AND_BUDGET:
+        assert not getattr(req, name), f"{name} was set without the caller asking"

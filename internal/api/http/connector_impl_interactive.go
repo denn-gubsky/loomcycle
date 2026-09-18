@@ -308,3 +308,28 @@ func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind,
 
 	return finalStatus, nil
 }
+
+// RetuneRun is the canonical retune — see connector.Connector.
+//
+// The conversion to the HTTP wire shape is deliberate rather than incidental:
+// runOverridesWire is what retuneRun merges, validates and stores, so routing
+// every transport through it means a gRPC retune and an HTTP one cannot diverge
+// about what an override means or which are permitted.
+func (s *Server) RetuneRun(ctx context.Context, runID string, ov connector.RunOverrides) error {
+	if ov.IsZero() {
+		return fmt.Errorf("retune: at least one override is required")
+	}
+	run, err := s.runForSteer(ctx, runID)
+	if err != nil {
+		// Unknown and cross-tenant collapse to the same answer on purpose.
+		return connector.ErrRunNotInFlight
+	}
+	wire := runOverridesWire{
+		Model: ov.Model, Provider: ov.Provider, Tier: ov.Tier, Effort: ov.Effort,
+		MaxTokens: ov.MaxTokens, MaxIterations: ov.MaxIterations,
+		UnboundedIterations: ov.UnboundedIterations, MaxConcurrentChildren: ov.MaxConcurrentChildren,
+		RetryAttempts: ov.RetryAttempts, MemoryInjectMaxTokens: ov.MemoryInjectMaxTokens,
+		MemoryIndexMaxBytes: ov.MemoryIndexMaxBytes, InjectToolGuide: ov.InjectToolGuide,
+	}
+	return s.retuneRun(ctx, run, &wire)
+}
