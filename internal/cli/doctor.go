@@ -143,6 +143,22 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		r.pass("Listen address", fmt.Sprintf("%s (bindable)", listenAddr))
 	}
 
+	// Agent capability gates. doctor inspected no agents at all before this,
+	// so the most common "why is my agent not doing that" — a tool granted with
+	// no gate behind it — went unmentioned by the command an operator runs
+	// precisely to be told what is wrong.
+	//
+	// A denied grant is a WARN, never a FAIL: many agents hold Memory for its
+	// non-scoped ops, and failing the config over a pattern that is often
+	// deliberate would make doctor something people stop running.
+	if warns := cfg.ConfigWarnings(); len(warns) > 0 {
+		for _, w := range warns {
+			r.warn("Config advisory", w)
+		}
+	} else {
+		r.pass("Config advisories", "none — every granted tool has a gate behind it")
+	}
+
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, r.summary())
 
@@ -280,6 +296,15 @@ type configForDoctor interface {
 	StoragePgDSN() string
 	StorageDataDir() string
 	ListenAddrValue() string
+	// ConfigWarnings returns the non-fatal advisories config-load already
+	// produces — an agent holding a tool whose capability gate is empty, a
+	// principal whose token env is unset, a layered override.
+	//
+	// They existed and were logged ONCE at boot, where an operator debugging a
+	// week later never sees them. doctor inspected no agents at all, so the most
+	// common "why is my agent not doing that" went unmentioned by the command
+	// people run precisely to be told what is wrong.
+	ConfigWarnings() []string
 }
 
 // providerListFromConfig collects every provider name referenced
