@@ -2881,6 +2881,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		PayloadMetadata:     in.PayloadMetadata,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         in.Interactive,
+		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
 		Sampling:            runCfg.Sampling,   // merged once, above
 		Compaction:          runCfg.Compaction, // merged once, above
 		Context:             mergedContext,     // merged once, above (RFC CR)
@@ -4605,6 +4606,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Metadata:            req.Metadata,  // direct /v1/runs caller is first-party → trusted; no payload_metadata
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         req.Interactive,
+		InteractiveNow:      s.interactiveNowFn(runID, req.Interactive),
 		Sampling:            runCfg.Sampling,   // merged once, above
 		Compaction:          runCfg.Compaction, // merged once, above
 		Context:             mergedContext,     // merged once, above (RFC CR)
@@ -5282,6 +5284,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Metadata:                body.Metadata,
 		RunTimeoutSeconds:       runCfg.RunTimeoutSeconds,
 		Interactive:             body.Interactive,
+		InteractiveNow:          s.interactiveNowFn(run.ID, body.Interactive),
 		ArmTurnCancel:           s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
 		Sampling:                runCfg.Sampling,                             // merged once, above
 		Compaction:              runCfg.Compaction,                           // merged once, above

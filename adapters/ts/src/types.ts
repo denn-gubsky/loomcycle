@@ -305,6 +305,22 @@ export interface RunOverrideOptions {
   memoryIndexMaxBytes?: number;
   /** Whether to inject the generated tool guide into the prompt. */
   injectToolGuide?: boolean;
+  /** Park this run at its turn boundaries instead of finishing, so an operator
+   *  can steer it — settable while the run is ALREADY GOING, which is the point:
+   *  nobody knows at start that they will need to correct it.
+   *
+   *  `false` releases a run that was started interactive. Omit to keep whatever
+   *  the run has; a retune of anything else must not disturb this. */
+  interactive?: boolean;
+
+  /** Let this run's agent ASK a human a question, overriding what its
+   *  definition allows.
+   *
+   *  Overridable because an interruption touches no data and no host — it blocks
+   *  and waits for a person — so the exposure is liveness, bounded by the run's
+   *  timeout and the interruption's own. */
+  interruption?: { enabled?: boolean; kinds?: string[]; max_pending?: number };
+
 }
 
 export interface RunOptions extends RunOverrideOptions {

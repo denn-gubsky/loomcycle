@@ -798,7 +798,8 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
 		Sampling:         samplingFromProto(req.GetSampling()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
-		Interactive:      req.GetInteractive(),           // RFC AI
+		Interactive:      req.GetInteractive(), // RFC AI
+		Interruption:     interruptionFromProto(req.GetInterruption()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
@@ -847,7 +848,8 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
 		Sampling:         samplingFromProto(req.GetSampling()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
-		Interactive:      req.GetInteractive(),           // RFC AI
+		Interactive:      req.GetInteractive(), // RFC AI
+		Interruption:     interruptionFromProto(req.GetInterruption()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-continuation context-window override
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
@@ -1158,11 +1160,12 @@ type runInputProtoArgs struct {
 	TenantID         string
 	UserTier         string
 	UserBearer       string
-	UserCredentials  map[string]string  // v1.x RFC F per-tool named credentials
-	Sampling         *config.Sampling   // v0.28.0 per-run sampling override
-	Compaction       *config.Compaction // v0.32.0 per-run compaction override
-	Interactive      bool               // RFC AI — park at end_turn for steering
-	MaxContextTokens int                // RFC CJ per-run context-window override (0 = inherit agent def)
+	UserCredentials  map[string]string            // v1.x RFC F per-tool named credentials
+	Sampling         *config.Sampling             // v0.28.0 per-run sampling override
+	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
+	Interactive      bool                         // RFC AI — park at end_turn for steering
+	Interruption     *config.AgentInterruptionACL // per-run override of whether the agent may ask a human
+	MaxContextTokens int                          // RFC CJ per-run context-window override (0 = inherit agent def)
 
 	// RFC DC per-run overrides. Routing selects within what the definition
 	// declares; the budget knobs are raisable except MaxConcurrentChildren,
@@ -1209,10 +1212,11 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		TenantID:              a.TenantID,
 		UserTier:              a.UserTier,
 		UserBearer:            a.UserBearer,
-		UserCredentials:       a.UserCredentials,  // v1.x RFC F per-tool named credentials
-		Sampling:              a.Sampling,         // v0.28.0 per-run sampling override
-		Compaction:            a.Compaction,       // v0.32.0 per-run compaction override
-		Interactive:           a.Interactive,      // RFC AI — park at end_turn for steering
+		UserCredentials:       a.UserCredentials, // v1.x RFC F per-tool named credentials
+		Sampling:              a.Sampling,        // v0.28.0 per-run sampling override
+		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
+		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
+		Interruption:          a.Interruption,
 		MaxContextTokens:      a.MaxContextTokens, // RFC CJ per-run context-window override
 	}
 	if a.AllowedHosts != nil {
@@ -1734,4 +1738,18 @@ func int32PtrToInt(p *int32) *int {
 	}
 	v := int(*p)
 	return &v
+}
+
+// interruptionFromProto maps the per-run interruption override onto the config
+// shape. nil in stays nil out — "the caller said nothing" must reach the runner
+// as inherit-the-definition, not as a zero-valued block that disables it.
+func interruptionFromProto(in *loomcyclepb.Interruption) *config.AgentInterruptionACL {
+	if in == nil {
+		return nil
+	}
+	return &config.AgentInterruptionACL{
+		Enabled:    in.GetEnabled(),
+		Kinds:      in.GetKinds(),
+		MaxPending: int(in.GetMaxPending()),
+	}
 }

@@ -151,6 +151,15 @@ type SpawnRunRequest struct {
 	MemoryInjectMaxTokens *int   `json:"memory_inject_max_tokens,omitempty"`
 	MemoryIndexMaxBytes   *int   `json:"memory_index_max_bytes,omitempty"`
 	InjectToolGuide       *bool  `json:"inject_tool_guide,omitempty"`
+
+	// Interactive parks the run at its turn boundaries instead of finishing, so
+	// an operator can steer it. A POINTER: absent keeps what the run has, which
+	// is what a retune of anything else must not disturb.
+	Interactive *bool `json:"interactive,omitempty"`
+
+	// Interruption lets this run's agent ask a human a question even when its
+	// definition does not enable it. nil = inherit the definition's.
+	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned
@@ -815,10 +824,26 @@ type RunOverrides struct {
 	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
 	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
 	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
+
+	// Interactive parks the run at its turn boundaries instead of finishing, so
+	// an operator can take hold of one that is already going. Interruption lets
+	// it ask a human a question. Both nil = leave what the run has.
+	Interactive  *bool                        `json:"interactive,omitempty"`
+	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
 // IsZero reports whether the caller supplied no override at all. Transports
 // refuse that rather than absorbing it: an empty set means the field names were
 // misspelled or mis-nested, and reporting success for a call that changed
 // nothing is how that mistake stays invisible.
-func (o RunOverrides) IsZero() bool { return o == (RunOverrides{}) }
+// Hand-written rather than `o == (RunOverrides{})`: the struct now holds a
+// pointer to a slice-bearing type, so the comparison no longer compiles, and a
+// quiet switch to reflect.DeepEqual would read a zero-valued pointer as
+// "supplied" — the opposite of what this answers.
+func (o RunOverrides) IsZero() bool {
+	return o.Model == "" && o.Provider == "" && o.Tier == "" && o.Effort == "" &&
+		o.MaxTokens == 0 && o.MaxIterations == 0 && o.UnboundedIterations == nil &&
+		o.MaxConcurrentChildren == 0 && o.RetryAttempts == nil &&
+		o.MemoryInjectMaxTokens == nil && o.MemoryIndexMaxBytes == nil &&
+		o.InjectToolGuide == nil && o.Interactive == nil && o.Interruption == nil
+}

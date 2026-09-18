@@ -1165,6 +1165,8 @@ class LoomcycleClient:
         memory_inject_max_tokens: Optional[int] = None,
         memory_index_max_bytes: Optional[int] = None,
         inject_tool_guide: Optional[bool] = None,
+        interactive: Optional[bool] = None,
+        interruption: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
@@ -1197,8 +1199,11 @@ class LoomcycleClient:
                 memory_inject_max_tokens=memory_inject_max_tokens,
                 memory_index_max_bytes=memory_index_max_bytes,
                 inject_tool_guide=inject_tool_guide,
+                interactive=interactive,
             ),
         )
+        if interruption is not None:
+            req.interruption.CopyFrom(_build_interruption(interruption))
         try:
             resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -1221,6 +1226,8 @@ class LoomcycleClient:
         memory_inject_max_tokens: Optional[int] = None,
         memory_index_max_bytes: Optional[int] = None,
         inject_tool_guide: Optional[bool] = None,
+        interactive: Optional[bool] = None,
+        interruption: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         """Change a run's settings WITHOUT sending it a turn (mirror of
         ``POST /v1/runs/{run_id}/retune``).
@@ -1250,8 +1257,11 @@ class LoomcycleClient:
                 memory_inject_max_tokens=memory_inject_max_tokens,
                 memory_index_max_bytes=memory_index_max_bytes,
                 inject_tool_guide=inject_tool_guide,
+                interactive=interactive,
             ),
         )
+        if interruption is not None:
+            req.interruption.CopyFrom(_build_interruption(interruption))
         try:
             resp = await self._stub.RetuneRun(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -2007,6 +2017,10 @@ def _build_run_request(
     memory_inject_max_tokens: Optional[int] = None,
     memory_index_max_bytes: Optional[int] = None,
     inject_tool_guide: Optional[bool] = None,
+    # Take hold of a run: park it at its turn boundaries so an operator can
+    # correct it, and let it ask a question. `interactive` is a separate
+    # parameter above (it is also a run-START flag); this is the override form.
+    interruption: Optional[Mapping[str, Any]] = None,
 ) -> "pb.RunRequest":
     """Construct a pb.RunRequest from the run params. Shared by
     run_streaming + the batch builder so the field-mapping lives in one
@@ -2040,6 +2054,8 @@ def _build_run_request(
             inject_tool_guide=inject_tool_guide,
         ),
     )
+    if interruption is not None:
+        req.interruption.CopyFrom(_build_interruption(interruption))
     if allowed_hosts is not None:
         req.allowed_hosts.list.extend(allowed_hosts)
     if sampling is not None:
@@ -2083,6 +2099,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         memory_inject_max_tokens=spawn.get("memory_inject_max_tokens"),
         memory_index_max_bytes=spawn.get("memory_index_max_bytes"),
         inject_tool_guide=spawn.get("inject_tool_guide"),
+        interruption=spawn.get("interruption"),
     )
 
 
@@ -2351,6 +2368,20 @@ def _directory_user(u: Any) -> Mapping[str, Any]:
     if u.last_started_at:
         out["last_started_at"] = u.last_started_at
     return out
+
+
+def _build_interruption(d: Mapping[str, Any]) -> "pb.Interruption":
+    """Build pb.Interruption from a plain dict.
+
+    Unknown keys are IGNORED rather than raising: the block is a forward-compatible
+    policy shape, and a client one version behind should not fail on a field it has
+    not learned about yet.
+    """
+    return pb.Interruption(
+        enabled=bool(d.get("enabled", False)),
+        kinds=list(d.get("kinds") or ()),
+        max_pending=int(d.get("max_pending", 0) or 0),
+    )
 
 
 def _optional_overrides(**kwargs: Any) -> dict[str, Any]:

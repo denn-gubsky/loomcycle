@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -35,10 +36,36 @@ type runOverridesWire struct {
 	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
 	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
 	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
+
+	// Interactive promotes (or demotes) the run at its turn boundaries. Three
+	// states, hence the pointer: absent keeps what the run has, true parks it at
+	// the next boundary instead of finishing, false lets a parked-by-default run
+	// end. This is the field that lets an operator take hold of an agent that is
+	// already running.
+	Interactive *bool `json:"interactive,omitempty"`
+
+	// Interruption lets the run's agent ask a human a question even when its
+	// definition does not enable it. See the record's field for why this is not
+	// the "reach" class it used to be filed under.
+	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
+// isZero reports whether the caller supplied nothing at all.
+//
+// Written field-by-field rather than as `*w == runOverridesWire{}`: the struct
+// now holds a pointer to AgentInterruptionACL, which carries a slice, so the
+// struct comparison this used to be would no longer compile. A silent switch to
+// reflect.DeepEqual would compile and then treat a zero-valued pointer as
+// "supplied", which is the opposite of what this answers.
 func (w *runOverridesWire) isZero() bool {
-	return w == nil || (*w == runOverridesWire{})
+	if w == nil {
+		return true
+	}
+	return w.Model == "" && w.Provider == "" && w.Tier == "" && w.Effort == "" &&
+		w.MaxTokens == 0 && w.MaxIterations == 0 && w.UnboundedIterations == nil &&
+		w.MaxConcurrentChildren == 0 && w.RetryAttempts == nil &&
+		w.MemoryInjectMaxTokens == nil && w.MemoryIndexMaxBytes == nil &&
+		w.InjectToolGuide == nil && w.Interactive == nil && w.Interruption == nil
 }
 
 // split turns the wire object into the three records the run's configuration
@@ -123,6 +150,17 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 		Routing:           mergeRouting(cur.Routing, next.Routing),
 		Resources:         mergeResources(cur.Resources, next.Resources),
 		Tuning:            mergeTuning(cur.Tuning, next.Tuning),
+		// Last writer wins for these two, unlike the merged blocks above: they
+		// are single decisions rather than field sets, so "keep what is there
+		// unless this call says otherwise" IS the merge.
+		Interactive:  cur.Interactive,
+		Interruption: cur.Interruption,
+	}
+	if in.Interactive != nil {
+		merged.Interactive = in.Interactive
+	}
+	if in.Interruption != nil {
+		merged.Interruption = in.Interruption
 	}
 
 	// Refuse now, not next turn.
@@ -316,4 +354,38 @@ func (s *Server) handleRetuneRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "retuned": true})
+}
+
+// interactiveNowFn returns the callback the loop consults at each turn boundary
+// to decide whether to park.
+//
+// It reads the run's stored configuration rather than a cached bool, because the
+// question is "has an operator promoted this run SINCE it started" and the
+// answer can arrive from another request, another goroutine, or another replica.
+// The read costs one row per turn boundary — a turn contains a model call, so
+// this is not the expensive part — and it is correct across replicas for free,
+// which an in-process flag would not be.
+//
+// FAILS TO THE START-TIME ANSWER. A store error or an undecodable record returns
+// what the run began as, never a guess: a read that did not work must not change
+// whether a run terminates.
+func (s *Server) interactiveNowFn(runID string, startedInteractive bool) func(context.Context) bool {
+	return func(ctx context.Context) bool {
+		// A storeless server has nowhere to have recorded a promotion, and this
+		// runs at EVERY turn boundary — so the nil check is not defensive
+		// paranoia, it is the difference between "no promotions here" and a panic
+		// on every run. Found by the suite, not by review.
+		if s == nil || s.store == nil || runID == "" {
+			return startedInteractive
+		}
+		run, err := s.store.GetRun(ctx, runID)
+		if err != nil {
+			return startedInteractive
+		}
+		rec, ok := decodeRunConfig(run.RunConfig)
+		if !ok || rec.Interactive == nil {
+			return startedInteractive
+		}
+		return *rec.Interactive
+	}
 }

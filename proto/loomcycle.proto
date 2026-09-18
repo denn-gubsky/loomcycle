@@ -615,6 +615,9 @@ message RunRequest {
   optional int32 memory_inject_max_tokens = 26;
   optional int32 memory_index_max_bytes = 27;
   optional bool inject_tool_guide = 28;
+
+  // Per-run interruption override — see the Interruption message.
+  optional Interruption interruption = 29;
 }
 
 message ContinueRequest {
@@ -679,12 +682,27 @@ message ContinueRequest {
   optional int32 memory_inject_max_tokens = 23;
   optional int32 memory_index_max_bytes = 24;
   optional bool inject_tool_guide = 25;
+
+  // Per-run interruption override — see the Interruption message.
+  optional Interruption interruption = 26;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
 // Every field is proto3 `optional` so "unset" (inherit the agent's value)
 // is distinguishable from an explicit zero (temperature 0.0 is
 // deterministic, NOT "unspecified").
+// Interruption is the per-run override of whether the agent may ASK a human a
+// question, overriding what its definition allows.
+//
+// Overridable because an interruption touches no data and no host — it blocks
+// and waits for a person. The exposure is liveness, which run_timeout_seconds
+// and the interruption's own timeout already bound.
+message Interruption {
+  bool enabled = 1;
+  repeated string kinds = 2;
+  int32 max_pending = 3;
+}
+
 message Sampling {
   optional double temperature = 1;
   optional double top_p = 2;
@@ -926,6 +944,11 @@ message RunInputRequest {
   optional int32 memory_inject_max_tokens = 13;
   optional int32 memory_index_max_bytes = 14;
   optional bool inject_tool_guide = 15;
+
+  // Take hold of a run that is already going: park it at its turn boundaries
+  // so an operator can correct it, and let it ask a question.
+  optional bool interactive = 16;
+  optional Interruption interruption = 17;
 }
 
 // RetuneRunRequest changes a run's settings and delivers no turn. The override
@@ -944,6 +967,11 @@ message RetuneRunRequest {
   optional int32 memory_inject_max_tokens = 11;
   optional int32 memory_index_max_bytes = 12;
   optional bool inject_tool_guide = 13;
+
+  // Take hold of a run that is already going: park it at its turn boundaries
+  // so an operator can correct it, and let it ask a question.
+  optional bool interactive = 14;
+  optional Interruption interruption = 15;
 }
 
 message RetuneRunResponse {

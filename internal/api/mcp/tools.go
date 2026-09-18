@@ -36,7 +36,9 @@ const spawnPerRunProps = `
 	"retry_attempts": {"type": "integer", "minimum": 0, "description": "How many times to retry the same provider before falling back. 0 disables retrying for this child."},
 	"memory_inject_max_tokens": {"type": "integer", "minimum": 0, "description": "Token budget for memory injected into this child's prompt. 0 injects none."},
 	"memory_index_max_bytes": {"type": "integer", "minimum": 0, "description": "Byte budget for this child's memory index. 0 omits it."},
-	"inject_tool_guide": {"type": "boolean", "description": "Whether to inject the generated tool guide into this child's prompt."}`
+	"inject_tool_guide": {"type": "boolean", "description": "Whether to inject the generated tool guide into this child's prompt."},
+	"interactive": {"type": "boolean", "description": "Park this child at its turn boundaries instead of finishing, so an operator can steer it. Also settable on a run that is ALREADY GOING \u2014 that is the point, since nobody knows at start that they will need to correct it. false releases a run that was started interactive."},
+	"interruption": {"type": "object", "description": "Let this child ASK a human a question, overriding what its definition allows. It blocks and waits for a person, so the cost is the run stopping until someone answers \u2014 bounded by the run timeout and the interruption's own.", "properties": {"enabled": {"type": "boolean"}, "kinds": {"type": "array", "items": {"type": "string"}}, "max_pending": {"type": "integer", "minimum": 0}}}`
 
 // toolDescriptors returns the MCP tool catalogue. Count is asserted
 // by TestServer_ToolsList in server_test.go — let that test be the

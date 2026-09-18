@@ -60,6 +60,17 @@ var agentDefOverridability = map[string]overridability{
 	"MemoryInjectMaxTokens": runMayChoose,
 	"MemoryIndexMaxBytes":   runMayChoose,
 	"InjectToolGuide":       runMayChoose,
+	// MOVED OUT OF "reach". It sat beside MemoryScopes and Volumes under "what
+	// data and hosts the agent can touch", and it touches neither: an
+	// interruption blocks and waits for a PERSON. The exposure is liveness — a
+	// run that stops and waits — which is the class unbounded_iterations is in,
+	// and which run_timeout_seconds and the interruption's own timeout bound.
+	//
+	// The operational need settled it: an operator watching an agent go wrong
+	// could not let it ask a question, because that decision was frozen into the
+	// definition before the run existed. An untrusted trigger still cannot set
+	// it — webhook / A2A / scheduled runs build their input from the definition.
+	"Interruption": runMayChoose,
 
 	// --- narrowing-only: a run may give up reach it was granted, never take
 	// more. Restoring these on resume makes a resumed run no WIDER than the
@@ -74,7 +85,6 @@ var agentDefOverridability = map[string]overridability{
 	"HistoryScope":     notOverridable,
 	"EvaluationScopes": notOverridable,
 	"Channels":         notOverridable,
-	"Interruption":     notOverridable,
 	"MemoryRoots":      notOverridable,
 	"MemoryQuotaBytes": notOverridable,
 	"SqlQuotaBytes":    notOverridable,
