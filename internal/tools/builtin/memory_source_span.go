@@ -68,6 +68,16 @@ type FactSource struct {
 	// source_session_id from the consolidator and from the drained pending row — so
 	// the reach-through the plan asked for has data behind it at last.
 	SessionID string
+	// ObservedAt is WHEN THE FACT WAS OBSERVED, in unix nanoseconds; 0 = not recorded.
+	//
+	// It is carried here rather than left in the store because recall had no date on
+	// it at all, and that is what "when did X happen" needs. The span was supposed to
+	// cover this — its own comment claims it "carries the turn's own leading
+	// timestamp" — but measured on a live store only 36 of 111 spans (32%) actually
+	// did: splitting a turn on sentence punctuation leaves the stamp on the FIRST
+	// sentence and strips it from every later one. observed_at is on 263 of 303 facts
+	// (87%), which is the coverage the span was believed to have.
+	ObservedAt int64
 }
 
 func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
@@ -100,7 +110,8 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	// followable even when the span was never derived, which is the common shape
 	// before a verification pass runs. The old query required a non-empty span
 	// and so hid those rows entirely.
-	stmt := `SELECT natural_key, coalesce(source_quote, ''), coalesce(run_id, ''), coalesce(session_id, '') FROM chunk_memory_meta ` +
+	stmt := `SELECT natural_key, coalesce(source_quote, ''), coalesce(run_id, ''), coalesce(session_id, ''), ` +
+		`coalesce(observed_at, 0) FROM chunk_memory_meta ` +
 		`WHERE natural_key IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
 	res, err := sm.Query(ctx, key, sm.Rebind(stmt), keys)
@@ -109,16 +120,20 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	}
 	out := make(map[string]FactSource, len(res.Rows))
 	for _, row := range res.Rows {
-		if len(row) < 4 {
+		if len(row) < 5 {
 			continue
 		}
 		nk, span, runID, sessionID := asStr(row[0]), asStr(row[1]), asStr(row[2]), asStr(row[3])
-		// A row with neither a span nor a pointer says nothing, so it is dropped;
-		// any one of them alone is still useful and is kept.
-		if nk == "" || (span == "" && runID == "" && sessionID == "") {
+		observedAt, _ := asInt64(row[4])
+		// A row with neither a span nor a pointer nor a date says nothing, so it is
+		// dropped; any one of them alone is still useful and is kept. The date joined
+		// this test rather than being folded into the old one: a fact whose span was
+		// never derived but whose observation time WAS recorded is exactly the row
+		// this change exists to stop discarding.
+		if nk == "" || (span == "" && runID == "" && sessionID == "" && observedAt == 0) {
 			continue
 		}
-		out[nk] = FactSource{Span: span, RunID: runID, SessionID: sessionID}
+		out[nk] = FactSource{Span: span, RunID: runID, SessionID: sessionID, ObservedAt: observedAt}
 	}
 	return out
 }
