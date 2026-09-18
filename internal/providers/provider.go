@@ -567,6 +567,25 @@ const (
 	// crossing), so the /run terminal + chat render a budget banner.
 	EventLimit EventType = "limit"
 
+	// EventCapabilityInert reports a tool the agent HOLDS but cannot use,
+	// because the capability gate that tool reads grants nothing.
+	//
+	// SERVER-generated, like EventLimit and EventOverride, and emitted ONCE at
+	// run start rather than per call: the condition is a property of the
+	// definition, not of any one invocation, and repeating it every time the
+	// model reached for the tool would bury it.
+	//
+	// It exists because `tools` and the capability gates are two independent
+	// grants and the second silently voids the first. Before this, an agent
+	// granted AgentDef with no agent_def_scopes discovered the problem by being
+	// refused mid-task, and the operator saw "the agent didn't do it" rather
+	// than "the agent could not".
+	//
+	// Only genuinely INERT grants are reported. memory_scopes, history_scope,
+	// sql_scopes and evaluation_scopes now resolve to what the caller owns, so
+	// an unset one is not inert and an event for it would be noise on every run.
+	EventCapabilityInert EventType = "capability_inert"
+
 	// EventOverride records that a RUN's own configuration changed while it was
 	// running — an operator retuned a parked chat (RFC DC P3/D8).
 	//
@@ -687,6 +706,10 @@ type Event struct {
 	// Limit carries the structured payload on EventLimit (a per-scope
 	// token-budget crossing, RFC AW). Nil on all other event types.
 	Limit *LimitInfo `json:"limit,omitempty"`
+
+	// CapabilityInert carries the structured payload on EventCapabilityInert.
+	// Nil on all other event types.
+	CapabilityInert *CapabilityInertInfo `json:"capability_inert,omitempty"`
 
 	// Override carries the structured payload on EventOverride (a run's
 	// configuration changed mid-run, RFC DC). Nil on all other event types.
@@ -1046,6 +1069,23 @@ type OverrideInfo struct {
 // month" without a follow-up fetch. No secrets: Scope/ScopeID are a
 // tenant/subject id (already non-secret, like user_id) and the counts are
 // integers. Wire-stable; field names are part of the RFC AW contract.
+// CapabilityInertInfo is the structured payload on EventCapabilityInert: one
+// tool the agent holds and cannot use.
+//
+// It carries the FIX as well as the fact. A reader told only "AgentDef is
+// inert" still has to work out which yaml key governs it, and the answer is not
+// guessable from the tool name — which is most of why this failure was hard to
+// act on.
+type CapabilityInertInfo struct {
+	// Tool is the granted tool, as named in the agent's `tools` list.
+	Tool string `json:"tool"`
+	// Gate is the yaml key that governs it, e.g. "agent_def_scopes".
+	Gate string `json:"gate"`
+	// Message is a human-readable line naming the tool, the gate and what to
+	// set. Optional, but always populated by the runtime.
+	Message string `json:"message,omitempty"`
+}
+
 type LimitInfo struct {
 	// Scope is which axis tripped: "operator" | "tenant" | "user".
 	Scope string `json:"scope"`

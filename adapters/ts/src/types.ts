@@ -40,6 +40,7 @@ export type EventType =
   // RFC AW per-scope token budgets. `limit` = a server-generated token-budget
   // crossing (a soft warning at run start, or a soft crossing mid-run). The
   // structured payload rides `AgentEvent.limit`.
+  | "capability_inert"
   | "limit"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
@@ -154,6 +155,22 @@ export interface ErrorInfo {
   retry_after_ms?: number;
 }
 
+/** The payload on a `capability_inert` event: one tool the agent holds and
+ *  cannot use, because the capability gate that tool reads grants nothing.
+ *
+ *  Server-generated, emitted ONCE at run start — the condition is a property of
+ *  the definition, not of any one call. It carries the FIX as well as the fact:
+ *  the governing yaml key is not guessable from the tool name, which is most of
+ *  why this failure was hard to act on. */
+export interface CapabilityInertInfo {
+  /** The granted tool, as named in the agent's `tools` list. */
+  tool: string;
+  /** The yaml key that governs it, e.g. `agent_def_scopes`. */
+  gate: string;
+  /** A line naming the tool, the gate, and what to set. */
+  message?: string;
+}
+
 export interface LimitInfo {
   /** Which axis tripped: "operator" | "tenant" | "user". */
   scope: string;
@@ -197,6 +214,8 @@ export interface AgentEvent {
   /** Payload on `event: limit` (RFC AW) — a per-scope token-budget crossing.
    *  Nil on all other event types. */
   limit?: LimitInfo;
+  /** Set on `capability_inert` events: a tool the agent holds and cannot use. */
+  capability_inert?: CapabilityInertInfo;
   /** Set on `event: override` frames — what the operator changed, and from
    *  what to what. */
   override?: OverrideInfo;

@@ -357,6 +357,7 @@ export type {
   UsageAggregate,
   UsageReportResponse,
   // RFC AW per-scope token budgets
+  CapabilityInertInfo,
   LimitInfo,
   TokenLimit,
   TokenLimitsResponse,

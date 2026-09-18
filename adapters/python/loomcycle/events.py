@@ -109,6 +109,23 @@ class LimitInfo:
 
 
 @dataclass(frozen=True)
+class CapabilityInertInfo:
+    """Structured payload on ``capability_inert`` events.
+
+    One tool the agent HOLDS and cannot use, because the capability gate that
+    tool reads grants nothing. Server-generated and emitted ONCE at run start —
+    the condition belongs to the definition, not to any one call.
+
+    It carries the FIX as well as the fact: the governing yaml key is not
+    guessable from the tool name, which is most of why this failure was hard to
+    act on. Mirrors ``providers.CapabilityInertInfo`` on the Go side."""
+
+    tool: str  # the granted tool, as named in the agent's `tools`
+    gate: str  # the yaml key that governs it, e.g. "agent_def_scopes"
+    message: str = ""  # names the tool, the gate, and what to set
+
+
+@dataclass(frozen=True)
 class OverrideInfo:
     """Structured payload on ``override`` events (RFC DC per-run overrides).
 
@@ -172,6 +189,7 @@ class AgentEvent:
     awaiting_input: Optional[AwaitingInput] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
+    capability_inert: Optional[CapabilityInertInfo] = None
     override: Optional[OverrideInfo] = None
     error_info: Optional[ErrorInfo] = None
     error: str = ""
@@ -238,6 +256,13 @@ class AgentEvent:
                 limit=ev.limit.limit,
                 message=ev.limit.message,
             )
+        ci: Optional[CapabilityInertInfo] = None
+        if ev.HasField("capability_inert"):
+            ci = CapabilityInertInfo(
+                tool=ev.capability_inert.tool,
+                gate=ev.capability_inert.gate,
+                message=ev.capability_inert.message,
+            )
         ov: Optional[OverrideInfo] = None
         if ev.HasField("override"):
             ov = OverrideInfo(
@@ -268,6 +293,7 @@ class AgentEvent:
             awaiting_input=ai,
             user_input=ui,
             limit=li,
+            capability_inert=ci,
             override=ov,
             error_info=ei,
             error=ev.error,

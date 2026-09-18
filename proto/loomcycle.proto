@@ -1156,6 +1156,11 @@ message Event {
   // the runtime moved the run because something failed, this means a person
   // chose to, and the two want opposite responses.
   OverrideInfo override = 14;
+
+  // capability_inert carries the payload on type=capability_inert frames: a
+  // tool the agent holds and cannot use. SERVER-generated, emitted once at run
+  // start. Nil on every other event type.
+  CapabilityInertInfo capability_inert = 15;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1234,6 +1239,16 @@ message Retry {
 // stands against its ceiling. No secrets: scope/scope_id are a tenant/subject
 // id (already non-secret, like user_id) and the counts are integers. Mirrors
 // providers.LimitInfo on the Go side.
+// CapabilityInertInfo is the payload on type=capability_inert frames: one tool
+// the agent holds and cannot use, because the gate that tool reads grants
+// nothing. Carries the FIX as well as the fact — the governing yaml key is not
+// guessable from the tool name, which is most of why this was hard to act on.
+message CapabilityInertInfo {
+  string tool = 1;
+  string gate = 2;
+  string message = 3;
+}
+
 message LimitInfo {
   string scope = 1;      // "operator" | "tenant" | "user"
   string scope_id = 2;   // tenant id (scope=tenant), user subject (scope=user), "" (operator)
