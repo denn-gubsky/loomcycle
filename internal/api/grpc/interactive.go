@@ -40,12 +40,15 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 	// configuration when the operator's turn arrives, so the record has to be in
 	// the store by the time the message wakes it. The other order applies the
 	// change one turn late, which an operator reads as "it ignored me".
-	if ov := overridesFromProto(
-		req.GetModel(), req.GetProvider(), req.GetTier(), req.GetEffort(),
-		req.GetMaxTokens(), req.GetMaxIterations(), req.GetMaxConcurrentChildren(),
-		req.UnboundedIterations, req.InjectToolGuide,
-		req.RetryAttempts, req.MemoryInjectMaxTokens, req.MemoryIndexMaxBytes,
-	); !ov.IsZero() {
+	if ov := overridesFromProto(protoOverrideFields{
+		Model: req.GetModel(), Provider: req.GetProvider(), Tier: req.GetTier(), Effort: req.GetEffort(),
+		MaxTokens: req.GetMaxTokens(), MaxIterations: req.GetMaxIterations(),
+		MaxConcurrentChildren: req.GetMaxConcurrentChildren(),
+		Unbounded:             req.UnboundedIterations, InjectToolGuide: req.InjectToolGuide,
+		RetryAttempts: req.RetryAttempts, MemInject: req.MemoryInjectMaxTokens,
+		MemIndex:    req.MemoryIndexMaxBytes,
+		Interactive: req.Interactive, Interruption: req.GetInterruption(),
+	}); !ov.IsZero() {
 		switch err := s.connector.RetuneRun(ctx, runID, ov); {
 		case errors.Is(err, connector.ErrRunNotInFlight):
 			return nil, status.Error(codes.NotFound, err.Error())
@@ -175,12 +178,19 @@ func (s *Server) StreamRun(req *loomcyclepb.StreamRunRequest, stream loomcyclepb
 // ONE function for both RunInput and RetuneRun. They carry the same twelve
 // fields at different numbers, and two hand-written mappings of one list is the
 // exact shape that left the steer path with none of them in the first place.
-func overridesFromProto(
-	model, provider, tier, effort string,
-	maxTokens, maxIterations, maxConcurrentChildren int32,
-	unbounded, injectToolGuide *bool,
-	retryAttempts, memInject, memIndex *int32,
-) connector.RunOverrides {
+// protoOverrideFields is what the caller fills in. A STRUCT rather than the
+// positional parameter list this started as: it reached twelve parameters, six of
+// them *bool / *int32, and adding two more would have made a transposed pair
+// compile silently. Keyed fields cannot be swapped by accident.
+type protoOverrideFields struct {
+	Model, Provider, Tier, Effort                   string
+	MaxTokens, MaxIterations, MaxConcurrentChildren int32
+	Unbounded, InjectToolGuide, Interactive         *bool
+	RetryAttempts, MemInject, MemIndex              *int32
+	Interruption                                    *loomcyclepb.Interruption
+}
+
+func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
 	toInt := func(p *int32) *int {
 		if p == nil {
 			return nil
@@ -189,11 +199,15 @@ func overridesFromProto(
 		return &v
 	}
 	return connector.RunOverrides{
-		Model: model, Provider: provider, Tier: tier, Effort: effort,
-		MaxTokens: int(maxTokens), MaxIterations: int(maxIterations),
-		UnboundedIterations: unbounded, MaxConcurrentChildren: int(maxConcurrentChildren),
-		RetryAttempts: toInt(retryAttempts), MemoryInjectMaxTokens: toInt(memInject),
-		MemoryIndexMaxBytes: toInt(memIndex), InjectToolGuide: injectToolGuide,
+		Model: f.Model, Provider: f.Provider, Tier: f.Tier, Effort: f.Effort,
+		MaxTokens: int(f.MaxTokens), MaxIterations: int(f.MaxIterations),
+		UnboundedIterations: f.Unbounded, MaxConcurrentChildren: int(f.MaxConcurrentChildren),
+		RetryAttempts: toInt(f.RetryAttempts), MemoryInjectMaxTokens: toInt(f.MemInject),
+		MemoryIndexMaxBytes: toInt(f.MemIndex), InjectToolGuide: f.InjectToolGuide,
+		// nil stays nil: "the caller said nothing" must reach the runner as
+		// inherit-the-definition, never as a block that DISABLES what it allows.
+		Interactive:  f.Interactive,
+		Interruption: interruptionFromProto(f.Interruption),
 	}
 }
 
@@ -209,12 +223,15 @@ func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunReques
 	if runID == "" {
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
-	ov := overridesFromProto(
-		req.GetModel(), req.GetProvider(), req.GetTier(), req.GetEffort(),
-		req.GetMaxTokens(), req.GetMaxIterations(), req.GetMaxConcurrentChildren(),
-		req.UnboundedIterations, req.InjectToolGuide,
-		req.RetryAttempts, req.MemoryInjectMaxTokens, req.MemoryIndexMaxBytes,
-	)
+	ov := overridesFromProto(protoOverrideFields{
+		Model: req.GetModel(), Provider: req.GetProvider(), Tier: req.GetTier(), Effort: req.GetEffort(),
+		MaxTokens: req.GetMaxTokens(), MaxIterations: req.GetMaxIterations(),
+		MaxConcurrentChildren: req.GetMaxConcurrentChildren(),
+		Unbounded:             req.UnboundedIterations, InjectToolGuide: req.InjectToolGuide,
+		RetryAttempts: req.RetryAttempts, MemInject: req.MemoryInjectMaxTokens,
+		MemIndex:    req.MemoryIndexMaxBytes,
+		Interactive: req.Interactive, Interruption: req.GetInterruption(),
+	})
 	if ov.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "at least one override is required")
 	}

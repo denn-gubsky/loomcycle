@@ -23,6 +23,9 @@ var overrideWireNames = []string{
 	"model", "provider", "tier", "effort",
 	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
 	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes", "inject_tool_guide",
+	// Take hold of a run that is already going: park it at its next boundary so
+	// an operator can correct it, and let it ask a question.
+	"interactive", "interruption",
 }
 
 // The Go side first: RunInput and the connector's spawn shape must both be able
@@ -34,6 +37,7 @@ func TestOverrideParity_GoShapesCarryEveryOverride(t *testing.T) {
 		"unbounded_iterations": "UnboundedIterations", "max_concurrent_children": "MaxConcurrentChildren",
 		"retry_attempts": "RetryAttempts", "memory_inject_max_tokens": "MemoryInjectMaxTokens",
 		"memory_index_max_bytes": "MemoryIndexMaxBytes", "inject_tool_guide": "InjectToolGuide",
+		"interactive": "Interactive", "interruption": "Interruption",
 	}
 	for _, tc := range []struct {
 		name string

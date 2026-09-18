@@ -263,6 +263,14 @@ type RunInput struct {
 	// unbounded_iterations agent for a true always-on terminal. Cancel ends it.
 	Interactive bool
 
+	// Interruption is the run's own answer to whether the agent may ASK a human
+	// a question, overriding the definition's block. nil = inherit it.
+	//
+	// It is overridable because an interruption touches no data and no host — it
+	// blocks and waits for a person — so the exposure is liveness, which
+	// RunTimeoutSeconds and the interruption's own timeout bound.
+	Interruption *config.AgentInterruptionACL
+
 	// Sampling is an optional per-RUN LLM sampling-param override (temperature,
 	// top_p, …). Merged PER FIELD over the agent's own Sampling (per-run field
 	// wins, an unset field inherits the agent's). nil = inherit the agent's

@@ -242,13 +242,13 @@ function runBody(opts: RunOptions): Record<string, unknown> {
  *  to the TYPE but to only one of those lists is invisible on the wire from one
  *  of them, silently. That is the shape of the bug RFC DA shipped.
  */
-function applyOverridesToWire(body: Record<string, unknown>, opts: {
-  model?: string; provider?: string; tier?: string; effort?: string;
-  maxTokens?: number; maxIterations?: number; unboundedIterations?: boolean;
-  maxConcurrentChildren?: number; retryAttempts?: number;
-  memoryInjectMaxTokens?: number; memoryIndexMaxBytes?: number;
-  injectToolGuide?: boolean;
-}): void {
+// The parameter is RunOverrideOptions itself, not a structural copy of its
+// fields. It WAS such a copy — a second enumeration of the same list sitting in
+// the signature of the function whose whole job is to be the single one — and
+// adding a field to the shared interface then failed to compile here, which is
+// the good outcome only because someone was looking. Typing it as the interface
+// makes the list unduplicated rather than merely checked.
+function applyOverridesToWire(body: Record<string, unknown>, opts: RunOverrideOptions): void {
   if (opts.model !== undefined) body.model = opts.model;
   if (opts.provider !== undefined) body.provider = opts.provider;
   if (opts.tier !== undefined) body.tier = opts.tier;
@@ -261,6 +261,8 @@ function applyOverridesToWire(body: Record<string, unknown>, opts: {
   if (opts.memoryInjectMaxTokens !== undefined) body.memory_inject_max_tokens = opts.memoryInjectMaxTokens;
   if (opts.memoryIndexMaxBytes !== undefined) body.memory_index_max_bytes = opts.memoryIndexMaxBytes;
   if (opts.injectToolGuide !== undefined) body.inject_tool_guide = opts.injectToolGuide;
+  if (opts.interactive !== undefined) body.interactive = opts.interactive;
+  if (opts.interruption !== undefined) body.interruption = opts.interruption;
 }
 
 
