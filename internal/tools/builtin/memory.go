@@ -1823,6 +1823,18 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 			if sp.ObservedAt > 0 {
 				mem["observed_at"] = time.Unix(0, sp.ObservedAt).UTC().Format(time.RFC3339)
 			}
+			// WHEN IT BECAME TRUE, as distinct from when it was said — the field a
+			// "when did X happen" question actually asks for. It was SET-ONLY: the
+			// schema accepts valid_at on a write and recall never returned it, so a
+			// fact that HAD an event time kept it where no reader could reach it.
+			//
+			// Emitted ONLY when it differs from observed_at. Equal values are not two
+			// facts about the world, they are one instant recorded twice, and on the
+			// reference store that is 78 of the 89 rows carrying it — repeating them
+			// would add a field to every hit to say nothing.
+			if sp.ValidAt > 0 && sp.ValidAt != sp.ObservedAt {
+				mem["valid_at"] = time.Unix(0, sp.ValidAt).UTC().Format(time.RFC3339)
+			}
 		}
 		// Omitted when the backend could not classify the row — see RecallFact.Kind.
 		// An absent kind means "unknown", which is why this is not defaulted.

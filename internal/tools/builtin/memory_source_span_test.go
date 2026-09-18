@@ -159,3 +159,59 @@ func TestSourceSpansFor_ADateAloneIsStillWorthReturning(t *testing.T) {
 			"\"when did X happen\" question needs most (got %v)", got)
 	}
 }
+
+// TestSourceSpansFor_CarriesTheEventTimeSeparately.
+//
+// valid_at was SET-ONLY: the Memory schema accepts it on a write and recall never
+// returned it, so the one field that answers "when did it HAPPEN" — as opposed to
+// when it was said — was unreachable to the reader that needs it.
+//
+// "Yesterday I met them in Boston", said on the 4th, is observed_at the 4th and
+// valid_at the 3rd. A probe on the live rig showed exactly this failure: handed only
+// observed_at, the answerer replied "May 8, 2023" where the gold was 7 May — the day
+// the remark was made, not the day of the event.
+func TestSourceSpansFor_CarriesTheEventTimeSeparately(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	const nk = "memory/fact/said-then-happened-earlier"
+	const said int64 = 1683554160000000000     // 2023-05-08
+	const happened int64 = 1683467760000000000 // 2023-05-07
+
+	if err := d.exec(ctx, key,
+		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, observed_at, valid_at)
+		 VALUES (?, ?, ?, ?)`, "c-evt", nk, said, happened); err != nil {
+		t.Skipf("fixture insert not supported on this tier: %v", err)
+	}
+	got := SourceSpansFor(ctx, d.SqlMem, tools.RunIdentity(ctx).TenantID,
+		store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, []string{nk})
+	src, ok := got[nk]
+	if !ok {
+		t.Fatalf("no source row for %q", nk)
+	}
+	if src.ValidAt != happened {
+		t.Errorf("ValidAt = %d, want %d — the event time is on the row and was "+
+			"unreachable through recall", src.ValidAt, happened)
+	}
+	if src.ObservedAt != said {
+		t.Errorf("ObservedAt = %d, want %d — the two must not be conflated", src.ObservedAt, said)
+	}
+}
+
+// TestSourceSpansFor_AnEventTimeAloneIsStillWorthReturning. A fact whose span was
+// never derived but whose EVENT time was recorded is exactly the row a temporal
+// question needs; the row-keeping test must not drop it.
+func TestSourceSpansFor_AnEventTimeAloneIsStillWorthReturning(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	key := sidecarScope(t, d, ctx)
+	const nk = "memory/fact/event-time-only"
+	const happened int64 = 1683467760000000000
+	if err := d.exec(ctx, key,
+		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, valid_at) VALUES (?, ?, ?)`,
+		"c-evtonly", nk, happened); err != nil {
+		t.Skipf("fixture insert not supported on this tier: %v", err)
+	}
+	if _, ok := SourceSpansFor(ctx, d.SqlMem, tools.RunIdentity(ctx).TenantID,
+		store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, []string{nk})[nk]; !ok {
+		t.Error("a row carrying only an event time was dropped")
+	}
+}
