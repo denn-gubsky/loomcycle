@@ -1685,7 +1685,7 @@ func (s *Server) substratePoliciesForAgent(agentDef config.AgentDef, selfName st
 			SelfName: selfName,
 		},
 		tools.EvaluationPolicyValue{
-			Scopes: agentDef.EvaluationScopes,
+			Scopes: tools.EffectiveEvaluationScopes(agentDef.EvaluationScopes),
 		}
 }
 
@@ -2789,7 +2789,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: agentDef.SqlScopes,
+		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
@@ -4530,7 +4530,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: agentDef.SqlScopes,
+		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
@@ -5222,7 +5222,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
 	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: agentDef.SqlScopes,
+		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	loopCtx = tools.WithCompactionPolicy(loopCtx, config.MergeCompaction(agentDef.Compaction, body.Compaction))
@@ -6657,7 +6657,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// above), so a child granted `run` reads/writes the SAME ephemeral DB as
 	// the rest of the tree — dropped once at the top-level run's completion.
 	subCtx = tools.WithSqlMemPolicy(subCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: def.SqlScopes,
+		AllowedScopes: tools.EffectiveSqlScopes(subCtx, def.SqlScopes),
 		QuotaBytes:    def.SqlQuotaBytes,
 	})
 	// Stamped on subCtx so the child's OWN children inherit both recursively,

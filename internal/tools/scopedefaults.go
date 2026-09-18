@@ -108,3 +108,58 @@ func EffectiveHistoryScopes(ctx context.Context, declared []string) []string {
 	}
 	return []string{"user"}
 }
+
+// EffectiveSqlScopes resolves the SQL Memory ACL for a run.
+//
+// Same shape and the same reasons as EffectiveMemoryScopes: an agent holding
+// Memory with no sql_scopes had every SQL op refused, and nothing said so until
+// the model tried. The default is the caller's own database — `user` — and
+// nothing wider.
+//
+// NOT `tenant`, unlike memory. The documented enum here is {agent, user, run},
+// and a tenant Document write needs the grant on BOTH memory_scopes and
+// sql_scopes; defaulting one side of that pair would hand out half a capability
+// whose other half is still denied, which is a more confusing failure than a
+// clean refusal.
+//
+// NOT `agent` either, though it is tempting: the agent-scoped database is
+// durable and shared across every run of that agent, so defaulting it would
+// give an agent cross-run state its author never asked for. `user` is what the
+// caller already owns.
+func EffectiveSqlScopes(ctx context.Context, declared []string) []string {
+	if deniedAll(declared) {
+		return nil
+	}
+	if len(declared) > 0 {
+		return cloneScopes(declared)
+	}
+	// Same gate as the memory default: `user` resolves its scope_id from the
+	// run's user id, so a userless run would receive a grant that cannot
+	// resolve — the silent uselessness this default exists to remove.
+	if RunIdentity(ctx).UserID == "" {
+		return nil
+	}
+	return []string{"user"}
+}
+
+// EffectiveEvaluationScopes resolves the Evaluation-tool gate for a run.
+//
+// The default is `submit_self` alone: an agent recording an evaluation of its
+// OWN run reaches nothing else, which is the whole test for what belongs in a
+// default. Every other value in the vocabulary crosses to another run or
+// another agent — submit_siblings, submit_descendants, submit_any and read_any
+// are all reach, and stay default-deny.
+//
+// Unlike the memory and SQL defaults this needs no user id — the scope is the
+// agent's own run, which always exists when the tool can be called at all — and
+// so it takes NO ctx. A resolver that accepted one and ignored it would misstate
+// what it depends on, and its callers would thread a value for nothing.
+func EffectiveEvaluationScopes(declared []string) []string {
+	if deniedAll(declared) {
+		return nil
+	}
+	if len(declared) > 0 {
+		return cloneScopes(declared)
+	}
+	return []string{"submit_self"}
+}

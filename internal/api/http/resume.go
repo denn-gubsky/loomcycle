@@ -396,7 +396,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// across pause / snapshot / cross-instance resume (mirrors the memory +
 	// volume policy re-derivation above).
 	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: agentDef.SqlScopes,
+		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
 		QuotaBytes:    agentDef.SqlQuotaBytes,
 	})
 	// Restored from the run's own record, stamped for sub-agent inheritance.

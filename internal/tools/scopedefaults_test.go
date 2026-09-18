@@ -144,3 +144,95 @@ func TestEffectiveMemoryScopes_DoesNotAliasTheDefinitionsSlice(t *testing.T) {
 		t.Errorf("the definition's slice changed to %v (was %v)", declared, before)
 	}
 }
+
+func TestEffectiveSqlScopes_DefaultsToTheCallersOwnDatabase(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		id       RunIdentityValue
+		declared []string
+		want     []string
+	}{
+		{
+			// NOT `agent`, though it is tempting: that database is durable and
+			// shared across every run of the agent, so defaulting it hands out
+			// cross-run state nobody asked for. NOT `tenant` either — a tenant
+			// Document write needs the grant on BOTH memory_scopes and
+			// sql_scopes, and half a capability fails more confusingly than none.
+			name: "absent gate — the user's own database, and nothing wider",
+			id:   RunIdentityValue{UserID: "u1", TenantID: "acme"},
+			want: []string{"user"},
+		},
+		{
+			name: "absent gate, no user — stays deny",
+			id:   RunIdentityValue{TenantID: "acme"},
+			want: nil,
+		},
+		{
+			name:     "a declared list is used verbatim",
+			id:       RunIdentityValue{UserID: "u1"},
+			declared: []string{"agent", "run"},
+			want:     []string{"agent", "run"},
+		},
+		{
+			name:     "explicit deny-all is honoured",
+			id:       RunIdentityValue{UserID: "u1"},
+			declared: []string{DenyAllScopes},
+			want:     nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EffectiveSqlScopes(runCtx(tc.id), tc.declared)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveEvaluationScopes_DefaultsToJudgingOnlyItself(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared []string
+		want     []string
+	}{
+		{
+			// Every other value crosses to another run or another agent:
+			// submit_siblings, submit_descendants, submit_any and read_any are
+			// all reach, and stay default-deny.
+			name: "absent gate — its own run, and nothing else",
+			want: []string{"submit_self"},
+		},
+		{
+			name:     "a declared list is used verbatim and is not widened",
+			declared: []string{"read_any"},
+			want:     []string{"read_any"},
+		},
+		{
+			name:     "explicit deny-all is honoured",
+			declared: []string{DenyAllScopes},
+			want:     nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EffectiveEvaluationScopes(tc.declared)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The same aliasing hazard the memory resolver had: these are handed the LIVE
+// slice off a shared config.AgentDef.
+func TestEffectiveSqlScopes_DoesNotAliasTheDefinitionsSlice(t *testing.T) {
+	declared := make([]string, 0, 4)
+	declared = append(declared, "agent")
+	before := append([]string(nil), declared...)
+
+	got := EffectiveSqlScopes(runCtx(RunIdentityValue{UserID: "u1"}), declared)
+	_ = append(got, "mutated")
+
+	if arr := declared[:cap(declared)]; arr[len(before)] != "" {
+		t.Errorf("the definition's backing array changed to %v — the resolver aliased it", arr)
+	}
+}

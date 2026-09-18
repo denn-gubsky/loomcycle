@@ -1160,9 +1160,15 @@ type AgentDef struct {
 
 	// SqlScopes is the RFC AA SQL Memory ACL — the closed set of
 	// per-scope sqlite databases the agent may run sql_query / sql_exec
-	// against. Empty = NO SQL access (the default-deny invariant: even
-	// with Memory in tools, an agent without sql_scopes sees its
-	// SQL ops refused). Closed enum {agent, user, run}:
+	// against. Closed enum {agent, user, run}.
+	//
+	// UNSET IS NO LONGER DENY: it resolves to ["user"] — the caller's own
+	// database — via tools.EffectiveSqlScopes. Not "agent", which is durable and
+	// shared across every run of the agent; not "tenant", because a tenant
+	// Document write needs the grant on BOTH this and memory_scopes and half a
+	// capability fails more confusingly than none. To grant nothing:
+	// `sql_scopes: ["-*"]`. Resolved at policy time; this field is
+	// content-identifying and a materialised default would fork every agent.
 	//
 	//   - "agent" → this agent's durable DB (tenant-keyed, cross-run)
 	//   - "user"  → this end-user's durable DB (tenant-keyed, cross-agent)
@@ -1361,6 +1367,11 @@ type AgentDef struct {
 	// the target run's identity; the model never supplies it. The
 	// scope list gates WHICH emitter roles the agent is allowed to
 	// produce.
+	//
+	// UNSET IS NO LONGER DENY: it resolves to ["submit_self"] — evaluating its
+	// OWN run, which reaches nothing else. Every other value crosses to another
+	// run or agent and stays default-deny. To grant nothing:
+	// `evaluation_scopes: ["-*"]`.
 	EvaluationScopes []string `yaml:"evaluation_scopes"`
 
 	// HistoryScope gates the RFC BE History tool (browse/search/annotate
