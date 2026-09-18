@@ -182,6 +182,28 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 	if n > connector.MaxBatchSpawns {
 		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: %d spawns exceeds the per-batch cap of %d", n, connector.MaxBatchSpawns)
 	}
+	// Every child is a FRESH run, so every child needs a prompt. A run with no
+	// user turn reaches the model as a null turn: it gets the system prompt and
+	// nothing to act on, answers whatever that implies, and COMPLETES — so the
+	// caller reads a green envelope and the emptiness is visible only in the
+	// thinking trace. handleSpawnRun has refused this since F47 and handleRuns
+	// since before that; the two batch surfaces never did, so the identical
+	// mistake was a 422 on one path and a silently-empty run on another.
+	//
+	// The guard lives HERE rather than in each handler because there are two of
+	// them — the MCP tool and POST /v1/runs:batch — and the HTTP one performs no
+	// per-child validation at all. One place, or it is a coin flip which surface
+	// a caller happens to use.
+	//
+	// It fails the BATCH rather than the child, matching how a missing `agent` is
+	// already treated: a malformed spec is a caller error, not a run outcome.
+	for i := range req.Spawns {
+		if len(req.Spawns[i].Segments) == 0 {
+			return connector.BatchSpawnResult{}, fmt.Errorf(
+				`spawn_runs: spawns[%d].segments is required — a run with no user turn sends the model an empty prompt and completes anyway. Pass segments: [{"role":"user","content":[{"type":"trusted-text","text":"..."}]}]`, i)
+		}
+	}
+
 	mode := req.Mode
 	if mode == "" {
 		mode = "join"

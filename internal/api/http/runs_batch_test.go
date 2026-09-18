@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -93,14 +94,14 @@ func TestSpawnRunBatch_RejectsMalformed(t *testing.T) {
 
 	over := make([]connector.SpawnRunRequest, connector.MaxBatchSpawns+1)
 	for i := range over {
-		over[i] = connector.SpawnRunRequest{Agent: "r"}
+		over[i] = connector.SpawnRunRequest{Agent: "r", Segments: oneSegment()}
 	}
 	if _, err := s.SpawnRunBatch(ctx, connector.BatchSpawnRequest{Spawns: over}); err == nil {
 		t.Errorf("over-cap (%d) batch: want error, got nil", len(over))
 	}
 
 	if _, err := s.SpawnRunBatch(ctx, connector.BatchSpawnRequest{
-		Spawns: []connector.SpawnRunRequest{{Agent: "r"}},
+		Spawns: []connector.SpawnRunRequest{{Agent: "r", Segments: oneSegment()}},
 		Mode:   "detach",
 	}); err == nil {
 		t.Error("mode=detach: want error (needs RFC P), got nil")
@@ -188,5 +189,64 @@ func TestRunsBatch_HTTPEndpoint(t *testing.T) {
 	big.WriteString(`]}`)
 	if rec := doJSON(t, s, "POST", "/v1/runs:batch", big.String()); rec.Code != http.StatusBadRequest {
 		t.Errorf("over-cap status = %d, want 400", rec.Code)
+	}
+}
+
+func oneSegment() []loop.PromptSegment {
+	return []loop.PromptSegment{{
+		Role:    "user",
+		Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}},
+	}}
+}
+
+// A fan-out child with no prompt reaches the model as a NULL user turn: it gets
+// the system prompt, answers whatever that implies, and COMPLETES — so the
+// caller reads a green envelope and the emptiness is visible only in the
+// thinking trace. handleSpawnRun has refused this since F47 and handleRuns for
+// longer; both batch surfaces accepted it, so the identical caller mistake was a
+// 422 on one path and a silently-empty run on another.
+//
+// The guard is in SpawnRunBatch rather than in each handler because there are
+// two of them and POST /v1/runs:batch performs no per-child validation at all.
+func TestSpawnRunBatch_RefusesAChildWithNoPrompt(t *testing.T) {
+	s := &Server{}
+	ctx := context.Background()
+
+	_, err := s.SpawnRunBatch(ctx, connector.BatchSpawnRequest{
+		Spawns: []connector.SpawnRunRequest{
+			{Agent: "r", Segments: oneSegment()},
+			{Agent: "r"}, // no prompt
+		},
+	})
+	if err == nil {
+		t.Fatal("a child with no segments was accepted — it would have run against an empty " +
+			"prompt and reported success")
+	}
+	// The message has to name WHICH child and show the shape, because the field
+	// is easy to get wrong and the caller has up to 32 of them.
+	if !strings.Contains(err.Error(), "spawns[1]") {
+		t.Errorf("error does not name the offending child: %v", err)
+	}
+	if !strings.Contains(err.Error(), "trusted-text") {
+		t.Errorf("error does not show the shape that would work: %v", err)
+	}
+}
+
+// Both surfaces inherit it — that is the point of putting it in the shared
+// method rather than in the handler someone happened to be looking at.
+func TestRunsBatch_HTTPEndpointRefusesAChildWithNoPrompt(t *testing.T) {
+	_, ts, _, _ := routedServer(t)
+	resp, err := http.Post(ts.URL+"/v1/runs:batch", "application/json",
+		strings.NewReader(`{"spawns":[{"agent":"router"}]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body = %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if !strings.Contains(string(body), "segments is required") {
+		t.Errorf("body does not explain the refusal: %s", strings.TrimSpace(string(body)))
 	}
 }
