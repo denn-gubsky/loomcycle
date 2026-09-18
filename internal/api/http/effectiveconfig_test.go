@@ -38,6 +38,71 @@ func TestEffectiveConfig_EveryOverridableFieldIsReported(t *testing.T) {
 	}
 }
 
+// The COMPLEMENT of the test above, and the one that was missing.
+//
+// That test walks the classification table and asks "can the report read this?".
+// It cannot see a reader the iteration never reaches — dead code whose field is
+// silently absent from every report. `interactive` shipped exactly that way: the
+// runFieldReaders entry and the fallback both existed and were both unreachable,
+// because the iteration is keyed off config.AgentDef and no such field exists
+// there.
+//
+// A guard that only checks one direction is half a guard.
+func TestEffectiveConfig_EveryReaderIsReachable(t *testing.T) {
+	reported := reportableFieldNames()
+
+	// Deduped: a field usually has BOTH a reader and a fallback, and naming it
+	// twice reads as two problems.
+	seen := map[string]bool{}
+	var dead []string
+	note := func(name string) {
+		if _, ok := reported[name]; !ok && !seen[name] {
+			seen[name] = true
+			dead = append(dead, name)
+		}
+	}
+	for name := range runFieldReaders {
+		note(name)
+	}
+	for name := range fallbacks {
+		note(name)
+	}
+	sort.Strings(dead)
+	if len(dead) > 0 {
+		t.Errorf("these readers/fallbacks are never reached by the report: %s\n\n"+
+			"An entry the iteration cannot see is dead code, and the field it was "+
+			"written for is missing from every report. Classify it in "+
+			"agentDefOverridability, or name it in runOnlyOverridable if the "+
+			"definition has no such field.",
+			strings.Join(dead, ", "))
+	}
+}
+
+// A name in both sets would be reported twice and sorted nondeterministically.
+func TestEffectiveConfig_TheTwoFieldSetsAreDisjoint(t *testing.T) {
+	for name := range runOnlyOverridable {
+		if _, ok := agentDefOverridability[name]; ok {
+			t.Errorf("%q is in BOTH agentDefOverridability and runOnlyOverridable — "+
+				"runOnlyOverridable is for fields the definition does NOT have", name)
+		}
+	}
+}
+
+// reportableFieldNames mirrors what effectiveFields iterates. Derived from the
+// same two sets rather than restated, so it cannot drift from the real loop.
+func reportableFieldNames() map[string]struct{} {
+	out := make(map[string]struct{})
+	for name, kind := range agentDefOverridability {
+		if kind != notOverridable {
+			out[name] = struct{}{}
+		}
+	}
+	for name := range runOnlyOverridable {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
 // Non-vacuity: the derived list must actually contain the override set.
 func TestEffectiveConfig_TheDerivedListIsPopulated(t *testing.T) {
 	n := 0
@@ -152,6 +217,50 @@ func TestEffectiveConfig_ADefinitionsOwnValueIsAttributedToIt(t *testing.T) {
 	if tier.Source != sourceDefinition {
 		t.Errorf("tier source = %q, want %q — the definition set it and the report says "+
 			"otherwise", tier.Source, sourceDefinition)
+	}
+}
+
+// The behaviour the reachability guard protects: `interactive` is IN the report,
+// and a retune moves it. A custom chat cannot decide whether it may ask the user
+// a question if the one endpoint built to answer "what is this run actually
+// doing" omits the field that says so.
+func TestEffectiveConfig_ReportsInteractiveAndARetuneMovesIt(t *testing.T) {
+	_, ts, _, run := parkedRoutedRun(t)
+
+	_, body := getEffective(t, ts, run.ID)
+	var resp effResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	got, ok := resp.Fields["interactive"]
+	if !ok {
+		t.Fatalf("interactive missing from the report — the reader exists but nothing "+
+			"reaches it: %v", resp.Fields)
+	}
+	// This fixture's run was CREATED interactive, so the report must say so
+	// before anything is retuned: how the run was started is itself the answer.
+	if got.Value != true {
+		t.Errorf("interactive = %v, want true (the run was started interactive)", got.Value)
+	}
+
+	// And a retune moves it. `false` on a run that started interactive is the
+	// direction with no other expression — it RELEASES the run, which is why
+	// this is a settable boolean and not a flag that can only be turned on.
+	if c, b := postRetune(t, ts, run.ID, `{"interactive":false}`); c != 200 {
+		t.Fatalf("retune: %d %s", c, strings.TrimSpace(b))
+	}
+	_, body = getEffective(t, ts, run.ID)
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got = resp.Fields["interactive"]
+	if got.Value != false {
+		t.Errorf("after a retune to false, interactive = %v, want false — a release "+
+			"that the report does not show is a release the operator cannot confirm",
+			got.Value)
+	}
+	if got.Source != sourceRun {
+		t.Errorf("interactive source = %q, want %q", got.Source, sourceRun)
 	}
 }
 
