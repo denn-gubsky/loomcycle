@@ -429,6 +429,24 @@ type Connector interface {
 	//   ErrSteerQueueFull      — the run's buffer is full. ResourceExhausted.
 	SteerRun(ctx context.Context, runID, text, source string) (delivered bool, err error)
 
+	// RetuneRun changes a LIVE run's per-run overrides WITHOUT delivering a turn
+	// — the canonical half of POST /v1/runs/{run_id}/retune and the RetuneRun
+	// RPC.
+	//
+	// It exists as its own method because SteerRun requires text: a retune could
+	// otherwise only ride an operator turn, so changing a parked chat's model
+	// meant writing a message into the transcript that nobody wanted to send.
+	//
+	// The overrides select WITHIN what the agent's definition allows and cannot
+	// widen it; one it forbids is REFUSED here rather than stored and discovered
+	// on the next turn, so a stored record is always one the run could adopt.
+	//
+	// Typed errors:
+	//   ErrRunNotInFlight — no live run for run_id, or cross-tenant. NotFound.
+	//     Deliberately the same answer for both: run_ids are returned to callers
+	//     and shown in the UI, so the gate must not become an existence oracle.
+	RetuneRun(ctx context.Context, runID string, ov RunOverrides) error
+
 	// StreamRunEvents tails a single run's persisted events to a visitor,
 	// replaying from fromSeq and live-tailing — the streaming counterpart to
 	// GET /v1/runs/{run_id}/stream. The operator's own turns are replayed too

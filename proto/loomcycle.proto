@@ -103,6 +103,19 @@ service Loomcycle {
   // steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
   rpc RunInput(RunInputRequest) returns (RunInputResponse);
 
+  // RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
+  // the gRPC twin of POST /v1/runs/{run_id}/retune.
+  //
+  // RunInput requires text, so a retune could only ride an operator turn:
+  // changing a parked chat's model meant writing a message into the transcript
+  // that nobody wanted to send. Retuning and speaking are two acts, so they get
+  // two RPCs; RunInput keeps its overrides for the atomic case.
+  //
+  // NotFound covers both an unknown run and one belonging to another tenant —
+  // deliberately the same answer, so the gate is not an existence oracle.
+  // InvalidArgument when no override is supplied, mirroring the HTTP 422.
+  rpc RetuneRun(RetuneRunRequest) returns (RetuneRunResponse);
+
   // CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
   // model generation + the tool calls it started) and parks it at
   // awaiting_input — session + transcript intact. This is NOT whole-run cancel
@@ -891,6 +904,51 @@ message RunInputRequest {
   // source from the auth boundary (gRPC has no cookie → "api"), never trusts
   // this field.
   string source = 3;
+
+  // Per-run overrides applied BEFORE the text is delivered — retune and speak
+  // in one call. The HTTP endpoint has accepted these since the retune shipped;
+  // this side carried none of them, so a gRPC or Python caller could not retune
+  // at all. Same field set and same numbers-to-meaning mapping as RunRequest.
+  //
+  // Routing selects WITHIN what the agent's definition declares and cannot
+  // widen it. The budget knobs are raisable except max_concurrent_children,
+  // which may only be LOWERED. The tuning row is `optional` because each has a
+  // meaningful zero — 0 retries, inject nothing, omit the guide.
+  string model = 4;
+  string provider = 5;
+  string tier = 6;
+  string effort = 7;
+  int32 max_tokens = 8;
+  int32 max_iterations = 9;
+  optional bool unbounded_iterations = 10;
+  int32 max_concurrent_children = 11;
+  optional int32 retry_attempts = 12;
+  optional int32 memory_inject_max_tokens = 13;
+  optional int32 memory_index_max_bytes = 14;
+  optional bool inject_tool_guide = 15;
+}
+
+// RetuneRunRequest changes a run's settings and delivers no turn. The override
+// field set is RunInputRequest's, minus the text.
+message RetuneRunRequest {
+  string run_id = 1;
+  string model = 2;
+  string provider = 3;
+  string tier = 4;
+  string effort = 5;
+  int32 max_tokens = 6;
+  int32 max_iterations = 7;
+  optional bool unbounded_iterations = 8;
+  int32 max_concurrent_children = 9;
+  optional int32 retry_attempts = 10;
+  optional int32 memory_inject_max_tokens = 11;
+  optional int32 memory_index_max_bytes = 12;
+  optional bool inject_tool_guide = 13;
+}
+
+message RetuneRunResponse {
+  string run_id = 1;
+  bool retuned = 2;
 }
 
 // RunInputResponse mirrors the HTTP POST /v1/runs/{run_id}/input reply.

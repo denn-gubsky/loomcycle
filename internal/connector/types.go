@@ -790,3 +790,35 @@ type RunStateEvent struct {
 	// Nil when the run carried no context.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
 }
+
+// RunOverrides is the per-run override set carried by a RETUNE — the shared
+// shape for POST /v1/runs/{run_id}/retune, the RetuneRun RPC, and the overrides
+// that ride a steer.
+//
+// It mirrors the same twelve fields SpawnRunRequest carries, and for the same
+// reasons: routing selects WITHIN what the definition declares, the budget knobs
+// are raisable except MaxConcurrentChildren (lower-only — the only bound on
+// fan-out there is), and the tuning row is pointers because each has a
+// meaningful zero that "unset" must stay distinguishable from.
+type RunOverrides struct {
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Tier     string `json:"tier,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+
+	MaxTokens             int   `json:"max_tokens,omitempty"`
+	MaxIterations         int   `json:"max_iterations,omitempty"`
+	UnboundedIterations   *bool `json:"unbounded_iterations,omitempty"`
+	MaxConcurrentChildren int   `json:"max_concurrent_children,omitempty"`
+
+	RetryAttempts         *int  `json:"retry_attempts,omitempty"`
+	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
+	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
+	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
+}
+
+// IsZero reports whether the caller supplied no override at all. Transports
+// refuse that rather than absorbing it: an empty set means the field names were
+// misspelled or mis-nested, and reporting success for a call that changed
+// nothing is how that mistake stays invisible.
+func (o RunOverrides) IsZero() bool { return o == (RunOverrides{}) }

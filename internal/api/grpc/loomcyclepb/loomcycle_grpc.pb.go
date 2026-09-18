@@ -49,6 +49,7 @@ const (
 	Loomcycle_ErasureExecute_FullMethodName      = "/loomcycle.v1.Loomcycle/ErasureExecute"
 	Loomcycle_ReplaySession_FullMethodName       = "/loomcycle.v1.Loomcycle/ReplaySession"
 	Loomcycle_RunInput_FullMethodName            = "/loomcycle.v1.Loomcycle/RunInput"
+	Loomcycle_RetuneRun_FullMethodName           = "/loomcycle.v1.Loomcycle/RetuneRun"
 	Loomcycle_CancelTurn_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelTurn"
 	Loomcycle_ResolveInterrupt_FullMethodName    = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
 	Loomcycle_StreamRun_FullMethodName           = "/loomcycle.v1.Loomcycle/StreamRun"
@@ -169,6 +170,18 @@ type LoomcycleClient interface {
 	// (never wire-trusted). Cross-replica routing is inherited from the
 	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
 	RunInput(ctx context.Context, in *RunInputRequest, opts ...grpc.CallOption) (*RunInputResponse, error)
+	// RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
+	// the gRPC twin of POST /v1/runs/{run_id}/retune.
+	//
+	// RunInput requires text, so a retune could only ride an operator turn:
+	// changing a parked chat's model meant writing a message into the transcript
+	// that nobody wanted to send. Retuning and speaking are two acts, so they get
+	// two RPCs; RunInput keeps its overrides for the atomic case.
+	//
+	// NotFound covers both an unknown run and one belonging to another tenant —
+	// deliberately the same answer, so the gate is not an existence oracle.
+	// InvalidArgument when no override is supplied, mirroring the HTTP 422.
+	RetuneRun(ctx context.Context, in *RetuneRunRequest, opts ...grpc.CallOption) (*RetuneRunResponse, error)
 	// CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
 	// model generation + the tool calls it started) and parks it at
 	// awaiting_input — session + transcript intact. This is NOT whole-run cancel
@@ -607,6 +620,16 @@ func (c *loomcycleClient) RunInput(ctx context.Context, in *RunInputRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RunInputResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_RunInput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) RetuneRun(ctx context.Context, in *RetuneRunRequest, opts ...grpc.CallOption) (*RetuneRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RetuneRunResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_RetuneRun_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1190,6 +1213,18 @@ type LoomcycleServer interface {
 	// (never wire-trusted). Cross-replica routing is inherited from the
 	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
 	RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error)
+	// RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
+	// the gRPC twin of POST /v1/runs/{run_id}/retune.
+	//
+	// RunInput requires text, so a retune could only ride an operator turn:
+	// changing a parked chat's model meant writing a message into the transcript
+	// that nobody wanted to send. Retuning and speaking are two acts, so they get
+	// two RPCs; RunInput keeps its overrides for the atomic case.
+	//
+	// NotFound covers both an unknown run and one belonging to another tenant —
+	// deliberately the same answer, so the gate is not an existence oracle.
+	// InvalidArgument when no override is supplied, mirroring the HTTP 422.
+	RetuneRun(context.Context, *RetuneRunRequest) (*RetuneRunResponse, error)
 	// CancelTurn stops the CURRENT turn of a LIVE interactive run (its in-flight
 	// model generation + the tool calls it started) and parks it at
 	// awaiting_input — session + transcript intact. This is NOT whole-run cancel
@@ -1539,6 +1574,9 @@ func (UnimplementedLoomcycleServer) ReplaySession(context.Context, *ReplaySessio
 func (UnimplementedLoomcycleServer) RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RunInput not implemented")
 }
+func (UnimplementedLoomcycleServer) RetuneRun(context.Context, *RetuneRunRequest) (*RetuneRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetuneRun not implemented")
+}
 func (UnimplementedLoomcycleServer) CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelTurn not implemented")
 }
@@ -1887,6 +1925,24 @@ func _Loomcycle_RunInput_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).RunInput(ctx, req.(*RunInputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_RetuneRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetuneRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).RetuneRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_RetuneRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).RetuneRun(ctx, req.(*RetuneRunRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2801,6 +2857,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RunInput",
 			Handler:    _Loomcycle_RunInput_Handler,
+		},
+		{
+			MethodName: "RetuneRun",
+			Handler:    _Loomcycle_RetuneRun_Handler,
 		},
 		{
 			MethodName: "CancelTurn",

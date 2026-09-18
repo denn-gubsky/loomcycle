@@ -93,6 +93,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.RunInputRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RunInputResponse.FromString,
                 _registered_method=True)
+        self.RetuneRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RetuneRun',
+                request_serializer=loomcycle__pb2.RetuneRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RetuneRunResponse.FromString,
+                _registered_method=True)
         self.CancelTurn = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/CancelTurn',
                 request_serializer=loomcycle__pb2.CancelTurnRequest.SerializeToString,
@@ -462,6 +467,23 @@ class LoomcycleServicer:
         the run's steer queue is full. The injected `source` is server-stamped
         (never wire-trusted). Cross-replica routing is inherited from the
         steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RetuneRun(self, request, context):
+        """RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
+        the gRPC twin of POST /v1/runs/{run_id}/retune.
+
+        RunInput requires text, so a retune could only ride an operator turn:
+        changing a parked chat's model meant writing a message into the transcript
+        that nobody wanted to send. Retuning and speaking are two acts, so they get
+        two RPCs; RunInput keeps its overrides for the atomic case.
+
+        NotFound covers both an unknown run and one belonging to another tenant —
+        deliberately the same answer, so the gate is not an existence oracle.
+        InvalidArgument when no override is supplied, mirroring the HTTP 422.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1102,6 +1124,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.RunInputRequest.FromString,
                     response_serializer=loomcycle__pb2.RunInputResponse.SerializeToString,
             ),
+            'RetuneRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.RetuneRun,
+                    request_deserializer=loomcycle__pb2.RetuneRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.RetuneRunResponse.SerializeToString,
+            ),
             'CancelTurn': grpc.unary_unary_rpc_method_handler(
                     servicer.CancelTurn,
                     request_deserializer=loomcycle__pb2.CancelTurnRequest.FromString,
@@ -1649,6 +1676,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/RunInput',
             loomcycle__pb2.RunInputRequest.SerializeToString,
             loomcycle__pb2.RunInputResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RetuneRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RetuneRun',
+            loomcycle__pb2.RetuneRunRequest.SerializeToString,
+            loomcycle__pb2.RetuneRunResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -247,6 +247,12 @@ func (m *mockConnector) StreamUserRunStates(_ context.Context, req connector.Str
 }
 
 // RFC AI interactive-session stubs.
+// RetuneRun: the base mock satisfies the interface; the tests that care
+// override it.
+func (m *mockConnector) RetuneRun(context.Context, string, connector.RunOverrides) error {
+	return nil
+}
+
 func (m *mockConnector) SteerRun(context.Context, string, string, string) (bool, error) {
 	return false, connector.ErrRunNotInFlight
 }
