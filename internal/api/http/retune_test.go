@@ -200,6 +200,13 @@ func TestRetune_EmitsATypedOverrideEventOnTheTranscript(t *testing.T) {
 		if e.RunID != run.ID || e.Type != string(providers.EventOverride) {
 			continue
 		}
+		// A retune now produces TWO override events: the server's, recording what
+		// the operator asked for, and the loop's, recording the routing the run
+		// adopted. This test is about the second, and the routing pair is what
+		// distinguishes them (see OverrideInfo.FromModel).
+		if !strings.Contains(string(e.Payload), `"from_model"`) {
+			continue
+		}
 		var ev providers.Event
 		if err := json.Unmarshal(e.Payload, &ev); err != nil {
 			t.Fatalf("the persisted override event is not a providers.Event: %v", err)
@@ -644,5 +651,59 @@ func TestRetune_SetFieldsNamesEveryOverrideTheBodyCarried(t *testing.T) {
 		if !found {
 			t.Errorf("%s was set to its meaningful zero and setFields did not name it", z)
 		}
+	}
+}
+
+// A single retune of a ROUTING field produces two override events, and a
+// consumer has to be able to tell them apart — the pair is the discriminator.
+//
+// This is the case the pre-existing routing test stopped covering the moment a
+// second event appeared: it took the last match and got whichever was written
+// later. Asserting the SHAPE of both is what stops that recurring.
+func TestRetune_ARoutingChangeProducesBothEventsAndTheyAreDistinguishable(t *testing.T) {
+	srv, ts, prov, run := parkedRoutedRun(t)
+
+	if code, b := postInput(t, ts, run.ID, `{"text":"go","overrides":{"model":"model-b"}}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+	prov.waitForRequests(t, 1)
+	waitFor(t, "the routing event to reach the transcript", func() bool {
+		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), `"from_model"`)
+	})
+
+	events, err := srv.store.GetTranscript(context.Background(), run.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requested, applied int
+	for _, e := range events {
+		if e.RunID != run.ID || e.Type != string(providers.EventOverride) {
+			continue
+		}
+		var ev providers.Event
+		if err := json.Unmarshal(e.Payload, &ev); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if ev.Override == nil {
+			t.Fatal("an override event persisted with no payload")
+		}
+		if ev.Override.FromModel == "" {
+			requested++
+			if len(ev.Override.Fields) == 0 {
+				t.Error("the operator-request event named no fields, which is the only thing " +
+					"it carries that the routing event does not")
+			}
+		} else {
+			applied++
+			if ev.Override.ToModel == "" {
+				t.Error("the routing event carried a from with no to")
+			}
+		}
+	}
+	if requested != 1 {
+		t.Errorf("operator-request events = %d, want 1", requested)
+	}
+	if applied != 1 {
+		t.Errorf("routing-applied events = %d, want 1", applied)
 	}
 }

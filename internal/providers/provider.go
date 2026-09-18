@@ -1011,7 +1011,17 @@ type OverrideInfo struct {
 	Source string `json:"source"`
 
 	// FromModel / ToModel are the routing pair, formatted "provider/model".
-	// Empty when the change did not move routing.
+	//
+	// THEY ARE ALSO HOW THE TWO OVERRIDE EVENTS ARE TOLD APART, and a consumer
+	// needs to: a single retune can produce both. The server emits one when the
+	// operator acts, listing the keys the request set and carrying NO pair —
+	// nothing has been re-resolved yet, so there is no honest "to" to report.
+	// The loop emits one when the run adopts a routing change, and that one
+	// always carries both halves.
+	//
+	// So: a pair present means "the run is now using this"; a pair absent means
+	// "an operator asked for these fields". A reader that wants only the second
+	// kind filters on FromModel == "".
 	FromModel string `json:"from_model,omitempty"`
 	ToModel   string `json:"to_model,omitempty"`
 
