@@ -1273,6 +1273,12 @@ type AgentDef struct {
 	// resolved operator-side, never model-supplied.
 	RecallIncludeTurns bool `yaml:"recall_include_turns"`
 
+	// RecallAttachTraces makes `Memory op=recall` also search the trace index with
+	// the same query and return those turns as a separate block. Needs the trace
+	// index enabled AND backfilled; an empty index yields zero turns silently, which
+	// is why the response reports how many it found.
+	RecallAttachTraces bool `yaml:"recall_attach_traces"`
+
 	// MemoryIndexMaxBytes is the soft size cap the memory protocol surfaces to
 	// the agent for its /memory/index document — the agent is asked to keep the
 	// index under it and move detail into /memory/topics/<slug>. 0 = the

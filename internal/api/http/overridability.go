@@ -101,6 +101,15 @@ var agentDefOverridability = map[string]overridability{
 	// other reach field here.
 	"RecallIncludeTurns": notOverridable,
 
+	// SAME REACH, WIDER: the question-anchored search returns raw turns matched to
+	// the caller's own query rather than only turns a fact was extracted from, so a
+	// run that could set it would reach MORE transcript than the sibling grants, not
+	// less. history_scope still gates the read, but the declaration of whether the
+	// turns are offered at all is the operator's — and a per-run override would
+	// recreate at the API boundary exactly the failure this grant exists to avoid,
+	// where the decision sits with the caller instead of the operator.
+	"RecallAttachTraces": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,
