@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -138,5 +139,41 @@ func TestConsolidator_RFC3339AndISOStampsAreAccepted(t *testing.T) {
 		if got := set.ObservedAt; got != tc.want {
 			t.Errorf("stamp %q -> observed_at %q, want %q", tc.stamp, got, tc.want)
 		}
+	}
+}
+
+// TestConsolidator_AModelTimeLaterThanTheTurnIsCorrected.
+//
+// observed_at is WHEN IT WAS SAID, so a value later than the turn's own timestamp is
+// not a reading of the sentence — it is the extractor emitting the date it happens to
+// be running on. Measured on a live store: 5 of 263 facts carried an observed_at in
+// 2026 on a 2023 corpus, two of them while their own span still read
+// "[7:55 pm on 9 June, 2023]".
+//
+// This is the ONE direction in which the model does not win. The sibling test
+// TestConsolidator_AModelSuppliedTimeIsNotOverwritten pins the other: an EARLIER
+// value is exactly the relative date ("last month") the parser cannot resolve, and
+// is kept.
+//
+// It matters more than 2% suggests now that recall RETURNS observed_at — a wrong
+// date reaches the reader as an answer, where a missing one does not.
+func TestConsolidator_AModelTimeLaterThanTheTurnIsCorrected(t *testing.T) {
+	f := newFakeToolset()
+	f.bands = map[string]any{"merge_threshold": 0.90, "related_threshold": 0.50}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "user: [7:56 pm on 7 July, 2023] Dave: I moved to Berlin.\nassistant: ok"
+	// The extractor emits the date it is RUNNING on, not the date of the turn.
+	f.factsJSON = `[{"text":"Dave moved to Berlin.","class":"fact","observed_at":"2026-09-16T12:00:00Z"}]`
+
+	runConsolidator(t, f)
+
+	set := lastFactWrite(t, f)
+	if got := set.ObservedAt; got == "2026-09-16T12:00:00Z" {
+		t.Errorf("observed_at = %q — the ingestion date was kept over the turn's own "+
+			"stamp, which is the leak this corrects", got)
+	}
+	if got := set.ObservedAt; !strings.HasPrefix(got, "2023-07-07") {
+		t.Errorf("observed_at = %q, want the turn's stamp (2023-07-07) — a turn cannot "+
+			"have been said after its own timestamp", got)
 	}
 }
