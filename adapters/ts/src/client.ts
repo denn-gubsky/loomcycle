@@ -136,6 +136,7 @@ import type {
   ReplaySessionResult,
   CancelTurnResult,
   CompactionOptions,
+  ContextOptions,
   RunBatchOptions,
   RunBatchResult,
   RunOptions,
@@ -205,6 +206,28 @@ function compactionToWire(c: CompactionOptions): Record<string, unknown> {
   return w;
 }
 
+/** contextToWire maps the camelCase ContextOptions to the snake_case `context`
+ *  block the server decodes.
+ *
+ *  Note `autorecapAtPct` -> `autorecap_at_pct`: the wire key has no underscore
+ *  after "auto", unlike compaction's `autocompact_at_pct`. The two blocks are
+ *  spelled differently on the wire and a shared helper would have to special-
+ *  case one of them, so they stay separate functions. */
+function contextToWire(c: ContextOptions): Record<string, unknown> {
+  const w: Record<string, unknown> = {};
+  if (c.mode !== undefined) w.mode = c.mode;
+  if (c.keepLastN !== undefined) w.keep_last_n = c.keepLastN;
+  if (c.reasoning !== undefined) w.reasoning = c.reasoning;
+  if (c.recapMaxChars !== undefined) w.recap_max_chars = c.recapMaxChars;
+  if (c.autorecapAtPct !== undefined) w.autorecap_at_pct = c.autorecapAtPct;
+  if (c.stateSchema !== undefined) w.state_schema = c.stateSchema;
+  if (c.onInvalidPatch !== undefined) w.on_invalid_patch = c.onInvalidPatch;
+  if (c.maxPatchRetries !== undefined) w.max_patch_retries = c.maxPatchRetries;
+  if (c.recall !== undefined) w.recall = c.recall;
+  if (c.harvestToMemory !== undefined) w.harvest_to_memory = c.harvestToMemory;
+  return w;
+}
+
 /** runBody builds the snake_case /v1/runs request body from RunOptions,
  *  omitting unset fields (preserves the server's nil semantics — notably
  *  `allowedHosts: null` is treated as "omit", not deny-all). Shared by
@@ -232,6 +255,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
   if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+  if (opts.context !== undefined) body.context = contextToWire(opts.context);
   if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
   if (opts.interactive !== undefined) body.interactive = opts.interactive;
   applyOverridesToWire(body, opts);
@@ -342,6 +366,7 @@ export class LoomcycleClient {
     if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
+    if (opts.context !== undefined) body.context = contextToWire(opts.context);
     if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
     if (opts.interactive !== undefined) body.interactive = opts.interactive;
     applyOverridesToWire(body, opts);
