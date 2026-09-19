@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // THE GUARD THAT KEEPS THIS REPORT HONEST.
@@ -278,4 +280,51 @@ func jsonNum(t *testing.T, v any) float64 {
 		t.Fatalf("value %v (%T) is not a number", v, v)
 	}
 	return f
+}
+
+// The effective-config report names what CANNOT take effect, not only what
+// will. This is the half boot validation cannot do: a per-run context override
+// can introduce the trap on a run whose definition is clean, and boot never
+// sees that combination.
+func TestEffectiveConfig_ReportsInertAutocompactThreshold(t *testing.T) {
+	_, ts, _, run := parkedRoutedRun(t)
+
+	// The fixture's agent is not in a distilling mode, so nothing is inert —
+	// and the key must still be PRESENT, or a consumer cannot tell "nothing
+	// inert" from "this server does not report it".
+	_, body := getEffective(t, ts, run.ID)
+	var resp struct {
+		Inert []config.InertContextSetting `json:"inert"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if resp.Inert == nil {
+		t.Error("inert is absent/null — an empty slice is the answer that lets a " +
+			"consumer distinguish it from an older server")
+	}
+	if len(resp.Inert) != 0 {
+		t.Errorf("a non-distilling agent reported inert settings: %+v", resp.Inert)
+	}
+}
+
+// The predicate itself is shared with the boot check, so the two surfaces
+// cannot disagree about which settings are dead.
+func TestEffectiveConfig_InertSharesThePredicateWithBootValidation(t *testing.T) {
+	a := config.AgentDef{
+		Context: &config.Context{Mode: func() *string {
+			m := config.ContextModeRecap
+			return &m
+		}()},
+		Compaction: &config.Compaction{AutoCompactAtPct: func() *int { i := 70; return &i }()},
+	}
+	// Whatever the boot warnings say is dead, the report must also call dead.
+	inert := config.InertContextSettings(a)
+	if len(inert) == 0 {
+		t.Fatal("the shared predicate reported nothing for a recap agent with an " +
+			"autocompact threshold — the two surfaces would both be silent")
+	}
+	if inert[0].Setting != "compaction.autocompact_at_pct" {
+		t.Errorf("setting = %q, want compaction.autocompact_at_pct", inert[0].Setting)
+	}
 }
