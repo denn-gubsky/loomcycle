@@ -8,6 +8,122 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.84.0
+
+*Context distillation could fail in five different ways and say nothing. It cannot any more.*
+
+Twelve PRs. One line dominates — a whole subsystem made observable before it was
+changed — plus three grpc vulnerabilities closed on the serving path.
+
+A LIVE CHAT CLIMBED TO THE TOP OF ITS WINDOW WHILE AUTO-DISTILLATION NEVER FIRED
+ONCE, and every mechanism that could have reported why was silent. The threshold
+was crossed at 72%; the next call was at 99%. Zero recap markers, zero errors.
+
+The leading cause, on the evidence: the recap summariser's token budget is
+derived from `recap_max_chars` (`/4 + 64`), so the default allows about **192
+tokens** — and `summarizeWith` accumulates only text, while Ollama routes a
+thinking model's reasoning to a separate channel. That session logged **1293**
+thinking events. A thinking model given 192 tokens spends them thinking and
+returns nothing, which took a branch that emitted no event, no error and no
+marker.
+
+⚠️ THE SILENCE WAS THE DEFECT, NOT THE DECLINE. Telling "the threshold was never
+crossed" from "it was crossed and the summariser returned empty" required reading
+the summariser's source and counting event types in a raw transcript. That is not
+a diagnosis an operator can make, which is why visibility came first and the
+behavioural fixes second.
+
+**`context_distill_declined`** is a new event carrying one of five reasons,
+because they call for five different actions: `split_declined` (carrying the
+message count and `keep_last_n` — those two numbers ARE the diagnosis),
+`empty_summary`, `summarize_failed`, `not_smaller`, `reasoning_keep`. It is
+emitted at most once per (mode, reason) per run — a condition that is a property
+of the configuration must not repeat until it buries itself — and surfaces on
+`Context op=self` beside the footprint, because an agent told it is at 99% will
+otherwise call `op=compact` into the same decline and learn nothing.
+
+⚠️ A DISTILLATION THAT MADE THINGS WORSE WAS BEING APPLIED. In the observed
+session an operator's manual compact went `14230 -> 14334` tokens and was applied
+anyway: both numbers were already measured at every site and never compared. All
+three sites now refuse when the result is not smaller — `after >= before` exactly,
+not a margin, because a 10% rule would have refused the first GOOD compaction of
+that same session.
+
+The harvests moved with it. `Recall.Harvest` and the memory bank ran ABOVE the
+measurement, so a declined distillation had already handed away a span it then
+kept — and with the gate re-firing every iteration, wrote the same content
+repeatedly.
+
+A RUN THAT ANSWERS IN ONE ITERATION CAN NOW DISTIL. The footprint was zero until
+the first provider call RETURNED, while the gate runs at the top of an iteration —
+so a continuation answering at `end_turn`, which is a single iteration, could
+never distil however full its replayed prompt. The observed session's last run
+sent 30100 tokens of a 32768 window this way and reclaimed nothing. It is now
+seeded from the messages the first request will actually carry.
+
+A MANUAL COMPACT OPERATES ON THE SESSION, which is what the loop holds. It used
+to fetch the session transcript and then filter it to one `run_id`, so a
+continuation chat presented 2-3 messages and answered "nothing to compact" at 92%
+of the window — and when the split DID succeed, the kept-tail count was computed
+from that run-scoped slice and applied against the session-scoped history,
+producing a summary of a span the model never held.
+
+"Nothing to compact" is now three answers with their numbers: `noop` (too short),
+`noop_keep_spans_all` (`keep_last_n` pins everything — lower it), and
+`noop_not_smaller`. The existing `noop` value is unchanged, so a consumer matching
+it keeps working.
+
+DEAD CONFIGURATION SAYS SO, at boot and in the effective-config report. The agent
+in that session declared `compaction.autocompact_at_pct: 70` and
+`compaction.memory_flush: true`, and both were inert: **only `mode: append`
+consults the compaction path at all**. Every other mode distils by its own route —
+`recap` takes the other branch, `stateful` returns before the gate exists, and
+`auto` resolves to one of those two, so it is inert either way. Reported with the
+live knob to set instead.
+
+**`context` reaches the typed client.** The server has accepted a per-run
+`context` block since it shipped and no typed consumer could send one — and there
+was no workaround, because the request body is assembled from an allow-list, so
+the key was dropped even by a caller casting past the type checker. That is what
+made A/B-ing distillation modes impossible, which is how the rest of this work
+gets verified.
+
+THREE GRPC VULNERABILITIES CLOSED, all reaching loomcycle's own serving path
+rather than merely present in the module graph: a server panic via a missing
+`:authority`/`Host` header, heap exhaustion via HTTP/2 DATA frame fragmentation,
+and the xDS RBAC + HTTP/2 transport issue. Two are unauthenticated remote DoS.
+grpc 1.80.0 -> 1.83.2; `govulncheck` goes from three affecting findings to zero.
+
+ON THE MEMORY SIDE, a retrieval grant and an honest negative result. Recall can
+now search the trace index with the caller's own query and return those turns as a
+separate block — worth **+31pp** on a local answerer where fact-anchored
+attachment reaches 0.5473 and direct search reaches 0.7877.
+
+⚠️ BUT THE GATE WAS NOT MET, and the notes record that rather than the headline.
+On a second conversation the effect is +12.3pp against the +29.6pp of the first, so
+the original figure was a property of that conversation rather than of the
+architecture. The cause is a gap in the grant: it enriched `op=recall` only, and
+the model elects the op — on the second conversation it chose `search` 49 times of
+85, and the inert half moved by **exactly zero**, which rules out the alternative
+explanation that `search` simply marked harder questions. The grant now covers
+`search` too.
+
+**Upgrade notes.** No configuration changes are required.
+
+`POST /v1/runs/{run_id}/compact` now operates on the SESSION rather than the run.
+Byte-identical for a single-run session, which is most autonomous runs; a
+continuation chat will now find something to compact where it previously reported
+a noop.
+
+A compaction or recap whose result is not smaller is now REFUSED rather than
+applied. If you have a fixture or a monitor asserting that a tiny conversation
+compacts successfully, it will now report `noop_not_smaller` — which is the
+correct answer: the compaction preamble alone is ~190 characters, so a very short
+history genuinely grows.
+
+Adapters: `@loomcycle/client` **1.84.0**, `loomcycle` (PyPI) **1.84.0**. The TS
+bump carries the new `context` block, which loomboard's distillation panel needs.
+
 ## What's in v1.83.0
 
 *The run controls that shipped write-only can now be read back — and a granted tool that could never work says so at run start.*
