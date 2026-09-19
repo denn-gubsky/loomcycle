@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -153,6 +154,14 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	}
 	if body := s.renderSearchRequest(ctx, mi); body != "" {
 		sections[meminject.VariantSearchRequest] = body
+	}
+	// recalled_context: gated on an actual reference, because it costs TWO retrievals
+	// and an embedding of the run's initial input. A prompt that never places the
+	// placeholder must not pay for them.
+	if meminject.ReferencesVariant(promptSrc, meminject.VariantRecalledContext) {
+		if body := s.renderRecalledContext(ctx, mi); body != "" {
+			sections[meminject.VariantRecalledContext] = body
+		}
 	}
 	// ontology: gated on an actual reference, like user_info, because rendering it
 	// PROVISIONS the tenant's ontology document. A prompt that never mentions the
@@ -669,6 +678,110 @@ func (s *Server) renderSearchRequest(ctx context.Context, mi memInject) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// renderRecalledContext runs the retrieval an answering agent would have issued for
+// itself, before the model's first token.
+//
+// TWO SEARCHES, TWO BLOCKS, TWO BUDGETS. The first is a hybrid recall over the
+// facts — what is KNOWN. The second searches the raw conversation turns — what was
+// SAID. They are rendered apart and labelled, because fusing them into one ranked
+// list is what ErrTracesNotCombinable refuses: turns are far more numerous than the
+// facts extracted from them and lexically overlap them by construction, so a single
+// list lets the evidence crowd out the conclusions. Separate budgets for the same
+// reason the recall tool keeps them separate — one shared cap would let whichever
+// search ran first starve the other, and which one that is would be an accident of
+// ordering.
+//
+// ⚠️ TURNS CARRY THEIR OWN DATES AND THAT IS HALF THE POINT. A distilled fact is
+// tenseless ("Caroline went to a support group") while the turn opens with its own
+// "[1:56 pm on 8 May, 2023]". Measured on LoCoMo conv-26, reaching the turns was
+// worth +39pp on a cloud reader, concentrated in temporal questions.
+//
+// Best-effort throughout: no embedder, no trace index, or no match renders the block
+// it can and omits the one it cannot. This runs on the prompt-assembly path, and a
+// retrieval fault must not fail the run.
+//
+// ⚠️ NOT GATED BY THE AGENT'S memory_scopes, and deliberately so — the same posture
+// core_blocks, user_info and search_request already take. The authority here is the
+// PLACEHOLDER: an operator who writes {{memory:recalled_context}} into an
+// operator-authored system prompt has decided this agent sees this user's memory,
+// and the agent's own tool grants are a different question (what it may go and FETCH
+// for itself). The content is still framed as data, never as instruction — see
+// trustedVariants, which this variant is deliberately absent from.
+func (s *Server) renderRecalledContext(ctx context.Context, mi memInject) string {
+	if s.store == nil || mi.UserID == "" || strings.TrimSpace(mi.InitialInput) == "" {
+		return ""
+	}
+	// TENANT STAMPING — the same security-critical step the off-run search handler
+	// takes. The in-process backend reads the tenant from RunIdentity ONLY, so
+	// without this the retrieval runs at the shared "" tenant and could read another
+	// tenant's rows into this tenant's prompt.
+	sctx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: mi.Tenant})
+	backend := inprocess.New(s.store, s.embedder)
+
+	var b strings.Builder
+	// FACTS — what is known. Notes ride along with facts here for the same reason
+	// recall admits them by default: on a corpus of ingested turns every row is a
+	// note, and excluding them would render an empty block on exactly the stores
+	// this exists to serve.
+	if res, err := backend.Search(sctx, store.MemoryScopeUser, mi.UserID, meminject.SearchQuery{
+		QueryText: mi.InitialInput,
+		TopK:      recalledContextFactsTopK,
+		Sources:   []meminject.Source{meminject.SourceFacts, meminject.SourceNotes},
+	}, meminject.DefaultRankConfig(), meminject.DedupConfig{}); err == nil {
+		used := 0
+		for _, e := range res.Entries {
+			if strings.HasPrefix(e.Key, meminject.CoreBlockKeyPrefix) {
+				continue // already injected via core_blocks; do not render twice
+			}
+			line := renderMemoryValue(e.Value)
+			if strings.TrimSpace(line) == "" || used+len(line) > recalledContextFactsBudget {
+				continue
+			}
+			if used == 0 {
+				b.WriteString("FACTS (what is known):\n")
+			}
+			used += len(line)
+			fmt.Fprintf(&b, "- %s\n", line)
+		}
+	}
+
+	// TURNS — what was said, with their own timestamps.
+	if res, err := backend.Search(sctx, store.MemoryScopeUser, mi.UserID, meminject.SearchQuery{
+		QueryText: mi.InitialInput,
+		TopK:      recalledContextTurnsTopK,
+		Sources:   []meminject.Source{meminject.SourceTraces},
+	}, meminject.DefaultRankConfig(), meminject.DedupConfig{}); err == nil {
+		used := 0
+		for _, e := range res.Entries {
+			line := builtin.TraceTurnText(e.Value)
+			if strings.TrimSpace(line) == "" || used+len(line) > recalledContextTurnsBudget {
+				continue
+			}
+			if used == 0 {
+				if b.Len() > 0 {
+					b.WriteString("\n")
+				}
+				b.WriteString("TURNS (what was actually said):\n")
+			}
+			used += len(line)
+			fmt.Fprintf(&b, "- %s\n", line)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+const (
+	// recalledContextFactsTopK / recalledContextTurnsTopK bound each retrieval.
+	// Deliberately small on both legs: the measured win came from a handful of
+	// directly-matched rows, and the coerced-prompt collapse is the standing evidence
+	// that a small reader's ATTENTION is the scarce resource, not its context window.
+	recalledContextFactsTopK = 10
+	recalledContextTurnsTopK = 6
+	// Separate budgets — see renderRecalledContext.
+	recalledContextFactsBudget = 4000
+	recalledContextTurnsBudget = 6000
+)
 
 // readCoreBlock fetches core/<label> in (scope, scopeID) at the given tenant.
 // Returns (value, true) on a hit, ("", false) on miss/error (best-effort: the

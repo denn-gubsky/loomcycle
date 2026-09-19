@@ -828,6 +828,14 @@ type MemoryPolicyValue struct {
 	// Operator-resolved from the agent def — never model-supplied, same posture as
 	// AllowedScopes.
 	RecallIncludeTurns bool
+
+	// RecallAttachTraces is the `recall_attach_traces` grant: recall ALSO runs the
+	// question-anchored trace search and returns those turns as their own block.
+	// Distinct from RecallIncludeTurns, which attaches the turn each recalled FACT
+	// came from — fact-anchored retrieval can only return turns some fact was already
+	// extracted from, and the 24-point gap between the two routes on a cloud reader is
+	// exactly the turns the extractor passed over.
+	RecallAttachTraces bool
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.

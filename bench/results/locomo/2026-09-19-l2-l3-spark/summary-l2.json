@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b L2",
+  "note": "+ recall_attach_traces: the QUESTION-anchored trace search",
+  "arm": "locomo/orn-l2-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T18:45:37Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 148,
+  "accuracy": 0.6858,
+  "strict": 0.6014,
+  "correct": 89,
+  "partial": 25,
+  "wrong": 34,
+  "unparsed": 2,
+  "not_found": 17,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.5,
+      "not_found": 3
+    },
+    "2": {
+      "graded": 35,
+      "accuracy": 0.7,
+      "not_found": 5
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.5455,
+      "not_found": 3
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.7857,
+      "not_found": 6
+    }
+  }
+}

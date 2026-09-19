@@ -1,0 +1,136 @@
+package builtin
+
+// memory_recall_traces.go — the QUESTION-anchored turns, attached by the runtime.
+//
+// WHY A SECOND RETRIEVAL AND NOT A WIDER FIRST ONE. Its sibling
+// (memory_recall_turns.go) attaches the turn a recalled FACT was distilled from.
+// That is fact-anchored: the query finds facts, and each fact drags its own turn
+// along. Measured on LoCoMo conv-26, that route reaches 0.5473 on a cloud reader
+// while searching the turns DIRECTLY with the question reaches 0.7877 — 24 points
+// that fact-anchoring cannot recover, because it can only ever return turns some
+// fact was already extracted from. The turns that answer the remaining questions are
+// the ones the extractor passed over.
+//
+// So this runs the trace search the reader will not run for itself. The uptake
+// numbers are the whole argument: handed the tool and told when to use it, deepseek
+// issued 214 trace retrievals across 150 questions, qwen3.6 issued 7, and
+// ornith-1.5:35b — agentic-tuned — issued 17. Mandating it in the prompt took
+// compliance to 100% and accuracy to 0.0034. An operator who wants these turns
+// cannot get them by asking the model.
+//
+// ⚠️ A SEPARATE BLOCK, NOT FUSED INTO `memories`. This is expansion, not ranking.
+// Scoring a raw turn against the fact extracted from it in one ranked list is what
+// ErrTracesNotCombinable refuses, and for the same reason it is refused there: the
+// two answer different questions ("what was said" vs "what is known") and a fused
+// list lets the more numerous, lexically-overlapping turns crowd out the facts. The
+// reader gets both and is told which is which.
+//
+// ⚠️ THE INDEX IS A PRECONDITION, AND AN EMPTY ONE IS SILENT. The trace index is
+// forward-only and off by default; a store ingested before the flag has nothing in
+// it, and this retrieval then returns zero turns while looking like it worked. The
+// response says how many it found for exactly that reason.
+
+import (
+	"context"
+	"encoding/json"
+
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+)
+
+const (
+	// recallTraceTopK bounds how many turns the question-anchored search returns.
+	// Deliberately small: the measured win came from a handful of directly-matched
+	// turns, and the coerced-prompt collapse is the standing evidence that a small
+	// reader's attention is the scarce resource, not its context window.
+	recallTraceTopK = 6
+	// recallTraceMaxChars bounds ONE turn, matching the fact-anchored cap so a reader
+	// sees the two blocks in the same units.
+	recallTraceMaxChars = 1200
+	// recallTracesBudget bounds the whole block, SEPARATE from the fact-anchored
+	// budget. Sharing one budget would let whichever retrieval ran first starve the
+	// other, and which one that is would be an accident of ordering.
+	recallTracesBudget = 6000
+)
+
+// attachQuestionTurns runs the trace search for the same query and returns the turns
+// as their own block.
+//
+// Best-effort: no index, no embedder, or no match returns an empty slice and no
+// error. A missing turn is not a failed recall — the facts are still the answer to
+// the question that was asked.
+func (m *Memory) attachQuestionTurns(ctx context.Context, scope store.MemoryScope,
+	scopeID, query string) (turns []map[string]any, found int) {
+	if query == "" {
+		return nil, 0
+	}
+	// ⚠️ HISTORY REACH IS GOVERNED BY history_scope, exactly as it is for the
+	// fact-anchored turns. A turn is chat transcript however the runtime reached it,
+	// and letting the memory path serve one an agent's History grant forbids would
+	// make the grant decorative.
+	histScopes := tools.EffectiveHistoryScopes(ctx, tools.HistoryPolicy(ctx).Scopes)
+	if !historyScopeAllowsOwnChats(histScopes) {
+		return nil, 0
+	}
+	// Default ranking, as the `search` op uses when the caller names no rank block:
+	// this retrieval is the one the model would have issued, so it should behave the
+	// way that call behaves rather than acquire a private tuning.
+	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
+		QueryText: query,
+		Sources:   []memrank.Source{memrank.SourceTraces},
+		TopK:      recallTraceTopK,
+	}, memrank.DefaultRankConfig(), memrank.DedupConfig{})
+	if err != nil {
+		// Swallowed on purpose: an operator grant must not turn a working recall into
+		// a failed one because the index is off or the embedder is down. The reported
+		// count is what distinguishes "nothing indexed" from "nothing matched".
+		return nil, 0
+	}
+	used := 0
+	for _, hit := range res.Entries {
+		text := trimTraceText(TraceTurnText(hit.Value))
+		if text == "" {
+			continue
+		}
+		if used+len(text) > recallTracesBudget {
+			break
+		}
+		used += len(text)
+		found++
+		turns = append(turns, map[string]any{"text": text})
+	}
+	return turns, found
+}
+
+// TraceTurnText pulls the rendered turn out of a stored trace row.
+//
+// EXPORTED because the prompt-injection path renders the same rows and must parse
+// them the same way. A second copy of this is the drift that has cost this codebase
+// a silent bug more than once.
+//
+// The row is the index's own JSON ({text, speaker, session_id, at}), and `text`
+// already opens with the turn's own "[date] Speaker:" stamp — which is the half that
+// matters here, since the distilled fact it sits beside is tenseless. A row that will
+// not parse yields "" and is skipped rather than handed to the reader as raw JSON:
+// a model shown a serialised object tends to answer with one.
+func TraceTurnText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var row struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return ""
+	}
+	return row.Text
+}
+
+// trimTraceText caps one turn. Separate so the bound is testable without a store.
+func trimTraceText(s string) string {
+	if len(s) <= recallTraceMaxChars {
+		return s
+	}
+	return s[:recallTraceMaxChars]
+}

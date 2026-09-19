@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b L2 draw 2 (replicate)",
+  "note": "identical definition to draw 1; run because draw 1's strict sat 0.0014 above the gate floor",
+  "arm": "locomo/orn-l2-rep",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T19:10:20Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 148,
+  "accuracy": 0.6588,
+  "strict": 0.5878,
+  "correct": 87,
+  "partial": 21,
+  "wrong": 40,
+  "unparsed": 2,
+  "not_found": 22,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.4688,
+      "not_found": 5
+    },
+    "2": {
+      "graded": 35,
+      "accuracy": 0.6571,
+      "not_found": 7
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.5455,
+      "not_found": 2
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.7643,
+      "not_found": 8
+    }
+  }
+}

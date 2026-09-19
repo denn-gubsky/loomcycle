@@ -2782,6 +2782,19 @@ export interface AgentDefOverlay {
    *  models they do not make it. Also gated by `history_scope`: this decides whether
    *  turns are OFFERED, history_scope whether they may be READ. */
   recall_include_turns?: boolean;
+  /** Also run the QUESTION-anchored trace search on every `recall` and return those
+   *  turns as their own block, beside the facts.
+   *
+   *  Distinct from `recall_include_turns`, which attaches the turn each recalled FACT
+   *  was distilled from: fact-anchored retrieval can only reach turns some fact was
+   *  already extracted from, and the turns that answer the rest are the ones the
+   *  extractor passed over. Measured on one corpus the two routes differ by 24 points.
+   *
+   *  Operator-set, with deliberately NO tool parameter: told to pass the sibling's
+   *  parameter on every call, one model passed it on 51 of 128. Also gated by
+   *  `history_scope`, and needs the trace index enabled AND backfilled — an empty
+   *  index yields zero turns silently. */
+  recall_attach_traces?: boolean;
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;

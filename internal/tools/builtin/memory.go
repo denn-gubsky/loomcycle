@@ -1860,6 +1860,19 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		turnsAttached, turnsDropped = m.attachSourceTurns(ctx, scope, memories, spans)
 	}
 
+	// THE QUESTION-ANCHORED TURNS, as their own retrieval. The block above attaches
+	// the turn each recalled FACT came from, which can only ever reach turns some
+	// fact was already extracted from; this searches the turns directly with the
+	// caller's query, which is where the remaining 24 points were measured. Operator
+	// grant only — there is deliberately no tool parameter for it, because the one
+	// this feature's sibling shipped with was passed on 51 of 128 calls by a model
+	// that had been told to pass it every time.
+	var questionTurns []map[string]any
+	questionTurnsFound := 0
+	if tools.MemoryPolicy(ctx).RecallAttachTraces {
+		questionTurns, questionTurnsFound = m.attachQuestionTurns(ctx, scope, scopeID, in.Query)
+	}
+
 	// THE ARRAY IS "memories", NOT "facts" (it used to be "facts").
 	//
 	// Recall's default admits notes as well as distilled facts, and on a corpus of
@@ -1885,6 +1898,18 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		if turnsDropped > 0 {
 			out["turns_dropped_for_budget"] = turnsDropped
 		}
+	}
+	// A SEPARATE KEY, so the reader can tell the two apart. `memories[].turn` is the
+	// turn a specific fact came from; `source_turns` is what the question itself
+	// matched, and nothing claims a fact was extracted from those.
+	//
+	// The count is reported even when it is zero: the trace index is forward-only and
+	// off by default, so "the grant is on but the index is empty" and "the index is
+	// full and nothing matched" are the same empty list, and only an operator can fix
+	// the first one.
+	if tools.MemoryPolicy(ctx).RecallAttachTraces {
+		out["source_turns"] = questionTurns
+		out["source_turns_found"] = questionTurnsFound
 	}
 	// Same shape as search reports it, so an agent learns one vocabulary.
 	if res.TimeFilter != nil {

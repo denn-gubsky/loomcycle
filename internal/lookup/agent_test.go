@@ -310,6 +310,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"memory_protocol":          true,
 		"memory_consolidation":     true, // RFC BL P2 — consolidation control-ops grant (content-identifying)
 		"recall_include_turns":     true, // RFC DF — recall attaches source turns (content-identifying; gated by history_scope too)
+		"recall_attach_traces":     true, // question-anchored turns: recall also runs the trace search (content-identifying; gated by history_scope too)
 		"memory_index_max_bytes":   true, // RFC BL P1 — /memory/index soft cap surfaced to the agent
 		"memory_roots":             true, // RFC BL P1 — user-root provisioning control (lazy|force|suppress)
 		"retry_attempts":           true,

@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b control",
+  "note": "facts only; verified 0 self-elected trace calls of 151",
+  "arm": "locomo/orn-control-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T18:35:13Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 149,
+  "accuracy": 0.3758,
+  "strict": 0.2953,
+  "correct": 44,
+  "partial": 24,
+  "wrong": 81,
+  "unparsed": 1,
+  "not_found": 58,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.3438,
+      "not_found": 6
+    },
+    "2": {
+      "graded": 37,
+      "accuracy": 0.1892,
+      "not_found": 22
+    },
+    "3": {
+      "graded": 10,
+      "accuracy": 0.5,
+      "not_found": 3
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.4714,
+      "not_found": 27
+    }
+  }
+}

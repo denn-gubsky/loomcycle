@@ -2787,6 +2787,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Backend:            agentDef.MemoryBackend,
 		Consolidation:      agentDef.MemoryConsolidation,
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
+		RecallAttachTraces: agentDef.RecallAttachTraces,
 	})
 	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
 	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
@@ -4542,6 +4543,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Backend:            agentDef.MemoryBackend,
 		Consolidation:      agentDef.MemoryConsolidation,
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
+		RecallAttachTraces: agentDef.RecallAttachTraces,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -5239,6 +5241,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Backend:            agentDef.MemoryBackend,
 		Consolidation:      agentDef.MemoryConsolidation,
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
+		RecallAttachTraces: agentDef.RecallAttachTraces,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -6669,6 +6672,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		Backend:            def.MemoryBackend,
 		Consolidation:      def.MemoryConsolidation,
 		RecallIncludeTurns: def.RecallIncludeTurns,
+		RecallAttachTraces: def.RecallAttachTraces,
 	})
 	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
 	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory

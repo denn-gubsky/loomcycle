@@ -188,6 +188,11 @@ type AgentContent struct {
 	// like MemoryConsolidation — it changes what the agent SEES on every recall, so
 	// two agents differing only in this are not the same agent.
 	RecallIncludeTurns bool `json:"recall_include_turns,omitempty"`
+
+	// RecallAttachTraces is the question-anchored grant. Content-identifying for the
+	// same reason its sibling is: it changes what the model is shown, so two agents
+	// differing only here are not the same agent.
+	RecallAttachTraces bool `json:"recall_attach_traces,omitempty"`
 	// MemoryIndexMaxBytes / MemoryInjectMaxTokens / MemoryProtocol / MemoryRoots
 	// (RFC BL P1) are content-identifying. Tags are kept in alphabetical order:
 	// memory_index_max_bytes < memory_inject_max_tokens < memory_protocol, and
@@ -419,6 +424,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MemoryProtocol:        a.MemoryProtocol,
 		MemoryConsolidation:   a.MemoryConsolidation,
 		RecallIncludeTurns:    a.RecallIncludeTurns,
+		RecallAttachTraces:    a.RecallAttachTraces,
 		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
 		MemoryRoots:           a.MemoryRoots,
 	}
