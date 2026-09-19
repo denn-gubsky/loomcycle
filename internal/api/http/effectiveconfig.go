@@ -42,6 +42,23 @@ type effectiveValue struct {
 // Every entry that agentDefOverridability marks overridable must appear here.
 // TestEffectiveConfig_EveryOverridableFieldIsReported enforces that, so a new
 // override cannot ship and quietly go unreported.
+// runOnlyOverridable names the per-run overrides that have NO config.AgentDef
+// counterpart. agentDefOverridability is DERIVED from that struct and guarded
+// against naming anything else, so it structurally cannot hold them — and the
+// report iterates it, so without this set such a field is silently absent from
+// every report even though its reader and fallback exist.
+//
+// `Interactive` is the case, and the asymmetry is deliberate rather than an
+// oversight in the definition: parking at turn boundaries is a property of THIS
+// run, chosen at start or by a retune. Nobody knows at start that they will
+// need to correct a run, which is the whole reason it is retunable.
+//
+// TestEffectiveConfig_EveryReaderIsReachable is the guard that would have
+// caught the omission; it did not exist when this shipped.
+var runOnlyOverridable = map[string]struct{}{
+	"Interactive": {},
+}
+
 var runFieldReaders = map[string]func(runConfigRecord) (any, bool){
 	"Model": func(r runConfigRecord) (any, bool) {
 		return pick(r.Routing != nil && r.Routing.Model != "", func() any { return r.Routing.Model })
@@ -198,13 +215,17 @@ func (s *Server) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 // the fallback layer — reporting the source at each step.
 func (s *Server) effectiveFields(ctx context.Context, run store.Run, def, eff config.AgentDef, rec runConfigRecord) map[string]effectiveValue {
 	ec := s.effectiveCtxFor(ctx, run, eff)
-	out := make(map[string]effectiveValue, len(agentDefOverridability))
+	out := make(map[string]effectiveValue, len(agentDefOverridability)+len(runOnlyOverridable))
 
-	names := make([]string, 0, len(agentDefOverridability))
+	names := make([]string, 0, len(agentDefOverridability)+len(runOnlyOverridable))
 	for name, kind := range agentDefOverridability {
 		if kind != notOverridable {
 			names = append(names, name)
 		}
+	}
+	// Plus the overrides the definition has no field for — see runOnlyOverridable.
+	for name := range runOnlyOverridable {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 
