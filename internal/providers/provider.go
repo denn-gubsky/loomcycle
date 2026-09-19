@@ -586,6 +586,28 @@ const (
 	// an unset one is not inert and an event for it would be noise on every run.
 	EventCapabilityInert EventType = "capability_inert"
 
+	// EventContextDistillDeclined reports that context distillation was TRIED
+	// and did nothing — the threshold was crossed, the gate fired, and the
+	// distiller returned without shrinking anything.
+	//
+	// It exists because a decline used to be indistinguishable from never
+	// having been attempted. A live chat climbed to the top of its window with
+	// zero recap markers and zero errors, and telling "the threshold was never
+	// crossed" from "it was crossed and the summarizer returned empty" required
+	// reading the summarizer's source and counting event types in a raw
+	// transcript. That is not a diagnosis an operator can make.
+	//
+	// A DISTINCT type rather than a flag on EventContextRecap: those markers are
+	// consumed by replayTranscript to rebuild history, and a "did nothing"
+	// variant would force every replay site to learn to skip some of them. This
+	// type is inert on replay — the switch ignores it — which is the property
+	// that makes it safe to add.
+	//
+	// Emitted at most once per (mode, reason) per run: a reason that is a
+	// property of the CONFIGURATION would otherwise repeat every iteration and
+	// bury itself, while a state-dependent one legitimately recurs.
+	EventContextDistillDeclined EventType = "context_distill_declined"
+
 	// EventOverride records that a RUN's own configuration changed while it was
 	// running — an operator retuned a parked chat (RFC DC P3/D8).
 	//
@@ -710,6 +732,10 @@ type Event struct {
 	// CapabilityInert carries the structured payload on EventCapabilityInert.
 	// Nil on all other event types.
 	CapabilityInert *CapabilityInertInfo `json:"capability_inert,omitempty"`
+
+	// ContextDistill carries the structured payload on
+	// EventContextDistillDeclined. Nil on all other event types.
+	ContextDistill *ContextDistillDeclinedInfo `json:"context_distill,omitempty"`
 
 	// Override carries the structured payload on EventOverride (a run's
 	// configuration changed mid-run, RFC DC). Nil on all other event types.
@@ -1083,6 +1109,66 @@ type CapabilityInertInfo struct {
 	Gate string `json:"gate"`
 	// Message is a human-readable line naming the tool, the gate and what to
 	// set. Optional, but always populated by the runtime.
+	Message string `json:"message,omitempty"`
+}
+
+// Distillation-decline reasons. Each names a DIFFERENT operator action, which
+// is why this is an enumeration and not one "declined" flag — a reader told
+// only that distillation declined has learned nothing they can act on.
+const (
+	// DistillDeclineSplitDeclined — CompactionSplit found nothing to summarize:
+	// keep_last_n spans the whole conversation. Carries Messages and KeepLastN,
+	// because those two numbers ARE the diagnosis. Action: lower keep_last_n.
+	DistillDeclineSplitDeclined = "split_declined"
+	// DistillDeclineEmptySummary — the summarizer returned no text and no
+	// error. A thinking model on a small budget spends it reasoning and emits
+	// nothing the accumulator collects. Action: raise recap_max_chars, or pick
+	// an effort that makes the driver stop the model thinking.
+	DistillDeclineEmptySummary = "empty_summary"
+	// DistillDeclineSummarizeFailed — the summarize call errored. The existing
+	// EventError is STILL emitted alongside this; terminal-error consumers
+	// depend on it, so this reason adds a structured twin rather than replacing
+	// a signal something already watches.
+	DistillDeclineSummarizeFailed = "summarize_failed"
+	// DistillDeclineNotSmaller — the distillation ran and produced something no
+	// smaller than what it replaced, so it was refused. Carries both token
+	// counts: "14230 -> 14334" is the whole explanation.
+	DistillDeclineNotSmaller = "not_smaller"
+	// DistillDeclineReasoningKeep — reasoning: keep asks for no distillation.
+	// Not a fault; reported so that "nothing happened" is never silent, because
+	// an operator who did not realise keep disables this needs to see it once.
+	DistillDeclineReasoningKeep = "reasoning_keep"
+)
+
+// ContextDistillDeclinedInfo is the payload on EventContextDistillDeclined.
+//
+// The numeric fields are populated per reason rather than always: a reader
+// should be able to act on the event without a second lookup, and which numbers
+// are the evidence depends on why it declined.
+type ContextDistillDeclinedInfo struct {
+	// Mode is the distillation path that declined: "recap" | "compaction".
+	// Which one matters because they read DIFFERENT config keys, and an
+	// operator editing the wrong block is the failure one subsystem over.
+	Mode string `json:"mode"`
+	// Trigger is "auto" | "self" — the threshold fired, or the agent asked.
+	Trigger string `json:"trigger,omitempty"`
+	// Reason is one of the DistillDecline* constants.
+	Reason string `json:"reason"`
+	// UsedTokens / WindowTokens are the footprint that opened the gate. They
+	// say how urgent the decline is: declining at 40% is housekeeping,
+	// declining at 99% is the run about to fail.
+	UsedTokens   int `json:"used_tokens,omitempty"`
+	WindowTokens int `json:"window_tokens,omitempty"`
+	// Messages / KeepLastN are the split_declined diagnosis: this many messages
+	// in hand, this many pinned by policy, so nothing was left to summarize.
+	Messages  int `json:"messages,omitempty"`
+	KeepLastN int `json:"keep_last_n,omitempty"`
+	// BeforeTokens / AfterTokens are the not_smaller evidence — what the
+	// distillation would have replaced, and what it produced.
+	BeforeTokens int `json:"before_tokens,omitempty"`
+	AfterTokens  int `json:"after_tokens,omitempty"`
+	// Message is a human-readable line naming the condition and the fix.
+	// Optional, but always populated by the runtime.
 	Message string `json:"message,omitempty"`
 }
 

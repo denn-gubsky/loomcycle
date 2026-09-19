@@ -39,8 +39,8 @@ func (e recallTestEmbedder) Dimension() int   { return e.dim }
 // index, so a later free-text Recall recovers a needle buried past the boundary.
 func TestMaybeAutoCompact_HarvestsEvictedSpanToRecallIndex(t *testing.T) {
 	msgs := []providers.Message{
-		userMsg("the task"), asstMsg("the secret token is orchid-88 keep it"),
-		userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3"),
+		userMsg("the task"), asstMsg(bulky("the secret token is orchid-88 keep it")),
+		userMsg(bulky("q2")), asstMsg(bulky("a2")), userMsg("q3"), asstMsg("a3"),
 	}
 	ix := recall.NewIndex(recallTestEmbedder{dim: 256}, 0)
 	opts := RunOptions{
@@ -70,7 +70,7 @@ func TestMaybeAutoCompact_HarvestsEvictedSpanToRecallIndex(t *testing.T) {
 // TestMaybeAutoCompact_NilRecallIndexNoOp: with recall off (nil index),
 // compaction proceeds unchanged and the nil-receiver Harvest never panics.
 func TestMaybeAutoCompact_NilRecallIndexNoOp(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	opts := RunOptions{
 		Provider:   &steerProvider{},
 		Model:      "x",

@@ -141,7 +141,7 @@ func TestRecapMessages_Shape(t *testing.T) {
 // maybeRecap folds the middle into a recap assistant turn, keeps the last-N tail
 // verbatim, and pins the task as its own user turn.
 func TestMaybeRecap_RecapsAndKeepsTail(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	opts := RunOptions{Provider: &steerProvider{}, Model: "x", Context: recapMode(2, "recap")}
 	out, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
 	if !did {
@@ -170,7 +170,7 @@ func TestMaybeRecap_FlatAndFoldsForward(t *testing.T) {
 	p := &recapProbeProvider{reply: "RECAP-CONTENT"}
 	opts := RunOptions{Provider: p, Model: "x", Context: recapMode(2, "recap")}
 
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	out1, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("first recap did not fire")
@@ -275,13 +275,27 @@ func (p *errProvider) Call(context.Context, providers.Request) (<-chan providers
 // EventContextRecap, and the next request runs on the shrunk history. This is the
 // one seam the unit tests above don't cover — that Run() actually wires recapMode
 // to the gate. keep_last_n=0 forces a distil on the short interactive history.
+// bulkyRecapSegs opens the run with a turn that has real substance.
+//
+// This test runs keep_last_n:0, which summarizes the WHOLE history, and the
+// recap preamble is ~130 characters — so the shared two-character "go" segment
+// recaps into something LARGER and is now correctly refused. The test is about
+// the gate wiring reaching maybeRecap, not about distilling nothing, so its
+// fixture has to be a conversation worth distilling.
+func bulkyRecapSegs() []PromptSegment {
+	return []PromptSegment{{Role: "user", Content: []PromptContentBlock{
+		{Type: "trusted-text", Text: bulky("go")}}}}
+}
+
 func TestRun_RecapMode_AutoRecapsAndShrinks(t *testing.T) {
 	q := make(chan steer.Message, 4)
 	parked := make(chan struct{}, 8)
 	recapped := make(chan struct{}, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	prov := &ctxUsageProvider{firstIn: 164000, maxCtx: 200000} // turn 0 → 82% footprint
+	// turn 0 → 82% footprint, and a first reply with enough substance that
+	// recapping it is actually a saving (the recap itself comes back as "ok").
+	prov := &ctxUsageProvider{firstIn: 164000, maxCtx: 200000, firstText: bulky("turn")}
 	m := config.ContextModeRecap
 	done := make(chan struct{})
 	go func() {
@@ -290,7 +304,7 @@ func TestRun_RecapMode_AutoRecapsAndShrinks(t *testing.T) {
 			Model:       "x",
 			Tools:       []tools.Tool{noopTool{}},
 			Dispatcher:  tools.NewDispatcher([]tools.Tool{noopTool{}}),
-			Segments:    steerSegs(),
+			Segments:    bulkyRecapSegs(),
 			SteerQueue:  q,
 			Interactive: true,
 			Context:     &config.Context{Mode: &m, KeepLastN: cptr(0), AutoRecapAtPct: cptr(50)},
