@@ -6275,6 +6275,118 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	return w
 }
 
+// InertContextSetting names a context/compaction setting that is CONFIGURED but
+// cannot take effect, with the reason and what to set instead.
+//
+// Structured rather than a formatted string because two surfaces render it —
+// the boot warnings and the effective-config report — and the RFC's whole point
+// is that a configuration which silently does nothing is the defect. Two
+// independently-written predicates would eventually disagree about which
+// settings are dead, which is the same failure one level up.
+type InertContextSetting struct {
+	// Setting is the yaml path, e.g. "compaction.autocompact_at_pct".
+	Setting string `json:"setting"`
+	// Reason says why it cannot take effect, in terms of the OTHER setting
+	// that disables it — the thing the operator has to change their mind about.
+	Reason string `json:"reason"`
+	// Fix names the setting that DOES work for what they were trying to do.
+	// An advisory without this makes the operator hunt for the live knob.
+	Fix string `json:"fix,omitempty"`
+}
+
+// contextModeOf resolves the declared mode, treating an absent context block as
+// append (the documented default: an agent with no context block is byte-
+// identical to pre-RFC-CR behaviour).
+func contextModeOf(a AgentDef) string {
+	if a.Context != nil && a.Context.Mode != nil && *a.Context.Mode != "" {
+		return *a.Context.Mode
+	}
+	return ContextModeAppend
+}
+
+// InertContextSettings reports the context/compaction settings this agent
+// declares that CANNOT take effect, and why.
+//
+// ⚠️ THE COMPACTION AUTO-PATH IS BYPASSED BY EVERY NON-APPEND MODE, which is
+// broader than it first looks and is why this is unconditional rather than
+// hedged on how `auto` resolves:
+//
+//   - mode: recap    — the gate takes the recap branch, so shouldAutoCompact is
+//     never consulted; the live threshold is context.autorecap_at_pct.
+//   - mode: stateful — runStateful returns BEFORE the gate exists ("the
+//     append/recap machinery below does not apply"), and never reads Compaction
+//     at all.
+//   - mode: auto     — resolves to one of those two at run start. Both bypass
+//     the compaction gate, so the resolution does not need to be known here.
+//
+// Only mode: append (or no context block) leaves the compaction auto-path live.
+func InertContextSettings(a AgentDef) []InertContextSetting {
+	mode := contextModeOf(a)
+	if mode == ContextModeAppend {
+		return nil
+	}
+	var out []InertContextSetting
+
+	// The threshold that fired nothing on the session that motivated this: an
+	// operator set compaction.autocompact_at_pct: 70 and watched the window
+	// fill, because the live knob for their mode was the other one.
+	if a.Compaction != nil && a.Compaction.AutoCompactAtPct != nil {
+		fix := "context.autorecap_at_pct"
+		if mode == ContextModeStateful {
+			// Stateful distils per step by construction; there is no threshold
+			// to move, and pointing at one would be a false lead.
+			fix = ""
+		}
+		out = append(out, InertContextSetting{
+			Setting: "compaction.autocompact_at_pct",
+			Reason: fmt.Sprintf("context.mode is %q, and the compaction threshold is only consulted in append mode"+
+				" — every other mode distils by its own path", mode),
+			Fix: fix,
+		})
+	}
+
+	// memory_flush installs the banking callback but the recap and stateful
+	// paths both gate the actual bank on context.harvest_to_memory, so the flag
+	// alone banks nothing. Not reported when harvest_to_memory is already set:
+	// the spans ARE banked then, and the flag is merely redundant.
+	if a.Compaction != nil && a.Compaction.MemoryFlush != nil && *a.Compaction.MemoryFlush &&
+		!HarvestToMemoryEnabled(a.Context) {
+		out = append(out, InertContextSetting{
+			Setting: "compaction.memory_flush",
+			Reason: fmt.Sprintf("context.mode is %q, and that path banks evicted spans only when"+
+				" context.harvest_to_memory is set", mode),
+			Fix: "context.harvest_to_memory",
+		})
+	}
+	return out
+}
+
+// contextCompactionWarnings renders InertContextSettings as boot advisories.
+//
+// It lives beside agentGateWarnings rather than in Compaction.Validate()
+// because the verdict depends on context.mode, and Validate is a method on
+// *Compaction which cannot see it. That is also why this is a warning and not
+// an error: the combination is legal, merely useless, and an operator mid-way
+// through changing modes should not be unable to boot.
+//
+// Appended at the per-agent validate loop, which carries it to the boot log,
+// ReloadResult.Warnings and snapshots for free.
+func contextCompactionWarnings(name string, a AgentDef) []string {
+	inert := InertContextSettings(a)
+	if len(inert) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(inert))
+	for _, s := range inert {
+		msg := fmt.Sprintf("agent %q: %s is set but does nothing — %s", name, s.Setting, s.Reason)
+		if s.Fix != "" {
+			msg += fmt.Sprintf("; set %s instead", s.Fix)
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
 // sqlMemConfigWarnings returns the non-fatal advisory when an agent is
 // configured for RFC AA SQL Memory (Memory in tools + a non-empty
 // sql_scopes) but the subsystem is disabled at the storage layer — the agent
@@ -6874,6 +6986,10 @@ func validate(c *Config) error {
 		// tool they haven't gated yet.
 		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 		c.Warnings = append(c.Warnings, sqlMemConfigWarnings(name, agent, c.Storage.SqlMemEnabled)...)
+		// Context/compaction settings that cannot take effect for this agent's
+		// mode. The failure they catch is the one this advisory channel exists
+		// for: a knob that is set, looks right, and is never read.
+		c.Warnings = append(c.Warnings, contextCompactionWarnings(name, agent)...)
 		if agent.MemoryQuotaBytes < 0 {
 			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
 		}

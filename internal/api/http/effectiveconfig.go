@@ -204,10 +204,23 @@ func (s *Server) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// `inert`: settings this run carries that CANNOT take effect.
+	//
+	// Computed from the EFFECTIVE definition, not the stored one, which is the
+	// reason it belongs here as well as at boot: a per-run context override can
+	// introduce the trap on a run whose definition is perfectly clean, and boot
+	// validation never sees that combination. Empty slice rather than omitted,
+	// so a consumer can tell "nothing inert" from "this server does not report
+	// it" without version-sniffing.
+	inert := config.InertContextSettings(eff)
+	if inert == nil {
+		inert = []config.InertContextSetting{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_id": runID,
 		"agent":  run.Agent,
 		"fields": s.effectiveFields(r.Context(), run, agentDef, eff, rec),
+		"inert":  inert,
 	})
 }
 
