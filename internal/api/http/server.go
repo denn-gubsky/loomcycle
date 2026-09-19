@@ -7535,22 +7535,35 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 			msg: "the agent is mid-turn; compact when it's parked waiting for your input"}
 	}
 
-	// Rebuild the conversation from this run's transcript (== the parked loop's
-	// in-memory history — a parked run has persisted everything up to the park).
+	// Rebuild the conversation from the SESSION's transcript — which is what the
+	// loop actually holds.
+	//
+	// ⚠️ THIS USED TO FILTER TO ONE run_id, and the filter was wrong in both
+	// directions. It fetched the session transcript and then discarded most of
+	// it, so a continuation chat presented 2-3 messages and answered "nothing to
+	// compact" at 92% of its window. Worse, when the split DID succeed, keepN
+	// was computed from that run-scoped slice and applied by applyCompactSummary
+	// against the loop's SESSION-scoped history: a summary of a span the model
+	// never held, stapled to a tail sliced from a different list.
+	//
+	// RecapSession, twenty lines down, has always read the session unfiltered.
+	// Byte-identical for a single-run session, which is most autonomous runs.
 	events, terr := s.store.GetTranscript(ctx, run.SessionID)
 	if terr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: "read transcript: " + terr.Error()}
 	}
-	runEvents := make([]store.Event, 0, len(events))
-	for _, e := range events {
-		if e.RunID == runID {
-			runEvents = append(runEvents, e)
-		}
-	}
-	msgs := replayTranscript(runEvents)
+	msgs := replayTranscript(events)
 	before := estimateMessageTokens(msgs)
 	if len(msgs) < minCompactMessages {
-		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"}, nil
+		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before,
+			// Stays "noop" — the value this case has always returned. The two
+			// NEW verdicts below are additive; renaming this one would break
+			// every consumer already matching it, to say something the reason
+			// field now says anyway.
+			Applied:  "noop",
+			Messages: len(msgs),
+			Reason: fmt.Sprintf("the session holds %d message(s); compaction needs at least %d",
+				len(msgs), minCompactMessages)}, nil
 	}
 
 	// Resolve provider/model + summarize (one model call) — same chain resume
@@ -7592,7 +7605,13 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// CompactionSplit (shared with the loop) picks what to summarize vs keep.
 	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirst)
 	if !splitOK {
-		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before, Applied: "noop"}, nil
+		// "nothing to compact" is what this used to say, and it is what a caller
+		// at 92% of the window read as "you are fine". The two numbers here ARE
+		// the diagnosis, and the action follows from them.
+		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: before,
+			Applied: "noop_keep_spans_all", Messages: len(msgs), KeepLastN: keepLastN,
+			Reason: fmt.Sprintf("keep_last_n %d pins all %d message(s) of this session, leaving nothing to summarize — lower compaction.keep_last_n",
+				keepLastN, len(msgs))}, nil
 	}
 	// RFC AX: compaction summarizes via a provider.Call made OUTSIDE the run loop,
 	// so the summary ctx must carry the same credential context a run's loopCtx does
@@ -7613,23 +7632,6 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if summary == "" {
 		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarization produced no text"}
 	}
-	// RFC BL P3: bank the span this compaction discards, for the manual path
-	// (POST /v1/runs/{id}/compact + Context op=compact). AFTER a successful
-	// summary, mirroring the auto path — a failed summarization discards nothing,
-	// so there is nothing to rescue.
-	//
-	// Banked HERE rather than in the loop because this path summarizes outside the
-	// loop and pushes the finished summary; the loop's applyCompactSummary only
-	// swaps history and never calls maybeAutoCompact, so this cannot double-bank.
-	// It covers the terminal case too, which never reaches the loop at all.
-	//
-	// Best-effort exactly like the auto path: a compact must not fail because a
-	// queue write did.
-	if bank := s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(agentDef.Context), run.TenantID, run.UserID, run.Agent, runID, run.SessionID); bank != nil {
-		if _, berr := bank(summCtx, msgs[firstIdx:cut]); berr != nil {
-			log.Printf("compact %s: memory_flush did not bank: %v", runID, berr)
-		}
-	}
 	keepN := len(msgs) - cut
 	pinned := ""
 	if firstIdx > 0 {
@@ -7640,6 +7642,44 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 		}
 	}
 	after := estimateMessageTokens(loop.CompactionMessages(pinned, summary, msgs[cut:]))
+
+	// ⚠️ REFUSE A COMPACTION THAT IS NOT SMALLER — the third site the refusal
+	// was specified for, and the one the evidence actually came from: the
+	// observed session's MANUAL compact went 14230 -> 14334 and was applied.
+	// Both numbers were already computed here and never compared.
+	//
+	// Placed after `after :=` and BEFORE the push below, while the 200 is still
+	// ours to write. Not in applyCompactSummary: by then the server has already
+	// answered {compacted: true}, so a refusal there makes the transcript
+	// disagree with the API response.
+	//
+	// `after >= before` exactly, not a margin — a 10% rule would have refused
+	// the first GOOD compaction of that same session (36%).
+	if after >= before {
+		return connector.CompactResult{RunID: runID, Compacted: false, BeforeTokens: before, AfterTokens: after,
+			Applied: "noop_not_smaller", Messages: len(msgs), KeepLastN: keepLastN,
+			Reason: fmt.Sprintf("the summary is not smaller than what it replaces (%d -> %d tokens), so it was refused rather than applied",
+				before, after)}, nil
+	}
+
+	// RFC BL P3: bank the span this compaction discards, for the manual path
+	// (POST /v1/runs/{id}/compact + Context op=compact).
+	//
+	// Banked HERE rather than in the loop because this path summarizes outside
+	// the loop and pushes the finished summary; the loop's applyCompactSummary
+	// only swaps history and never calls maybeAutoCompact, so this cannot
+	// double-bank. It covers the terminal case too, which never reaches the
+	// loop at all. Best-effort: a compact must not fail because a queue write
+	// did.
+	//
+	// ⚠️ BELOW the refusal, deliberately. It used to sit above the measurement,
+	// so a compaction that was about to be rejected had already handed its span
+	// to the consolidator — banking content that stays live in the history.
+	if bank := s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(agentDef.Context), run.TenantID, run.UserID, run.Agent, runID, run.SessionID); bank != nil {
+		if _, berr := bank(summCtx, msgs[firstIdx:cut]); berr != nil {
+			log.Printf("compact %s: memory_flush did not bank: %v", runID, berr)
+		}
+	}
 
 	// Apply. Live (local or cross-replica, routed by steerReg.Push): push the
 	// compact control (summary + keep-N/keep-first) — the loop swaps its history

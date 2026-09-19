@@ -246,8 +246,31 @@ type CompactResult struct {
 	BeforeTokens int    `json:"before_tokens"`
 	AfterTokens  int    `json:"after_tokens"`
 	// Applied: "live" (pushed to the running loop), "marker" (persisted for a
-	// terminal run's next continuation), or "noop" (too short to compact).
+	// terminal run's next continuation), or one of the noop_* verdicts below.
+	//
+	// The noops are DISTINGUISHED because "nothing to compact" was a lie of
+	// omission: a caller at 92% of its window was told it was fine, when the
+	// real answer was "keep_last_n pins every message there is". They call for
+	// different actions, so they are different values:
+	//
+	//	noop                 — fewer than 4 messages; genuinely nothing to do.
+	//	                       UNCHANGED from before, so an existing consumer
+	//	                       matching "noop" keeps working; the new detail
+	//	                       rides Reason/Messages/KeepLastN instead.
+	//	noop_keep_spans_all  — keep_last_n pins the whole conversation. Lower it.
+	//	noop_not_smaller     — the summary came back no smaller, so it was
+	//	                       refused rather than applied.
+	//
+	// The two noop_* values are ADDITIVE. A consumer that has not learned them
+	// still sees compacted=false, which was always the field to branch on.
 	Applied string `json:"applied"`
+	// Reason is a human-readable line for a noop_* verdict, naming the numbers
+	// that explain it. Empty on success.
+	Reason string `json:"reason,omitempty"`
+	// Messages / KeepLastN are the noop_keep_spans_all diagnosis — this many
+	// messages in the session, this many pinned by policy.
+	Messages  int `json:"messages,omitempty"`
+	KeepLastN int `json:"keep_last_n,omitempty"`
 }
 
 // ReplaySessionRequest carries the inputs to ReplaySession: the SOURCE session
