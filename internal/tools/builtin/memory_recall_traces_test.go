@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 )
 
 // TestRecallTraces_IsGrantOnlyWithNoToolParameter.
@@ -155,5 +157,60 @@ func TestRecallTraces_GrantRoundTripsTheAgentDefinition(t *testing.T) {
 				"%d — the grant does not round-trip the definition everywhere its "+
 				"sibling does", f, sib, mine)
 		}
+	}
+}
+
+// TestRecallTraces_SuppressedWhenTheCallerAlreadyAskedForTraces.
+//
+// A trace-only search returns the turns as its ENTRIES. Appending them again under
+// `source_turns` hands the model the same rows twice in two shapes — the duplication
+// the dedup path exists to prevent. ErrTracesNotCombinable already refuses mixing
+// traces with other sources, so "asked for traces" is exactly a traces-only query.
+func TestRecallTraces_SuppressedWhenTheCallerAlreadyAskedForTraces(t *testing.T) {
+	if !sourcesIncludeTraces([]memrank.Source{memrank.SourceTraces}) {
+		t.Error("a traces-only selector was not recognised — the block would be appended " +
+			"on top of a result that already IS the turns")
+	}
+	for _, sel := range [][]memrank.Source{
+		nil,
+		{memrank.SourceFacts},
+		{memrank.SourceFacts, memrank.SourceNotes},
+		{memrank.SourceDocuments},
+	} {
+		if sourcesIncludeTraces(sel) {
+			t.Errorf("selector %v was treated as a trace search — the grant would be "+
+				"suppressed on exactly the calls it exists to serve", sel)
+		}
+	}
+}
+
+// TestRecallTraces_GrantCoversSearchNotJustRecall.
+//
+// ⚠️ THE REGRESSION THIS FILE'S SIBLING DID NOT HAVE. The grant first shipped on
+// `recall` alone, and the OP IS A DECISION THE MODEL MAKES: on one LoCoMo conversation
+// the reader chose `recall` 136 of 150 times and the grant fired on 91% of calls; on
+// another it chose `search` 49 of 85 and fired on 42%. Of 81 questions there, the 36
+// that used `recall` moved +27.8pp and the 45 that used `search` moved +0.0pp — the
+// lever was worth the same, only coverage differed.
+//
+// Driven off the source text rather than a live store, because the point is
+// structural: both dispatch paths must consult the grant.
+func TestRecallTraces_GrantCoversSearchNotJustRecall(t *testing.T) {
+	b, err := os.ReadFile("memory.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if n := strings.Count(src, "RecallAttachTraces"); n < 2 {
+		t.Errorf("the grant is consulted %d time(s) in memory.go — it must gate BOTH the "+
+			"recall path and the search path, or the op the model happens to pick decides "+
+			"whether an operator's grant applies", n)
+	}
+	if n := strings.Count(src, "attachQuestionTurns"); n < 2 {
+		t.Errorf("attachQuestionTurns is called %d time(s) — expected both recall and search", n)
+	}
+	if !strings.Contains(src, "sourcesIncludeTraces") {
+		t.Error("the search path does not suppress the block on a traces-only search, so a " +
+			"trace search would return the same rows twice")
 	}
 }
