@@ -1568,6 +1568,35 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		"query_embedding_dim": res.QueryEmbeddingDim,
 		"truncated":           res.Truncated,
 	}
+
+	// THE QUESTION-ANCHORED TURNS ON `search` TOO, and this is not symmetry for its
+	// own sake — it is a measured gap.
+	//
+	// The grant first shipped on `recall` alone, and the OP IS A DECISION THE MODEL
+	// MAKES. Measured across two LoCoMo conversations with the same agent definition:
+	// on conv-26 the reader chose `recall` 136 times of 150 and the grant fired on
+	// 91% of calls; on conv-30 it chose `search` 49 of 85 and the grant fired on 42%.
+	// The consequence was exact — of 81 conv-30 questions, the 36 that used `recall`
+	// got turns on all 36 and moved +27.8pp, while the 45 that used `search` got turns
+	// on none and moved +0.0pp. The lever was worth the same on both corpora; only
+	// coverage differed. This closes that.
+	//
+	// It is the same lesson as the tool PARAMETER one level up: a caller-elected
+	// parameter was passed on 51 of 128 calls, so the decision moved to the operator
+	// grant — and then the op quietly became the new decision. An operator grant has
+	// to hold wherever the capability is reachable, not on the one path it was first
+	// written for.
+	//
+	// ⚠️ NOT WHEN THE CALLER ALREADY ASKED FOR TRACES. A trace-only search returns the
+	// turns as its ENTRIES; appending them again under `source_turns` would hand the
+	// model the same rows twice in two shapes, which is the duplication the dedup path
+	// exists to prevent. `ErrTracesNotCombinable` already refuses mixing traces with
+	// other sources, so "the caller asked for traces" is exactly a traces-only query.
+	if tools.MemoryPolicy(ctx).RecallAttachTraces && !sourcesIncludeTraces(sources) {
+		turns, found := m.attachQuestionTurns(ctx, scope, scopeID, in.Query)
+		out["source_turns"] = turns
+		out["source_turns_found"] = found
+	}
 	// Present only when a window was asked for, so a search that never mentions
 	// time keeps its exact prior response shape.
 	if res.TimeFilter != nil {

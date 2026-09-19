@@ -134,3 +134,17 @@ func trimTraceText(s string) string {
 	}
 	return s[:recallTraceMaxChars]
 }
+
+// sourcesIncludeTraces reports whether the caller explicitly asked for raw turns.
+//
+// Used to suppress the question-anchored block on a search that is ALREADY a trace
+// search: those turns arrive as the result's entries, and appending the same rows a
+// second time under a different key is duplication the reader has to reconcile.
+func sourcesIncludeTraces(sources []memrank.Source) bool {
+	for _, s := range sources {
+		if s == memrank.SourceTraces {
+			return true
+		}
+	}
+	return false
+}

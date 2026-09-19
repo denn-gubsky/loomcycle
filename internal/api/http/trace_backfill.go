@@ -155,9 +155,21 @@ func (s *Server) handleMemoryBackfillTraces(w http.ResponseWriter, r *http.Reque
 			if dryRun {
 				continue
 			}
+			// ⚠️ THE TURN'S OWN INSTANT, NOT time.Now(). This field used to record when
+			// the row was INDEXED, which made a trace search able to answer "what was
+			// said" and never "when" — the half the temporal questions actually need,
+			// since a distilled fact is tenseless and the turn is what carries the
+			// date. A backfill run months after a conversation stamped every turn in it
+			// with the same afternoon. Falls back to now only when the transcript event
+			// carried no timestamp, which is the pre-existing behaviour for rows that
+			// genuinely have none.
+			at := turn.At
+			if at.IsZero() {
+				at = time.Now()
+			}
 			value, merr := json.Marshal(traceTurnValue{
 				Text: text, Speaker: turn.Speaker, SessionID: sess.SessionID,
-				At: time.Now().UTC().Format(time.RFC3339Nano),
+				At: at.UTC().Format(time.RFC3339Nano),
 			})
 			if merr != nil {
 				continue
