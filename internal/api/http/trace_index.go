@@ -109,6 +109,9 @@ func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, 
 		text = text[:traceTurnMaxBytes]
 	}
 
+	// now() IS the turn's instant here, and correctly so: this path indexes a user
+	// turn AS IT ARRIVES. That is not true of the backfill or of the assistant path
+	// below, which both replay turns said earlier — they take the turn's own stamp.
 	value, err := json.Marshal(traceTurnValue{
 		Text: text, Speaker: "user", SessionID: sessionID, RunID: runID,
 		At: time.Now().UTC().Format(time.RFC3339Nano),
@@ -279,9 +282,16 @@ func (s *Server) indexAssistantTurns(ctx context.Context, runID string, meta run
 		// second pass overwrite the first instead of filing the same words twice.
 		// The user path cannot do this: it has no seq in hand at write time.
 		key := store.TraceTurnKeyPrefix + run.SessionID + ":a" + strconv.FormatInt(turn.Seq, 10)
+		// THE TURN'S OWN INSTANT. finishRun replays turns from a completed run, and a
+		// long or resumed run can close well after the assistant actually spoke — so
+		// now() would stamp every turn of that run with the same closing moment.
+		at := turn.At
+		if at.IsZero() {
+			at = time.Now()
+		}
 		value, err := json.Marshal(traceTurnValue{
 			Text: text, Speaker: "assistant", SessionID: run.SessionID, RunID: runID,
-			At: time.Now().UTC().Format(time.RFC3339Nano),
+			At: at.UTC().Format(time.RFC3339Nano),
 		})
 		if err != nil {
 			continue

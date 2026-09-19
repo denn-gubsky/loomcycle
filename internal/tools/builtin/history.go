@@ -936,6 +936,15 @@ type conversationTurn struct {
 	// and to say where in the chat a match sits, without pretending to a
 	// per-turn identity the event log does not carry.
 	Seq int64 `json:"seq"`
+	// At is WHEN THE TURN WAS SAID, taken from the transcript event.
+	//
+	// ⚠️ It exists because the trace index was storing time.Now() — the moment of
+	// INDEXING — and nothing else carried the turn's own instant. A trace search
+	// could therefore return "what was said" but never "when", which is the half the
+	// temporal questions need: a distilled fact is tenseless and the turn is what
+	// carries the date. The LoCoMo corpus only appears to work because its harness
+	// pre-stamps the text; a live-indexed turn had no date at all.
+	At time.Time `json:"at,omitempty"`
 }
 
 // conversationTurns segments a transcript into speaker turns.
@@ -958,12 +967,14 @@ func conversationTurns(events []store.Event) []conversationTurn {
 	var out []conversationTurn
 	var asst strings.Builder
 	asstSeq := int64(0)
+	var asstAt time.Time
 	flushAssistant := func() {
 		if text := strings.TrimSpace(asst.String()); text != "" {
-			out = append(out, conversationTurn{Speaker: "assistant", Text: text, Seq: asstSeq})
+			out = append(out, conversationTurn{Speaker: "assistant", Text: text, Seq: asstSeq, At: asstAt})
 		}
 		asst.Reset()
 		asstSeq = 0
+		asstAt = time.Time{}
 	}
 	for _, ev := range events {
 		switch ev.Type {
@@ -972,7 +983,7 @@ func conversationTurns(events []store.Event) []conversationTurn {
 			// operator steer (which the runner persists in this same shape).
 			flushAssistant()
 			if text := userTurnText(ev.Payload); text != "" {
-				out = append(out, conversationTurn{Speaker: "user", Text: text, Seq: ev.Seq})
+				out = append(out, conversationTurn{Speaker: "user", Text: text, Seq: ev.Seq, At: ev.Timestamp})
 			}
 		case "text":
 			// Assistant text is persisted one row PER STREAMED DELTA, so these
@@ -981,6 +992,9 @@ func conversationTurns(events []store.Event) []conversationTurn {
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil {
 				if asst.Len() == 0 {
 					asstSeq = ev.Seq
+					// The FIRST delta's instant, not the last: an assistant turn is
+					// stamped when it began, matching how the user turn beside it is.
+					asstAt = ev.Timestamp
 				}
 				asst.WriteString(pe.Text)
 			}
