@@ -73,14 +73,55 @@ should be re-checked against a real-retrieval arm before it is acted on.
 
 ## Caveats
 
-- conv-30 is **one draw**. Its margin is large (7.7 / 9.4 questions) but it has not
-  been replicated; conv-26 has two.
 - conv-30 has **no open-domain slice** and 81 questions against conv-26's 152, so its
   higher absolute number is partly the question mix. The within-conversation
   control→L2 delta is the comparable quantity.
-- These arms hold the **tool loop**. The L2+L3 combination measured on conv-26 reached
-  comparable accuracy at 3.8× lower latency with 13 tool calls instead of 150, and has
-  **not** been re-measured with the fix.
+## ⚠️ The L2+L3 combination LOSES once both are measured fairly
+
+Pre-fix the combo matched L2 (0.6690 vs 0.6858, +15/−20, p=0.5) at 3.8× lower latency,
+and was recommended on that basis. **That recommendation is withdrawn.**
+
+| conv-26 arm | accuracy | strict | p50 | gate |
+|---|---|---|---|---|
+| L2 pre-fix (mean of 2) | 0.6723 | 0.5946 | 8.2s | fail |
+| combo pre-fix | 0.6690 | 0.5724 | 2.2s | fail |
+| **L2 FIXED (mean of 2)** | **0.6976** | **0.6216** | 8.1s | **PASS** |
+| combo FIXED | 0.6610 | 0.5822 | 2.5s | fail |
+
+The mechanism is exact: **the combo makes 14 tool calls in 150 questions** — the
+pre-retrieved block answers most of them, so the model rarely reaches for the tool.
+The fix improves only the TOOL path. L2 makes 150 calls and gained 2.5pp; the combo
+makes 14 and gained nothing. Their earlier equivalence was an artifact of L2 being
+handicapped.
+
+The honest trade is now **3.2× lower latency for ~4 points of accuracy and the gate** —
+real for a latency-bound deployment, but a trade rather than a free win. It also
+sharpens L2 vs L3: a model-composed query against the full trace index beats one
+embedding of the raw question, and the combo suppresses exactly that mechanism.
+
+## The residue — where the remaining work is
+
+`residue.py` classifies what the best arm still misses, into buckets with different
+fixes:
+
+| bucket | conv-26 | conv-30 | what fixes it |
+|---|---|---|---|
+| UNREACHABLE (oracle fails too) | 16 | 9 | nothing retrieval-side |
+| RETRIEVAL (wrong; oracle right) | 16 | 4 | better retrieval |
+| **VAGUE** (partial; oracle right) | **12** | **4** | **prompt/answering** |
+| ABSTAINED | 11 | 5 | evidence or willingness |
+| REGRESSED | 1 | 1 | — |
+
+**VAGUE is the cheapest bucket and is invisible in any aggregate.** These are answers
+that found the evidence and dropped the specific — *"from her home country"* when the
+gold is **Sweden**; *"counseling and mental health"* when the gold is *"counseling and
+mental health for Transgender people"*. They score 0.5 and look exactly like retrieval
+failures in the headline number. With ABSTAINED that is 23 of conv-26's 56 — over 40%
+of the residue reachable without touching the memory layer.
+
+⚠️ **UNREACHABLE over-counts.** It is defined by the oracle also failing, and the
+oracle renders only LoCoMo's ANNOTATED evidence, which is off by one. Some of those
+questions are reachable by real retrieval; the oracle simply never saw the turn.
 - Both stores were built chat-ingested with traces backfilled scoped to
   `locomo/scribe`, and trace-index **writes off** while measuring. A queue-ingested
   store yields zero turns silently.

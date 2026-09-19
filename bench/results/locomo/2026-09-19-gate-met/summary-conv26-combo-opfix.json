@@ -1,0 +1,39 @@
+{
+  "label": "conv-26 L2+L3 combo (op-coverage fix)",
+  "note": "combo re-measured; only 14 tool calls, so the fix barely touches it",
+  "arm": "locomo/orn-l2l3fix-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-19T14:11:11Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 146,
+  "accuracy": 0.661,
+  "strict": 0.5822,
+  "correct": 85,
+  "partial": 23,
+  "wrong": 38,
+  "unparsed": 4,
+  "not_found": 18,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.4375,
+      "not_found": 4
+    },
+    "2": {
+      "graded": 33,
+      "accuracy": 0.6667,
+      "not_found": 3
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.4545,
+      "not_found": 5
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.7929,
+      "not_found": 6
+    }
+  }
+}
