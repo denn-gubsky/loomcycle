@@ -576,3 +576,165 @@ func TestDistillers_HaveNoSilentDeclinePath(t *testing.T) {
 		}
 	}
 }
+
+// singleTurnProvider answers once at end_turn — the shape of a continuation
+// that replies without calling a tool. It records the message count of each
+// request so a test can see whether the history was distilled BEFORE the send.
+type singleTurnProvider struct {
+	mu       sync.Mutex
+	sentMsgs []int
+	maxCtx   int
+	reply    string
+}
+
+func (p *singleTurnProvider) ID() string                                   { return "single-turn" }
+func (p *singleTurnProvider) Probe(context.Context) error                  { return nil }
+func (p *singleTurnProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *singleTurnProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *singleTurnProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.sentMsgs = append(p.sentMsgs, len(req.Messages))
+	p.mu.Unlock()
+	text := p.reply
+	if text == "" {
+		text = "ok"
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: text}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn"}
+	close(ch)
+	return ch, nil
+}
+
+// B-iii, the iteration-0 hole: a run that answers in ONE iteration must still
+// be able to distil, because the gate runs before the request is sent.
+//
+// The footprint used to be zero until a call RETURNED, so a continuation
+// replaying a large history had no opportunity at all — it sent the whole thing
+// and finished. The observed session's last run sent 30100 tokens of a 32768
+// window this way and reclaimed nothing.
+func TestRun_SingleIterationOverThresholdDistils(t *testing.T) {
+	// A prior history well over the threshold: ~40 messages of real bulk, of
+	// which keep_last_n 2 keeps only the tail.
+	var prior []providers.Message
+	for i := 0; i < 40; i++ {
+		if i%2 == 0 {
+			prior = append(prior, userMsg(bulky("q")))
+		} else {
+			prior = append(prior, asstMsg(bulky("a")))
+		}
+	}
+	// The estimate must actually clear the threshold, or this test proves
+	// nothing about the gate.
+	est := estimateMessageTokens(prior)
+	window := est * 2 // the history alone is ~50% of the window
+	if est == 0 {
+		t.Fatal("fixture has no weight")
+	}
+
+	prov := &singleTurnProvider{maxCtx: window, reply: "short"}
+	m := config.ContextModeRecap
+	var recapped int
+	var mu sync.Mutex
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:         []tools.Tool{noopTool{}},
+		Dispatcher:    tools.NewDispatcher([]tools.Tool{noopTool{}}),
+		Segments:      steerSegs(),
+		PriorMessages: prior,
+		Context: &config.Context{Mode: &m, KeepLastN: cptr(2),
+			AutoRecapAtPct: cptr(50), Reasoning: cptr("drop")},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventContextRecap {
+				mu.Lock()
+				recapped++
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	got := recapped
+	mu.Unlock()
+	if got == 0 {
+		t.Fatal("a single-iteration run over the threshold did not distil — the gate " +
+			"runs at the TOP of the iteration, so an unseeded footprint makes this " +
+			"impossible however full the replayed prompt is")
+	}
+
+	prov.mu.Lock()
+	sent := append([]int(nil), prov.sentMsgs...)
+	prov.mu.Unlock()
+	if len(sent) == 0 {
+		t.Fatal("the provider was never called")
+	}
+	// The distillation must happen BEFORE the send, not after it: the point is
+	// that the oversized prompt never leaves.
+	if sent[0] >= len(prior) {
+		t.Errorf("the first request carried %d messages of a %d-message history — "+
+			"the distillation did not take effect before the send", sent[0], len(prior))
+	}
+}
+
+// The seed must not fire the gate on a SMALL history. A run that is nowhere
+// near its window distilling at start would throw away context for nothing,
+// and chars/4 overcounts, so this is the direction to check.
+func TestRun_SeedDoesNotDistilAShortHistory(t *testing.T) {
+	prov := &singleTurnProvider{maxCtx: 200000}
+	m := config.ContextModeRecap
+	var recapped int
+	var mu sync.Mutex
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:         []tools.Tool{noopTool{}},
+		Dispatcher:    tools.NewDispatcher([]tools.Tool{noopTool{}}),
+		Segments:      steerSegs(),
+		PriorMessages: distillableConvo(),
+		Context:       &config.Context{Mode: &m, KeepLastN: cptr(2), AutoRecapAtPct: cptr(50)},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventContextRecap {
+				mu.Lock()
+				recapped++
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if recapped != 0 {
+		t.Errorf("distilled %d time(s) on a history far below the threshold — the "+
+			"seed is firing the gate when it should not", recapped)
+	}
+}
+
+// effectiveWindow is shared by the seed and the per-turn update precisely so
+// they cannot disagree about how full the window is.
+func TestEffectiveWindow_BudgetOnlyLowers(t *testing.T) {
+	cap200k := &singleTurnProvider{maxCtx: 200000}
+	for _, tc := range []struct {
+		name             string
+		reported, budget int
+		want             int
+	}{
+		{"static capability when nothing reported", 0, 0, 200000},
+		{"a per-call report wins over the capability", 131072, 0, 131072},
+		{"a budget lowers it", 0, 32768, 32768},
+		{"a budget cannot enlarge a fixed window", 0, 999999, 200000},
+		{"a budget lowers a per-call report too", 131072, 8192, 8192},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := effectiveWindow(tc.reported, RunOptions{Provider: cap200k, MaxContextTokens: tc.budget})
+			if got != tc.want {
+				t.Errorf("effectiveWindow(%d, budget=%d) = %d, want %d",
+					tc.reported, tc.budget, got, tc.want)
+			}
+		})
+	}
+}

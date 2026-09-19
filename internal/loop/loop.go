@@ -1170,6 +1170,29 @@ func messageText(m providers.Message) string {
 
 // estimateMessageTokens is a cheap chars/4 heuristic over message text + tool I/O
 // — for the operator-facing before/after readout, not for billing.
+// effectiveWindow resolves the context-window ceiling the distillation gate
+// measures against, from whatever is known at the call site.
+//
+// EXTRACTED rather than duplicated. The seed at run start and the per-turn
+// update need the identical answer, and the one thing that must not happen is
+// the two disagreeing about how full the window is — a gate that fires on one
+// formula and a gauge that reports another is a worse diagnostic than neither.
+//
+// `reported` is a per-CALL window when a driver supplies one (Ollama reads the
+// model's actually-loaded context from /api/ps), 0 before any call has
+// returned. The static capability is the fallback, and a per-agent budget can
+// only LOWER the result — never enlarge a fixed cloud window.
+func effectiveWindow(reported int, opts RunOptions) int {
+	w := reported
+	if w == 0 {
+		w = opts.Provider.Capabilities().MaxContextTokens
+	}
+	if opts.MaxContextTokens > 0 && (w == 0 || opts.MaxContextTokens < w) {
+		w = opts.MaxContextTokens
+	}
+	return w
+}
+
 func estimateMessageTokens(msgs []providers.Message) int {
 	chars := 0
 	for _, m := range msgs {
@@ -1890,7 +1913,29 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// lastCompactIter debounces back-to-back auto-compactions.
 	var compactRequested atomic.Bool
 	ctx = tools.WithCompactRequest(ctx, &compactRequested)
-	var lastCtxTokens, lastWindow int
+	// ⚠️ SEEDED, not zero. These used to start at 0 and stay there until the
+	// first provider call RETURNED, while the distillation gate runs at the TOP
+	// of an iteration — so a run whose very first request was already near the
+	// window could not distil before sending it.
+	//
+	// That is not a corner case: a continuation answering at end_turn is ONE
+	// iteration, so an interactive chat replaying a large history had no
+	// opportunity to distil at all, however full its prompt. The observed
+	// session's last run sent 30100 tokens of a 32768 window on a single
+	// iteration and reclaimed nothing.
+	//
+	// The estimate is chars/4 — not a new estimator, the same one the gate
+	// already runs on after a steer-delivered compaction, after a recap and
+	// after a compaction. Its error direction is the safe one: chars/4
+	// OVERCOUNTS dense text, so the seed errs toward distilling slightly early,
+	// and the first real usage event overwrites it with the provider's own
+	// count.
+	//
+	// Post-call distillation was the alternative and is the wrong shape: for a
+	// continuation it would distil for a NEXT Run() whose counters start at
+	// zero again, which is indistinguishable from doing nothing.
+	lastCtxTokens := estimateMessageTokens(messages)
+	lastWindow := effectiveWindow(0, opts)
 	lastCompactIter := -2
 	// Distillation declines dedup on (mode, reason) for the life of the run,
 	// mirroring the server's seenLimit set.
@@ -2537,19 +2582,10 @@ outerLoop:
 			// A driver may already report a per-CALL window (e.g. Ollama
 			// reads the model's actual loaded context from /api/ps) — prefer
 			// that and only fall back to the static capability default.
-			if iterUsage.MaxContextTokens == 0 {
-				iterUsage.MaxContextTokens = opts.Provider.Capabilities().MaxContextTokens
-			}
-			// RFC CJ: a per-agent context budget caps the EFFECTIVE window used by
-			// the auto-compaction threshold + the gauge. Clamp to whatever the
-			// provider reported — a budget can only LOWER a fixed cloud window,
-			// never enlarge it (0 = unknown window → adopt the budget). For Ollama
-			// the driver already reported the per-agent num_ctx here, so this is a
-			// no-op unless the budget is smaller still.
-			if opts.MaxContextTokens > 0 &&
-				(iterUsage.MaxContextTokens == 0 || opts.MaxContextTokens < iterUsage.MaxContextTokens) {
-				iterUsage.MaxContextTokens = opts.MaxContextTokens
-			}
+			// RFC CJ: a per-agent context budget caps the EFFECTIVE window used
+			// by the distillation threshold + the gauge. See effectiveWindow —
+			// shared with the run-start seed so the two cannot disagree.
+			iterUsage.MaxContextTokens = effectiveWindow(iterUsage.MaxContextTokens, opts)
 			// RFC AV: stamp the serving provider onto the per-call usage event
 			// too (not just totalUsage) so the token_usage row records which
 			// provider actually served this call — exact across mid-run fallback.
