@@ -1373,6 +1373,55 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 // compacted form, emitting the marker. Returns the (possibly unchanged) slice +
 // whether it compacted. A failed summary call changes nothing (logged via emit).
 // The caller gates WHEN this runs (threshold / self-request) at a clean boundary.
+// declineSplitMessage names the two numbers that ARE the split diagnosis, and
+// the key to change. "distillation declined" sends an operator to read source;
+// "keep_last_n 6 pins all 7 messages" sends them to the right line of yaml.
+func declineSplitMessage(mode string, messages, keepLastN int) string {
+	key := "keep_last_n"
+	if mode == "recap" {
+		key = "context.keep_last_n"
+	} else {
+		key = "compaction.keep_last_n"
+	}
+	return fmt.Sprintf("context %s declined: %s %d pins all %d message(s), leaving nothing to distil — lower %s",
+		mode, key, keepLastN, messages, key)
+}
+
+// compactionSummaryDecline distinguishes the two summarizer outcomes that both
+// end in no text. They are NOT the same problem: a failure has an error to
+// read, while an empty return is a budget/routing issue with no error at all —
+// the one that produced the silent climb this work exists to fix.
+func compactionSummaryDecline(mode, trigger string, window int, err error) *providers.ContextDistillDeclinedInfo {
+	info := &providers.ContextDistillDeclinedInfo{
+		Mode: mode, Trigger: trigger, WindowTokens: window,
+		Reason: providers.DistillDeclineEmptySummary,
+		Message: "context " + mode + " declined: the summarizer returned no text. A thinking model " +
+			"spends a small budget reasoning and emits nothing the summary accumulator collects — " +
+			"raise recap_max_chars, or choose an effort that stops the model thinking",
+	}
+	if err != nil {
+		info.Reason = providers.DistillDeclineSummarizeFailed
+		info.Message = "context " + mode + " declined: the summarize call failed: " + err.Error()
+	}
+	return info
+}
+
+// declineDistill is the SINGLE exit for "distillation was attempted and did
+// nothing". Every `return messages, false` in maybeRecap and maybeAutoCompact
+// goes through it, so a bare one added later reads as an asymmetry in review.
+//
+// The silence WAS the bug. A live chat crossed its threshold and climbed to the
+// top of the window with zero recap markers and zero errors, and telling "never
+// attempted" from "attempted and the summarizer returned empty" required
+// reading this file and counting event types in a raw transcript. Routing the
+// returns through one helper is what makes the invariant checkable rather than
+// a convention.
+func declineDistill(emit func(providers.Event), messages []providers.Message,
+	info *providers.ContextDistillDeclinedInfo) ([]providers.Message, bool) {
+	emit(providers.Event{Type: providers.EventContextDistillDeclined, ContextDistill: info})
+	return messages, false
+}
+
 func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
 	c := opts.Compaction
 	keepLastN := config.CompactionDefaultKeepLastN
@@ -1395,7 +1444,10 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	}
 	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
 	if !ok {
-		return messages, false
+		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
+			Mode: "compaction", Trigger: trigger, Reason: providers.DistillDeclineSplitDeclined,
+			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			Message: declineSplitMessage("compaction", len(messages), keepLastN)})
 	}
 	// Safety cap: when the provider reports a window, never let the kept-
 	// verbatim tail itself approach it — otherwise the post-compaction request
@@ -1407,10 +1459,12 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	}
 	summary, err := Summarize(ctx, opts.Provider, model, messages[firstIdx:cut], targetPct)
 	if err != nil || strings.TrimSpace(summary) == "" {
+		// The EventError stays: terminal-error consumers depend on it. The
+		// decline is an additional STRUCTURED twin, not a replacement.
 		if err != nil {
 			emit(providers.Event{Type: providers.EventError, Error: "compaction summary failed (" + trigger + "): " + err.Error()})
 		}
-		return messages, false
+		return declineDistill(emit, messages, compactionSummaryDecline("compaction", trigger, window, err))
 	}
 	before := estimateMessageTokens(messages)
 	pinned := ""
@@ -1419,6 +1473,18 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	}
 	out := CompactionMessages(pinned, strings.TrimSpace(summary), messages[cut:])
 	after := estimateMessageTokens(out)
+	// Refuse a distillation that is not smaller — see the twin in maybeRecap.
+	// Placed BEFORE the bank and the harvest below, which is why those two need
+	// no reordering here: a refused compaction must not hand away a span it is
+	// about to keep.
+	if after >= before {
+		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
+			Mode: "compaction", Trigger: trigger, Reason: providers.DistillDeclineNotSmaller,
+			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			BeforeTokens: before, AfterTokens: after,
+			Message: fmt.Sprintf("context compaction declined: the result is not smaller (%d -> %d tokens), "+
+				"so it was refused rather than applied", before, after)})
+	}
 	info := &providers.ContextCompactionEventInfo{
 		Summary: strings.TrimSpace(summary), KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
 		BeforeTokens: before, AfterTokens: after, Trigger: trigger}
@@ -1603,11 +1669,21 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 		}
 	}
 	if reasoning == "keep" {
-		return messages, false // no distillation in keep mode
+		// Not a fault — but reported, because "nothing happened" must never be
+		// silent. An operator who did not realise `keep` disables distillation
+		// needs to see that once, not deduce it.
+		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
+			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineReasoningKeep,
+			WindowTokens: window, Messages: len(messages),
+			Message: "context recap declined: context.reasoning is \"keep\", which asks for no " +
+				"distillation — set reasoning: recap (or drop) to let the window be reclaimed"})
 	}
 	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
 	if !ok {
-		return messages, false
+		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
+			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineSplitDeclined,
+			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			Message: declineSplitMessage("recap", len(messages), keepLastN)})
 	}
 	if window > 0 {
 		cut = capKeptTailToWindow(messages, cut, window*compactionKeptTailBudgetPct/100)
@@ -1616,21 +1692,17 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	if reasoning == "recap" {
 		r, err := RecapReasoning(ctx, opts.Provider, model, messages[firstIdx:cut], maxChars)
 		if err != nil || strings.TrimSpace(r) == "" {
+			// The EventError stays for terminal-error consumers; the decline is
+			// the structured twin. The err==nil branch is the one that produced
+			// the observed silent climb — it had no signal of any kind.
 			if err != nil {
 				emit(providers.Event{Type: providers.EventError, Error: "context recap failed (" + trigger + "): " + err.Error()})
 			}
-			return messages, false
+			return declineDistill(emit, messages, compactionSummaryDecline("recap", trigger, window, err))
 		}
 		newRecap = strings.TrimSpace(r)
 	}
 	// reasoning=="drop": no recap call; the evicted span is dropped with no note.
-	// Recall harvest: embed the evicted span before it is dropped, so a later
-	// Recall(query) can fetch it back — most valuable exactly here, where recap
-	// (or drop) loses the detail. nil-safe when recall is off.
-	opts.RecallIndex.Harvest(ctx, messages[firstIdx:cut])
-	// Persistent-memory harvest (RFC CT P2): bank the same evicted span for the
-	// consolidator when the agent opted in. No-op unless context.harvest_to_memory.
-	harvestToMemory(ctx, opts, emit, messages[firstIdx:cut])
 	before := estimateMessageTokens(messages)
 	pinned := ""
 	if firstIdx > 0 {
@@ -1638,6 +1710,34 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	}
 	out := RecapMessages(pinned, newRecap, messages[cut:])
 	after := estimateMessageTokens(out)
+	// Refuse a distillation that is not smaller. On the observed session a
+	// manual compaction went 14230 -> 14334 and was applied anyway: both
+	// numbers were already measured here and never compared.
+	//
+	// The predicate is `after >= before` EXACTLY, not a margin — a 10% rule
+	// would have refused the first good compaction of that same session (36%),
+	// and at 99% of a window a 5% win is still a win.
+	if after >= before {
+		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
+			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineNotSmaller,
+			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			BeforeTokens: before, AfterTokens: after,
+			Message: fmt.Sprintf("context recap declined: the result is not smaller (%d -> %d tokens), "+
+				"so it was refused rather than applied", before, after)})
+	}
+	// ⚠️ THE HARVESTS BELONG BELOW THE CHECK, and used to sit above it. They
+	// hand the evicted span to Recall and to persistent memory — which is only
+	// correct once we know the span is actually being dropped. Above the check,
+	// every decline banked a span it then kept, and with the gate re-firing each
+	// iteration that wrote the same content repeatedly.
+	//
+	// Recall harvest: embed the evicted span before it is dropped, so a later
+	// Recall(query) can fetch it back — most valuable exactly here, where recap
+	// (or drop) loses the detail. nil-safe when recall is off.
+	opts.RecallIndex.Harvest(ctx, messages[firstIdx:cut])
+	// Persistent-memory harvest (RFC CT P2): bank the same evicted span for the
+	// consolidator when the agent opted in. No-op unless context.harvest_to_memory.
+	harvestToMemory(ctx, opts, emit, messages[firstIdx:cut])
 	emit(providers.Event{Type: providers.EventContextRecap,
 		ContextRecap: &providers.ContextRecapEventInfo{
 			Recap: newRecap, KeepN: len(messages) - cut, KeepFirst: firstIdx > 0,
@@ -1792,6 +1892,45 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	ctx = tools.WithCompactRequest(ctx, &compactRequested)
 	var lastCtxTokens, lastWindow int
 	lastCompactIter := -2
+	// Distillation declines dedup on (mode, reason) for the life of the run,
+	// mirroring the server's seenLimit set.
+	//
+	// The PAIR is the key, deliberately. A reason that is a property of the
+	// CONFIGURATION — keep_last_n spanning the conversation, reasoning:keep —
+	// is equally true on every iteration, and repeating it would bury it in its
+	// own noise. A state-dependent one (not_smaller) can legitimately recur as
+	// the history changes, and a DIFFERENT reason always gets through.
+	//
+	// This complements the debounce above rather than duplicating it: the
+	// debounce suppresses re-attempts within its window, this suppresses a
+	// repeat of the same verdict after that window expires.
+	seenDecline := map[string]bool{}
+	// The most recent decline, surfaced on Context op=self.
+	//
+	// This is why the value is held rather than read off the event stream: the
+	// EVENT fires once per (mode, reason), but the CONDITION persists, and an
+	// agent reading op=self on turn 20 needs it as much as on turn 3. A
+	// consumer that only saw the event would have to remember it itself.
+	var lastDistill tools.LastDistillValue
+	distillEmit := func(ev providers.Event) {
+		if ev.Type == providers.EventContextDistillDeclined && ev.ContextDistill != nil {
+			// Recorded here because this is the one path EVERY decline takes,
+			// so what op=self reports cannot diverge from what was emitted.
+			// (Before or after the dedup is equivalent today — the first
+			// occurrence always passes through — so this is about having a
+			// single origin, not about ordering.)
+			lastDistill = tools.LastDistillValue{
+				Mode: ev.ContextDistill.Mode, Reason: ev.ContextDistill.Reason,
+				Message: ev.ContextDistill.Message,
+			}
+			key := ev.ContextDistill.Mode + "|" + ev.ContextDistill.Reason
+			if seenDecline[key] {
+				return
+			}
+			seenDecline[key] = true
+		}
+		emit(ev)
+	}
 	// L1 recap (RFC CR) reuses lastCompactIter to debounce — the two distillation
 	// modes are mutually exclusive per run. No running-recap state is threaded: the
 	// prior recap rides the transcript (see RecapMessages), so replay/resume are
@@ -1993,15 +2132,19 @@ outerLoop:
 			if selfReq {
 				trigger = "self"
 			}
+			// The debounce advances on every ATTEMPT, not only on success.
+			// It used to sit inside the `if did` blocks below, so a decline
+			// left it untouched, the gate re-fired on the very next iteration,
+			// and a summarize call was burned every iteration for the rest of
+			// the run — against a condition that could not change.
+			lastCompactIter = iter
 			if recapMode {
-				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastWindow, emit, trigger); did {
+				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
-					lastCompactIter = iter
 					lastCtxTokens = estimateMessageTokens(messages)
 				}
-			} else if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, emit, trigger); did {
+			} else if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
 				messages = newMsgs
-				lastCompactIter = iter
 				// Compaction shrank the history; refresh the footprint so op=self
 				// below reflects the compacted size, not the pre-compaction value
 				// (the next real turn's usage overwrites it).
@@ -2016,6 +2159,11 @@ outerLoop:
 		// drainSteer + auto/self compaction, so a same-turn op=self never reports
 		// the stale pre-compaction footprint. 0 on the first iteration.
 		iterCtx = tools.WithContextUsage(iterCtx, lastCtxTokens, lastWindow)
+		// Stamped HERE, beside the footprint, so the two cannot describe
+		// different iterations. The footprint alone is a trap: an agent told it
+		// is at 99% calls op=compact, and if distillation is declining
+		// structurally that call reaches the same decline and teaches nothing.
+		iterCtx = tools.WithLastDistill(iterCtx, lastDistill)
 
 		// Context-transform plugins (RFC Z / F43): run the configured chain on a
 		// COPY of the outbound context — the loop's canonical system/messages

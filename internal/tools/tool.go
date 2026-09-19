@@ -1434,6 +1434,47 @@ func ContextUsage(ctx context.Context) ContextUsageValue {
 	return v
 }
 
+// ctxKeyLastDistill carries the most recent context-distillation DECLINE so
+// Context op=self can report it, mirroring ctxKeyContextUsage above and stamped
+// in the same place so the two can never disagree about the same iteration.
+//
+// It exists because the footprint alone is a trap. An agent told "you are at
+// 99% of your window" reasonably calls Context op=compact — and if distillation
+// is declining for a structural reason (keep_last_n pins the whole
+// conversation, the summarizer returns nothing), that call lands in the SAME
+// decline and the agent learns nothing. Reporting the decline lets it stop
+// trying and say what is wrong instead.
+//
+// Only a DECLINE is carried. A successful distillation needs no report here:
+// the footprint drops, which the agent can already see.
+type ctxKeyLastDistill struct{}
+
+// LastDistillValue is the decline op=self reports. Mode/Reason are the
+// DistillDecline* vocabulary; Message is the human-readable line carrying the
+// fix, which is what makes it actionable rather than merely informative.
+type LastDistillValue struct {
+	Mode    string
+	Reason  string
+	Message string
+}
+
+// WithLastDistill attaches the most recent distillation decline to ctx. An
+// empty Reason is a no-op, so op=self omits the field on a run where
+// distillation has not declined.
+func WithLastDistill(ctx context.Context, v LastDistillValue) context.Context {
+	if v.Reason == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyLastDistill{}, v)
+}
+
+// LastDistill returns the most recent distillation decline from ctx (zero value
+// when none — Reason=="").
+func LastDistill(ctx context.Context) LastDistillValue {
+	v, _ := ctx.Value(ctxKeyLastDistill{}).(LastDistillValue)
+	return v
+}
+
 // ctxKeyEventEmitter is the context key for the v0.8.4 typed-audit-
 // event emitter. The loop's OnEvent callback is attached at run
 // start; tools that want to surface structured wire events (e.g.

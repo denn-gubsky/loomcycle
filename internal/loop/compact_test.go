@@ -22,6 +22,30 @@ func userMsg(text string) providers.Message {
 func asstMsg(text string) providers.Message {
 	return providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: text}}}
 }
+
+// bulky pads a fixture turn so the span it belongs to is actually worth
+// distilling.
+//
+// ⚠️ These fixtures USED to be two-character turns, and they passed. The
+// compaction preamble alone is ~190 characters, so "compacting" six tiny
+// messages produced a result an order of magnitude LARGER than the input — and
+// every one of these tests asserted did==true on it. That is precisely the
+// defect the not-smaller refusal now catches, sitting inside the suite meant to
+// cover this code. The fixtures had to change, not the check.
+func bulky(tag string) string {
+	return tag + " " + strings.Repeat("a turn with enough substance to be worth distilling. ", 6)
+}
+
+// distillableConvo is the standard six-message fixture: a pinned task, an
+// evicted middle with real bulk, and a two-message tail kept verbatim.
+func distillableConvo() []providers.Message {
+	return []providers.Message{
+		userMsg("the task"),
+		asstMsg(bulky("a1")), userMsg(bulky("q2")), asstMsg(bulky("a2")),
+		userMsg("q3"), asstMsg("a3"),
+	}
+}
+
 func toolResultMsg() providers.Message {
 	return providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", Text: "r"}}}
 }
@@ -86,7 +110,7 @@ func TestShouldAutoCompact(t *testing.T) {
 // maybeAutoCompact summarizes the middle inline and keeps the pinned task + the
 // last-N tail (the auto/self path computes the summary itself).
 func TestMaybeAutoCompact_SummarizesAndKeepsTail(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	opts := RunOptions{
 		Provider:   &steerProvider{}, // Call returns text "ok" → summary="ok"
 		Model:      "x",
@@ -246,6 +270,13 @@ type ctxUsageProvider struct {
 	firstIn  int
 	maxCtx   int
 	turn     int
+	// firstText, when set, is the TURN-0 reply; every later turn stays "ok".
+	//
+	// The asymmetry is the point. A recap fixture needs a LONG span to distil
+	// and a SHORT summary to replace it with — and the summarize call goes
+	// through this same fake, so a uniformly bulky provider would produce a
+	// recap as large as the span and be (correctly) refused as not smaller.
+	firstText string
 }
 
 func (p *ctxUsageProvider) ID() string                                   { return "ctxusage-test" }
@@ -262,11 +293,15 @@ func (p *ctxUsageProvider) Call(ctx context.Context, _ providers.Request) (<-cha
 	p.mu.Unlock()
 
 	in := 0
+	text := "ok"
 	if turn == 0 {
 		in = p.firstIn
+		if p.firstText != "" {
+			text = p.firstText
+		}
 	}
 	ch := make(chan providers.Event, 2)
-	ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+	ch <- providers.Event{Type: providers.EventText, Text: text}
 	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: in}}
 	close(ch)
 	return ch, nil
@@ -427,7 +462,7 @@ func TestCapKeptTailToWindow(t *testing.T) {
 // would duplicate what is still in context, and banking the whole history would
 // re-bank the pinned task on every compaction.
 func TestMaybeAutoCompact_BanksDiscardedSpan(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	var got []providers.Message
 	opts := RunOptions{
 		Provider:   &steerProvider{},
@@ -449,7 +484,7 @@ func TestMaybeAutoCompact_BanksDiscardedSpan(t *testing.T) {
 	}
 
 	// Dropped = everything between the pinned first turn and the kept tail.
-	want := []string{"a1", "q2", "a2"}
+	want := []string{bulky("a1"), bulky("q2"), bulky("a2")}
 	if len(got) != len(want) {
 		t.Fatalf("banked %d messages, want %d — the span must be exactly what was discarded, not the kept tail or the whole history: %+v", len(got), len(want), got)
 	}
@@ -476,7 +511,7 @@ func TestMaybeAutoCompact_BanksDiscardedSpan(t *testing.T) {
 // memory_banked block at all rather than an empty one — an absent field is what
 // tells a consumer the feature is off.
 func TestMaybeAutoCompact_NoBankWithoutTheCallback(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	opts := RunOptions{
 		Provider:   &steerProvider{},
 		Model:      "x",
@@ -501,7 +536,7 @@ func TestMaybeAutoCompact_NoBankWithoutTheCallback(t *testing.T) {
 // name itself on the marker and change nothing else. A compaction that refused to
 // complete because banking failed would trade a live run for a memory nicety.
 func TestMaybeAutoCompact_SurvivesBankFailure(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	opts := RunOptions{
 		Provider:   &steerProvider{},
 		Model:      "x",
@@ -536,7 +571,7 @@ func TestMaybeAutoCompact_SurvivesBankFailure(t *testing.T) {
 // feature being off, or an operator debugging "why is nothing being banked" cannot
 // tell a filtered span from an unset flag.
 func TestMaybeAutoCompact_ToolOnlySpanReportsNothingToBank(t *testing.T) {
-	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
+	msgs := distillableConvo()
 	opts := RunOptions{
 		Provider:   &steerProvider{},
 		Model:      "x",

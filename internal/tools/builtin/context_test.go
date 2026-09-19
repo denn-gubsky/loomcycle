@@ -311,6 +311,50 @@ func TestContextTool_SelfReportsContextUsage(t *testing.T) {
 	}
 }
 
+// op=self reports the last distillation DECLINE, so an agent at 99% of its
+// window can tell "compacting will help" from "compacting already isn't
+// working". Omitted when distillation has not declined.
+func TestContextTool_SelfReportsADistillationDecline(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	// Nothing declined → omitted. A field that is always present, reading
+	// "none", trains the model to skip it.
+	res0, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if _, present := decodeResult(t, res0.Text)["context_distill_declined"]; present {
+		t.Error("context_distill_declined present with no decline — want omitted")
+	}
+
+	ctx = tools.WithLastDistill(ctx, tools.LastDistillValue{
+		Mode: "recap", Reason: "split_declined",
+		Message: "context recap declined: context.keep_last_n 6 pins all 7 message(s)",
+	})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	d, ok := out["context_distill_declined"].(map[string]any)
+	if !ok {
+		t.Fatalf("context_distill_declined missing/wrong type: %v", out["context_distill_declined"])
+	}
+	if d["reason"] != "split_declined" || d["mode"] != "recap" {
+		t.Errorf("decline = %+v, want mode recap / reason split_declined", d)
+	}
+	// The message is the actionable half: an agent that knows only "declined"
+	// can repeat op=compact forever without learning anything.
+	if msg, _ := d["message"].(string); !strings.Contains(msg, "keep_last_n") {
+		t.Errorf("decline message does not name the gate: %q", msg)
+	}
+}
+
+// An empty reason must not produce an empty block — the no-op guard on the
+// setter is what keeps "no decline" and "a decline with no detail" distinct.
+func TestContextTool_AnEmptyDeclineIsNotReported(t *testing.T) {
+	tool := &Context{}
+	ctx := tools.WithLastDistill(context.Background(), tools.LastDistillValue{})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if _, present := decodeResult(t, res.Text)["context_distill_declined"]; present {
+		t.Error("an empty LastDistillValue was reported as a decline")
+	}
+}
+
 // op=compact sets the loop's compact-request flag; without one wired it errors.
 func TestContextTool_CompactSetsFlag(t *testing.T) {
 	tool := &Context{}

@@ -318,6 +318,26 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		}
 		out["context"] = usage
 	}
+	// context_distill_declined: the last time distillation was TRIED for this
+	// run and did nothing, with the reason and the fix.
+	//
+	// It is reported beside `context` above deliberately, because the footprint
+	// alone misleads. An agent reading "used_pct: 99" does the sensible thing
+	// and calls op=compact — and when distillation is declining for a
+	// structural reason (keep_last_n pins the whole conversation, the
+	// summarizer returns nothing) that call reaches the SAME decline, silently.
+	// It can then repeat that forever and never learn why.
+	//
+	// With this the agent can stop trying and report the condition instead,
+	// which is the only useful move left to it. Omitted when distillation has
+	// not declined on this run.
+	if d := tools.LastDistill(ctx); d.Reason != "" {
+		decl := map[string]any{"mode": d.Mode, "reason": d.Reason}
+		if d.Message != "" {
+			decl["message"] = d.Message
+		}
+		out["context_distill_declined"] = decl
+	}
 	// volumes: the filesystem volumes (RFC AH) the file/exec tools enforce for
 	// this run. Each entry names a root + mode (ro/rw) + whether it's the
 	// default for an omitted `volume` arg. Paths passed to Read/Write/Edit/
