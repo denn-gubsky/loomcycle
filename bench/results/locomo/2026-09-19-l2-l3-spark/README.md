@@ -1,5 +1,17 @@
 # L2 and L3 on ornith-1.5 — +31pp from runtime-supplied retrieval
 
+> ## ⚠️ SUPERSEDED IN PART — the gate IS met with the op-coverage fix
+>
+> Every L2 arm in this file ran with `recall_attach_traces` firing on `op=recall`
+> only, so each number is a **coverage-weighted average** rather than a property of
+> the lever. With the grant covering `search` too, conv-26 reaches **0.6976 / strict
+> 0.6216 (mean of two draws)** and conv-30 **0.7654 / 0.7160** — the gate met on both
+> conversations. See `../2026-09-19-gate-met/`.
+>
+> The retraction below **still stands for the implementation it describes**: that
+> claim rested on +0.34 of a question from one draw and died on its replicate. What
+> changed is the code, not the standard of evidence.
+
 > ## ⚠️ RETRACTION (replicate, 2026-09-19)
 >
 > An earlier version of this file claimed L2 was "the first local answerer to clear

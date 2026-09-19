@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b conv-26 L2 (op-coverage fix) draw 2",
+  "note": "replicate; the gate is a threshold claim and needs a mean over draws",
+  "arm": "locomo/orn-l2fix-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-19T13:26:28Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 147,
+  "accuracy": 0.6939,
+  "strict": 0.619,
+  "correct": 91,
+  "partial": 22,
+  "wrong": 34,
+  "unparsed": 3,
+  "not_found": 11,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.5,
+      "not_found": 1
+    },
+    "2": {
+      "graded": 34,
+      "accuracy": 0.6765,
+      "not_found": 5
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.5455,
+      "not_found": 2
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.8143,
+      "not_found": 3
+    }
+  }
+}
