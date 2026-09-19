@@ -1,0 +1,39 @@
+{
+  "label": "qwen3.6:latest L2",
+  "note": "recall_attach_traces; does the lever transfer to a second reader",
+  "arm": "locomo/q36-l2-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T19:28:30Z",
+  "model": "ollama-local/qwen3.6:latest",
+  "asked": 150,
+  "graded": 146,
+  "accuracy": 0.6336,
+  "strict": 0.5616,
+  "correct": 82,
+  "partial": 21,
+  "wrong": 43,
+  "unparsed": 4,
+  "not_found": 26,
+  "per_category": {
+    "1": {
+      "graded": 31,
+      "accuracy": 0.5,
+      "not_found": 4
+    },
+    "2": {
+      "graded": 35,
+      "accuracy": 0.6857,
+      "not_found": 4
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.3182,
+      "not_found": 6
+    },
+    "4": {
+      "graded": 69,
+      "accuracy": 0.7174,
+      "not_found": 12
+    }
+  }
+}

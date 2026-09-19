@@ -1,0 +1,39 @@
+{
+  "label": "ornith-1.5:35b L2+L3 combined",
+  "note": "tool loop AND pre-retrieved block; the model elects the tool on only 13 of 150",
+  "arm": "locomo/orn-l2l3-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T19:34:40Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 145,
+  "accuracy": 0.669,
+  "strict": 0.5724,
+  "correct": 83,
+  "partial": 28,
+  "wrong": 34,
+  "unparsed": 5,
+  "not_found": 17,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.4531,
+      "not_found": 4
+    },
+    "2": {
+      "graded": 32,
+      "accuracy": 0.7188,
+      "not_found": 3
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.3636,
+      "not_found": 4
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.7929,
+      "not_found": 6
+    }
+  }
+}

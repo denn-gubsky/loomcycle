@@ -1,0 +1,39 @@
+{
+  "label": "qwen3.6:latest P1",
+  "note": "recall_include_turns; third independent measurement of the P1 grant",
+  "arm": "locomo/q36-p1-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T19:21:59Z",
+  "model": "ollama-local/qwen3.6:latest",
+  "asked": 150,
+  "graded": 148,
+  "accuracy": 0.4392,
+  "strict": 0.3514,
+  "correct": 52,
+  "partial": 26,
+  "wrong": 70,
+  "unparsed": 2,
+  "not_found": 51,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.4062,
+      "not_found": 5
+    },
+    "2": {
+      "graded": 36,
+      "accuracy": 0.3194,
+      "not_found": 18
+    },
+    "3": {
+      "graded": 10,
+      "accuracy": 0.35,
+      "not_found": 6
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.5286,
+      "not_found": 22
+    }
+  }
+}

@@ -40,6 +40,7 @@ reader *and* embedder, so no arm depends on another host.
 | L3 — tool-free, pre-retrieved (`{{memory:recalled_context}}`) | 0.5933 | 0.4933 | 0.187 | **1.7s** | **0** | fail |
 | **L2 — + question-anchored turns (`recall_attach_traces`)** | **0.6858** | **0.6014** | 0.113 | 8.3s | 150 | see retraction |
 | L2 — draw 2 (replicate) | 0.6588 | 0.5878 | 0.147 | 8.1s | 150 | fail |
+| **L2+L3 combined — tool loop AND pre-retrieved block** | **0.6690** | 0.5724 | 0.113 | **2.2s** | **13** | fail |
 | oracle — reading ceiling | 0.8048 | 0.7397 | 0.087 | 1.0s | 0 | — |
 
 Every step is significant, and the ladder is strict:
@@ -103,6 +104,60 @@ about holding a tool. Those are different things and this pair separates them.
 8.3s — 50.7% of the available headroom for 20% of the latency, and it works on any
 model that can read a dated block. For a latency-bound or tool-less deployment it is
 the better trade; for accuracy it is not.
+
+## The combo is the shape to ship
+
+L2 and L3 are not exclusive: L2's turns come from a model-composed query mid-run,
+L3's from the raw question before the first token. Different queries, different
+timing. Run together on ornith:
+
+| comparison | McNemar | p |
+|---|---|---|
+| combo vs **L2 draw 1** | +15/−20 | **0.5 — indistinguishable** |
+| combo vs **L3** | +19/−4 | **0.0026 — significantly better** |
+
+At **2.2s against L2's 8.3s, and 13 tool calls against 150.**
+
+**The mechanism is that the model stops needing the tool.** Given the pre-retrieved
+block it elects `Memory` on only 13 of 150 questions — and that residual ~9% is
+where the tool earns its keep. This also re-reads the L2-vs-L3 gap reported above:
+L3 did not lose for lacking a tool loop, it lost because a single pre-retrieval on
+the raw question sometimes misses and there is no recourse. Give it recourse and the
+gap closes.
+
+So the design is not *tool OR pre-retrieval*. It is **pre-retrieval with the tool as
+fallback**, which buys L2's accuracy at near-L3's cost.
+
+⚠️ **One caveat: strict is lower.** 0.5724 against L2's 0.5878–0.6014. Accuracy
+matches because the combo converts some *correct* into *partial* (28 partials against
+21–25). If strict is the target, L2 is the better arm; if it is accuracy per second,
+the combo wins decisively.
+
+## The lever generalises to a second reader
+
+| reader | control → L2 | Δ | McNemar | % of own ceiling |
+|---|---|---|---|---|
+| ornith-1.5 draw 1 | 0.3758 → 0.6858 | +31.0pp | +54/−0, p=1.1e-16 | 85.2% |
+| ornith-1.5 draw 2 | 0.3758 → 0.6588 | +28.3pp | +51/−4, p=2.1e-11 | 81.9% |
+| **qwen3.6** | 0.3446 → 0.6336 | **+28.9pp** | **+51/−2, p=3.2e-13** | **88.8%** |
+
+qwen3.6 lands **inside ornith's own two-draw spread**, from a different architecture
+on the same host and store, with an identical category signature — temporal won 19/0
+against ornith's 21/0, multi-hop 9/0, single-hop 23/1. **That makes the lever a
+property of the runtime, not of a reader.**
+
+L2 brings both readers to **82–89% of their individual ceilings**, which is a more
+useful invariant than raw accuracy: the ceilings differ (0.8048 vs 0.7138) but the
+fraction recovered does not.
+
+P1's grant now has three measurements across two models and two hosts — **+9.5pp**
+(qwen3.6/Spark, +24/−5, p=5.5e-04), **+10.4pp** (ornith/Spark, +24/−3, p=4.9e-05),
+**+11.4pp** (qwen3.6/TrueNAS, +20/−2, p=1.2e-04) — a 1.9pp spread, every one
+significant.
+
+**qwen3.6 does not clear the gate either** (0.6336 / strict 0.5616), and L1 predicted
+exactly that: its strict *ceiling* is 0.6207, so even perfect retrieval leaves it on
+the line. The gate is a reader-capability problem, not a retrieval one.
 
 ## Method notes
 

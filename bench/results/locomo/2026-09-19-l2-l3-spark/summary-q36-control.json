@@ -1,0 +1,39 @@
+{
+  "label": "qwen3.6:latest control",
+  "note": "facts only; cross-model check on the same host",
+  "arm": "locomo/q36-control-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-18T19:16:06Z",
+  "model": "ollama-local/qwen3.6:latest",
+  "asked": 150,
+  "graded": 148,
+  "accuracy": 0.3446,
+  "strict": 0.2635,
+  "correct": 39,
+  "partial": 24,
+  "wrong": 85,
+  "unparsed": 2,
+  "not_found": 64,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.3125,
+      "not_found": 6
+    },
+    "2": {
+      "graded": 36,
+      "accuracy": 0.1806,
+      "not_found": 24
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.4091,
+      "not_found": 5
+    },
+    "4": {
+      "graded": 69,
+      "accuracy": 0.4348,
+      "not_found": 29
+    }
+  }
+}
