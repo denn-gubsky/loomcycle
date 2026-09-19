@@ -539,6 +539,14 @@ export interface RunOptions extends RunOverrideOptions {
    *  Omitted = inherit entirely. Trigger compaction mid-run with
    *  {@link LoomcycleClient.compactRun}. */
   compaction?: CompactionOptions;
+  /** Per-run context-DISTILLATION override, merged PER FIELD over the agent's
+   *  own `context` block (this wins; unset fields inherit).
+   *
+   *  Start-only — see {@link ContextOptions}. This is what varies the
+   *  distillation strategy for a run without forking the agent, and outside
+   *  `mode: "append"` it, not {@link RunOptions.compaction}, is the block the
+   *  runtime reads. */
+  context?: ContextOptions;
   /** Per-run context-WINDOW override in tokens (RFC CJ). Wins over the agent's
    *  own `max_context_tokens` when > 0; omitted = inherit it (which itself
    *  defers to the provider/driver default). Distinct from a model's output
@@ -595,6 +603,77 @@ export interface CompactionOptions {
   /** Run the summary call on a cheaper/faster model served by the SAME
    *  provider. Omitted = the run's model. */
   model?: string;
+}
+
+/** Per-run context-distillation override. Mirrors the server's `context`
+ *  block — every field optional; an unset field inherits the agent's value,
+ *  merged per field.
+ *
+ *  DISTINCT from {@link CompactionOptions}, and the two are not
+ *  interchangeable: `compaction` is the append-mode summariser, while this
+ *  chooses HOW history is distilled at all. Outside `mode: "append"` the
+ *  compaction knobs are never consulted — so setting `autocompactAtPct` on a
+ *  recap or stateful run does nothing. The server reports settings in that
+ *  state under `inert` on GET /v1/runs/{id}/effective-config.
+ *
+ *  START-ONLY. These are accepted when a run BEGINS, not by retune: `mode` is
+ *  latched before the loop starts (the stateful branch is taken or not, and
+ *  the tool catalogue is already resolved), so a retune could apply the
+ *  thresholds and silently ignore the mode. */
+export interface ContextOptions {
+  /** How history is distilled.
+   *  - `append`   — keep everything; the compaction knobs apply here and
+   *                 ONLY here.
+   *  - `recap`    — fold the evicted span into a running progress note.
+   *  - `stateful` — a different loop: the model emits a patch + action each
+   *                 step and carries state rather than transcript.
+   *  - `auto`     — resolved at run start from the provider: a local backend
+   *                 or an interactive run takes `recap`, a frontier API takes
+   *                 `stateful`. */
+  mode?: "append" | "recap" | "stateful" | "auto";
+  /** Keep the last N messages verbatim (default 6; 0 = distil all).
+   *
+   *  ⚠️ This is a FLOOR on what can be distilled: a conversation of N+1
+   *  messages or fewer has nothing left after the pinned first turn, so it
+   *  never distils however full the window is. A chat of few enormous turns
+   *  is exactly that shape. The run reports it as a `context_distill_declined`
+   *  event with reason `split_declined`, carrying both numbers. */
+  keepLastN?: number;
+  /** What happens to the evicted span in recap mode.
+   *  - `recap` (default) — summarise it into a running note.
+   *  - `drop`            — discard it with no note.
+   *  - `keep`            — distil nothing (reported as a decline, so the
+   *                        run says why the window is not being reclaimed). */
+  reasoning?: "recap" | "drop" | "keep";
+  /** Character budget for the running recap note (default 512).
+   *
+   *  ⚠️ The summariser's token budget is derived from this
+   *  (`recapMaxChars/4 + 64`), so the default allows ~192 tokens. A model that
+   *  spends its budget on reasoning can return nothing at all, which the run
+   *  reports as a `context_distill_declined` event with reason
+   *  `empty_summary`. Raise this, or pick an effort that stops the model
+   *  thinking. */
+  recapMaxChars?: number;
+  /** Auto-distil when used/window ≥ N% (50..95; default 80). This is the live
+   *  threshold in recap mode — NOT `compaction.autocompactAtPct`. */
+  autorecapAtPct?: number;
+  /** JSON Schema the stateful mode validates every state patch against.
+   *  Stateful mode only. */
+  stateSchema?: Record<string, unknown>;
+  /** What a stateful run does with a patch that fails the schema
+   *  (`retry` default, or `fail`). */
+  onInvalidPatch?: "retry" | "fail";
+  /** How many times a rejected patch may be retried (default 2). */
+  maxPatchRetries?: number;
+  /** Grant the Recall tool so the agent can fetch back detail the
+   *  distillation dropped. */
+  recall?: boolean;
+  /** Bank each evicted span for the memory consolidator.
+   *
+   *  This is the flag the recap and stateful paths actually read —
+   *  `compaction.memoryFlush` installs the banking callback but nothing
+   *  outside append mode calls it. */
+  harvestToMemory?: boolean;
 }
 
 /** Opaque caller-tracking lineage (v0.12.x) attached to a run and
@@ -681,6 +760,9 @@ export interface ContinueOptions extends RunOverrideOptions {
   sampling?: SamplingOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
+  /** Per-continuation context-distillation override — see
+   *  {@link RunOptions.context}. */
+  context?: ContextOptions;
   /** Per-continuation context-WINDOW override in tokens — see
    *  {@link RunOptions.maxContextTokens}. */
   maxContextTokens?: number;

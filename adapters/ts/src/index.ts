@@ -151,6 +151,7 @@ export type {
   RunOptions,
   SamplingOptions,
   CompactionOptions,
+  ContextOptions,
   ToolUse,
   Usage,
   // Agent metadata
