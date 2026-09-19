@@ -1,0 +1,34 @@
+{
+  "label": "deepseek-v4-flash conv-30 (incidental)",
+  "note": "the ingest run's own grading with the default cloud answerer; full toolset",
+  "arm": "locomo/answerer",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-19T06:46:43Z",
+  "model": "deepseek/deepseek-flash",
+  "asked": 81,
+  "graded": 81,
+  "accuracy": 0.7716,
+  "strict": 0.716,
+  "correct": 58,
+  "partial": 9,
+  "wrong": 14,
+  "unparsed": 0,
+  "not_found": 4,
+  "per_category": {
+    "1": {
+      "graded": 11,
+      "accuracy": 0.5,
+      "not_found": 1
+    },
+    "2": {
+      "graded": 26,
+      "accuracy": 0.9423,
+      "not_found": 0
+    },
+    "4": {
+      "graded": 44,
+      "accuracy": 0.7386,
+      "not_found": 3
+    }
+  }
+}
