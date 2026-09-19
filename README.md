@@ -182,7 +182,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.83.0) gave the run controls their READS. v1.82.0 let a
+The most recent line (v1.84.0) made context distillation impossible to fail
+silently. A live chat had climbed to the top of its window while auto-distillation
+never fired once — threshold crossed at 72%, next call at 99%, zero markers and
+zero errors — because a decline could take any of five paths and emit nothing. A
+`context_distill_declined` event now names which one and what to change, a
+distillation whose result is not smaller is refused rather than applied, a run
+that answers in a single iteration can still distil, a manual compact operates on
+the session the loop actually holds, and configuration that cannot take effect
+says so at boot. The same release closes three grpc vulnerabilities on the serving
+path, two of them unauthenticated remote DoS.
+
+Before it, v1.83.0 gave the run controls their READS. v1.82.0 let a
 run carry its own model, budgets and tuning, and all of it was write-only: a
 caller could set an override and had no way to read it back. A run's
 configuration can now be read, and separately its EFFECTIVE configuration —
