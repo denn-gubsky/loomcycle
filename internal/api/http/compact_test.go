@@ -143,9 +143,17 @@ func seedConversation(t *testing.T, srv *Server, terminal bool) (sessID, runID s
 		return []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}}}
 	}
 	// 8 exchanges → 16 messages; keep_last_4 + keep_first leaves ~11 to summarize.
+	//
+	// ⚠️ The turns carry real bulk because a compaction whose result is NOT
+	// SMALLER is now refused, and the compaction preamble alone is ~190
+	// characters — so "question 3"/"answer 3" compacts 36 tokens into 68 and is
+	// correctly rejected. These fixtures asserted success on that for as long as
+	// nothing compared the two numbers, which is the defect the refusal exists
+	// to catch.
+	bulk := strings.Repeat("with enough substance that summarising it is a saving. ", 6)
 	for i := 1; i <= 8; i++ {
-		appendResumeEvent(t, srv, run.ID, "user_input", uinput(fmt.Sprintf("question %d", i)))
-		appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d", i)})
+		appendResumeEvent(t, srv, run.ID, "user_input", uinput(fmt.Sprintf("question %d %s", i, bulk)))
+		appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d %s", i, bulk)})
 		appendResumeEvent(t, srv, run.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
 	}
 	if terminal {
@@ -265,9 +273,16 @@ func TestCompact_RestrictedRunDeniesOperatorKey(t *testing.T) {
 	uinput := func(text string) []loop.PromptSegment {
 		return []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: text}}}}
 	}
+	// Turns with real bulk. A compaction is now REFUSED when its result is not
+	// smaller, and the compaction preamble alone is ~190 characters — so
+	// eight rounds of "question 3"/"answer 3" produce a result larger than the
+	// input and are correctly refused. This test is about the operator-key
+	// restriction, not about compaction arithmetic, so its fixture has to be a
+	// conversation worth compacting.
+	bulk := strings.Repeat("with enough substance that summarising it is a saving. ", 6)
 	for i := 1; i <= 8; i++ {
-		appendResumeEvent(t, srv, run.ID, "user_input", uinput(fmt.Sprintf("question %d", i)))
-		appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d", i)})
+		appendResumeEvent(t, srv, run.ID, "user_input", uinput(fmt.Sprintf("question %d %s", i, bulk)))
+		appendResumeEvent(t, srv, run.ID, "text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d %s", i, bulk)})
 		appendResumeEvent(t, srv, run.ID, "done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
 	}
 	if err := srv.store.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
