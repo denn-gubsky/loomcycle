@@ -41,10 +41,39 @@ import (
 
 const (
 	// recallTraceTopK bounds how many turns the question-anchored search returns.
-	// Deliberately small: the measured win came from a handful of directly-matched
-	// turns, and the coerced-prompt collapse is the standing evidence that a small
-	// reader's attention is the scarce resource, not its context window.
-	recallTraceTopK = 6
+	//
+	// ⚠️ 24, NOT 6, AND 6 WAS THE ONLY BOUND THAT EVER BIT. Measured across 300
+	// recalls on the reference store: every single one returned exactly 6 turns while
+	// the block averaged 1271 chars against a 6000-char budget — 4x headroom the
+	// budget never used. The two bounds are not interchangeable. The budget is
+	// content-aware and cuts when turns are long; a fixed count cuts a short-turn
+	// corpus off regardless of cost. LoCoMo turns average ~212 chars, so k=6 spent
+	// 21% of the budget and discarded the rest.
+	//
+	// WHAT 24 BUYS, two draws per cell on two conversations:
+	//
+	//   conv-26  k=6  0.6976 / strict 0.6216   ->  k=24  0.7457 / 0.6826   +4.8pp
+	//   conv-30  k=6  0.7593 / strict 0.7160   ->  k=24  0.8013 / 0.7454   +4.2pp
+	//
+	// The magnitudes agree within 0.6pp across corpora with different question mixes
+	// and turn lengths, and the within-condition spreads are 0.0018-0.0123. On
+	// conv-26 three of four cross-pairings are significant (p=0.017-0.041); on
+	// conv-30 none are (p=0.18-0.73), because 81 questions and a high baseline leave
+	// only 5-7 moving and the paired test has no power there. The claim rests on the
+	// agreeing magnitudes, not on conv-30's p-values.
+	//
+	// ⚠️ WHY NOT HIGHER. k=48 was measured and is a plateau: +11/-11 (p=1.0) and
+	// +11/-13 (p=0.839) against k=24, for +1.1s of latency. At 48 the BUDGET finally
+	// binds (1 of 150 recalls reached the count; blocks ran 6427 chars) and buys
+	// nothing — so ~24 turns is where this corpus saturates, and 24 is the smaller of
+	// two values that perform identically.
+	//
+	// ⚠️ IT IS NOT FREE. k=24 loses 5-6 questions that k=6 answered correctly: more
+	// material dilutes attention, which is the documented failure mode here (the
+	// coerced-prompt arm collapsed to 0.0034 from added instructions). The net is
+	// clearly positive on both corpora; a corpus of long turns would pay more of that
+	// cost and collect less of the benefit, and the budget is what protects it.
+	recallTraceTopK = 24
 	// recallTraceMaxChars bounds ONE turn, matching the fact-anchored cap so a reader
 	// sees the two blocks in the same units.
 	recallTraceMaxChars = 1200
