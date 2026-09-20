@@ -1,0 +1,49 @@
+{
+  "label": "ornith-1.5:35b LongMemEval control",
+  "note": "facts only; oracle-variant subset, 130 instances",
+  "arm": "locomo/orn-control-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-20T05:32:14Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 130,
+  "graded": 128,
+  "accuracy": 0.5938,
+  "strict": 0.5781,
+  "correct": 74,
+  "partial": 4,
+  "wrong": 50,
+  "unparsed": 2,
+  "not_found": 49,
+  "per_category": {
+    "101": {
+      "graded": 20,
+      "accuracy": 0.9,
+      "not_found": 8
+    },
+    "102": {
+      "graded": 12,
+      "accuracy": 0.3333,
+      "not_found": 8
+    },
+    "103": {
+      "graded": 6,
+      "accuracy": 0.8333,
+      "not_found": 0
+    },
+    "104": {
+      "graded": 36,
+      "accuracy": 0.5556,
+      "not_found": 14
+    },
+    "105": {
+      "graded": 33,
+      "accuracy": 0.4545,
+      "not_found": 13
+    },
+    "106": {
+      "graded": 21,
+      "accuracy": 0.6667,
+      "not_found": 6
+    }
+  }
+}
