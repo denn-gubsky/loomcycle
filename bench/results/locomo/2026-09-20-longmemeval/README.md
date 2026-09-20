@@ -85,3 +85,47 @@ rate. That is a wall, not a scoping choice.
   `-consolidate-passes 8`, `-concurrency 8`.
 - The corpus is not vendored (MIT, but large); `subset-instance-ids.json` lists the
   130 `question_id`s so the subset is re-derivable.
+
+## The abstention probe — the prompt fix FAILS, and fails badly
+
+The open question above was whether the `_abs` cost is recoverable by prompt rather
+than by withholding the grant. It is not. Arm identical to L2 except **one sentence**
+added to the reader prompt:
+
+> *"Retrieved material is often ABOUT the question without ANSWERING it. Answer only
+> if the material states the answer; being on the same topic is not an answer."*
+
+| slice | control | L2 | **L2 + abstain sentence** |
+|---|---|---|---|
+| answerable (n=100) | 0.5408 nf=0.26 | **0.7857** nf=0.03 | **0.2353** nf=0.13 |
+| `_abs` inverted (n=30) | 0.7667 nf=0.77 | 0.5000 nf=0.50 | **0.7931** nf=0.77 |
+
+| pairing | answerable | `_abs` |
+|---|---|---|
+| L2 → probe | **+0/−7, p=0.0156** | **+8/−0, p=0.0078** |
+| control → probe | +1/−5, p=0.219 | +3/−2, p=1 |
+
+**`_abs` recovered completely — every one of the eight regressions reversed, back to
+0.7931, above even the control. And the answerable slice collapsed to 0.2353, far
+below the control's 0.5408.**
+
+⚠️ **The collapse is much larger than the abstention change explains.** Abstention on
+the answerable slice rose only 0.03 → 0.13; a 10-point abstention rise cannot produce
+a 55-point accuracy fall. So this is not simply "the model became more cautious" — the
+added sentence degraded the *answering* as well. That is the same shape as this
+programme's coerced-arm result (a mandatory protocol took a local reader to 0.0034):
+**added instruction on a small reader is not free, and one sentence was enough.**
+
+**What it means.** The reader does not have a judgement about evidential sufficiency
+that a prompt can sharpen. It has a threshold, and moving it trades the slices —
+here, catastrophically. `recall_attach_traces` cannot be made abstention-safe by
+wording. If it is to ship where abstention matters, the control has to be a runtime
+one, not an instruction.
+
+⚠️ **PROVENANCE: this arm's raw artefacts were lost.** The session was interrupted and
+`/tmp` cleared after the run completed and these figures were computed, so unlike
+every other result in this directory there is no `summary-*.json` and the numbers are
+not re-derivable from what is committed. They are recorded because they were observed,
+and flagged because they cannot be re-checked without re-running (~2h; the subset is
+re-derivable from `subset-instance-ids.json`). Treat the direction and rough
+magnitudes as sound and any single figure as unverified.
