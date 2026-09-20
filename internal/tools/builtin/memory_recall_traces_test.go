@@ -214,3 +214,39 @@ func TestRecallTraces_GrantCoversSearchNotJustRecall(t *testing.T) {
 			"trace search would return the same rows twice")
 	}
 }
+
+// TestRecallTraces_SkipsTurnsFromTheCallersOwnRun.
+//
+// The live indexer files a user turn as it arrives, so by the time the attached
+// search runs, the question being asked IS in the index — and it matches itself
+// better than anything else, taking the top slot and handing the reader its own
+// question back as evidence. On a per-instance benchmark where each run asks one
+// question, that is a guaranteed wasted slot in every block.
+//
+// Fails OPEN: a row with no run_id is KEPT, because dropping real evidence is worse
+// than keeping one echo.
+func TestRecallTraces_SkipsTurnsFromTheCallersOwnRun(t *testing.T) {
+	own := `{"text":"my own question","run_id":"r_self"}`
+	other := `{"text":"something said earlier","run_id":"r_earlier"}`
+	legacy := `{"text":"a row from before the field existed"}`
+	if got := traceTurnRunID(json.RawMessage(own)); got != "r_self" {
+		t.Errorf("traceTurnRunID = %q, want r_self", got)
+	}
+	if got := traceTurnRunID(json.RawMessage(other)); got != "r_earlier" {
+		t.Errorf("traceTurnRunID = %q, want r_earlier", got)
+	}
+	if got := traceTurnRunID(json.RawMessage(legacy)); got != "" {
+		t.Errorf("a row without run_id must yield \"\" so it is KEPT, got %q", got)
+	}
+	if got := traceTurnRunID(json.RawMessage(`not json`)); got != "" {
+		t.Errorf("an unparseable row must yield \"\" (fail open), got %q", got)
+	}
+	src, err := os.ReadFile("memory_recall_traces.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "ownRun != \"\" && traceTurnRunID(") {
+		t.Error("the skip is not guarded on a non-empty own-run id — with no run identity " +
+			"every legacy row would match \"\" and the whole block would be dropped")
+	}
+}

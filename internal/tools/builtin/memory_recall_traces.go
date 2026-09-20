@@ -116,8 +116,19 @@ func (m *Memory) attachQuestionTurns(ctx context.Context, scope store.MemoryScop
 		// count is what distinguishes "nothing indexed" from "nothing matched".
 		return nil, 0
 	}
+	// ⚠️ A TURN FROM THE RUN YOU ARE CURRENTLY IN IS NOT EVIDENCE ABOUT THE PAST.
+	// The live indexer files a user turn as it arrives, so the question being asked
+	// right now is in the index by the time this search runs — and it matches itself
+	// better than anything else does, taking the top slot and handing the reader its
+	// own question back as "what was said". Skipping by run id is exact; a text
+	// comparison against the query would also drop a genuine earlier turn that
+	// happened to repeat the question.
+	ownRun := tools.RunIdentity(ctx).RootRunID
 	used := 0
 	for _, hit := range res.Entries {
+		if ownRun != "" && traceTurnRunID(hit.Value) == ownRun {
+			continue
+		}
 		text := trimTraceText(TraceTurnText(hit.Value))
 		if text == "" {
 			continue
@@ -130,6 +141,23 @@ func (m *Memory) attachQuestionTurns(ctx context.Context, scope store.MemoryScop
 		turns = append(turns, map[string]any{"text": text})
 	}
 	return turns, found
+}
+
+// traceTurnRunID reports which run filed this turn, so a caller can tell its own
+// words from the history it is asking about. "" when the row predates the field or
+// will not parse — which fails OPEN (the turn is kept), because dropping real
+// evidence is the worse error of the two.
+func traceTurnRunID(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var row struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return ""
+	}
+	return row.RunID
 }
 
 // TraceTurnText pulls the rendered turn out of a stored trace row.
