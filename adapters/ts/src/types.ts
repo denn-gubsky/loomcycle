@@ -642,8 +642,13 @@ export interface ContextOptions {
   /** What happens to the evicted span in recap mode.
    *  - `recap` (default) — summarise it into a running note.
    *  - `drop`            — discard it with no note.
-   *  - `keep`            — distil nothing (reported as a decline, so the
-   *                        run says why the window is not being reclaimed). */
+   *  - `keep`            — distil nothing. Reported as a `reasoning_keep`
+   *                        decline WHEN THE THRESHOLD IS REACHED, so the run
+   *                        says why the window is not being reclaimed. Below
+   *                        the threshold there is nothing to report and no
+   *                        frame is emitted — absence of a decline means the
+   *                        gate did not open, not that distillation is
+   *                        broken. */
   reasoning?: "recap" | "drop" | "keep";
   /** Character budget for the running recap note (default 512).
    *
