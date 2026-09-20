@@ -913,12 +913,12 @@ func cancelledToolResults(pending []providers.ToolUse) []providers.ContentBlock 
 // loop) or false to terminate — ctx cancelled during the park, or a
 // non-interactive run (the handler 409s that case, so it is only a safety net:
 // stopping a non-interactive run's only turn would terminate it).
-func finishTurnCancel(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, reason string, emit func(providers.Event), disarm func()) ([]providers.Message, int, bool) {
+func finishTurnCancel(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens, preambleTokens int, reason string, emit func(providers.Event), disarm func()) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventTurnCancelled,
 		TurnCancelled: &providers.TurnCancelledEventInfo{Reason: reason, SinceTurn: sinceTurn}})
 	disarm()
 	if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil {
-		return parkForOperatorTurn(ctx, opts, messages, sinceTurn, lastCtxTokens, emit)
+		return parkForOperatorTurn(ctx, opts, messages, sinceTurn, lastCtxTokens, preambleTokens, emit)
 	}
 	return messages, lastCtxTokens, false
 }
@@ -967,7 +967,7 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 // the refreshed context footprint (changed only when a compaction ran), and
 // whether a real operator turn arrived — false ⇒ ctx cancelled / queue closed ⇒
 // the caller terminates the run.
-func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
+func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
 	for {
@@ -981,7 +981,7 @@ func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []provi
 			// compacted size, not the stale pre-compaction value. Without this a
 			// parked run that compacted kept reporting its old ~full context
 			// (used_tokens / used_pct) until the next real turn's usage landed.
-			lastCtxTokens = estimateMessageTokens(messages)
+			lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 			continue // re-park: wait for the operator's actual next turn
 		}
 		messages = append(messages, providers.Message{
@@ -1191,6 +1191,43 @@ func effectiveWindow(reported int, opts RunOptions) int {
 		w = opts.MaxContextTokens
 	}
 	return w
+}
+
+// estimatePreambleTokens estimates the part of a request that is NOT the
+// conversation: the system prompt and the tool catalogue.
+//
+// ⚠️ THIS IS THE HALF THE FOOTPRINT USED TO OMIT, and omitting it is not a
+// rounding error — it decides the outcome. A chat/local agent on a 2048-token
+// window measured 2 tokens of conversation against a real request of 3340: the
+// gate stayed shut while the run sent 163% of its window, because the estimate
+// counted three lines of chat and the preamble it ignored was the whole prompt.
+//
+// The worse the ratio of preamble to conversation, the further wrong it is —
+// so a small window with a large system prompt and a wide tool catalogue, which
+// is exactly the local-inference shape, is where it fails hardest.
+func estimatePreambleTokens(system []providers.ContentBlock, toolSpecs []providers.ToolSpec) int {
+	chars := 0
+	for _, c := range system {
+		chars += len(c.Text)
+	}
+	for _, ts := range toolSpecs {
+		// Name + description + schema all ride the wire and all get billed.
+		chars += len(ts.Name) + len(ts.Description) + len(ts.InputSchema)
+	}
+	return chars / 4
+}
+
+// estimatePromptTokens estimates what the provider will bill for the NEXT
+// request: preamble + conversation.
+//
+// It exists so the seed and the post-distillation refreshes measure the same
+// quantity the per-turn update does (InputTokens + cache, which the provider
+// counts over the whole request). A gate driven by one number while the gauge
+// reports another is a worse diagnostic than neither — the mistake this
+// function's absence made, one field away from the window formula that was
+// extracted to prevent exactly it.
+func estimatePromptTokens(preambleTokens int, msgs []providers.Message) int {
+	return preambleTokens + estimateMessageTokens(msgs)
 }
 
 func estimateMessageTokens(msgs []providers.Message) int {
@@ -1934,7 +1971,10 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// Post-call distillation was the alternative and is the wrong shape: for a
 	// continuation it would distil for a NEXT Run() whose counters start at
 	// zero again, which is indistinguishable from doing nothing.
-	lastCtxTokens := estimateMessageTokens(messages)
+	// Computed once: the system prompt and tool catalogue do not change within
+	// a run, and they are most of the request on a small window.
+	preambleTokens := estimatePreambleTokens(system, toolSpecs)
+	lastCtxTokens := estimatePromptTokens(preambleTokens, messages)
 	lastWindow := effectiveWindow(0, opts)
 	lastCompactIter := -2
 	// Distillation declines dedup on (mode, reason) for the life of the run,
@@ -2072,7 +2112,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	parkAbandoned := false
 	if opts.StartParked && opts.Interactive && opts.SteerQueue != nil {
 		var resumedWithInput bool
-		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, 0, lastCtxTokens, emit)
+		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, 0, lastCtxTokens, preambleTokens, emit)
 		if !resumedWithInput {
 			// Cancelled while waiting. The run ends on the end_turn it had
 			// already reached before the pause; skipping the loop entirely lets
@@ -2154,7 +2194,7 @@ outerLoop:
 				// A steer-delivered compaction shrank the running history; refresh
 				// the footprint so the auto-compact check + op=self below reflect
 				// the compacted size, not the stale pre-compaction value.
-				lastCtxTokens = estimateMessageTokens(messages)
+				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 			}
 		}
 
@@ -2186,14 +2226,14 @@ outerLoop:
 			if recapMode {
 				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
-					lastCtxTokens = estimateMessageTokens(messages)
+					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 				}
 			} else if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
 				messages = newMsgs
 				// Compaction shrank the history; refresh the footprint so op=self
 				// below reflects the compacted size, not the pre-compaction value
 				// (the next real turn's usage overwrites it).
-				lastCtxTokens = estimateMessageTokens(messages)
+				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 			}
 		}
 
@@ -2620,7 +2660,7 @@ outerLoop:
 				messages = append(messages, providers.Message{Role: "user", Content: cancelledToolResults(pendingTools)})
 			}
 			var resumed bool
-			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
 			iterSpan.End()
 			if !resumed {
 				break
@@ -2641,7 +2681,7 @@ outerLoop:
 				// finds nothing armed → the handler 409s it).
 				disarmTurn()
 				var resumedWithInput bool
-				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, iter, lastCtxTokens, emit)
+				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, emit)
 				iterSpan.End()
 				if !resumedWithInput {
 					break
@@ -2687,7 +2727,7 @@ outerLoop:
 		// another model turn. Run-cancel is checked first (ctx.Err()==nil).
 		if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
 			var resumed bool
-			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
+			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
 			iterSpan.End()
 			if !resumed {
 				break

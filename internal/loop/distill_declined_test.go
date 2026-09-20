@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -736,5 +737,124 @@ func TestEffectiveWindow_BudgetOnlyLowers(t *testing.T) {
 					tc.reported, tc.budget, got, tc.want)
 			}
 		})
+	}
+}
+
+// fatTool has a description and schema of realistic size, so a catalogue of
+// them weighs what a real one weighs.
+type fatTool struct{ n int }
+
+func (f fatTool) Name() string        { return fmt.Sprintf("tool%d", f.n) }
+func (f fatTool) Description() string { return strings.Repeat("a tool the agent may call. ", 20) }
+func (f fatTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"q":{"type":"string","description":"` +
+		strings.Repeat("x", 300) + `"}}}`)
+}
+func (f fatTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: "ok"}, nil
+}
+
+// billingProvider reports what a provider ACTUALLY bills — system + tools +
+// messages — rather than the conversation alone.
+type billingProvider struct {
+	mu     sync.Mutex
+	billed []int
+	maxCtx int
+}
+
+func (p *billingProvider) ID() string                                   { return "billing" }
+func (p *billingProvider) Probe(context.Context) error                  { return nil }
+func (p *billingProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *billingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *billingProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	in := estimatePreambleTokens(req.System, req.Tools) + estimateMessageTokens(req.Messages)
+	p.mu.Lock()
+	p.billed = append(p.billed, in)
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn",
+		Usage: &providers.Usage{InputTokens: in}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ THE INVERSE OF TestRun_SingleIterationOverThresholdDistils, and the shape
+// that shipped broken.
+//
+// That test uses a 40-message history, so the message-only estimate crosses the
+// threshold and the gate opens — the half of B-iii that worked. This one is a
+// SHORT conversation whose tokens are almost entirely system prompt and tool
+// catalogue, which is the chat/local shape: a small window with a large
+// preamble.
+//
+// Found in production, not by the suite: a 2048-token window measured 2 tokens
+// of conversation against a real request of 3340, so the run sent 163% of its
+// window with the gate shut and no decline.
+//
+// A gate driven by an estimate needs a fixture where the estimate DISAGREES
+// with the real figure, or it only ever proves the agreeing case.
+func TestRun_FootprintCountsTheSystemPromptAndTools(t *testing.T) {
+	var toolset []tools.Tool
+	for i := 0; i < 12; i++ {
+		toolset = append(toolset, fatTool{n: i})
+	}
+	segs := []PromptSegment{
+		{Role: "system", Content: []PromptContentBlock{{Type: "trusted-text",
+			Text: strings.Repeat("You are a helpful assistant with a long operator preamble. ", 40)}}},
+		{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi there"}}},
+	}
+	_, fresh := splitSegments(segs)
+	msgOnly := estimateMessageTokens(fresh)
+
+	prov := &billingProvider{maxCtx: 2048}
+	m := config.ContextModeRecap
+	var frames int
+	var mu sync.Mutex
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      toolset,
+		Dispatcher: tools.NewDispatcher(toolset),
+		Segments:   segs,
+		// reasoning:keep short-circuits FIRST in maybeRecap, before the split
+		// and before any summariser call — so an opened gate emits a decline
+		// unconditionally. That makes this test read the GATE, not the
+		// distiller: zero frames can only mean the gate stayed shut.
+		Context:          &config.Context{Mode: &m, Reasoning: cptr("keep"), AutoRecapAtPct: cptr(50)},
+		MaxContextTokens: 2048,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventContextDistillDeclined {
+				mu.Lock()
+				frames++
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Non-vacuity: the fixture must actually be the disagreeing shape, or this
+	// test proves nothing about the estimator.
+	if msgOnly*100 >= 2048*50 {
+		t.Fatalf("fixture is not the disagreeing shape: messages alone are %d tokens, "+
+			"already over the 50%% threshold", msgOnly)
+	}
+	prov.mu.Lock()
+	billed := append([]int(nil), prov.billed...)
+	prov.mu.Unlock()
+	if len(billed) == 0 || billed[0]*100 < 2048*50 {
+		t.Fatalf("fixture does not cross the threshold on the REAL count: billed %v", billed)
+	}
+
+	mu.Lock()
+	got := frames
+	mu.Unlock()
+	if got == 0 {
+		t.Errorf("the gate never opened: the conversation alone is %d tokens (%.1f%%) "+
+			"but the real request is %d (%.1f%%) — the footprint is ignoring the system "+
+			"prompt and tool catalogue, which on a small window IS the request",
+			msgOnly, float64(msgOnly)*100/2048, billed[0], float64(billed[0])*100/2048)
 	}
 }
