@@ -1,11 +1,13 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -79,7 +81,7 @@ const operatorTokenDefInputSchema = `{
     "def_id":     {"type": "string", "description": "Existing def_id (for get; alternative target for rotate/retire)."},
     "tenant_id":  {"type": "string", "description": "Authoritative tenant (required for create)."},
     "subject":    {"type": "string", "description": "Authoritative subject (optional for create; defaults to tok-<name>)."},
-    "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog (create; default [substrate:admin])."},
+    "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog. REQUIRED on create (except with import_token) — an omitted list is refused rather than defaulting to [substrate:admin], because that made a mistyped key mint a full-power token. Note the asymmetry: the request field is scopes, the response echoes it as allowed_scopes."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -120,9 +122,24 @@ func (s *OperatorTokenDef) Execute(ctx context.Context, raw json.RawMessage) (to
 		// Default-deny: only the admin transports grant this.
 		return errResult("OperatorTokenDef tool: requires operator-admin (substrate:admin)"), nil
 	}
+	// ⚠️ UNKNOWN KEYS ARE REFUSED ON THIS TOOL, which is not how the rest of
+	// the substrate reads its input — and the asymmetry is the point.
+	//
+	// Everywhere else a stray field is harmless: the value is dropped and the
+	// caller gets a def that differs from what they typed. Here the dropped
+	// field decided PRIVILEGE, and the surrounding defaults turned "I did not
+	// understand your key" into "you now hold admin". `allowed_scopes` is the
+	// key that did it, and it is not an unreasonable guess: the response echoes
+	// the list under that name and so does the stored column.
+	//
+	// So this input is parsed strictly. An operator who mistypes a field on a
+	// token mint gets a 400 naming the field, not a token with more power than
+	// they asked for.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	var in operatorTokenDefInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
+	if err := dec.Decode(&in); err != nil {
+		return errResult(fmt.Sprintf("invalid input JSON: %s%s", err, mintKeyHint(err))), nil
 	}
 	switch in.Op {
 	case "create":
@@ -171,6 +188,9 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if !operatorTokenNameRe.MatchString(in.TenantID) {
 		return errResult(fmt.Sprintf("create: tenant_id %q invalid (must match [a-zA-Z0-9_-]{1,64})", in.TenantID)), nil
 	}
+	// Hoisted above the scope check: the migration path is the one place an
+	// omitted scope list still means admin.
+	imported := in.ImportToken != ""
 	subject := in.Subject
 	if subject == "" {
 		// Decision 4: default to a stable per-token id so attribution /
@@ -183,7 +203,32 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	}
 	scopes := in.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{auth.ScopeAdmin} // preserve "single token, full power"
+		// ⚠️ AN OMITTED SCOPE LIST USED TO MEAN [substrate:admin], which made
+		// the failure mode of every mistake MAXIMUM PRIVILEGE — and that
+		// mistake is self-locking: one admin-scoped def turns off the legacy
+		// LOOMCYCLE_AUTH_TOKEN fallback (legacyFallbackDisabled →
+		// OperatorTokenDefCountActiveAdmin), so an accidental admin token
+		// revokes the very bearer that minted it. Hit live on 2026-09-21: a
+		// caller sent `allowed_scopes` — the name the RESPONSE and the stored
+		// column both use — json.Unmarshal dropped the unknown key, and three
+		// tenant tokens came back as admin, two of them locking their
+		// deployment out of the API entirely.
+		//
+		// The legitimate admin mint is not a mistake: it is an operator typing
+		// a command. So admin is now stated rather than inherited, and the
+		// failure mode of a typo is an inert 400.
+		//
+		// import_token is the one exception, below: binding the legacy
+		// LOOMCYCLE_AUTH_TOKEN means "this IS the admin token", and the
+		// migration cannot ask the operator to say so twice.
+		if !imported {
+			return errResult("create: missing required field: scopes — name them explicitly " +
+				"(e.g. [\"substrate:tenant\"], or [\"" + auth.ScopeAdmin + "\"] for a full-power token). " +
+				"An omitted list no longer defaults to " + auth.ScopeAdmin + ": that made every " +
+				"mis-spelled key mint an admin token, which also disables the legacy " +
+				"LOOMCYCLE_AUTH_TOKEN login and locks the deployment out"), nil
+		}
+		scopes = []string{auth.ScopeAdmin}
 	}
 	if len(scopes) > s.maxScopes() {
 		return errResult(fmt.Sprintf("create: too many scopes (%d > %d)", len(scopes), s.maxScopes())), nil
@@ -211,7 +256,6 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	// only sanctioned operator-supplied-token path; it imports a hash,
 	// never echoes the plaintext back.
 	var plaintext, suffix string
-	imported := in.ImportToken != ""
 	if imported {
 		if len(in.ImportToken) < 8 {
 			return errResult("create: import_token too short (min 8 chars)"), nil
@@ -436,4 +480,18 @@ func operatorTokenCreateResponse(row store.OperatorTokenDefRow, plaintext, suffi
 	m["token_suffix"] = suffix
 	m["warning"] = "store this token now — it is shown once and cannot be retrieved later"
 	return m
+}
+
+// mintKeyHint names the one wrong key that has actually cost a deployment, so
+// the error says what to type instead of only what was wrong.
+//
+// `allowed_scopes` is what the response and the stored column call this list —
+// a caller reading either one back and sending it forward lands exactly here.
+func mintKeyHint(err error) string {
+	if err == nil || !strings.Contains(err.Error(), "allowed_scopes") {
+		return ""
+	}
+	return " — the request field is \"scopes\"; \"allowed_scopes\" is what the RESPONSE " +
+		"calls it. They were silently different until this check existed, and the " +
+		"difference minted admin tokens"
 }

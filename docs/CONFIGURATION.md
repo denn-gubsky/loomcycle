@@ -1138,7 +1138,7 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` +
 
 | Scope | Grants |
 |---|---|
-| `substrate:admin` | **Superuser** — satisfies every scope, incl. token minting, runtime admin (pause/resume/snapshot), and **cross-tenant** focus. The create-time default. |
+| `substrate:admin` | **Superuser** — satisfies every scope, incl. token minting, runtime admin (pause/resume/snapshot), and **cross-tenant** focus. ⚠️ **Never implicit.** A mint with no `scopes` used to default here; it is now refused, because that made a mistyped key hand out a full-power token — and minting one also disables the legacy `LOOMCYCLE_AUTH_TOKEN` login, so the accident could lock a deployment out of its own API. Ask for it by name. |
 | `substrate:tenant` | **Tenant operator (RFC AF/AG)** — FULL power WITHIN the token's own tenant: runs, channels, authoring all 8 substrate Def families (incl. `_mcpserverdef`, the dynamic-MCP-ingestion surface), registering tool-use hooks, and opening a **tenant-confined** loomcycle-as-MCP-server session (`/v1/_mcp`, RFC AG) — but NOT the operator plane (no minting, no runtime admin, no cross-tenant access). Lets a self-provisioning tenant author its own surface without admin. |
 | `runs:create` / `runs:read` | Create/continue runs · read runs, agents, sessions. |
 | `channel:publish` / `channel:read` | Publish/ack · subscribe/peek on the per-user + system channel surface. |

@@ -168,13 +168,62 @@ func TestOperatorTokenDef_CopyFromEnvImportsExistingSecret(t *testing.T) {
 	}
 }
 
-func TestOperatorTokenDef_DefaultScopeIsAdmin(t *testing.T) {
+// ⚠️ THIS TEST USED TO ASSERT THE DEFECT: that an omitted scope list mints
+// [substrate:admin]. It does not any more, because that made the failure mode
+// of every mistake MAXIMUM PRIVILEGE — and self-locking, since one admin def
+// disables the legacy LOOMCYCLE_AUTH_TOKEN login.
+//
+// Hit live on 2026-09-21: a caller sent `allowed_scopes` (what the RESPONSE and
+// the stored column call the list), json.Unmarshal dropped the unknown key, and
+// three tenant tokens came back as admin — two of them locking their deployment
+// out of its own API.
+func TestOperatorTokenDef_OmittedScopesIsRefusedNotEscalated(t *testing.T) {
 	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	out := mustOp(t, tool, ctx, `{"op":"create","name":"root","tenant_id":"default"}`)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"root","tenant_id":"default"}`))
+	if !res.IsError {
+		t.Fatalf("an omitted scope list minted a token instead of being refused: %s", res.Text)
+	}
+	// The error has to carry the fix, not just the fault: this is the message
+	// an operator reads at the moment they cannot mint anything.
+	for _, want := range []string{"scopes", auth.ScopeAdmin, "LOOMCYCLE_AUTH_TOKEN"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("refusal does not mention %q — an operator cannot act on it:\n%s", want, res.Text)
+		}
+	}
+}
+
+// THE REPORTED INCIDENT, in one call. `allowed_scopes` is not an unreasonable
+// guess — it is what the response echoes and what the column is named — and it
+// used to be dropped in silence and replaced with admin.
+func TestOperatorTokenDef_TheWrongScopeKeyIsRefusedWithTheRightOne(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"create","name":"bench","tenant_id":"acme","allowed_scopes":["substrate:tenant"]}`))
+	if !res.IsError {
+		t.Fatalf("a mis-named scope key still minted a token: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "allowed_scopes") || !strings.Contains(res.Text, `"scopes"`) {
+		t.Errorf("the refusal names neither the wrong key nor the right one:\n%s", res.Text)
+	}
+	// And nothing was created — a refused mint must not leave a def behind.
+	if _, err := tool.Store.OperatorTokenDefGetCurrentByName(ctx, "bench"); err == nil {
+		t.Error("a refused mint created a def anyway")
+	}
+}
+
+// The one carve-out: binding the legacy LOOMCYCLE_AUTH_TOKEN means "this IS the
+// admin token", and the migration cannot ask the operator to say so twice.
+func TestOperatorTokenDef_ImportKeepsTheAdminDefault(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	out := mustOp(t, tool, ctx,
+		`{"op":"create","name":"legacy","tenant_id":"default","import_token":"legacy-secret-value"}`)
 	scopes, _ := out["allowed_scopes"].([]any)
 	if len(scopes) != 1 || scopes[0] != auth.ScopeAdmin {
-		t.Errorf("default scopes = %v, want [%s]", scopes, auth.ScopeAdmin)
+		t.Errorf("import_token scopes = %v, want [%s] — the migration path still needs the default",
+			scopes, auth.ScopeAdmin)
 	}
 }
 
@@ -190,8 +239,8 @@ func TestOperatorTokenDef_RejectsUnknownScope(t *testing.T) {
 func TestOperatorTokenDef_RefusesDuplicateLiveName(t *testing.T) {
 	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	mustOp(t, tool, ctx, `{"op":"create","name":"dup","tenant_id":"t"}`)
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"dup","tenant_id":"t"}`))
+	mustOp(t, tool, ctx, `{"op":"create","name":"dup","tenant_id":"t","scopes":["runs:create"]}`)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"dup","tenant_id":"t","scopes":["runs:create"]}`))
 	if !res.IsError || !strings.Contains(res.Text, "rotate") {
 		t.Errorf("second create on a live name should refuse and suggest rotate; got %s", res.Text)
 	}
