@@ -174,37 +174,94 @@ func initialObservation(msgs []providers.Message) string {
 	return "Task: " + s
 }
 
-// callForEmitState makes one provider call and returns the emit_state tool input,
-// the call's usage, and any error. NO OnEvent hook is set — the returned channel
-// is the event source (mirrors summarizeWith); streaming text is ignored, the
-// tool call is what matters.
-func callForEmitState(ctx context.Context, provider providers.Provider, req providers.Request) (json.RawMessage, *providers.Usage, error) {
+// errNoEmitState is the model answering the wrong SHAPE, as opposed to the
+// provider or the transport failing.
+//
+// ⚠️ THE DISTINCTION IS THE WHOLE POINT. A 500, a dropped socket or a refused
+// request is nothing the model can be asked to fix, so it terminates the run.
+// "You replied in prose instead of calling the tool" is a correctable mistake
+// of exactly the kind the rejected-patch path already re-prompts for, and
+// treating the two identically is what turned one conversational reply into a
+// dead run on step zero.
+var errNoEmitState = errors.New("model did not call emit_state")
+
+// emitStateCall is one step's raw result: the tool input when the model complied,
+// and — when it did not — what it produced instead.
+type emitStateCall struct {
+	input json.RawMessage
+	// text is the assistant's prose. Kept because it is BOTH halves of the fix:
+	// the retry shows the model its own reply, and the terminal error can say
+	// what the run actually got rather than only what it wanted.
+	text string
+	// thinking is a reasoning trace, kept SEPARATE and never replayed. A model
+	// whose entire output was thinking looks identical from outside to one that
+	// emitted nothing, and those call for different answers — raise the budget
+	// versus change the model. (The same confusion produced the silent recap
+	// failure: a thinking model's output never reached the text accumulator.)
+	thinking string
+	usage    *providers.Usage
+}
+
+// callForEmitState makes one provider call and returns the emit_state tool input
+// plus whatever else the model produced. NO OnEvent hook is set — the returned
+// channel is the event source (mirrors summarizeWith); the tool call is what
+// matters, but the text is no longer thrown away.
+func callForEmitState(ctx context.Context, provider providers.Provider, req providers.Request) (emitStateCall, error) {
+	var out emitStateCall
 	ch, err := provider.Call(ctx, req)
 	if err != nil {
-		return nil, nil, err
+		return out, err
 	}
-	var input json.RawMessage
-	var usage *providers.Usage
+	var text, thinking strings.Builder
 	var streamErr string
 	for ev := range ch {
 		switch ev.Type {
 		case providers.EventToolCall:
-			if ev.ToolUse != nil && ev.ToolUse.Name == emitStateToolName && input == nil {
-				input = ev.ToolUse.Input
+			if ev.ToolUse != nil && ev.ToolUse.Name == emitStateToolName && out.input == nil {
+				out.input = ev.ToolUse.Input
 			}
+		case providers.EventText:
+			text.WriteString(ev.Text)
+		case providers.EventThinking:
+			thinking.WriteString(ev.Text)
 		case providers.EventDone:
-			usage = ev.Usage
+			out.usage = ev.Usage
 		case providers.EventError:
 			streamErr = ev.Error
 		}
 	}
+	out.text = strings.TrimSpace(text.String())
+	out.thinking = strings.TrimSpace(thinking.String())
 	if streamErr != "" {
-		return nil, usage, errors.New(streamErr)
+		return out, errors.New(streamErr)
 	}
-	if len(input) == 0 {
-		return nil, usage, errors.New("model did not call emit_state")
+	if len(out.input) == 0 {
+		return out, errNoEmitState
 	}
-	return input, usage, nil
+	return out, nil
+}
+
+// producedInstead describes, for an operator, what came back when the tool call
+// did not — the difference between "answered the wrong way", "only thought" and
+// "returned nothing at all", which are three different problems.
+func producedInstead(c emitStateCall) string {
+	switch {
+	case c.text != "":
+		return fmt.Sprintf("it replied with %d characters of prose instead: %q", len(c.text), snippet(c.text))
+	case c.thinking != "":
+		return fmt.Sprintf("it produced only a reasoning trace (%d characters) and no reply: %q",
+			len(c.thinking), snippet(c.thinking))
+	default:
+		return "it returned no content at all"
+	}
+}
+
+func snippet(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 200 {
+		return s[:200] + "…"
+	}
+	return s
 }
 
 func addUsage(dst *providers.Usage, u *providers.Usage) {
@@ -294,7 +351,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		for attempt := 0; ; attempt++ {
 			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort}
 			applyStatefulSampling(&req, opts.Sampling)
-			input, usage, err := callForEmitState(ctx, opts.Provider, req)
+			call, err := callForEmitState(ctx, opts.Provider, req)
+			input, usage := call.input, call.usage
 			addUsage(&total, usage)
 			if usage != nil {
 				// The provider's own count of the whole request, which is what
@@ -306,9 +364,45 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				}
 				lastWindow = effectiveWindow(usage.MaxContextTokens, opts)
 			}
-			if err != nil {
+			if err != nil && !errors.Is(err, errNoEmitState) {
+				// Transport or provider fault — nothing the model can correct.
 				emit(providers.Event{Type: providers.EventError, Error: "stateful step failed: " + err.Error()})
 				return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, err
+			}
+			if err != nil {
+				// ⚠️ THE SAME BUDGET AS A REJECTED PATCH, and it used to get
+				// none. `on_invalid_patch` / `max_patch_retries` covered a patch
+				// that arrived and failed validation; a model that answered in
+				// prose — the ordinary behaviour of a local model handed a
+				// conversational question — got one shot and killed the run on
+				// step zero, with its reply discarded unread.
+				//
+				// Both are the same condition from the runtime's side: the
+				// output was not usable, and the model is the one who can fix
+				// it. So it is re-prompted with what it actually said.
+				if onInvalid == "fail" || attempt >= maxRetries {
+					msg := fmt.Sprintf("stateful step failed: model did not call emit_state after %d attempt(s) — %s. "+
+						"context.mode: stateful requires a model that reliably emits tool calls; "+
+						"raise context.max_patch_retries, or move this agent to a model that does",
+						attempt+1, producedInstead(call))
+					emit(providers.Event{Type: providers.EventError, Error: msg})
+					return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, errors.New(msg)
+				}
+				// Show it its own reply, then say what was required. An EMPTY
+				// assistant turn is never appended — the providers reject one,
+				// so a model that returned nothing gets the instruction alone.
+				// A reasoning trace is not replayed either: it is not an
+				// assistant turn the API will accept back.
+				if call.text != "" {
+					msgs = append(msgs, providers.Message{Role: "assistant",
+						Content: []providers.ContentBlock{{Type: "text", Text: call.text}}})
+				}
+				msgs = append(msgs, providers.Message{Role: "user",
+					Content: []providers.ContentBlock{{Type: "text", Text: "That reply was not usable: in structured " +
+						"execution mode the ONLY accepted response is a single `emit_state` tool call, and prose is " +
+						"discarded. Send the same content again as `emit_state` — put your answer in `final` with " +
+						"`done: true` if you are finished, otherwise name the next `action`."}}})
+				continue
 			}
 			parsed, perr := parseEmitState(input)
 			var verr error

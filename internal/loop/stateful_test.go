@@ -382,3 +382,200 @@ func TestSchemasDiffer(t *testing.T) {
 		t.Error("different schemas must differ")
 	}
 }
+
+// proseThenComplyProvider answers the first `proseTurns` calls the way a local
+// model answers a conversational question — with prose and no tool call — then
+// complies. It records every request's messages so a test can see what the
+// retry actually fed back.
+type proseThenComplyProvider struct {
+	mu         sync.Mutex
+	turn       int
+	proseTurns int
+	prose      string
+	thinking   string
+	script     string
+	requests   [][]providers.Message
+}
+
+func (p *proseThenComplyProvider) ID() string                                   { return "prose-then-comply" }
+func (p *proseThenComplyProvider) Probe(context.Context) error                  { return nil }
+func (p *proseThenComplyProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *proseThenComplyProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *proseThenComplyProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req.Messages)
+	i := p.turn
+	p.turn++
+	p.mu.Unlock()
+
+	ch := make(chan providers.Event, 3)
+	if i < p.proseTurns {
+		if p.prose != "" {
+			ch <- providers.Event{Type: providers.EventText, Text: p.prose}
+		}
+		if p.thinking != "" {
+			ch <- providers.Event{Type: providers.EventThinking, Text: p.thinking}
+		}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn",
+			Usage: &providers.Usage{InputTokens: 4287, OutputTokens: 557}}
+	} else {
+		ch <- providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName, Input: json.RawMessage(p.script)}}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use",
+			Usage: &providers.Usage{InputTokens: 4300, OutputTokens: 60}}
+	}
+	close(ch)
+	return ch, nil
+}
+func (p *proseThenComplyProvider) calls() int { p.mu.Lock(); defer p.mu.Unlock(); return p.turn }
+func (p *proseThenComplyProvider) reqs() [][]providers.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([][]providers.Message(nil), p.requests...)
+}
+
+func statefulRun(t *testing.T, prov providers.Provider, cx *config.Context) (RunResult, error, []providers.Event) {
+	t.Helper()
+	var evs []providers.Event
+	var mu sync.Mutex
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: []PromptSegment{{Role: "user",
+			Content: []PromptContentBlock{{Type: "trusted-text", Text: "Hello. What can you do?"}}}},
+		Context: cx,
+		OnEvent: func(ev providers.Event) { mu.Lock(); evs = append(evs, ev); mu.Unlock() },
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	return res, err, append([]providers.Event(nil), evs...)
+}
+
+// ⚠️ A MODEL THAT ANSWERED THE WRONG WAY IS NOT A BROKEN PROVIDER.
+//
+// `on_invalid_patch` / `max_patch_retries` covered a patch that ARRIVED and
+// failed validation. A model that replied in prose — the ordinary behaviour of
+// a local model handed "Hello. What can you do?" — got no retry at all: the run
+// died on step zero, 557 output tokens were discarded unread, and the operator
+// was told only "model did not call emit_state".
+//
+// Both are the same condition from the runtime's side: the output was not
+// usable and the model is the one who can fix it.
+func TestRun_Stateful_AMissingEmitStateIsRetried(t *testing.T) {
+	prov := &proseThenComplyProvider{
+		proseTurns: 1,
+		prose:      "Hello! I can search the web, read files and answer questions.",
+		script:     `{"patch":{"note":"greeted"},"done":true,"final":"hi"}`,
+	}
+	res, err, _ := statefulRun(t, prov, statefulCtx(nil))
+	if err != nil {
+		t.Fatalf("a prose first turn killed the run: %v", err)
+	}
+	if prov.calls() != 2 {
+		t.Errorf("provider called %d time(s), want 2 — the missing tool call was not retried", prov.calls())
+	}
+	if res.FinalText != "hi" {
+		t.Errorf("final = %q, want %q", res.FinalText, "hi")
+	}
+
+	// The retry must SHOW the model what it said, or it has no idea what to
+	// correct — the whole reason the text is no longer discarded.
+	second := prov.reqs()[1]
+	var sawAssistant, sawInstruction bool
+	for _, m := range second {
+		for _, c := range m.Content {
+			if m.Role == "assistant" && strings.Contains(c.Text, "I can search the web") {
+				sawAssistant = true
+			}
+			if m.Role == "user" && strings.Contains(c.Text, "`emit_state` tool call") {
+				sawInstruction = true
+			}
+		}
+	}
+	if !sawAssistant {
+		t.Errorf("the retry did not feed back the model's own reply: %+v", second)
+	}
+	if !sawInstruction {
+		t.Errorf("the retry did not say what was required: %+v", second)
+	}
+}
+
+// The budget is respected and the terminal error is diagnosable. Before this,
+// the operator got "model did not call emit_state" and nothing else — not how
+// many attempts, not what the model produced instead, not what to change.
+func TestRun_Stateful_AMissingEmitStateExhaustsTheBudgetAndSaysWhatItGot(t *testing.T) {
+	prov := &proseThenComplyProvider{
+		proseTurns: 99, // never complies
+		prose:      "Hello! I can search the web, read files and answer questions.",
+		script:     `{"done":true}`,
+	}
+	cx := statefulCtx(nil)
+	two := 2
+	cx.MaxPatchRetries = &two
+	_, err, evs := statefulRun(t, prov, cx)
+	if err == nil {
+		t.Fatal("a model that never calls emit_state must still fail the run")
+	}
+	if prov.calls() != 3 {
+		t.Errorf("provider called %d time(s), want 3 (1 + max_patch_retries 2)", prov.calls())
+	}
+	var errText string
+	for _, ev := range evs {
+		if ev.Type == providers.EventError {
+			errText = ev.Error
+		}
+	}
+	for _, want := range []string{"after 3 attempt(s)", "prose instead", "I can search the web", "max_patch_retries"} {
+		if !strings.Contains(errText, want) {
+			t.Errorf("the terminal error does not mention %q — an operator cannot act on it:\n%s", want, errText)
+		}
+	}
+}
+
+// ⚠️ AN EMPTY ASSISTANT TURN 400s THE NEXT CALL, and a thinking model's whole
+// output lands somewhere the text accumulator never looked — the same shape as
+// the silent recap failure. So a reasoning-only reply must be REPORTED and
+// never REPLAYED.
+func TestRun_Stateful_AThinkingOnlyReplyIsNotReplayedAsAnEmptyTurn(t *testing.T) {
+	prov := &proseThenComplyProvider{
+		proseTurns: 1,
+		thinking:   "the user greeted me, I should introduce myself",
+		script:     `{"patch":{"n":1},"done":true,"final":"ok"}`,
+	}
+	if _, err, _ := statefulRun(t, prov, statefulCtx(nil)); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	for _, m := range prov.reqs()[1] {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, c := range m.Content {
+			if strings.TrimSpace(c.Text) == "" {
+				t.Errorf("an EMPTY assistant turn was replayed — the next provider call 400s on it")
+			}
+			if strings.Contains(c.Text, "I should introduce myself") {
+				t.Errorf("a reasoning trace was replayed as an assistant turn; it is not one")
+			}
+		}
+	}
+
+	// And a reasoning-only reply must still be distinguishable from silence.
+	prov2 := &proseThenComplyProvider{proseTurns: 99, thinking: "thinking hard", script: `{}`}
+	cx := statefulCtx(nil)
+	zero := 0
+	cx.MaxPatchRetries = &zero
+	_, err, evs := statefulRun(t, prov2, cx)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	var errText string
+	for _, ev := range evs {
+		if ev.Type == providers.EventError {
+			errText = ev.Error
+		}
+	}
+	if !strings.Contains(errText, "only a reasoning trace") {
+		t.Errorf("a thinking-only reply reads as silence:\n%s", errText)
+	}
+}
