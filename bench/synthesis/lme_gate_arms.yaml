@@ -1,0 +1,120 @@
+# Gate arms for the LongMemEval abstention question — layered OVER
+# `bench/synthesis/ingest.yaml`, which supplies the code-js scribe, the pinned
+# extractor and the judge.
+#
+#   LOOMCYCLE_PRESETS=base,memory \
+#   OLLAMA_BASE_URL=http://100.112.7.68:11434 \
+#   LOOMCYCLE_MEMORY_TRACE_INDEX=1 LOOMCYCLE_CODE_AGENTS_ENABLED=1 \
+#   ./bin/loomcycle --config bench/synthesis/ingest.yaml \
+#                   --config bench/synthesis/lme_gate_arms.yaml
+#
+# ⚠️ THESE DEFINITIONS EXIST BECAUSE THE PREVIOUS ONES DID NOT. The 2026-09-20
+# LongMemEval arms were configured from a file in /tmp, which an interrupted
+# session cleared along with every raw report. The numbers survived only because
+# they had been summarised; the arms themselves could not be re-run. Anything an
+# arm is defined by belongs in the repo.
+#
+# WHAT IS BEING MEASURED. Attaching question-anchored turns lifts the answerable
+# slice +24.5pp and costs the `_abs` slice −26.7pp, and a prompt cannot repair it
+# (`bench/results/locomo/2026-09-20-longmemeval/`). A gate that WITHHOLDS the turns
+# when they look insufficient is the remaining runtime route. The gate only ever
+# chooses between two states — turns attached, or not — so the two states are what
+# these arms measure, per question. Any gate is then assembled from them: a
+# threshold gate, a model-verified gate, or any future decider, without re-running
+# the answerer once.
+
+memory:
+  embedder:
+    provider: ollama
+    model: bge-m3
+    # Spark. OVERRIDES the truenas pin in ingest.yaml — the store these arms read
+    # was embedded here, and a query embedded by a different host lands in a
+    # different space.
+    base_url: http://100.112.7.68:11434
+
+agents:
+  # ── The two states a gate chooses between ────────────────────────────────────
+  #
+  # The system prompt is a YAML anchor reused verbatim by both arms, so
+  # byte-identity is structural rather than something a reviewer has to diff. The
+  # ONLY difference between these two agents is `recall_attach_traces`. That
+  # matters more than it sounds: an earlier arm pair differed by a "tidied" prompt
+  # as well as the lever, and the tidying (dropping two `{{tool:}}` expansions)
+  # took accuracy to 0.0567 with 80% abstention.
+  locomo/orn-control-sp: &orn_arm
+    provider: ollama-local
+    model: ornith-1.5:35b
+    max_tokens: 1200
+    sampling: { temperature: 0 }
+    tools: [Memory, History, Document]
+    memory_scopes: [user, tenant]
+    history_scope: [user]
+    system_prompt: |
+      You answer a question from stored memory, and only from what you retrieve.
+      Never answer from what you already know: every name here is fictional, and
+      a confident answer from outside memory is the error this measures.
+
+      ## Tools
+      {{tool:Context.tools}}
+
+      {{tool:Context.guide}}
+
+      Three things the generated list above cannot tell you:
+      - `Memory op=recall` is the semantic search over remembered facts. Start
+        there. Both `scope` and `query` are required, and facts live in scope
+        `user` — try `tenant` as well when a question is about something shared.
+      - `History op=window` opens the ORIGINAL turns a fact was distilled from.
+        Reach for it when a fact is nearly an answer but drops the specific the
+        question asks for — a date, a number, a name. You MUST pass
+        `scope: "user"`: it defaults to `self`, which holds none of these
+        conversations and is refused.
+      - `Document op=graph_recall` starts from facts matching the question and
+        FOLLOWS THE RELATIONS between the things they name. Use it when the answer
+        is about something the question does not name directly — "which region
+        does X work in" when X's employer, not X, carries the region. Pass
+        `query`, `hops` (4 is usually enough) and `budget_chars` (1200).
+
+      Some questions need TWO OR MORE stored facts combined. Combine them.
+
+      Answer in one short sentence. No preamble, no reasoning shown. If memory
+      does not support an answer, reply with exactly NOT_FOUND and nothing else.
+
+  locomo/orn-l2k24-sp:
+    <<: *orn_arm
+    # The whole difference. The runtime attaches question-anchored turns; the
+    # model elects nothing, and there is deliberately no tool parameter for it.
+    recall_attach_traces: true
+
+  # ── The second decider ───────────────────────────────────────────────────────
+  #
+  # LOCAL on purpose. The premise under test is that a big reasoning model judges
+  # sufficiency implicitly while a small one cannot, so a cloud verifier would
+  # measure a different claim than the one being made. If a local verifier cannot
+  # do this either, the double-call route closes for local deployments — which is
+  # the finding that matters.
+  #
+  # It is asked for a VERDICT on material, never for an answer: the failure this
+  # whole line comes from is a reader treating on-topic material as sufficient,
+  # and a verifier that starts composing answers has joined that failure rather
+  # than checking it.
+  locomo/sufficiency:
+    provider: ollama-local
+    model: ornith-1.5:35b
+    tools: []
+    skills: ["-*"]
+    disable_context: true
+    max_tokens: 300
+    sampling: { temperature: 0 }
+    system_prompt: |
+      You decide ONE thing: does the MATERIAL below contain the answer to the
+      QUESTION? You are not answering the question.
+
+      Material is often ABOUT the question without ANSWERING it — the same topic,
+      the same people, a nearby event. That is the case you exist to catch.
+
+      Reply with one JSON object and nothing else — no prose, no code fences:
+      {"contains_answer": true, "why": "one short sentence"}
+
+      contains_answer is true only if some line of the material states the answer
+      outright. If answering would require guessing, combining a plausible story,
+      or assuming something the material does not say, it is false.
