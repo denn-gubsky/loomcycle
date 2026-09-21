@@ -8,6 +8,142 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.87.0
+
+*A mistyped key can no longer mint an admin token, a summarizer gets the budget to answer, and the emit_state contract is finally on the wire.*
+
+Five PRs, four of them opened by one operator report and one by a security
+incident. ⚠️ **One breaking change — see Upgrading.**
+
+### ⚠️ A mistyped key minted admin tokens (#1324)
+
+Hit live while minting bench tenants. The caller sent `allowed_scopes` — which
+is what the *response* echoes and what the stored column is named, so it is not
+an unreasonable guess — `json.Unmarshal` dropped the unknown key, `scopes` came
+through empty, and the documented default fired:
+
+```go
+if len(scopes) == 0 {
+    scopes = []string{auth.ScopeAdmin}   // "single token, full power"
+}
+```
+
+Three tenant tokens were minted as **admin**. HTTP 200, a plausible-looking
+response, no error anywhere.
+
+**And the mistake is self-locking.** One non-retired admin-scoped def turns OFF
+the `LOOMCYCLE_AUTH_TOKEN` fallback, so the accidental token revokes the very
+bearer that minted it — every later admin call returns an opaque 401 and there
+is no way back through the API. Two of the three deployments needed SQL to
+recover.
+
+Two layers now, and neither alone is the fix. An omitted scope list is
+**refused** rather than escalated — admin is stated, not inherited, so a typo is
+an inert 400 instead of maximum privilege. And the mint tool refuses **unknown
+keys**, deliberately unlike the rest of the substrate: everywhere else a stray
+field just means you get a def that differs from what you typed, but here the
+dropped field decided *privilege*. `import_token` keeps the old default, since
+binding the legacy token already says which scope it carries.
+
+### The stateful loop stopped killing runs over a conversational reply (#1320)
+
+`chat/local` FAILED on its first turn with *"model did not call emit_state"* —
+4287 in / 557 out, 45.4s, before the operator's "Hello. What can you do?" got
+any answer. The model was not broken: it was asked a conversational question and
+answered conversationally, and the loop threw 557 tokens of perfectly good prose
+away and gave up.
+
+`on_invalid_patch` / `max_patch_retries` covered a patch that ARRIVED and failed
+validation; a model that never called the tool got no retry at all. Both are the
+same condition from the runtime's side — the output was not usable and the model
+can fix it — so a missing call is now retried under the same budget, re-prompted
+with what the model actually said. What it produced is no longer discarded
+either, so the terminal error can say what the run *got* rather than only what
+it wanted. Thinking is kept separately and never replayed: a reasoning-only
+reply looks identical to silence from outside, and those need opposite fixes.
+
+### The emit_state contract is on the wire (#1321, RFC DG P1)
+
+`grep -rn "tool_choice" internal/` returned **one** hit before this release, in
+a comment about OpenAI-compat fields the gateway ignores. loomcycle had never
+sent `tool_choice` on any driver — so a model that ignored "call `emit_state`
+exactly once" was not disobeying anything the wire ever said.
+
+`providers.ToolChoice{Mode,Name}` now maps onto all three dialects (Anthropic
+`{type:any|tool|none}`, OpenAI `required`/the nested named form, Gemini
+`functionCallingConfig`), with deepseek/vllm/llamacpp inheriting through the
+OpenAI driver. The zero value is auto, so every unopted request is
+byte-identical.
+
+⚠️ **Ollama is non-mandatory, by decision.** `/api/chat` has no `tool_choice`
+and neither does its OpenAI shim, so a forced request there DEGRADES rather than
+being refused — refusing would make every local-model agent unrunnable to buy a
+guarantee it never had. The run says so when it finally fails, because "the model
+ignored the constraint" and "there was no constraint" call for opposite next
+moves.
+
+⚠️ **Anthropic drops a forced choice under extended thinking**, which the driver
+attaches whenever an agent sets `effort` on a reasoning-capable model. That pair
+400s, so thinking wins and the choice is dropped with a log line — the same
+precedence already applied to temperature.
+
+### A summarizer gets the budget to answer, not just to think (#1322)
+
+Reported from the terminal on `chat/local-small`:
+
+> Context recap declined at 87% of the window: the summarizer returned no text …
+> **raise recap_max_chars**, or choose an effort that stops the model thinking
+
+That advice is the tell — it asks you to lengthen the summary to fix a *budget*.
+`recap_max_chars` asks the PROMPT for a length, and the runtime derived the
+model's OUTPUT CAP from the same number: 192 tokens at the default. A reasoning
+model spends that thinking before it writes a word.
+
+The cap now has a floor independent of the requested length, and the call asks
+for the least reasoning the provider will give it — it previously sent **no**
+effort at all, and on Anthropic and Ollama an unset hint means "the model's own
+default", which for qwen3/deepseek-r1 is to think. If that hint breaks a
+provider (OpenAI passes it through as `reasoning_effort`, which a non-reasoning
+model rejects) the call drops it and retries once, which can only turn a decline
+into a summary.
+
+### Recap can run on its own model (#1323)
+
+`compaction:` has had a `model:` override since it shipped; `context:` never got
+one, so a recap always ran on the agent's own model. ⚠️ The point is the model's
+BEHAVIOUR, not its context window: a recap reads a span and writes a short note,
+so it is never the call that runs out of window — what breaks it is a reasoning
+model. Point `context.model` at a cheap non-thinking summarizer beside a
+thinking chat model.
+
+Carried across all six surfaces, with a guard that reflects over
+`config.Context`'s json tags rather than holding a list. It found a real
+pre-existing gap on its first run: `recall` and `harvest_to_memory` were missing
+from the MCP per-run context schema, so an MCP caller could not set either.
+
+### Upgrading
+
+- ⚠️ **BREAKING: `loomcycle operator-token create` now requires `--scopes`.** It
+  refuses in the CLI and prints both spellings plus the lockout warning.
+  `--copy-from-env` is exempt. The Web UI is unaffected — it already sent
+  `scopes` explicitly and refused an empty set. If you script token minting,
+  add the flag.
+- ⚠️ **Check your existing tokens.** If any were minted without an explicit
+  scope list, they are admin. `select name, allowed_scopes from
+  operator_token_defs where retired_at is null;` — and note that an unintended
+  admin row also disables the legacy `LOOMCYCLE_AUTH_TOKEN` login.
+- **`effort` on an Ollama stateful agent now reaches the wire as a forced tool
+  call** where the provider supports one. Nothing to change; a local model that
+  ignored the prompt contract is now re-prompted rather than fatal.
+- **The `History op=recap` token cap rose from 160 to 1024.** A deliberate
+  trade: 160 was a tight guard against a verbose model and a guaranteed EMPTY
+  result against a reasoning one.
+- **Adapters at 1.87.0** (`@loomcycle/client` on npm; Python rides its own
+  `python-v1.87.0` tag). `context.model` is new public surface on both.
+- Cut as a minor, not a patch: a patch tag builds only
+  `denngubsky/loomcycle-browser`, and these fixes have to reach the images a
+  deployment pulls.
+
 ## What's in v1.86.0
 
 *The distillation reports v1.85.0 added now wait for a number the provider returned — and every wire event is finally nameable from a typed client.*
