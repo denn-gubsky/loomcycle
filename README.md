@@ -182,7 +182,20 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.85.0) made distillation RECOVERABLE. v1.84.0 made a
+The most recent line (v1.86.0) fixed the regression v1.85.0 shipped with, found
+in production within a day. The distillation gate's footprint is seeded before
+the first call so a one-iteration continuation can still distil — but that seed
+counts the system prompt and tool catalogue, which distillation cannot shrink,
+so on a preamble-heavy agent it crossed the threshold on iteration zero and the
+run alarmed three times about a request it had not sent. The gate still opens on
+the seed; only the operator-facing reports now wait for a footprint a provider
+returned. The same release makes every wire event value nameable from
+`@loomcycle/client` — sixteen were missing from its `EventType`, including the
+one the incident turned on — and fixes an effective-config report that computed
+its `inert` advisory against the stored definition while answering `fields` from
+the run.
+
+Before it, v1.85.0 made distillation RECOVERABLE. v1.84.0 made a
 failed distillation visible; this one closes the gap that visibility exposed — a
 recap that declined had no second tier, `stateful` had no bound at all in the
 dimension that actually grows (its state object Σ), and a pinning `keep_last_n`
@@ -193,7 +206,7 @@ fixes a v1.84.0 defect found in production: the footprint counted the
 conversation but not the system prompt or tool catalogue, so a small-window agent
 sent 163% of its window with the gate never opening.
 
-Before it, v1.84.0 made context distillation impossible to fail
+And before that, v1.84.0 made context distillation impossible to fail
 silently. A live chat had climbed to the top of its window while auto-distillation
 never fired once — threshold crossed at 72%, next call at 99%, zero markers and
 zero errors — because a decline could take any of five paths and emit nothing. A
