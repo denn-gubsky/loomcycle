@@ -259,6 +259,20 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	emitTool := []providers.ToolSpec{emitStateToolSpec()}
 
 	sigma := map[string]any{}
+	// lastWritten records which step last touched each Σ key, so eviction can
+	// break ties by recency WITHIN a retention class. The class is the
+	// operator's statement of what matters; recency only orders equals.
+	lastWritten := map[string]int{}
+	// ⚠️ STATEFUL HAD NO FOOTPRINT AT ALL. The transcript is rebuilt from
+	// (Σ, observation) each step so it cannot accumulate — which is why the
+	// gate was never wired here — but Σ ITSELF accumulates, and
+	// statefulUserMessage serialises the whole of it into the prompt every
+	// step. Nothing measured it, nothing bounded it, and the run grew until
+	// the provider refused.
+	preambleTokens := estimatePreambleTokens(system, toolSpecs)
+	lastIn := preambleTokens + sigmaTokens(sigma)
+	lastWindow := effectiveWindow(0, opts)
+	seenExhaustedState := map[int]bool{}
 	holder := &tools.ExecStateHolder{Sigma: sigma}
 	dispatchCtx := tools.WithExecutionState(ctx, holder) // the action sees the live Σ (Context op=state)
 
@@ -277,6 +291,15 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			applyStatefulSampling(&req, opts.Sampling)
 			input, usage, err := callForEmitState(ctx, opts.Provider, req)
 			addUsage(&total, usage)
+			if usage != nil {
+				// The provider's own count of the whole request, which is what
+				// the eviction threshold must measure against — the same
+				// numerator the append/recap gate uses.
+				if in := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens; in > 0 {
+					lastIn = in
+				}
+				lastWindow = effectiveWindow(usage.MaxContextTokens, opts)
+			}
 			if err != nil {
 				emit(providers.Event{Type: providers.EventError, Error: "stateful step failed: " + err.Error()})
 				return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, err
@@ -309,7 +332,47 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		}
 
 		sigma = statepatch.Merge(sigma, es.Patch)
+		for k := range es.Patch {
+			lastWritten[k] = iter
+		}
 		holder.Sigma = sigma
+
+		// ⚠️ STRUCTURAL COMPACTION. Summarising is the wrong operation on a
+		// state object: Σ is validated against state_schema, and prose is not a
+		// Σ — the next patch would have nothing well-formed to merge into. The
+		// structural equivalent is EVICTION of the least significant entries.
+		var evicted []string
+		if aboveBackstop(opts.Compaction, lastIn, lastWindow) && backstopAvailable(opts.Compaction) {
+			// The budget is Σ's share of the window. The preamble is fixed for
+			// the run and the observation is one step, so Σ is the only part
+			// eviction can move.
+			budget := lastWindow*compactionKeptTailBudgetPct/100 - preambleTokens
+			if plan := sigmaEvictionPlan(sigma, schema, lastWritten, budget); len(plan) > 0 {
+				// Bank BEFORE dropping. Σ is the run's working memory, and
+				// silently losing it is worse than a large prompt — a later
+				// recall must be able to fetch back what was evicted.
+				bankEvictedSigma(ctx, opts, emit, sigma, plan)
+				for _, k := range plan {
+					delete(sigma, k)
+					delete(lastWritten, k)
+				}
+				holder.Sigma = sigma
+				evicted = plan
+				lastIn = preambleTokens + sigmaTokens(sigma)
+			} else {
+				// Nothing evictable and still over: every key is core, or the
+				// preamble alone is the problem. Either way the run is heading
+				// for the provider's limit and must say so.
+				reportExhausted(emit, seenExhaustedState, opts.Compaction, lastIn, lastWindow,
+					[]providers.ContextTierVerdict{{
+						Mode:   "stateful",
+						Reason: providers.DistillDeclineSplitDeclined,
+						Message: "stateful state cannot be reduced: every key is retention " +
+							"core (the default) — declare x-retention: scratch or derived on " +
+							"the state_schema properties that are safe to drop",
+					}})
+			}
+		}
 
 		// Model-proposed schema (RFC CR): recorded for the operator to review +
 		// adopt (by forking the agent def's context.state_schema). INERT — it does
@@ -321,7 +384,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			lastProposed = es.ProposeSchema
 		}
 		emit(providers.Event{Type: providers.EventContextState,
-			ContextState: &providers.ContextStateEventInfo{State: sigma, Patch: es.Patch, Iter: iter, Action: actionName(es), Reasoning: es.Reasoning, ProposedSchema: proposed}})
+			ContextState: &providers.ContextStateEventInfo{State: sigma, Patch: es.Patch, Iter: iter, Action: actionName(es), Reasoning: es.Reasoning, ProposedSchema: proposed, Evicted: evicted}})
 
 		// Recall harvest (RFC CT): stateful is the most lossy mode — only Σ and the
 		// latest observation are fed, so each step's reasoning + observation are

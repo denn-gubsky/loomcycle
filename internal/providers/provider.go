@@ -1047,6 +1047,13 @@ type ContextStateEventInfo struct {
 	// context.state_schema). Absent unless the model proposed one that differs
 	// from the run's active schema.
 	ProposedSchema map[string]any `json:"proposed_schema,omitempty"`
+	// Evicted names the Σ keys structural compaction dropped this step, if any.
+	//
+	// On the per-step event rather than its own type because this is where an
+	// operator already reads Σ — a state that shrank with no explanation beside
+	// it is the silence this line exists to remove, and a separate event would
+	// have to be correlated back to the step that caused it.
+	Evicted []string `json:"evicted,omitempty"`
 }
 
 // MemoryBankedInfo is the outcome of a compaction's memory flush. It is on the
