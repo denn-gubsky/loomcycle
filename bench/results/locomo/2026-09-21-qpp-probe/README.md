@@ -82,3 +82,83 @@ from "off-topic with a lower score", and only the first is the real target.
 - `analyze.py` — signals + AUC (Mann-Whitney)
 - `probe.yaml` — retrieval-only rig (embedder pinned to the store's own model)
 - `summary-qpp.json` — all 462 measurements
+
+---
+
+# Stage 2 — the real `_abs` slice. The hypothesis FAILS; the plain score survives.
+
+2026-09-21. The 130-instance LongMemEval subset from `../2026-09-20-longmemeval/`
+(100 answerable + **all 30 `_abs`** — 30 is the whole oracle corpus, not a sample),
+re-ingested from scratch as chats with the trace index on, `consolidate-passes=0`.
+**Retrieval only: no answerer, no judge.** The one model call is the query embedding.
+130 of 130 measured, 0 errors, 0 empty indexes. Harness arm: `-retrieval-dump`.
+
+## Result
+
+| signal | AUC | p | mean answerable | mean `_abs` |
+|---|---|---|---|---|
+| **mean_k** | **0.786** | <0.0001 | 0.4999 | 0.4325 |
+| **top1 (raw cosine)** | **0.783** | <0.0001 | 0.6507 | 0.5693 |
+| std_k (homogeneity) | 0.672 | 0.0044 | 0.0741 | 0.0597 |
+| **perplexity T=0.05** | **0.589** | **0.14** | 8.55 | 9.87 |
+| perplexity raw | 0.576 | 0.21 | 18.85 | 20.65 |
+| nqc | 0.557 | 0.34 | 0.1515 | 0.1393 |
+| gap_top1_mean | 0.555 | 0.36 | 0.1508 | 0.1368 |
+| perplexity T=0.01 | 0.542 | 0.49 | 1.90 | 1.79 |
+
+Criterion was fixed before the run: **AUC ≥ 0.75 to be worth building on.** Only the two
+plain score means clear it. With eight signals tested, Bonferroni is 0.05/8 = 0.00625 —
+`mean_k`, `top1` and `std_k` survive it; nothing else comes close.
+
+## ⚠️ The homogeneity hypothesis does not survive contact with `_abs`
+
+**Perplexity is directionally right and statistically nothing**: answerable sets *are*
+tighter (8.55 vs 9.87), but AUC 0.589 at **p = 0.14**. On LoCoMo's off-topic negatives
+the same signal scored 0.897. The entire apparent power was the easy corpus.
+
+**And conditional on the score it carries nothing at all.** Split at the median top1 and
+re-test perplexity within each half:
+
+| half | n (ans/`_abs`) | AUC (lower perplexity = answerable) |
+|---|---|---|
+| low top1 — the ambiguous region, where a second signal would matter | 40 / 25 | **0.394** |
+| high top1 | 60 / 5 | 0.540 |
+
+In the half where it would have to do the work, it is **inverted**. This is stage 1's
+warning confirmed on the real task: homogeneity looked predictive because tight sets
+also score high, not because tightness is independent evidence.
+
+`std_k` is the one homogeneity variant that stays significant (0.672, p = 0.0044) — but
+it is below the gate and blocks **1 of 30** `_abs` at an operating point that keeps 96%
+of the answerable slice. That is not a lever.
+
+## What DOES work, modestly: gate on the plain top-1 score
+
+The single 95%-retention operating point undersells it — the curve is steep just below
+it. Estimated effect on the measured L2 arm (+24.5pp answerable, −26.7pp `_abs`):
+
+| keep answerable | top1 threshold | `_abs` blocked | estimated net |
+|---|---|---|---|
+| 100.0% | 0.4680 | 10.0% | answerable +0.0pp, `_abs` +2.7pp |
+| 97.0% | 0.5078 | 16.7% | answerable −0.7pp, `_abs` +4.4pp |
+| **94.0%** | **0.5456** | **43.3%** | **answerable −1.5pp, `_abs` +11.6pp** |
+| 89.0% | 0.5720 | 60.0% | answerable −2.7pp, `_abs` +16.0pp |
+| 82.0% | 0.5940 | 66.7% | answerable −4.4pp, `_abs` +17.8pp |
+
+A deterministic threshold on a number the retriever already computes and the attach path
+already discards. No model decision, no extra call — exactly the shape of control the
+LongMemEval result said was needed.
+
+⚠️ **These are estimates and the thresholds are IN-SAMPLE.** Two things must be true
+before any of it is a result: (1) the trade is linear only if blocked questions are
+average, and they are not — they are the weak-retrieval ones, where L2's gain was
+probably smaller anyway; (2) the threshold was chosen by looking at this answerable
+distribution, with 30 `_abs` total, so 43.3% is 13 questions. It needs held-out
+validation and then an end-to-end arm. Nothing here replaces running it.
+
+## The honest summary
+
+The idea was good and the cheap test was right to run: it cost one afternoon and killed
+a plausible mechanism that would otherwise have been built. **Set homogeneity does not
+tell you whether a retrieved set answers the question — the plain similarity of the best
+hit does, about as well as anything here, and it was already on the wire.**
