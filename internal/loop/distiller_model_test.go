@@ -46,20 +46,6 @@ func (p *modelRecordingProvider) Call(_ context.Context, req providers.Request) 
 	return ch, nil
 }
 
-// summarizableChat is a conversation the DEFAULT keep_last_n of 6 can still
-// split: the standard six-message fixture is pinned whole, so a recap on it
-// declines before the summarizer is ever called and every assertion below would
-// be vacuous for the wrong reason.
-//
-// (#1322 adds an identical longChat; collapse the two on whichever rebases.)
-func summarizableChat() []providers.Message {
-	out := []providers.Message{userMsg("the task")}
-	for i := 0; i < 7; i++ {
-		out = append(out, asstMsg(bulky("a")), userMsg(bulky("q")))
-	}
-	return out
-}
-
 // context.model runs the RECAP on a different model from the same provider —
 // the knob compaction has had since it shipped and recap never got.
 func TestRecap_UsesTheConfiguredSummarizerModel(t *testing.T) {
@@ -68,7 +54,7 @@ func TestRecap_UsesTheConfiguredSummarizerModel(t *testing.T) {
 	if _, did := maybeRecap(context.Background(),
 		RunOptions{Provider: prov, Model: "qwen3.6",
 			Context: &config.Context{Mode: cptr(config.ContextModeRecap), Model: &summarizer}},
-		summarizableChat(), 36_000, 40_000, func(providers.Event) {}, "auto"); !did {
+		longChat(), 36_000, 40_000, func(providers.Event) {}, "auto"); !did {
 		t.Fatal("recap declined — the fixture is not exercising the summarize call")
 	}
 	prov.mu.Lock()
@@ -88,7 +74,7 @@ func TestRecap_WithoutAModelUsesTheRunsOwn(t *testing.T) {
 	if _, did := maybeRecap(context.Background(),
 		RunOptions{Provider: prov, Model: "qwen3.6",
 			Context: &config.Context{Mode: cptr(config.ContextModeRecap)}},
-		summarizableChat(), 36_000, 40_000, func(providers.Event) {}, "auto"); !did {
+		longChat(), 36_000, 40_000, func(providers.Event) {}, "auto"); !did {
 		t.Fatal("recap declined")
 	}
 	prov.mu.Lock()
