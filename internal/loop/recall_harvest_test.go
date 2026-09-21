@@ -49,7 +49,7 @@ func TestMaybeAutoCompact_HarvestsEvictedSpanToRecallIndex(t *testing.T) {
 		Compaction:  &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
 		RecallIndex: ix,
 	}
-	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("expected compaction to happen")
 	}
@@ -76,7 +76,7 @@ func TestMaybeAutoCompact_NilRecallIndexNoOp(t *testing.T) {
 		Model:      "x",
 		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
 	}
-	if _, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto"); !did {
+	if _, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto"); !did {
 		t.Fatal("compaction should still happen with recall off")
 	}
 }
@@ -97,7 +97,7 @@ func TestMaybeRecap_HarvestsEvictedSpan(t *testing.T) {
 		Context:     &config.Context{Mode: cptr(config.ContextModeRecap), KeepLastN: cptr(2), Reasoning: cptr("drop")},
 		RecallIndex: ix,
 	}
-	_, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	_, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("expected recap distillation to happen")
 	}

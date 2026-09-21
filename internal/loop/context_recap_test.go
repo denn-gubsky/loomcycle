@@ -143,7 +143,7 @@ func TestRecapMessages_Shape(t *testing.T) {
 func TestMaybeRecap_RecapsAndKeepsTail(t *testing.T) {
 	msgs := distillableConvo()
 	opts := RunOptions{Provider: &steerProvider{}, Model: "x", Context: recapMode(2, "recap")}
-	out, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	out, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("expected a recap distillation")
 	}
@@ -171,7 +171,7 @@ func TestMaybeRecap_FlatAndFoldsForward(t *testing.T) {
 	opts := RunOptions{Provider: p, Model: "x", Context: recapMode(2, "recap")}
 
 	msgs := distillableConvo()
-	out1, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	out1, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("first recap did not fire")
 	}
@@ -179,7 +179,7 @@ func TestMaybeRecap_FlatAndFoldsForward(t *testing.T) {
 
 	// New turns arrive, then a second recap.
 	out1 = append(out1, userMsg("q4"), asstMsg("a4"), userMsg("q5"), asstMsg("a5"))
-	out2, did := maybeRecap(context.Background(), opts, out1, 0, func(providers.Event) {}, "auto")
+	out2, did := maybeRecap(context.Background(), opts, out1, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("second recap did not fire")
 	}
@@ -202,7 +202,7 @@ func TestMaybeRecap_DropMode(t *testing.T) {
 	p := &recapProbeProvider{reply: "SHOULD-NOT-BE-CALLED"}
 	opts := RunOptions{Provider: p, Model: "x", Context: recapMode(2, "drop")}
 	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
-	out, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	out, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("drop mode should still distil (drop the evicted span)")
 	}
@@ -220,7 +220,7 @@ func TestMaybeRecap_KeepMode(t *testing.T) {
 	p := &recapProbeProvider{reply: "x"}
 	opts := RunOptions{Provider: p, Model: "x", Context: recapMode(2, "keep")}
 	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
-	out, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	out, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if did {
 		t.Error("keep mode must not distil")
 	}
@@ -238,7 +238,7 @@ func TestMaybeRecap_SurvivesRecapFailure(t *testing.T) {
 	opts := RunOptions{Provider: &errProvider{}, Model: "x", Context: recapMode(2, "recap")}
 	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2"), asstMsg("a2"), userMsg("q3"), asstMsg("a3")}
 	var gotErr bool
-	out, did := maybeRecap(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+	out, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
 		if ev.Type == providers.EventError {
 			gotErr = true
 		}

@@ -1591,9 +1591,9 @@ func declineSplitMessage(mode string, messages, keepLastN int) string {
 // end in no text. They are NOT the same problem: a failure has an error to
 // read, while an empty return is a budget/routing issue with no error at all —
 // the one that produced the silent climb this work exists to fix.
-func compactionSummaryDecline(mode, trigger string, window int, err error) *providers.ContextDistillDeclinedInfo {
+func compactionSummaryDecline(mode, trigger string, used, window int, err error) *providers.ContextDistillDeclinedInfo {
 	info := &providers.ContextDistillDeclinedInfo{
-		Mode: mode, Trigger: trigger, WindowTokens: window,
+		Mode: mode, Trigger: trigger, UsedTokens: used, WindowTokens: window,
 		Reason: providers.DistillDeclineEmptySummary,
 		Message: "context " + mode + " declined: the summarizer returned no text. A thinking model " +
 			"spends a small budget reasoning and emits nothing the summary accumulator collects — " +
@@ -1643,7 +1643,7 @@ func declineSeverity(reason string) string {
 	return providers.DistillSeverityInfo
 }
 
-func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
+func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, used, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
 	c := opts.Compaction
 	keepLastN := config.CompactionDefaultKeepLastN
 	keepFirst := config.CompactionDefaultKeepFirst
@@ -1669,7 +1669,7 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	if !ok {
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "compaction", Trigger: trigger, Reason: providers.DistillDeclineSplitDeclined,
-			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			UsedTokens: used, WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
 			Message: declineSplitMessage("compaction", len(messages), keepLastN)})
 	}
 	// Safety cap: when the provider reports a window, never let the kept-
@@ -1687,7 +1687,7 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 		if err != nil {
 			emit(providers.Event{Type: providers.EventError, Error: "compaction summary failed (" + trigger + "): " + err.Error()})
 		}
-		return declineDistill(emit, messages, compactionSummaryDecline("compaction", trigger, window, err))
+		return declineDistill(emit, messages, compactionSummaryDecline("compaction", trigger, used, window, err))
 	}
 	before := estimateMessageTokens(messages)
 	pinned := ""
@@ -1703,7 +1703,7 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	if after >= before {
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "compaction", Trigger: trigger, Reason: providers.DistillDeclineNotSmaller,
-			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			UsedTokens: used, WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
 			BeforeTokens: before, AfterTokens: after,
 			Message: fmt.Sprintf("context compaction declined: the result is not smaller (%d -> %d tokens), "+
 				"so it was refused rather than applied", before, after)})
@@ -1873,7 +1873,7 @@ func shouldAutoRecap(cx *config.Context, used, window, iter, lastIter int) bool 
 // task) is always pinned — the preamble the paper under-counts. No running-state
 // is threaded: the prior recap lives in the evicted span (see RecapMessages) and
 // is folded forward by the recap call, so replay/resume rebuild identically.
-func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Message, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
+func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Message, used, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
 	cx := opts.Context
 	keepLastN := config.ContextDefaultKeepLastN
 	reasoning := config.ContextDefaultReasoning
@@ -1897,7 +1897,7 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 		// needs to see that once, not deduce it.
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineReasoningKeep,
-			WindowTokens: window, Messages: len(messages),
+			UsedTokens: used, WindowTokens: window, Messages: len(messages),
 			Message: "context recap declined: context.reasoning is \"keep\", which asks for no " +
 				"distillation — set reasoning: recap (or drop) to let the window be reclaimed"})
 	}
@@ -1907,7 +1907,7 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	if !ok {
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineSplitDeclined,
-			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			UsedTokens: used, WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
 			Message: declineSplitMessage("recap", len(messages), keepLastN)})
 	}
 	if window > 0 {
@@ -1923,7 +1923,7 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 			if err != nil {
 				emit(providers.Event{Type: providers.EventError, Error: "context recap failed (" + trigger + "): " + err.Error()})
 			}
-			return declineDistill(emit, messages, compactionSummaryDecline("recap", trigger, window, err))
+			return declineDistill(emit, messages, compactionSummaryDecline("recap", trigger, used, window, err))
 		}
 		newRecap = strings.TrimSpace(r)
 	}
@@ -1945,7 +1945,7 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	if after >= before {
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineNotSmaller,
-			WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+			UsedTokens: used, WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
 			BeforeTokens: before, AfterTokens: after,
 			Message: fmt.Sprintf("context recap declined: the result is not smaller (%d -> %d tokens), "+
 				"so it was refused rather than applied", before, after)})
@@ -2446,7 +2446,7 @@ outerLoop:
 			iterVerdicts = nil
 			reclaimed := false
 			if recapMode {
-				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
+				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastCtxTokens, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
 					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 					reclaimed = true
@@ -2466,7 +2466,7 @@ outerLoop:
 			// primary, so this is its only invocation there.
 			if !reclaimed && (backstopDue || selfReq || !recapMode) &&
 				backstopAvailable(opts.Compaction) {
-				if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
+				if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastCtxTokens, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
 					// Compaction shrank the history; refresh the footprint so
 					// op=self below reflects the compacted size, not the

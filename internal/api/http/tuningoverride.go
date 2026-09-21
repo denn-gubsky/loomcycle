@@ -68,6 +68,16 @@ type runOverrides struct {
 	Routing   *routingOverride
 	Resources *resourceOverride
 	Tuning    *tuningOverride
+	// Context is the run's own context block (mode, keep_last_n, thresholds).
+	//
+	// ⚠️ ITS ABSENCE WAS A BUG, not a simplification. The effective-config
+	// report's `inert` array is computed from the definition this returns, and
+	// its whole justification over the boot-time warning is that it sees a
+	// PER-RUN override introducing a trap on a clean definition. Without this
+	// field it structurally could not, so the array answered from the stored
+	// definition while the same response's `fields.context` answered from the
+	// run — one payload, two verdicts about one setting.
+	Context *config.Context
 }
 
 // effectiveDef returns the definition this run actually runs under: the stored
@@ -82,5 +92,11 @@ func (s *Server) effectiveDef(ctx context.Context, def config.AgentDef, ov runOv
 	if out, err = applyResourceOverride(out, ov.Resources); err != nil {
 		return def, err
 	}
-	return applyTuningOverride(out, ov.Tuning), nil
+	out = applyTuningOverride(out, ov.Tuning)
+	// Per-field merge, matching how the run path itself applies it — a run that
+	// sets only `mode` must not blank the agent's keep_last_n.
+	if ov.Context != nil {
+		out.Context = config.MergeContext(out.Context, ov.Context)
+	}
+	return out, nil
 }

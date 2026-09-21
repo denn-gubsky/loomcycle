@@ -29,7 +29,7 @@ func TestMaybeRecap_BanksToMemoryWhenOptedIn(t *testing.T) {
 			return "mp_1", nil
 		},
 	}
-	_, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto")
+	_, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("expected recap distillation to happen")
 	}
@@ -59,7 +59,7 @@ func TestMaybeRecap_NoBankWhenHarvestOff(t *testing.T) {
 			return "x", nil
 		},
 	}
-	if _, did := maybeRecap(context.Background(), opts, msgs, 0, func(providers.Event) {}, "auto"); !did {
+	if _, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(providers.Event) {}, "auto"); !did {
 		t.Fatal("expected recap distillation")
 	}
 	if banked != 0 {
@@ -78,7 +78,7 @@ func TestHarvestToMemory_BankingErrorIsNonFatal(t *testing.T) {
 			return "", errors.New("agent has no user in memory_scopes")
 		},
 	}
-	_, did := maybeRecap(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+	_, did := maybeRecap(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
 		if ev.Type == providers.EventError {
 			errs++
 		}
