@@ -1807,6 +1807,7 @@ func contextFromProto(in *loomcyclepb.Context) *config.Context {
 		KeepLastN:       intPtrFrom32(in.KeepLastN),
 		Reasoning:       in.Reasoning,
 		RecapMaxChars:   intPtrFrom32(in.RecapMaxChars),
+		Model:           in.Model,
 		AutoRecapAtPct:  intPtrFrom32(in.AutorecapAtPct),
 		OnInvalidPatch:  in.OnInvalidPatch,
 		MaxPatchRetries: intPtrFrom32(in.MaxPatchRetries),

@@ -1551,6 +1551,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 			KeepLastN:       cx.KeepLastN,
 			Reasoning:       cx.Reasoning,
 			RecapMaxChars:   cx.RecapMaxChars,
+			Model:           cx.Model,
 			AutoRecapAtPct:  cx.AutoRecapAtPct,
 			StateSchema:     cx.StateSchema,
 			OnInvalidPatch:  cx.OnInvalidPatch,

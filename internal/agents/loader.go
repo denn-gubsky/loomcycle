@@ -207,6 +207,7 @@ type Context struct {
 	KeepLastN       *int           `json:"keep_last_n,omitempty"`
 	Reasoning       *string        `json:"reasoning,omitempty"`
 	RecapMaxChars   *int           `json:"recap_max_chars,omitempty"`
+	Model           *string        `json:"model,omitempty"`
 	AutoRecapAtPct  *int           `json:"autorecap_at_pct,omitempty"`
 	StateSchema     map[string]any `json:"state_schema,omitempty"`
 	OnInvalidPatch  *string        `json:"on_invalid_patch,omitempty"`

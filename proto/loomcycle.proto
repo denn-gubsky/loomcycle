@@ -739,6 +739,8 @@ message Context {
   optional int32 max_patch_retries = 8;
   optional bool recall = 9;
   optional bool harvest_to_memory = 10;
+  // The recap call's own model (same provider). Mirrors Compaction.model.
+  optional string model = 11;
 }
 
 message Interruption {

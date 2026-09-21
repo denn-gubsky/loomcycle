@@ -896,15 +896,24 @@ export interface ContextOptions {
    *                        gate did not open, not that distillation is
    *                        broken. */
   reasoning?: "recap" | "drop" | "keep";
-  /** Character budget for the running recap note (default 512).
+  /** Character budget for the running recap note (default 512) — a bound on
+   *  the note's LENGTH.
    *
-   *  ⚠️ The summariser's token budget is derived from this
-   *  (`recapMaxChars/4 + 64`), so the default allows ~192 tokens. A model that
-   *  spends its budget on reasoning can return nothing at all, which the run
-   *  reports as a `context_distill_declined` event with reason
-   *  `empty_summary`. Raise this, or pick an effort that stops the model
-   *  thinking. */
+   *  ⚠️ It does not decide whether the summariser can answer. A reasoning
+   *  model can spend its output budget thinking and return nothing at all,
+   *  which the run reports as a `context_distill_declined` event with reason
+   *  `empty_summary`; the fix for that is {@link ContextOptions.model}, not a
+   *  longer note. */
   recapMaxChars?: number;
+  /** Run the RECAP call on a different model, served by the SAME provider.
+   *  Unset = the run's own model. Mirrors `compaction.model`.
+   *
+   *  ⚠️ What this is for is the model's BEHAVIOUR, not its context window. A
+   *  recap reads a span of transcript and writes a short note, so it is never
+   *  the call that runs out of window; what breaks it is a reasoning model,
+   *  which spends its output budget thinking before it writes. Point this at a
+   *  cheap non-thinking model beside a thinking chat model. */
+  model?: string;
   /** Auto-distil when used/window ≥ N% (50..95; default 80). This is the live
    *  threshold in recap mode — NOT `compaction.autocompactAtPct`. */
   autorecapAtPct?: number;

@@ -2419,7 +2419,7 @@ def _build_context(d: Mapping[str, Any]) -> "pb.Context":
     against it.
     """
     out = pb.Context()
-    for key in ("mode", "reasoning", "on_invalid_patch"):
+    for key in ("mode", "reasoning", "on_invalid_patch", "model"):
         if d.get(key) is not None:
             setattr(out, key, str(d[key]))
     for key in ("keep_last_n", "recap_max_chars", "autorecap_at_pct", "max_patch_retries"):
