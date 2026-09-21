@@ -1,0 +1,39 @@
+{
+  "label": "conv-26 L2-fix draw 1",
+  "note": "gate PASS",
+  "arm": "locomo/orn-l2fix-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-19T13:20:31Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 150,
+  "graded": 149,
+  "accuracy": 0.7013,
+  "strict": 0.6242,
+  "correct": 93,
+  "partial": 23,
+  "wrong": 33,
+  "unparsed": 1,
+  "not_found": 11,
+  "per_category": {
+    "1": {
+      "graded": 32,
+      "accuracy": 0.5312,
+      "not_found": 1
+    },
+    "2": {
+      "graded": 36,
+      "accuracy": 0.6944,
+      "not_found": 5
+    },
+    "3": {
+      "graded": 11,
+      "accuracy": 0.5455,
+      "not_found": 2
+    },
+    "4": {
+      "graded": 70,
+      "accuracy": 0.8071,
+      "not_found": 3
+    }
+  }
+}

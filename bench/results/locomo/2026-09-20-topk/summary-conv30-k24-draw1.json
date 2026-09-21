@@ -1,0 +1,34 @@
+{
+  "label": "conv30-k24-draw1",
+  "note": "recallTraceTopK sweep",
+  "arm": "locomo/orn-l2k24-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-20T04:42:05Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 81,
+  "graded": 80,
+  "accuracy": 0.8063,
+  "strict": 0.75,
+  "correct": 60,
+  "partial": 9,
+  "wrong": 11,
+  "unparsed": 1,
+  "not_found": 3,
+  "per_category": {
+    "1": {
+      "graded": 11,
+      "accuracy": 0.5455,
+      "not_found": 1
+    },
+    "2": {
+      "graded": 26,
+      "accuracy": 0.9423,
+      "not_found": 1
+    },
+    "4": {
+      "graded": 43,
+      "accuracy": 0.7907,
+      "not_found": 1
+    }
+  }
+}

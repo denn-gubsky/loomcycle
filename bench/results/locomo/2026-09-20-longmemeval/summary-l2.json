@@ -1,0 +1,49 @@
+{
+  "label": "ornith-1.5:35b LongMemEval L2 (k=24)",
+  "note": "recall_attach_traces; SEE THE _abs SLICE before quoting the overall",
+  "arm": "locomo/orn-l2k24-sp",
+  "judge": "locomo/judge",
+  "started_at": "2026-09-20T08:15:17Z",
+  "model": "ollama-local/ornith-1.5:35b",
+  "asked": 130,
+  "graded": 128,
+  "accuracy": 0.7188,
+  "strict": 0.7109,
+  "correct": 91,
+  "partial": 2,
+  "wrong": 35,
+  "unparsed": 2,
+  "not_found": 18,
+  "per_category": {
+    "101": {
+      "graded": 20,
+      "accuracy": 0.9,
+      "not_found": 4
+    },
+    "102": {
+      "graded": 12,
+      "accuracy": 0.9167,
+      "not_found": 0
+    },
+    "103": {
+      "graded": 4,
+      "accuracy": 1.0,
+      "not_found": 0
+    },
+    "104": {
+      "graded": 38,
+      "accuracy": 0.6053,
+      "not_found": 6
+    },
+    "105": {
+      "graded": 33,
+      "accuracy": 0.6061,
+      "not_found": 6
+    },
+    "106": {
+      "graded": 21,
+      "accuracy": 0.7619,
+      "not_found": 2
+    }
+  }
+}

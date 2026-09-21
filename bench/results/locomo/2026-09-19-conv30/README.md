@@ -1,5 +1,17 @@
 # conv-30 — the second conversation, and why L2 delivered half
 
+> ## ⚠️ SUPERSEDED — this arm was measured before the op-coverage fix
+>
+> The diagnosis in this file is what produced the fix. With the grant covering
+> `search` as well as `recall`, conv-30 goes **0.5617 → 0.7654 / strict 0.7160**,
+> questions receiving turns go **36/81 → 81/81**, and the gate is met. See
+> `../2026-09-19-gate-met/`.
+>
+> ⚠️ One conclusion here is **overturned**: temporal is NOT a local-reader reading
+> limit. The fixed arm reaches 0.9038 on temporal, *beating the oracle* — because the
+> oracle renders only LoCoMo's annotated evidence, which is off by one. The temporal
+> deficit was coverage.
+
 Run 2026-09-19. LoCoMo **conv-30**, categories 1–4, **81 scoreable questions**, same
 judge (`deepseek-v4-flash`, temperature 0), all arms on Spark (reader + embedder).
 
