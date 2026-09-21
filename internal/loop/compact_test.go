@@ -117,7 +117,7 @@ func TestMaybeAutoCompact_SummarizesAndKeepsTail(t *testing.T) {
 		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
 	}
 	var compacted bool
-	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0 /* no window cap */, func(providers.Event) {}, "auto")
+	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0 /* no window cap */, func(providers.Event) {}, "auto")
 	if !did {
 		t.Fatal("expected compaction to happen")
 	}
@@ -474,7 +474,7 @@ func TestMaybeAutoCompact_BanksDiscardedSpan(t *testing.T) {
 		},
 	}
 	var info *providers.ContextCompactionEventInfo
-	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
 		if ev.Type == providers.EventContextCompaction {
 			info = ev.ContextCompaction
 		}
@@ -518,7 +518,7 @@ func TestMaybeAutoCompact_NoBankWithoutTheCallback(t *testing.T) {
 		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
 	}
 	var info *providers.ContextCompactionEventInfo
-	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
 		if ev.Type == providers.EventContextCompaction {
 			info = ev.ContextCompaction
 		}
@@ -546,7 +546,7 @@ func TestMaybeAutoCompact_SurvivesBankFailure(t *testing.T) {
 		},
 	}
 	var info *providers.ContextCompactionEventInfo
-	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
 		if ev.Type == providers.EventContextCompaction {
 			info = ev.ContextCompaction
 		}
@@ -581,7 +581,7 @@ func TestMaybeAutoCompact_ToolOnlySpanReportsNothingToBank(t *testing.T) {
 		},
 	}
 	var info *providers.ContextCompactionEventInfo
-	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, func(ev providers.Event) {
+	_, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
 		if ev.Type == providers.EventContextCompaction {
 			info = ev.ContextCompaction
 		}

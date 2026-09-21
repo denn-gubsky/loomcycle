@@ -60,7 +60,7 @@ func TestMaybeRecap_EmptySummary_EmitsDeclined(t *testing.T) {
 		Provider: prov, Model: "x",
 		Context: &config.Context{KeepLastN: cptr(2), Reasoning: cptr("recap")},
 	}
-	_, did := maybeRecap(context.Background(), opts, distillableConvo(), 32768,
+	_, did := maybeRecap(context.Background(), opts, distillableConvo(), 0, 32768,
 		func(e providers.Event) { evs = append(evs, e) }, "auto")
 	if did {
 		t.Fatal("a recap that produced no text must not report success")
@@ -104,7 +104,7 @@ func TestMaybeRecap_SplitDeclined_EmitsDeclined(t *testing.T) {
 		Provider: &steerProvider{}, Model: "x",
 		Context: &config.Context{KeepLastN: cptr(6), Reasoning: cptr("recap")},
 	}
-	_, did := maybeRecap(context.Background(), opts, msgs, 32768,
+	_, did := maybeRecap(context.Background(), opts, msgs, 0, 32768,
 		func(e providers.Event) { evs = append(evs, e) }, "auto")
 	if did {
 		t.Fatal("split declined, so no distillation happened")
@@ -134,7 +134,7 @@ func TestMaybeRecap_ReasoningKeep_EmitsDeclined(t *testing.T) {
 		Provider: &steerProvider{}, Model: "x",
 		Context: &config.Context{KeepLastN: cptr(2), Reasoning: cptr("keep")},
 	}
-	if _, did := maybeRecap(context.Background(), opts, distillableConvo(), 32768,
+	if _, did := maybeRecap(context.Background(), opts, distillableConvo(), 0, 32768,
 		func(e providers.Event) { evs = append(evs, e) }, "auto"); did {
 		t.Fatal("keep mode distils nothing")
 	}
@@ -181,7 +181,7 @@ func TestMaybeRecap_RefusesWhenResultIsNotSmaller(t *testing.T) {
 		},
 	}
 	in := distillableConvo()
-	out, did := maybeRecap(context.Background(), opts, in, 32768,
+	out, did := maybeRecap(context.Background(), opts, in, 0, 32768,
 		func(e providers.Event) { evs = append(evs, e) }, "auto")
 	if did {
 		t.Fatal("a result that is not smaller must be refused, not applied")
@@ -952,7 +952,7 @@ func TestMaybeRecap_SplitDeclineCarriesWarningSeverity(t *testing.T) {
 		Provider: &steerProvider{}, Model: "x",
 		Context: &config.Context{KeepLastN: cptr(6), Reasoning: cptr("recap")},
 	}
-	maybeRecap(context.Background(), opts, msgs, 32768,
+	maybeRecap(context.Background(), opts, msgs, 0, 32768,
 		func(e providers.Event) { evs = append(evs, e) }, "auto")
 	d := declinesFrom(evs)
 	if len(d) != 1 {
@@ -981,7 +981,7 @@ func TestMaybeAutoCompact_SplitDeclineNamesTheCompactionKey(t *testing.T) {
 		Provider: &steerProvider{}, Model: "x",
 		Compaction: &config.Compaction{KeepLastN: cptr(6), KeepFirst: cptr(true)},
 	}
-	maybeAutoCompact(context.Background(), opts, msgs, 32768,
+	maybeAutoCompact(context.Background(), opts, msgs, 0, 32768,
 		func(e providers.Event) { evs = append(evs, e) }, "auto")
 	d := declinesFrom(evs)
 	if len(d) != 1 {
@@ -1457,5 +1457,87 @@ func TestRun_NoContextReportBeforeTheFirstMeasuredTurn(t *testing.T) {
 	}
 	if !reportedAfter {
 		t.Errorf("no context report at all once the footprint was measured — the fix silenced the feature; order=%v", order)
+	}
+}
+
+// ⚠️ A FIELD DECLARED AND NEVER ASSIGNED IS WORSE THAN AN ABSENT ONE.
+//
+// `used_tokens` has been on ContextDistillDeclinedInfo since the type existed
+// and no site ever set it, so every decline said "the window is 32768" and left
+// the reader to guess how full it was — the one number that decides whether a
+// decline is urgent. A consumer written against the type had a field that was
+// always zero, which reads as "0 tokens in use", not as "not reported".
+//
+// Swept by STRUCT LITERAL rather than by exercise: a reason reachable only
+// under a configuration this test does not build would be missed by a
+// behavioural check, and the literal sites are the complete set by
+// construction.
+func TestDistillDeclines_EveryVerdictCarriesTheFootprint(t *testing.T) {
+	src, err := os.ReadFile("loop.go")
+	if err != nil {
+		t.Fatalf("read loop.go: %v", err)
+	}
+	text := string(src)
+
+	// The two distillers plus the shared builder both recap and compaction use
+	// for a summariser failure — three regions, because a literal in any of
+	// them reaches an operator.
+	regions := map[string]string{}
+	for _, fn := range []string{"func maybeRecap(", "func maybeAutoCompact(", "func compactionSummaryDecline("} {
+		i := strings.Index(text, fn)
+		if i < 0 {
+			t.Fatalf("%s not found — this guard is now watching nothing", fn)
+		}
+		end := strings.Index(text[i:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("could not find the end of %s", fn)
+		}
+		regions[fn] = text[i : i+end]
+	}
+
+	total := 0
+	for fn, body := range regions {
+		// Each literal runs to its closing brace-paren; splitting on the opener
+		// and reading to the next "}" is enough because these are single-level.
+		parts := strings.Split(body, "ContextDistillDeclinedInfo{")
+		for _, p := range parts[1:] {
+			total++
+			lit := p
+			if j := strings.Index(p, "}"); j >= 0 {
+				lit = p[:j]
+			}
+			if !strings.Contains(lit, "UsedTokens:") {
+				t.Errorf("a decline built in %s does not set UsedTokens — the operator "+
+					"is told the window size and not how much of it is in use:\n\t%s",
+					fn, strings.TrimSpace(strings.ReplaceAll(lit, "\n", " ")))
+			}
+		}
+	}
+	if total < 5 {
+		t.Fatalf("only found %d decline literals; the construction form changed and "+
+			"this sweep is reading nothing", total)
+	}
+}
+
+// The behavioural half: the field does not merely appear in the source, it
+// arrives on the wire with the run's real footprint.
+func TestDistillDeclines_TheFootprintReachesTheEvent(t *testing.T) {
+	opts := RunOptions{Provider: &errProvider{}, Model: "x",
+		Context: &config.Context{KeepLastN: cptr(99)}}
+	var got []*providers.ContextDistillDeclinedInfo
+	collect := func(ev providers.Event) {
+		if ev.Type == providers.EventContextDistillDeclined && ev.ContextDistill != nil {
+			got = append(got, ev.ContextDistill)
+		}
+	}
+	maybeRecap(context.Background(), opts, distillableConvo(), 12345, 32768, collect, "auto")
+	maybeAutoCompact(context.Background(), opts, distillableConvo(), 12345, 32768, collect, "auto")
+	if len(got) != 2 {
+		t.Fatalf("expected a decline from each distiller, got %d", len(got))
+	}
+	for _, d := range got {
+		if d.UsedTokens != 12345 {
+			t.Errorf("%s decline carries used_tokens=%d, want 12345", d.Mode, d.UsedTokens)
+		}
 	}
 }

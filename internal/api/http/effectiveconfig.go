@@ -196,6 +196,9 @@ func (s *Server) handleEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 
 	eff, err := s.effectiveDef(r.Context(), agentDef, runOverrides{
 		Routing: rec.Routing, Resources: rec.Resources, Tuning: rec.Tuning,
+		// ⚠️ Context was MISSING here, and the omission made the `inert` array
+		// contradict the `fields` beside it in the same response.
+		Context: rec.Context,
 	})
 	if err != nil {
 		// A stored record the definition can no longer satisfy is worth saying

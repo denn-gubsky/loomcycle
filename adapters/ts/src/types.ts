@@ -240,6 +240,31 @@ export interface EffectiveConfigResponse {
   run_id: string;
   agent: string;
   fields: Record<string, EffectiveValue>;
+  /** Settings this run carries that CANNOT take effect — the advisory half of
+   *  the report, and the half a `fields` map structurally cannot express.
+   *
+   *  `fields` answers "what value is in force"; a setting can be in force and
+   *  still be inert, because a DIFFERENT setting disables it — a compaction
+   *  threshold under a mode that never consults compaction, a `memory_flush`
+   *  whose banking is gated on `harvest_to_memory`. An operator reading only
+   *  `fields` sees their value and concludes it is doing something.
+   *
+   *  Always present, `[]` when nothing is inert, so a consumer can tell "this
+   *  run has no traps" from "this server does not report them". */
+  inert: InertContextSetting[];
+}
+
+/** One entry in {@link EffectiveConfigResponse.inert}. */
+export interface InertContextSetting {
+  /** The yaml path that cannot take effect, e.g. `compaction.memory_flush`. */
+  setting: string;
+  /** Why — named in terms of the OTHER setting that disables it, because that
+   *  is the one the operator has to change their mind about. */
+  reason: string;
+  /** The setting that DOES do what they were reaching for. Absent when there
+   *  is no equivalent, which is itself the answer; an advisory without it
+   *  leaves the operator hunting for the live knob. */
+  fix?: string;
 }
 
 /** The reply from `retuneRun` — the run's MERGED configuration, not an echo of
