@@ -74,8 +74,18 @@ func TestRecap_CapsMaxTokens(t *testing.T) {
 	if _, err := Recap(context.Background(), p, "m", recapConvo()); err != nil {
 		t.Fatalf("Recap: %v", err)
 	}
-	if p.req.MaxTokens != recapMaxTokens {
-		t.Errorf("MaxTokens = %d, want %d", p.req.MaxTokens, recapMaxTokens)
+	// ⚠️ THIS ASSERTED THE DERIVATION, and the derivation was the defect: at
+	// 160 tokens a reasoning model spends the whole cap thinking and returns
+	// nothing, so the History recap came back blank on precisely the local
+	// models it is cheapest to run. What the call owes is a cap that is BOTH
+	// generous enough for the asked-for length and above the floor every
+	// distillation now gets.
+	if p.req.MaxTokens < recapMaxTokens {
+		t.Errorf("MaxTokens = %d, below the %d the recap prompt needs", p.req.MaxTokens, recapMaxTokens)
+	}
+	if p.req.MaxTokens < distillMinOutputTokens {
+		t.Errorf("MaxTokens = %d, below the %d floor a summarizer needs to get past its own "+
+			"reasoning", p.req.MaxTokens, distillMinOutputTokens)
 	}
 	if p.req.MaxTokens*4 <= RecapMaxChars {
 		t.Errorf("token cap %d leaves no headroom over the %d-char budget", p.req.MaxTokens, RecapMaxChars)

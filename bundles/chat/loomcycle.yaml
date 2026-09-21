@@ -83,6 +83,11 @@ agents:
       # and replaces the evicted assistant reasoning with a running note.
       keep_last_n: 6
       reasoning: recap
+      # A cloud model summarises comfortably inside the default, but a longer
+      # note is cheap here and a chat transcript carries more than 512
+      # characters' worth of thread. See chat/local-small for the failure the
+      # runtime floor fixes.
+      recap_max_chars: 2048
       autorecap_at_pct: 80
     compaction:
       enabled: true
@@ -262,6 +267,14 @@ agents:
       # and replaces the evicted assistant reasoning with a running note.
       keep_last_n: 6
       reasoning: recap
+      # ⚠️ RAISED FROM THE 512 DEFAULT, and not for the reason the name suggests.
+      # recap_max_chars asks the PROMPT for a length, and the runtime derives the
+      # model's output cap from it. A local reasoning model (qwen3) spends that
+      # cap thinking and emits nothing, which reads as "the summarizer returned
+      # no text" — the failure observed on this exact agent. The runtime now
+      # floors the cap independently, so this value is free to mean what it says:
+      # a 12k transcript deserves a longer note than 512 characters.
+      recap_max_chars: 4096
       # Lower than chat/medium's 80: a local window is smaller and fills sooner,
       # matching this agent's compaction trigger below.
       autorecap_at_pct: 70

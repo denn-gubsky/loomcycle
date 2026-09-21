@@ -1298,6 +1298,13 @@ const RecapMaxChars = 256
 // instruction still can't bill (or return) a paragraph. Generous next to
 // RecapMaxChars (~64 tokens at 4 chars/token) so a compliant model finishes its
 // sentence well inside the cap rather than being cut off mid-word.
+//
+// ⚠️ RAISED TO distillMinOutputTokens IN PRACTICE, and the trade is deliberate.
+// 160 tokens is a tight cost guard against a verbose model and a guaranteed
+// EMPTY RESULT against a reasoning one, which spends the whole cap thinking
+// before it writes — the History recap would then be blank on exactly the local
+// models it is cheapest to run. A looser cap costs tokens only when a model
+// ignores the instruction; the tight one costs the feature.
 const recapMaxTokens = 160
 
 // recapPrompt is the op=recap counterpart to compactionPrompt. A recap is NOT a
@@ -1332,6 +1339,32 @@ func Recap(ctx context.Context, provider providers.Provider, model string, msgs 
 // regardless of how msgs alternates, and the model clearly sees "summarize
 // this". NO tools are offered → the summary call cannot re-enter the tool /
 // compaction machinery. maxTokens 0 leaves the provider default.
+// distillMinOutputTokens is the FLOOR on what a summarizer may spend, as
+// distinct from how long a summary is asked for.
+//
+// ⚠️ THE TWO WERE THE SAME NUMBER, and on a thinking model that is fatal.
+// recap_max_chars asks the PROMPT for a length; MaxTokens caps what the model
+// may EMIT — and a reasoning model spends that cap thinking before it writes
+// anything. At the 512-char default the cap was 192 tokens, so qwen3.6 reasoned
+// past it and returned no text at all: a silent empty_summary on every attempt,
+// reported to the operator as "raise recap_max_chars", which is advice to
+// lengthen the summary in order to fix a budget.
+//
+// A floor costs nothing when the model complies — a compliant summarizer stops
+// when it is done, it does not fill the cap — and it is the difference between
+// a distiller that works on a local reasoning model and one that never can.
+const distillMinOutputTokens = 1024
+
+// summarizeEffort is what a distillation call asks for, and it asks for as
+// little reasoning as the provider will give it.
+//
+// A recap is mechanical: fold a span of transcript into a shorter note. There
+// is no reasoning worth paying for, and on a small budget the reasoning is
+// exactly what crowds out the answer. Anthropic maps low to NO thinking block,
+// Ollama to think:false — the two providers where an unset hint means "use the
+// model's own default", which for qwen3/deepseek-r1 is to think.
+const summarizeEffort = "low"
+
 func summarizeWith(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message, system, lead string, maxTokens int) (string, error) {
 	var convo strings.Builder
 	for _, m := range msgs {
@@ -1348,15 +1381,48 @@ func summarizeWith(ctx context.Context, provider providers.Provider, model strin
 			}
 		}
 	}
-	ch, err := provider.Call(ctx, providers.Request{
+	if maxTokens > 0 && maxTokens < distillMinOutputTokens {
+		maxTokens = distillMinOutputTokens
+	}
+	req := providers.Request{
 		Model:     model,
 		System:    []providers.ContentBlock{{Type: "text", Text: system}},
 		MaxTokens: maxTokens,
+		Effort:    summarizeEffort,
 		Messages: []providers.Message{{
 			Role:    "user",
 			Content: []providers.ContentBlock{{Type: "text", Text: lead + "\n\n" + convo.String()}},
 		}},
-	})
+	}
+	out, err := runSummarizeCall(ctx, provider, req)
+	if err == nil || ctx.Err() != nil {
+		return out, err
+	}
+	// ⚠️ THE EFFORT HINT IS THE MOST LIKELY THING TO HAVE BROKEN THIS CALL, and
+	// it is the one part of the request the caller never asked for. The OpenAI
+	// driver passes Effort straight through as reasoning_effort, which a
+	// non-reasoning model rejects, and Ollama refuses `think` on a model that
+	// cannot reason — so a hint added for the thinking case can break the
+	// providers that never needed it.
+	//
+	// Rather than guess per model which providers tolerate it, drop it and try
+	// once more. Strictly better than the behaviour it replaces: before this,
+	// any error here was simply a decline, so a second plain attempt can only
+	// turn a decline into a summary.
+	plain := req
+	plain.Effort = ""
+	if retried, rerr := runSummarizeCall(ctx, provider, plain); rerr == nil {
+		return retried, nil
+	}
+	return out, err
+}
+
+// runSummarizeCall is one round-trip, collecting only the assistant's TEXT.
+// Thinking is deliberately not accumulated — a reasoning trace is not a summary,
+// and folding one into the transcript would put the model's scratch work where
+// its conclusions belong.
+func runSummarizeCall(ctx context.Context, provider providers.Provider, req providers.Request) (string, error) {
+	ch, err := provider.Call(ctx, req)
 	if err != nil {
 		return "", err
 	}
