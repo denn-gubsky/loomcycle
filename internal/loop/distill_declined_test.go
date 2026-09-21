@@ -771,6 +771,12 @@ func (f fatTool) Execute(context.Context, json.RawMessage) (tools.Result, error)
 type billingProvider struct {
 	mu     sync.Mutex
 	billed []int
+	// kinds records, per call and in order, whether the request was the
+	// agent's own turn or a distillation. A summarize call carries no tools
+	// and its own system prompt, so it is distinguishable at this seam — and
+	// it is the only way to observe that a distillation ran, because the
+	// summarizer's own call emits no event of any kind.
+	kinds  []string
 	maxCtx int
 }
 
@@ -782,8 +788,15 @@ func (p *billingProvider) Capabilities() providers.Capabilities {
 }
 func (p *billingProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	in := estimatePreambleTokens(req.System, req.Tools) + estimateMessageTokens(req.Messages)
+	kind := "turn"
+	for _, b := range req.System {
+		if strings.Contains(b.Text, "RECAP") || strings.Contains(b.Text, "summar") {
+			kind = "distill"
+		}
+	}
 	p.mu.Lock()
 	p.billed = append(p.billed, in)
+	p.kinds = append(p.kinds, kind)
 	p.mu.Unlock()
 	ch := make(chan providers.Event, 2)
 	ch <- providers.Event{Type: providers.EventText, Text: "ok"}
@@ -813,61 +826,90 @@ func TestRun_FootprintCountsTheSystemPromptAndTools(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		toolset = append(toolset, fatTool{n: i})
 	}
+	// A dozen SHORT alternating turns: long enough that keep_last_n leaves a
+	// span to distil, small enough that the conversation alone stays far under
+	// the threshold. That combination is the fixture's whole point — the
+	// estimate must DISAGREE with the real figure, or the test only proves the
+	// agreeing case.
+	var prior []providers.Message
+	for i := 0; i < 12; i++ {
+		if i%2 == 0 {
+			prior = append(prior, userMsg(fmt.Sprintf("q%d", i)))
+		} else {
+			prior = append(prior, asstMsg(fmt.Sprintf("a%d", i)))
+		}
+	}
 	segs := []PromptSegment{
 		{Role: "system", Content: []PromptContentBlock{{Type: "trusted-text",
 			Text: strings.Repeat("You are a helpful assistant with a long operator preamble. ", 40)}}},
 		{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "hi there"}}},
 	}
 	_, fresh := splitSegments(segs)
-	msgOnly := estimateMessageTokens(fresh)
+	convo := append(append([]providers.Message(nil), prior...), fresh...)
+	msgOnly := estimateMessageTokens(convo)
 
 	prov := &billingProvider{maxCtx: 2048}
 	m := config.ContextModeRecap
-	var frames int
-	var mu sync.Mutex
 	_, err := Run(context.Background(), RunOptions{
 		Provider: prov, Model: "x",
-		Tools:      toolset,
-		Dispatcher: tools.NewDispatcher(toolset),
-		Segments:   segs,
-		// reasoning:keep short-circuits FIRST in maybeRecap, before the split
-		// and before any summariser call — so an opened gate emits a decline
-		// unconditionally. That makes this test read the GATE, not the
-		// distiller: zero frames can only mean the gate stayed shut.
-		Context:          &config.Context{Mode: &m, Reasoning: cptr("keep"), AutoRecapAtPct: cptr(50)},
+		Tools:         toolset,
+		Dispatcher:    tools.NewDispatcher(toolset),
+		Segments:      segs,
+		PriorMessages: prior,
+		// reasoning:recap so an opened gate makes a SUMMARIZE CALL, which is
+		// the observable this reads. The earlier version read the gate through
+		// its decline FRAME instead, and that instrument stopped working when
+		// the loop (correctly) stopped reporting a condition it had only
+		// estimated — the property never changed, the proxy did. A call is the
+		// better witness anyway: it is what "the oversized prompt did not leave
+		// before distillation ran" actually means.
+		Context:          &config.Context{Mode: &m, AutoRecapAtPct: cptr(50)},
 		MaxContextTokens: 2048,
-		OnEvent: func(ev providers.Event) {
-			if ev.Type == providers.EventContextDistillDeclined {
-				mu.Lock()
-				frames++
-				mu.Unlock()
-			}
-		},
+		OnEvent:          func(providers.Event) {},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Non-vacuity: the fixture must actually be the disagreeing shape, or this
-	// test proves nothing about the estimator.
+
+	// Non-vacuity 1: the fixture must be the disagreeing shape.
 	if msgOnly*100 >= 2048*50 {
 		t.Fatalf("fixture is not the disagreeing shape: messages alone are %d tokens, "+
 			"already over the 50%% threshold", msgOnly)
 	}
-	prov.mu.Lock()
-	billed := append([]int(nil), prov.billed...)
-	prov.mu.Unlock()
-	if len(billed) == 0 || billed[0]*100 < 2048*50 {
-		t.Fatalf("fixture does not cross the threshold on the REAL count: billed %v", billed)
+	// Non-vacuity 2: the split must be able to succeed, or "no distill call"
+	// would mean "nothing to distil" rather than "the gate stayed shut".
+	if _, _, ok := splitOrCutToWindow(convo, config.ContextDefaultKeepLastN,
+		config.CompactionDefaultKeepFirst, 2048*compactionKeptTailBudgetPct/100); !ok {
+		t.Fatalf("fixture cannot be split, so a missing distill call would prove nothing")
 	}
 
-	mu.Lock()
-	got := frames
-	mu.Unlock()
-	if got == 0 {
-		t.Errorf("the gate never opened: the conversation alone is %d tokens (%.1f%%) "+
-			"but the real request is %d (%.1f%%) — the footprint is ignoring the system "+
-			"prompt and tool catalogue, which on a small window IS the request",
-			msgOnly, float64(msgOnly)*100/2048, billed[0], float64(billed[0])*100/2048)
+	prov.mu.Lock()
+	billed := append([]int(nil), prov.billed...)
+	kinds := append([]string(nil), prov.kinds...)
+	prov.mu.Unlock()
+	if len(kinds) == 0 {
+		t.Fatal("provider was never called")
+	}
+	// Non-vacuity 3: the run really does cross the threshold on the REAL count.
+	realTurn := -1
+	for i, k := range kinds {
+		if k == "turn" {
+			realTurn = i
+			break
+		}
+	}
+	if realTurn < 0 || billed[realTurn]*100 < 2048*50 {
+		t.Fatalf("fixture does not cross the threshold on the REAL count: billed %v kinds %v",
+			billed, kinds)
+	}
+
+	if kinds[0] != "distill" {
+		t.Errorf("the gate never opened before the first turn: the conversation alone is "+
+			"%d tokens (%.1f%%) but the real request is %d (%.1f%%) — the footprint is "+
+			"ignoring the system prompt and tool catalogue, which on a small window IS "+
+			"the request; call kinds were %v",
+			msgOnly, float64(msgOnly)*100/2048, billed[realTurn],
+			float64(billed[realTurn])*100/2048, kinds)
 	}
 }
 
@@ -1309,5 +1351,111 @@ func TestBackstopAvailable_HonoursAnExplicitOptOutButNotTheDefault(t *testing.T)
 					}[tc.want])
 			}
 		})
+	}
+}
+
+// preambleHeavyProvider reports a window and a high per-turn footprint, and
+// keeps calling a tool for `toolTurns` turns so the run reaches the iteration
+// where the gate's debounce has expired.
+type preambleHeavyProvider struct {
+	mu        sync.Mutex
+	turn      int
+	toolTurns int
+	in        int
+	maxCtx    int
+}
+
+func (p *preambleHeavyProvider) ID() string                                   { return "preamble-heavy" }
+func (p *preambleHeavyProvider) Probe(context.Context) error                  { return nil }
+func (p *preambleHeavyProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *preambleHeavyProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *preambleHeavyProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	turn := p.turn
+	p.turn++
+	p.mu.Unlock()
+
+	ch := make(chan providers.Event, 2)
+	if turn < p.toolTurns {
+		ch <- providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: "t", Name: "peek", Input: json.RawMessage(`{}`)}}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use",
+			Usage: &providers.Usage{InputTokens: p.in}}
+	} else {
+		ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn",
+			Usage: &providers.Usage{InputTokens: p.in}}
+	}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ THE RUN HAS NOT SENT ANYTHING YET — so it has nothing to report.
+//
+// The footprint seed counts the preamble, and a preamble is fixed and
+// irreducible: on an agent whose system prompt and tool catalogue are most of
+// its window, the seed sits above the threshold on iteration ZERO, before a
+// conversation exists. The run then told its operator "keep_last_n 6 pins all 1
+// message(s)" at severity warning and "88% of the window is in use and
+// distillation did not shrink it" — three alarms, on every run, about a request
+// the provider had never seen.
+//
+// Both halves are asserted here on purpose. Suppressing the report is easy to
+// over-do: a fix that simply stops reporting would pass the first half and
+// silently delete the feature, so the same run must still report once a turn
+// has returned a real number.
+func TestRun_NoContextReportBeforeTheFirstMeasuredTurn(t *testing.T) {
+	peek := &selfReadingTool{}
+	// 16000 preamble tokens against a 20000 window = 80%, reached by the
+	// system prompt alone. The conversation is one short message.
+	prov := &preambleHeavyProvider{toolTurns: 4, in: 17600, maxCtx: 20000}
+	m := config.ContextModeRecap
+
+	var mu sync.Mutex
+	var order []providers.EventType
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{peek},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{peek}),
+		Segments: []PromptSegment{
+			{Role: "system", Content: []PromptContentBlock{{Type: "text",
+				Text: strings.Repeat("system prompt filler. ", 3200)}}},
+			{Role: "user", Content: []PromptContentBlock{{Type: "text", Text: "hi"}}},
+		},
+		// keep_last_n 99 pins the whole conversation → every tier declines, so
+		// the exhaustion report is reachable once the footprint is measured.
+		Context:       &config.Context{Mode: &m, KeepLastN: cptr(99), AutoRecapAtPct: cptr(50)},
+		MaxIterations: 6,
+		OnEvent: func(ev providers.Event) {
+			mu.Lock()
+			order = append(order, ev.Type)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("event order: %v", order)
+
+	measured := false
+	reportedAfter := false
+	for _, ty := range order {
+		switch ty {
+		case providers.EventUsage:
+			measured = true
+		case providers.EventContextDistillDeclined, providers.EventContextExhausted:
+			if !measured {
+				t.Errorf("%s reported before any turn returned a footprint; order=%v", ty, order)
+			} else {
+				reportedAfter = true
+			}
+		}
+	}
+	if !reportedAfter {
+		t.Errorf("no context report at all once the footprint was measured — the fix silenced the feature; order=%v", order)
 	}
 }

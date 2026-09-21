@@ -272,6 +272,11 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	preambleTokens := estimatePreambleTokens(system, toolSpecs)
 	lastIn := preambleTokens + sigmaTokens(sigma)
 	lastWindow := effectiveWindow(0, opts)
+	// Same rule as the append/recap gate: EVICT on the estimate if you must,
+	// but only REPORT a number a provider returned. A driver that reports no
+	// usage would otherwise leave lastIn at the preamble estimate forever and
+	// tell the operator its state cannot be reduced — about a Σ that is empty.
+	footprintMeasured := false
 	seenExhaustedState := map[int]bool{}
 	holder := &tools.ExecStateHolder{Sigma: sigma}
 	dispatchCtx := tools.WithExecutionState(ctx, holder) // the action sees the live Σ (Context op=state)
@@ -297,6 +302,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				// numerator the append/recap gate uses.
 				if in := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens; in > 0 {
 					lastIn = in
+					footprintMeasured = true
 				}
 				lastWindow = effectiveWindow(usage.MaxContextTokens, opts)
 			}
@@ -359,7 +365,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				holder.Sigma = sigma
 				evicted = plan
 				lastIn = preambleTokens + sigmaTokens(sigma)
-			} else {
+			} else if footprintMeasured {
 				// Nothing evictable and still over: every key is core, or the
 				// preamble alone is the problem. Either way the run is heading
 				// for the provider's limit and must say so.
