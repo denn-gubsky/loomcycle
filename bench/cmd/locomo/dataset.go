@@ -369,6 +369,18 @@ func Parse(b []byte, categories []int) ([]Conversation, *Defects, error) {
 			conv.Queries = append(conv.Queries, Query{
 				Question: q.Question, Category: q.Category,
 				Expected: expected, Answer: goldAnswer(q.Answer),
+				// LoCoMo's category 5 is ADVERSARIAL: 444 of its 446 questions have a
+				// null answer, and they are built as minimal pairs of answerable ones —
+				// "what did CAROLINE realize after HER race" beside "what did MELANIE
+				// realize after the race". Refusing one is CORRECT, exactly as it is for
+				// a LongMemEval `_abs` instance, so the same flag has to be set or the
+				// harness scores the right behaviour as a miss.
+				//
+				// It is set from the CATEGORY rather than from a null gold: two of the
+				// 446 do carry an answer, and reading the label off the data would make
+				// the arm's ground truth depend on a field the dataset fills
+				// inconsistently.
+				Abstain: q.Category == CategoryAdversarial,
 			})
 		}
 		out = append(out, conv)

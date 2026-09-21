@@ -261,3 +261,42 @@ func TestConvert_EmitsADatasetTheRealEvalLoaderAccepts(t *testing.T) {
 		}
 	}
 }
+
+// TestParse_AdversarialQueryIsMarkedAbstain pins the scoring label, not the filter.
+//
+// LoCoMo's category 5 is built as minimal pairs of answerable questions — "what did
+// CAROLINE realize after HER race" beside "what did MELANIE realize after the race" —
+// and 444 of its 446 have a null answer. Refusing one is CORRECT. Without Abstain the
+// harness grades that refusal as a miss, which reads as the reader failing on the very
+// slice it handled properly, so an arm using -categories=5 would report the opposite of
+// what happened.
+//
+// The sibling test above covers whether the query is INCLUDED; nothing covered how it
+// is SCORED, which is why this could be wrong while the suite stayed green.
+func TestParse_AdversarialQueryIsMarkedAbstain(t *testing.T) {
+	convs, _ := parseFixture(t, CategoryAdversarial, CategorySingleHop)
+	var adversarial, answerable int
+	for _, c := range convs {
+		for _, q := range c.Queries {
+			switch q.Category {
+			case CategoryAdversarial:
+				adversarial++
+				if !q.Abstain {
+					t.Errorf("adversarial query %q has Abstain=false: refusing it would be "+
+						"graded as a miss", q.Question)
+				}
+			case CategorySingleHop:
+				answerable++
+				if q.Abstain {
+					t.Errorf("answerable query %q has Abstain=true: answering it would be "+
+						"graded as a miss", q.Question)
+				}
+			}
+		}
+	}
+	// A vacuous pass is the failure mode here — both arms of the check need a case.
+	if adversarial == 0 || answerable == 0 {
+		t.Fatalf("fixture yielded %d adversarial and %d answerable queries; the test "+
+			"asserts nothing unless both are present", adversarial, answerable)
+	}
+}
