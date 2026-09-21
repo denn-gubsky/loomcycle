@@ -162,3 +162,88 @@ The idea was good and the cheap test was right to run: it cost one afternoon and
 a plausible mechanism that would otherwise have been built. **Set homogeneity does not
 tell you whether a retrieved set answers the question — the plain similarity of the best
 hit does, about as well as anything here, and it was already on the wire.**
+
+---
+
+# Stage 3 — the wide sample. The gate is corpus-dependent, and stage 2 measured the easy case.
+
+2026-09-21, same evening. Two runs, 2,481 questions, retrieval only.
+
+| corpus | answerable | unanswerable | how "unanswerable" is built |
+|---|---|---|---|
+| `longmemeval_oracle`, **all 500** | 470 | 30 `_abs` | on-topic, answer simply absent |
+| `locomo10`, **categories 1–5** | 1,535 | **446 adversarial** | **minimal pairs** of answerable ones |
+
+LoCoMo's category 5 is the find. 444 of its 446 questions have a null answer, and they
+are built as minimal pairs: *"What did **Melanie** realize after the charity race?"* is
+answerable; *"What did **Caroline** realize after **her** race?"* is not. One name apart.
+That is **14.8× more negatives than LongMemEval holds in total** — and a much harder,
+much more realistic kind of unanswerable.
+
+## The headline: the same gate, two very different answers
+
+| signal | LongMemEval `_abs` (n=30) | LoCoMo adversarial (n=446) |
+|---|---|---|
+| **top1** | **0.759**  (0.687–0.831) | **0.586**  (0.558–0.615) |
+| mean_k | 0.758 | 0.574 |
+| std_k | 0.645 | 0.535 |
+| perplexity T=0.05 | 0.602 *(inverted; CI excludes 0.5)* | **0.479** — nothing |
+
+Operating points, same thresholds:
+
+| keep answerable | `_abs` blocked | adversarial blocked |
+|---|---|---|
+| 97% | 10.0% | 8.5% |
+| 94% | 26.7% | 11.4% |
+| 89% | 43.3% | 19.7% |
+| 82% | 60.0% | 28.7% |
+
+**Why.** Mean gap in top-1 cosine between the classes is **0.0750** on LongMemEval and
+**0.0137** on LoCoMo — **5.5× smaller**. Change one name in a question and the embedding
+lands in the same place, so the retrieved set is nearly the same set. There is no
+statistic of that set that can separate them, because they are not different sets.
+
+⚠️ **This corrects stage 2's recommendation.** The trade-off curve committed earlier
+("keep 94%, block 43%") was measured against the easier negative class. Against
+adversarial negatives the same operating point blocks **11.4%**. A score gate is not
+a general answer to the `_abs` problem — it is an answer to *one kind* of it.
+
+## Perplexity: the wider sample DID move it, and it still does not help
+
+On the 130-subset it was AUC 0.589 at p=0.14 — recorded above as "statistically
+nothing". On all 500 it reaches **0.602 with a CI that excludes 0.5**. The prediction
+that widening the answerable side could not make it significant was **wrong**: the
+standard error barely moved (0.057 → 0.051, as predicted) but the point estimate rose
+enough to cross. Worth keeping in the dump for that reason alone.
+
+It is still not a lever: on LoCoMo's harder negatives it is **0.479**, i.e. nothing.
+
+## Two scores are not better than one — measured, not argued
+
+Out-of-fold AUC, 5-fold × 5 seeds, logistic on standardised features:
+
+| model | LongMemEval | LoCoMo |
+|---|---|---|
+| top-1 alone | 0.745 ± 0.014 | 0.581 ± 0.003 |
+| perplexity alone | 0.562 ± 0.018 | 0.496 ± 0.012 |
+| **top-1 + perplexity** | 0.740 **(−0.005)** | 0.576 **(−0.005)** |
+| top-1 + perplexity + std_k | 0.739 (−0.007) | 0.582 (+0.001) |
+
+And they are **not orthogonal**: r = −0.47 (LongMemEval) and −0.44 (LoCoMo), holding
+*within each class separately* (−0.468/−0.463 and −0.402/−0.556), so it is not an
+artefact of pooling. About a fifth of shared variance. Adding the second feature costs
+a little out of fold, which is what a redundant feature does.
+
+## What the whole three-stage probe leaves
+
+1. **Set homogeneity is not an independent signal.** Three corpora, two of them large.
+   Where it looks predictive, it is standing in for the score.
+2. **A score gate is corpus-dependent and the realistic case is the bad one.** A user
+   asking about something the system does not know, in the vocabulary of what it does,
+   is a minimal pair — the right-hand panel, not the left.
+3. **The `_abs` problem is still open**, and retrieval-shape statistics are now ruled
+   out as the answer. What has not been tested: anything that reads the *content* of the
+   retrieved set against the question rather than the geometry of its scores — which is
+   a judgement, and therefore back to a model call, which is where this started.
+
+Artifact (both panels, shared scales): the frontier chart published from this session.
