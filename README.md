@@ -182,7 +182,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.86.0) fixed the regression v1.85.0 shipped with, found
+The most recent line (v1.87.0) closed a privilege-escalation defect and three
+failures an operator found in one afternoon. ⚠️ Minting an operator token with
+no `scopes` used to default to `substrate:admin`, so a mistyped key — sending
+`allowed_scopes`, which is what the response echoes — silently handed out a
+full-power token, and one of those also disables the legacy
+`LOOMCYCLE_AUTH_TOKEN` login, locking the deployment out of its own API. An
+omitted list is now refused and the mint tool rejects unknown keys. Alongside
+it: the stateful loop re-prompts a model that answered in prose instead of
+killing the run, `tool_choice` reaches every driver that has one (Ollama has
+none, and degrades rather than refusing), a summarizer is no longer capped at
+192 output tokens it spends thinking, and `context.model` can point recap at a
+cheap non-thinking model.
+
+⚠️ **Breaking:** `loomcycle operator-token create` now requires `--scopes`.
+
+Before it, v1.86.0 fixed the regression v1.85.0 shipped with, found
 in production within a day. The distillation gate's footprint is seeded before
 the first call so a one-iteration continuation can still distil — but that seed
 counts the system prompt and tool catalogue, which distillation cannot shrink,
