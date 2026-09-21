@@ -310,21 +310,27 @@ func TestEffectiveConfig_ReportsInertAutocompactThreshold(t *testing.T) {
 
 // The predicate itself is shared with the boot check, so the two surfaces
 // cannot disagree about which settings are dead.
+//
+// ⚠️ The example changed with the runtime. This used to assert that a recap
+// agent's compaction.autocompact_at_pct was reported inert — which stopped
+// being true when compaction became the backstop for every mode. memory_flush
+// is the surviving case: it installs a banking callback that nothing outside
+// append mode calls.
 func TestEffectiveConfig_InertSharesThePredicateWithBootValidation(t *testing.T) {
+	yes := true
 	a := config.AgentDef{
 		Context: &config.Context{Mode: func() *string {
 			m := config.ContextModeRecap
 			return &m
 		}()},
-		Compaction: &config.Compaction{AutoCompactAtPct: func() *int { i := 70; return &i }()},
+		Compaction: &config.Compaction{MemoryFlush: &yes},
 	}
-	// Whatever the boot warnings say is dead, the report must also call dead.
 	inert := config.InertContextSettings(a)
 	if len(inert) == 0 {
-		t.Fatal("the shared predicate reported nothing for a recap agent with an " +
-			"autocompact threshold — the two surfaces would both be silent")
+		t.Fatal("the shared predicate reported nothing for a recap agent whose " +
+			"memory_flush cannot fire — the two surfaces would both be silent")
 	}
-	if inert[0].Setting != "compaction.autocompact_at_pct" {
-		t.Errorf("setting = %q, want compaction.autocompact_at_pct", inert[0].Setting)
+	if inert[0].Setting != "compaction.memory_flush" {
+		t.Errorf("setting = %q, want compaction.memory_flush", inert[0].Setting)
 	}
 }
