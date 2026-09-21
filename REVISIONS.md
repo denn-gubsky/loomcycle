@@ -8,6 +8,116 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.86.0
+
+*The distillation reports v1.85.0 added now wait for a number the provider returned — and every wire event is finally nameable from a typed client.*
+
+Three PRs, all fixes, cut as a minor because the TS adapter gains real public
+API and a deployment needs the full image build.
+
+⚠️ **THE REGRESSION v1.85.0 SHIPPED WITH, REPORTED FROM PRODUCTION WITHIN A
+DAY.** An operator's interactive terminal stopped rendering after `started` on
+every run — three agents, two context modes — and reported the runs as hung.
+They were not hung. v1.85.0 had begun emitting three NEW frames between
+`started` and the first turn, then answering and parking exactly as before:
+
+```
+v1.84.0  session agent steer started                                              text usage awaiting_input
+v1.85.0  session agent steer started  ctx_distill_declined ×2  context_exhausted  text usage awaiting_input
+```
+
+The `409` on cancel was the same fact seen from another angle: turn-cancel is
+disarmed while a run waits at `awaiting_input`, so it correctly refuses a run
+that is parked rather than stuck.
+
+And the frames were **false**. The run had sent nothing:
+
+> context recap declined: context.keep_last_n 6 pins all **1 message(s)**, leaving nothing to distil — `severity: warning`
+>
+> context not reclaimed: **88%** of the window (17600/20000 tokens) is in use and distillation did not shrink it
+
+One message, because the conversation had not started. 88%, because before the
+first turn the footprint is a chars/4 estimate of a request no tokenizer has
+seen, measured against the static capability a driver may still revise — Ollama
+reads the model's actually-loaded window from `/api/ps` only after a call.
+
+**Three compounding causes, each correct on its own.** #1305 seeded the
+footprint so a one-iteration continuation could distil before sending an
+oversized prompt; its own commit message names the failure it was introducing —
+*"a short history must NOT distil at start"*. #1308 then added the preamble to
+that seed, which is right: on a small window the system prompt and tool
+catalogue **are** the request. But a preamble is not a short history. It is
+fixed and irreducible, so on an agent whose preamble is most of its window it
+sits above the threshold on iteration ZERO and on every iteration after, and the
+gate opens on a quantity distillation cannot move. #1312 then hung a second tier
+and an exhaustion report on that same gate, so one silent decline became three
+alarms.
+
+**The fix is one rule: report what you measured.** The gate still OPENS on the
+seed and distillation still runs — that protection is the point of seeding it,
+and a resumed transcript already over the window is still reduced before the
+first call. Only the operator-facing reports — the declines, the exhaustion
+report, and the value `Context op=self` carries — wait for a footprint a
+provider actually returned. `runStateful` gets the same rule, where a driver
+that reports no usage would otherwise claim an empty Σ cannot be reduced.
+
+### Every wire event value is nameable from TypeScript (#1317)
+
+`context_exhausted` reached that terminal as a type **no typed consumer could
+name**: it was never added to `@loomcycle/client`'s `EventType`. It was not
+alone — **sixteen** wire values were missing from that union, some for a dozen
+releases:
+
+`context_recap` · `context_state` · `context_distill_declined` ·
+`context_exhausted` · `thinking` · `turn_cancelled` · `provider_fallback` ·
+`fallback_suppressed` · `model_downgraded` · `cache_invalidated` ·
+`reasoning_invalidated` · `channel_publish` · `channel_delivery` ·
+`interruption_pending` · `spawn_child_started` · `spawn_child_result`
+
+The **payloads** were missing too, so even a consumer casting out of the union
+had nothing to reach into: eleven fields on `AgentEvent` — the five context
+payloads, `fallback`, `channel`, `interruption`, `turn_cancelled`,
+`spawn_child`, and the `reasoning` trace on `done`.
+
+Two hand-written per-event parity guards already existed and neither caught it,
+because each only guards its own event. So the new guard **does not hold a
+list**: it enumerates the runtime's own `EventType` constants out of
+`provider.go` and requires each value on the union's member lines. A list in the
+test would be a third copy to forget.
+
+### The effective-config report answers from the run (#1318)
+
+`GET /v1/runs/{id}/effective-config` merged the run's `Routing`, `Resources` and
+`Tuning` onto the stored definition and computed its `inert` advisory array from
+the result — but never passed `Context`. So the array answered from the stored
+definition while `fields.context` **in the same response** answered from the
+run: one payload, two verdicts about one setting. Seeing a per-run override
+introduce or clear a trap is the entire reason that array exists over the
+boot-time warning, and it structurally could not.
+
+Two more values that existed and never arrived: `used_tokens` had been declared
+on every decline since the type existed and was set by nothing — so a decline
+reported the window size and left the reader to guess how full it was, and a
+consumer saw `0` and read *"0 tokens in use"* rather than *"not reported"*. And
+`EffectiveConfigResponse` declared `fields` and stopped, so `inert` — the half
+`fields` structurally cannot express, because a setting can be in force **and**
+inert — was unreachable from a typed client.
+
+### Upgrading
+
+- **A genuine `context_exhausted` still fires.** This release removes the FALSE
+  pre-turn report, not the feature: a run whose window really is full, measured,
+  will still say so. A consumer that renders the event stream needs a case for
+  it — `@loomcycle/client` 1.86.0 finally lets you write one.
+- **Adapters at 1.86.0** (`@loomcycle/client` on npm; the Python adapter rides
+  its own `python-v1.86.0` tag). Not ceremonial: #1317 and #1318 add public
+  surface, and adapter surface that ships without its version bump is stranded.
+- **Cut as a minor, not a patch.** A patch tag builds only
+  `denngubsky/loomcycle-browser`, and this fix has to reach the images a
+  deployment actually pulls.
+- Nothing to change in configuration. If you deleted `compaction.autocompact_at_pct`
+  on v1.84.0's advice, v1.85.0's upgrade note still applies — put it back.
+
 ## What's in v1.85.0
 
 *Context distillation now reclaims the window in every mode — or says loudly that it cannot.*
