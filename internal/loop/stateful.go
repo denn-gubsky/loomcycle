@@ -393,8 +393,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				if onInvalid == "fail" || attempt >= maxRetries {
 					msg := fmt.Sprintf("stateful step failed: model did not call emit_state after %d attempt(s) — %s. "+
 						"context.mode: stateful requires a model that reliably emits tool calls; "+
-						"raise context.max_patch_retries, or move this agent to a model that does",
-						attempt+1, producedInstead(call))
+						"raise context.max_patch_retries, or move this agent to a model that does%s",
+						attempt+1, producedInstead(call), unforcedNote(opts))
 					emit(providers.Event{Type: providers.EventError, Error: msg})
 					return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, errors.New(msg)
 				}
@@ -549,4 +549,21 @@ func schemasDiffer(a, b map[string]any) bool {
 		return true
 	}
 	return string(ab) != string(bb)
+}
+
+// unforcedNote says whether the run could even ASK for the tool on the wire.
+//
+// ⚠️ THE TWO FAILURES READ IDENTICALLY WITHOUT IT, and they call for opposite
+// next moves. A model that ignored a protocol-level constraint needs replacing;
+// one that was never given the constraint may be fine on a provider that has
+// one. Ollama has no tool_choice on /api/chat, so a forced request there
+// degrades rather than being refused (RFC DG) — which is the right call, and
+// exactly the kind of silent degradation this codebase keeps having to make
+// visible after the fact.
+func unforcedNote(opts RunOptions) string {
+	if opts.Provider == nil || opts.Provider.Capabilities().SupportsToolChoice {
+		return ""
+	}
+	return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
+		"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
 }

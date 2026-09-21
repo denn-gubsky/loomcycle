@@ -630,3 +630,63 @@ func TestRun_Stateful_AsksForTheEmitStateToolOnTheWire(t *testing.T) {
 			"prompt-only on the wire", prov.choices[0], want)
 	}
 }
+
+// ⚠️ "THE MODEL IGNORED THE CONSTRAINT" AND "THERE WAS NO CONSTRAINT" READ
+// IDENTICALLY WITHOUT THIS, and they call for opposite next moves: replace the
+// model, or move the agent to a provider that has a tool_choice at all. Ollama
+// has none, so a forced request there degrades silently by design — this is the
+// line that stops the degradation being invisible when it finally costs a run.
+func TestRun_Stateful_TheErrorSaysWhenTheToolCouldNotBeForced(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		forceable  bool
+		wantInText bool
+	}{
+		{"a provider that cannot force says so", false, true},
+		{"a provider that can force stays quiet", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &unforceableProvider{canForce: tc.forceable}
+			cx := statefulCtx(nil)
+			zero := 0
+			cx.MaxPatchRetries = &zero
+			_, err, evs := statefulRun(t, prov, cx)
+			if err == nil {
+				t.Fatal("expected the run to fail")
+			}
+			var errText string
+			for _, ev := range evs {
+				if ev.Type == providers.EventError {
+					errText = ev.Error
+				}
+			}
+			got := strings.Contains(errText, "NOT enforced")
+			if got != tc.wantInText {
+				t.Errorf("mentions the unenforced call = %v, want %v:\n%s", got, tc.wantInText, errText)
+			}
+		})
+	}
+}
+
+// unforceableProvider never calls emit_state, and reports whether it has a
+// tool_choice on the wire.
+type unforceableProvider struct{ canForce bool }
+
+func (p *unforceableProvider) ID() string {
+	if p.canForce {
+		return "openai"
+	}
+	return "ollama-local"
+}
+func (p *unforceableProvider) Probe(context.Context) error                  { return nil }
+func (p *unforceableProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *unforceableProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, SupportsToolChoice: p.canForce}
+}
+func (p *unforceableProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "Hello! I can help with that."}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
