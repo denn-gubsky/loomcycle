@@ -101,3 +101,84 @@ right answers to protect a cost that, in this configuration, is one question.
   def's 300 was entirely consumed by ornith's reasoning trace, and the first pass
   returned 69 of 130 with `stop_reason: max_tokens` and zero text
 - assembled with `../2026-09-21-qpp-probe/assemble_gate.py`
+
+---
+
+# The cascade: cosine decides who gets asked, the verifier decides the rest
+
+Arm 0 and arm 2 each lost to the other somewhere, which is usually a sign that neither
+decider is wrong so much as misapplied. Running the verifier **only below a cosine
+threshold** was proposed as a cost saving. It is one — and the saving turns out to be
+the least interesting thing about it. `cascade.py` reproduces everything below.
+
+## The two mechanisms, and they are enumerable rather than statistical
+
+**Cosine protects the verifier from its own false positives.** The verifier is far too
+eager: it withholds 34 of 96 answerable questions. That eagerness costs most on
+high-confidence questions — the ones a threshold can hand over without asking. And the
+problem it is there to catch is not up there: **16 of 29 unanswerable questions sit in
+the bottom two cosine deciles**, only 5 in the top half.
+
+```
+unanswerable by cosine decile (low → high):  8  8  3  1  4  0  2  1  2  0
+```
+
+**The verifier rescues rather than confirms.** Below the threshold it says *attach* for
+12 of 39, and **9 of those are answerable questions the reader got right** — a pure
+threshold discards all 9. That, not the catching, is where the cascade's answerable
+score comes from.
+
+Each decider fixes the other's characteristic error, and both effects are countable
+cases rather than a statistic. That is the part that should survive a configuration
+change.
+
+## Measured, all on the same 125 questions
+
+| strategy | answerable | `_abs` | verifier calls |
+|---|---|---|---|
+| L2 — always attach | 0.8226 | 0.8966 | 0 |
+| pure threshold @ 0.595 | 0.7926 | 0.9310 | 0 |
+| verifier on everything | 0.7957 | 0.9310 | 125 |
+| **cascade @ 0.595** | **0.8333** | **0.9310** | **39** |
+
+The cascade beats every single-decider strategy on the answerable slice and ties the
+best on `_abs`, asking the verifier about **less than a third** of the questions.
+
+The sweep, with the exact two-sided sign test on the discordant pairs against L2:
+
+| T | asked | answerable | `_abs` | vs L2 | p |
+|---|---|---|---|---|---|
+| 0.527 | 12 | 0.8387 | 0.8966 | +2/−0 | 0.500 |
+| 0.595 | 37 | 0.8333 | 0.9310 | +3/−1 | 0.625 |
+| 0.612 | 50 | 0.8333 | 0.9310 | +3/−1 | 0.625 |
+| 0.628 | 62 | 0.8226 | 0.9310 | +4/−3 | 1.000 |
+| 0.671 | 87 | 0.8172 | 0.9655 | +4/−4 | 1.000 |
+
+⚠️ **No point dominates.** At 0.527 the answerable slice is higher (0.8387) but `_abs`
+never recovers — there the verifier is asked so little that it rescues nobody and the
+cascade degenerates into the pure threshold. 0.595 is reported because it is where
+`_abs` recovers fully while answerable stays above L2; that is a choice made **after**
+seeing this table, so it is in-sample. `cascade.py` auto-selects nothing.
+
+## ⚠️ The exposure
+
+At 0.595, ten unanswerable questions bypass the verifier. The reader refuses eight of
+them anyway; **two are answered**. The verifier would have caught all ten. So the
+cascade trades two confabulations for two thirds fewer calls and +3.8pp on the
+answerable slice against asking every time.
+
+## ⚠️ And what these numbers cannot establish
+
+Every margin here is inside the noise. Against L2 the cascade is **+3/−1 (p = 0.63)** on
+the answerable slice, and on `_abs` it is 26 → 27 correct refusals — **one question**.
+That is unavoidable: this configuration's `_abs` cost is one question of thirty (see the
+top of this file), so there is almost nothing to optimise and all four strategies land
+on top of each other.
+
+**What is sound here is the mechanism, not the effect size.** The 9 rescued questions
+and the 34 false withholds are named cases, not estimates. The size of the win needs a
+configuration where the cost being prevented is real — which is the same prerequisite
+the top of this file already sets.
+
+The same raw-question deviation applies: both deciders judge the retrieval for the raw
+question while the reader saw its own mid-run query.
