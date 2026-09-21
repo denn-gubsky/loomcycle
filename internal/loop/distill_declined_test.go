@@ -270,13 +270,23 @@ func TestRun_DistillDeclineIsNotRepeatedEveryIteration(t *testing.T) {
 	prov.mu.Lock()
 	calls := prov.turn
 	prov.mu.Unlock()
-	if len(d) != 1 {
-		t.Fatalf("a configuration-bound decline was reported %d times over %d turns; "+
-			"it must be reported once per (mode, reason) per run or it buries itself: %+v",
-			len(d), calls, d)
+	// ⚠️ ONE PER KEY, not one in total. With the second tier in place a single
+	// gate opening can decline TWICE — the mode's distiller and then compaction
+	// — for different reasons, and those are genuinely different news. What
+	// must never happen is the SAME (mode, reason, severity) repeating across
+	// turns, which is the burying this dedup exists to prevent.
+	seen := map[string]int{}
+	for _, x := range d {
+		seen[x.Mode+"|"+x.Reason+"|"+x.Severity]++
 	}
-	if d[0].Reason != providers.DistillDeclineSplitDeclined {
-		t.Errorf("reason = %q, want %q", d[0].Reason, providers.DistillDeclineSplitDeclined)
+	for key, n := range seen {
+		if n > 1 {
+			t.Errorf("%q was reported %d times over %d turns; a configuration-bound "+
+				"condition must be reported once per run or it buries itself", key, n, calls)
+		}
+	}
+	if len(d) == 0 {
+		t.Fatal("no declines at all — the fixture no longer exercises the gate")
 	}
 }
 
@@ -518,11 +528,13 @@ func TestRun_ADeclineReachesTheToolContext(t *testing.T) {
 	for _, v := range seen {
 		if v.Reason != "" {
 			withDecline++
-			if v.Reason != providers.DistillDeclineSplitDeclined {
-				t.Errorf("tool saw reason %q, want %q", v.Reason, providers.DistillDeclineSplitDeclined)
-			}
-			if !strings.Contains(v.Message, "keep_last_n") {
-				t.Errorf("tool saw a decline with no actionable message: %q", v.Message)
+			// WHICH reason is not the point — the second tier means it may be
+			// the mode's distiller or compaction, whichever declined last. What
+			// this test is about is the CARRY: a value recorded in the loop
+			// reaching a tool's context at all.
+			if v.Message == "" {
+				t.Errorf("tool saw reason %q with no message — the fix does not survive "+
+					"the carry, which is most of what makes it useful", v.Reason)
 			}
 		}
 	}
@@ -1024,9 +1036,19 @@ func TestRun_ExhaustionIsReportedWhenNothingCanReclaim(t *testing.T) {
 	} else if e.Verdicts[0].Reason != providers.DistillDeclineSplitDeclined {
 		t.Errorf("verdict reason = %q, want split_declined", e.Verdicts[0].Reason)
 	}
-	// And the fix the tier named must survive into the report verbatim.
-	if !strings.Contains(e.Message, "context.keep_last_n") {
-		t.Errorf("the report drops the fix the tier named: %q", e.Message)
+	// ⚠️ EVERY tier's fix must survive into the report, not just the last.
+	// With the second tier in place this run declines TWICE for different
+	// reasons — recap on context.keep_last_n, compaction on
+	// compaction.keep_last_n — and an operator handed only one fixes half the
+	// problem and watches the window keep filling.
+	for _, want := range []string{"context.keep_last_n", "compaction.keep_last_n"} {
+		if !strings.Contains(e.Message, want) {
+			t.Errorf("the report drops %s — it carries only some tiers' fixes: %q", want, e.Message)
+		}
+	}
+	if len(e.Verdicts) < 2 {
+		t.Errorf("only %d verdict(s): the second tier should have been tried and "+
+			"refused too, and the report must show both attempts", len(e.Verdicts))
 	}
 }
 
@@ -1081,5 +1103,211 @@ func TestRun_NoExhaustionBelowTheBackstop(t *testing.T) {
 	mu.Unlock()
 	if len(ex) != 0 {
 		t.Errorf("reported exhaustion at 0.5%% of the window: %+v", ex[0])
+	}
+}
+
+// ⚠️ THE SECOND TIER — the change this phase exists for.
+//
+// A recap that declines used to leave nothing else to try, so the run climbed
+// to the provider's limit with compaction never consulted. The fixture makes
+// recap decline for a reason compaction does NOT share: a thinking model
+// returns no text within the recap budget (empty_summary), while compaction
+// runs on a different prompt and a different budget and succeeds.
+//
+// That asymmetry is the whole argument for compaction being the right last
+// resort. A second tier that failed for the same reasons would be theatre.
+type recapFailsCompactionWorksProvider struct {
+	mu        sync.Mutex
+	recapCall int
+	compCall  int
+	inTokens  int
+	maxCtx    int
+}
+
+func (p *recapFailsCompactionWorksProvider) ID() string                  { return "asym" }
+func (p *recapFailsCompactionWorksProvider) Probe(context.Context) error { return nil }
+func (p *recapFailsCompactionWorksProvider) ListModels(context.Context) ([]string, error) {
+	return nil, nil
+}
+func (p *recapFailsCompactionWorksProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *recapFailsCompactionWorksProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	// Each distiller is identified by a phrase unique to ITS prompt. A loose
+	// match like "compact" also hits an ordinary turn whose tool guide mentions
+	// Context op=compact — which then reports 0 input tokens, the footprint
+	// never rises, and the gate never opens at all.
+	isRecap, isCompact := false, false
+	for _, b := range req.System {
+		if strings.Contains(b.Text, "running RECAP of an agent's progress") {
+			isRecap = true
+		}
+		if strings.Contains(b.Text, "You are compacting a conversation to free up") {
+			isCompact = true
+		}
+	}
+	p.mu.Lock()
+	if isRecap {
+		p.recapCall++
+	} else if isCompact {
+		p.compCall++
+	}
+	p.mu.Unlock()
+
+	ch := make(chan providers.Event, 2)
+	switch {
+	case isRecap:
+		// Thinking only: summarizeWith collects no text → empty_summary.
+		ch <- providers.Event{Type: providers.EventThinking, Text: "considering"}
+	case isCompact:
+		ch <- providers.Event{Type: providers.EventText, Text: "a compact summary"}
+	default:
+		ch <- providers.Event{Type: providers.EventText, Text: "ok"}
+	}
+	in := 0
+	if !isRecap && !isCompact {
+		in = p.inTokens
+	}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn",
+		Usage: &providers.Usage{InputTokens: in}}
+	close(ch)
+	return ch, nil
+}
+
+func TestRun_RecapDeclineFallsThroughToCompaction(t *testing.T) {
+	// A real history, so BOTH tiers get past the split and actually reach their
+	// summarisers. A short conversation declines at the split for both, which
+	// proves nothing about the fall-through — the first version of this test
+	// did exactly that and passed its own premise check by accident.
+	var prior []providers.Message
+	for i := 0; i < 30; i++ {
+		if i%2 == 0 {
+			prior = append(prior, userMsg(bulky("q")))
+		} else {
+			prior = append(prior, asstMsg(bulky("a")))
+		}
+	}
+	// The history must exceed the BACKSTOP threshold (80% by default), not just
+	// the recap threshold. The backstop sits ABOVE the primary by design — a
+	// fixture between the two exercises recap and correctly never reaches
+	// compaction, which is the mistake the first version of this test made.
+	window := estimateMessageTokens(prior) * 100 / 90 // ~90% of the window
+	m := config.ContextModeRecap
+
+	prov := &recapFailsCompactionWorksProvider{maxCtx: window}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:         []tools.Tool{noopTool{}},
+		Dispatcher:    tools.NewDispatcher([]tools.Tool{noopTool{}}),
+		Segments:      steerSegs(),
+		PriorMessages: prior,
+		Context:       &config.Context{Mode: &m, KeepLastN: cptr(2), AutoRecapAtPct: cptr(50)},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	prov.mu.Lock()
+	recapN, compN := prov.recapCall, prov.compCall
+	prov.mu.Unlock()
+	if recapN == 0 {
+		t.Fatal("recap was never attempted — the fixture no longer exercises the primary")
+	}
+	if compN == 0 {
+		t.Error("recap declined and compaction was NEVER TRIED: the run has no second " +
+			"tier, so a declining recap leaves the window to fill to the provider's limit")
+	}
+}
+
+// ⚠️ C4 — the window beats a pinning keep_last_n.
+//
+// The declined-split early return never reached capKeptTailToWindow, so a run
+// whose kept tail alone exceeded the window had no escape: keep_last_n could
+// veto every distillation path and the run climbed to the provider's limit.
+// That was deferred until the second tier made it load-bearing — a backstop
+// keep_last_n can veto is not a backstop.
+//
+// The precedence is now explicit: keep_last_n is a PREFERENCE about how much to
+// keep verbatim; the window is a HARD LIMIT. A preference does not override a
+// limit.
+func TestSplitOrCutToWindow_TheWindowBeatsAPinningKeepLastN(t *testing.T) {
+	var msgs []providers.Message
+	for i := 0; i < 20; i++ {
+		if i%2 == 0 {
+			msgs = append(msgs, userMsg(bulky("q")))
+		} else {
+			msgs = append(msgs, asstMsg(bulky("a")))
+		}
+	}
+	total := estimateMessageTokens(msgs)
+
+	// keep_last_n 99 pins every message: CompactionSplit declines outright.
+	if _, _, ok := CompactionSplit(msgs, 99, true); ok {
+		t.Fatal("fixture does not decline the plain split — it proves nothing")
+	}
+
+	// A budget the pinned tail CANNOT fit → the window wins and a cut is forced.
+	_, cut, ok := splitOrCutToWindow(msgs, 99, true, total/4)
+	if !ok {
+		t.Fatal("the kept tail alone exceeds the window and the distillation was " +
+			"abandoned anyway — keep_last_n is still vetoing the backstop")
+	}
+	if cut <= 1 {
+		t.Errorf("cut = %d: nothing was moved into the summarised span", cut)
+	}
+	if got := estimateMessageTokens(msgs[cut:]); got > total/4 {
+		t.Errorf("kept tail is %d tokens against a %d budget — it was not cut to fit",
+			got, total/4)
+	}
+}
+
+// The override fires ONLY when the tail genuinely does not fit. A short
+// conversation that keep_last_n spans is still declined: there is nothing to
+// reclaim, and cutting it would discard context for no gain.
+func TestSplitOrCutToWindow_AFittingTailIsStillDeclined(t *testing.T) {
+	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2")}
+	if _, _, ok := splitOrCutToWindow(msgs, 99, true, 1_000_000); ok {
+		t.Error("a tiny conversation that fits the window was cut anyway — the " +
+			"window override must fire only when the tail does not fit")
+	}
+}
+
+// ⚠️ THE `enabled` DECISION, which is the one judgement call in this phase.
+//
+// compaction.enabled is OFF by default ("opt-in so existing agents are
+// byte-identical"). If the backstop honoured that default, it would be absent
+// for most agents and the requirement it exists for — the window must not
+// overflow — would not hold.
+//
+// So the distinction is between a FEATURE and a SAFETY NET:
+//
+//	nil / unset      → the backstop RUNS. Nobody opted out; "do nothing" is not
+//	                   a defensible answer at the point of failure.
+//	explicit false   → HONOURED. That is an operator stating they do not want
+//	                   this mechanism, and silently overriding a stated choice
+//	                   is worse than the overflow — the run reports exhaustion
+//	                   instead, so the consequence is visible rather than
+//	                   inferred.
+//	explicit true    → runs, obviously.
+func TestBackstopAvailable_HonoursAnExplicitOptOutButNotTheDefault(t *testing.T) {
+	no, yes := false, true
+	for _, tc := range []struct {
+		name string
+		c    *config.Compaction
+		want bool
+	}{
+		{"no compaction block at all", nil, true},
+		{"block present, enabled unset", &config.Compaction{}, true},
+		{"explicit enabled: true", &config.Compaction{Enabled: &yes}, true},
+		{"explicit enabled: false", &config.Compaction{Enabled: &no}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := backstopAvailable(tc.c); got != tc.want {
+				t.Errorf("backstopAvailable = %v, want %v — %s", got, tc.want,
+					map[bool]string{
+						true:  "the default must not disable the safety net",
+						false: "an explicit opt-out must be honoured",
+					}[tc.want])
+			}
+		})
 	}
 }
