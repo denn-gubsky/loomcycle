@@ -88,8 +88,12 @@ type options struct {
 	// queue path is the deterministic ingest every other axis measures against.
 	ingestAsChats bool
 	// scribe is the agent whose runs carry the turns when ingestAsChats is set.
-	scribe     string
-	runTimeout time.Duration
+	scribe string
+	// retrievalDump, when set, turns the answer axis into the QPP arm: ingest as
+	// usual, then record the SHAPE of each question's retrieved set instead of
+	// spawning an answerer and a judge. See retrieval_dump.go.
+	retrievalDump string
+	runTimeout    time.Duration
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -125,6 +129,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		answerOnly    = fs.Bool("answer-only", false, "answer axis: grade the EXISTING store — skip flush/purge/seed/ingest/consolidate. For measuring a retrieval-side change with the corpus held constant; the empty-store guard still applies")
 		seedTurns     = fs.Bool("seed-turns", false, "answer axis: also write one embedded row per TURN into the partition the answerer reads, so it answers from conversation content rather than only from distilled facts (this is what the published systems do)")
 		runTimeout    = fs.Duration("run-timeout", 10*time.Minute, "answer axis: per-run timeout (agent runs are slower than REST calls)")
+		retrievalDump = fs.String("retrieval-dump", "", "answer axis: instead of answering, record each question's retrieved-set SHAPE (scores + perplexity) to this JSONL file. No answerer, no judge — the QPP arm")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -147,6 +152,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		answerOnly:    *answerOnly,
 		ingestAsChats: *ingestAsChats,
 		scribe:        *scribe,
+		retrievalDump: *retrievalDump,
 	}
 	if opts.concurrency < 1 {
 		opts.concurrency = 1

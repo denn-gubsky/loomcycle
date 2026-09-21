@@ -142,6 +142,10 @@ type searchRequest struct {
 	Scope   string `json:"scope"`
 	ScopeID string `json:"scope_id"`
 	TopK    int    `json:"top_k"`
+	// Sources narrows which kinds of remembered thing come back. Omitted keeps the
+	// endpoint's default (everything), which is what the retrieval-metrics axis wants;
+	// the QPP dump sets ["traces"] so it sees exactly what the grant attaches.
+	Sources []string `json:"sources,omitempty"`
 }
 
 type searchResponse struct {
@@ -169,6 +173,18 @@ func (c *Client) Search(ctx context.Context, scope, scopeID, query string, topK 
 		keys = append(keys, e.Key)
 	}
 	return keys, out.QueryEmbeddingDim, nil
+}
+
+// SearchScored is Search with the SCORES kept. Search returns keys because the
+// retrieval-metrics axis grades rank order and nothing else; the QPP probe grades the
+// SHAPE of the score vector, so throwing the scores away is exactly what it cannot do.
+func (c *Client) SearchScored(ctx context.Context, scope, scopeID, query string, topK int,
+	sources []string) (searchResponse, error) {
+	var out searchResponse
+	err := c.do(ctx, http.MethodPost, "/v1/_memory/search", searchRequest{
+		Query: query, Scope: scope, ScopeID: scopeID, TopK: topK, Sources: sources,
+	}, &out)
+	return out, err
 }
 
 // DeleteEntry removes one row — used by -mode=purge to reclaim a scope.

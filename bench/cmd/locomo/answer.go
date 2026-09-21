@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -744,6 +745,20 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 		},
 	}
 
+	// QPP arm: one append-mode file for the whole run, since each conversation
+	// contributes its own rows and the loop walks them one at a time.
+	var dumpFile *os.File
+	if opts.retrievalDump != "" {
+		f, err := openRetrievalDump(opts.retrievalDump)
+		if err != nil {
+			return fmt.Errorf("retrieval-dump: %w", err)
+		}
+		defer f.Close()
+		dumpFile = f
+		fmt.Fprintf(stdout, "retrieval-dump: recording retrieved-set shape to %s "+
+			"(no answerer, no judge)\n", opts.retrievalDump)
+	}
+
 	var all []AnswerResult
 	for _, conv := range convs {
 		if err := ctx.Err(); err != nil {
@@ -832,6 +847,20 @@ func doAnswerAxis(ctx context.Context, convs []Conversation, defects *Defects, o
 			facts, passes = gotFacts, gotPasses
 			rep.FactsWritten += facts
 			fmt.Fprintf(stdout, "  consolidated in %d pass(es), %d facts written\n", passes, facts)
+		}
+
+		// QPP ARM: measure the retrieved set and move on.
+		//
+		// The empty-store guard below deliberately does NOT apply here. It refuses to
+		// grade a store with no FACTS, and this arm reads TRACES and grades nothing —
+		// an instance whose index came up empty is a data point, not a broken run, and
+		// each row records its own `found` so an empty index stays visible in the file
+		// rather than being turned into a fatal error about the wrong tier.
+		if dumpFile != nil {
+			if _, err := dumpRetrieval(ctx, rest, userID, conv, opts.topK, dumpFile, stdout); err != nil {
+				return err
+			}
+			continue
 		}
 
 		// REFUSE to grade an empty store. With no rows, every recall comes back
