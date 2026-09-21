@@ -182,7 +182,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.84.0) made context distillation impossible to fail
+The most recent line (v1.85.0) made distillation RECOVERABLE. v1.84.0 made a
+failed distillation visible; this one closes the gap that visibility exposed — a
+recap that declined had no second tier, `stateful` had no bound at all in the
+dimension that actually grows (its state object Σ), and a pinning `keep_last_n`
+could veto every path. Compaction is now reachable from every mode, Σ is evicted
+by declared retention class, the window beats `keep_last_n`, and a run that
+cannot reclaim says so rather than climbing to the provider's limit. It also
+fixes a v1.84.0 defect found in production: the footprint counted the
+conversation but not the system prompt or tool catalogue, so a small-window agent
+sent 163% of its window with the gate never opening.
+
+Before it, v1.84.0 made context distillation impossible to fail
 silently. A live chat had climbed to the top of its window while auto-distillation
 never fired once — threshold crossed at 72%, next call at 99%, zero markers and
 zero errors — because a decline could take any of five paths and emit nothing. A

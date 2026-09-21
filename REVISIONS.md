@@ -8,6 +8,118 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.85.0
+
+*Context distillation now reclaims the window in every mode — or says loudly that it cannot.*
+
+Seven PRs. v1.84.0 made a failed distillation **visible**; this release makes it
+**recoverable**, and closes the gap that visibility immediately exposed.
+
+⚠️ **THE DEFECT v1.84.0 SHIPPED WITH, FOUND IN PRODUCTION.** The footprint that
+drives the distillation gate counted the CONVERSATION only, while the value it
+was compared against — and the value the provider bills — counts the system
+prompt and tool catalogue too. On a `chat/local` agent with a 2048-token window
+the estimate read **2 tokens (0.1%)** against a real request of **3340 (163%)**:
+the run sent 163% of its window with the gate never opening. A small window with
+a large preamble is the worst possible ratio, and no unit fixture had that shape
+— every one was built large-in-messages, which is exactly where the estimate and
+reality agree. Reported by a consumer running a real configuration, not by the
+suite.
+
+That fix also corrects `Context op=self`'s gauge, which under-reported by the
+whole preamble on every turn after a distillation — so an agent deciding whether
+to self-compact was reading the same wrong number it was being judged by.
+
+A DECLINED DISTILLATION NOW HAS A SECOND TIER. The gate branched once — recap
+mode took recap, everything else took compaction — so `compaction.autocompact_at_pct`
+was inert in recap mode **by construction**, and a recap that declined left
+nothing else to try while the run climbed to the provider's limit.
+
+Compaction is now reachable from every mode, and it is the right last resort
+precisely because it fails DIFFERENTLY: `empty_summary` is a property of the
+recap budget and the recap prompt, and a compaction summary runs on neither. A
+second tier that failed for the same reasons would be theatre.
+
+THE WINDOW NOW BEATS A PINNING `keep_last_n`. The declined-split path never
+reached the tail cap, so a run whose kept tail alone exceeded the window had no
+escape — `keep_last_n` could veto every distillation path. The precedence is now
+explicit: `keep_last_n` is a PREFERENCE about how much to keep verbatim, the
+window is a HARD LIMIT, and a preference does not override a limit. It fires only
+when the tail genuinely does not fit.
+
+STATEFUL MODE IS BOUNDED AT LAST. Its transcript is rebuilt from (Σ, observation)
+each step so it cannot accumulate — which is why the gate was never wired there —
+but **Σ itself accumulates**, and the whole of it is serialised into the prompt
+every step. Nothing measured it and nothing bounded it.
+
+Summarising is the wrong operation on a state object: Σ is validated against
+`state_schema`, and prose is not a Σ. The structural equivalent is EVICTION, by a
+retention class declared per property — `core` never dropped, `derived`
+recomputable, `scratch` dropped first, least-recently-written as the tiebreaker
+within a class. **The default is `core`**, so no agent starts losing state on
+upgrade; the cost is that an undeclared schema gets no relief and reports
+exhaustion instead. Evicted entries are banked before they go, because Σ is the
+run's working memory and losing it silently would trade a context problem for a
+data-loss one.
+
+⚠️ **AND THE ESCAPE HATCH THAT ALREADY EXISTED WAS NOT ONE.** A model can prune Σ
+by emitting `null`. Relying on that is relying on the model to ELECT a behaviour,
+and the measurement for exactly that pattern is that it does not: a tool
+parameter was passed on 51 of 128 calls, and making it imperative took compliance
+to 100% while accuracy collapsed to 0.003. A bound the model must choose is not a
+bound.
+
+EXHAUSTION IS NOW LOUD. When nothing reclaims the window and the footprint is at
+the point where something should have, the run emits `context_exhausted` carrying
+every tier's verdict — because "the mechanism ran and refused, here is the fix it
+named" and "nothing ran at all" call for opposite next moves. Banded by ten
+points rather than reported once, since a run stuck at 82% and the same run at
+95% is news twice.
+
+Declines also carry a SEVERITY now. Most are routine — `reasoning_keep` is the
+operator's own instruction, `not_smaller` is a correct refusal — but
+`split_declined` is a warning: that path will decline identically every time and
+the window keeps filling. If every decline warned, none of them would.
+
+⚠️ **THE TWO `keep_last_n` KEYS ARE NAMED APART EVERYWHERE.** Recap reads
+`context.keep_last_n` (default 6); compaction reads `compaction.keep_last_n`
+(default 4). A message naming the bare key sends half its readers to edit the
+setting that was not the problem, and they then watch the window keep filling and
+conclude the fix does not work.
+
+## Upgrade notes
+
+⚠️ **IF YOU FOLLOWED THE v1.84.0 ADVISORY AND DELETED `compaction.autocompact_at_pct`,
+PUT IT BACK.** That release warned it "does nothing" outside `append` mode. It was
+true then. It is false now: the threshold is the BACKSTOP for every mode, and in
+`stateful` it is the only bound Σ has. The advisory is retired in this release,
+but configuration already edited on its advice will not repair itself.
+
+**Distillation now fires where it previously could not**, so agents near their
+thresholds will distil EARLIER than before. Three changes compound here: the
+footprint now includes the system prompt and tool catalogue (so the same
+conversation reads as a larger fraction of the window), compaction is reachable
+from every mode, and a run that answers in a single iteration can distil at all.
+This is the intended behaviour, and it is a visible change for every `recap` and
+`stateful` agent.
+
+⚠️ **`chat/local` IS NO LONGER LOCAL.** It moves from a pinned `ollama-local` model
+to `tier: high`, which is a cloud tier — every prompt and tool result now leaves
+the machine. Its system prompt no longer claims otherwise. It also moves to
+`mode: stateful`, which means **the `/run` terminal cannot steer or park it**: the
+stateful loop has no steering and no `end_turn` parking. Pin the previous
+behaviour in your own overlay if you were relying on either.
+
+**A `stateful` agent wanting Σ eviction must declare retention classes** on its
+`state_schema` properties (`x-retention: scratch | derived | core`). Without them
+every key defaults to `core`, nothing is evictable, and the run reports exhaustion
+rather than shrinking.
+
+Adapters: `@loomcycle/client` **1.85.0**, `loomcycle` (PyPI) **1.85.0** — carrying
+a corrected `reasoning: "keep"` doc. The old text promised a decline
+unconditionally; it is only reported once the threshold is reached, and that
+sentence is what led a consumer to expect a frame that was never owed.
+
 ## What's in v1.84.0
 
 *Context distillation could fail in five different ways and say nothing. It cannot any more.*
