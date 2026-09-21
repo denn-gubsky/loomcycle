@@ -49,6 +49,49 @@ export type EventType =
   // chose to, and a UI should not render a deliberate model change as an
   // outage. The structured payload rides `AgentEvent.override`.
   | "override"
+  // ⚠️ THESE SIXTEEN WERE ON THE WIRE BEFORE THEY WERE IN THIS UNION, some of
+  // them for a dozen releases. A consumer narrowing on `ev.type` could not
+  // NAME them, so the only way to render one was to cast out of the union —
+  // and a value a typed client cannot name is a value it is likely to drop.
+  //
+  // It cost an incident: v1.85.0 began emitting `context_exhausted`, a type
+  // that had never existed on the wire, into a terminal that had no case for
+  // it. A server change is only half of a two-repo feature; this file is the
+  // other half, and it is now swept against internal/providers/provider.go
+  // rather than extended one value at a time.
+  //
+  // Context visibility — what the distillation subsystem did, declined to do,
+  // or could not do. `context_recap` (L1 recap ran), `context_state` (the
+  // stateful Σ after a step, incl. any evicted keys), `context_distill_declined`
+  // (a tier ran and refused, with the reason), `context_exhausted` (nothing
+  // reclaimed the window and the run is heading for the provider's limit).
+  | "context_recap"
+  | "context_state"
+  | "context_distill_declined"
+  | "context_exhausted"
+  // The model's streamed reasoning trace, forwarded live. Not accumulated into
+  // content and not echoed into the next request — the full trace rides
+  // `done`.
+  | "thinking"
+  // RFC BH: the operator stopped THIS turn (the run itself continues, and an
+  // interactive run parks).
+  | "turn_cancelled"
+  // Routing: the runtime moved the run because something FAILED — a provider
+  // swap, a swap it refused to make, a model downgrade, and the two
+  // cache/reasoning invalidations a swap forces.
+  | "provider_fallback"
+  | "fallback_suppressed"
+  | "model_downgraded"
+  | "cache_invalidated"
+  | "reasoning_invalidated"
+  // Channels + interruptions raised from inside a run.
+  | "channel_publish"
+  | "channel_delivery"
+  | "interruption_pending"
+  // Agent fan-out ledger (a parent's parallel_spawn), which is what makes an
+  // in-flight child durable across a pause.
+  | "spawn_child_started"
+  | "spawn_child_result"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -300,6 +343,158 @@ export interface LimitInfo {
   message?: string;
 }
 
+/** A tier's verdict inside {@link ContextExhaustedInfo} — what was tried and
+ *  why it refused. Carried verbatim from each decline rather than summarised,
+ *  because each already names its own fix. */
+export interface ContextTierVerdict {
+  /** "recap" | "compaction" | "stateful". */
+  mode: string;
+  /** Same vocabulary as {@link ContextDistillDeclinedInfo.reason}. */
+  reason?: string;
+  message?: string;
+}
+
+/** Payload on `context_distill_declined` — a distillation tier ran and refused.
+ *
+ *  The coarse branch is the event's existence: a run that distilled emits
+ *  `context_recap` / `context_compaction` instead. `reason` says which refusal,
+ *  and new values are ADDITIVE — a consumer that does not know one should fall
+ *  back to `message`, never drop the frame. */
+export interface ContextDistillDeclinedInfo {
+  /** Which tier declined: "recap" | "compaction". */
+  mode: string;
+  /** What opened the gate: "auto" | "self" | "manual". */
+  trigger?: string;
+  /** "split_declined" | "empty_summary" | "summary_error" | "not_smaller" |
+   *  "reasoning_keep" | "noop" | "noop_keep_spans_all" | "noop_not_smaller". */
+  reason: string;
+  used_tokens?: number;
+  window_tokens?: number;
+  /** Conversation length at the refusal. */
+  messages?: number;
+  keep_last_n?: number;
+  before_tokens?: number;
+  after_tokens?: number;
+  /** "info" | "warning". `warning` means this path cannot reclaim the window
+   *  and will decline identically again; `info` means the mechanism is healthy
+   *  and the refusal was correct for this input. */
+  severity?: string;
+  message?: string;
+}
+
+/** Payload on `context_exhausted` — every tier ran (or could not) and the
+ *  window is still full. Reported at most once per run per 10-point band, and
+ *  ONLY from a footprint a provider actually returned: before the first turn
+ *  the numbers are an estimate of a request that has not been sent, and the run
+ *  says nothing. */
+export interface ContextExhaustedInfo {
+  used_tokens: number;
+  window_tokens: number;
+  used_pct?: number;
+  /** Every tier's explanation, not just the last — a run can decline twice for
+   *  DIFFERENT reasons, and half the fix is not a fix. */
+  verdicts?: ContextTierVerdict[];
+  message?: string;
+}
+
+/** Payload on `context_compaction` — the L0 summarize-and-keep-tail form. */
+export interface ContextCompactionInfo {
+  summary: string;
+  before_tokens?: number;
+  after_tokens?: number;
+  keep_n?: number;
+  keep_first?: boolean;
+  trigger?: string;
+  /** Set when the evicted span was banked to persistent memory. */
+  memory_banked?: { pending_id?: string; messages?: number; error?: string };
+}
+
+/** Payload on `context_recap` — the L1 form: the evicted span becomes a running
+ *  note and the last N turns stay verbatim. */
+export interface ContextRecapInfo {
+  recap: string;
+  before_tokens?: number;
+  after_tokens?: number;
+  keep_n?: number;
+  keep_first?: boolean;
+  trigger?: string;
+  /** "recap" | "drop" — what happened to the evicted reasoning. */
+  reasoning?: string;
+}
+
+/** Payload on `context_state` — the L2 stateful form, emitted once per step. */
+export interface ContextStateInfo {
+  /** Σ after the step's patch was merged. */
+  state: Record<string, unknown>;
+  /** What this step changed. */
+  patch?: Record<string, unknown>;
+  iter: number;
+  action?: string;
+  reasoning?: string;
+  /** A schema the model proposed. INERT — recorded for an operator to adopt by
+   *  forking the agent def, never applied to this run's validation. */
+  proposed_schema?: Record<string, unknown>;
+  /** Σ keys dropped by retention-class eviction this step. Banked to memory
+   *  before they went, so a later recall can fetch them back. */
+  evicted?: string[];
+}
+
+/** Payload on `provider_fallback` / `fallback_suppressed` / `model_downgraded` —
+ *  the runtime moved (or refused to move) the run after a failure. */
+export interface FallbackInfo {
+  failed_provider: string;
+  failed_model: string;
+  new_provider?: string;
+  new_model?: string;
+  attempt: number;
+  user_tier: string;
+  reason: string;
+  cause_error?: string;
+}
+
+/** Payload on `channel_publish` / `channel_delivery`. */
+export interface ChannelEventInfo {
+  channel: string;
+  message_id: string;
+  scope: string;
+  scope_id?: string;
+  payload_bytes: number;
+  payload_preview?: string;
+  dropped_oldest?: number;
+  cursor?: string;
+}
+
+/** Payload on `interruption_pending` — the run asked a human a question and is
+ *  waiting on the answer. */
+export interface InterruptionEventInfo {
+  interrupt_id: string;
+  kind: string;
+  question?: string;
+  options?: unknown;
+  context?: string;
+  priority: string;
+  expires_at?: string;
+}
+
+/** Payload on `turn_cancelled` (RFC BH). */
+export interface TurnCancelledInfo {
+  reason?: string;
+  since_turn: number;
+}
+
+/** Payload on `spawn_child_started` / `spawn_child_result` — the two-event
+ *  ledger a fan-out parent writes so an in-flight child survives a pause. */
+export interface SpawnChildInfo {
+  tool_use_id: string;
+  index: number;
+  run_id?: string;
+  agent?: string;
+  ok?: boolean;
+  output?: string;
+  error?: string;
+  state?: Record<string, unknown>;
+}
+
 export interface AgentEvent {
   type: EventType;
   text?: string;
@@ -346,6 +541,32 @@ export interface AgentEvent {
   // v0.12.x — opaque caller-tracking lineage on the `event: agent` frame
   // (and inherited by sub-agents). Present only when the run carried it.
   parent_context?: ParentContext;
+  /** Payload on `context_compaction`. */
+  context_compaction?: ContextCompactionInfo;
+  /** Payload on `context_recap`. */
+  context_recap?: ContextRecapInfo;
+  /** Payload on `context_state`. */
+  context_state?: ContextStateInfo;
+  /** Payload on `context_distill_declined`. Named `context_distill` on the
+   *  wire, not `context_distill_declined` — the field is the server struct's
+   *  json tag and does not mirror the event name. */
+  context_distill?: ContextDistillDeclinedInfo;
+  /** Payload on `context_exhausted`. */
+  context_exhausted?: ContextExhaustedInfo;
+  /** Payload on `provider_fallback` / `fallback_suppressed` /
+   *  `model_downgraded`. */
+  fallback?: FallbackInfo;
+  /** Payload on `channel_publish` / `channel_delivery`. */
+  channel?: ChannelEventInfo;
+  /** Payload on `interruption_pending`. */
+  interruption?: InterruptionEventInfo;
+  /** Payload on `turn_cancelled`. */
+  turn_cancelled?: TurnCancelledInfo;
+  /** Payload on `spawn_child_started` / `spawn_child_result`. */
+  spawn_child?: SpawnChildInfo;
+  /** The assistant turn's accumulated reasoning trace, on `done`. Empty for
+   *  non-thinking models. */
+  reasoning?: string;
   // v0.9.x — client-synthesized observability fields, populated only on
   // events of `type: "_meta"`. `meta_subtype` is always set on a
   // _meta event (distinguishes open from close). `meta_reason` is set
