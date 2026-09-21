@@ -219,6 +219,7 @@ function contextToWire(c: ContextOptions): Record<string, unknown> {
   if (c.keepLastN !== undefined) w.keep_last_n = c.keepLastN;
   if (c.reasoning !== undefined) w.reasoning = c.reasoning;
   if (c.recapMaxChars !== undefined) w.recap_max_chars = c.recapMaxChars;
+  if (c.model !== undefined) w.model = c.model;
   if (c.autorecapAtPct !== undefined) w.autorecap_at_pct = c.autorecapAtPct;
   if (c.stateSchema !== undefined) w.state_schema = c.stateSchema;
   if (c.onInvalidPatch !== undefined) w.on_invalid_patch = c.onInvalidPatch;

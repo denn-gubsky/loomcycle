@@ -1824,6 +1824,18 @@ type Context struct {
 	Reasoning *string `json:"reasoning,omitempty" yaml:"reasoning"`
 	// RecapMaxChars bounds the running reasoning-recap note. Default 512.
 	RecapMaxChars *int `json:"recap_max_chars,omitempty" yaml:"recap_max_chars"`
+	// Model optionally runs the RECAP call on a different model SERVED BY THE
+	// SAME PROVIDER. "" / nil = the run's own model.
+	//
+	// ⚠️ THE POINT IS THE MODEL'S BEHAVIOUR, NOT ITS CONTEXT WINDOW. A recap
+	// reads a span of transcript and writes a short note; it is never the call
+	// that runs out of window. What breaks it is a reasoning model, which
+	// spends its output budget thinking before it writes — so what this buys is
+	// a cheap NON-THINKING summarizer beside a thinking chat model.
+	//
+	// Mirrors compaction.model, which has had this since compaction shipped;
+	// recap simply never got the same knob.
+	Model *string `json:"model,omitempty" yaml:"model"`
 	// AutoRecapAtPct is the recap trigger: recap when used/window >= N%. Range
 	// 50..95; default 80. Only consulted in recap mode when the provider reports a
 	// context window. Mirrors compaction.autocompact_at_pct.
@@ -1898,7 +1910,7 @@ func (c *Context) IsZero() bool {
 	return c == nil || (c.Mode == nil && c.KeepLastN == nil && c.Reasoning == nil &&
 		c.RecapMaxChars == nil && c.AutoRecapAtPct == nil &&
 		len(c.StateSchema) == 0 && c.OnInvalidPatch == nil && c.MaxPatchRetries == nil &&
-		c.Recall == nil && c.HarvestToMemory == nil)
+		c.Recall == nil && c.HarvestToMemory == nil && c.Model == nil)
 }
 
 // Clone deep-copies (every field is a pointer) so a merge never aliases an input.
@@ -1943,6 +1955,10 @@ func (c *Context) Clone() *Context {
 	if c.HarvestToMemory != nil {
 		v := *c.HarvestToMemory
 		out.HarvestToMemory = &v
+	}
+	if c.Model != nil {
+		v := *c.Model
+		out.Model = &v
 	}
 	return out
 }
@@ -2020,6 +2036,10 @@ func MergeContext(base, over *Context) *Context {
 	if over.HarvestToMemory != nil {
 		v := *over.HarvestToMemory
 		out.HarvestToMemory = &v
+	}
+	if over.Model != nil {
+		v := *over.Model
+		out.Model = &v
 	}
 	return out
 }

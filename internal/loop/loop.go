@@ -1956,6 +1956,11 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 		if cx.RecapMaxChars != nil {
 			maxChars = *cx.RecapMaxChars
 		}
+		// A cheap, ideally NON-THINKING summarizer beside the run's own model.
+		// Same provider — this is a model swap, not a routing decision.
+		if cx.Model != nil && *cx.Model != "" {
+			model = *cx.Model
+		}
 	}
 	if reasoning == "keep" {
 		// Not a fault — but reported, because "nothing happened" must never be
