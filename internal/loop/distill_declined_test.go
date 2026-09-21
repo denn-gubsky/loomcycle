@@ -858,3 +858,228 @@ func TestRun_FootprintCountsTheSystemPromptAndTools(t *testing.T) {
 			msgOnly, float64(msgOnly)*100/2048, billed[0], float64(billed[0])*100/2048)
 	}
 }
+
+func exhaustedFrom(evs []providers.Event) []*providers.ContextExhaustedInfo {
+	var out []*providers.ContextExhaustedInfo
+	for _, e := range evs {
+		if e.Type == providers.EventContextExhausted && e.ContextExhausted != nil {
+			out = append(out, e.ContextExhausted)
+		}
+	}
+	return out
+}
+
+// A decline that leaves the window reclaimable is INFO; one that cannot is a
+// WARNING. The distinction is what makes the channel worth reading: if every
+// decline were a warning, none of them would be.
+func TestDeclineSeverity_OnlySplitDeclinedWarns(t *testing.T) {
+	for reason, want := range map[string]string{
+		providers.DistillDeclineSplitDeclined:   providers.DistillSeverityWarning,
+		providers.DistillDeclineEmptySummary:    providers.DistillSeverityInfo,
+		providers.DistillDeclineNotSmaller:      providers.DistillSeverityInfo,
+		providers.DistillDeclineReasoningKeep:   providers.DistillSeverityInfo,
+		providers.DistillDeclineSummarizeFailed: providers.DistillSeverityInfo,
+	} {
+		if got := declineSeverity(reason); got != want {
+			t.Errorf("declineSeverity(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}
+
+// The severity must ride the emitted event, not just exist as a function —
+// a consumer branches on the payload.
+func TestMaybeRecap_SplitDeclineCarriesWarningSeverity(t *testing.T) {
+	var evs []providers.Event
+	msgs := []providers.Message{
+		userMsg("the task"), asstMsg("a1"), userMsg("q2"),
+		asstMsg("a2"), userMsg("q3"), asstMsg("a3"), userMsg("q4"),
+	}
+	opts := RunOptions{
+		Provider: &steerProvider{}, Model: "x",
+		Context: &config.Context{KeepLastN: cptr(6), Reasoning: cptr("recap")},
+	}
+	maybeRecap(context.Background(), opts, msgs, 32768,
+		func(e providers.Event) { evs = append(evs, e) }, "auto")
+	d := declinesFrom(evs)
+	if len(d) != 1 {
+		t.Fatalf("want one decline, got %+v", d)
+	}
+	if d[0].Severity != providers.DistillSeverityWarning {
+		t.Errorf("severity = %q, want warning — keep_last_n pinning the conversation "+
+			"means this path will decline identically forever", d[0].Severity)
+	}
+	// ⚠️ The message must name WHICH keep_last_n. Recap reads
+	// context.keep_last_n; an operator sent to compaction.keep_last_n edits a
+	// setting that was not the problem and watches the window keep filling.
+	if !strings.Contains(d[0].Message, "context.keep_last_n") {
+		t.Errorf("message does not qualify the key: %q", d[0].Message)
+	}
+	if strings.Contains(d[0].Message, "compaction.keep_last_n") {
+		t.Errorf("recap decline names the COMPACTION key: %q", d[0].Message)
+	}
+}
+
+// The compaction branch must name the other one.
+func TestMaybeAutoCompact_SplitDeclineNamesTheCompactionKey(t *testing.T) {
+	var evs []providers.Event
+	msgs := []providers.Message{userMsg("the task"), asstMsg("a1"), userMsg("q2")}
+	opts := RunOptions{
+		Provider: &steerProvider{}, Model: "x",
+		Compaction: &config.Compaction{KeepLastN: cptr(6), KeepFirst: cptr(true)},
+	}
+	maybeAutoCompact(context.Background(), opts, msgs, 32768,
+		func(e providers.Event) { evs = append(evs, e) }, "auto")
+	d := declinesFrom(evs)
+	if len(d) != 1 {
+		t.Fatalf("want one decline, got %+v", d)
+	}
+	if !strings.Contains(d[0].Message, "compaction.keep_last_n") {
+		t.Errorf("message does not qualify the key: %q", d[0].Message)
+	}
+}
+
+// ⚠️ THE GUARANTEE: the window is either reclaimed, or the run says clearly
+// that it cannot be.
+//
+// The runtime cannot promise to reclaim — keep_last_n can pin an entire
+// conversation and there is then nothing to distil. What it can promise is
+// never to fail silently, which is what this event is.
+//
+// The fixture is the unreclaimable one deliberately: keep_last_n pins every
+// message, so the split declines and no amount of retrying changes it.
+func TestRun_ExhaustionIsReportedWhenNothingCanReclaim(t *testing.T) {
+	prov := &recapCountingProvider{firstIn: 30000, maxCtx: 32768}
+	q := make(chan steer.Message, 8)
+	parked := make(chan struct{}, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := config.ContextModeRecap
+	var mu sync.Mutex
+	var evs []providers.Event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(ctx, RunOptions{
+			Provider: prov, Model: "x",
+			Tools:      []tools.Tool{noopTool{}},
+			Dispatcher: tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:   steerSegs(),
+			SteerQueue: q, Interactive: true,
+			// keep_last_n 99 pins everything → permanently declining split.
+			Context: &config.Context{Mode: &m, KeepLastN: cptr(99), AutoRecapAtPct: cptr(50)},
+			// 30000/32768 = 91%, above the 80 default backstop.
+			MaxContextTokens: 32768,
+			OnEvent: func(ev providers.Event) {
+				mu.Lock()
+				evs = append(evs, ev)
+				mu.Unlock()
+				if ev.Type == providers.EventAwaitingInput {
+					parked <- struct{}{}
+				}
+			},
+		})
+	}()
+	waitPark := func(what string) {
+		t.Helper()
+		select {
+		case <-parked:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s: timed out", what)
+		}
+	}
+	waitPark("initial park")
+	for i := 0; i < 3; i++ {
+		q <- steer.Message{Text: "continue"}
+		waitPark("re-park")
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	ex := exhaustedFrom(evs)
+	mu.Unlock()
+	if len(ex) == 0 {
+		t.Fatal("the window was never reclaimed and the run said nothing — this is the " +
+			"silent climb the whole line exists to remove")
+	}
+	// Banded, not per-iteration. The footprint is constant across these turns,
+	// so the condition is equally true every time the gate opens — reporting it
+	// each time would bury it in itself, which is the failure the decline dedup
+	// already had to solve.
+	if len(ex) > 1 {
+		t.Errorf("reported exhaustion %d times at a constant footprint; it must be "+
+			"banded, or the report buries itself", len(ex))
+	}
+	e := ex[0]
+	if e.UsedPct < 80 {
+		t.Errorf("used_pct = %d, want >= the backstop threshold", e.UsedPct)
+	}
+	if e.UsedTokens == 0 || e.WindowTokens == 0 {
+		t.Errorf("exhaustion report carries no numbers: %+v", e)
+	}
+	// It must carry what was TRIED, not only that the window is full — "the
+	// mechanism ran and refused" and "nothing ran" need opposite responses.
+	if len(e.Verdicts) == 0 {
+		t.Error("no tier verdicts — a reader cannot tell a refusal from an absence")
+	} else if e.Verdicts[0].Reason != providers.DistillDeclineSplitDeclined {
+		t.Errorf("verdict reason = %q, want split_declined", e.Verdicts[0].Reason)
+	}
+	// And the fix the tier named must survive into the report verbatim.
+	if !strings.Contains(e.Message, "context.keep_last_n") {
+		t.Errorf("the report drops the fix the tier named: %q", e.Message)
+	}
+}
+
+// A run comfortably inside its window must NOT be told it is exhausted. This is
+// the direction that turns the event into noise, and noise is how a channel
+// that matters gets ignored.
+func TestRun_NoExhaustionBelowTheBackstop(t *testing.T) {
+	prov := &recapCountingProvider{firstIn: 1000, maxCtx: 200000} // 0.5%
+	q := make(chan steer.Message, 8)
+	parked := make(chan struct{}, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := config.ContextModeRecap
+	var mu sync.Mutex
+	var evs []providers.Event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(ctx, RunOptions{
+			Provider: prov, Model: "x",
+			Tools:      []tools.Tool{noopTool{}},
+			Dispatcher: tools.NewDispatcher([]tools.Tool{noopTool{}}),
+			Segments:   steerSegs(),
+			SteerQueue: q, Interactive: true,
+			Context: &config.Context{Mode: &m, KeepLastN: cptr(99), AutoRecapAtPct: cptr(50)},
+			OnEvent: func(ev providers.Event) {
+				mu.Lock()
+				evs = append(evs, ev)
+				mu.Unlock()
+				if ev.Type == providers.EventAwaitingInput {
+					parked <- struct{}{}
+				}
+			},
+		})
+	}()
+	select {
+	case <-parked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("initial park: timed out")
+	}
+	q <- steer.Message{Text: "continue"}
+	select {
+	case <-parked:
+	case <-time.After(3 * time.Second):
+		t.Fatal("re-park: timed out")
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	ex := exhaustedFrom(evs)
+	mu.Unlock()
+	if len(ex) != 0 {
+		t.Errorf("reported exhaustion at 0.5%% of the window: %+v", ex[0])
+	}
+}
