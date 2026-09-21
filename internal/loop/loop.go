@@ -1137,6 +1137,41 @@ const compactionKeptTailBudgetPct = 50
 // lose the agent's most recent context entirely — better over-budget-by-one-turn
 // than empty. Returns the (possibly larger) cut; cut only ever increases, so the
 // summarized span [firstIdx:cut] stays non-empty.
+// splitOrCutToWindow is CompactionSplit with one override: when keep_last_n
+// pins the whole conversation AND the pinned tail alone will not fit the
+// window, the WINDOW WINS and the tail is cut to fit.
+//
+// ⚠️ THIS CLOSES A DELIBERATE DEFERRAL, and the backstop is what forced it. The
+// declined-split early return never reached capKeptTailToWindow, so a run whose
+// kept tail alone exceeded the window had no escape at all — keep_last_n could
+// veto every distillation path and the run climbed to the provider's limit.
+//
+// A backstop that keep_last_n can veto is not a backstop. So the precedence is
+// now explicit: keep_last_n is a PREFERENCE about how much to keep verbatim,
+// and the window is a HARD LIMIT. A preference does not override a limit.
+//
+// It only overrides when the tail genuinely does not fit. A short conversation
+// that keep_last_n spans is still declined — there is nothing to reclaim there,
+// and cutting it would discard context for no gain.
+func splitOrCutToWindow(msgs []providers.Message, keepLastN int, keepFirst bool, budget int) (firstIdx, cut int, ok bool) {
+	firstIdx, cut, ok = CompactionSplit(msgs, keepLastN, keepFirst)
+	if ok || budget <= 0 {
+		return firstIdx, cut, ok
+	}
+	// The split declined: keep_last_n pins everything from firstIdx on. If that
+	// fits the window there is nothing wrong — decline stands.
+	if estimateMessageTokens(msgs[firstIdx:]) <= budget {
+		return firstIdx, cut, false
+	}
+	// It does not fit. Cut forward until it does; if that leaves anything to
+	// summarize, the distillation proceeds after all.
+	forced := capKeptTailToWindow(msgs, firstIdx, budget)
+	if forced <= firstIdx {
+		return firstIdx, cut, false // irreducible — genuinely nothing to do
+	}
+	return firstIdx, forced, true
+}
+
 func capKeptTailToWindow(msgs []providers.Message, cut, budget int) int {
 	if budget <= 0 {
 		return cut
@@ -1381,6 +1416,17 @@ func applyCompactSummary(messages []providers.Message, summary string, keepN int
 // turn's context footprint crossed the trigger percentage, and we didn't just
 // compact (one-iteration debounce against thrash). used/window are the previous
 // iteration's live values (0 on the first iteration → never fires).
+// containsStr is a local membership check; the exhaustion report dedups tier
+// messages so two tiers declining identically read as one condition.
+func containsStr(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 // reportExhausted emits the "nothing reclaimed the window" report, at most once
 // per run per 10-point band.
 //
@@ -1408,15 +1454,45 @@ func reportExhausted(emit func(providers.Event), seen map[int]bool, c *config.Co
 		// which is a configuration answer rather than a runtime one.
 		msg += " — no distillation path ran; check that the mode's distiller is enabled"
 	default:
-		// Carry the tier's own explanation verbatim. It already names the fix,
-		// and paraphrasing it here would be a second, worse copy of the advice.
-		msg += " — " + verdicts[len(verdicts)-1].Message
+		// ⚠️ EVERY tier's explanation, not just the last one. With the second
+		// tier in place a run can decline twice for DIFFERENT reasons — recap
+		// on context.keep_last_n, compaction on compaction.keep_last_n — and an
+		// operator handed only the final message fixes half the problem and
+		// watches the window keep filling.
+		//
+		// Carried verbatim rather than paraphrased: each already names its own
+		// fix, and a summary of them here would be a second, worse copy.
+		var seenMsg []string
+		for _, v := range verdicts {
+			if v.Message != "" && !containsStr(seenMsg, v.Message) {
+				seenMsg = append(seenMsg, v.Message)
+			}
+		}
+		msg += " — " + strings.Join(seenMsg, " | ")
 	}
 	emit(providers.Event{Type: providers.EventContextExhausted,
 		ContextExhausted: &providers.ContextExhaustedInfo{
 			UsedTokens: used, WindowTokens: window, UsedPct: pct,
 			Verdicts: verdicts, Message: msg,
 		}})
+}
+
+// backstopAvailable reports whether compaction may run as the LAST RESORT for a
+// mode whose own distiller did not reclaim the window.
+//
+// ⚠️ THIS DELIBERATELY IGNORES THE `enabled` DEFAULT, and the distinction is
+// between a FEATURE and a SAFETY NET. `compaction.enabled` is off by default so
+// that existing agents are byte-identical — it governs whether the loop
+// auto-compacts at the operator's chosen threshold. The backstop is not that:
+// it fires at the point where the run is otherwise going to hit the provider's
+// limit and stop, and "do nothing" is not a defensible answer there.
+//
+// An EXPLICIT `enabled: false` is still honoured. That is an operator saying
+// they do not want this mechanism, and overriding a stated choice silently
+// would be worse than the overflow — but the run then reports exhaustion, so
+// the consequence of the choice is visible rather than inferred.
+func backstopAvailable(c *config.Compaction) bool {
+	return c == nil || c.Enabled == nil || *c.Enabled
 }
 
 // backstopPct is the footprint percentage at which the window is considered to
@@ -1587,7 +1663,9 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 			model = *c.Model
 		}
 	}
-	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
+	// The window overrides a pinning keep_last_n — see splitOrCutToWindow.
+	firstIdx, cut, ok := splitOrCutToWindow(messages, keepLastN, keepFirst,
+		window*compactionKeptTailBudgetPct/100)
 	if !ok {
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "compaction", Trigger: trigger, Reason: providers.DistillDeclineSplitDeclined,
@@ -1823,7 +1901,9 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 			Message: "context recap declined: context.reasoning is \"keep\", which asks for no " +
 				"distillation — set reasoning: recap (or drop) to let the window be reclaimed"})
 	}
-	firstIdx, cut, ok := CompactionSplit(messages, keepLastN, keepFirst)
+	// The window overrides a pinning keep_last_n — see splitOrCutToWindow.
+	firstIdx, cut, ok := splitOrCutToWindow(messages, keepLastN, keepFirst,
+		window*compactionKeptTailBudgetPct/100)
 	if !ok {
 		return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
 			Mode: "recap", Trigger: trigger, Reason: providers.DistillDeclineSplitDeclined,
@@ -2310,12 +2390,19 @@ outerLoop:
 		// choosing recap bypasses the compaction auto-trigger. The smaller next
 		// request self-debounces. Applies to ALL runs (interactive + autonomous).
 		selfReq := compactRequested.Swap(false)
-		var distill bool
+		// The gate opens on EITHER threshold. A mode whose primary sits above
+		// the backstop — or whose primary cannot fire at all — must still reach
+		// compaction, or the window fills with nothing consulted.
+		var primaryDue bool
 		if recapMode {
-			distill = selfReq || shouldAutoRecap(opts.Context, lastCtxTokens, lastWindow, iter, lastCompactIter)
+			primaryDue = shouldAutoRecap(opts.Context, lastCtxTokens, lastWindow, iter, lastCompactIter)
 		} else {
-			distill = selfReq || shouldAutoCompact(opts.Compaction, lastCtxTokens, lastWindow, iter, lastCompactIter)
+			primaryDue = shouldAutoCompact(opts.Compaction, lastCtxTokens, lastWindow, iter, lastCompactIter)
 		}
+		backstopDue := iter > lastCompactIter+1 &&
+			backstopAvailable(opts.Compaction) &&
+			aboveBackstop(opts.Compaction, lastCtxTokens, lastWindow)
+		distill := selfReq || primaryDue || backstopDue
 		if distill {
 			trigger := "auto"
 			if selfReq {
@@ -2335,13 +2422,29 @@ outerLoop:
 					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 					reclaimed = true
 				}
-			} else if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
-				messages = newMsgs
-				// Compaction shrank the history; refresh the footprint so op=self
-				// below reflects the compacted size, not the pre-compaction value
-				// (the next real turn's usage overwrites it).
-				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-				reclaimed = true
+			}
+			// ⚠️ THE SECOND TIER. Compaction is reachable from EVERY mode, not
+			// only append — which is the whole point: a recap that declines used
+			// to leave nothing else to try, and the run climbed to the limit.
+			//
+			// It is the right last resort precisely because it fails
+			// DIFFERENTLY: empty_summary is a property of the recap budget and
+			// the recap prompt, and a compaction summary runs on neither. A
+			// second tier that failed for the same reasons would be theatre.
+			//
+			// Reached when the mode's own distiller did not reclaim AND the
+			// footprint is at the backstop. In append mode compaction IS the
+			// primary, so this is its only invocation there.
+			if !reclaimed && (backstopDue || selfReq || !recapMode) &&
+				backstopAvailable(opts.Compaction) {
+				if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
+					messages = newMsgs
+					// Compaction shrank the history; refresh the footprint so
+					// op=self below reflects the compacted size, not the
+					// pre-compaction value (the next turn's usage overwrites it).
+					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+					reclaimed = true
+				}
 			}
 			// Nothing reclaimed the window, and the footprint is at the point
 			// where something should have. Say so — this is the run heading for
