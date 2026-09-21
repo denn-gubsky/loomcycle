@@ -608,6 +608,26 @@ const (
 	// bury itself, while a state-dependent one legitimately recurs.
 	EventContextDistillDeclined EventType = "context_distill_declined"
 
+	// EventContextExhausted reports that the footprint is at or above the
+	// threshold where distillation was supposed to reclaim the window, and
+	// nothing did.
+	//
+	// It is DISTINCT from a decline, and the distinction is the point. A
+	// decline says "this path did nothing and here is why" — routine, and
+	// sometimes correct. Exhaustion says "the window is not being reclaimed and
+	// the run is heading for the provider's limit", which is a different
+	// message to a different reader.
+	//
+	// The honest guarantee this event exists to keep: the window is either
+	// reclaimed, or the run says clearly that it cannot be. It can always be
+	// made impossible — keep_last_n can pin an entire conversation — so the
+	// runtime cannot promise to reclaim. It can promise never to fail silently.
+	//
+	// LOOP-generated, like the declines, and carries every
+	// tier's verdict so a reader can see what was tried rather than only that
+	// it failed.
+	EventContextExhausted EventType = "context_exhausted"
+
 	// EventOverride records that a RUN's own configuration changed while it was
 	// running — an operator retuned a parked chat (RFC DC P3/D8).
 	//
@@ -736,6 +756,10 @@ type Event struct {
 	// ContextDistill carries the structured payload on
 	// EventContextDistillDeclined. Nil on all other event types.
 	ContextDistill *ContextDistillDeclinedInfo `json:"context_distill,omitempty"`
+
+	// ContextExhausted carries the structured payload on
+	// EventContextExhausted. Nil on all other event types.
+	ContextExhausted *ContextExhaustedInfo `json:"context_exhausted,omitempty"`
 
 	// Override carries the structured payload on EventOverride (a run's
 	// configuration changed mid-run, RFC DC). Nil on all other event types.
@@ -1134,6 +1158,16 @@ const (
 	// smaller than what it replaced, so it was refused. Carries both token
 	// counts: "14230 -> 14334" is the whole explanation.
 	DistillDeclineNotSmaller = "not_smaller"
+	// Distillation-decline severities. Most declines are routine; one is not.
+	//
+	// The distinction is whether the WINDOW CAN STILL BE RECLAIMED by this
+	// path. reasoning_keep is the operator's own instruction and not_smaller is
+	// a correct refusal — both leave the mechanism healthy. split_declined
+	// means keep_last_n pins the whole conversation, so this path will decline
+	// identically every time and the window will keep filling.
+	DistillSeverityInfo    = "info"
+	DistillSeverityWarning = "warning"
+
 	// DistillDeclineReasoningKeep — reasoning: keep asks for no distillation.
 	// Not a fault; reported so that "nothing happened" is never silent, because
 	// an operator who did not realise keep disables this needs to see it once.
@@ -1167,8 +1201,51 @@ type ContextDistillDeclinedInfo struct {
 	// distillation would have replaced, and what it produced.
 	BeforeTokens int `json:"before_tokens,omitempty"`
 	AfterTokens  int `json:"after_tokens,omitempty"`
+	// Severity is DistillSeverityInfo or DistillSeverityWarning — whether the
+	// window can still be reclaimed by this path.
+	//
+	// It also joins the once-per-run dedup key, so a condition that ESCALATES
+	// is reported again rather than suppressed by its own earlier, quieter
+	// self. A decline that was informational at 60% and is a warning at 90% is
+	// two different messages to an operator.
+	Severity string `json:"severity,omitempty"`
 	// Message is a human-readable line naming the condition and the fix.
 	// Optional, but always populated by the runtime.
+	//
+	// ⚠️ When it names keep_last_n it must QUALIFY which one — recap reads
+	// context.keep_last_n, compaction reads compaction.keep_last_n, and an
+	// operator sent to the wrong block edits a setting that was not the
+	// problem. See declineSplitMessage.
+	Message string `json:"message,omitempty"`
+}
+
+// ContextExhaustedInfo is the payload on EventContextExhausted: the footprint
+// that was not reclaimed, and what each tier said when asked.
+type ContextExhaustedInfo struct {
+	// UsedTokens / WindowTokens are why this is urgent rather than tidy.
+	UsedTokens   int `json:"used_tokens"`
+	WindowTokens int `json:"window_tokens"`
+	// UsedPct is precomputed because every consumer wants it and a window of 0
+	// (an unknown ceiling) makes the division a trap.
+	UsedPct int `json:"used_pct,omitempty"`
+	// Verdicts is what each distillation tier answered, in the order tried.
+	// A reader needs to know the mechanism RAN and refused, not merely that the
+	// window is full — those call for opposite next moves.
+	Verdicts []ContextTierVerdict `json:"verdicts,omitempty"`
+	// Message is a human-readable line naming the condition and what would
+	// change it.
+	Message string `json:"message,omitempty"`
+}
+
+// ContextTierVerdict is one tier's answer inside ContextExhaustedInfo.
+type ContextTierVerdict struct {
+	// Mode is the tier that was asked: "recap" | "compaction" | "stateful".
+	Mode string `json:"mode"`
+	// Reason is a DistillDecline* constant, or "" when the tier was not
+	// reachable at all for this run.
+	Reason string `json:"reason,omitempty"`
+	// Message is that tier's own explanation, carried verbatim so the
+	// exhaustion report does not paraphrase away the fix it named.
 	Message string `json:"message,omitempty"`
 }
 

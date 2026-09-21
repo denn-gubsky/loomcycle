@@ -1381,6 +1381,68 @@ func applyCompactSummary(messages []providers.Message, summary string, keepN int
 // turn's context footprint crossed the trigger percentage, and we didn't just
 // compact (one-iteration debounce against thrash). used/window are the previous
 // iteration's live values (0 on the first iteration → never fires).
+// reportExhausted emits the "nothing reclaimed the window" report, at most once
+// per run per 10-point band.
+//
+// BANDED rather than once-per-run, because the condition worsens: a run stuck at
+// 82% and the same run at 95% are different news, and an operator who saw the
+// first deserves the second. Banding is the compromise between that and one
+// report per iteration, which would bury itself.
+func reportExhausted(emit func(providers.Event), seen map[int]bool, c *config.Compaction,
+	used, window int, verdicts []providers.ContextTierVerdict) {
+	pct := 0
+	if window > 0 {
+		pct = used * 100 / window
+	}
+	band := pct / 10
+	if seen[band] {
+		return
+	}
+	seen[band] = true
+
+	msg := fmt.Sprintf("context not reclaimed: %d%% of the window (%d/%d tokens) is in use "+
+		"and distillation did not shrink it", pct, used, window)
+	switch {
+	case len(verdicts) == 0:
+		// No tier even ran. Almost always a disabled or unreachable distiller,
+		// which is a configuration answer rather than a runtime one.
+		msg += " — no distillation path ran; check that the mode's distiller is enabled"
+	default:
+		// Carry the tier's own explanation verbatim. It already names the fix,
+		// and paraphrasing it here would be a second, worse copy of the advice.
+		msg += " — " + verdicts[len(verdicts)-1].Message
+	}
+	emit(providers.Event{Type: providers.EventContextExhausted,
+		ContextExhausted: &providers.ContextExhaustedInfo{
+			UsedTokens: used, WindowTokens: window, UsedPct: pct,
+			Verdicts: verdicts, Message: msg,
+		}})
+}
+
+// backstopPct is the footprint percentage at which the window is considered to
+// be in trouble — compaction's own threshold, read WITHOUT the enabled/debounce
+// gating shouldAutoCompact applies.
+//
+// It is separate because exhaustion is a different question from "should we
+// compact now". A run whose compaction block is disabled entirely still needs
+// to be told its window is not being reclaimed; answering "no distillation was
+// due" to an operator staring at 95% is the silence this line exists to remove.
+func backstopPct(c *config.Compaction) int {
+	if c != nil && c.AutoCompactAtPct != nil {
+		return *c.AutoCompactAtPct
+	}
+	return config.CompactionDefaultAutoAtPct
+}
+
+// aboveBackstop reports whether the footprint has reached the point where
+// something should have reclaimed the window.
+func aboveBackstop(c *config.Compaction, used, window int) bool {
+	if window <= 0 || used <= 0 {
+		return false // an unknown ceiling cannot be exceeded
+	}
+	return used*100 >= window*backstopPct(c)
+}
+
 func shouldAutoCompact(c *config.Compaction, used, window, iter, lastCompactIter int) bool {
 	if c == nil || c.Enabled == nil || !*c.Enabled {
 		return false
@@ -1437,11 +1499,13 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 // the key to change. "distillation declined" sends an operator to read source;
 // "keep_last_n 6 pins all 7 messages" sends them to the right line of yaml.
 func declineSplitMessage(mode string, messages, keepLastN int) string {
-	key := "keep_last_n"
+	// ⚠️ ALWAYS QUALIFIED. There are two settings with this short name — recap
+	// reads context.keep_last_n (default 6), compaction reads
+	// compaction.keep_last_n (default 4) — and a message naming the bare key
+	// sends half its readers to edit the one that was not the problem.
+	key := "compaction.keep_last_n"
 	if mode == "recap" {
 		key = "context.keep_last_n"
-	} else {
-		key = "compaction.keep_last_n"
 	}
 	return fmt.Sprintf("context %s declined: %s %d pins all %d message(s), leaving nothing to distil — lower %s",
 		mode, key, keepLastN, messages, key)
@@ -1478,8 +1542,29 @@ func compactionSummaryDecline(mode, trigger string, window int, err error) *prov
 // a convention.
 func declineDistill(emit func(providers.Event), messages []providers.Message,
 	info *providers.ContextDistillDeclinedInfo) ([]providers.Message, bool) {
+	// Severity is derived HERE rather than at each call site, for the same
+	// reason the exit itself is centralised: a site that forgets it would emit
+	// a decline with no severity, which the dedup key and the consumer both
+	// read as a distinct (and meaningless) third value.
+	if info.Severity == "" {
+		info.Severity = declineSeverity(info.Reason)
+	}
 	emit(providers.Event{Type: providers.EventContextDistillDeclined, ContextDistill: info})
 	return messages, false
+}
+
+// declineSeverity answers one question: can this path still reclaim the window?
+//
+// split_declined cannot — keep_last_n pins the whole conversation, so the path
+// will decline identically every time and the window keeps filling. The others
+// leave the mechanism healthy: reasoning_keep is the operator's instruction,
+// not_smaller is a correct refusal, and the two summariser failures are about
+// one call rather than the configuration.
+func declineSeverity(reason string) string {
+	if reason == providers.DistillDeclineSplitDeclined {
+		return providers.DistillSeverityWarning
+	}
+	return providers.DistillSeverityInfo
 }
 
 func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers.Message, window int, emit func(providers.Event), trigger string) ([]providers.Message, bool) {
@@ -1997,8 +2082,23 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// agent reading op=self on turn 20 needs it as much as on turn 3. A
 	// consumer that only saw the event would have to remember it itself.
 	var lastDistill tools.LastDistillValue
+	// iterVerdicts collects the declines of ONE gate opening. The exhaustion
+	// report needs what was tried and refused — "the window is full" and "the
+	// mechanism ran and refused, here is why" call for opposite next moves.
+	var iterVerdicts []providers.ContextTierVerdict
+	// seenExhausted keeps the exhaustion report to once per run per severity
+	// band, for the same reason declines dedup: a condition that is true every
+	// iteration would otherwise bury itself.
+	seenExhausted := map[int]bool{}
 	distillEmit := func(ev providers.Event) {
 		if ev.Type == providers.EventContextDistillDeclined && ev.ContextDistill != nil {
+			// Keep this iteration's verdict for the exhaustion report. Cleared
+			// at the top of each gate opening, so the report carries what was
+			// tried THIS time rather than an accumulation across the run.
+			iterVerdicts = append(iterVerdicts, providers.ContextTierVerdict{
+				Mode: ev.ContextDistill.Mode, Reason: ev.ContextDistill.Reason,
+				Message: ev.ContextDistill.Message,
+			})
 			// Recorded here because this is the one path EVERY decline takes,
 			// so what op=self reports cannot diverge from what was emitted.
 			// (Before or after the dedup is equivalent today — the first
@@ -2008,7 +2108,11 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				Mode: ev.ContextDistill.Mode, Reason: ev.ContextDistill.Reason,
 				Message: ev.ContextDistill.Message,
 			}
-			key := ev.ContextDistill.Mode + "|" + ev.ContextDistill.Reason
+			// Severity is part of the key so an ESCALATION is reported again.
+			// The same reason at info and at warning is two different messages
+			// to an operator, and suppressing the second because the first was
+			// quieter is how a condition gets buried by its own earlier self.
+			key := ev.ContextDistill.Mode + "|" + ev.ContextDistill.Reason + "|" + ev.ContextDistill.Severity
 			if seenDecline[key] {
 				return
 			}
@@ -2223,10 +2327,13 @@ outerLoop:
 			// and a summarize call was burned every iteration for the rest of
 			// the run — against a condition that could not change.
 			lastCompactIter = iter
+			iterVerdicts = nil
+			reclaimed := false
 			if recapMode {
 				if newMsgs, did := maybeRecap(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
 					messages = newMsgs
 					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+					reclaimed = true
 				}
 			} else if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, lastWindow, distillEmit, trigger); did {
 				messages = newMsgs
@@ -2234,6 +2341,15 @@ outerLoop:
 				// below reflects the compacted size, not the pre-compaction value
 				// (the next real turn's usage overwrites it).
 				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+				reclaimed = true
+			}
+			// Nothing reclaimed the window, and the footprint is at the point
+			// where something should have. Say so — this is the run heading for
+			// the provider's limit, and it is the one condition an operator must
+			// never have to infer from an absence of events.
+			if !reclaimed && aboveBackstop(opts.Compaction, lastCtxTokens, lastWindow) {
+				reportExhausted(distillEmit, seenExhausted, opts.Compaction,
+					lastCtxTokens, lastWindow, iterVerdicts)
 			}
 		}
 
