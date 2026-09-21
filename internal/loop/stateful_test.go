@@ -579,3 +579,114 @@ func TestRun_Stateful_AThinkingOnlyReplyIsNotReplayedAsAnEmptyTurn(t *testing.T)
 		t.Errorf("a thinking-only reply reads as silence:\n%s", errText)
 	}
 }
+
+// toolChoiceRecordingProvider captures what the loop asked for on the wire.
+type toolChoiceRecordingProvider struct {
+	mu      sync.Mutex
+	choices []providers.ToolChoice
+	script  string
+}
+
+func (p *toolChoiceRecordingProvider) ID() string                                   { return "tc-rec" }
+func (p *toolChoiceRecordingProvider) Probe(context.Context) error                  { return nil }
+func (p *toolChoiceRecordingProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *toolChoiceRecordingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, SupportsToolChoice: true}
+}
+func (p *toolChoiceRecordingProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.choices = append(p.choices, req.ToolChoice)
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall,
+		ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName, Input: json.RawMessage(p.script)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+
+// THE CROSSING (RFC DG). The drivers' own tests prove each maps ToolChoice onto
+// its wire; this proves the stateful loop actually ASKS. A mapping nothing sets
+// is as inert as no mapping at all, and that gap is invisible from either side.
+func TestRun_Stateful_AsksForTheEmitStateToolOnTheWire(t *testing.T) {
+	prov := &toolChoiceRecordingProvider{script: `{"patch":{"n":1},"done":true,"final":"ok"}`}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: []PromptSegment{{Role: "user",
+			Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		Context: statefulCtx(nil),
+		OnEvent: func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.choices) == 0 {
+		t.Fatal("provider was never called")
+	}
+	want := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}
+	if prov.choices[0] != want {
+		t.Errorf("first step asked for %+v, want %+v — the emit_state contract is still "+
+			"prompt-only on the wire", prov.choices[0], want)
+	}
+}
+
+// ⚠️ "THE MODEL IGNORED THE CONSTRAINT" AND "THERE WAS NO CONSTRAINT" READ
+// IDENTICALLY WITHOUT THIS, and they call for opposite next moves: replace the
+// model, or move the agent to a provider that has a tool_choice at all. Ollama
+// has none, so a forced request there degrades silently by design — this is the
+// line that stops the degradation being invisible when it finally costs a run.
+func TestRun_Stateful_TheErrorSaysWhenTheToolCouldNotBeForced(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		forceable  bool
+		wantInText bool
+	}{
+		{"a provider that cannot force says so", false, true},
+		{"a provider that can force stays quiet", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &unforceableProvider{canForce: tc.forceable}
+			cx := statefulCtx(nil)
+			zero := 0
+			cx.MaxPatchRetries = &zero
+			_, err, evs := statefulRun(t, prov, cx)
+			if err == nil {
+				t.Fatal("expected the run to fail")
+			}
+			var errText string
+			for _, ev := range evs {
+				if ev.Type == providers.EventError {
+					errText = ev.Error
+				}
+			}
+			got := strings.Contains(errText, "NOT enforced")
+			if got != tc.wantInText {
+				t.Errorf("mentions the unenforced call = %v, want %v:\n%s", got, tc.wantInText, errText)
+			}
+		})
+	}
+}
+
+// unforceableProvider never calls emit_state, and reports whether it has a
+// tool_choice on the wire.
+type unforceableProvider struct{ canForce bool }
+
+func (p *unforceableProvider) ID() string {
+	if p.canForce {
+		return "openai"
+	}
+	return "ollama-local"
+}
+func (p *unforceableProvider) Probe(context.Context) error                  { return nil }
+func (p *unforceableProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *unforceableProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, SupportsToolChoice: p.canForce}
+}
+func (p *unforceableProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventText, Text: "Hello! I can help with that."}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}

@@ -108,6 +108,21 @@ type Capabilities struct {
 	// SupportsEffort is coarse here but refined per-call in the driver.
 	SupportsVision bool
 
+	// SupportsToolChoice signals that this provider has a WIRE parameter for
+	// constraining which tool the model may call (RFC DG). Coarse, like
+	// SupportsVision: per-model and per-request nuance is refined inside the
+	// driver, because the incompatibilities are not provider-wide — Anthropic
+	// rejects a forced choice only when extended thinking is attached.
+	//
+	// ⚠️ FALSE IS NOT AN ERROR. Ollama has no such parameter on /api/chat or on
+	// its OpenAI shim, and a run against it is not refused: the request is
+	// dropped and the caller proceeds unforced. Forcing is an OPTIMISATION of a
+	// contract the prompt already states, never the only thing holding it up —
+	// the stateful loop re-prompts a model that answers the wrong way either
+	// way. A design that refused instead would make every local-model agent
+	// unrunnable to buy a guarantee it never had.
+	SupportsToolChoice bool
+
 	// SupportsEffort signals that the driver translates Request.Effort
 	// into a native wire parameter when set. Anthropic maps it to a
 	// `thinking.budget_tokens` block; OpenAI to `reasoning_effort`;
@@ -159,6 +174,44 @@ type Capabilities struct {
 	MetadataViaInput bool
 }
 
+// ToolChoice is the provider-neutral form of "you must call a tool".
+//
+// Deliberately not a string: the named form carries a second field, and a
+// stringly-typed "tool:emit_state" would put parsing in four drivers instead of
+// the one place that builds it.
+type ToolChoice struct {
+	// Mode is "" (= auto, the zero value and today's behaviour), "auto",
+	// "none", "required" (any tool, the model picks) or "tool" (a named one).
+	Mode string
+	// Name is the tool that must be called. Only meaningful with Mode "tool";
+	// a driver ignores it otherwise rather than guessing.
+	Name string
+}
+
+// ToolChoice modes. This is loomcycle's own vocabulary, not any provider's —
+// each driver maps it, and two providers spell the same intent differently
+// ("required" against {"type":"any"}).
+const (
+	ToolChoiceAuto     = "auto"
+	ToolChoiceNone     = "none"
+	ToolChoiceRequired = "required"
+	ToolChoiceTool     = "tool"
+)
+
+// Forces reports whether this choice constrains the model at all. auto and the
+// zero value do not, so a driver skips the whole mapping for them and stays
+// byte-identical to its pre-RFC-DG wire body.
+func (tc ToolChoice) Forces() bool {
+	switch tc.Mode {
+	case ToolChoiceNone, ToolChoiceRequired:
+		return true
+	case ToolChoiceTool:
+		return tc.Name != ""
+	default:
+		return false
+	}
+}
+
 // Request is one round-trip to the provider. The loop builds a fresh Request
 // for each iteration, appending the previous tool_result(s) to Messages.
 type Request struct {
@@ -200,6 +253,16 @@ type Request struct {
 	// translation lands in PR 3 of the resolve-matrix series; PR 1
 	// adds the field but drivers ignore it.
 	Effort string `json:"-"`
+
+	// ToolChoice constrains WHETHER and WHICH tool the model may call (RFC DG).
+	// The zero value is auto — today's behaviour, byte-identical — so an
+	// unopted request is unchanged on every driver.
+	//
+	// Each driver translates it into its own shape (Anthropic tool_choice,
+	// OpenAI tool_choice, Gemini toolConfig.functionCallingConfig) and a driver
+	// with no such parameter DROPS it. Dropping is the documented outcome, not
+	// a failure: see Capabilities.SupportsToolChoice.
+	ToolChoice ToolChoice `json:"-"`
 
 	// OnEvent, when set, is called for events that occur BEFORE the
 	// response channel exists — most importantly, EventRetry frames

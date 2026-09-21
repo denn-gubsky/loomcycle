@@ -349,7 +349,17 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		msgs := []providers.Message{statefulUserMessage(sigma, obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
-			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort}
+			// RFC DG: say on the WIRE what the system prompt has only ever
+			// asked for. Narrowing `tools` to emit_state was never enough —
+			// the run that produced this RFC had exactly one tool offered and
+			// replied in prose anyway.
+			//
+			// A provider without the parameter DROPS it and the step proceeds
+			// unforced, which is why this is an optimisation and not a
+			// precondition: the contract still lives in the prompt, and a
+			// model that ignores it is still re-prompted rather than fatal.
+			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort,
+				ToolChoice: providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}}
 			applyStatefulSampling(&req, opts.Sampling)
 			call, err := callForEmitState(ctx, opts.Provider, req)
 			input, usage := call.input, call.usage
@@ -383,8 +393,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				if onInvalid == "fail" || attempt >= maxRetries {
 					msg := fmt.Sprintf("stateful step failed: model did not call emit_state after %d attempt(s) — %s. "+
 						"context.mode: stateful requires a model that reliably emits tool calls; "+
-						"raise context.max_patch_retries, or move this agent to a model that does",
-						attempt+1, producedInstead(call))
+						"raise context.max_patch_retries, or move this agent to a model that does%s",
+						attempt+1, producedInstead(call), unforcedNote(opts))
 					emit(providers.Event{Type: providers.EventError, Error: msg})
 					return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, errors.New(msg)
 				}
@@ -539,4 +549,21 @@ func schemasDiffer(a, b map[string]any) bool {
 		return true
 	}
 	return string(ab) != string(bb)
+}
+
+// unforcedNote says whether the run could even ASK for the tool on the wire.
+//
+// ⚠️ THE TWO FAILURES READ IDENTICALLY WITHOUT IT, and they call for opposite
+// next moves. A model that ignored a protocol-level constraint needs replacing;
+// one that was never given the constraint may be fine on a provider that has
+// one. Ollama has no tool_choice on /api/chat, so a forced request there
+// degrades rather than being refused (RFC DG) — which is the right call, and
+// exactly the kind of silent degradation this codebase keeps having to make
+// visible after the fact.
+func unforcedNote(opts RunOptions) string {
+	if opts.Provider == nil || opts.Provider.Capabilities().SupportsToolChoice {
+		return ""
+	}
+	return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
+		"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
 }

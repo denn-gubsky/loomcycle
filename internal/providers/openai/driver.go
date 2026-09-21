@@ -106,6 +106,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// models will see the API's 400 surface clearly.
 		SupportsEffort: true,
 		SupportsVision: true, // per-model refined by openaiSupportsVision
+		// Chat Completions has carried tool_choice since function calling
+		// shipped; the wrapper drivers (deepseek, vllm, llamacpp) inherit this
+		// through inner.Capabilities() and may override it via capsPatch.
+		SupportsToolChoice: true,
 	})
 }
 
@@ -215,10 +219,14 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 //     into separate role:"tool" messages.
 
 type wireRequest struct {
-	Model     string        `json:"model"`
-	Messages  []wireMessage `json:"messages"`
-	Tools     []wireTool    `json:"tools,omitempty"`
-	MaxTokens int           `json:"max_tokens,omitempty"`
+	Model    string        `json:"model"`
+	Messages []wireMessage `json:"messages"`
+	Tools    []wireTool    `json:"tools,omitempty"`
+	// ToolChoice is "none" / "auto" / "required" or the named-function object
+	// (RFC DG); `any` typed so one field carries both wire forms. Omitted
+	// unless the caller asked, so an unopted body is byte-identical.
+	ToolChoice any `json:"tool_choice,omitempty"`
+	MaxTokens  int `json:"max_tokens,omitempty"`
 	// MaxCompletionTokens is the reasoning-model spelling of the output cap.
 	// OpenAI's o-series / GPT-5 reasoning models REJECT max_tokens with a 400
 	// ("Unsupported parameter: max_tokens … use max_completion_tokens instead")
@@ -405,6 +413,7 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 			},
 		})
 	}
+	w.ToolChoice = openaiToolChoice(req.ToolChoice)
 
 	return json.Marshal(w)
 }
@@ -872,4 +881,31 @@ func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
 		out = append(out, m.ID)
 	}
 	return out, nil
+}
+
+// openaiToolChoice maps loomcycle's neutral vocabulary onto Chat Completions.
+// nil = send nothing, which is the API's own default ("auto" with tools).
+//
+// ⚠️ THE NAMED FORM IS THE NESTED ONE. Chat Completions takes
+// {"type":"function","function":{"name":X}}; the flat {"type":"function",
+// "name":X} belongs to the Responses API, and this driver posts to
+// /chat/completions. Sending the wrong one is accepted as a no-op by some
+// gateways and rejected by others, which is the worst of both.
+func openaiToolChoice(tc providers.ToolChoice) any {
+	switch tc.Mode {
+	case providers.ToolChoiceNone:
+		return "none"
+	case providers.ToolChoiceRequired:
+		return "required"
+	case providers.ToolChoiceTool:
+		if tc.Name == "" {
+			return nil
+		}
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": tc.Name},
+		}
+	default:
+		return nil
+	}
 }
