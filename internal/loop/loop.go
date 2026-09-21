@@ -2141,6 +2141,26 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	preambleTokens := estimatePreambleTokens(system, toolSpecs)
 	lastCtxTokens := estimatePromptTokens(preambleTokens, messages)
 	lastWindow := effectiveWindow(0, opts)
+	// ⚠️ THE SEED IS A GUESS, AND A GUESS MUST NOT BE REPORTED AS A FINDING.
+	// Until a turn returns, lastCtxTokens is chars/4 over content no tokenizer
+	// has seen and lastWindow is the static capability a driver may still
+	// revise (Ollama reads the model's actually-loaded window from /api/ps
+	// only after a call). The seed exists so a one-iteration continuation can
+	// still DISTIL before it sends an oversized prompt; arming the run's
+	// operator-facing REPORTS from it was collateral.
+	//
+	// It matters because the seed counts the preamble, and a preamble is not a
+	// short history: it is fixed and irreducible, so on an agent whose system
+	// prompt and tool catalogue are most of a small window it sits above the
+	// threshold on iteration ZERO, before the conversation exists. The run then
+	// told its operator "keep_last_n 6 pins all 1 message(s)" at severity
+	// warning, and "88% of the window is in use and distillation did not shrink
+	// it" — three alarms, on every run, about a request that had not been sent.
+	//
+	// So: the gate still OPENS on the seed (that protection is the point of
+	// seeding it), and distillation still runs. Only the reporting waits for a
+	// number the provider actually returned.
+	footprintMeasured := false
 	lastCompactIter := -2
 	// Distillation declines dedup on (mode, reason) for the life of the run,
 	// mirroring the server's seenLimit set.
@@ -2172,6 +2192,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	seenExhausted := map[int]bool{}
 	distillEmit := func(ev providers.Event) {
 		if ev.Type == providers.EventContextDistillDeclined && ev.ContextDistill != nil {
+			if !footprintMeasured {
+				// Nothing has been measured yet — see footprintMeasured. The
+				// decline is real (the distillation genuinely did not run), but
+				// the CONDITION it describes is an estimate of a request the
+				// provider has never seen, and the next iteration has real
+				// numbers to report from. Dropped before the verdict list and
+				// before lastDistill, so op=self does not carry it either.
+				return
+			}
 			// Keep this iteration's verdict for the exhaustion report. Cleared
 			// at the top of each gate opening, so the report carries what was
 			// tried THIS time rather than an accumulation across the run.
@@ -2450,7 +2479,8 @@ outerLoop:
 			// where something should have. Say so — this is the run heading for
 			// the provider's limit, and it is the one condition an operator must
 			// never have to infer from an absence of events.
-			if !reclaimed && aboveBackstop(opts.Compaction, lastCtxTokens, lastWindow) {
+			if !reclaimed && footprintMeasured &&
+				aboveBackstop(opts.Compaction, lastCtxTokens, lastWindow) {
 				reportExhausted(distillEmit, seenExhausted, opts.Compaction,
 					lastCtxTokens, lastWindow, iterVerdicts)
 			}
@@ -2857,6 +2887,11 @@ outerLoop:
 			// compaction the next request shrinks, so this self-debounces.
 			lastCtxTokens = iterUsage.InputTokens + iterUsage.CacheReadTokens + iterUsage.CacheCreationTokens
 			lastWindow = iterUsage.MaxContextTokens
+			// Set BESIDE the values it qualifies, not derived from a separate
+			// flag: the question the reports ask is "did a provider report
+			// this footprint", and the only honest answer is at the assignment
+			// that made it so.
+			footprintMeasured = true
 		}
 
 		stopReason = iterStop
