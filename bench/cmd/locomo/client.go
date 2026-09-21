@@ -154,6 +154,9 @@ type searchResponse struct {
 		Score     float64 `json:"score"`
 		RankScore float64 `json:"rank_score"`
 		Kind      string  `json:"kind"`
+		// Value is the stored row. Decoded only so the dump can carry the retrieved
+		// material for a second decider to read; the metrics axis ignores it.
+		Value json.RawMessage `json:"value"`
 	} `json:"entries"`
 	QueryEmbeddingDim int  `json:"query_embedding_dim"`
 	Truncated         bool `json:"truncated"`
