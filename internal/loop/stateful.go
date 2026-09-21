@@ -349,7 +349,17 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		msgs := []providers.Message{statefulUserMessage(sigma, obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
-			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort}
+			// RFC DG: say on the WIRE what the system prompt has only ever
+			// asked for. Narrowing `tools` to emit_state was never enough —
+			// the run that produced this RFC had exactly one tool offered and
+			// replied in prose anyway.
+			//
+			// A provider without the parameter DROPS it and the step proceeds
+			// unforced, which is why this is an optimisation and not a
+			// precondition: the contract still lives in the prompt, and a
+			// model that ignores it is still re-prompted rather than fatal.
+			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort,
+				ToolChoice: providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}}
 			applyStatefulSampling(&req, opts.Sampling)
 			call, err := callForEmitState(ctx, opts.Provider, req)
 			input, usage := call.input, call.usage

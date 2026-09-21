@@ -96,6 +96,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		SupportsThinking:  true,
 		SupportsEffort:    true,
 		SupportsVision:    true, // per-model refined by anthropicSupportsVision
+		// Per-REQUEST refined in buildRequestBody: a forced choice is rejected
+		// when an extended-thinking block rides along, which depends on the
+		// call's effort hint and so cannot be answered here.
+		SupportsToolChoice: true,
 	})
 }
 
@@ -214,6 +218,35 @@ type wireRequest struct {
 	// the field is nil it's omitted from the wire — non-reasoning
 	// models would 400 on its presence.
 	Thinking *wireThinking `json:"thinking,omitempty"`
+	// ToolChoice constrains which tool the model may call (RFC DG). Omitted
+	// unless the caller asked for it, so an unopted body is byte-identical.
+	ToolChoice *wireToolChoice `json:"tool_choice,omitempty"`
+}
+
+// wireToolChoice is Anthropic's shape: {"type":"auto"|"any"|"tool"|"none"}
+// with `name` only on "tool".
+type wireToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+}
+
+// anthropicToolChoice maps loomcycle's neutral vocabulary onto Anthropic's.
+// nil = send nothing, which is the API's own default of "auto" when tools are
+// present and "none" when they are not.
+func anthropicToolChoice(tc providers.ToolChoice) *wireToolChoice {
+	switch tc.Mode {
+	case providers.ToolChoiceNone:
+		return &wireToolChoice{Type: "none"}
+	case providers.ToolChoiceRequired:
+		return &wireToolChoice{Type: "any"}
+	case providers.ToolChoiceTool:
+		if tc.Name == "" {
+			return nil
+		}
+		return &wireToolChoice{Type: "tool", Name: tc.Name}
+	default:
+		return nil
+	}
 }
 
 // wireThinking is Anthropic's extended-thinking opt-in. The API spec
@@ -336,6 +369,26 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 			"set effort OR temperature, not both", req.Model)
 		w.Temperature = nil
 		w.TopP = nil
+	}
+
+	// RFC DG. Mapped here rather than at the call site so the "auto" case never
+	// touches the body at all.
+	w.ToolChoice = anthropicToolChoice(req.ToolChoice)
+	// ⚠️ A FORCED CHOICE AND MANUAL EXTENDED THINKING CANNOT BOTH BE SENT.
+	// Anthropic returns 400 for tool_choice any/tool when thinking is enabled,
+	// and this driver attaches thinking whenever the agent declared an effort
+	// hint on a reasoning-capable model — so the pair is reachable from
+	// ordinary configuration, not just a mistake.
+	//
+	// Thinking wins, for the same reason it wins over temperature above: the
+	// operator opted into reasoning explicitly, while a forced choice is an
+	// optimisation of a contract the prompt already carries. Dropped and
+	// logged rather than errored, so an effort-bearing agent keeps running.
+	// "none" survives — the API accepts it under thinking.
+	if w.Thinking != nil && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
+		log.Printf("anthropic: dropped tool_choice %q — incompatible with extended thinking (effort) on model %q; "+
+			"the model is asked for the tool in the prompt instead", w.ToolChoice.Type, req.Model)
+		w.ToolChoice = nil
 	}
 
 	for _, sb := range req.System {

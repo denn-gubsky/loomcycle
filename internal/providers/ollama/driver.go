@@ -421,7 +421,20 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// every consumer, which is the over-claim in its worst form: no gauge,
 		// and no compaction ceiling at all.
 		MaxContextTokens: d.staticContextWindow(),
-		SupportsThinking: true,
+		// ⚠️ EXPLICIT FALSE, NOT AN OMISSION (RFC DG). Ollama has no
+		// tool_choice on /api/chat and none on its OpenAI-compatible shim
+		// either, so there is nothing to send — this is a property of the
+		// protocol, not a gap in this driver.
+		//
+		// The caller is expected to proceed anyway. The one lever that does
+		// exist here — narrowing `tools` to the single tool you want — is
+		// already how the stateful loop calls this driver, and the model still
+		// answered in prose, which is what motivated the RFC. Constrained
+		// decoding via the `format` field is the real answer and is a separate
+		// phase (and is unavailable on the hosted "ollama" registration, which
+		// does not support structured outputs).
+		SupportsToolChoice: false,
+		SupportsThinking:   true,
 		// The effort hint drives Ollama's top-level `think` flag (see
 		// buildRequestBody): medium/high enable a reasoning model's
 		// thinking trace, low disables it, empty leaves the model default.

@@ -121,6 +121,8 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		NativePromptCache: false,
 		ParallelToolCalls: true,
 		Streaming:         true,
+		// RFC DG: toolConfig.functionCallingConfig carries the constraint.
+		SupportsToolChoice: true,
 		// gemini-2.5-pro tops out at 2M; gemini-2.5-flash at 1M.
 		// (gemini-2.0-flash was retired by Google 2026-05 — no
 		// longer available to new users; replaced by 2.5-flash.)
@@ -224,6 +226,45 @@ type wireRequest struct {
 	Tools             []wireTool     `json:"tools,omitempty"`
 	SystemInstruction *wireContent   `json:"systemInstruction,omitempty"`
 	GenerationConfig  *wireGenConfig `json:"generationConfig,omitempty"`
+	// ToolConfig constrains which function the model may call (RFC DG).
+	// Omitted unless the caller asked, so an unopted body is byte-identical.
+	ToolConfig *wireToolConfig `json:"toolConfig,omitempty"`
+}
+
+// wireToolConfig is Gemini's shape — the constraint lives in its own object
+// rather than beside `tools`, and the named form is a LIST of allowed names
+// rather than a single one.
+type wireToolConfig struct {
+	FunctionCallingConfig wireFunctionCallingConfig `json:"functionCallingConfig"`
+}
+
+type wireFunctionCallingConfig struct {
+	Mode                 string   `json:"mode"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+}
+
+// geminiToolConfig maps loomcycle's neutral vocabulary onto Gemini's.
+// nil = send nothing, which is the API's own AUTO default.
+//
+// A single forced tool is expressed as ANY narrowed by allowedFunctionNames:
+// Gemini has no "call exactly this one" mode, and a one-element allow-list is
+// the documented equivalent.
+func geminiToolConfig(tc providers.ToolChoice) *wireToolConfig {
+	switch tc.Mode {
+	case providers.ToolChoiceNone:
+		return &wireToolConfig{FunctionCallingConfig: wireFunctionCallingConfig{Mode: "NONE"}}
+	case providers.ToolChoiceRequired:
+		return &wireToolConfig{FunctionCallingConfig: wireFunctionCallingConfig{Mode: "ANY"}}
+	case providers.ToolChoiceTool:
+		if tc.Name == "" {
+			return nil
+		}
+		return &wireToolConfig{FunctionCallingConfig: wireFunctionCallingConfig{
+			Mode: "ANY", AllowedFunctionNames: []string{tc.Name},
+		}}
+	default:
+		return nil
+	}
 }
 
 type wireContent struct {
@@ -339,6 +380,7 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		}
 		w.Tools = []wireTool{{FunctionDeclarations: decls}}
 	}
+	w.ToolConfig = geminiToolConfig(req.ToolChoice)
 
 	if req.MaxTokens > 0 || req.Temperature != nil || req.Effort != "" ||
 		req.TopP != nil || req.TopK != nil || req.Seed != nil || len(req.Stop) > 0 {

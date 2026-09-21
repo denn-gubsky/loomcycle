@@ -579,3 +579,54 @@ func TestRun_Stateful_AThinkingOnlyReplyIsNotReplayedAsAnEmptyTurn(t *testing.T)
 		t.Errorf("a thinking-only reply reads as silence:\n%s", errText)
 	}
 }
+
+// toolChoiceRecordingProvider captures what the loop asked for on the wire.
+type toolChoiceRecordingProvider struct {
+	mu      sync.Mutex
+	choices []providers.ToolChoice
+	script  string
+}
+
+func (p *toolChoiceRecordingProvider) ID() string                                   { return "tc-rec" }
+func (p *toolChoiceRecordingProvider) Probe(context.Context) error                  { return nil }
+func (p *toolChoiceRecordingProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *toolChoiceRecordingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, SupportsToolChoice: true}
+}
+func (p *toolChoiceRecordingProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.choices = append(p.choices, req.ToolChoice)
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall,
+		ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName, Input: json.RawMessage(p.script)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+
+// THE CROSSING (RFC DG). The drivers' own tests prove each maps ToolChoice onto
+// its wire; this proves the stateful loop actually ASKS. A mapping nothing sets
+// is as inert as no mapping at all, and that gap is invisible from either side.
+func TestRun_Stateful_AsksForTheEmitStateToolOnTheWire(t *testing.T) {
+	prov := &toolChoiceRecordingProvider{script: `{"patch":{"n":1},"done":true,"final":"ok"}`}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: []PromptSegment{{Role: "user",
+			Content: []PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		Context: statefulCtx(nil),
+		OnEvent: func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.choices) == 0 {
+		t.Fatal("provider was never called")
+	}
+	want := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}
+	if prov.choices[0] != want {
+		t.Errorf("first step asked for %+v, want %+v — the emit_state contract is still "+
+			"prompt-only on the wire", prov.choices[0], want)
+	}
+}
