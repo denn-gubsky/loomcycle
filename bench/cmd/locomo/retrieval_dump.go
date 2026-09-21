@@ -58,8 +58,19 @@ type retrievalDumpRow struct {
 	PplxRaw float64 `json:"pplx_raw"`
 	PplxT05 float64 `json:"pplx_t05"`
 	PplxT01 float64 `json:"pplx_t01"`
-	Error   string  `json:"error,omitempty"`
+	// Texts is the retrieved material itself, capped per turn. Carried so a SECOND
+	// decider — a model asked whether this material answers the question — can be run
+	// off the dump instead of re-ingesting 130 instances to ask it. Empty unless
+	// -retrieval-dump-texts, because the scores are what the shape analysis needs and
+	// the bodies multiply the file by an order of magnitude.
+	Texts []string `json:"texts,omitempty"`
+	Error string   `json:"error,omitempty"`
 }
+
+// dumpTexts is set by -retrieval-dump-texts. A package-level flag value rather than a
+// parameter threaded through dumpRetrieval's signature: the dump is one call site and
+// the alternative is a signature nobody else needs.
+var dumpTexts bool
 
 // perplexity is exp(entropy) of the score vector read as a distribution — the
 // "homogeneity" the hypothesis is about, in the units it is usually stated in: k for a
@@ -146,6 +157,11 @@ func dumpRetrieval(ctx context.Context, rest *Client, userID string, conv Conver
 				row.Scores = append(row.Scores, e.Score)
 				row.Ranks = append(row.Ranks, e.RankScore)
 			}
+			if dumpTexts {
+				for _, e := range res.Entries {
+					row.Texts = append(row.Texts, trimForDump(string(e.Value)))
+				}
+			}
 			row.Found = len(row.Scores)
 			if row.Found > 0 {
 				sorted := append([]float64(nil), row.Scores...)
@@ -168,6 +184,16 @@ func dumpRetrieval(ctx context.Context, rest *Client, userID string, conv Conver
 	}
 	fmt.Fprintf(stdout, "  retrieval-dump: measured %d question(s)\n", measured)
 	return measured, nil
+}
+
+// trimForDump bounds one turn in the dump. The verifier reads these, and a model asked
+// to judge sufficiency over unbounded material judges the truncation instead.
+func trimForDump(s string) string {
+	const max = 1200
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 // openRetrievalDump opens the dump file for append across instances, since the answer
