@@ -2,11 +2,14 @@
 # Two general-purpose conversational agents for direct chatting in the
 # interactive /run terminal:
 #   chat/medium — tier:middle (routes per your provider_priority; cloud-capable)
-#   chat/local  — pinned to the local middle model (ollama-local); never leaves the box
+#   chat/local  — ⚠️ NAME IS HISTORICAL. Was pinned to ollama-local; now routed to
+#                 the `high` tier (cloud). Uses STRUCTURAL compaction (mode:
+#                 stateful), which means the /run terminal cannot steer or park
+#                 it — see the agent block.
 #
 # Selected via `LOOMCYCLE_PRESETS=…,chat`. This bundle carries NO provider matrix:
-# `chat/medium` needs a `middle` tier and `chat/local` needs the `local-medium` alias from
-# another layer — select `base` alongside it (or supply your own).
+# `chat/medium` needs a `middle` tier and `chat/local` now needs a `high` tier — select
+# `base` alongside it (or supply your own).
 #
 # Requirements for the full toolset:
 #   - File/shell tools (Read/Write/Edit/Grep/Glob/Bash/Bashbox) need a read-write
@@ -17,8 +20,9 @@
 #   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
 #   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
 #   - Bashbox needs LOOMCYCLE_BASHBOX_ENABLED=1; Bash needs LOOMCYCLE_BASH_ENABLED=1.
-#   - chat/local's large context window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
-#     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml.
+#   - chat/local-small's local window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
+#     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml. chat/local
+#     no longer uses it: it is on a cloud tier.
 #
 # ORGANISATION KNOWLEDGE (tenant scope) is deliberately NOT granted here.
 # These agents hold `memory_scopes: [user]`, so they read and write one user's
@@ -124,10 +128,17 @@ agents:
       - When you act with a tool, briefly say what you did and what you found.
 
   chat/local:
-    model: local-medium                     # → ollama-local; local-only, no cloud fallback
+    # ⚠️ NO LONGER LOCAL-ONLY. This was `model: local-medium` (ollama-local —
+    # nothing left the box). `tier: high` routes to cloud-kimi / gpt-max / opus,
+    # so every prompt and every tool result this agent handles goes to a cloud
+    # provider. The NAME is now historical; see the bundle header.
+    #
+    # What bought it: a local thinking model could not produce a context summary
+    # within its budget, so distillation declined on every attempt and the
+    # window filled to the top. A frontier model summarises reliably.
+    tier: high
     effort: medium
-    # max_tokens OMITTED — ollama-local generates until the context window fills
-    # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
+    # max_tokens OMITTED — each provider applies its own default.
     unbounded_iterations: true
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption]
     memory_scopes: [user]
@@ -135,35 +146,63 @@ agents:
     sampling:
       temperature: 0.7
     context:
-      # On-the-fly context distillation, tier-routed. `auto` lets the RUNTIME
-      # pick: a frontier API gets L2 stateful (the conversation is replaced by a
-      # structured JSON state Σ), a local backend gets L1 recap.
+      # STRUCTURAL compaction. The conversation is replaced by a structured JSON
+      # state Σ: each step the model emits a patch, Σ is merged, and only
+      # (Σ, latest observation) is fed back. The transcript never accumulates.
       #
-      # These agents are INTERACTIVE — unbounded_iterations, park at end_turn,
-      # steered from the /run terminal — and auto never routes an interactive run
-      # to stateful, because that loop has no steering or parking wired yet. So
-      # today this resolves to recap for all three.
+      # ⚠️ THIS BREAKS THE /run TERMINAL FOR THIS AGENT. The stateful loop has
+      # no steering and no end_turn parking — `runStateful` returns before that
+      # machinery exists and never reads a SteerQueue. An operator cannot steer
+      # this agent mid-run or continue a parked session from the terminal.
+      # `unbounded_iterations` above is inert here too: max_iterations bounds
+      # the step loop instead.
       #
-      # It is written as `auto` rather than `recap` on purpose: the day steer and
-      # park compose onto the stateful loop, these agents pick up the structured-JSON
-      # state with no bundle edit. Pinning `recap` would mean remembering to revisit.
-      mode: auto
-      # Recap keeps the preamble + the last N messages VERBATIM (snapped to a
-      # clean user-turn boundary, so a tool_use/tool_result pair is never split)
-      # and replaces the evicted assistant reasoning with a running note.
-      keep_last_n: 6
-      reasoning: recap
-      # Lower than chat/medium's 80: a local window is smaller and fills sooner,
-      # matching this agent's compaction trigger below.
-      autorecap_at_pct: 70
+      # Chosen deliberately with that cost accepted. The day steer and park
+      # compose onto the stateful loop, this becomes the better mode outright.
+      mode: stateful
+      # ⚠️ RETENTION CLASSES ARE WHAT MAKE Σ BOUNDED. Σ accumulates — a merge
+      # removes a key only when the model emits null for it — and the whole of
+      # it is serialised into the prompt every step. Eviction is opt-in PER KEY
+      # and anything undeclared defaults to `core` (never evicted), so a schema
+      # without these gets no relief from Σ growth and reports exhaustion
+      # instead.
+      #
+      #   core     the task's spine — never dropped
+      #   derived  recomputable from core + observations
+      #   scratch  working notes — dropped first
+      #
+      # Evicted entries are banked to memory BEFORE they go, so a later recall
+      # can fetch back what structural compaction discarded.
+      state_schema:
+        type: object
+        properties:
+          goal:      { type: string, x-retention: core }
+          decisions: { type: string, x-retention: core }
+          facts:     { type: string, x-retention: derived }
+          progress:  { type: string, x-retention: derived }
+          notes:     { type: string, x-retention: scratch }
+          scratch:   { type: string, x-retention: scratch }
+      # A patch that fails the schema is retried with the reason shown to the
+      # model; `fail` would end the run on one malformed emit.
+      on_invalid_patch: retry
+      max_patch_retries: 2
+      # Stateful is the most lossy mode — only Σ and the latest observation are
+      # fed — so harvest every evicted step and every evicted Σ entry.
+      harvest_to_memory: true
+      recall: true
     compaction:
+      # The BACKSTOP threshold, live in every mode now rather than append only.
+      # In stateful it triggers Σ EVICTION rather than summarisation.
       enabled: true
       memory_flush: true                    # RFC BL P3 — see chat/medium above
       autocompact_at_pct: 70
     system_prompt: |
-      You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but
-      you run entirely on the operator's LOCAL model (ollama-local) — nothing you
-      process leaves the box. Favor this for private or offline work.
+      You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT.
+
+      ⚠️ Despite the name, you no longer run locally: you are routed to the
+      `high` tier, which is a cloud provider. Do NOT tell a user that their
+      data stays on their machine, and do not treat material as private on
+      that basis.
 
       {{memory:tenant_info}}
 
@@ -188,8 +227,10 @@ agents:
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
       - Ask a clarifying question when the request is ambiguous.
-      - You run on a local model, so keep tool use deliberate and reasoning
-        efficient — prefer one focused search/read over many speculative calls.
+      - You carry a structured state between steps rather than a transcript.
+        Put durable things in `goal`/`decisions`, working notes in
+        `notes`/`scratch` — the latter are dropped first when the state grows
+        too large, so anything you will need later does not belong there.
 
   chat/local-small:
     model: local-small                     # → ollama-local; local-only, no cloud fallback

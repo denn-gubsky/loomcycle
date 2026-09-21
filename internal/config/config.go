@@ -6327,23 +6327,26 @@ func InertContextSettings(a AgentDef) []InertContextSetting {
 	}
 	var out []InertContextSetting
 
-	// The threshold that fired nothing on the session that motivated this: an
-	// operator set compaction.autocompact_at_pct: 70 and watched the window
-	// fill, because the live knob for their mode was the other one.
-	if a.Compaction != nil && a.Compaction.AutoCompactAtPct != nil {
-		fix := "context.autorecap_at_pct"
-		if mode == ContextModeStateful {
-			// Stateful distils per step by construction; there is no threshold
-			// to move, and pointing at one would be a false lead.
-			fix = ""
-		}
-		out = append(out, InertContextSetting{
-			Setting: "compaction.autocompact_at_pct",
-			Reason: fmt.Sprintf("context.mode is %q, and the compaction threshold is only consulted in append mode"+
-				" — every other mode distils by its own path", mode),
-			Fix: fix,
-		})
-	}
+	// ⚠️ THE `autocompact_at_pct` ADVISORY IS GONE, and its removal is the
+	// point. It used to say the threshold "does nothing" outside append mode.
+	// That was true when compaction was reachable only from append; it stopped
+	// being true when compaction became the BACKSTOP for every mode.
+	//
+	// Leaving it would have been the exact defect this advisory channel exists
+	// to remove — configuration whose stated effect is not its real one — and
+	// worse than the original silence, because it tells an operator to delete a
+	// setting that is now load-bearing. In stateful it is the threshold that
+	// drives Σ eviction.
+	//
+	// ⚠️ AND NOTHING REPLACES IT. The obvious candidate was an ordering
+	// warning: a backstop at or below the primary threshold sounds like it
+	// would pre-empt the cheaper path. It does not. The tiers are tried IN
+	// ORDER within a single gate opening — the mode's own distiller runs first
+	// and compaction only sees what it declined — so the thresholds decide WHEN
+	// the gate opens, never WHICH tier goes first. The ordering is harmless,
+	// and the defaults (80/80) are equal, so such a warning would have fired on
+	// every recap agent that never configured anything. That is the noise
+	// failure this channel has already had to be rescued from twice.
 
 	// memory_flush installs the banking callback but the recap and stateful
 	// paths both gate the actual bank on context.harvest_to_memory, so the flag
