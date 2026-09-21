@@ -56,7 +56,7 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	name := fs.String("name", "", "token name (required)")
 	tenant := fs.String("tenant", "", "authoritative tenant_id (required)")
 	subject := fs.String("subject", "", "authoritative subject (default tok-<name>)")
-	scopes := fs.String("scopes", "", "comma-separated scopes (default substrate:admin)")
+	scopes := fs.String("scopes", "", "comma-separated scopes (required unless --copy-from-env; use substrate:admin for a full-power token)")
 	copyFromEnv := fs.Bool("copy-from-env", false, "migration: bind the existing $LOOMCYCLE_AUTH_TOKEN instead of minting (zero-disruption upgrade)")
 	httpTimeout := fs.Duration("http-timeout", 15*time.Second, "client-side HTTP request timeout")
 	if err := fs.Parse(args); err != nil {
@@ -72,6 +72,22 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *scopes != "" {
 		payload["scopes"] = splitCSV(*scopes)
+	} else if !*copyFromEnv {
+		// ⚠️ THE SERVER NO LONGER DEFAULTS AN OMITTED LIST TO substrate:admin,
+		// because that made the failure mode of every mistyped key a
+		// maximum-privilege token — one of which also disables the legacy
+		// LOOMCYCLE_AUTH_TOKEN login and locks the deployment out.
+		//
+		// Refused HERE rather than relayed, so the operator reads the fix in
+		// the terminal they typed into instead of a server error about a JSON
+		// field they never wrote. --copy-from-env is exempt: binding the
+		// existing admin token already says which scope it carries.
+		fmt.Fprintln(stderr, "loomcycle: error: --scopes is required (it no longer defaults to "+
+			"substrate:admin — an omitted list used to mint a full-power token by accident)")
+		fmt.Fprintln(stderr, "  a tenant operator:  --scopes substrate:tenant")
+		fmt.Fprintln(stderr, "  a full-power token: --scopes substrate:admin")
+		fmt.Fprintln(stderr, "  ⚠️ minting substrate:admin disables the legacy LOOMCYCLE_AUTH_TOKEN login")
+		return 2
 	}
 	if *copyFromEnv {
 		env := getenvDefault("LOOMCYCLE_AUTH_TOKEN", "")
