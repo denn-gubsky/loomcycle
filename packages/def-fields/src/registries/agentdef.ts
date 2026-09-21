@@ -135,7 +135,7 @@ export const agentDefRegistry: DefRegistry = {
         { key: "keep_last_n", label: "Keep last N", group: "Context & compaction", type: "int", min: 0, hint: "How many recent turns stay verbatim when distilling." },
         { key: "reasoning", label: "Reasoning policy", group: "Context & compaction", type: "enum", options: ["recap", "drop", "keep"], hint: "What happens to evicted reasoning: fold into a recap, drop it, or keep it." },
         { key: "recap_max_chars", label: "Recap max chars", group: "Context & compaction", type: "int", min: 0, hint: "Upper bound on the running recap note." },
-        { key: "model", label: "Recap model", group: "Context & compaction", type: "string", hint: "Run the recap call on a different model from the same provider — e.g. a cheap non-thinking one. Blank = the run's own model." },
+        { key: "model", label: "Recap model", group: "Context & compaction", type: "text", hint: "Run the recap call on a different model from the same provider — e.g. a cheap non-thinking one. Blank = the run's own model." },
         { key: "autorecap_at_pct", label: "Auto-recap at %", group: "Context & compaction", type: "int", min: 50, max: 95, hint: "Distil once the context footprint crosses this share of the window." },
         { key: "recall", label: "Recall", group: "Context & compaction", type: "bool", hint: "Index every evicted span so the agent can fetch a dropped detail back by a free-text Recall. Grants the Recall tool automatically." },
         { key: "harvest_to_memory", label: "Harvest to memory", group: "Context & compaction", type: "bool", hint: "Bank each evicted span for the consolidator, so facts learned mid-run survive into later runs. Needs `user` in memory scopes." },
