@@ -1091,7 +1091,7 @@ func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *tes
 		t.Fatal("the live run did not finish after its queue closed")
 	}
 
-	// Route 2: the resume. InitialState is what statefulSigmaFromTranscript
+	// Route 2: the resume. InitialState is what statefulSeedFromEvents
 	// recovers from the last context_state marker.
 	resumed := &sigmaCapturingProvider{scripts: []string{`{"patch":{},"done":true,"final":"resumed"}`}}
 	if _, err := Run(context.Background(), RunOptions{

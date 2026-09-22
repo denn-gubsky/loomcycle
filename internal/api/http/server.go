@@ -2509,11 +2509,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Transcript replay (continuation only) ----
+	var sessionEvents []store.Event
 	if isContinuation {
 		transcript, err := s.store.GetTranscript(ctx, in.SessionID)
 		if err != nil {
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}
+		sessionEvents = transcript
 		priorMessages = replayTranscript(transcript)
 	}
 
@@ -2861,6 +2863,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// uncapped/noop slot, so uncapped runs stay zero-overhead.
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot, runRouting)
+	seed, seeded := statefulContinuationSeed(sessionEvents, mergedContext, provider.Capabilities().Local, in.Interactive, segments)
+	if seeded {
+		priorMessages = nil
+	}
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -2868,6 +2874,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Dispatcher:          dispatcher,
 		Segments:            injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
 		PriorMessages:       priorMessages,
+		InitialState:        seed.Sigma,
+		InitialObservation:  seed.Observation,
 		PauseGate:           gate,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
@@ -5284,6 +5292,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// for uncapped/noop slots.
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot, runRouting)
+	seed, seeded := statefulContinuationSeed(transcript, runCfg.Context, provider.Capabilities().Local, body.Interactive, segments)
+	if seeded {
+		priorMessages = nil
+	}
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:                provider,
 		Model:                   model,
@@ -5291,6 +5303,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Dispatcher:              dispatcher,
 		Segments:                injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
 		PriorMessages:           priorMessages,
+		InitialState:            seed.Sigma,
+		InitialObservation:      seed.Observation,
 		PauseGate:               gate,
 		OnEvent:                 emit,
 		OnHeartbeat:             heartbeat,
@@ -5343,39 +5357,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 //
 // Each run boundary (new user_input event) marks the end of the previous
 // assistant/user-tool-result turn pair.
-// statefulSigmaFromTranscript recovers a stateful run's Σ from its transcript:
-// the State carried on the LAST context_state marker (RFC DH P2).
-//
-// ⚠️ THIS MAKES context_state LOAD-BEARING, and its own doc comment calls it
-// "still persisted for audit" — which was true until this function existed.
-// Anyone trimming that marker to save transcript bytes would now silently
-// break resume for every stateful run, so the two comments point at each other
-// on purpose.
-//
-// Each marker carries the WHOLE post-merge Σ rather than the step's patch, so
-// the last one is the answer and no replay of the merge sequence is needed. nil
-// when the run is not stateful or never completed a step — a fresh Σ, which is
-// the correct start for both.
-func statefulSigmaFromTranscript(events []store.Event) map[string]any {
-	var sigma map[string]any
-	for _, ev := range events {
-		if ev.Type != "context_state" {
-			continue
-		}
-		var pe providers.Event
-		if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.ContextState == nil {
-			// A row that will not parse is skipped rather than fatal: an older
-			// or truncated marker must not cost the run the Σ it CAN recover
-			// from the markers around it.
-			continue
-		}
-		if pe.ContextState.State != nil {
-			sigma = pe.ContextState.State
-		}
-	}
-	return sigma
-}
-
 func replayTranscript(events []store.Event) []providers.Message {
 	var messages []providers.Message
 	var asstText strings.Builder

@@ -219,10 +219,15 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		}
 	}
 	priorMessages := replayTranscript(runEvents)
-	// RFC DH P2: a stateful run's history is Σ, not its messages. Recovered
-	// unconditionally — nil for a non-stateful run, which is what its loop
-	// expects — so the resume path needs no mode branch it could get wrong.
-	statefulSigma := statefulSigmaFromTranscript(runEvents)
+	// RFC DH P2: a stateful run's history is Σ, not its messages — and neither
+	// its first observation nor whether it can continue at all may be read off
+	// a replayed conversation it never had. Both come from its stateful events.
+	// The mode is resolved here the way Run will resolve it.
+	stateful := loop.StatefulMode(runCfg.Context, provider.Capabilities().Local, run.Interactive)
+	var seed statefulSeed
+	if stateful {
+		seed = statefulSeedFromEvents(runEvents, nil, run.Interactive)
+	}
 
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
 	// Phase-3 watcher parked mid-wg.Wait, so its transcript ends on a dangling
@@ -266,7 +271,15 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// the trailing assistant turn this whole branch exists to prevent — a
 	// silent degrade into the exact malformed request. Refuse loudly instead.
 	startParked := false
-	if !isFanout && !endsWithPendingTurn(priorMessages) {
+	// A stateful run has something to continue with when its seed carries an
+	// observation (an action's result, an operator's message); with none, it
+	// was waiting for the operator — the same two outcomes as below, decided
+	// from its own events.
+	idle := !endsWithPendingTurn(priorMessages)
+	if stateful {
+		idle = seed.Observation == ""
+	}
+	if !isFanout && idle {
 		if !run.Interactive || s.steerReg == nil {
 			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
@@ -458,6 +471,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
+	if stateful {
+		// The stateful loop renders an observation from these when it is given
+		// none — which is exactly the replayed conversation it must not see.
+		priorMessages = nil
+	}
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -465,7 +483,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Dispatcher:          dispatcher,
 		Segments:            segments,
 		PriorMessages:       priorMessages,
-		InitialState:        statefulSigma, // RFC DH P2: nil unless the run was stateful
+		InitialState:        seed.Sigma, // RFC DH P2: nil unless the run was stateful
+		InitialObservation:  seed.Observation,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,      // RFC DC P2: restored, not re-derived
@@ -533,7 +552,13 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 				s.finishRunFailedReason(run.ID, "resume: reconcile fan-out parent: "+rerr.Error(), meta)
 				return
 			}
-			runOpts.PriorMessages = append(runOpts.PriorMessages, toolResult)
+			if stateful {
+				// The envelope IS the parked action's result, so it is the
+				// observation — the stateful loop reads nothing else.
+				runOpts.InitialObservation = toolResultText(toolResult)
+			} else {
+				runOpts.PriorMessages = append(runOpts.PriorMessages, toolResult)
+			}
 		}
 
 		// RFC BF P2b per-provider gate: acquire BEFORE the global slot (same
@@ -1082,4 +1107,15 @@ func (s *Server) providerForModel(ctx context.Context, def config.AgentDef, tena
 		}
 	}
 	return "", false
+}
+
+// toolResultText is the text of a synthesised tool_result message.
+func toolResultText(m providers.Message) string {
+	var b strings.Builder
+	for _, c := range m.Content {
+		if c.Type == "tool_result" {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }

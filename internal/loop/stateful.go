@@ -26,7 +26,7 @@ import (
 // the reasoning, executes the named action to produce the next observation, and
 // loops. Cost is O(T): the fed prompt never grows. The full event stream (each
 // EventContextState marker) is persisted — ⚠️ AND NO LONGER ONLY FOR AUDIT:
-// statefulSigmaFromTranscript recovers a RESUMED run's Σ from the last such
+// statefulSeedFromEvents recovers a RESUMED run's Σ from the last such
 // marker (RFC DH P2), so trimming them to save transcript bytes would silently
 // make every resumed stateful run forget everything it knew.
 //
@@ -45,6 +45,18 @@ func contextStatefulMode(cx *config.Context) bool {
 // contextAutoMode reports whether the policy is tier-routed (mode: auto).
 func contextAutoMode(cx *config.Context) bool {
 	return cx != nil && cx.Mode != nil && *cx.Mode == config.ContextModeAuto
+}
+
+// StatefulMode reports whether a run with this context policy runs the
+// stateful loop, resolving mode:auto exactly as Run will. A caller that builds
+// a run's INPUT — resume, a session continuation — needs the answer before
+// Run is called: a stateful run is seeded from its recorded state, not from
+// its replayed messages.
+func StatefulMode(cx *config.Context, local, interactive bool) bool {
+	if contextAutoMode(cx) {
+		cx = resolveAutoContextMode(cx, local, interactive)
+	}
+	return contextStatefulMode(cx)
 }
 
 // resolveAutoContextMode turns mode:auto into a concrete mode (RFC CR tier-
@@ -501,6 +513,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	}
 
 	obs := initialObservation(initial)
+	if opts.InitialObservation != "" {
+		obs = opts.InitialObservation
+	}
 	// StartParked: a re-attached interactive run waits for the operator before
 	// spending a model call. Mirrors Run's handling — an abandoned park ends the
 	// run on the turn it had already reached rather than calling the provider.

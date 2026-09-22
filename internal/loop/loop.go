@@ -204,6 +204,18 @@ type RunOptions struct {
 	// nil = start empty, which is correct for a fresh run.
 	InitialState map[string]any
 
+	// InitialObservation, when non-empty, is a stateful run's FIRST observation
+	// verbatim, in place of one rendered from PriorMessages + Segments. Ignored
+	// by the append/recap loop.
+	//
+	// ⚠️ THE OTHER HALF OF A STATEFUL RESUME. InitialState restores what the run
+	// knew; this restores what it was looking at — the result of the action it
+	// chose before it paused, or the operator's message a continuation carries.
+	// Without it the first observation was rendered from a replayed transcript:
+	// every operator message and every answer so far, relabelled "Task:", and
+	// unbounded — the history stateful mode exists not to feed back.
+	InitialObservation string
+
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
 	// a session's prior turns. Empty for a fresh run (the v0.2 case).
