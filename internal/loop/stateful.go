@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
@@ -466,8 +467,28 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// unforced, which is why this is an optimisation and not a
 			// precondition: the contract still lives in the prompt, and a
 			// model that ignores it is still re-prompted rather than fatal.
-			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort,
-				ToolChoice: providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}}
+			//
+			// ⚠️ THE CONTEXT-TRANSFORM CHAIN RUNS HERE TOO, on a copy, exactly as
+			// Run applies it to the append loop's request. This request used to
+			// go out untransformed, so the `redact` plugin never saw a stateful
+			// run — and Σ and the observation are where tool output, and any
+			// secret in it, lands.
+			reqSystem, reqMsgs := statefulSystem, msgs
+			if len(opts.ContextPlugins) > 0 && opts.Provider.ID() != codeJSProviderID {
+				cs, cm, perr := contextplugin.Apply(ctx, opts.ContextPlugins, statefulSystem, msgs)
+				if perr != nil {
+					emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
+					return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, perr
+				}
+				reqSystem, reqMsgs = cs, cm
+			}
+			req := providers.Request{Model: opts.Model, System: reqSystem, Messages: reqMsgs, Tools: emitTool,
+				MaxTokens:        opts.MaxTokens,
+				MaxContextTokens: opts.MaxContextTokens, // RFC CJ — without it Ollama ignored a per-agent context size
+				Effort:           opts.Effort,
+				ToolChoice:       providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName},
+				OnEvent:          emit, // a driver's retry-while-rate-limited event reaches the stream
+			}
 			applyStatefulSampling(&req, opts.Sampling)
 			call, err := callForEmitState(ctx, opts.Provider, req)
 			input, usage := call.input, call.usage

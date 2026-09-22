@@ -704,6 +704,7 @@ type actionScriptProvider struct {
 	scripts  []string
 	turn     int
 	observed []string
+	lastReq  providers.Request
 }
 
 func (p *actionScriptProvider) ID() string                                   { return "action-script" }
@@ -714,6 +715,7 @@ func (p *actionScriptProvider) Capabilities() providers.Capabilities {
 }
 func (p *actionScriptProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	p.mu.Lock()
+	p.lastReq = req
 	for _, m := range req.Messages {
 		for _, c := range m.Content {
 			p.observed = append(p.observed, c.Text)
@@ -1483,5 +1485,57 @@ func TestRun_Stateful_AnActionSeesItsToolUseID(t *testing.T) {
 	if rec.gotID == "" {
 		t.Error("a stateful action ran with no tool-use id on its ctx, so an Agent parallel_spawn " +
 			"writes no ledger and a paused fan-out parent cannot be reconciled")
+	}
+}
+
+// ⚠️ THE REDACT PLUGIN NEVER SAW A STATEFUL RUN. Run applies the context-
+// transform chain to the append loop's outbound request only; the stateful
+// request went out raw — and the secret here reaches it twice, once in the
+// task and once as the observation a tool returned.
+func TestRun_Stateful_ContextPluginsRedactTheOutboundRequest(t *testing.T) {
+	echo := &echoTool{reply: "the tool printed seekritvalue88"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:          []tools.Tool{echo},
+		Dispatcher:     tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:       leakSegs(),
+		Context:        statefulCtx(nil),
+		ContextPlugins: redactChain(t),
+		OnEvent:        func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if prov.sawObservation("seekritvalue88") {
+		t.Errorf("a stateful request carried a secret the redact plugin should have removed: %v", prov.observed)
+	}
+	if !prov.sawObservation("the tool printed") {
+		t.Fatalf("the action's observation never reached the model, so this test asserts nothing: %v", prov.observed)
+	}
+}
+
+// RFC CJ: a per-agent context size reaches the provider. Without it Ollama
+// fell back to the pinned or loaded num_ctx, silently ignoring the agent's.
+func TestRun_Stateful_TheRequestCarriesTheContextSize(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{},"done":true,"final":"ok"}`}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:         statefulTaskSegs(),
+		Context:          statefulCtx(nil),
+		MaxContextTokens: 65536,
+		OnEvent:          func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.lastReq.MaxContextTokens != 65536 {
+		t.Errorf("request MaxContextTokens = %d, want 65536", prov.lastReq.MaxContextTokens)
+	}
+	if prov.lastReq.OnEvent == nil {
+		t.Error("the request carries no OnEvent, so a driver's rate-limit retry never reaches the stream")
 	}
 }
