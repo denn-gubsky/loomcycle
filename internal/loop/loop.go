@@ -2177,7 +2177,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// P (`system`) and the action-tool catalog are resolved, into the self-
 	// contained stateful loop. The append/recap machinery below does not apply.
 	if contextStatefulMode(opts.Context) {
-		return runStateful(ctx, opts, system, messages, toolSpecs, emit)
+		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
 	}
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool

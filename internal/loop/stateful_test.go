@@ -7,9 +7,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -825,5 +827,175 @@ func TestRun_Stateful_AValidActionStillRuns(t *testing.T) {
 	}
 	if echo.callCount() != 1 {
 		t.Errorf("a valid action ran %d time(s), want 1 — the guard refuses everything", echo.callCount())
+	}
+}
+
+// statefulInteractive runs a stateful agent with a steer queue, feeding the
+// scripted emit_state replies in order. Returns once the run ends.
+func statefulInteractive(t *testing.T, prov providers.Provider, q chan steer.Message,
+	park chan struct{}, extra func(*RunOptions)) (RunResult, error) {
+	t.Helper()
+	opts := RunOptions{
+		Provider: prov, Model: "x",
+		Segments:    statefulTaskSegs(),
+		Context:     statefulCtx(nil),
+		Interactive: true,
+		SteerQueue:  q,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventAwaitingInput {
+				select {
+				case park <- struct{}{}:
+				default:
+				}
+			}
+		},
+	}
+	if extra != nil {
+		extra(&opts)
+	}
+	return Run(context.Background(), opts)
+}
+
+// ⚠️ THE REPORTED BUG, AND THE ASSERTION THAT MATTERS IS Σ — not that a second
+// answer arrived. runStateful reached the model's `done` and RETURNED, so a
+// terminal chat stopped after every answer whatever `interactive` said.
+//
+// A loop that parked but restarted from an empty Σ would pass "two answers
+// arrived" and be useless: the whole point of carrying state across the park is
+// that turn 2 knows what turn 1 established. So this reads the FED PROMPT.
+func TestRun_Stateful_ParksAndCarriesStateAcrossTheOperatorTurn(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"reasoning":"first","patch":{"topic":"DDRAM"},"done":true,"final":"answer one"}`,
+		`{"reasoning":"second","patch":{"followup":"yes"},"done":true,"final":"answer two"}`,
+	}}
+	q := make(chan steer.Message, 4)
+	park := make(chan struct{}, 8)
+
+	done := make(chan RunResult, 1)
+	go func() {
+		res, err := statefulInteractive(t, prov, q, park, nil)
+		if err != nil {
+			t.Errorf("Run: %v", err)
+		}
+		done <- res
+	}()
+
+	waitPark := func(what string) {
+		t.Helper()
+		select {
+		case <-park:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("%s: the run never parked — it ended after its answer", what)
+		}
+	}
+	waitPark("first turn")
+	q <- steer.Message{Text: "and what about refresh cycles?"}
+	waitPark("second turn")
+	close(q) // queue closed → the run ends
+
+	select {
+	case res := <-done:
+		if res.StopReason != "end_turn" {
+			t.Errorf("stop = %q, want end_turn", res.StopReason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the run did not end after the queue closed")
+	}
+
+	// Σ FROM TURN ONE MUST BE IN TURN TWO'S PROMPT. This is the assertion a
+	// park-that-forgets would fail and "two answers arrived" would not.
+	if !prov.sawObservation(`"topic":"DDRAM"`) {
+		t.Errorf("turn 2 was fed a state without turn 1's patch — the park restarted from an "+
+			"empty Σ; prompts: %v", prov.observed)
+	}
+	// And the operator's message reached the model AS AN OBSERVATION, marked.
+	if !prov.sawObservation("operator: and what about refresh cycles?") {
+		t.Errorf("the operator's message never reached the model as a marked observation: %v",
+			prov.observed)
+	}
+}
+
+// ⚠️ NON-VACUITY, and the failure this change could plausibly introduce: an
+// AUTONOMOUS stateful run must still END at `done`. A park that fired on every
+// run would hang every scheduled, webhook and sub-agent stateful run in the
+// deployment, and the test above would still pass.
+func TestRun_Stateful_AnAutonomousRunStillEndsAtDone(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"n":1},"done":true,"final":"done"}`,
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res, err := Run(ctx, RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  statefulCtx(nil),
+		OnEvent:  func(providers.Event) {},
+	})
+	if err != nil {
+		t.Fatalf("an autonomous stateful run did not end on its own: %v", err)
+	}
+	if res.StopReason != "end_turn" || res.FinalText != "done" {
+		t.Errorf("stop=%q final=%q, want end_turn/done", res.StopReason, res.FinalText)
+	}
+}
+
+// The prompt paragraph describing `operator:` observations is for interactive
+// runs ONLY — an autonomous run cannot receive one, and a prompt that documents
+// impossible inputs teaches nothing and is paid for on every call.
+func TestStatefulSystem_TheOperatorParagraphIsInteractiveOnly(t *testing.T) {
+	base := []providers.ContentBlock{{Type: "text", Text: "you are an agent"}}
+	withIt := buildStatefulSystem(base, nil, nil, true)
+	without := buildStatefulSystem(base, nil, nil, false)
+	has := func(bs []providers.ContentBlock) bool {
+		for _, b := range bs {
+			if strings.Contains(b.Text, statefulOperatorPrefix) {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(withIt) {
+		t.Error("an interactive stateful prompt never explains what an `operator:` observation is")
+	}
+	if has(without) {
+		t.Error("an autonomous stateful prompt carries a paragraph about an input it cannot receive")
+	}
+}
+
+// ⚠️ EACH PARK COSTS AN ITERATION, and runStateful derived its own cap from
+// opts.MaxIterations — missing the lift Run applies to every interactive run. A
+// parked chat on the default 16 died after a handful of exchanges reporting
+// max_iterations, which is an answer about the wrong thing.
+func TestRun_Stateful_InteractiveGetsTheLiftedIterationCap(t *testing.T) {
+	var scripts []string
+	for i := 0; i < 20; i++ {
+		scripts = append(scripts, `{"patch":{"n":1},"done":true,"final":"ok"}`)
+	}
+	prov := &actionScriptProvider{scripts: scripts}
+	q := make(chan steer.Message, 32)
+	park := make(chan struct{}, 32)
+
+	done := make(chan RunResult, 1)
+	go func() {
+		res, _ := statefulInteractive(t, prov, q, park, nil)
+		done <- res
+	}()
+	for i := 0; i < 18; i++ {
+		select {
+		case <-park:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("the run stopped parking after %d turns — the default 16-iteration cap "+
+				"still applies to an interactive stateful run", i)
+		}
+		q <- steer.Message{Text: "again"}
+	}
+	close(q)
+	select {
+	case res := <-done:
+		if res.StopReason == "max_iterations" {
+			t.Errorf("an interactive stateful chat hit max_iterations after %d turns", res.Iterations)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the run did not end")
 	}
 }
