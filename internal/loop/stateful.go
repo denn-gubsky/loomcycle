@@ -173,6 +173,17 @@ func parseEmitState(input json.RawMessage) (*emitStateOut, error) {
 	return &out, nil
 }
 
+// retryToolUseID is the id a correction request replays the model's rejected
+// emit_state under: the model's own, when it gave one, so the assistant turn
+// sent back is the one it produced (a thinking model's replayed block belongs
+// to it); a synthetic one for a driver that issues none (Ollama).
+func retryToolUseID(modelID string, iter, attempt int) string {
+	if modelID != "" {
+		return modelID
+	}
+	return fmt.Sprintf("es-%d-%d", iter, attempt)
+}
+
 // newActionIDTag is a short random tag that makes one run's action ids unique
 // among the session's. crypto/rand never fails on a supported platform; the
 // fixed fallback only costs uniqueness, never correctness within the run.
@@ -314,6 +325,13 @@ type emitStateCall struct {
 	// failure: a thinking model's output never reached the text accumulator.)
 	thinking string
 	usage    *providers.Usage
+	// reasoning / reasoningSig are the driver's own record of the thinking
+	// block, from EventDone — what a thinking model requires to be replayed on
+	// an assistant turn that is sent back to it. callID is the tool_use id the
+	// model gave its emit_state call, for the same reason.
+	reasoning    string
+	reasoningSig string
+	callID       string
 }
 
 // callForEmitState makes one provider call and returns the emit_state tool input
@@ -333,6 +351,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 		case providers.EventToolCall:
 			if ev.ToolUse != nil && ev.ToolUse.Name == emitStateToolName && out.input == nil {
 				out.input = ev.ToolUse.Input
+				out.callID = ev.ToolUse.ID
 			}
 		case providers.EventText:
 			text.WriteString(ev.Text)
@@ -340,6 +359,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 			thinking.WriteString(ev.Text)
 		case providers.EventDone:
 			out.usage = ev.Usage
+			out.reasoning, out.reasoningSig = ev.Reasoning, ev.ReasoningSignature
 		case providers.EventError:
 			streamErr = ev.Error
 		}
@@ -718,7 +738,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				// assistant turn the API will accept back.
 				if call.text != "" {
 					msgs = append(msgs, providers.Message{Role: "assistant",
-						Content: []providers.ContentBlock{{Type: "text", Text: call.text}}})
+						Content:   []providers.ContentBlock{{Type: "text", Text: call.text}},
+						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig})
 				}
 				msgs = append(msgs, providers.Message{Role: "user",
 					Content: []providers.ContentBlock{{Type: "text", Text: "That reply was not usable: in structured " +
@@ -744,9 +765,10 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				}
 				// Rollback-retry: show the model its rejected emit_state + the reason,
 				// as a proper tool_use/tool_result pair, and ask for a correction.
-				tid := fmt.Sprintf("es-%d-%d", iter, attempt)
+				tid := retryToolUseID(call.callID, iter, attempt)
 				msgs = append(msgs,
-					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}}},
+					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}},
+						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig},
 					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state rejected: " + cause.Error() + ". Emit a corrected emit_state."}}})
 				continue
 			}
@@ -758,9 +780,10 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// that cannot produce `final` would then loop.
 			if endsTurn(parsed) && strings.TrimSpace(parsed.Final) == "" && strings.TrimSpace(parsed.Reasoning) == "" &&
 				onInvalid != "fail" && attempt < maxRetries {
-				tid := fmt.Sprintf("es-%d-%d", iter, attempt)
+				tid := retryToolUseID(call.callID, iter, attempt)
 				msgs = append(msgs,
-					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}}},
+					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}},
+						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig},
 					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state not accepted: " +
 						"it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in `final`."}}})
 				continue

@@ -1842,3 +1842,72 @@ func TestRun_Stateful_ActionIDsDifferAcrossRuns(t *testing.T) {
 		t.Errorf("two runs used the same first action id %q / %q", a, b)
 	}
 }
+
+// thinkingRetryProvider answers with a thinking block on every call: first a
+// patch the schema rejects, then a valid one. It records each request.
+type thinkingRetryProvider struct {
+	mu   sync.Mutex
+	reqs []providers.Request
+}
+
+func (p *thinkingRetryProvider) ID() string                                   { return "thinking" }
+func (p *thinkingRetryProvider) Probe(context.Context) error                  { return nil }
+func (p *thinkingRetryProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *thinkingRetryProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *thinkingRetryProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	n := len(p.reqs)
+	p.reqs = append(p.reqs, req)
+	p.mu.Unlock()
+	input := `{"patch":{"count":"not a number"}}`
+	if n > 0 {
+		input = `{"patch":{"count":1},"done":true,"final":"ok"}`
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+		ID: fmt.Sprintf("toolu_%d", n), Name: emitStateToolName, Input: json.RawMessage(input)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{},
+		Reasoning: fmt.Sprintf("thinking %d", n), ReasoningSignature: fmt.Sprintf("sig %d", n)}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ A CORRECTION REQUEST REPLAYED THE MODEL'S TURN WITHOUT ITS THINKING. A
+// thinking model requires the block back on an assistant turn it is sent —
+// Anthropic its signed thinking block, DeepSeek its reasoning_content — so the
+// correction a model could have acted on came back as a 400, which was fatal.
+func TestRun_Stateful_ARetryReplaysTheModelsThinking(t *testing.T) {
+	prov := &thinkingRetryProvider{}
+	cx := statefulCtx(map[string]any{"type": "object", "properties": map[string]any{
+		"count": map[string]any{"type": "integer"}}})
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  cx,
+		OnEvent:  func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.reqs) != 2 {
+		t.Fatalf("calls = %d, want a rejected patch then its correction", len(prov.reqs))
+	}
+	var asst *providers.Message
+	for i := range prov.reqs[1].Messages {
+		if prov.reqs[1].Messages[i].Role == "assistant" {
+			asst = &prov.reqs[1].Messages[i]
+		}
+	}
+	if asst == nil {
+		t.Fatal("the correction request replayed no assistant turn")
+	}
+	if asst.Reasoning != "thinking 0" || asst.ReasoningSignature != "sig 0" {
+		t.Errorf("replayed turn reasoning=%q signature=%q, want the model's own", asst.Reasoning, asst.ReasoningSignature)
+	}
+	if len(asst.Content) == 0 || asst.Content[0].ToolUseID != "toolu_0" {
+		t.Errorf("replayed tool_use id = %v, want the model's own toolu_0", asst.Content)
+	}
+}
