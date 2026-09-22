@@ -690,3 +690,140 @@ func (p *unforceableProvider) Call(context.Context, providers.Request) (<-chan p
 	close(ch)
 	return ch, nil
 }
+
+// actionScriptProvider emits a scripted emit_state per step and records the
+// observation it was fed on the following one, so a test can read what the
+// runtime told the model after a bad action.
+type actionScriptProvider struct {
+	mu       sync.Mutex
+	scripts  []string
+	turn     int
+	observed []string
+}
+
+func (p *actionScriptProvider) ID() string                                   { return "action-script" }
+func (p *actionScriptProvider) Probe(context.Context) error                  { return nil }
+func (p *actionScriptProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *actionScriptProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *actionScriptProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			p.observed = append(p.observed, c.Text)
+		}
+	}
+	i := p.turn
+	p.turn++
+	p.mu.Unlock()
+
+	ch := make(chan providers.Event, 2)
+	if i < len(p.scripts) {
+		ch <- providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: fmt.Sprintf("t%d", i), Name: emitStateToolName,
+				Input: json.RawMessage(p.scripts[i])}}
+	}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+func (p *actionScriptProvider) sawObservation(sub string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, o := range p.observed {
+		if strings.Contains(o, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// ⚠️ THE ACTION NAME WENT STRAIGHT TO THE DISPATCHER, UNCHECKED — and the worst
+// case of that is the model naming `emit_state`, which is not a tool at all but
+// the channel it is already speaking through. Reported from a live chat: the
+// operator saw `emit_state` / input {} / "tool not found: emit_state", an answer
+// that says the name was wrong and not one word about which names are right.
+func TestRun_Stateful_NamingEmitStateAsAnActionIsExplained(t *testing.T) {
+	echo := &echoTool{reply: "observed"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"reasoning":"confused","patch":{},"action":{"tool":"emit_state","input":{}}}`,
+		`{"patch":{"n":1},"done":true,"final":"done"}`,
+	}}
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("stop = %q; a bad action must not end the run", res.StopReason)
+	}
+	// The dispatcher must never have been asked — emit_state is not a tool, and
+	// "tool not found" is the answer this change exists to stop producing.
+	if echo.callCount() != 0 {
+		t.Errorf("a real tool ran for a bogus action name")
+	}
+	if !prov.sawObservation("is not an action") {
+		t.Errorf("the model was not told what emit_state is; observations: %v", prov.observed)
+	}
+	if !prov.sawObservation("`Echo`") {
+		t.Errorf("the correction does not name the tools the agent MAY use — an error that " +
+			"says only what was wrong leaves the model guessing")
+	}
+}
+
+// The general case: any name the agent was not offered is refused HERE, where
+// the offered set is known, rather than by a dispatcher that knows every tool
+// in the process and so can only say "not found".
+func TestRun_Stateful_AnUnofferedActionNamesTheAlternatives(t *testing.T) {
+	echo := &echoTool{reply: "observed"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Bash","input":{}}}`,
+		`{"patch":{"n":1},"done":true,"final":"done"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if echo.callCount() != 0 {
+		t.Errorf("an unoffered action reached the dispatcher")
+	}
+	if !prov.sawObservation("no tool named `Bash`") || !prov.sawObservation("`Echo`") {
+		t.Errorf("the refusal does not name the bad tool AND the available ones: %v", prov.observed)
+	}
+}
+
+// Non-vacuity for both: a VALID action still dispatches. A guard that refused
+// everything would pass the two tests above and break the loop entirely.
+func TestRun_Stateful_AValidActionStillRuns(t *testing.T) {
+	echo := &echoTool{reply: "observed"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{"n":1},"done":true,"final":"done"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if echo.callCount() != 1 {
+		t.Errorf("a valid action ran %d time(s), want 1 — the guard refuses everything", echo.callCount())
+	}
+}
