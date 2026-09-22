@@ -8,6 +8,99 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.88.0
+
+*A stateful chat waits for you instead of ending, and remembers what it knew when it wakes up.*
+
+Three PRs, all from one operator report against v1.87.0, and all in the
+stateful loop. RFC DH P1 + P2 — released together on purpose, because P1 alone
+is honest in-process and a lie the first time a replica restarts.
+
+### The chat stopped after every turn (#1328, RFC DH P1)
+
+> The chat/local model with stateful context still stops the agent after each
+> turn regardless of interactive flag state.
+
+It did, and `grep SteerQueue internal/loop/stateful.go` returned **zero hits**.
+The loop reached the model's `done` and RETURNED, where the append/recap loop
+calls `parkForOperatorTurn` instead. `interactive: true` was not ignored so much
+as unimplemented — the flag reached a loop with nowhere to put it.
+
+⚠️ **AND THE RUNTIME ALREADY BELIEVED THESE WERE INCOMPATIBLE.**
+`resolveAutoContextMode` refuses to route an interactive run to stateful and
+says why in its own comment — "that loop has no steer/park". But it governs
+`mode: auto` only, so an **explicit** `mode: stateful` walked past the guard in
+silence. The protection you got depended on how little you specified.
+
+A stateful run now parks at `done`, and your next message becomes its next
+**observation**, prefixed `operator: `. The park belongs at `done` and not at
+every step: the step loop is internal machinery you never see, and the thing
+you wait for is the answer.
+
+⚠️ **THE RUNTIME STILL DOES NOT WRITE Σ.** A reserved key filled by the runtime
+would make Σ half model-authored and half not, with `state_schema` validating
+only one of the halves. The prompt instead tells the model that this observation
+is a person speaking and that nothing survives the turn except the state, then
+leaves it to decide what is durable — which is its job in this mode. That
+paragraph is added for interactive runs only; an autonomous one cannot receive
+such an observation.
+
+The iteration cap is also now computed once, in `Run`, and handed down. This
+loop derived its own and missed every lift `Run` applies — including the one
+that matters, since each PARK consumes an iteration. A parked chat on the
+default 16 would have died after a handful of exchanges reporting
+`max_iterations`, which is an answer about the wrong thing.
+`unbounded_iterations` stops being inert in this mode.
+
+### And it forgot everything when it woke up (#1329, RFC DH P2)
+
+Σ survives a live park because the goroutine holding it does. Across a pause, a
+snapshot restore or a replica move it was lost.
+
+⚠️ **A STATEFUL RUN'S HISTORY IS NOT ITS MESSAGES.** `replayTranscript` rebuilds
+a conversation, which is precisely what stateful mode exists to *not* have — the
+model is fed only (Σ, observation). A resumed run handed only `PriorMessages`
+started from an **empty Σ** and cheerfully continued a conversation whose every
+established fact it had forgotten. That is worse than refusing to resume: it
+looks like it worked.
+
+No new column: each `context_state` marker already carries the whole post-merge
+Σ, so the last one is the answer. ⚠️ Which makes that marker **load-bearing**,
+where its own comment used to say "still persisted for audit" — both comments
+now point at each other, so anyone trimming it to save transcript bytes meets
+the reason not to.
+
+### `tool not found: emit_state` (#1327)
+
+From the same chat. The model named `emit_state` as its ACTION, and the action
+name went straight to the dispatcher unchecked — so the answer was a lookup that
+could only miss.
+
+⚠️ `emit_state` is not a tool. It is the channel the model is already speaking
+through, offered as the only entry in `tools` on every step, and its `action`
+field names a DIFFERENT tool for the runtime to run. Both that and any unoffered
+name are now refused in the loop, which is the only place that knows which tools
+THIS agent was offered — the dispatcher knows every tool in the process, so "not
+found" is the most it can ever say. The observation names the mistake AND the
+alternatives.
+
+### Upgrading
+
+- **Nothing to change.** An interactive `mode: stateful` agent — `chat/local` in
+  the bundled `chat` preset — starts behaving as a terminal chat on upgrade:
+  it parks for your next message instead of ending the run.
+- **Autonomous stateful runs are unaffected.** They still end at `done`; the
+  park requires both `interactive` and a steer queue.
+- **⚠️ Do not trim `context_state` events from a transcript.** They are how a
+  resumed stateful run recovers its state.
+- **The adapters are bumped to 1.88.0 with NO surface change.** Nothing in
+  `@loomcycle/client` or the Python client differs from 1.87.0 — the bump keeps
+  "the client version matches the runtime version" true rather than announcing
+  anything new.
+- Still open from RFC DH: **P3** — RFC BH turn-cancel needs a defined resting
+  place in the stateful loop (cancelling mid-dispatch leaves an action whose
+  result nothing will read), and a per-turn step budget.
+
 ## What's in v1.87.0
 
 *A mistyped key can no longer mint an admin token, a summarizer gets the budget to answer, and the emit_state contract is finally on the wire.*
