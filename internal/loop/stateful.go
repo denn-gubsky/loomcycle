@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -709,12 +710,20 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
 		default:
-			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
-			res := opts.Dispatcher.Execute(dispatchCtx, es.Action.Tool, es.Action.Input)
-			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: res.Text, IsError: res.IsError})
-			obs = res.Text
-			if res.IsError {
-				obs = "ERROR: " + res.Text
+			tu := providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}
+			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
+			// ⚠️ THROUGH THE APPEND LOOP'S DISPATCH, not the dispatcher directly.
+			// This used to call Dispatcher.Execute, which skipped everything
+			// executePendingTools adds around a call: the operator's Pre-hooks
+			// (a deny did not apply to a stateful agent), Post-hooks, the
+			// tool-use id the parallel_spawn ledger keys on, and the RFC DA
+			// classification of a failure. It also emits the tool_result.
+			ident := tools.RunIdentity(ctx)
+			hookIdent := hooks.Identity{Agent: opts.AgentName, UserID: ident.UserID, AgentID: ident.AgentID, Tenant: ident.TenantID}
+			blocks := executePendingTools(dispatchCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
+			obs = blocks[0].Text
+			if blocks[0].IsError {
+				obs = "ERROR: " + obs
 			}
 		}
 	}

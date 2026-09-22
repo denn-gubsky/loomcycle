@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -1401,5 +1404,84 @@ func TestRun_Stateful_AnAbandonedStartParkedRunStillEndsWithDone(t *testing.T) {
 	}
 	if !sawDone {
 		t.Error("an abandoned StartParked stateful run ended without emitting done")
+	}
+}
+
+// ⚠️ A STATEFUL ACTION WENT STRAIGHT TO THE DISPATCHER, so an operator's
+// Pre-hook deny — the policy seam for "this agent may not call that" — did not
+// apply to any mode:stateful agent. The tool must not run, and the model must
+// see the denial as its observation.
+func TestRun_Stateful_APreHookDenyStopsTheAction(t *testing.T) {
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(hooks.PreHookResult{
+			Deny: &hooks.ToolResult{IsError: true, Text: "denied by operator policy"},
+		})
+	}))
+	defer hookSrv.Close()
+	reg := hooks.NewRegistry()
+	if _, err := reg.Register(&hooks.Hook{
+		Owner: "test", Name: "deny-echo", Phase: hooks.PhasePre,
+		CallbackURL: hookSrv.URL, Agents: []string{"stateful-agent"}, Tools: []string{"Echo"},
+	}); err != nil {
+		t.Fatalf("register hook: %v", err)
+	}
+
+	echo := &echoTool{reply: "the tool ran"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		AgentName:  "stateful-agent",
+		Hooks:      hooks.NewDispatcher(reg, nil),
+		OnEvent:    func(providers.Event) {},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if echo.callCount() != 0 {
+		t.Errorf("the denied tool ran %d time(s) — the Pre-hook never saw a stateful action", echo.callCount())
+	}
+	if !prov.sawObservation("denied by operator policy") {
+		t.Errorf("the model never saw the denial as its observation: %v", prov.observed)
+	}
+}
+
+// ctxRecordingTool records the tool-use id the loop stamped on its ctx — the
+// key the parallel_spawn ledger uses to make a fan-out durable.
+type ctxRecordingTool struct{ gotID string }
+
+func (c *ctxRecordingTool) Name() string                 { return "Echo" }
+func (c *ctxRecordingTool) Description() string          { return "" }
+func (c *ctxRecordingTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (c *ctxRecordingTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
+	c.gotID = tools.ToolUseID(ctx)
+	return tools.Result{Text: "ok"}, nil
+}
+
+func TestRun_Stateful_AnActionSeesItsToolUseID(t *testing.T) {
+	rec := &ctxRecordingTool{}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{rec},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{rec}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rec.gotID == "" {
+		t.Error("a stateful action ran with no tool-use id on its ctx, so an Agent parallel_spawn " +
+			"writes no ledger and a paused fan-out parent cannot be reconciled")
 	}
 }
