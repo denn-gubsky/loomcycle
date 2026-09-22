@@ -2190,6 +2190,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// recall.FromContext). No-op when opts.RecallIndex is nil (recall off).
 	ctx = recall.NewContext(ctx, opts.RecallIndex)
 
+	// Clamp the operator-supplied retry count to the safety cap so
+	// a misconfigured yaml can't induce minute-scale delays per error.
+	// Above the stateful branch: that loop retries on the same budget.
+	if opts.MaxSameProviderRetries > maxSameProviderRetriesCap {
+		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
+	}
+
 	// Run-lifetime heartbeat: pulse OnHeartbeat every parkHeartbeatInterval for
 	// as long as this run's goroutine is alive, IN ADDITION to the per-iteration
 	// pulse below. The stale-run sweeper reaps a run whose heartbeat hasn't
@@ -2389,12 +2396,6 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// retry budget is per-provider. Capped at opts.MaxSameProviderRetries
 	// (clamped to maxSameProviderRetriesCap=5).
 	var sameProviderRetries int
-
-	// Clamp the operator-supplied retry count to the safety cap so
-	// a misconfigured yaml can't induce minute-scale delays per error.
-	if opts.MaxSameProviderRetries > maxSameProviderRetriesCap {
-		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
-	}
 
 	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
 	// disarmTurn removes its armed registry token. Both are re-created per turn

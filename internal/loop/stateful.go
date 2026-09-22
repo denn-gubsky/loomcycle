@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
@@ -342,6 +343,72 @@ func addUsage(dst *providers.Usage, u *providers.Usage) {
 	if u.Model != "" {
 		dst.Model = u.Model
 	}
+	// Which key paid, for the run-level summary (runs.credential_source) — the
+	// append loop carries the last call's; the per-call split is the ledger's.
+	if u.CredentialSource != "" {
+		dst.CredentialSource = u.CredentialSource
+		dst.CredentialScopeID = u.CredentialScopeID
+	}
+}
+
+// statefulRecovery is the provider-fault recovery state of one stateful run:
+// the append loop's same-provider retry budget and fallback counter.
+type statefulRecovery struct {
+	sameProviderRetries int
+	fallbackAttempts    int
+	firstStepSucceeded  bool
+}
+
+type statefulCallOutcome int
+
+const (
+	statefulCallFatal statefulCallOutcome = iota
+	statefulCallRetry
+	statefulCallCancelled
+)
+
+// recoverStatefulCall applies the append loop's answer to a provider fault, in
+// the same order: a same-provider retry with backoff for a retryable error
+// while the budget lasts; then resolver feedback; then a cross-provider
+// fallback under the run's policy. Retry means "send this step again" — on the
+// same provider, or on the one opts now names.
+func recoverStatefulCall(ctx context.Context, opts *RunOptions, rec *statefulRecovery, err error,
+	emit func(providers.Event), msgs []providers.Message) statefulCallOutcome {
+	if ctx.Err() != nil {
+		return statefulCallCancelled
+	}
+	if rec.sameProviderRetries < opts.MaxSameProviderRetries &&
+		providers.ClassifyError(err) == providers.ErrorClassRetryable {
+		rec.sameProviderRetries++
+		backoff := sameProviderRetryBackoff(rec.sameProviderRetries)
+		emit(providers.Event{Type: providers.EventRetry, Retry: &providers.RetryInfo{
+			Provider: opts.Provider.ID(), Attempt: rec.sameProviderRetries,
+			WaitMs: backoff.Milliseconds(), Reason: providers.RetryReasonSchedule,
+		}})
+		select {
+		case <-ctx.Done():
+			return statefulCallCancelled
+		case <-time.After(backoff):
+		}
+		return statefulCallRetry
+	}
+	// Resolver feedback, split by class exactly as Run's is: a 429 cools the
+	// pair briefly, anything else marks it stalled. An operator-key refusal is a
+	// per-run policy decision, not an outage, and must not poison the matrix.
+	if !errors.Is(err, providers.ErrOperatorKeyForbidden) {
+		if providers.IsRateLimit(err) {
+			if opts.MarkRateLimited != nil {
+				opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
+			}
+		} else if opts.MarkStalled != nil {
+			opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+		}
+	}
+	if tryProviderFallback(ctx, opts, &rec.fallbackAttempts, err, emit, msgs, rec.firstStepSucceeded) == fallbackOutcomeSwitched {
+		rec.sameProviderRetries = 0
+		return statefulCallRetry
+	}
+	return statefulCallFatal
 }
 
 func applyStatefulSampling(req *providers.Request, s *config.Sampling) {
@@ -420,6 +487,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	dispatchCtx := tools.WithExecutionState(ctx, holder) // the action sees the live Σ (Context op=state)
 
 	var total providers.Usage
+	var rec statefulRecovery
 	// finish emits the run's ONE terminal done. ⚠️ DONE MEANS THE RUN IS OVER, to
 	// every consumer that reads it — the Web UI marks the run completed on it, and
 	// the MCP / connector spawn paths take their final stop reason from it. This
@@ -494,6 +562,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			input, usage := call.input, call.usage
 			addUsage(&total, usage)
 			if usage != nil {
+				total.Provider = opts.Provider.ID() // the SERVING provider, across a fallback
 				// The provider's own count of the whole request, which is what
 				// the eviction threshold must measure against — the same
 				// numerator the append/recap gate uses.
@@ -531,9 +600,27 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				emit(providers.Event{Type: providers.EventUsage, Usage: &iterUsage})
 			}
 			if err != nil && !errors.Is(err, errNoEmitState) {
-				// Transport or provider fault — nothing the model can correct.
+				// Transport or provider fault — nothing the MODEL can correct, but
+				// the append loop's recovery applies unchanged, and this loop used
+				// to have none: one 429 or "overloaded" killed a stateful run that
+				// an append run on the same agent would ride out. Neither retry
+				// consumes a max_patch_retries attempt — that budget is for the
+				// model's mistakes, and this was not one.
+				switch recoverStatefulCall(ctx, &opts, &rec, err, emit, msgs) {
+				case statefulCallRetry:
+					attempt--
+					continue
+				case statefulCallCancelled:
+					return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
+				}
 				emit(providers.Event{Type: providers.EventError, Error: "stateful step failed: " + err.Error()})
 				return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, err
+			}
+			// The call reached the provider and came back: the pair is healthy
+			// enough to answer, whatever the model then did with the answer.
+			rec.sameProviderRetries = 0
+			if opts.ClearStall != nil {
+				opts.ClearStall(opts.Provider.ID(), opts.Model)
 			}
 			if err != nil {
 				// ⚠️ THE SAME BUDGET AS A REJECTED PATCH, and it used to get
@@ -594,6 +681,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				continue
 			}
 			es = parsed
+			rec.firstStepSucceeded = true
 			break
 		}
 

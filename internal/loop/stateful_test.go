@@ -1539,3 +1539,89 @@ func TestRun_Stateful_TheRequestCarriesTheContextSize(t *testing.T) {
 		t.Error("the request carries no OnEvent, so a driver's rate-limit retry never reaches the stream")
 	}
 }
+
+// flakyStatefulProvider fails its first `fail` calls with `err`, then answers
+// with a finishing emit_state. It is the stateful twin of the append loop's
+// retry fixtures.
+type flakyStatefulProvider struct {
+	id    string
+	mu    sync.Mutex
+	fail  int
+	err   error
+	calls int
+}
+
+func (p *flakyStatefulProvider) ID() string                                   { return p.id }
+func (p *flakyStatefulProvider) Probe(context.Context) error                  { return nil }
+func (p *flakyStatefulProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *flakyStatefulProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *flakyStatefulProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	if n <= p.fail {
+		return nil, p.err
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName,
+		Input: json.RawMessage(`{"patch":{"n":1},"done":true,"final":"from ` + p.id + `"}`)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ ONE RATE-LIMITED CALL KILLED A STATEFUL RUN. Every provider error was
+// fatal in this loop, while an append run on the same agent retries and then
+// falls back. Both recoveries apply here now, and neither spends the patch
+// budget: with max_patch_retries 0 the run still recovers.
+func TestRun_Stateful_ARetryableErrorIsRetriedOnTheSameProvider(t *testing.T) {
+	prov := &flakyStatefulProvider{id: "p1", fail: 1, err: fmt.Errorf("fake 429: rate_limited")}
+	zero := 0
+	cx := statefulCtx(nil)
+	cx.MaxPatchRetries = &zero
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:               statefulTaskSegs(),
+		Context:                cx,
+		MaxSameProviderRetries: 2,
+		OnEvent:                func(providers.Event) {},
+	})
+	if err != nil || res.FinalText != "from p1" {
+		t.Fatalf("a stateful run did not recover from one 429: final=%q err=%v", res.FinalText, err)
+	}
+	if prov.calls != 2 {
+		t.Errorf("calls = %d, want 2 (one failed, one retried)", prov.calls)
+	}
+}
+
+func TestRun_Stateful_AProviderFaultFallsBack(t *testing.T) {
+	failing := &flakyStatefulProvider{id: "p1", fail: 99, err: fmt.Errorf("anthropic 429: rate limit exceeded")}
+	healthy := &flakyStatefulProvider{id: "p2"}
+	var fellBack bool
+	res, err := Run(context.Background(), RunOptions{
+		Provider: failing, Model: "x",
+		Segments:       statefulTaskSegs(),
+		Context:        statefulCtx(nil),
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "medium"},
+		ReResolve: func(context.Context, string, string, error) (providers.Provider, string, string, error) {
+			return healthy, "y", "", nil
+		},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventProviderFallback {
+				fellBack = true
+			}
+		},
+	})
+	if err != nil || res.FinalText != "from p2" {
+		t.Fatalf("a stateful run did not fall back: final=%q err=%v", res.FinalText, err)
+	}
+	if !fellBack {
+		t.Error("no provider_fallback event was emitted")
+	}
+	if res.Usage.Provider != "p2" {
+		t.Errorf("run usage attributes provider %q, want the serving p2", res.Usage.Provider)
+	}
+}
