@@ -2,6 +2,8 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,6 +171,17 @@ func parseEmitState(input json.RawMessage) (*emitStateOut, error) {
 		out.Patch = map[string]any{} // a step with no state change is legal
 	}
 	return &out, nil
+}
+
+// newActionIDTag is a short random tag that makes one run's action ids unique
+// among the session's. crypto/rand never fails on a supported platform; the
+// fixed fallback only costs uniqueness, never correctness within the run.
+func newActionIDTag() string {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "0"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // endsTurn reports whether a step ends the turn: done, or no action named.
@@ -521,6 +534,13 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 
 	var total providers.Usage
 	var rec statefulRecovery
+	// ⚠️ ACTION IDS ARE PERSISTED, and the step counter restarts at 0 in every
+	// run — while a session holds many (each continuation is a new run). A
+	// session that later replays as messages (mode auto sends an interactive
+	// run to recap) would then carry duplicate tool_use ids, which a provider
+	// may reject, and the Web UI pairs calls with results by id. A per-run tag
+	// keeps them unique; the in-request retry ids never persist and need none.
+	actionIDTag := newActionIDTag()
 	// finish emits the run's ONE terminal done. ⚠️ DONE MEANS THE RUN IS OVER, to
 	// every consumer that reads it — the Web UI marks the run completed on it, and
 	// the MCP / connector spawn paths take their final stop reason from it. This
@@ -860,7 +880,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		}
 
 		// Execute the named action → next observation.
-		tid := fmt.Sprintf("es-act-%d", iter)
+		tid := fmt.Sprintf("es-%s-act-%d", actionIDTag, iter)
 		switch {
 		case opts.Dispatcher == nil:
 			obs = "ERROR: no tools are available to run action " + es.Action.Tool

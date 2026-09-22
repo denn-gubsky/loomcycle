@@ -1810,3 +1810,35 @@ func TestRun_Stateful_AnActionMissingRequiredFieldsIsExplained(t *testing.T) {
 		t.Errorf("tool ran %d time(s), want 1 (only the complete call)", tool.calls)
 	}
 }
+
+// Action ids are persisted and the step counter restarts in every run, so two
+// runs of one session used to write the same tool_use id.
+func TestRun_Stateful_ActionIDsDifferAcrossRuns(t *testing.T) {
+	firstActionID := func() string {
+		echo := &echoTool{reply: "ok"}
+		prov := &actionScriptProvider{scripts: []string{
+			`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+			`{"patch":{},"done":true,"final":"ok"}`,
+		}}
+		var id string
+		if _, err := Run(context.Background(), RunOptions{
+			Provider: prov, Model: "x",
+			Tools:      []tools.Tool{echo},
+			Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+			Segments:   statefulTaskSegs(),
+			Context:    statefulCtx(nil),
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventToolCall && id == "" {
+					id = ev.ToolUse.ID
+				}
+			},
+		}); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		return id
+	}
+	a, b := firstActionID(), firstActionID()
+	if a == "" || a == b {
+		t.Errorf("two runs used the same first action id %q / %q", a, b)
+	}
+}
