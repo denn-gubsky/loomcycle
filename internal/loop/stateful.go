@@ -22,13 +22,17 @@ import (
 // patch against the state schema, merges it into Σ with null-deletion, discards
 // the reasoning, executes the named action to produce the next observation, and
 // loops. Cost is O(T): the fed prompt never grows. The full event stream (each
-// EventContextState marker) is still persisted for audit.
+// EventContextState marker) is persisted — ⚠️ AND NO LONGER ONLY FOR AUDIT:
+// statefulSigmaFromTranscript recovers a RESUMED run's Σ from the last such
+// marker (RFC DH P2), so trimming them to save transcript bytes would silently
+// make every resumed stateful run forget everything it knew.
 //
 // This is a self-contained loop, deliberately separate from the append/recap
-// Run() body so it cannot regress the shipped path. PR1 scope: autonomous runs.
-// Interactive steering, pause/park, and cross-instance resume of a stateful run
-// are not wired here yet (a stateful run is short-horizon-per-step and re-derives
-// cheaply); they compose on top later.
+// Run() body so it cannot regress the shipped path.
+//
+// Interactive steering and end_turn parking ARE wired here now (RFC DH P1), and
+// a resumed run recovers Σ from its transcript (P2). What is still absent is
+// RFC BH turn-cancel and a per-turn step budget — P3.
 
 // contextStatefulMode reports whether the resolved policy selects L2 stateful.
 func contextStatefulMode(cx *config.Context) bool {
@@ -384,7 +388,13 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	statefulSystem := buildStatefulSystem(system, toolSpecs, schema, interactive)
 	emitTool := []providers.ToolSpec{emitStateToolSpec()}
 
+	// Seeded from a resumed run's last recorded Σ (RFC DH P2); empty for a
+	// fresh one. Copied rather than aliased so the caller's map is never
+	// mutated by a merge — opts is passed by value but the map inside it is not.
 	sigma := map[string]any{}
+	for k, v := range opts.InitialState {
+		sigma[k] = v
+	}
 	// lastWritten records which step last touched each Σ key, so eviction can
 	// break ties by recency WITHIN a retention class. The class is the
 	// operator's statement of what matters; recency only orders equals.

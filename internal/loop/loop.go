@@ -192,6 +192,18 @@ type RunOptions struct {
 	// restores 'running'. nil disables pausing (direct loop callers / tests).
 	PauseGate PauseGate
 
+	// InitialState is the Σ a RESUMED stateful run starts from (RFC DH P2).
+	//
+	// ⚠️ A STATEFUL RUN'S HISTORY IS NOT ITS MESSAGES. PriorMessages carries a
+	// replayed transcript, which is exactly what stateful mode exists to not
+	// have — the model is fed only (Σ, observation). A resumed run handed only
+	// PriorMessages therefore starts from an EMPTY Σ and cheerfully continues a
+	// conversation whose every established fact it has forgotten, which is a
+	// worse failure than refusing to resume: it looks like it worked.
+	//
+	// nil = start empty, which is correct for a fresh run.
+	InitialState map[string]any
+
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
 	// a session's prior turns. Empty for a fresh run (the v0.2 case).

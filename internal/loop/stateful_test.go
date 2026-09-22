@@ -999,3 +999,124 @@ func TestRun_Stateful_InteractiveGetsTheLiftedIterationCap(t *testing.T) {
 		t.Fatal("the run did not end")
 	}
 }
+
+// sigmaCapturingProvider records the Σ it was FED on each step, which is the
+// only place a resumed run's recovered state is observable.
+type sigmaCapturingProvider struct {
+	mu      sync.Mutex
+	fed     []string
+	scripts []string
+	turn    int
+}
+
+func (p *sigmaCapturingProvider) ID() string                                   { return "sigma-cap" }
+func (p *sigmaCapturingProvider) Probe(context.Context) error                  { return nil }
+func (p *sigmaCapturingProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *sigmaCapturingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *sigmaCapturingProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			p.fed = append(p.fed, c.Text)
+		}
+	}
+	i := p.turn
+	p.turn++
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	if i < len(p.scripts) {
+		ch <- providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName, Input: json.RawMessage(p.scripts[i])}}
+	}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+func (p *sigmaCapturingProvider) firstFed() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.fed) == 0 {
+		return ""
+	}
+	return p.fed[0]
+}
+
+// ⚠️ THE DRIFT TEST. Σ reaches a waking run by two routes — the goroutine held
+// it across a live park, or it was rebuilt from the transcript after a pause,
+// snapshot restore or replica move. Two paths is the cheaper design and the
+// risk is that they disagree, so the disagreement is what gets asserted rather
+// than hoped about.
+//
+// A resumed run that started from an empty Σ would continue the conversation
+// having forgotten every fact it established, which is worse than refusing to
+// resume: it looks like it worked.
+func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *testing.T) {
+	established := map[string]any{"goal": "explain DDRAM", "decisions": "capacitors, refreshed"}
+
+	// Route 1: the live park. Turn 1 sets Σ; turn 2 is fed what the goroutine held.
+	live := &actionScriptProvider{scripts: []string{
+		`{"patch":{"goal":"explain DDRAM","decisions":"capacitors, refreshed"},"done":true,"final":"one"}`,
+		`{"patch":{},"done":true,"final":"two"}`,
+	}}
+	q := make(chan steer.Message, 4)
+	park := make(chan struct{}, 8)
+	go func() { _, _ = statefulInteractive(t, live, q, park, nil) }()
+	select {
+	case <-park:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live run never parked")
+	}
+	q <- steer.Message{Text: "go on"}
+	select {
+	case <-park:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live run never re-parked")
+	}
+	close(q)
+
+	// Route 2: the resume. InitialState is what statefulSigmaFromTranscript
+	// recovers from the last context_state marker.
+	resumed := &sigmaCapturingProvider{scripts: []string{`{"patch":{},"done":true,"final":"resumed"}`}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: resumed, Model: "x",
+		Segments:     statefulTaskSegs(),
+		Context:      statefulCtx(nil),
+		InitialState: established,
+		OnEvent:      func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("resumed run: %v", err)
+	}
+
+	// The resumed run's FIRST fed state must carry what the live run's SECOND
+	// turn was fed. Compared on the prompt, because that is the only thing the
+	// model actually sees — a Σ correct in a struct and absent from the prompt
+	// is the failure this whole phase exists to prevent.
+	for _, want := range []string{`"goal":"explain DDRAM"`, `"decisions":"capacitors, refreshed"`} {
+		if !live.sawObservation(want) {
+			t.Errorf("the LIVE park did not carry %s into the next turn: %v", want, live.observed)
+		}
+		if !strings.Contains(resumed.firstFed(), want) {
+			t.Errorf("the RESUMED run was not fed %s — it starts from an empty Σ and has "+
+				"forgotten what the run established:\n%s", want, resumed.firstFed())
+		}
+	}
+}
+
+// Non-vacuity: a run with no InitialState still starts empty. A seed that
+// leaked in from somewhere would make the test above pass for the wrong reason.
+func TestRun_Stateful_WithoutInitialStateTheRunStartsEmpty(t *testing.T) {
+	prov := &sigmaCapturingProvider{scripts: []string{`{"patch":{},"done":true,"final":"ok"}`}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  statefulCtx(nil),
+		OnEvent:  func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(prov.firstFed(), "Current state:\n{}") {
+		t.Errorf("a fresh stateful run was fed a non-empty state:\n%s", prov.firstFed())
+	}
+}
