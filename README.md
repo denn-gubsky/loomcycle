@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.87.0) closed a privilege-escalation defect and three
+The most recent line (v1.88.0) made the structured-state context mode usable
+from a terminal. An agent on `context.mode: stateful` ended its run after every
+answer whatever `interactive` said — the loop had no park and no steering at all
+— and a resumed one started from an empty state, continuing a conversation whose
+every established fact it had forgotten. It now parks for the operator's next
+message, takes that message as its next observation, and recovers its state from
+the transcript after a pause, snapshot restore or replica move.
+
+Before it, v1.87.0 closed a privilege-escalation defect and three
 failures an operator found in one afternoon. ⚠️ Minting an operator token with
 no `scopes` used to default to `substrate:admin`, so a mistyped key — sending
 `allowed_scopes`, which is what the response echoes — silently handed out a
