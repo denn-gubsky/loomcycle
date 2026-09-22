@@ -2228,9 +2228,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// stateful run pulsed only while parked: a working one kept a NULL
 	// last_heartbeat_at and the sweeper failed it as heartbeat_timeout ten minutes
 	// in, with its goroutine still running and spending tokens.
+	//
+	// The goroutine takes its OWN copy of ctx: Run reassigns ctx below this
+	// point (the compact-request stamp, per-iteration values), and a closure
+	// over the variable reads it while that write happens — a data race that
+	// did not exist while this block sat below the last reassignment.
 	if opts.OnHeartbeat != nil {
 		hbDone := make(chan struct{})
 		defer close(hbDone)
+		hbCtx := ctx
 		go func() {
 			t := time.NewTicker(parkHeartbeatInterval)
 			defer t.Stop()
@@ -2238,7 +2244,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				select {
 				case <-hbDone:
 					return
-				case <-ctx.Done():
+				case <-hbCtx.Done():
 					return
 				case <-t.C:
 					opts.OnHeartbeat()
