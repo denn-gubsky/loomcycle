@@ -2189,8 +2189,8 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	// RFC CR tier-routing: `context.mode: auto` resolves to a concrete mode from
 	// the RESOLVED provider — a local backend → recap (schema-free, safe for a
-	// weaker model), a frontier API → stateful. An interactive run never resolves
-	// to stateful (that loop has no steer/park), so it takes recap. Resolved once
+	// weaker model), a frontier API → stateful. An interactive run takes recap
+	// (see resolveAutoContextMode for why that outlived its reason). Resolved once
 	// here on a CLONE (never mutating the shared agent def); a mid-run provider
 	// fallback keeps the mode chosen at start.
 	if contextAutoMode(opts.Context) {

@@ -64,9 +64,15 @@ func StatefulMode(cx *config.Context, local, interactive bool) bool {
 
 // resolveAutoContextMode turns mode:auto into a concrete mode (RFC CR tier-
 // routing): a local backend → recap (schema-free, safe for a weaker model), a
-// frontier API → stateful. An interactive run never resolves to stateful — that
-// loop has no steer/park — so it takes recap regardless of tier. Returns a CLONE
-// carrying the concrete mode so the shared agent def is never mutated.
+// frontier API → stateful. An interactive run takes recap regardless of tier.
+//
+// ⚠️ THE ORIGINAL REASON FOR THAT IS GONE: it said the stateful loop had no
+// steer or park, and RFC DH P1 gave it both. The clause is kept on purpose
+// until an interactive stateful chat has been verified end to end — Σ carried
+// across turns in the embedded terminal, on a frontier and on a local model —
+// because stateful is the less forgiving mode for a model that fumbles its
+// emit shape. An explicit `mode: stateful` has always bypassed it. Returns a
+// CLONE carrying the concrete mode so the shared agent def is never mutated.
 func resolveAutoContextMode(cx *config.Context, local, interactive bool) *config.Context {
 	mode := config.ContextModeStateful
 	if local || interactive {
