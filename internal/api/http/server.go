@@ -7634,6 +7634,21 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if perr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusServiceUnavailable, msg: "provider unavailable: " + perr.Error()}
 	}
+	// ⚠️ A STATEFUL RUN HAS NO HISTORY TO COMPACT — its state object is rebuilt
+	// every step and bounded by eviction. This used to proceed: summarise the
+	// replayed transcript (a model call), bank the span to memory, push the
+	// summary to the loop, and answer {compacted: true} — after which the
+	// stateful loop dropped the push. Refused before any of that is spent. The
+	// run's own recorded context wins over the definition's, as on resume.
+	runCx := agentDef.Context
+	if rc, ok := decodeRunConfig(run.RunConfig); ok && rc.Context != nil {
+		runCx = rc.Context
+	}
+	if loop.StatefulMode(runCx, provider.Capabilities().Local, run.Interactive) {
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "stateful_run",
+			msg: "a stateful run has no conversation history to compact; its state is bounded by eviction " +
+				"(declare x-retention: scratch or derived on state_schema properties that are safe to drop)"}
+	}
 
 	// Resolve the run's compaction keep-N / keep-first / target / summary-model
 	// (agent-def settings; defaults applied) so a manual compact keeps recent

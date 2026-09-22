@@ -2,10 +2,12 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -163,5 +165,37 @@ func TestCompactRun_RefusesWhenSummaryIsNotSmaller(t *testing.T) {
 	}
 	if !strings.Contains(res.Reason, "not smaller") {
 		t.Errorf("reason does not say why: %q", res.Reason)
+	}
+}
+
+// ⚠️ A STATEFUL RUN HAS NO HISTORY TO COMPACT, and a manual compact used to
+// pretend otherwise: it summarised the replayed transcript (a model call),
+// banked the span, pushed the summary to the loop — which dropped it — and
+// answered compacted:true. It is refused before anything is spent.
+func TestCompactRun_RefusesAStatefulRun(t *testing.T) {
+	mode := config.ContextModeStateful
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"compactor": {Provider: "scripted", Model: "stub-model", Tools: []string{},
+				Context: &config.Context{Mode: &mode}},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	prov := &scriptedProvider{defaultS: []providers.Event{
+		{Type: providers.EventText, Text: "COMPACTED SUMMARY"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}},
+	}}
+	srv, _ := makeServer(t, prov, cfg)
+	_, _, runID := seedContinuationSession(t, srv, 8, 1)
+
+	_, err := srv.CompactRun(context.Background(), runID)
+	var ce *compactErr
+	if !errors.As(err, &ce) || ce.status != 409 || ce.code != "stateful_run" {
+		t.Fatalf("CompactRun on a stateful run: err = %v, want a 409 stateful_run refusal", err)
+	}
+	if n := prov.calls.Load(); n != 0 {
+		t.Errorf("the refusal came after %d model call(s) — the summary was paid for and thrown away", n)
 	}
 }
