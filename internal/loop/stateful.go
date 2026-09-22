@@ -523,6 +523,20 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		if opts.OnHeartbeat != nil {
 			opts.OnHeartbeat()
 		}
+		// Cooperative pause (RFC X / F41), at the same boundary the append loop
+		// parks at: before a model call, never between an action and its
+		// result. ⚠️ THIS LOOP NEVER CHECKED IT, so a runtime pause did not
+		// quiesce a stateful run — it kept calling the provider while the
+		// runtime reported itself paused, Pause() waited out its whole timeout,
+		// and the row never reached pause_state='paused', which is the only
+		// state resume re-dispatches. Here Σ is persisted (the last
+		// context_state) and so is the pending observation (a tool_result or
+		// the operator's user_input), which is what a resume rebuilds from.
+		if opts.PauseGate != nil && opts.PauseGate.PauseRequested() {
+			if err := opts.PauseGate.Park(ctx); err != nil {
+				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
+			}
+		}
 		msgs := []providers.Message{statefulUserMessage(sigma, obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {

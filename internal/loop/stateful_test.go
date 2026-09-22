@@ -1625,3 +1625,51 @@ func TestRun_Stateful_AProviderFaultFallsBack(t *testing.T) {
 		t.Errorf("run usage attributes provider %q, want the serving p2", res.Usage.Provider)
 	}
 }
+
+// ⚠️ A RUNTIME PAUSE NEVER REACHED A STATEFUL RUN: the gate is checked at the
+// top of the append loop's iteration only. The run kept calling its provider
+// while the runtime reported itself paused, and never reached
+// pause_state='paused' — the one state resume re-dispatches.
+func TestRun_Stateful_ParksAtAStepBoundaryWhenPaused(t *testing.T) {
+	gate := newFakePauseGate()
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{"n":1},"done":true,"final":"ok"}`}}
+	done := make(chan struct{})
+	var res RunResult
+	var runErr error
+	go func() {
+		defer close(done)
+		res, runErr = Run(context.Background(), RunOptions{
+			Provider: prov, Model: "x",
+			Segments:  statefulTaskSegs(),
+			Context:   statefulCtx(nil),
+			PauseGate: gate,
+			OnEvent:   func(providers.Event) {},
+		})
+	}()
+	deadline := time.After(2 * time.Second)
+	for !gate.isParked() {
+		select {
+		case <-done:
+			t.Fatal("the stateful run finished without parking — PauseGate was never consulted")
+		case <-deadline:
+			t.Fatal("timed out waiting for the stateful run to park")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	prov.mu.Lock()
+	callsWhileParked := prov.turn
+	prov.mu.Unlock()
+	if callsWhileParked != 0 {
+		t.Errorf("provider called %d time(s) while the run was parked for a pause", callsWhileParked)
+	}
+	gate.release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the run did not finish after the pause was released")
+	}
+	if runErr != nil || res.StopReason != "end_turn" {
+		t.Errorf("after resume: stop=%q err=%v", res.StopReason, runErr)
+	}
+}
