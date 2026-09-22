@@ -219,6 +219,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		}
 	}
 	priorMessages := replayTranscript(runEvents)
+	// RFC DH P2: a stateful run's history is Σ, not its messages. Recovered
+	// unconditionally — nil for a non-stateful run, which is what its loop
+	// expects — so the resume path needs no mode branch it could get wrong.
+	statefulSigma := statefulSigmaFromTranscript(runEvents)
 
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
 	// Phase-3 watcher parked mid-wg.Wait, so its transcript ends on a dangling
@@ -461,6 +465,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Dispatcher:          dispatcher,
 		Segments:            segments,
 		PriorMessages:       priorMessages,
+		InitialState:        statefulSigma, // RFC DH P2: nil unless the run was stateful
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
 		MaxTokens:           agentDef.MaxTokens,      // RFC DC P2: restored, not re-derived
