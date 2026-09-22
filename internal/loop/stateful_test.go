@@ -1062,7 +1062,12 @@ func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *tes
 	}}
 	q := make(chan steer.Message, 4)
 	park := make(chan struct{}, 8)
-	go func() { _, _ = statefulInteractive(t, live, q, park, nil) }()
+	// ⚠️ AWAITED, NOT FIRED AND FORGOTTEN. A run left in parkForInput outlives
+	// the test that started it, and parkHeartbeatInterval is a package-level var
+	// another test MUTATES — so a leaked park reads it while that test writes
+	// it, and the race surfaces in the innocent test rather than this one.
+	liveDone := make(chan struct{})
+	go func() { defer close(liveDone); _, _ = statefulInteractive(t, live, q, park, nil) }()
 	select {
 	case <-park:
 	case <-time.After(3 * time.Second):
@@ -1075,6 +1080,11 @@ func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *tes
 		t.Fatal("the live run never re-parked")
 	}
 	close(q)
+	select {
+	case <-liveDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live run did not finish after its queue closed")
+	}
 
 	// Route 2: the resume. InitialState is what statefulSigmaFromTranscript
 	// recovers from the last context_state marker.
