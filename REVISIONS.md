@@ -8,6 +8,59 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.89.0
+
+*A stateful run reports the tokens it spends — and until now it spent them against no budget at all.*
+
+One PR. Small, and worth deploying for the second paragraph rather than the first.
+
+### ⚠️ `mode: stateful` was exempt from token budgets (#1331)
+
+Reported as `tokens: 0 in / 0 out` on a RUNNING interactive chat, which is
+the visible corner of it and the least of it.
+
+`runStateful` accumulated its totals into the final `EventDone` and emitted **no
+per-call `EventUsage` at all**. That event is what three separate subsystems key
+off:
+
+| consumer | consequence |
+|---|---|
+| the UI gauge | a stateful run read `0 in / 0 out` for its whole life |
+| the RFC AV ledger | `recordCallUsage` never fired → `token_usage` had no rows → `GET /v1/_usage` was blind to stateful runs → `runs.cost` summed an empty set to NULL |
+| **the RFC AW budgets** | `limits.Add` never fired → a `mode: stateful` agent spent tokens that counted against **no per-scope budget** |
+
+The last row is why this is not a display bug. **An operator who set a hard
+token limit was not protected from this mode**, and nothing said so — the run
+looked like it cost nothing.
+
+The event is now stamped like the append loop's: the effective window, so the
+gauge has a denominator, and the SERVING provider, so the ledger records which
+key paid across a mid-run fallback.
+
+### A test that leaked a parked goroutine
+
+Found by CI going red on a DATA RACE that named the wrong test.
+`parkHeartbeatInterval` is a package-level var one test lowers to keep itself
+fast — safe only while no other goroutine is inside `parkForInput`, which reads
+it. v1.88.0's resume test started an interactive run and never awaited it, so
+the leaked park read the var while the next test wrote it, and the failure
+surfaced a long way from the cause. Awaited now, with a note at the var saying
+what mutating it costs.
+
+### Upgrading
+
+- **Check your usage figures for stateful agents.** Every `mode: stateful` run
+  before v1.89.0 wrote NO ledger rows, so its tokens are absent from
+  `GET /v1/_usage`, its `runs.cost` is NULL, and it never incremented a budget
+  counter. The history cannot be reconstructed — the per-call figures were never
+  recorded. Counters are correct from this release forward.
+- **⚠️ If you rely on RFC AW token budgets, re-check them against a tenant that
+  runs stateful agents.** Its month-to-date total was under-counted by exactly
+  those runs.
+- **The adapters are bumped to 1.89.0 with NO surface change**, as in v1.88.0 —
+  the bump keeps "the client version matches the runtime version" true rather
+  than announcing anything new.
+
 ## What's in v1.88.0
 
 *A stateful chat waits for you instead of ending, and remembers what it knew when it wakes up.*

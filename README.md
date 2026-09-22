@@ -182,7 +182,13 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.88.0) made the structured-state context mode usable
+The most recent line (v1.89.0) closed a token-budget bypass: the structured-state
+loop never emitted a per-call usage event, so a `mode: stateful` run wrote no
+ledger rows, reported no cost, and — the part that matters — incremented no
+per-scope budget counter. An operator who had set a hard token limit was not
+protected from that mode. It reports its spend now.
+
+Before it, v1.88.0 made the structured-state context mode usable
 from a terminal. An agent on `context.mode: stateful` ended its run after every
 answer whatever `interactive` said — the loop had no park and no steering at all
 — and a resumed one started from an empty state, continuing a conversation whose
