@@ -948,6 +948,12 @@ func finishTurnCancel(ctx context.Context, opts *RunOptions, messages []provider
 // drift from the loop that enforces it. One constant, two readers.
 const DefaultMaxIterations = 16
 
+// ⚠️ A PACKAGE-LEVEL VAR THAT TESTS MUTATE. A test lowering it to keep itself
+// fast is only safe while no OTHER goroutine is inside parkForInput, which
+// reads it — and a test that starts an interactive run without AWAITING it
+// leaves exactly such a goroutine behind. The race then surfaces in whichever
+// innocent test runs next and writes the var, which is a long way from the test
+// that actually leaked. Await your runs.
 var parkHeartbeatInterval = 30 * time.Second
 
 // parkForInput blocks a persistent interactive run until an operator steering

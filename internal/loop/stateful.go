@@ -462,6 +462,33 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 					footprintMeasured = true
 				}
 				lastWindow = effectiveWindow(usage.MaxContextTokens, opts)
+
+				// ⚠️ THIS LOOP NEVER REPORTED A SINGLE TOKEN IT SPENT. It
+				// accumulated `total` and attached it to the final EventDone,
+				// and emitted no per-call EventUsage at all — which is the
+				// event three separate subsystems key off:
+				//
+				//   the UI gauge        → a stateful run read "0 in / 0 out"
+				//                         for its whole life
+				//   the RFC AV ledger   → recordCallUsage never fired, so
+				//                         token_usage had no rows, /v1/_usage
+				//                         was blind to stateful runs, and
+				//                         runs.cost summed an empty set to NULL
+				//   the RFC AW budgets  → limits.Add never fired, so a
+				//                         mode:stateful agent spent tokens that
+				//                         counted against NO per-scope budget
+				//
+				// The last one is the reason this is not a display bug. An
+				// operator who set a hard token limit was not protected from
+				// this mode, and nothing said so.
+				//
+				// Stamped like the append loop's: the effective window so the
+				// gauge has a denominator, and the SERVING provider so the
+				// ledger records which key paid across a mid-run fallback.
+				iterUsage := *usage
+				iterUsage.MaxContextTokens = lastWindow
+				iterUsage.Provider = opts.Provider.ID()
+				emit(providers.Event{Type: providers.EventUsage, Usage: &iterUsage})
 			}
 			if err != nil && !errors.Is(err, errNoEmitState) {
 				// Transport or provider fault — nothing the model can correct.

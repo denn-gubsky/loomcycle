@@ -1062,7 +1062,12 @@ func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *tes
 	}}
 	q := make(chan steer.Message, 4)
 	park := make(chan struct{}, 8)
-	go func() { _, _ = statefulInteractive(t, live, q, park, nil) }()
+	// ⚠️ AWAITED, NOT FIRED AND FORGOTTEN. A run left in parkForInput outlives
+	// the test that started it, and parkHeartbeatInterval is a package-level var
+	// another test MUTATES — so a leaked park reads it while that test writes
+	// it, and the race surfaces in the innocent test rather than this one.
+	liveDone := make(chan struct{})
+	go func() { defer close(liveDone); _, _ = statefulInteractive(t, live, q, park, nil) }()
 	select {
 	case <-park:
 	case <-time.After(3 * time.Second):
@@ -1075,6 +1080,11 @@ func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *tes
 		t.Fatal("the live run never re-parked")
 	}
 	close(q)
+	select {
+	case <-liveDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live run did not finish after its queue closed")
+	}
 
 	// Route 2: the resume. InitialState is what statefulSigmaFromTranscript
 	// recovers from the last context_state marker.
@@ -1118,5 +1128,95 @@ func TestRun_Stateful_WithoutInitialStateTheRunStartsEmpty(t *testing.T) {
 	}
 	if !strings.Contains(prov.firstFed(), "Current state:\n{}") {
 		t.Errorf("a fresh stateful run was fed a non-empty state:\n%s", prov.firstFed())
+	}
+}
+
+// usageProvider reports real token counts on every stateful step.
+type usageProvider struct {
+	mu      sync.Mutex
+	turn    int
+	scripts []string
+	in, out int
+	maxCtx  int
+}
+
+func (p *usageProvider) ID() string                                   { return "usage-prov" }
+func (p *usageProvider) Probe(context.Context) error                  { return nil }
+func (p *usageProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *usageProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: p.maxCtx}
+}
+func (p *usageProvider) Call(_ context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	i := p.turn
+	p.turn++
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	if i < len(p.scripts) {
+		ch <- providers.Event{Type: providers.EventToolCall,
+			ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName, Input: json.RawMessage(p.scripts[i])}}
+	}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use",
+		Usage: &providers.Usage{InputTokens: p.in, OutputTokens: p.out}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ THIS LOOP NEVER REPORTED A SINGLE TOKEN IT SPENT, and it is not a display
+// bug. EventUsage is what three subsystems key off — the UI gauge, the RFC AV
+// per-call ledger (recordCallUsage), and the RFC AW budget counters
+// (limits.Add) — and a stateful run emitted none of them. So a mode:stateful
+// agent spent tokens that counted against NO per-scope budget, and an operator
+// who set a hard limit was not protected from it.
+//
+// Reported as "tokens: 0 in / 0 out" on a RUNNING interactive chat, which is
+// the visible corner of it.
+func TestRun_Stateful_ReportsPerCallUsage(t *testing.T) {
+	echo := &echoTool{reply: "observed"}
+	prov := &usageProvider{in: 4287, out: 557, maxCtx: 40_000, scripts: []string{
+		`{"patch":{"n":1},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{"n":2},"done":true,"final":"done"}`,
+	}}
+	var usages []*providers.Usage
+	var mu sync.Mutex
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventUsage && ev.Usage != nil {
+				mu.Lock()
+				usages = append(usages, ev.Usage)
+				mu.Unlock()
+			}
+		},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
+	// ONE PER MODEL CALL, not one per run: the ledger is per-call by design, and
+	// a single summary row would misattribute a mid-run provider fallback.
+	if len(usages) != 2 {
+		t.Fatalf("got %d usage events for a 2-step run, want 2 — the ledger, the budget "+
+			"counters and the gauge all key off this event", len(usages))
+	}
+	for i, u := range usages {
+		if u.InputTokens != 4287 || u.OutputTokens != 557 {
+			t.Errorf("usage[%d] = %d in / %d out, want the provider's own counts", i, u.InputTokens, u.OutputTokens)
+		}
+		// The gauge needs a denominator and the ledger needs to know which key
+		// paid — both ride this event in the append loop, so both must here.
+		if u.MaxContextTokens != 40_000 {
+			t.Errorf("usage[%d] carries window %d, want the effective 40000 — the gauge has "+
+				"no denominator without it", i, u.MaxContextTokens)
+		}
+		if u.Provider != "usage-prov" {
+			t.Errorf("usage[%d] provider = %q, want the serving provider — the ledger records "+
+				"which key paid across a mid-run fallback", i, u.Provider)
+		}
 	}
 }
