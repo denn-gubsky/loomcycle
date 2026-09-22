@@ -250,6 +250,8 @@ export interface EventPayload {
   type: string;
   text?: string;
   tool_use?: { id: string; name: string; input: unknown };
+  // Not sent by the server on any event frame: a tool_result carries its call's
+  // id as `tool_use.id`. Read it through lib/toolSettlement, never directly.
   tool_use_id?: string;
   is_error?: boolean;
   stop_reason?: string;

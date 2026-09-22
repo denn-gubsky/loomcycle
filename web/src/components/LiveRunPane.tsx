@@ -6,6 +6,7 @@ import {
   type RunStatus,
 } from "../hooks/useRunStream";
 import { type TranscriptEvent } from "../api";
+import { settledToolIds } from "../lib/toolSettlement";
 
 // LiveRunPane renders one run's live transcript + controls. Decoupled
 // from useRunStream (takes plain props) so both the single-run tab and
@@ -112,11 +113,7 @@ export default function LiveRunPane({
   // model (request in flight / response streaming in).
   const busy = running && !awaitingInput && !pendingInterrupt;
   const busyHint = useMemo(() => {
-    const resultIds = new Set<string>();
-    for (const e of events) {
-      const rid = e.event?.tool_use_id;
-      if (rid) resultIds.add(rid);
-    }
+    const resultIds = settledToolIds(events);
     for (let i = events.length - 1; i >= 0; i--) {
       const tu = events[i].event?.tool_use;
       if (tu?.id && !resultIds.has(tu.id)) return `running ${tu.name}…`;

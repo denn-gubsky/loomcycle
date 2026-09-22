@@ -13,6 +13,7 @@ import {
   getTranscript,
 } from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
+import { settledToolIds } from "../lib/toolSettlement";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
@@ -324,13 +325,7 @@ type AwaitedState =
 // best-effort: if the operator filters events somehow, the
 // derivation degrades to "running".
 function deriveAwaitedState(events: TranscriptEvent[]): AwaitedState {
-  const settledIDs = new Set<string>();
-  for (const row of events) {
-    const ev = row.event ?? ({ type: row.type } as EventPayload);
-    if (ev.type === "tool_result" && ev.tool_use_id) {
-      settledIDs.add(ev.tool_use_id);
-    }
-  }
+  const settledIDs = settledToolIds(events);
   // Walk from newest to oldest looking for an unresolved tool_call.
   for (let i = events.length - 1; i >= 0; i--) {
     const row = events[i];
