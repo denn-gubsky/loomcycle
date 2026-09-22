@@ -1293,3 +1293,113 @@ func TestRun_Stateful_HeartbeatsWhileAStepIsInFlight(t *testing.T) {
 			"would fail this run as heartbeat_timeout while it is working (total beats %d)", beats.get())
 	}
 }
+
+// interactiveWireShape drives an interactive run through two operator turns
+// and returns the frame types a client sees, reduced to the ones that carry
+// run-lifecycle meaning (consecutive text frames collapsed).
+func interactiveWireShape(t *testing.T, prov providers.Provider, cx *config.Context) []providers.EventType {
+	t.Helper()
+	q := make(chan steer.Message, 4)
+	park := make(chan struct{}, 8)
+	var mu sync.Mutex
+	var shape []providers.EventType
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(context.Background(), RunOptions{
+			Provider: prov, Model: "x",
+			Segments:    statefulTaskSegs(),
+			Context:     cx,
+			Interactive: true,
+			SteerQueue:  q,
+			OnEvent: func(ev providers.Event) {
+				switch ev.Type {
+				case providers.EventText, providers.EventDone, providers.EventAwaitingInput:
+					mu.Lock()
+					if n := len(shape); !(ev.Type == providers.EventText && n > 0 && shape[n-1] == providers.EventText) {
+						shape = append(shape, ev.Type)
+					}
+					mu.Unlock()
+				}
+				if ev.Type == providers.EventAwaitingInput {
+					park <- struct{}{}
+				}
+			},
+		})
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-park:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("turn %d never parked", i+1)
+		}
+		if i == 0 {
+			q <- steer.Message{Text: "and then?"}
+		}
+	}
+	close(q)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the run did not end after the queue closed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]providers.EventType(nil), shape...)
+}
+
+// ⚠️ DONE IS TERMINAL TO EVERY CONSUMER, and the stateful loop emitted one at
+// each turn boundary before parking. The embedded terminal marked the chat
+// completed after its first answer and sent the next message as a NEW
+// continuation run — one that started from an empty Σ, while the parked run
+// sat holding its slot. The claim that the append loop did the same was never
+// checked; this is the check.
+func TestRun_Stateful_AnInteractiveRunHasTheAppendLoopsWireShape(t *testing.T) {
+	appendShape := interactiveWireShape(t, &textProvider{}, nil)
+	statefulShape := interactiveWireShape(t, &actionScriptProvider{scripts: []string{
+		`{"patch":{"n":1},"done":true,"final":"answer one"}`,
+		`{"patch":{"n":2},"done":true,"final":"answer two"}`,
+	}}, statefulCtx(nil))
+
+	if fmt.Sprint(statefulShape) != fmt.Sprint(appendShape) {
+		t.Errorf("an interactive stateful run's frames differ from the append loop's:\n"+
+			"  append:   %v\n  stateful: %v", appendShape, statefulShape)
+	}
+	var dones int
+	for _, ty := range statefulShape {
+		if ty == providers.EventDone {
+			dones++
+		}
+	}
+	if dones != 1 || statefulShape[len(statefulShape)-1] != providers.EventDone {
+		t.Errorf("want exactly one done, as the last lifecycle frame; got %v", statefulShape)
+	}
+}
+
+// ⚠️ THE OTHER HALF OF ONE TERMINAL DONE: a re-attached run whose operator
+// never came back ended with no done AT ALL, so a consumer waiting for the run
+// to finish never heard that it had.
+func TestRun_Stateful_AnAbandonedStartParkedRunStillEndsWithDone(t *testing.T) {
+	q := make(chan steer.Message)
+	close(q)
+	var sawDone bool
+	res, err := Run(context.Background(), RunOptions{
+		Provider: &actionScriptProvider{}, Model: "x",
+		Segments:    statefulTaskSegs(),
+		Context:     statefulCtx(nil),
+		Interactive: true,
+		SteerQueue:  q,
+		StartParked: true,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventDone {
+				sawDone = true
+			}
+		},
+	})
+	if err != nil || res.StopReason != "end_turn" {
+		t.Fatalf("stop=%q err=%v", res.StopReason, err)
+	}
+	if !sawDone {
+		t.Error("an abandoned StartParked stateful run ended without emitting done")
+	}
+}

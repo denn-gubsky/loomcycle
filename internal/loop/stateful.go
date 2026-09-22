@@ -417,6 +417,19 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	holder := &tools.ExecStateHolder{Sigma: sigma}
 	dispatchCtx := tools.WithExecutionState(ctx, holder) // the action sees the live Σ (Context op=state)
 
+	var total providers.Usage
+	// finish emits the run's ONE terminal done. ⚠️ DONE MEANS THE RUN IS OVER, to
+	// every consumer that reads it — the Web UI marks the run completed on it, and
+	// the MCP / connector spawn paths take their final stop reason from it. This
+	// loop used to emit one at every turn boundary before parking, so the embedded
+	// terminal showed a parked chat as finished after its first answer and sent
+	// the operator's next message as a brand-new continuation run. The append loop
+	// has never emitted a mid-run done: the turn boundary of an interactive run is
+	// awaiting_input, and per-call usage rides EventUsage.
+	finish := func(stop string) {
+		emit(providers.Event{Type: providers.EventDone, StopReason: stop, Usage: &total})
+	}
+
 	obs := initialObservation(initial)
 	// StartParked: a re-attached interactive run waits for the operator before
 	// spending a model call. Mirrors Run's handling — an abandoned park ends the
@@ -424,11 +437,11 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	if opts.StartParked && interactive {
 		next, resumed := parkForStatefulTurn(ctx, &opts, 0, emit)
 		if !resumed {
+			finish("end_turn")
 			return RunResult{StopReason: "end_turn", State: sigma}, nil
 		}
 		obs = next
 	}
-	var total providers.Usage
 	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
 	for iter := 0; iter < maxIter; iter++ {
@@ -637,7 +650,6 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				final = es.Reasoning
 			}
 			emit(providers.Event{Type: providers.EventText, Text: final})
-			emit(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &total})
 
 			// ⚠️ RFC DH P1: AN INTERACTIVE RUN PARKS HERE INSTEAD OF ENDING, and
 			// this one line is the whole of the reported bug. The loop reached
@@ -662,6 +674,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				// Cancelled while parked, or the queue closed: the run ends on
 				// the turn it had already completed.
 			}
+			finish("end_turn")
 			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 		}
 
@@ -706,7 +719,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		}
 	}
 
-	emit(providers.Event{Type: providers.EventDone, StopReason: "max_iterations", Usage: &total})
+	finish("max_iterations")
 	return RunResult{StopReason: "max_iterations", Iterations: maxIter, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 }
 
