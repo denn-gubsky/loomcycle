@@ -31,6 +31,10 @@ func TestMerge_RFC7386(t *testing.T) {
 		{"object replaces a scalar", `{"a":1}`, `{"a":{"x":1}}`, `{"a":{"x":1}}`},
 		{"scalar replaces an object", `{"a":{"x":1}}`, `{"a":5}`, `{"a":5}`},
 		{"nested null deletes a subkey", `{"o":{"x":1,"y":2}}`, `{"o":{"x":null}}`, `{"o":{"y":2}}`},
+		// RFC 7386: an object patched onto a missing or non-object value is
+		// MergePatch({}, value), so its nulls are removed, not stored.
+		{"nulls in a new object are dropped", `{}`, `{"o":{"x":null,"y":1}}`, `{"o":{"y":1}}`},
+		{"nulls in an object replacing a scalar are dropped", `{"o":5}`, `{"o":{"x":null,"y":1}}`, `{"o":{"y":1}}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
