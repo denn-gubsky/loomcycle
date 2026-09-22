@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -366,5 +367,57 @@ func TestMessages_AStatefulContinuationStartsFromTheSessionsState(t *testing.T) 
 	}
 	if strings.Contains(first, "ANSWER ONE") || strings.Contains(first, "explain DDRAM\n") {
 		t.Errorf("the continuation was fed the replayed conversation:\n%s", first)
+	}
+}
+
+// The same continuation through RunOnce — the universal path gRPC, MCP,
+// webhooks and the scheduler use, which no HTTP test reaches.
+func TestRunOnce_AStatefulContinuationStartsFromTheSessionsState(t *testing.T) {
+	mode := config.ContextModeStateful
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{
+		"statefulchat": {Model: "stub-model", Tools: []string{}, SystemPrompt: "you chat",
+			Context: &config.Context{Mode: &mode}},
+	}
+	prov := &sigmaFedProvider{}
+	srv, _ := makeServer(t, prov, cfg)
+	ctx := context.Background()
+
+	sess, err := srv.store.CreateSession(ctx, "", "statefulchat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_prior", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range multiTurnStatefulTranscript(t)[:6] {
+		if err := srv.store.AppendEvent(ctx, prior.ID, ev.Type, ev.Payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := srv.store.FinishRun(ctx, prior.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.RunOnce(ctx, runner.RunInput{
+		Agent: "statefulchat", SessionID: sess.ID, UserID: "alice",
+		Segments: []loop.PromptSegment{{Role: "user",
+			Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "and what about refresh?"}}}},
+	}, runner.RunCallbacks{OnEvent: func(providers.Event) {}}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	prov.mu.Lock()
+	first := ""
+	if len(prov.fed) > 0 {
+		first = prov.fed[0]
+	}
+	prov.mu.Unlock()
+	if !strings.Contains(first, `"found":"capacitors"`) {
+		t.Errorf("the continuation started from an empty Σ:\n%s", first)
+	}
+	if !strings.HasSuffix(first, "Latest observation:\nTask: and what about refresh?") {
+		t.Errorf("the continuation's first observation is not its own message:\n%s", first)
 	}
 }
