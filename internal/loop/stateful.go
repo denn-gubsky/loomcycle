@@ -770,6 +770,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			break
 		}
 
+		sigmaBefore := sigmaTokens(sigma)
 		sigma = statepatch.Merge(sigma, es.Patch)
 		for k := range es.Patch {
 			lastWritten[k] = iter
@@ -781,7 +782,16 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		// Σ — the next patch would have nothing well-formed to merge into. The
 		// structural equivalent is EVICTION of the least significant entries.
 		var evicted []string
-		if aboveBackstop(opts.Compaction, lastIn, lastWindow) && backstopAvailable(opts.Compaction) {
+		// ⚠️ lastIn MEASURED THE REQUEST THIS STEP ANSWERED, which carried the
+		// previous Σ. A large patch merged just now was never weighed before
+		// the next request went out, so one big write could take the prompt
+		// past the window with no eviction first. The gate counts the growth;
+		// what is REPORTED stays the provider's own number.
+		gateIn := lastIn
+		if grown := lastIn - sigmaBefore + sigmaTokens(sigma); grown > gateIn {
+			gateIn = grown
+		}
+		if aboveBackstop(opts.Compaction, gateIn, lastWindow) && backstopAvailable(opts.Compaction) {
 			// The budget is Σ's share of the window. The preamble is fixed for
 			// the run and the observation is one step, so Σ is the only part
 			// eviction can move.
@@ -798,7 +808,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				holder.Sigma = sigma
 				evicted = plan
 				lastIn = preambleTokens + sigmaTokens(sigma)
-			} else if footprintMeasured {
+			} else if footprintMeasured && aboveBackstop(opts.Compaction, lastIn, lastWindow) {
+				// Reported only on the provider's own number — the grown
+				// estimate may open the gate, but it is not a finding.
 				// Nothing evictable and still over: every key is core, or the
 				// preamble alone is the problem. Either way the run is heading
 				// for the provider's limit and must say so.

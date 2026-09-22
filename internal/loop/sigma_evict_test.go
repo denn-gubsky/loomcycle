@@ -366,3 +366,69 @@ func TestRunStateful_EvictedStateIsBankedBeforeItIsDropped(t *testing.T) {
 			"recovered: %.200q", joined)
 	}
 }
+
+// oneBigWriteProvider reports a small footprint on every call, and writes one
+// large scratch note on step 0 — the growth only the merge can see.
+type oneBigWriteProvider struct {
+	mu   sync.Mutex
+	step int
+}
+
+func (p *oneBigWriteProvider) ID() string                                   { return "one-big-write" }
+func (p *oneBigWriteProvider) Probe(context.Context) error                  { return nil }
+func (p *oneBigWriteProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *oneBigWriteProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true, MaxContextTokens: 10000}
+}
+func (p *oneBigWriteProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	s := p.step
+	p.step++
+	p.mu.Unlock()
+	out := fmt.Sprintf(`{"patch":{"spine":"task","note":%q},"action":{"tool":"Noop","input":{}}}`, strings.Repeat("n", 40000))
+	if s > 0 {
+		out = `{"patch":{},"done":true,"final":"fin"}`
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+		ID: fmt.Sprintf("t%d", s), Name: emitStateToolName, Input: json.RawMessage(out)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use",
+		Usage: &providers.Usage{InputTokens: 100, MaxContextTokens: 10000}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ EVICTION WEIGHED THE REQUEST BEFORE THIS STEP'S PATCH. The footprint came
+// from the call that produced the patch, so a single large write — here ~10000
+// tokens into a 10000-token window — was never counted before the next
+// request went out.
+func TestRunStateful_ALargePatchIsWeighedBeforeTheNextRequest(t *testing.T) {
+	m := config.ContextModeStateful
+	schema := map[string]any{"type": "object", "properties": map[string]any{
+		"spine": map[string]any{"type": "string", retentionKeyword: RetentionCore},
+		"note":  map[string]any{"type": "string", retentionKeyword: RetentionScratch},
+	}}
+	var mu sync.Mutex
+	var evicted []string
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: &oneBigWriteProvider{}, Model: "x",
+		Tools:      []tools.Tool{noopTool{}},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{noopTool{}}),
+		Segments:   steerSegs(),
+		Context:    &config.Context{Mode: &m, StateSchema: schema},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventContextState && ev.ContextState != nil {
+				mu.Lock()
+				evicted = append(evicted, ev.ContextState.Evicted...)
+				mu.Unlock()
+			}
+		},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(evicted) != 1 || evicted[0] != "note" {
+		t.Errorf("evicted %v; a patch that fills the window was sent on unweighed", evicted)
+	}
+}
