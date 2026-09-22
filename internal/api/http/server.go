@@ -5,6 +5,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -5904,6 +5905,19 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 				toStore.Text = s.redactor.String(ev.Text)
 			}
 		}
+		// ⚠️ THE SAME CONTENT, ONE HOP LATER. A stateful run copies what its tools
+		// returned into Σ, and persists the whole Σ, the step's patch and its
+		// reasoning on EVERY step — so masking only tool_call / tool_result left
+		// the secret in the events BLOB, snapshots and /v1/_events anyway. A
+		// resumed run then recovers a Σ with the value masked, which is what a
+		// replayed tool_result already carries today.
+		if ev.Type == providers.EventContextState && ev.ContextState != nil && s.redactor.Enabled() {
+			cs := *ev.ContextState // copy so the live event keeps the original
+			cs.Reasoning = s.redactor.String(cs.Reasoning)
+			cs.State = redactJSONMap(s.redactor, cs.State)
+			cs.Patch = redactJSONMap(s.redactor, cs.Patch)
+			toStore.ContextState = &cs
+		}
 		payload, err := json.Marshal(toStore)
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
@@ -5918,6 +5932,30 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			emitLimitLocked(info)
 		}
 	}
+}
+
+// redactJSONMap masks secrets anywhere in a JSON object by redacting its
+// serialised form. A map the redactor leaves unchanged is returned as-is. One
+// that no longer parses after masking is DROPPED rather than persisted: losing
+// a marker costs a resume that state, and falls back to the previous marker,
+// while keeping the original would store the secret this exists to remove.
+func redactJSONMap(r *redact.Redactor, m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return m
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	masked := r.Bytes(b)
+	if bytes.Equal(masked, b) {
+		return m
+	}
+	var out map[string]any
+	if err := json.Unmarshal(masked, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // recordCallUsage appends one per-call token_usage row (RFC AV): who paid
