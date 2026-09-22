@@ -10,6 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -52,6 +53,50 @@ func resolveAutoContextMode(cx *config.Context, local, interactive bool) *config
 	out := cx.Clone()
 	out.Mode = &mode
 	return out
+}
+
+// statefulOperatorPrefix marks an observation as a PERSON speaking rather than
+// a tool result (RFC DH P1).
+//
+// ⚠️ THE PREFIX IS LOAD-BEARING, not decoration. A stateful run has no
+// transcript, so the operator's message has to arrive through the one slot the
+// loop has for "something happened outside the model" — the observation. Without
+// a marker it is indistinguishable from the output of whatever action ran last,
+// and buildStatefulSystem tells the model what it means.
+const statefulOperatorPrefix = "operator: "
+
+// parkForStatefulTurn is parkForOperatorTurn's Σ-shaped twin: it parks a
+// completed stateful turn and returns the operator's next message as the next
+// OBSERVATION. Returns false when the ctx was cancelled or the queue closed —
+// the run is then over.
+//
+// ⚠️ THIS IS A NEW CALL SITE OF reResolveForOperatorTurn, and
+// parkForOperatorTurn's own comment says why that matters: the retune lives at
+// the park "so there is one place it can be forgotten from, and none where it
+// can disagree". A fourth park that skipped it would give stateful runs a
+// silently different answer to "was this retuned while it waited".
+func parkForStatefulTurn(ctx context.Context, opts *RunOptions, sinceTurn int, emit func(providers.Event)) (string, bool) {
+	emit(providers.Event{Type: providers.EventAwaitingInput,
+		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
+	for {
+		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
+		if !resumed {
+			return "", false
+		}
+		if m.Kind == steer.KindCompact {
+			// A compaction control has nothing to act on here: a stateful run
+			// has no history to replace — Σ IS the compaction, rebuilt from
+			// scratch every step. Re-park rather than treat it as the
+			// operator's turn, which would feed the model a summary of a
+			// transcript it never had.
+			continue
+		}
+		if opts.OnSteer != nil {
+			opts.OnSteer(m)
+		}
+		reResolveForOperatorTurn(ctx, opts, emit)
+		return statefulOperatorPrefix + m.Text, true
+	}
 }
 
 const emitStateToolName = "emit_state"
@@ -115,7 +160,7 @@ func actionName(es *emitStateOut) string {
 
 // buildStatefulSystem augments the resolved preamble P with the state protocol
 // instructions, the available action-tool catalog, and the state schema.
-func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.ToolSpec, schema map[string]any) []providers.ContentBlock {
+func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.ToolSpec, schema map[string]any, interactive bool) []providers.ContentBlock {
 	var b strings.Builder
 	b.WriteString("\n\n## Structured execution mode\n")
 	b.WriteString("You run in structured-state mode. You do NOT call the task tools directly. Each step you are shown the current state (a JSON object) and the latest observation; respond by calling `emit_state` exactly once:\n")
@@ -123,6 +168,22 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 	b.WriteString("- `patch`: a JSON merge-patch applied to the state. Set keys to record progress; a null value deletes a key.\n")
 	b.WriteString("- `action`: the next tool to run, as {\"tool\": <name>, \"input\": {…}}. The runtime executes it and hands you its output as the next observation.\n")
 	b.WriteString("- Finish by omitting `action` (or setting `done: true`) and putting your answer in `final`.\n")
+	if interactive {
+		// ⚠️ ADDED ONLY FOR AN INTERACTIVE RUN, so an autonomous one's prompt
+		// stays byte-identical — this paragraph describes a thing that cannot
+		// happen to it, and a prompt that documents impossible inputs teaches
+		// the model nothing and costs every call.
+		//
+		// It exists because the runtime deliberately does NOT write Σ: a
+		// reserved key filled by the runtime would make Σ half model-authored
+		// and half not, with state_schema validating only one of the halves. So
+		// the model is told the observation is different in kind, and left to
+		// decide what is durable — which is its job in this mode.
+		b.WriteString("- An observation beginning `" + statefulOperatorPrefix + "` is a PERSON speaking to you, " +
+			"not a tool result. You are in a live conversation: after you finish, they may reply. " +
+			"Nothing is remembered between turns except the state, so record what they asked " +
+			"(and anything you promised) in the patch if you will need it later.\n")
+	}
 	if len(toolSpecs) > 0 {
 		b.WriteString("\n### Action tools you may name\n")
 		for _, t := range toolSpecs {
@@ -293,7 +354,7 @@ func applyStatefulSampling(req *providers.Request, s *config.Sampling) {
 // runStateful executes the L2 loop. `system` is the resolved preamble P (already
 // split from opts.Segments); `initial` is the seed conversation (the task);
 // `toolSpecs` is the action-tool catalog; `emit` forwards + persists events.
-func runStateful(ctx context.Context, opts RunOptions, system []providers.ContentBlock, initial []providers.Message, toolSpecs []providers.ToolSpec, emit func(providers.Event)) (RunResult, error) {
+func runStateful(ctx context.Context, opts RunOptions, system []providers.ContentBlock, initial []providers.Message, toolSpecs []providers.ToolSpec, iterCap int, emit func(providers.Event)) (RunResult, error) {
 	cx := opts.Context
 	var schema map[string]any
 	onInvalid := config.ContextDefaultOnInvalidPatch
@@ -307,12 +368,20 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			maxRetries = *cx.MaxPatchRetries
 		}
 	}
-	maxIter := opts.MaxIterations
+	// ⚠️ THE CAP IS COMPUTED ONCE, IN Run, and handed down. This loop used to
+	// derive its own from opts.MaxIterations and so missed every lift Run
+	// applies — including the one that matters here: an interactive run gets
+	// max_iterations raised to the hard ceiling because each PARK consumes an
+	// iteration. A stateful turn spends several steps, so a parked chat on the
+	// default 16 died after a handful of exchanges reporting max_iterations,
+	// which is an answer about the wrong thing.
+	maxIter := iterCap
 	if maxIter <= 0 {
 		maxIter = 16
 	}
 
-	statefulSystem := buildStatefulSystem(system, toolSpecs, schema)
+	interactive := opts.Interactive && opts.SteerQueue != nil
+	statefulSystem := buildStatefulSystem(system, toolSpecs, schema, interactive)
 	emitTool := []providers.ToolSpec{emitStateToolSpec()}
 
 	sigma := map[string]any{}
@@ -339,6 +408,16 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	dispatchCtx := tools.WithExecutionState(ctx, holder) // the action sees the live Σ (Context op=state)
 
 	obs := initialObservation(initial)
+	// StartParked: a re-attached interactive run waits for the operator before
+	// spending a model call. Mirrors Run's handling — an abandoned park ends the
+	// run on the turn it had already reached rather than calling the provider.
+	if opts.StartParked && interactive {
+		next, resumed := parkForStatefulTurn(ctx, &opts, 0, emit)
+		if !resumed {
+			return RunResult{StopReason: "end_turn", State: sigma}, nil
+		}
+		obs = next
+	}
 	var total providers.Usage
 	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
@@ -509,7 +588,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		// consolidator when the agent opted in. No-op unless context.harvest_to_memory.
 		harvestToMemory(ctx, opts, emit, stepSpan)
 
-		// Terminal: done flag, or no action named.
+		// Turn boundary: done flag, or no action named.
 		if es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == "" {
 			final := es.Final
 			if final == "" {
@@ -517,6 +596,30 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			}
 			emit(providers.Event{Type: providers.EventText, Text: final})
 			emit(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &total})
+
+			// ⚠️ RFC DH P1: AN INTERACTIVE RUN PARKS HERE INSTEAD OF ENDING, and
+			// this one line is the whole of the reported bug. The loop reached
+			// the model's `done` and returned, so a terminal chat stopped after
+			// every answer no matter what `interactive` said — the flag reached
+			// a loop with nowhere to put it.
+			//
+			// The park belongs at `done` and not at every step: the step loop
+			// is internal machinery the operator never sees, and the thing they
+			// wait for is the answer. That is the one place the two loops
+			// already agreed, which is why this is a substitution rather than a
+			// new concept.
+			//
+			// interactiveAtBoundary (not the static flag) so a run promoted or
+			// demoted mid-flight is honoured, exactly as the append loop does.
+			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil {
+				next, resumed := parkForStatefulTurn(ctx, &opts, iter, emit)
+				if resumed {
+					obs = next
+					continue
+				}
+				// Cancelled while parked, or the queue closed: the run ends on
+				// the turn it had already completed.
+			}
 			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 		}
 
