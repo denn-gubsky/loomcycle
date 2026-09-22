@@ -1708,3 +1708,64 @@ func TestRun_Stateful_AnActionSeesWhatItIsRunningOn(t *testing.T) {
 		t.Errorf("op=self would report no context window: %+v", rec.gotUsage)
 	}
 }
+
+// runForText runs an autonomous stateful run with the given patch-retry budget
+// and returns every text frame the operator would have been shown.
+func runForText(t *testing.T, prov providers.Provider, retries int) (RunResult, []string) {
+	t.Helper()
+	cx := statefulCtx(nil)
+	cx.MaxPatchRetries = &retries
+	var mu sync.Mutex
+	var texts []string
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  cx,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventText {
+				mu.Lock()
+				texts = append(texts, ev.Text)
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return res, texts
+}
+
+// ⚠️ AN ANSWER IN THE PATCH REACHED THE USER AS AN EMPTY MESSAGE. Observed on a
+// local model: `final` and `reasoning` both empty, the answer under a Σ key.
+// The model is asked again, and its corrected turn is what is shown.
+func TestRun_Stateful_ATurnWithNoFinalIsAskedAgain(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"answer":"42"},"done":true}`,
+		`{"patch":{"answer":"42"},"done":true,"final":"The answer is 42."}`,
+	}}
+	res, texts := runForText(t, prov, 2)
+	if res.FinalText != "The answer is 42." {
+		t.Errorf("final = %q, want the corrected answer", res.FinalText)
+	}
+	if !prov.sawObservation("with no `final`") {
+		t.Errorf("the model was never told its turn had no final: %v", prov.observed)
+	}
+	for _, tx := range texts {
+		if strings.TrimSpace(tx) == "" {
+			t.Errorf("an empty message was emitted to the operator: %q", texts)
+		}
+	}
+}
+
+// And when it still has nothing to say, the operator is told that — never
+// shown an empty message.
+func TestRun_Stateful_AnEmptyTurnIsNeverAnEmptyMessage(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{"answer":"42"},"done":true}`}}
+	res, texts := runForText(t, prov, 0)
+	if len(texts) != 1 || !strings.Contains(texts[0], "without an answer") || !strings.Contains(texts[0], "answer") {
+		t.Errorf("texts = %q, want one note naming what the turn changed", texts)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("stop = %q", res.StopReason)
+	}
+}

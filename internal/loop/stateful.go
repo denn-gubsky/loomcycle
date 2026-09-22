@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -168,6 +169,26 @@ func parseEmitState(input json.RawMessage) (*emitStateOut, error) {
 		out.Patch = map[string]any{} // a step with no state change is legal
 	}
 	return &out, nil
+}
+
+// endsTurn reports whether a step ends the turn: done, or no action named.
+func endsTurn(es *emitStateOut) bool {
+	return es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == ""
+}
+
+// emptyTurnNote is what the operator is shown when a turn ended with no answer
+// even after the model was asked for one — never an empty message, which reads
+// as the chat having broken.
+func emptyTurnNote(patch map[string]any) string {
+	keys := make([]string, 0, len(patch))
+	for k := range patch {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return "(the model ended its turn without an answer)"
+	}
+	return "(the model ended its turn without an answer; it updated its state: " + strings.Join(keys, ", ") + ")"
 }
 
 func actionName(es *emitStateOut) string {
@@ -709,6 +730,21 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state rejected: " + cause.Error() + ". Emit a corrected emit_state."}}})
 				continue
 			}
+			// ⚠️ A TURN THAT ENDS WITH NOTHING TO SAY. A model that put its answer
+			// in the patch — `{"answer": "…"}` — with `final` and `reasoning`
+			// both empty ended the turn as an empty message, and nothing noticed.
+			// The model is the one who can fix that, so it is asked to, on the
+			// same budget as a rejected patch. Not treated as not-done: a model
+			// that cannot produce `final` would then loop.
+			if endsTurn(parsed) && strings.TrimSpace(parsed.Final) == "" && strings.TrimSpace(parsed.Reasoning) == "" &&
+				onInvalid != "fail" && attempt < maxRetries {
+				tid := fmt.Sprintf("es-%d-%d", iter, attempt)
+				msgs = append(msgs,
+					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}}},
+					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state not accepted: " +
+						"it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in `final`."}}})
+				continue
+			}
 			es = parsed
 			rec.firstStepSucceeded = true
 			break
@@ -783,10 +819,16 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		harvestToMemory(ctx, opts, emit, stepSpan)
 
 		// Turn boundary: done flag, or no action named.
-		if es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == "" {
+		if endsTurn(es) {
 			final := es.Final
 			if final == "" {
+				// A fallback, and a bend in the contract that reasoning is
+				// discarded — kept because an answer found only there is still
+				// better shown than lost.
 				final = es.Reasoning
+			}
+			if strings.TrimSpace(final) == "" {
+				final = emptyTurnNote(es.Patch)
 			}
 			emit(providers.Event{Type: providers.EventText, Text: final})
 
