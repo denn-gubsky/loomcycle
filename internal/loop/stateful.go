@@ -843,7 +843,17 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// classification of a failure. It also emits the tool_result.
 			ident := tools.RunIdentity(ctx)
 			hookIdent := hooks.Identity{Agent: opts.AgentName, UserID: ident.UserID, AgentID: ident.AgentID, Tenant: ident.TenantID}
-			blocks := executePendingTools(dispatchCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
+			// What the append loop stamps per iteration, so Context op=self in a
+			// stateful action reports the provider/model it is actually running
+			// on (after any fallback), its sampling, and how full the window is.
+			// Stamped here rather than at the top of the step because a fallback
+			// during this step's call can change the first two.
+			actCtx := tools.WithResolvedProvider(dispatchCtx, opts.Provider.ID())
+			actCtx = tools.WithResolvedModel(actCtx, opts.Model)
+			actCtx = tools.WithResolvedSampling(actCtx, opts.Sampling)
+			actCtx = tools.WithMaxContextTokens(actCtx, opts.MaxContextTokens)
+			actCtx = tools.WithContextUsage(actCtx, lastIn, lastWindow)
+			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
 			obs = blocks[0].Text
 			if blocks[0].IsError {
 				obs = "ERROR: " + obs

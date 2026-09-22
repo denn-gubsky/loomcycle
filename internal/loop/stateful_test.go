@@ -1456,13 +1456,20 @@ func TestRun_Stateful_APreHookDenyStopsTheAction(t *testing.T) {
 
 // ctxRecordingTool records the tool-use id the loop stamped on its ctx — the
 // key the parallel_spawn ledger uses to make a fan-out durable.
-type ctxRecordingTool struct{ gotID string }
+type ctxRecordingTool struct {
+	gotID       string
+	gotProvider string
+	gotModel    string
+	gotUsage    tools.ContextUsageValue
+}
 
 func (c *ctxRecordingTool) Name() string                 { return "Echo" }
 func (c *ctxRecordingTool) Description() string          { return "" }
 func (c *ctxRecordingTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 func (c *ctxRecordingTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
 	c.gotID = tools.ToolUseID(ctx)
+	c.gotProvider, c.gotModel = tools.ResolvedProvider(ctx), tools.ResolvedModel(ctx)
+	c.gotUsage = tools.ContextUsage(ctx)
 	return tools.Result{Text: "ok"}, nil
 }
 
@@ -1671,5 +1678,33 @@ func TestRun_Stateful_ParksAtAStepBoundaryWhenPaused(t *testing.T) {
 	}
 	if runErr != nil || res.StopReason != "end_turn" {
 		t.Errorf("after resume: stop=%q err=%v", res.StopReason, runErr)
+	}
+}
+
+// Context op=self in a stateful action reported no provider, no model and no
+// context footprint: the append loop stamps them per iteration and this loop
+// never did.
+func TestRun_Stateful_AnActionSeesWhatItIsRunningOn(t *testing.T) {
+	rec := &ctxRecordingTool{}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "the-model",
+		Tools:            []tools.Tool{rec},
+		Dispatcher:       tools.NewDispatcher([]tools.Tool{rec}),
+		Segments:         statefulTaskSegs(),
+		Context:          statefulCtx(nil),
+		MaxContextTokens: 32768,
+		OnEvent:          func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rec.gotProvider != "action-script" || rec.gotModel != "the-model" {
+		t.Errorf("op=self would report provider=%q model=%q", rec.gotProvider, rec.gotModel)
+	}
+	if rec.gotUsage.Max == 0 {
+		t.Errorf("op=self would report no context window: %+v", rec.gotUsage)
 	}
 }
