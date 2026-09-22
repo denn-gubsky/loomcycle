@@ -521,10 +521,36 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		}
 
 		// Execute the named action → next observation.
-		if opts.Dispatcher == nil {
+		tid := fmt.Sprintf("es-act-%d", iter)
+		switch {
+		case opts.Dispatcher == nil:
 			obs = "ERROR: no tools are available to run action " + es.Action.Tool
-		} else {
-			tid := fmt.Sprintf("es-act-%d", iter)
+		// ⚠️ THE ACTION NAME WENT STRAIGHT TO THE DISPATCHER, unchecked. A model
+		// that named something that is not a tool got back the dispatcher's
+		// "tool not found: X" as its observation — an answer that says the name
+		// was wrong and not one word about which names are right.
+		//
+		// Reported from a live chat: the model named `emit_state` as its
+		// action. That is the worst case of the class, because emit_state is
+		// not a tool at all — it is the channel the model is ALREADY speaking
+		// through, offered as the only entry in `tools` on every step. Asking
+		// to "run" it is a category error the runtime was in the best position
+		// to name and instead forwarded to a lookup that could only miss.
+		case es.Action.Tool == emitStateToolName:
+			obs = "ERROR: `" + emitStateToolName + "` is not an action — it is how you reply. " +
+				"Every step you make exactly one " + emitStateToolName + " call; its `action` field names " +
+				"a DIFFERENT tool for the runtime to run for you. " + statefulActionHint(toolSpecs)
+			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
+			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
+		case !offersTool(toolSpecs, es.Action.Tool):
+			// Refused HERE rather than dispatched, so the observation can name
+			// the alternatives. The dispatcher knows every tool in the process;
+			// only this loop knows which ones THIS agent was offered.
+			obs = "ERROR: no tool named `" + es.Action.Tool + "` is available to this agent. " +
+				statefulActionHint(toolSpecs)
+			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
+			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
+		default:
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			res := opts.Dispatcher.Execute(dispatchCtx, es.Action.Tool, es.Action.Input)
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: res.Text, IsError: res.IsError})
@@ -566,4 +592,32 @@ func unforcedNote(opts RunOptions) string {
 	}
 	return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
 		"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
+}
+
+// offersTool reports whether this agent was offered a tool by that name. The
+// set is toolSpecs — the same list buildStatefulSystem prints under "Action
+// tools you may name", so what the loop accepts and what the prompt advertised
+// cannot drift apart.
+func offersTool(specs []providers.ToolSpec, name string) bool {
+	for _, t := range specs {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// statefulActionHint lists what the model MAY name, because an error that only
+// says what was wrong leaves it guessing — and a model that guesses twice burns
+// two steps of a bounded loop.
+func statefulActionHint(specs []providers.ToolSpec) string {
+	if len(specs) == 0 {
+		return "This agent has no action tools, so omit `action` and put your answer in `final`."
+	}
+	names := make([]string, 0, len(specs))
+	for _, t := range specs {
+		names = append(names, "`"+t.Name+"`")
+	}
+	return "Available tools: " + strings.Join(names, ", ") +
+		". Omit `action` (or set `done: true`) when you are ready to answer."
 }
