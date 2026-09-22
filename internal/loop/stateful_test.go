@@ -1220,3 +1220,76 @@ func TestRun_Stateful_ReportsPerCallUsage(t *testing.T) {
 		}
 	}
 }
+
+// blockingStatefulProvider holds each call open for `hold` before answering,
+// and records how many heartbeats fired WHILE it was held — the pulse that
+// keeps a slow step from being reaped, as opposed to the one between steps.
+type blockingStatefulProvider struct {
+	hold      time.Duration
+	beats     *atomicCounter
+	mu        sync.Mutex
+	duringMin int
+}
+
+type atomicCounter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *atomicCounter) inc()     { c.mu.Lock(); c.n++; c.mu.Unlock() }
+func (c *atomicCounter) get() int { c.mu.Lock(); defer c.mu.Unlock(); return c.n }
+
+func (p *blockingStatefulProvider) ID() string                                   { return "blocking" }
+func (p *blockingStatefulProvider) Probe(context.Context) error                  { return nil }
+func (p *blockingStatefulProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *blockingStatefulProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *blockingStatefulProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	before := p.beats.get()
+	select {
+	case <-time.After(p.hold):
+	case <-ctx.Done():
+	}
+	p.mu.Lock()
+	p.duringMin = p.beats.get() - before
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t0", Name: emitStateToolName,
+		Input: json.RawMessage(`{"patch":{"n":1},"done":true,"final":"ok"}`)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ A WORKING STATEFUL RUN SENT NO HEARTBEAT AT ALL. Run's lifetime ticker sat
+// below the stateful branch, so the only pulse a stateful run ever sent came
+// from parkForInput — and the sweeper fails a running row whose heartbeat is
+// NULL ten minutes after it started. A slow local model reaches that on one
+// step. The assertion is on the pulse DURING the call, which the between-step
+// pulse cannot satisfy.
+func TestRun_Stateful_HeartbeatsWhileAStepIsInFlight(t *testing.T) {
+	orig := parkHeartbeatInterval
+	parkHeartbeatInterval = 10 * time.Millisecond
+	defer func() { parkHeartbeatInterval = orig }()
+
+	beats := &atomicCounter{}
+	prov := &blockingStatefulProvider{hold: 150 * time.Millisecond, beats: beats}
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:    statefulTaskSegs(),
+		Context:     statefulCtx(nil),
+		OnHeartbeat: beats.inc,
+		OnEvent:     func(providers.Event) {},
+	})
+	if err != nil || res.StopReason != "end_turn" {
+		t.Fatalf("run: stop=%q err=%v", res.StopReason, err)
+	}
+	prov.mu.Lock()
+	during := prov.duringMin
+	prov.mu.Unlock()
+	if during == 0 {
+		t.Errorf("no heartbeat fired during a 150ms step with a 10ms interval — the sweeper "+
+			"would fail this run as heartbeat_timeout while it is working (total beats %d)", beats.get())
+	}
+}

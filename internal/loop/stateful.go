@@ -435,6 +435,11 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		if err := ctx.Err(); err != nil {
 			return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, err
 		}
+		// Same per-iteration pulse the append loop sends; Run's lifetime ticker
+		// covers a step that blocks longer than one interval.
+		if opts.OnHeartbeat != nil {
+			opts.OnHeartbeat()
+		}
 		msgs := []providers.Message{statefulUserMessage(sigma, obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
