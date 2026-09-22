@@ -1769,3 +1769,44 @@ func TestRun_Stateful_AnEmptyTurnIsNeverAnEmptyMessage(t *testing.T) {
 		t.Errorf("stop = %q", res.StopReason)
 	}
 }
+
+// requiredFieldTool declares a required input field, like Interruption's `op`.
+type requiredFieldTool struct{ calls int }
+
+func (r *requiredFieldTool) Name() string        { return "Ask" }
+func (r *requiredFieldTool) Description() string { return "asks the operator" }
+func (r *requiredFieldTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["op","question"],"properties":{"op":{"type":"string"},"question":{"type":"string"}}}`)
+}
+func (r *requiredFieldTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	r.calls++
+	return tools.Result{Text: "asked"}, nil
+}
+
+// Observed live: `{"tool":"Interruption","input":{}}`. The schema already says
+// what the input needs, so the loop names it instead of dispatching a call the
+// tool can only reject — and a valid call still runs.
+func TestRun_Stateful_AnActionMissingRequiredFieldsIsExplained(t *testing.T) {
+	tool := &requiredFieldTool{}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Ask","input":{}}}`,
+		`{"patch":{},"action":{"tool":"Ask","input":{"op":"ask","question":"which one?"}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{tool},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{tool}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !prov.sawObservation("`Ask` needs `op`, `question`") {
+		t.Errorf("the model was not told which fields were missing: %v", prov.observed)
+	}
+	if tool.calls != 1 {
+		t.Errorf("tool ran %d time(s), want 1 (only the complete call)", tool.calls)
+	}
+}

@@ -889,6 +889,15 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				statefulActionHint(toolSpecs)
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
+		case missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input) != "":
+			// Refused before dispatch, generally rather than per tool: the
+			// schema already says what the input needs, and naming it here
+			// costs the model one step instead of a guess. Observed live as
+			// `{"tool":"Interruption","input":{}}` — a fumble of the same class
+			// as naming emit_state, with a real tool.
+			obs = "ERROR: " + missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input)
+			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
+			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
 		default:
 			tu := providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
@@ -949,6 +958,48 @@ func unforcedNote(opts RunOptions) string {
 	}
 	return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
 		"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
+}
+
+// missingRequiredInput names what an action's input lacks against its tool's
+// declared schema — the top-level `required` fields only. "" means nothing is
+// missing, or the schema declares nothing to check. Deliberately not a full
+// JSON-Schema validation: every tool validates its own input, and a second
+// validator here would drift from the first.
+func missingRequiredInput(specs []providers.ToolSpec, name string, input json.RawMessage) string {
+	var schema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	for _, t := range specs {
+		if t.Name == name {
+			_ = json.Unmarshal(t.InputSchema, &schema)
+			break
+		}
+	}
+	if len(schema.Required) == 0 {
+		return ""
+	}
+	var got map[string]json.RawMessage
+	_ = json.Unmarshal(input, &got) // absent, null or a non-object all count as no fields
+	var missing []string
+	for _, f := range schema.Required {
+		if _, ok := got[f]; !ok {
+			missing = append(missing, "`"+f+"`")
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	props := make([]string, 0, len(schema.Properties))
+	for p := range schema.Properties {
+		props = append(props, "`"+p+"`")
+	}
+	sort.Strings(props)
+	msg := "`" + name + "` needs " + strings.Join(missing, ", ") + " in its input, which was not given."
+	if len(props) > 0 {
+		msg += " Its input fields are: " + strings.Join(props, ", ") + "."
+	}
+	return msg
 }
 
 // offersTool reports whether this agent was offered a tool by that name. The
