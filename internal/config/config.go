@@ -1692,6 +1692,9 @@ func (t *ToolChoice) Validate() error {
 	default:
 		return fmt.Errorf("tool_choice.until %q is not one of first_call, until_called, always", t.Until)
 	}
+	if t.Until == ToolChoiceUntilUntilCalled && !t.Forces() {
+		return fmt.Errorf("tool_choice.until \"until_called\" needs mode required or tool — with mode %q there is no call to wait for", t.Mode)
+	}
 	if t.Until == ToolChoiceUntilAlways && t.Forces() {
 		return fmt.Errorf("tool_choice.until \"always\" with mode %q would force a tool on every call, "+
 			"so the model could never give a final answer — use first_call or until_called", t.Mode)

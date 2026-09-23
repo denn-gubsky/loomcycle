@@ -212,6 +212,29 @@ func (tc ToolChoice) Forces() bool {
 	}
 }
 
+// ModelToolChoiceEnforcer is implemented by a driver whose ability to ENFORCE a
+// tool choice depends on the model and on the effort hint that decides its
+// thinking mode — which Capabilities, being per-provider, cannot express. The
+// Anthropic driver drops a forced choice for models that refuse one and under
+// manual (budgeted) thinking; this is how the loop learns it will.
+type ModelToolChoiceEnforcer interface {
+	EnforcesToolChoice(model, effort string, tc ToolChoice) bool
+}
+
+// EnforcesToolChoice reports whether a call with this choice will actually be
+// held to it by (p, model, effort). A choice that constrains nothing is always
+// enforced; otherwise a driver's per-model answer wins, then the coarse
+// Capabilities bit.
+func EnforcesToolChoice(p Provider, model, effort string, tc ToolChoice) bool {
+	if !tc.Forces() {
+		return true
+	}
+	if e, ok := p.(ModelToolChoiceEnforcer); ok {
+		return e.EnforcesToolChoice(model, effort, tc)
+	}
+	return p.Capabilities().SupportsToolChoice
+}
+
 // Request is one round-trip to the provider. The loop builds a fresh Request
 // for each iteration, appending the previous tool_result(s) to Messages.
 type Request struct {

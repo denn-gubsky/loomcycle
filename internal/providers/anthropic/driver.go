@@ -820,6 +820,25 @@ func anthropicModelRules(model string) anthropicRules {
 	}
 }
 
+// EnforcesToolChoice implements providers.ModelToolChoiceEnforcer: the same
+// rules buildRequestBody applies when it decides to drop a forced choice, asked
+// ahead of time so the loop can report it instead of the choice vanishing.
+func (d *Driver) EnforcesToolChoice(model, effort string, tc providers.ToolChoice) bool {
+	if tc.Mode == providers.ToolChoiceNone {
+		return true // accepted under every thinking mode and by every model
+	}
+	rules := anthropicModelRules(model)
+	if rules.noForcedChoice {
+		return false
+	}
+	// Budgeted (manual) thinking drops a forced choice; adaptive thinking
+	// keeps it. Only the budgeted models reach anthropicEffortBudget.
+	if !rules.adaptiveOnly && anthropicEffortBudget(effort, model) > 0 {
+		return false
+	}
+	return true
+}
+
 // applyAdaptiveEffort maps the effort hint for an adaptive-only model.
 // Effort is sent as-is (the API takes low/medium/high directly). medium and
 // high also switch adaptive thinking on — some of these models run without

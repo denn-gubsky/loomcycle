@@ -35,6 +35,7 @@ func TestToolChoiceValidate(t *testing.T) {
 		{ToolChoice{Mode: "sometimes"}, "is not one of"},
 		{ToolChoice{}, "mode is required"},
 		{ToolChoice{Mode: "tool", Name: "x", Until: "later"}, "until"},
+		{ToolChoice{Mode: "none", Until: "until_called"}, "no call to wait for"},
 	} {
 		err := tc.tc.Validate()
 		switch {
