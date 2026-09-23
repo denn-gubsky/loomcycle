@@ -143,6 +143,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			-- RFC DD: the run's own configuration record (opaque JSON).
 			-- NULL on a run that overrode nothing.
 			run_config            TEXT,
+			-- RFC DI: the run's answer (opaque JSON), written with the terminal
+			-- status. NULL while running and on a finish with nothing to report.
+			result                TEXT,
 			input_tokens          INTEGER NOT NULL DEFAULT 0,
 			output_tokens         INTEGER NOT NULL DEFAULT 0,
 			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1181,6 +1184,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// resume treats exactly as it does today (re-derive).
 		// See internal/store/postgres/migrations/0078_runs_run_config.
 		`ALTER TABLE runs ADD COLUMN run_config TEXT`,
+		// RFC DI: the run's answer, written in the same UPDATE as the terminal
+		// status. See internal/store/postgres/migrations/0079_runs_result.
+		`ALTER TABLE runs ADD COLUMN result TEXT`,
 		// RFC BE — human/organizational chat metadata on the session row (the
 		// History tool's browse/search/annotate surface). All additive + nullable
 		// so legacy rows read the zero value. tags is a JSON array (NULL = never
@@ -1658,7 +1664,8 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cost                  = ?,
 			cost_currency         = ?,
 			credential_source     = ?,
-			credential_scope_id   = ?
+			credential_scope_id   = ?,
+			result                = ?
 		WHERE id = ? AND status = ?`,
 		string(status), now, stopReason,
 		usage.InputTokens, usage.OutputTokens,
@@ -1666,6 +1673,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 		usage.Model, nilIfEmpty(usage.Provider), errMsg,
 		costArg, nilIfEmpty(usage.CostCurrency),
 		nilIfEmpty(usage.CredentialSource), nilIfEmpty(usage.CredentialScopeID),
+		nilIfEmptyRaw(usage.Result),
 		runID, string(store.RunRunning),
 	)
 	return err
@@ -2645,6 +2653,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var cost sql.NullFloat64
 	var costCurrency, credentialSource, credentialScopeID sql.NullString
 	var runConfig sql.NullString
+	var result sql.NullString
 	var sessAgent sql.NullString
 	var status string
 	if err := scanner.Scan(
@@ -2658,6 +2667,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&interactive, &operatorKeyRestricted, &isolated,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&runConfig,
+		&result,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -2739,6 +2749,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if runConfig.Valid && runConfig.String != "" {
 		r.RunConfig = json.RawMessage(runConfig.String)
 	}
+	if result.Valid && result.String != "" {
+		r.Result = json.RawMessage(result.String)
+	}
 	if sessAgent.Valid {
 		r.Agent = sessAgent.String
 	}
@@ -2763,6 +2776,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.interactive, r.operator_key_restricted, r.isolated,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		r.run_config,
+		r.result,
 		s.agent`
 
 // runFromTable is the canonical FROM clause paired with runColumns.

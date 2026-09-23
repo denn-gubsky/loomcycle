@@ -122,6 +122,7 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
+		{"FinishRunPersistsResult", testFinishRunPersistsResult},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},
@@ -12711,5 +12712,71 @@ func testAgentDefOperatorAuthoredRoundTrip(t *testing.T, s store.Store) {
 		if rows[0].OperatorAuthored != tc.want {
 			t.Errorf("%s via list: operator_authored = %v, want %v", tc.id, rows[0].OperatorAuthored, tc.want)
 		}
+	}
+}
+
+// testFinishRunPersistsResult pins RFC DI's runs.result: written by FinishRun in
+// the same statement as the terminal status, read back by every run read, and
+// absent (not an empty object) when the finish had nothing to report.
+func testFinishRunPersistsResult(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_result", UserID: "u"})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if got, _ := s.GetRun(ctx, run.ID); len(got.Result) != 0 {
+		t.Errorf("a running run already has a result %q", got.Result)
+	}
+
+	result := json.RawMessage(`{"stop_reason":"end_turn","final_text":"the answer","state":{"k":1}}`)
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Model: "m", Result: result}, ""); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(result, &want); err != nil {
+		t.Fatal(err)
+	}
+	// Every read path the run can come back through, not only GetRun: a
+	// scanner that forgot the column in one SELECT list reads back nil there.
+	byID, _ := s.GetRun(ctx, run.ID)
+	byAgent, _ := s.GetRunByAgentID(ctx, "a_result")
+	listed, _ := s.ListActiveRunsByUser(ctx, "u", store.RunCompleted)
+	reads := map[string]store.Run{"GetRun": byID, "GetRunByAgentID": byAgent}
+	for _, r := range listed {
+		if r.ID == run.ID {
+			reads["ListActiveRunsByUser"] = r
+		}
+	}
+	if len(reads) != 3 {
+		t.Fatalf("the finished run was not listed by ListActiveRunsByUser(completed)")
+	}
+	for name, r := range reads {
+		var have map[string]any
+		if err := json.Unmarshal(r.Result, &have); err != nil {
+			t.Errorf("%s: result is not valid JSON (%q): %v", name, r.Result, err)
+			continue
+		}
+		// Semantic compare: Postgres JSONB may reorder keys.
+		if !reflect.DeepEqual(want, have) {
+			t.Errorf("%s: result = %#v, want %#v", name, have, want)
+		}
+	}
+
+	// A finish with nothing to report writes NULL, and a second FinishRun on a
+	// terminal run changes nothing (the status guard), result included.
+	bare, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_result_none"})
+	if err := s.FinishRun(ctx, bare.ID, store.RunFailed, "", store.Usage{}, "owner gone"); err != nil {
+		t.Fatalf("FinishRun(no result): %v", err)
+	}
+	if got, _ := s.GetRun(ctx, bare.ID); len(got.Result) != 0 {
+		t.Errorf("a finish with no result read back %q, want absent", got.Result)
+	}
+	if err := s.FinishRun(ctx, run.ID, store.RunFailed, "", store.Usage{Result: json.RawMessage(`{"final_text":"late"}`)}, "late"); err != nil {
+		t.Fatalf("second FinishRun: %v", err)
+	}
+	if got, _ := s.GetRun(ctx, run.ID); !strings.Contains(string(got.Result), "the answer") {
+		t.Errorf("a second FinishRun overwrote a terminal run's result: %q", got.Result)
 	}
 }
