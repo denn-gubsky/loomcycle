@@ -1182,6 +1182,7 @@ export interface Agent {
 export interface RunSpec {
   sampling?: Record<string, unknown>;
   tool_choice?: ToolChoiceOptions;
+  output_format?: OutputFormatOptions;
   compaction?: Record<string, unknown>;
   context?: Record<string, unknown>;
   max_context_tokens?: number;
