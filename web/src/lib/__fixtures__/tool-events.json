@@ -1,0 +1,20 @@
+[
+  {
+    "type": "tool_call",
+    "tool_use": {
+      "id": "es-act-0",
+      "name": "Interruption",
+      "input": {}
+    }
+  },
+  {
+    "type": "tool_result",
+    "text": "missing required field: op",
+    "tool_use": {
+      "id": "es-act-0",
+      "name": "Interruption",
+      "input": {}
+    },
+    "is_error": true
+  }
+]

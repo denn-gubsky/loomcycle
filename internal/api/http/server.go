@@ -5,6 +5,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -2508,11 +2509,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Transcript replay (continuation only) ----
+	var sessionEvents []store.Event
 	if isContinuation {
 		transcript, err := s.store.GetTranscript(ctx, in.SessionID)
 		if err != nil {
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}
+		sessionEvents = transcript
 		priorMessages = replayTranscript(transcript)
 	}
 
@@ -2860,6 +2863,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// uncapped/noop slot, so uncapped runs stay zero-overhead.
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot, runRouting)
+	seed, seeded := statefulContinuationSeed(sessionEvents, mergedContext, provider.Capabilities().Local, in.Interactive, segments)
+	if seeded {
+		priorMessages = nil
+	}
 	res, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -2867,6 +2874,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Dispatcher:          dispatcher,
 		Segments:            injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
 		PriorMessages:       priorMessages,
+		InitialState:        seed.Sigma,
+		InitialObservation:  seed.Observation,
 		PauseGate:           gate,
 		OnEvent:             emit,
 		OnHeartbeat:         heartbeat,
@@ -5283,6 +5292,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// for uncapped/noop slots.
 	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
 	fbPolicy, fbReResolve := s.fallbackForRun(sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, provSlot, runRouting)
+	seed, seeded := statefulContinuationSeed(transcript, runCfg.Context, provider.Capabilities().Local, body.Interactive, segments)
+	if seeded {
+		priorMessages = nil
+	}
 	loopRes, runErr := loop.Run(loopCtx, loop.RunOptions{
 		Provider:                provider,
 		Model:                   model,
@@ -5290,6 +5303,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Dispatcher:              dispatcher,
 		Segments:                injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, body.Metadata, nil),
 		PriorMessages:           priorMessages,
+		InitialState:            seed.Sigma,
+		InitialObservation:      seed.Observation,
 		PauseGate:               gate,
 		OnEvent:                 emit,
 		OnHeartbeat:             heartbeat,
@@ -5342,39 +5357,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 //
 // Each run boundary (new user_input event) marks the end of the previous
 // assistant/user-tool-result turn pair.
-// statefulSigmaFromTranscript recovers a stateful run's Σ from its transcript:
-// the State carried on the LAST context_state marker (RFC DH P2).
-//
-// ⚠️ THIS MAKES context_state LOAD-BEARING, and its own doc comment calls it
-// "still persisted for audit" — which was true until this function existed.
-// Anyone trimming that marker to save transcript bytes would now silently
-// break resume for every stateful run, so the two comments point at each other
-// on purpose.
-//
-// Each marker carries the WHOLE post-merge Σ rather than the step's patch, so
-// the last one is the answer and no replay of the merge sequence is needed. nil
-// when the run is not stateful or never completed a step — a fresh Σ, which is
-// the correct start for both.
-func statefulSigmaFromTranscript(events []store.Event) map[string]any {
-	var sigma map[string]any
-	for _, ev := range events {
-		if ev.Type != "context_state" {
-			continue
-		}
-		var pe providers.Event
-		if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.ContextState == nil {
-			// A row that will not parse is skipped rather than fatal: an older
-			// or truncated marker must not cost the run the Σ it CAN recover
-			// from the markers around it.
-			continue
-		}
-		if pe.ContextState.State != nil {
-			sigma = pe.ContextState.State
-		}
-	}
-	return sigma
-}
-
 func replayTranscript(events []store.Event) []providers.Message {
 	var messages []providers.Message
 	var asstText strings.Builder
@@ -5904,6 +5886,19 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 				toStore.Text = s.redactor.String(ev.Text)
 			}
 		}
+		// ⚠️ THE SAME CONTENT, ONE HOP LATER. A stateful run copies what its tools
+		// returned into Σ, and persists the whole Σ, the step's patch and its
+		// reasoning on EVERY step — so masking only tool_call / tool_result left
+		// the secret in the events BLOB, snapshots and /v1/_events anyway. A
+		// resumed run then recovers a Σ with the value masked, which is what a
+		// replayed tool_result already carries today.
+		if ev.Type == providers.EventContextState && ev.ContextState != nil && s.redactor.Enabled() {
+			cs := *ev.ContextState // copy so the live event keeps the original
+			cs.Reasoning = s.redactor.String(cs.Reasoning)
+			cs.State = redactJSONMap(s.redactor, cs.State)
+			cs.Patch = redactJSONMap(s.redactor, cs.Patch)
+			toStore.ContextState = &cs
+		}
 		payload, err := json.Marshal(toStore)
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
@@ -5918,6 +5913,30 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			emitLimitLocked(info)
 		}
 	}
+}
+
+// redactJSONMap masks secrets anywhere in a JSON object by redacting its
+// serialised form. A map the redactor leaves unchanged is returned as-is. One
+// that no longer parses after masking is DROPPED rather than persisted: losing
+// a marker costs a resume that state, and falls back to the previous marker,
+// while keeping the original would store the secret this exists to remove.
+func redactJSONMap(r *redact.Redactor, m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return m
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	masked := r.Bytes(b)
+	if bytes.Equal(masked, b) {
+		return m
+	}
+	var out map[string]any
+	if err := json.Unmarshal(masked, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // recordCallUsage appends one per-call token_usage row (RFC AV): who paid
@@ -7614,6 +7633,21 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	provider, perr := s.providers.Get(providerID)
 	if perr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusServiceUnavailable, msg: "provider unavailable: " + perr.Error()}
+	}
+	// ⚠️ A STATEFUL RUN HAS NO HISTORY TO COMPACT — its state object is rebuilt
+	// every step and bounded by eviction. This used to proceed: summarise the
+	// replayed transcript (a model call), bank the span to memory, push the
+	// summary to the loop, and answer {compacted: true} — after which the
+	// stateful loop dropped the push. Refused before any of that is spent. The
+	// run's own recorded context wins over the definition's, as on resume.
+	runCx := agentDef.Context
+	if rc, ok := decodeRunConfig(run.RunConfig); ok && rc.Context != nil {
+		runCx = rc.Context
+	}
+	if loop.StatefulMode(runCx, provider.Capabilities().Local, run.Interactive) {
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "stateful_run",
+			msg: "a stateful run has no conversation history to compact; its state is bounded by eviction " +
+				"(declare x-retention: scratch or derived on state_schema properties that are safe to drop)"}
 	}
 
 	// Resolve the run's compaction keep-N / keep-first / target / summary-model

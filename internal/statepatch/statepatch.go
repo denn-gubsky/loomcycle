@@ -34,10 +34,13 @@ func Merge(base, patch map[string]any) map[string]any {
 			continue
 		}
 		if pm, ok := pv.(map[string]any); ok {
-			if bm, ok := out[k].(map[string]any); ok {
-				out[k] = Merge(bm, pm) // both objects → recurse
-				continue
-			}
+			bm, _ := out[k].(map[string]any)
+			// Both objects → recurse. A patch object landing where there was
+			// no object is MergePatch({}, value) per RFC 7386, which is still a
+			// recursion: stored as-is it kept its nulls, so Σ carried keys the
+			// patch had asked to delete.
+			out[k] = Merge(bm, pm)
+			continue
 		}
 		out[k] = pv // scalar / array / type-mismatch → replace
 	}

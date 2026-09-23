@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -701,6 +704,7 @@ type actionScriptProvider struct {
 	scripts  []string
 	turn     int
 	observed []string
+	lastReq  providers.Request
 }
 
 func (p *actionScriptProvider) ID() string                                   { return "action-script" }
@@ -711,6 +715,7 @@ func (p *actionScriptProvider) Capabilities() providers.Capabilities {
 }
 func (p *actionScriptProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	p.mu.Lock()
+	p.lastReq = req
 	for _, m := range req.Messages {
 		for _, c := range m.Content {
 			p.observed = append(p.observed, c.Text)
@@ -1086,7 +1091,7 @@ func TestRun_Stateful_AResumedRunStartsFromTheSameStateAParkWouldHaveHeld(t *tes
 		t.Fatal("the live run did not finish after its queue closed")
 	}
 
-	// Route 2: the resume. InitialState is what statefulSigmaFromTranscript
+	// Route 2: the resume. InitialState is what statefulSeedFromEvents
 	// recovers from the last context_state marker.
 	resumed := &sigmaCapturingProvider{scripts: []string{`{"patch":{},"done":true,"final":"resumed"}`}}
 	if _, err := Run(context.Background(), RunOptions{
@@ -1218,5 +1223,691 @@ func TestRun_Stateful_ReportsPerCallUsage(t *testing.T) {
 			t.Errorf("usage[%d] provider = %q, want the serving provider — the ledger records "+
 				"which key paid across a mid-run fallback", i, u.Provider)
 		}
+	}
+}
+
+// blockingStatefulProvider holds each call open for `hold` before answering,
+// and records how many heartbeats fired WHILE it was held — the pulse that
+// keeps a slow step from being reaped, as opposed to the one between steps.
+type blockingStatefulProvider struct {
+	hold      time.Duration
+	beats     *atomicCounter
+	mu        sync.Mutex
+	duringMin int
+}
+
+type atomicCounter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *atomicCounter) inc()     { c.mu.Lock(); c.n++; c.mu.Unlock() }
+func (c *atomicCounter) get() int { c.mu.Lock(); defer c.mu.Unlock(); return c.n }
+
+func (p *blockingStatefulProvider) ID() string                                   { return "blocking" }
+func (p *blockingStatefulProvider) Probe(context.Context) error                  { return nil }
+func (p *blockingStatefulProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *blockingStatefulProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *blockingStatefulProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	before := p.beats.get()
+	select {
+	case <-time.After(p.hold):
+	case <-ctx.Done():
+	}
+	p.mu.Lock()
+	p.duringMin = p.beats.get() - before
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t0", Name: emitStateToolName,
+		Input: json.RawMessage(`{"patch":{"n":1},"done":true,"final":"ok"}`)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ A WORKING STATEFUL RUN SENT NO HEARTBEAT AT ALL. Run's lifetime ticker sat
+// below the stateful branch, so the only pulse a stateful run ever sent came
+// from parkForInput — and the sweeper fails a running row whose heartbeat is
+// NULL ten minutes after it started. A slow local model reaches that on one
+// step. The assertion is on the pulse DURING the call, which the between-step
+// pulse cannot satisfy.
+func TestRun_Stateful_HeartbeatsWhileAStepIsInFlight(t *testing.T) {
+	orig := parkHeartbeatInterval
+	parkHeartbeatInterval = 10 * time.Millisecond
+	defer func() { parkHeartbeatInterval = orig }()
+
+	beats := &atomicCounter{}
+	prov := &blockingStatefulProvider{hold: 150 * time.Millisecond, beats: beats}
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:    statefulTaskSegs(),
+		Context:     statefulCtx(nil),
+		OnHeartbeat: beats.inc,
+		OnEvent:     func(providers.Event) {},
+	})
+	if err != nil || res.StopReason != "end_turn" {
+		t.Fatalf("run: stop=%q err=%v", res.StopReason, err)
+	}
+	prov.mu.Lock()
+	during := prov.duringMin
+	prov.mu.Unlock()
+	if during == 0 {
+		t.Errorf("no heartbeat fired during a 150ms step with a 10ms interval — the sweeper "+
+			"would fail this run as heartbeat_timeout while it is working (total beats %d)", beats.get())
+	}
+}
+
+// interactiveWireShape drives an interactive run through two operator turns
+// and returns the frame types a client sees, reduced to the ones that carry
+// run-lifecycle meaning (consecutive text frames collapsed).
+func interactiveWireShape(t *testing.T, prov providers.Provider, cx *config.Context) []providers.EventType {
+	t.Helper()
+	q := make(chan steer.Message, 4)
+	park := make(chan struct{}, 8)
+	var mu sync.Mutex
+	var shape []providers.EventType
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(context.Background(), RunOptions{
+			Provider: prov, Model: "x",
+			Segments:    statefulTaskSegs(),
+			Context:     cx,
+			Interactive: true,
+			SteerQueue:  q,
+			OnEvent: func(ev providers.Event) {
+				switch ev.Type {
+				case providers.EventText, providers.EventDone, providers.EventAwaitingInput:
+					mu.Lock()
+					if n := len(shape); !(ev.Type == providers.EventText && n > 0 && shape[n-1] == providers.EventText) {
+						shape = append(shape, ev.Type)
+					}
+					mu.Unlock()
+				}
+				if ev.Type == providers.EventAwaitingInput {
+					park <- struct{}{}
+				}
+			},
+		})
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-park:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("turn %d never parked", i+1)
+		}
+		if i == 0 {
+			q <- steer.Message{Text: "and then?"}
+		}
+	}
+	close(q)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the run did not end after the queue closed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]providers.EventType(nil), shape...)
+}
+
+// ⚠️ DONE IS TERMINAL TO EVERY CONSUMER, and the stateful loop emitted one at
+// each turn boundary before parking. The embedded terminal marked the chat
+// completed after its first answer and sent the next message as a NEW
+// continuation run — one that started from an empty Σ, while the parked run
+// sat holding its slot. The claim that the append loop did the same was never
+// checked; this is the check.
+func TestRun_Stateful_AnInteractiveRunHasTheAppendLoopsWireShape(t *testing.T) {
+	appendShape := interactiveWireShape(t, &textProvider{}, nil)
+	statefulShape := interactiveWireShape(t, &actionScriptProvider{scripts: []string{
+		`{"patch":{"n":1},"done":true,"final":"answer one"}`,
+		`{"patch":{"n":2},"done":true,"final":"answer two"}`,
+	}}, statefulCtx(nil))
+
+	if fmt.Sprint(statefulShape) != fmt.Sprint(appendShape) {
+		t.Errorf("an interactive stateful run's frames differ from the append loop's:\n"+
+			"  append:   %v\n  stateful: %v", appendShape, statefulShape)
+	}
+	var dones int
+	for _, ty := range statefulShape {
+		if ty == providers.EventDone {
+			dones++
+		}
+	}
+	if dones != 1 || statefulShape[len(statefulShape)-1] != providers.EventDone {
+		t.Errorf("want exactly one done, as the last lifecycle frame; got %v", statefulShape)
+	}
+}
+
+// ⚠️ THE OTHER HALF OF ONE TERMINAL DONE: a re-attached run whose operator
+// never came back ended with no done AT ALL, so a consumer waiting for the run
+// to finish never heard that it had.
+func TestRun_Stateful_AnAbandonedStartParkedRunStillEndsWithDone(t *testing.T) {
+	q := make(chan steer.Message)
+	close(q)
+	var sawDone bool
+	res, err := Run(context.Background(), RunOptions{
+		Provider: &actionScriptProvider{}, Model: "x",
+		Segments:    statefulTaskSegs(),
+		Context:     statefulCtx(nil),
+		Interactive: true,
+		SteerQueue:  q,
+		StartParked: true,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventDone {
+				sawDone = true
+			}
+		},
+	})
+	if err != nil || res.StopReason != "end_turn" {
+		t.Fatalf("stop=%q err=%v", res.StopReason, err)
+	}
+	if !sawDone {
+		t.Error("an abandoned StartParked stateful run ended without emitting done")
+	}
+}
+
+// ⚠️ A STATEFUL ACTION WENT STRAIGHT TO THE DISPATCHER, so an operator's
+// Pre-hook deny — the policy seam for "this agent may not call that" — did not
+// apply to any mode:stateful agent. The tool must not run, and the model must
+// see the denial as its observation.
+func TestRun_Stateful_APreHookDenyStopsTheAction(t *testing.T) {
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(hooks.PreHookResult{
+			Deny: &hooks.ToolResult{IsError: true, Text: "denied by operator policy"},
+		})
+	}))
+	defer hookSrv.Close()
+	reg := hooks.NewRegistry()
+	if _, err := reg.Register(&hooks.Hook{
+		Owner: "test", Name: "deny-echo", Phase: hooks.PhasePre,
+		CallbackURL: hookSrv.URL, Agents: []string{"stateful-agent"}, Tools: []string{"Echo"},
+	}); err != nil {
+		t.Fatalf("register hook: %v", err)
+	}
+
+	echo := &echoTool{reply: "the tool ran"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		AgentName:  "stateful-agent",
+		Hooks:      hooks.NewDispatcher(reg, nil),
+		OnEvent:    func(providers.Event) {},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if echo.callCount() != 0 {
+		t.Errorf("the denied tool ran %d time(s) — the Pre-hook never saw a stateful action", echo.callCount())
+	}
+	if !prov.sawObservation("denied by operator policy") {
+		t.Errorf("the model never saw the denial as its observation: %v", prov.observed)
+	}
+}
+
+// ctxRecordingTool records the tool-use id the loop stamped on its ctx — the
+// key the parallel_spawn ledger uses to make a fan-out durable.
+type ctxRecordingTool struct {
+	gotID       string
+	gotProvider string
+	gotModel    string
+	gotUsage    tools.ContextUsageValue
+}
+
+func (c *ctxRecordingTool) Name() string                 { return "Echo" }
+func (c *ctxRecordingTool) Description() string          { return "" }
+func (c *ctxRecordingTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (c *ctxRecordingTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
+	c.gotID = tools.ToolUseID(ctx)
+	c.gotProvider, c.gotModel = tools.ResolvedProvider(ctx), tools.ResolvedModel(ctx)
+	c.gotUsage = tools.ContextUsage(ctx)
+	return tools.Result{Text: "ok"}, nil
+}
+
+func TestRun_Stateful_AnActionSeesItsToolUseID(t *testing.T) {
+	rec := &ctxRecordingTool{}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{rec},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{rec}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rec.gotID == "" {
+		t.Error("a stateful action ran with no tool-use id on its ctx, so an Agent parallel_spawn " +
+			"writes no ledger and a paused fan-out parent cannot be reconciled")
+	}
+}
+
+// ⚠️ THE REDACT PLUGIN NEVER SAW A STATEFUL RUN. Run applies the context-
+// transform chain to the append loop's outbound request only; the stateful
+// request went out raw — and the secret here reaches it twice, once in the
+// task and once as the observation a tool returned.
+func TestRun_Stateful_ContextPluginsRedactTheOutboundRequest(t *testing.T) {
+	echo := &echoTool{reply: "the tool printed seekritvalue88"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:          []tools.Tool{echo},
+		Dispatcher:     tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:       leakSegs(),
+		Context:        statefulCtx(nil),
+		ContextPlugins: redactChain(t),
+		OnEvent:        func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if prov.sawObservation("seekritvalue88") {
+		t.Errorf("a stateful request carried a secret the redact plugin should have removed: %v", prov.observed)
+	}
+	if !prov.sawObservation("the tool printed") {
+		t.Fatalf("the action's observation never reached the model, so this test asserts nothing: %v", prov.observed)
+	}
+}
+
+// RFC CJ: a per-agent context size reaches the provider. Without it Ollama
+// fell back to the pinned or loaded num_ctx, silently ignoring the agent's.
+func TestRun_Stateful_TheRequestCarriesTheContextSize(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{},"done":true,"final":"ok"}`}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:         statefulTaskSegs(),
+		Context:          statefulCtx(nil),
+		MaxContextTokens: 65536,
+		OnEvent:          func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if prov.lastReq.MaxContextTokens != 65536 {
+		t.Errorf("request MaxContextTokens = %d, want 65536", prov.lastReq.MaxContextTokens)
+	}
+	if prov.lastReq.OnEvent == nil {
+		t.Error("the request carries no OnEvent, so a driver's rate-limit retry never reaches the stream")
+	}
+}
+
+// flakyStatefulProvider fails its first `fail` calls with `err`, then answers
+// with a finishing emit_state. It is the stateful twin of the append loop's
+// retry fixtures.
+type flakyStatefulProvider struct {
+	id    string
+	mu    sync.Mutex
+	fail  int
+	err   error
+	calls int
+}
+
+func (p *flakyStatefulProvider) ID() string                                   { return p.id }
+func (p *flakyStatefulProvider) Probe(context.Context) error                  { return nil }
+func (p *flakyStatefulProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *flakyStatefulProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *flakyStatefulProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls
+	p.mu.Unlock()
+	if n <= p.fail {
+		return nil, p.err
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t", Name: emitStateToolName,
+		Input: json.RawMessage(`{"patch":{"n":1},"done":true,"final":"from ` + p.id + `"}`)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 1}}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ ONE RATE-LIMITED CALL KILLED A STATEFUL RUN. Every provider error was
+// fatal in this loop, while an append run on the same agent retries and then
+// falls back. Both recoveries apply here now, and neither spends the patch
+// budget: with max_patch_retries 0 the run still recovers.
+func TestRun_Stateful_ARetryableErrorIsRetriedOnTheSameProvider(t *testing.T) {
+	prov := &flakyStatefulProvider{id: "p1", fail: 1, err: fmt.Errorf("fake 429: rate_limited")}
+	zero := 0
+	cx := statefulCtx(nil)
+	cx.MaxPatchRetries = &zero
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:               statefulTaskSegs(),
+		Context:                cx,
+		MaxSameProviderRetries: 2,
+		OnEvent:                func(providers.Event) {},
+	})
+	if err != nil || res.FinalText != "from p1" {
+		t.Fatalf("a stateful run did not recover from one 429: final=%q err=%v", res.FinalText, err)
+	}
+	if prov.calls != 2 {
+		t.Errorf("calls = %d, want 2 (one failed, one retried)", prov.calls)
+	}
+}
+
+func TestRun_Stateful_AProviderFaultFallsBack(t *testing.T) {
+	failing := &flakyStatefulProvider{id: "p1", fail: 99, err: fmt.Errorf("anthropic 429: rate limit exceeded")}
+	healthy := &flakyStatefulProvider{id: "p2"}
+	var fellBack bool
+	res, err := Run(context.Background(), RunOptions{
+		Provider: failing, Model: "x",
+		Segments:       statefulTaskSegs(),
+		Context:        statefulCtx(nil),
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "medium"},
+		ReResolve: func(context.Context, string, string, error) (providers.Provider, string, string, error) {
+			return healthy, "y", "", nil
+		},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventProviderFallback {
+				fellBack = true
+			}
+		},
+	})
+	if err != nil || res.FinalText != "from p2" {
+		t.Fatalf("a stateful run did not fall back: final=%q err=%v", res.FinalText, err)
+	}
+	if !fellBack {
+		t.Error("no provider_fallback event was emitted")
+	}
+	if res.Usage.Provider != "p2" {
+		t.Errorf("run usage attributes provider %q, want the serving p2", res.Usage.Provider)
+	}
+}
+
+// ⚠️ A RUNTIME PAUSE NEVER REACHED A STATEFUL RUN: the gate is checked at the
+// top of the append loop's iteration only. The run kept calling its provider
+// while the runtime reported itself paused, and never reached
+// pause_state='paused' — the one state resume re-dispatches.
+func TestRun_Stateful_ParksAtAStepBoundaryWhenPaused(t *testing.T) {
+	gate := newFakePauseGate()
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{"n":1},"done":true,"final":"ok"}`}}
+	done := make(chan struct{})
+	var res RunResult
+	var runErr error
+	go func() {
+		defer close(done)
+		res, runErr = Run(context.Background(), RunOptions{
+			Provider: prov, Model: "x",
+			Segments:  statefulTaskSegs(),
+			Context:   statefulCtx(nil),
+			PauseGate: gate,
+			OnEvent:   func(providers.Event) {},
+		})
+	}()
+	deadline := time.After(2 * time.Second)
+	for !gate.isParked() {
+		select {
+		case <-done:
+			t.Fatal("the stateful run finished without parking — PauseGate was never consulted")
+		case <-deadline:
+			t.Fatal("timed out waiting for the stateful run to park")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	prov.mu.Lock()
+	callsWhileParked := prov.turn
+	prov.mu.Unlock()
+	if callsWhileParked != 0 {
+		t.Errorf("provider called %d time(s) while the run was parked for a pause", callsWhileParked)
+	}
+	gate.release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the run did not finish after the pause was released")
+	}
+	if runErr != nil || res.StopReason != "end_turn" {
+		t.Errorf("after resume: stop=%q err=%v", res.StopReason, runErr)
+	}
+}
+
+// Context op=self in a stateful action reported no provider, no model and no
+// context footprint: the append loop stamps them per iteration and this loop
+// never did.
+func TestRun_Stateful_AnActionSeesWhatItIsRunningOn(t *testing.T) {
+	rec := &ctxRecordingTool{}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "the-model",
+		Tools:            []tools.Tool{rec},
+		Dispatcher:       tools.NewDispatcher([]tools.Tool{rec}),
+		Segments:         statefulTaskSegs(),
+		Context:          statefulCtx(nil),
+		MaxContextTokens: 32768,
+		OnEvent:          func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rec.gotProvider != "action-script" || rec.gotModel != "the-model" {
+		t.Errorf("op=self would report provider=%q model=%q", rec.gotProvider, rec.gotModel)
+	}
+	if rec.gotUsage.Max == 0 {
+		t.Errorf("op=self would report no context window: %+v", rec.gotUsage)
+	}
+}
+
+// runForText runs an autonomous stateful run with the given patch-retry budget
+// and returns every text frame the operator would have been shown.
+func runForText(t *testing.T, prov providers.Provider, retries int) (RunResult, []string) {
+	t.Helper()
+	cx := statefulCtx(nil)
+	cx.MaxPatchRetries = &retries
+	var mu sync.Mutex
+	var texts []string
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  cx,
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventText {
+				mu.Lock()
+				texts = append(texts, ev.Text)
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return res, texts
+}
+
+// ⚠️ AN ANSWER IN THE PATCH REACHED THE USER AS AN EMPTY MESSAGE. Observed on a
+// local model: `final` and `reasoning` both empty, the answer under a Σ key.
+// The model is asked again, and its corrected turn is what is shown.
+func TestRun_Stateful_ATurnWithNoFinalIsAskedAgain(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"answer":"42"},"done":true}`,
+		`{"patch":{"answer":"42"},"done":true,"final":"The answer is 42."}`,
+	}}
+	res, texts := runForText(t, prov, 2)
+	if res.FinalText != "The answer is 42." {
+		t.Errorf("final = %q, want the corrected answer", res.FinalText)
+	}
+	if !prov.sawObservation("with no `final`") {
+		t.Errorf("the model was never told its turn had no final: %v", prov.observed)
+	}
+	for _, tx := range texts {
+		if strings.TrimSpace(tx) == "" {
+			t.Errorf("an empty message was emitted to the operator: %q", texts)
+		}
+	}
+}
+
+// And when it still has nothing to say, the operator is told that — never
+// shown an empty message.
+func TestRun_Stateful_AnEmptyTurnIsNeverAnEmptyMessage(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{"answer":"42"},"done":true}`}}
+	res, texts := runForText(t, prov, 0)
+	if len(texts) != 1 || !strings.Contains(texts[0], "without an answer") || !strings.Contains(texts[0], "answer") {
+		t.Errorf("texts = %q, want one note naming what the turn changed", texts)
+	}
+	if res.StopReason != "end_turn" {
+		t.Errorf("stop = %q", res.StopReason)
+	}
+}
+
+// requiredFieldTool declares a required input field, like Interruption's `op`.
+type requiredFieldTool struct{ calls int }
+
+func (r *requiredFieldTool) Name() string        { return "Ask" }
+func (r *requiredFieldTool) Description() string { return "asks the operator" }
+func (r *requiredFieldTool) InputSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["op","question"],"properties":{"op":{"type":"string"},"question":{"type":"string"}}}`)
+}
+func (r *requiredFieldTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	r.calls++
+	return tools.Result{Text: "asked"}, nil
+}
+
+// Observed live: `{"tool":"Interruption","input":{}}`. The schema already says
+// what the input needs, so the loop names it instead of dispatching a call the
+// tool can only reject — and a valid call still runs.
+func TestRun_Stateful_AnActionMissingRequiredFieldsIsExplained(t *testing.T) {
+	tool := &requiredFieldTool{}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Ask","input":{}}}`,
+		`{"patch":{},"action":{"tool":"Ask","input":{"op":"ask","question":"which one?"}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{tool},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{tool}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !prov.sawObservation("`Ask` needs `op`, `question`") {
+		t.Errorf("the model was not told which fields were missing: %v", prov.observed)
+	}
+	if tool.calls != 1 {
+		t.Errorf("tool ran %d time(s), want 1 (only the complete call)", tool.calls)
+	}
+}
+
+// Action ids are persisted and the step counter restarts in every run, so two
+// runs of one session used to write the same tool_use id.
+func TestRun_Stateful_ActionIDsDifferAcrossRuns(t *testing.T) {
+	firstActionID := func() string {
+		echo := &echoTool{reply: "ok"}
+		prov := &actionScriptProvider{scripts: []string{
+			`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+			`{"patch":{},"done":true,"final":"ok"}`,
+		}}
+		var id string
+		if _, err := Run(context.Background(), RunOptions{
+			Provider: prov, Model: "x",
+			Tools:      []tools.Tool{echo},
+			Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+			Segments:   statefulTaskSegs(),
+			Context:    statefulCtx(nil),
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventToolCall && id == "" {
+					id = ev.ToolUse.ID
+				}
+			},
+		}); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		return id
+	}
+	a, b := firstActionID(), firstActionID()
+	if a == "" || a == b {
+		t.Errorf("two runs used the same first action id %q / %q", a, b)
+	}
+}
+
+// thinkingRetryProvider answers with a thinking block on every call: first a
+// patch the schema rejects, then a valid one. It records each request.
+type thinkingRetryProvider struct {
+	mu   sync.Mutex
+	reqs []providers.Request
+}
+
+func (p *thinkingRetryProvider) ID() string                                   { return "thinking" }
+func (p *thinkingRetryProvider) Probe(context.Context) error                  { return nil }
+func (p *thinkingRetryProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *thinkingRetryProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *thinkingRetryProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	n := len(p.reqs)
+	p.reqs = append(p.reqs, req)
+	p.mu.Unlock()
+	input := `{"patch":{"count":"not a number"}}`
+	if n > 0 {
+		input = `{"patch":{"count":1},"done":true,"final":"ok"}`
+	}
+	ch := make(chan providers.Event, 2)
+	ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
+		ID: fmt.Sprintf("toolu_%d", n), Name: emitStateToolName, Input: json.RawMessage(input)}}
+	ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{},
+		Reasoning: fmt.Sprintf("thinking %d", n), ReasoningSignature: fmt.Sprintf("sig %d", n)}
+	close(ch)
+	return ch, nil
+}
+
+// ⚠️ A CORRECTION REQUEST REPLAYED THE MODEL'S TURN WITHOUT ITS THINKING. A
+// thinking model requires the block back on an assistant turn it is sent —
+// Anthropic its signed thinking block, DeepSeek its reasoning_content — so the
+// correction a model could have acted on came back as a 400, which was fatal.
+func TestRun_Stateful_ARetryReplaysTheModelsThinking(t *testing.T) {
+	prov := &thinkingRetryProvider{}
+	cx := statefulCtx(map[string]any{"type": "object", "properties": map[string]any{
+		"count": map[string]any{"type": "integer"}}})
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  cx,
+		OnEvent:  func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.reqs) != 2 {
+		t.Fatalf("calls = %d, want a rejected patch then its correction", len(prov.reqs))
+	}
+	var asst *providers.Message
+	for i := range prov.reqs[1].Messages {
+		if prov.reqs[1].Messages[i].Role == "assistant" {
+			asst = &prov.reqs[1].Messages[i]
+		}
+	}
+	if asst == nil {
+		t.Fatal("the correction request replayed no assistant turn")
+	}
+	if asst.Reasoning != "thinking 0" || asst.ReasoningSignature != "sig 0" {
+		t.Errorf("replayed turn reasoning=%q signature=%q, want the model's own", asst.Reasoning, asst.ReasoningSignature)
+	}
+	if len(asst.Content) == 0 || asst.Content[0].ToolUseID != "toolu_0" {
+		t.Errorf("replayed tool_use id = %v, want the model's own toolu_0", asst.Content)
 	}
 }

@@ -5,6 +5,7 @@ import type {
   TranscriptEvent,
   UserInputPayload,
 } from "../api";
+import { toolResultId } from "../lib/toolSettlement";
 
 // TerminalTranscript renders the run's events as a chronological
 // flat stream of "[hh:mm:ss.SSS] event_type | payload" lines,
@@ -185,7 +186,7 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       };
     }
     case "tool_result": {
-      const id = (ev as { tool_use_id?: string }).tool_use_id ?? "";
+      const id = toolResultId(ev);
       const idTail = id ? `${id.slice(0, 8)} ` : "";
       const text = ev.text ?? "";
       return {

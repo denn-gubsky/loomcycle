@@ -156,3 +156,39 @@ func TestRecordingEmit_SpawnLedgerStoredNotForwarded(t *testing.T) {
 		}
 	}
 }
+
+// ⚠️ F32 MASKED THE TOOL RESULT AND MISSED THE COPY. A stateful run copies what
+// a tool returned into Σ, then persists the whole Σ, the step's patch and its
+// reasoning on every step, so the secret masked out of tool_result reached
+// the events BLOB anyway, one event later. The live event must stay intact.
+func TestRecordingEmit_RedactsSecretInContextState(t *testing.T) {
+	redactor := redact.New(map[string]string{"LOOMCYCLE_GITEA_TOKEN": emitSecret}, true)
+	srv, st, runID, ctx, cleanup := emitFixture(t, redactor)
+	defer cleanup()
+
+	var forwarded providers.Event
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", func(ev providers.Event) { forwarded = ev })
+	emit(providers.Event{Type: providers.EventContextState, ContextState: &providers.ContextStateEventInfo{
+		State:     map[string]any{"creds": map[string]any{"token": emitSecret}, "topic": "gitea"},
+		Patch:     map[string]any{"creds": map[string]any{"token": emitSecret}},
+		Reasoning: "the token is " + emitSecret,
+	}})
+
+	evs, _, err := st.ListEvents(ctx, store.EventFilter{Type: string(providers.EventContextState)}, 100, 0)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("ListEvents: %d events, err %v", len(evs), err)
+	}
+	if strings.Contains(string(evs[0].Payload), emitSecret) {
+		t.Errorf("secret persisted in a context_state event: %s", evs[0].Payload)
+	}
+	var stored providers.Event
+	if err := json.Unmarshal(evs[0].Payload, &stored); err != nil || stored.ContextState == nil {
+		t.Fatalf("stored context_state did not decode: %v", err)
+	}
+	if stored.ContextState.State["topic"] != "gitea" {
+		t.Errorf("redaction lost the rest of the state: %v", stored.ContextState.State)
+	}
+	if forwarded.ContextState == nil || !strings.Contains(forwarded.ContextState.Reasoning, emitSecret) {
+		t.Error("the LIVE event was mutated — only the persisted copy is to be masked")
+	}
+}

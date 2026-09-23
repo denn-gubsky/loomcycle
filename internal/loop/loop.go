@@ -204,6 +204,18 @@ type RunOptions struct {
 	// nil = start empty, which is correct for a fresh run.
 	InitialState map[string]any
 
+	// InitialObservation, when non-empty, is a stateful run's FIRST observation
+	// verbatim, in place of one rendered from PriorMessages + Segments. Ignored
+	// by the append/recap loop.
+	//
+	// ⚠️ THE OTHER HALF OF A STATEFUL RESUME. InitialState restores what the run
+	// knew; this restores what it was looking at — the result of the action it
+	// chose before it paused, or the operator's message a continuation carries.
+	// Without it the first observation was rendered from a replayed transcript:
+	// every operator message and every answer so far, relabelled "Task:", and
+	// unbounded — the history stateful mode exists not to feed back.
+	InitialObservation string
+
 	// PriorMessages is the conversation history to prepend before the
 	// caller's new Segments. Used by the continuation endpoint to replay
 	// a session's prior turns. Empty for a fresh run (the v0.2 case).
@@ -2177,8 +2189,8 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	// RFC CR tier-routing: `context.mode: auto` resolves to a concrete mode from
 	// the RESOLVED provider — a local backend → recap (schema-free, safe for a
-	// weaker model), a frontier API → stateful. An interactive run never resolves
-	// to stateful (that loop has no steer/park), so it takes recap. Resolved once
+	// weaker model), a frontier API → stateful. An interactive run takes recap
+	// (see resolveAutoContextMode for why that outlived its reason). Resolved once
 	// here on a CLONE (never mutating the shared agent def); a mid-run provider
 	// fallback keeps the mode chosen at start.
 	if contextAutoMode(opts.Context) {
@@ -2189,6 +2201,57 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// stateful branch, so both loop paths and their dispatched tools reach it via
 	// recall.FromContext). No-op when opts.RecallIndex is nil (recall off).
 	ctx = recall.NewContext(ctx, opts.RecallIndex)
+
+	// Clamp the operator-supplied retry count to the safety cap so
+	// a misconfigured yaml can't induce minute-scale delays per error.
+	// Above the stateful branch: that loop retries on the same budget.
+	if opts.MaxSameProviderRetries > maxSameProviderRetriesCap {
+		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
+	}
+
+	// Run-lifetime heartbeat: pulse OnHeartbeat every parkHeartbeatInterval for
+	// as long as this run's goroutine is alive, IN ADDITION to the per-iteration
+	// pulse below. The stale-run sweeper reaps a run whose heartbeat hasn't
+	// advanced in HeartbeatStaleAfter (default 10m) as CRASHED — but a SINGLE
+	// iteration can legitimately block far longer than the per-iteration cadence:
+	// a large-context prefill on a slow local model, a long tool, or
+	// same-provider retry backoff. A slow ollama review hit exactly this — two
+	// 300s header timeouts inside one iteration (>10m with no pulse) got the
+	// live run reaped as heartbeat_timeout. A live goroutine is not a crashed
+	// process, so keep the heartbeat fresh regardless of which phase the
+	// iteration is in. The callback is a fire-and-forget DB write (server's
+	// makeHeartbeat) — safe to call concurrently with the per-iteration pulse.
+	// Stops when Run returns (close) or ctx is cancelled. parkForInput keeps its
+	// own pulse (this subsumes it; harmless overlap).
+	//
+	// ⚠️ ABOVE THE STATEFUL BRANCH, deliberately. It used to sit below it, so a
+	// stateful run pulsed only while parked: a working one kept a NULL
+	// last_heartbeat_at and the sweeper failed it as heartbeat_timeout ten minutes
+	// in, with its goroutine still running and spending tokens.
+	//
+	// The goroutine takes its OWN copy of ctx: Run reassigns ctx below this
+	// point (the compact-request stamp, per-iteration values), and a closure
+	// over the variable reads it while that write happens — a data race that
+	// did not exist while this block sat below the last reassignment.
+	if opts.OnHeartbeat != nil {
+		hbDone := make(chan struct{})
+		defer close(hbDone)
+		hbCtx := ctx
+		go func() {
+			t := time.NewTicker(parkHeartbeatInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-hbDone:
+					return
+				case <-hbCtx.Done():
+					return
+				case <-t.C:
+					opts.OnHeartbeat()
+				}
+			}
+		}()
+	}
 
 	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
 	// the model emits a patch + action each step. Branch here, after the preamble
@@ -2351,45 +2414,6 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// retry budget is per-provider. Capped at opts.MaxSameProviderRetries
 	// (clamped to maxSameProviderRetriesCap=5).
 	var sameProviderRetries int
-
-	// Clamp the operator-supplied retry count to the safety cap so
-	// a misconfigured yaml can't induce minute-scale delays per error.
-	if opts.MaxSameProviderRetries > maxSameProviderRetriesCap {
-		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
-	}
-
-	// Run-lifetime heartbeat: pulse OnHeartbeat every parkHeartbeatInterval for
-	// as long as this run's goroutine is alive, IN ADDITION to the per-iteration
-	// pulse below. The stale-run sweeper reaps a run whose heartbeat hasn't
-	// advanced in HeartbeatStaleAfter (default 10m) as CRASHED — but a SINGLE
-	// iteration can legitimately block far longer than the per-iteration cadence:
-	// a large-context prefill on a slow local model, a long tool, or
-	// same-provider retry backoff. A slow ollama review hit exactly this — two
-	// 300s header timeouts inside one iteration (>10m with no pulse) got the
-	// live run reaped as heartbeat_timeout. A live goroutine is not a crashed
-	// process, so keep the heartbeat fresh regardless of which phase the
-	// iteration is in. The callback is a fire-and-forget DB write (server's
-	// makeHeartbeat) — safe to call concurrently with the per-iteration pulse.
-	// Stops when Run returns (close) or ctx is cancelled. parkForInput keeps its
-	// own pulse (this subsumes it; harmless overlap).
-	if opts.OnHeartbeat != nil {
-		hbDone := make(chan struct{})
-		defer close(hbDone)
-		go func() {
-			t := time.NewTicker(parkHeartbeatInterval)
-			defer t.Stop()
-			for {
-				select {
-				case <-hbDone:
-					return
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					opts.OnHeartbeat()
-				}
-			}
-		}()
-	}
 
 	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
 	// disarmTurn removes its armed registry token. Both are re-created per turn

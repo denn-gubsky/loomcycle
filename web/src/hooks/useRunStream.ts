@@ -301,7 +301,12 @@ export function useRunStream(): UseRunStream {
     (text: string) => {
       const t = text.trim();
       if (!t) return;
-      if (status === "running") {
+      // A PARKED run is steered, whatever `status` says. A run that reached
+      // awaiting_input is alive and waiting for exactly this message; sending it
+      // as a continuation instead starts a second run on the session and leaves
+      // the parked one holding its slot. That is what happened when a stateful
+      // run's per-turn `done` flipped status to completed mid-conversation.
+      if (status === "running" || awaitingInput) {
         const rid = runIdRef.current;
         if (!rid) return;
         setAwaitingInput(false); // optimistic; the resumed activity will stream
@@ -320,7 +325,7 @@ export function useRunStream(): UseRunStream {
       }
       sendMessage(t);
     },
-    [status, sendMessage],
+    [status, awaitingInput, sendMessage],
   );
 
   const cancel = useCallback(() => {

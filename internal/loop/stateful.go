@@ -2,12 +2,18 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -23,7 +29,7 @@ import (
 // the reasoning, executes the named action to produce the next observation, and
 // loops. Cost is O(T): the fed prompt never grows. The full event stream (each
 // EventContextState marker) is persisted — ⚠️ AND NO LONGER ONLY FOR AUDIT:
-// statefulSigmaFromTranscript recovers a RESUMED run's Σ from the last such
+// statefulSeedFromEvents recovers a RESUMED run's Σ from the last such
 // marker (RFC DH P2), so trimming them to save transcript bytes would silently
 // make every resumed stateful run forget everything it knew.
 //
@@ -44,11 +50,29 @@ func contextAutoMode(cx *config.Context) bool {
 	return cx != nil && cx.Mode != nil && *cx.Mode == config.ContextModeAuto
 }
 
+// StatefulMode reports whether a run with this context policy runs the
+// stateful loop, resolving mode:auto exactly as Run will. A caller that builds
+// a run's INPUT — resume, a session continuation — needs the answer before
+// Run is called: a stateful run is seeded from its recorded state, not from
+// its replayed messages.
+func StatefulMode(cx *config.Context, local, interactive bool) bool {
+	if contextAutoMode(cx) {
+		cx = resolveAutoContextMode(cx, local, interactive)
+	}
+	return contextStatefulMode(cx)
+}
+
 // resolveAutoContextMode turns mode:auto into a concrete mode (RFC CR tier-
 // routing): a local backend → recap (schema-free, safe for a weaker model), a
-// frontier API → stateful. An interactive run never resolves to stateful — that
-// loop has no steer/park — so it takes recap regardless of tier. Returns a CLONE
-// carrying the concrete mode so the shared agent def is never mutated.
+// frontier API → stateful. An interactive run takes recap regardless of tier.
+//
+// ⚠️ THE ORIGINAL REASON FOR THAT IS GONE: it said the stateful loop had no
+// steer or park, and RFC DH P1 gave it both. The clause is kept on purpose
+// until an interactive stateful chat has been verified end to end — Σ carried
+// across turns in the embedded terminal, on a frontier and on a local model —
+// because stateful is the less forgiving mode for a model that fumbles its
+// emit shape. An explicit `mode: stateful` has always bypassed it. Returns a
+// CLONE carrying the concrete mode so the shared agent def is never mutated.
 func resolveAutoContextMode(cx *config.Context, local, interactive bool) *config.Context {
 	mode := config.ContextModeStateful
 	if local || interactive {
@@ -153,6 +177,48 @@ func parseEmitState(input json.RawMessage) (*emitStateOut, error) {
 		out.Patch = map[string]any{} // a step with no state change is legal
 	}
 	return &out, nil
+}
+
+// retryToolUseID is the id a correction request replays the model's rejected
+// emit_state under: the model's own, when it gave one, so the assistant turn
+// sent back is the one it produced (a thinking model's replayed block belongs
+// to it); a synthetic one for a driver that issues none (Ollama).
+func retryToolUseID(modelID string, iter, attempt int) string {
+	if modelID != "" {
+		return modelID
+	}
+	return fmt.Sprintf("es-%d-%d", iter, attempt)
+}
+
+// newActionIDTag is a short random tag that makes one run's action ids unique
+// among the session's. crypto/rand never fails on a supported platform; the
+// fixed fallback only costs uniqueness, never correctness within the run.
+func newActionIDTag() string {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "0"
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// endsTurn reports whether a step ends the turn: done, or no action named.
+func endsTurn(es *emitStateOut) bool {
+	return es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == ""
+}
+
+// emptyTurnNote is what the operator is shown when a turn ended with no answer
+// even after the model was asked for one — never an empty message, which reads
+// as the chat having broken.
+func emptyTurnNote(patch map[string]any) string {
+	keys := make([]string, 0, len(patch))
+	for k := range patch {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return "(the model ended its turn without an answer)"
+	}
+	return "(the model ended its turn without an answer; it updated its state: " + strings.Join(keys, ", ") + ")"
 }
 
 func actionName(es *emitStateOut) string {
@@ -265,6 +331,13 @@ type emitStateCall struct {
 	// failure: a thinking model's output never reached the text accumulator.)
 	thinking string
 	usage    *providers.Usage
+	// reasoning / reasoningSig are the driver's own record of the thinking
+	// block, from EventDone — what a thinking model requires to be replayed on
+	// an assistant turn that is sent back to it. callID is the tool_use id the
+	// model gave its emit_state call, for the same reason.
+	reasoning    string
+	reasoningSig string
+	callID       string
 }
 
 // callForEmitState makes one provider call and returns the emit_state tool input
@@ -284,6 +357,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 		case providers.EventToolCall:
 			if ev.ToolUse != nil && ev.ToolUse.Name == emitStateToolName && out.input == nil {
 				out.input = ev.ToolUse.Input
+				out.callID = ev.ToolUse.ID
 			}
 		case providers.EventText:
 			text.WriteString(ev.Text)
@@ -291,6 +365,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 			thinking.WriteString(ev.Text)
 		case providers.EventDone:
 			out.usage = ev.Usage
+			out.reasoning, out.reasoningSig = ev.Reasoning, ev.ReasoningSignature
 		case providers.EventError:
 			streamErr = ev.Error
 		}
@@ -340,6 +415,72 @@ func addUsage(dst *providers.Usage, u *providers.Usage) {
 	if u.Model != "" {
 		dst.Model = u.Model
 	}
+	// Which key paid, for the run-level summary (runs.credential_source) — the
+	// append loop carries the last call's; the per-call split is the ledger's.
+	if u.CredentialSource != "" {
+		dst.CredentialSource = u.CredentialSource
+		dst.CredentialScopeID = u.CredentialScopeID
+	}
+}
+
+// statefulRecovery is the provider-fault recovery state of one stateful run:
+// the append loop's same-provider retry budget and fallback counter.
+type statefulRecovery struct {
+	sameProviderRetries int
+	fallbackAttempts    int
+	firstStepSucceeded  bool
+}
+
+type statefulCallOutcome int
+
+const (
+	statefulCallFatal statefulCallOutcome = iota
+	statefulCallRetry
+	statefulCallCancelled
+)
+
+// recoverStatefulCall applies the append loop's answer to a provider fault, in
+// the same order: a same-provider retry with backoff for a retryable error
+// while the budget lasts; then resolver feedback; then a cross-provider
+// fallback under the run's policy. Retry means "send this step again" — on the
+// same provider, or on the one opts now names.
+func recoverStatefulCall(ctx context.Context, opts *RunOptions, rec *statefulRecovery, err error,
+	emit func(providers.Event), msgs []providers.Message) statefulCallOutcome {
+	if ctx.Err() != nil {
+		return statefulCallCancelled
+	}
+	if rec.sameProviderRetries < opts.MaxSameProviderRetries &&
+		providers.ClassifyError(err) == providers.ErrorClassRetryable {
+		rec.sameProviderRetries++
+		backoff := sameProviderRetryBackoff(rec.sameProviderRetries)
+		emit(providers.Event{Type: providers.EventRetry, Retry: &providers.RetryInfo{
+			Provider: opts.Provider.ID(), Attempt: rec.sameProviderRetries,
+			WaitMs: backoff.Milliseconds(), Reason: providers.RetryReasonSchedule,
+		}})
+		select {
+		case <-ctx.Done():
+			return statefulCallCancelled
+		case <-time.After(backoff):
+		}
+		return statefulCallRetry
+	}
+	// Resolver feedback, split by class exactly as Run's is: a 429 cools the
+	// pair briefly, anything else marks it stalled. An operator-key refusal is a
+	// per-run policy decision, not an outage, and must not poison the matrix.
+	if !errors.Is(err, providers.ErrOperatorKeyForbidden) {
+		if providers.IsRateLimit(err) {
+			if opts.MarkRateLimited != nil {
+				opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
+			}
+		} else if opts.MarkStalled != nil {
+			opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+		}
+	}
+	if tryProviderFallback(ctx, opts, &rec.fallbackAttempts, err, emit, msgs, rec.firstStepSucceeded) == fallbackOutcomeSwitched {
+		rec.sameProviderRetries = 0
+		return statefulCallRetry
+	}
+	return statefulCallFatal
 }
 
 func applyStatefulSampling(req *providers.Request, s *config.Sampling) {
@@ -417,23 +558,66 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	holder := &tools.ExecStateHolder{Sigma: sigma}
 	dispatchCtx := tools.WithExecutionState(ctx, holder) // the action sees the live Σ (Context op=state)
 
+	var total providers.Usage
+	var rec statefulRecovery
+	// ⚠️ ACTION IDS ARE PERSISTED, and the step counter restarts at 0 in every
+	// run — while a session holds many (each continuation is a new run). A
+	// session that later replays as messages (mode auto sends an interactive
+	// run to recap) would then carry duplicate tool_use ids, which a provider
+	// may reject, and the Web UI pairs calls with results by id. A per-run tag
+	// keeps them unique; the in-request retry ids never persist and need none.
+	actionIDTag := newActionIDTag()
+	// finish emits the run's ONE terminal done. ⚠️ DONE MEANS THE RUN IS OVER, to
+	// every consumer that reads it — the Web UI marks the run completed on it, and
+	// the MCP / connector spawn paths take their final stop reason from it. This
+	// loop used to emit one at every turn boundary before parking, so the embedded
+	// terminal showed a parked chat as finished after its first answer and sent
+	// the operator's next message as a brand-new continuation run. The append loop
+	// has never emitted a mid-run done: the turn boundary of an interactive run is
+	// awaiting_input, and per-call usage rides EventUsage.
+	finish := func(stop string) {
+		emit(providers.Event{Type: providers.EventDone, StopReason: stop, Usage: &total})
+	}
+
 	obs := initialObservation(initial)
+	if opts.InitialObservation != "" {
+		obs = opts.InitialObservation
+	}
 	// StartParked: a re-attached interactive run waits for the operator before
 	// spending a model call. Mirrors Run's handling — an abandoned park ends the
 	// run on the turn it had already reached rather than calling the provider.
 	if opts.StartParked && interactive {
 		next, resumed := parkForStatefulTurn(ctx, &opts, 0, emit)
 		if !resumed {
+			finish("end_turn")
 			return RunResult{StopReason: "end_turn", State: sigma}, nil
 		}
 		obs = next
 	}
-	var total providers.Usage
 	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
 			return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, err
+		}
+		// Same per-iteration pulse the append loop sends; Run's lifetime ticker
+		// covers a step that blocks longer than one interval.
+		if opts.OnHeartbeat != nil {
+			opts.OnHeartbeat()
+		}
+		// Cooperative pause (RFC X / F41), at the same boundary the append loop
+		// parks at: before a model call, never between an action and its
+		// result. ⚠️ THIS LOOP NEVER CHECKED IT, so a runtime pause did not
+		// quiesce a stateful run — it kept calling the provider while the
+		// runtime reported itself paused, Pause() waited out its whole timeout,
+		// and the row never reached pause_state='paused', which is the only
+		// state resume re-dispatches. Here Σ is persisted (the last
+		// context_state) and so is the pending observation (a tool_result or
+		// the operator's user_input), which is what a resume rebuilds from.
+		if opts.PauseGate != nil && opts.PauseGate.PauseRequested() {
+			if err := opts.PauseGate.Park(ctx); err != nil {
+				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
+			}
 		}
 		msgs := []providers.Message{statefulUserMessage(sigma, obs)}
 		var es *emitStateOut
@@ -447,13 +631,34 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// unforced, which is why this is an optimisation and not a
 			// precondition: the contract still lives in the prompt, and a
 			// model that ignores it is still re-prompted rather than fatal.
-			req := providers.Request{Model: opts.Model, System: statefulSystem, Messages: msgs, Tools: emitTool, MaxTokens: opts.MaxTokens, Effort: opts.Effort,
-				ToolChoice: providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}}
+			//
+			// ⚠️ THE CONTEXT-TRANSFORM CHAIN RUNS HERE TOO, on a copy, exactly as
+			// Run applies it to the append loop's request. This request used to
+			// go out untransformed, so the `redact` plugin never saw a stateful
+			// run — and Σ and the observation are where tool output, and any
+			// secret in it, lands.
+			reqSystem, reqMsgs := statefulSystem, msgs
+			if len(opts.ContextPlugins) > 0 && opts.Provider.ID() != codeJSProviderID {
+				cs, cm, perr := contextplugin.Apply(ctx, opts.ContextPlugins, statefulSystem, msgs)
+				if perr != nil {
+					emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
+					return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, perr
+				}
+				reqSystem, reqMsgs = cs, cm
+			}
+			req := providers.Request{Model: opts.Model, System: reqSystem, Messages: reqMsgs, Tools: emitTool,
+				MaxTokens:        opts.MaxTokens,
+				MaxContextTokens: opts.MaxContextTokens, // RFC CJ — without it Ollama ignored a per-agent context size
+				Effort:           opts.Effort,
+				ToolChoice:       providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName},
+				OnEvent:          emit, // a driver's retry-while-rate-limited event reaches the stream
+			}
 			applyStatefulSampling(&req, opts.Sampling)
 			call, err := callForEmitState(ctx, opts.Provider, req)
 			input, usage := call.input, call.usage
 			addUsage(&total, usage)
 			if usage != nil {
+				total.Provider = opts.Provider.ID() // the SERVING provider, across a fallback
 				// The provider's own count of the whole request, which is what
 				// the eviction threshold must measure against — the same
 				// numerator the append/recap gate uses.
@@ -491,9 +696,27 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				emit(providers.Event{Type: providers.EventUsage, Usage: &iterUsage})
 			}
 			if err != nil && !errors.Is(err, errNoEmitState) {
-				// Transport or provider fault — nothing the model can correct.
+				// Transport or provider fault — nothing the MODEL can correct, but
+				// the append loop's recovery applies unchanged, and this loop used
+				// to have none: one 429 or "overloaded" killed a stateful run that
+				// an append run on the same agent would ride out. Neither retry
+				// consumes a max_patch_retries attempt — that budget is for the
+				// model's mistakes, and this was not one.
+				switch recoverStatefulCall(ctx, &opts, &rec, err, emit, msgs) {
+				case statefulCallRetry:
+					attempt--
+					continue
+				case statefulCallCancelled:
+					return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
+				}
 				emit(providers.Event{Type: providers.EventError, Error: "stateful step failed: " + err.Error()})
 				return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, err
+			}
+			// The call reached the provider and came back: the pair is healthy
+			// enough to answer, whatever the model then did with the answer.
+			rec.sameProviderRetries = 0
+			if opts.ClearStall != nil {
+				opts.ClearStall(opts.Provider.ID(), opts.Model)
 			}
 			if err != nil {
 				// ⚠️ THE SAME BUDGET AS A REJECTED PATCH, and it used to get
@@ -521,7 +744,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				// assistant turn the API will accept back.
 				if call.text != "" {
 					msgs = append(msgs, providers.Message{Role: "assistant",
-						Content: []providers.ContentBlock{{Type: "text", Text: call.text}}})
+						Content:   []providers.ContentBlock{{Type: "text", Text: call.text}},
+						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig})
 				}
 				msgs = append(msgs, providers.Message{Role: "user",
 					Content: []providers.ContentBlock{{Type: "text", Text: "That reply was not usable: in structured " +
@@ -547,16 +771,35 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				}
 				// Rollback-retry: show the model its rejected emit_state + the reason,
 				// as a proper tool_use/tool_result pair, and ask for a correction.
-				tid := fmt.Sprintf("es-%d-%d", iter, attempt)
+				tid := retryToolUseID(call.callID, iter, attempt)
 				msgs = append(msgs,
-					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}}},
+					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}},
+						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig},
 					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state rejected: " + cause.Error() + ". Emit a corrected emit_state."}}})
 				continue
 			}
+			// ⚠️ A TURN THAT ENDS WITH NOTHING TO SAY. A model that put its answer
+			// in the patch — `{"answer": "…"}` — with `final` and `reasoning`
+			// both empty ended the turn as an empty message, and nothing noticed.
+			// The model is the one who can fix that, so it is asked to, on the
+			// same budget as a rejected patch. Not treated as not-done: a model
+			// that cannot produce `final` would then loop.
+			if endsTurn(parsed) && strings.TrimSpace(parsed.Final) == "" && strings.TrimSpace(parsed.Reasoning) == "" &&
+				onInvalid != "fail" && attempt < maxRetries {
+				tid := retryToolUseID(call.callID, iter, attempt)
+				msgs = append(msgs,
+					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}},
+						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig},
+					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state not accepted: " +
+						"it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in `final`."}}})
+				continue
+			}
 			es = parsed
+			rec.firstStepSucceeded = true
 			break
 		}
 
+		sigmaBefore := sigmaTokens(sigma)
 		sigma = statepatch.Merge(sigma, es.Patch)
 		for k := range es.Patch {
 			lastWritten[k] = iter
@@ -568,7 +811,16 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		// Σ — the next patch would have nothing well-formed to merge into. The
 		// structural equivalent is EVICTION of the least significant entries.
 		var evicted []string
-		if aboveBackstop(opts.Compaction, lastIn, lastWindow) && backstopAvailable(opts.Compaction) {
+		// ⚠️ lastIn MEASURED THE REQUEST THIS STEP ANSWERED, which carried the
+		// previous Σ. A large patch merged just now was never weighed before
+		// the next request went out, so one big write could take the prompt
+		// past the window with no eviction first. The gate counts the growth;
+		// what is REPORTED stays the provider's own number.
+		gateIn := lastIn
+		if grown := lastIn - sigmaBefore + sigmaTokens(sigma); grown > gateIn {
+			gateIn = grown
+		}
+		if aboveBackstop(opts.Compaction, gateIn, lastWindow) && backstopAvailable(opts.Compaction) {
 			// The budget is Σ's share of the window. The preamble is fixed for
 			// the run and the observation is one step, so Σ is the only part
 			// eviction can move.
@@ -585,7 +837,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				holder.Sigma = sigma
 				evicted = plan
 				lastIn = preambleTokens + sigmaTokens(sigma)
-			} else if footprintMeasured {
+			} else if footprintMeasured && aboveBackstop(opts.Compaction, lastIn, lastWindow) {
+				// Reported only on the provider's own number — the grown
+				// estimate may open the gate, but it is not a finding.
 				// Nothing evictable and still over: every key is core, or the
 				// preamble alone is the problem. Either way the run is heading
 				// for the provider's limit and must say so.
@@ -626,13 +880,18 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		harvestToMemory(ctx, opts, emit, stepSpan)
 
 		// Turn boundary: done flag, or no action named.
-		if es.Done || es.Action == nil || strings.TrimSpace(es.Action.Tool) == "" {
+		if endsTurn(es) {
 			final := es.Final
 			if final == "" {
+				// A fallback, and a bend in the contract that reasoning is
+				// discarded — kept because an answer found only there is still
+				// better shown than lost.
 				final = es.Reasoning
 			}
+			if strings.TrimSpace(final) == "" {
+				final = emptyTurnNote(es.Patch)
+			}
 			emit(providers.Event{Type: providers.EventText, Text: final})
-			emit(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &total})
 
 			// ⚠️ RFC DH P1: AN INTERACTIVE RUN PARKS HERE INSTEAD OF ENDING, and
 			// this one line is the whole of the reported bug. The loop reached
@@ -657,11 +916,12 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				// Cancelled while parked, or the queue closed: the run ends on
 				// the turn it had already completed.
 			}
+			finish("end_turn")
 			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 		}
 
 		// Execute the named action → next observation.
-		tid := fmt.Sprintf("es-act-%d", iter)
+		tid := fmt.Sprintf("es-%s-act-%d", actionIDTag, iter)
 		switch {
 		case opts.Dispatcher == nil:
 			obs = "ERROR: no tools are available to run action " + es.Action.Tool
@@ -690,18 +950,45 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				statefulActionHint(toolSpecs)
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
-		default:
+		case missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input) != "":
+			// Refused before dispatch, generally rather than per tool: the
+			// schema already says what the input needs, and naming it here
+			// costs the model one step instead of a guess. Observed live as
+			// `{"tool":"Interruption","input":{}}` — a fumble of the same class
+			// as naming emit_state, with a real tool.
+			obs = "ERROR: " + missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input)
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
-			res := opts.Dispatcher.Execute(dispatchCtx, es.Action.Tool, es.Action.Input)
-			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: res.Text, IsError: res.IsError})
-			obs = res.Text
-			if res.IsError {
-				obs = "ERROR: " + res.Text
+			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
+		default:
+			tu := providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}
+			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
+			// ⚠️ THROUGH THE APPEND LOOP'S DISPATCH, not the dispatcher directly.
+			// This used to call Dispatcher.Execute, which skipped everything
+			// executePendingTools adds around a call: the operator's Pre-hooks
+			// (a deny did not apply to a stateful agent), Post-hooks, the
+			// tool-use id the parallel_spawn ledger keys on, and the RFC DA
+			// classification of a failure. It also emits the tool_result.
+			ident := tools.RunIdentity(ctx)
+			hookIdent := hooks.Identity{Agent: opts.AgentName, UserID: ident.UserID, AgentID: ident.AgentID, Tenant: ident.TenantID}
+			// What the append loop stamps per iteration, so Context op=self in a
+			// stateful action reports the provider/model it is actually running
+			// on (after any fallback), its sampling, and how full the window is.
+			// Stamped here rather than at the top of the step because a fallback
+			// during this step's call can change the first two.
+			actCtx := tools.WithResolvedProvider(dispatchCtx, opts.Provider.ID())
+			actCtx = tools.WithResolvedModel(actCtx, opts.Model)
+			actCtx = tools.WithResolvedSampling(actCtx, opts.Sampling)
+			actCtx = tools.WithMaxContextTokens(actCtx, opts.MaxContextTokens)
+			actCtx = tools.WithContextUsage(actCtx, lastIn, lastWindow)
+			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
+			obs = blocks[0].Text
+			if blocks[0].IsError {
+				obs = "ERROR: " + obs
 			}
 		}
 	}
 
-	emit(providers.Event{Type: providers.EventDone, StopReason: "max_iterations", Usage: &total})
+	finish("max_iterations")
 	return RunResult{StopReason: "max_iterations", Iterations: maxIter, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 }
 
@@ -732,6 +1019,48 @@ func unforcedNote(opts RunOptions) string {
 	}
 	return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
 		"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
+}
+
+// missingRequiredInput names what an action's input lacks against its tool's
+// declared schema — the top-level `required` fields only. "" means nothing is
+// missing, or the schema declares nothing to check. Deliberately not a full
+// JSON-Schema validation: every tool validates its own input, and a second
+// validator here would drift from the first.
+func missingRequiredInput(specs []providers.ToolSpec, name string, input json.RawMessage) string {
+	var schema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	for _, t := range specs {
+		if t.Name == name {
+			_ = json.Unmarshal(t.InputSchema, &schema)
+			break
+		}
+	}
+	if len(schema.Required) == 0 {
+		return ""
+	}
+	var got map[string]json.RawMessage
+	_ = json.Unmarshal(input, &got) // absent, null or a non-object all count as no fields
+	var missing []string
+	for _, f := range schema.Required {
+		if _, ok := got[f]; !ok {
+			missing = append(missing, "`"+f+"`")
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	props := make([]string, 0, len(schema.Properties))
+	for p := range schema.Properties {
+		props = append(props, "`"+p+"`")
+	}
+	sort.Strings(props)
+	msg := "`" + name + "` needs " + strings.Join(missing, ", ") + " in its input, which was not given."
+	if len(props) > 0 {
+		msg += " Its input fields are: " + strings.Join(props, ", ") + "."
+	}
+	return msg
 }
 
 // offersTool reports whether this agent was offered a tool by that name. The
