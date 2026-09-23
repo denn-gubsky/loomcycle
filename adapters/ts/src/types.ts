@@ -1128,7 +1128,8 @@ export interface ClientOptions {
 
 // ---- Agent metadata ----
 
-export type AgentStatus = "running" | "completed" | "failed" | "cancelled";
+/** `configured` is a run created but not yet started (RFC DI). */
+export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled";
 
 export interface AgentUsage {
   input_tokens?: number;
@@ -1173,7 +1174,30 @@ export interface Agent {
    *  over its definition. {@link LoomcycleClient.getAgent} only, like
    *  `result`; absent when the run overrode nothing. */
   spec?: RunSpec;
+  /** A CONFIGURED run's request as it will start (RFC DI) — what
+   *  {@link LoomcycleClient.updateConfiguredRun} edits. Snake_case wire keys;
+   *  present only while the run is configured, and never holds a secret. */
+  draft?: Record<string, unknown>;
 }
+
+/** A run created without being started (RFC DI). */
+export interface ConfiguredRun {
+  run_id: string;
+  agent_id?: string;
+  session_id?: string;
+  status: "configured";
+  /** The stored request, snake_case wire keys. */
+  draft: Record<string, unknown>;
+}
+
+/** The fields {@link LoomcycleClient.updateConfiguredRun} may replace: a run's
+ *  options minus its agent, identity, secrets and transport knobs. */
+export type ConfiguredRunPatch = Partial<
+  Omit<
+    RunOptions,
+    "agent" | "sessionId" | "tenantId" | "userId" | "agentId" | "userBearer" | "userCredentials" | "signal" | "debug"
+  >
+>;
 
 /** A run's own configuration record (RFC DI), as persisted — the values it
  *  ran with after its per-run overrides were merged over its definition.
