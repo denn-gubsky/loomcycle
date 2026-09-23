@@ -4695,7 +4695,13 @@ type Agent struct {
 	// cancellable). Adapters use this to distinguish "running and
 	// cancellable" from "running per the row but the registry doesn't
 	// know about it" (process restart leaves the latter).
-	Live          bool `protobuf:"varint,13,opt,name=live,proto3" json:"live,omitempty"`
+	Live bool `protobuf:"varint,13,opt,name=live,proto3" json:"live,omitempty"`
+	// result is the run's answer as JSON (RFC DI): {"final_text": ..., "state":
+	// {...}} — what the run row had no column for; stop_reason, error and usage
+	// are the fields above. Set on GetAgent only; ListUserAgents leaves it empty so
+	// a listing stays small. Empty while running and for a finish with nothing
+	// to report.
+	Result        []byte `protobuf:"bytes,14,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4819,6 +4825,13 @@ func (x *Agent) GetLive() bool {
 		return x.Live
 	}
 	return false
+}
+
+func (x *Agent) GetResult() []byte {
+	if x != nil {
+		return x.Result
+	}
+	return nil
 }
 
 // AgentUsage mirrors agentResponseUsage.
@@ -9746,7 +9759,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04type\x18\x05 \x01(\tR\x04type\x12\x18\n" +
 	"\apayload\x18\x06 \x01(\fR\apayload\",\n" +
 	"\x0fGetAgentRequest\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\xee\x03\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\x86\x04\n" +
 	"\x05Agent\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
@@ -9764,7 +9777,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	" \x01(\tR\x05error\x12.\n" +
 	"\x05usage\x18\v \x01(\v2\x18.loomcycle.v1.AgentUsageR\x05usage\x12F\n" +
 	"\x11last_heartbeat_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x0flastHeartbeatAt\x12\x12\n" +
-	"\x04live\x18\r \x01(\bR\x04live\"\xca\x01\n" +
+	"\x04live\x18\r \x01(\bR\x04live\x12\x16\n" +
+	"\x06result\x18\x0e \x01(\fR\x06result\"\xca\x01\n" +
 	"\n" +
 	"AgentUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +

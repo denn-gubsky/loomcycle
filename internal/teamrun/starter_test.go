@@ -94,10 +94,10 @@ func starterRunner(ch *fakeChannels, spawn SpawnFunc) *agentRunner {
 func TestStarter_ReadsDispatchesPublishesAcks(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pr":42}`)}}}
 	var got Prompt
-	r := starterRunner(ch, func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
 		got = p
 		return "looks fine", nil
-	})
+	}))
 
 	task := &Task{Input: "start", WalkID: "wlk_test"}
 	out, err := r.RunHandler(context.Background(), starterState(), task)
@@ -141,9 +141,9 @@ func TestStarter_ReadsDispatchesPublishesAcks(t *testing.T) {
 // fewer messages than it spawned turns a downstream wait into a hang.
 func TestStarter_AFailedRunStillPublishesToTheSink(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{}`)}}}
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		return "", errors.New("model refused")
-	})
+	}))
 
 	_, err := r.RunHandler(context.Background(), starterState(), &Task{})
 	if err == nil {
@@ -161,9 +161,9 @@ func TestStarter_AFailedRunStillPublishesToTheSink(t *testing.T) {
 // And a PANICKING agent, which is the case the deferred publish exists for.
 func TestStarter_APanickingRunStillPublishesToTheSink(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{}`)}}}
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		panic("spawner exploded")
-	})
+	}))
 
 	_, err := r.RunHandler(context.Background(), starterState(), &Task{})
 	if err == nil {
@@ -183,9 +183,9 @@ func TestStarter_APanickingRunStillPublishesToTheSink(t *testing.T) {
 // happens: a failed wave must not advance the cursor.
 func TestStarter_AFailedWaveDoesNotAck(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{}`)}}}
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		return "", errors.New("boom")
-	})
+	}))
 	_, _ = r.RunHandler(context.Background(), starterState(), &Task{})
 	if len(ch.acked) != 0 {
 		t.Errorf("a failed wave acked %v — the batch must redeliver", ch.acked)
@@ -196,10 +196,10 @@ func TestStarter_AFailedWaveDoesNotAck(t *testing.T) {
 // wave nobody produced would hand the next state an answer from nowhere.
 func TestStarter_NoMessageInTheWaitIsAWalkError(t *testing.T) {
 	ch := &fakeChannels{}
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		t.Fatal("spawned on an empty read")
 		return "", nil
-	})
+	}))
 	_, err := r.RunHandler(context.Background(), starterState(), &Task{})
 	if err == nil || !strings.Contains(err.Error(), "no message") {
 		t.Errorf("err = %v, want a no-message walk error", err)
@@ -211,10 +211,10 @@ func TestStarter_NoMessageInTheWaitIsAWalkError(t *testing.T) {
 func TestStarter_BindsProjectTheSourceMessage(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pull_request":{"number":1180}}`)}}}
 	var got Prompt
-	r := starterRunner(ch, func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
 		got = p
 		return "ok", nil
-	})
+	}))
 	st := starterState()
 	st.Handler.Binds = map[string]string{"pr": "$.pull_request.number"}
 
@@ -233,7 +233,7 @@ func TestStarter_BindsProjectTheSourceMessage(t *testing.T) {
 // No executor wired is refused AT THE STATE. A starter whose source never fires
 // looks identical to one whose source is empty, so silence is the wrong answer.
 func TestStarter_NoChannelExecutorIsRefused(t *testing.T) {
-	r := &agentRunner{spawn: func(context.Context, string, Prompt, string) (string, error) { return "", nil }}
+	r := &agentRunner{spawn: textSpawn(func(context.Context, string, Prompt, string) (string, error) { return "", nil })}
 	_, err := r.RunHandler(context.Background(), starterState(), &Task{})
 	if err == nil || !strings.Contains(err.Error(), "no channel executor") {
 		t.Errorf("err = %v, want a refusal naming the missing executor", err)
@@ -279,12 +279,12 @@ func TestStarterFanout_OneRunAndOneSinkMessagePerMessage(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(4)}
 	var mu sync.Mutex
 	var seen []string
-	r := starterRunner(ch, func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
 		mu.Lock()
 		seen = append(seen, p.DataSlots[StarterMessageSlot])
 		mu.Unlock()
 		return "done", nil
-	})
+	}))
 
 	if _, err := r.RunHandler(context.Background(), starterState(), &Task{}); err != nil {
 		t.Fatalf("wave: %v", err)
@@ -321,10 +321,10 @@ func TestStarterFanout_OneRunAndOneSinkMessagePerMessage(t *testing.T) {
 func TestStarterFanout_PerOnceIsOneRunWithTheBatch(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(3)}
 	var got Prompt
-	r := starterRunner(ch, func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(_ context.Context, _ string, p Prompt, _ string) (string, error) {
 		got = p
 		return "done", nil
-	})
+	}))
 	st := starterState()
 	st.Handler.Fanout.Per = teamgraph.FanoutPerOnce
 	st.Handler.Fanout.Max = 0
@@ -351,10 +351,10 @@ func TestStarterFanout_PerOnceIsOneRunWithTheBatch(t *testing.T) {
 func TestStarterFanout_MaxAboveTheDeploymentCeilingIsRefused(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(2)}
 	spawned := 0
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		spawned++
 		return "", nil
-	})
+	}))
 	r.maxWave = 2
 	st := starterState()
 	st.Handler.Fanout.Max = 8
@@ -372,9 +372,9 @@ func TestStarterFanout_MaxAboveTheDeploymentCeilingIsRefused(t *testing.T) {
 // the rest stay on the channel for the next pass, unacked.
 func TestStarterFanout_MaxBoundsTheWaveAndLeavesTheRest(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(10)}
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		return "done", nil
-	})
+	}))
 	st := starterState()
 	st.Handler.Fanout.Max = 3
 
@@ -392,7 +392,7 @@ func TestStarterFanout_AFailedRunStillLeavesTheCountWhole(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(3)}
 	var mu sync.Mutex
 	n := 0
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		mu.Lock()
 		n++
 		mine := n
@@ -401,7 +401,7 @@ func TestStarterFanout_AFailedRunStillLeavesTheCountWhole(t *testing.T) {
 			return "", errors.New("second one failed")
 		}
 		return "ok", nil
-	})
+	}))
 
 	_, err := r.RunHandler(context.Background(), starterState(), &Task{})
 	if err == nil {
@@ -427,7 +427,7 @@ func TestStarterFanout_WaitAtLeastSucceedsBelowFull(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(3)}
 	var mu sync.Mutex
 	n := 0
-	r := starterRunner(ch, func(context.Context, string, Prompt, string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		mu.Lock()
 		n++
 		mine := n
@@ -436,7 +436,7 @@ func TestStarterFanout_WaitAtLeastSucceedsBelowFull(t *testing.T) {
 			return "", errors.New("one failed")
 		}
 		return "ok", nil
-	})
+	}))
 	st := starterState()
 	st.Handler.Fanout.Wait = teamgraph.WaitAtLeast + ":2"
 
@@ -458,12 +458,12 @@ func TestStarterFanout_AgentsListCyclesAcrossMessages(t *testing.T) {
 	ch := &fakeChannels{inbox: inbox(4)}
 	var mu sync.Mutex
 	counts := map[string]int{}
-	r := starterRunner(ch, func(_ context.Context, agent string, _ Prompt, _ string) (string, error) {
+	r := starterRunner(ch, textSpawn(func(_ context.Context, agent string, _ Prompt, _ string) (string, error) {
 		mu.Lock()
 		counts[agent]++
 		mu.Unlock()
 		return "ok", nil
-	})
+	}))
 	st := starterState()
 	st.Handler.Fanout.Agent = ""
 	st.Handler.Fanout.Agents = []string{"a", "b"}

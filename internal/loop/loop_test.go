@@ -126,13 +126,15 @@ func TestLoopToolUseCycle(t *testing.T) {
 		t.Errorf("tool_result mismatched id: %q", last.Content[0].ToolUseID)
 	}
 
-	// Event ordering: started → text → tool_call → tool_result → text → done.
+	// Event ordering: started → prompt_snapshot (the first request, recorded
+	// once) → text → tool_call → tool_result → text → done.
 	gotTypes := make([]providers.EventType, len(events))
 	for i, e := range events {
 		gotTypes[i] = e.Type
 	}
 	want := []providers.EventType{
 		providers.EventStarted,
+		providers.EventPromptSnapshot,
 		providers.EventText,
 		providers.EventToolCall,
 		providers.EventUsage,

@@ -12,12 +12,12 @@ import (
 // capturingSpawn records the full Prompt each agent was handed, so these tests
 // assert what actually reached the agent rather than only what came back.
 func capturingSpawn(mu *sync.Mutex, got map[string]Prompt) SpawnFunc {
-	return func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
+	return textSpawn(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
 		mu.Lock()
 		got[agent] = p
 		mu.Unlock()
 		return agent + ":ok", nil
-	}
+	})
 }
 
 // The point of per-node prompts: ONE AgentDef, two states, different roles, no
@@ -27,12 +27,12 @@ func capturingSpawn(mu *sync.Mutex, got map[string]Prompt) SpawnFunc {
 func TestRunHandler_OneAgentTwoStatesGetTheirOwnSystemPrompts(t *testing.T) {
 	var mu sync.Mutex
 	got := map[string]Prompt{}
-	r := NewAgentRunner(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
+	r := NewAgentRunner(textSpawn(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		got[p.System] = p // key by role: same agent, two roles
 		return "ok", nil
-	})
+	}))
 
 	sec := teamgraph.State{ID: "sec", Handler: teamgraph.Handler{
 		Kind: teamgraph.HandlerAgent, Agent: "reviewer",
@@ -86,7 +86,7 @@ func TestNodePrompt_EmptyTemplateFallsBackToTheThreadedInput(t *testing.T) {
 func TestRunHandler_ParallelMembersShareTheNodesPrompt(t *testing.T) {
 	var mu sync.Mutex
 	got := map[string]Prompt{}
-	r := NewAgentRunner(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
+	r := NewAgentRunner(textSpawn(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
 		mu.Lock()
 		got[agent] = p
 		mu.Unlock()
@@ -94,7 +94,7 @@ func TestRunHandler_ParallelMembersShareTheNodesPrompt(t *testing.T) {
 			return "signal: success", nil
 		}
 		return agent + ":ok", nil
-	})
+	}))
 
 	st := teamgraph.State{ID: "fan", Handler: teamgraph.Handler{
 		Kind: teamgraph.HandlerParallel, Agents: []string{"a", "b"},
@@ -122,7 +122,7 @@ func TestRunHandler_ParallelMembersShareTheNodesPrompt(t *testing.T) {
 func TestRunHandler_ConsolidatorDoesNotInheritTheNodesSystemPrompt(t *testing.T) {
 	var mu sync.Mutex
 	got := map[string]Prompt{}
-	r := NewAgentRunner(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
+	r := NewAgentRunner(textSpawn(func(_ context.Context, agent string, p Prompt, _ string) (string, error) {
 		mu.Lock()
 		got[agent] = p
 		mu.Unlock()
@@ -130,7 +130,7 @@ func TestRunHandler_ConsolidatorDoesNotInheritTheNodesSystemPrompt(t *testing.T)
 			return "signal: success", nil
 		}
 		return "work product", nil
-	})
+	}))
 
 	st := teamgraph.State{ID: "review", Handler: teamgraph.Handler{
 		Kind: teamgraph.HandlerAgent, Agent: "reviewer", Consolidator: "judge",

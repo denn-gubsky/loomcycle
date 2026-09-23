@@ -305,11 +305,17 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	if s.store == nil {
 		return connector.Run{}, fmt.Errorf("get_run requires persistence (no Store configured)")
 	}
-	r, err := s.store.GetRunByAgentID(ctx, agentID)
+	// Tenant-gated like every other run read (HTTP handleGetAgent, gRPC
+	// GetAgent): agent ids are not secret, and this is what MCP get_run — a
+	// tenant-reachable tool since per-tenant MCP sessions — answers from. A
+	// cross-tenant run folds into the same opaque not-found a missing one gets.
+	r, err := s.tenantStore(ctx).GetRunByAgentID(ctx, agentID)
 	if err != nil {
 		return connector.Run{}, err
 	}
-	return storeRunToConnector(r), nil
+	out := storeRunToConnector(r)
+	out.Result = r.Result
+	return out, nil
 }
 
 // ListRuns enumerates runs. Today only the UserID filter has an
@@ -338,10 +344,17 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 		// don't accidentally walk the entire runs table.
 		return nil, fmt.Errorf("list_runs without user_id is not supported in v0.8.15; supply user_id in filter")
 	}
+	// The store lists by user id alone, and user ids are only unique within a
+	// tenant, so the tenant is applied here: a tenant session asking about a
+	// user id that also exists in another tenant sees only its own runs.
+	ts := s.tenantStore(ctx)
 	out := make([]connector.Run, 0, len(rows))
-	for i, r := range rows {
-		if i >= limit {
+	for _, r := range rows {
+		if len(out) >= limit {
 			break
+		}
+		if !ts.visible(r.TenantID) {
+			continue
 		}
 		out = append(out, storeRunToConnector(r))
 	}

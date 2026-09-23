@@ -86,15 +86,28 @@ type Prompt struct {
 	Values map[string]string
 }
 
-// SpawnFunc runs one named agent with a prompt and returns its final text
-// output. It mirrors builtin.SubAgentRunner, so the orchestrator reuses the
-// existing sub-agent machinery (tenant/identity inheritance, the recursion depth
-// cap, the cancel registry) rather than re-implementing run dispatch.
+// SpawnFunc runs one named agent with a prompt and returns what it produced.
+// It mirrors builtin.SubAgentRunner, so the orchestrator reuses the existing
+// sub-agent machinery (tenant/identity inheritance, the recursion depth cap,
+// the cancel registry) rather than re-implementing run dispatch.
 //
-// The Prompt parameter replaced a bare `input string`. Widening rather than
-// adding a sibling was deliberate: it breaks every implementor at compile time,
-// and none should be silently missed.
-type SpawnFunc func(ctx context.Context, agent string, p Prompt, defID string) (string, error)
+// The Prompt parameter replaced a bare `input string`, and SpawnResult replaced
+// a bare output string. Widening rather than adding a sibling was deliberate
+// both times: it breaks every implementor at compile time, and none should be
+// silently missed.
+type SpawnFunc func(ctx context.Context, agent string, p Prompt, defID string) (SpawnResult, error)
+
+// SpawnResult is what one spawned member produced.
+//
+// RunID makes the member ADDRESSABLE (RFC DI): with it a caller reads the
+// member's own result, prompt and transcript by id instead of from the string
+// a walk threaded onward. It is set on failure too whenever the run row
+// exists, because a failed member is exactly the one worth opening. Empty when
+// the implementor has no run behind the call.
+type SpawnResult struct {
+	Output string
+	RunID  string
+}
 
 // maxParallelConcurrency bounds how many of a parallel state's agents run at
 // once. It mirrors builtin.DefaultMaxConcurrentChildren (4): high enough to
@@ -266,7 +279,8 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		return r.captured(st, task, Outcome{Output: input})
 
 	case teamgraph.HandlerAgent:
-		out, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
+		sp, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
+		out := sp.Output
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -311,11 +325,11 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		// it reads the raw work product (not a results envelope) — it judges the
 		// previous state's output directly. This state IS the consolidator, so
 		// the node's own system prompt applies to it.
-		out, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
+		sp, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
 		if err != nil {
 			return Outcome{}, err
 		}
-		return r.captured(st, task, parseConsolidatorOutcome(out))
+		return r.captured(st, task, parseConsolidatorOutcome(sp.Output))
 
 	default:
 		// terminal is handled by the walk; anything else is a validation gap.
@@ -494,12 +508,12 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: runCtx.Err().Error()}
 				return
 			}
-			out, spawnErr := r.spawn(runCtx, name, prompt, "")
+			sp, spawnErr := r.spawn(runCtx, name, prompt, "")
 			if spawnErr != nil {
-				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: spawnErr.Error()}
+				results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: false, Error: spawnErr.Error()}
 				return
 			}
-			results[i] = agentResult{Index: i, Agent: name, Ok: true, Output: out}
+			results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: true, Output: sp.Output}
 			mu.Lock()
 			successes++
 			if successes >= need {
@@ -536,7 +550,7 @@ func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelop
 	// The envelope is built from the agents' OWN OUTPUTS — the most obviously
 	// model-written text in a walk, and the one a consolidator is definitionally
 	// handed. It rides a data slot for the same reason threaded output does.
-	out, err := r.spawn(ctx, consolidator, Prompt{
+	sp, err := r.spawn(ctx, consolidator, Prompt{
 		Input:          ThreadedOutputSlot,
 		DataSlots:      map[string]string{ThreadedOutputSlot: envelope},
 		SystemAuthored: r.operatorAuthored,
@@ -544,7 +558,7 @@ func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelop
 	if err != nil {
 		return Outcome{}, err
 	}
-	return parseConsolidatorOutcome(out), nil
+	return parseConsolidatorOutcome(sp.Output), nil
 }
 
 // parseConsolidatorOutcome extracts the selected edge from a consolidator's
@@ -622,8 +636,11 @@ func parallelConcurrency(n int) int {
 // It is duplicated here rather than imported: internal/tools/builtin imports
 // internal/teamrun, so importing it back would be a cycle.
 type agentResult struct {
-	Index  int    `json:"index"`
-	Agent  string `json:"agent"`
+	Index int    `json:"index"`
+	Agent string `json:"agent"`
+	// RunID names the member's own run (RFC DI), so a consolidator's envelope —
+	// and a reader of it — can point at the run that produced each result.
+	RunID  string `json:"run_id,omitempty"`
 	Ok     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`

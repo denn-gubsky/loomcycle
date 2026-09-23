@@ -68,7 +68,7 @@ func TestBreakpoint_BeforeDispatchHoldsEveryRunUntilReleased(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
 	var spawnedAtAsk int
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:before_dispatch"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:before_dispatch"},
 		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
 			spawnedAtAsk = spawn.count()
 			if bp.Phase != BeforeDispatch {
@@ -94,7 +94,7 @@ func TestBreakpoint_BeforeDispatchReleasesExactlyN(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
 	var pendings, spawnedBefore []int
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:before_dispatch"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:before_dispatch"},
 		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
 			pendings = append(pendings, bp.Pending)
 			spawnedBefore = append(spawnedBefore, spawn.count())
@@ -125,7 +125,7 @@ func TestBreakpoint_BeforeDispatchReleasesExactlyN(t *testing.T) {
 func TestBreakpoint_BeforeDispatchAbortSpawnsNothing(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
-	r := breakRunner(t, ch, spawn.fn, []string{"wave"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave"},
 		func(context.Context, Breakpoint) (BreakDecision, error) {
 			return BreakDecision{}, nil // zero value
 		})
@@ -153,7 +153,7 @@ func TestBreakpoint_PromptPreviewCarriesTheComposedMessage(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
 	var seen []PromptPreview
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:before_dispatch"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:before_dispatch"},
 		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
 			seen = bp.Prompts
 			return BreakDecision{Action: BreakContinue}, nil
@@ -188,7 +188,7 @@ func TestBreakpoint_AfterCollectionWithholdsEverySinkMessage(t *testing.T) {
 	spawn := &countingSpawn{}
 	var ranAtAsk, publishedAtAsk int
 	var results []BreakpointResult
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:after_collection"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:after_collection"},
 		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
 			ranAtAsk, publishedAtAsk = spawn.count(), len(ch.sinks(t))
 			results = bp.Results
@@ -218,7 +218,7 @@ func TestBreakpoint_AfterCollectionReleasesExactlyN(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
 	var publishedAtAsk []int
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:after_collection"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:after_collection"},
 		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
 			publishedAtAsk = append(publishedAtAsk, len(ch.sinks(t)))
 			if len(publishedAtAsk) == 1 {
@@ -254,7 +254,7 @@ func TestBreakpoint_AfterCollectionAbortWithholdsTheUnreleased(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
 	asks := 0
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:after_collection"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:after_collection"},
 		func(context.Context, Breakpoint) (BreakDecision, error) {
 			asks++
 			if asks == 1 {
@@ -293,7 +293,7 @@ func TestBreakpoint_PhaseScopedArmingPausesOnlyThatPhase(t *testing.T) {
 			ch := threeMessages()
 			spawn := &countingSpawn{}
 			var phases []BreakpointPhase
-			r := breakRunner(t, ch, spawn.fn, []string{tc.arg},
+			r := breakRunner(t, ch, textSpawn(spawn.fn), []string{tc.arg},
 				func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
 					phases = append(phases, bp.Phase)
 					return BreakDecision{Action: BreakContinue}, nil
@@ -318,7 +318,7 @@ func TestBreakpoint_PhaseScopedArmingPausesOnlyThatPhase(t *testing.T) {
 func TestBreakpoint_UnarmedStateTakesTheOriginalPath(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
-	r := breakRunner(t, ch, spawn.fn, []string{"some-other-state"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"some-other-state"},
 		func(context.Context, Breakpoint) (BreakDecision, error) {
 			t.Error("an unarmed state must never pause")
 			return BreakDecision{Action: BreakAbort}, nil
@@ -337,7 +337,7 @@ func TestBreakpoint_AskErrorAbortsTheWalk(t *testing.T) {
 	ch := threeMessages()
 	spawn := &countingSpawn{}
 	sentinel := errors.New("interruption timed out")
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:before_dispatch"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:before_dispatch"},
 		func(context.Context, Breakpoint) (BreakDecision, error) {
 			return BreakDecision{Action: BreakContinue}, sentinel
 		})
@@ -361,7 +361,7 @@ func TestBreakpoint_StagedDispatchDoesNotShortCircuit(t *testing.T) {
 	st.Handler.Fanout.Wait = teamgraph.WaitAtLeast + ":1"
 
 	asks := 0
-	r := breakRunner(t, ch, spawn.fn, []string{"wave:before_dispatch"},
+	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:before_dispatch"},
 		func(context.Context, Breakpoint) (BreakDecision, error) {
 			asks++
 			return BreakDecision{Action: BreakRelease, N: 1}, nil

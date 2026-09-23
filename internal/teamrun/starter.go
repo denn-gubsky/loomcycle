@@ -64,9 +64,12 @@ type SinkMessage struct {
 	WaveSize int    `json:"wave_size"`
 	Index    int    `json:"index"`
 	Agent    string `json:"agent"`
-	Status   string `json:"status"`
-	Output   string `json:"output,omitempty"`
-	Error    string `json:"error,omitempty"`
+	// RunID is the member run that produced this message (RFC DI): the handle a
+	// downstream reader uses to open that run's result, prompt and transcript.
+	RunID  string `json:"run_id,omitempty"`
+	Status string `json:"status"`
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Sink statuses. `ok` and `error` today; `timeout` arrives with the per-run
@@ -420,12 +423,13 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	}
 	// The wave this run belongs to rides ctx to the run-creation seam, which
 	// stamps it on the run's ParentContext. A join, not a copy.
-	out, err := r.spawn(r.withWave(ctx, env.WalkID, waveID, index), agent, prompt, "")
+	sp, err := r.spawn(r.withWave(ctx, env.WalkID, waveID, index), agent, prompt, "")
+	res.RunID = sp.RunID
 	if err != nil {
 		res.Error = err.Error()
 		return res
 	}
-	res.Ok, res.Output = true, out
+	res.Ok, res.Output = true, sp.Output
 	return res
 }
 
@@ -436,7 +440,7 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 		return
 	}
 	msg := SinkMessage{
-		Wave: waveID, WaveSize: waveSize, Index: res.Index, Agent: res.Agent,
+		Wave: waveID, WaveSize: waveSize, Index: res.Index, Agent: res.Agent, RunID: res.RunID,
 		Status: SinkOK, Output: res.Output,
 	}
 	if !res.Ok {

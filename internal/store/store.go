@@ -473,6 +473,16 @@ type Run struct {
 	// store.Run directly — HTTP, gRPC and the connector each convert to their
 	// own shape — so this is not an API addition.
 	RunConfig json.RawMessage `json:"run_config,omitempty"`
+
+	// Result is the run's answer (RFC DI): what the model finished with —
+	// stop reason, final text, the stateful Σ, and the error when it failed.
+	// Written once, in the same UPDATE that makes the run terminal, so a
+	// reader never sees a finished run without it. Opaque JSON for the same
+	// reason RunConfig is. nil while running, on legacy rows, and on the
+	// paths that end a run with nothing to report (an owner replica declared
+	// dead). It lives and dies with the session's transcript: retention and
+	// subject erasure remove the run row with its events.
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 // PauseState constants — the wire string values stored in runs.pause_state.
@@ -573,6 +583,12 @@ type Usage struct {
 	// lives in token_usage.
 	CredentialSource  string
 	CredentialScopeID string
+
+	// Result is written to runs.result by FinishRun (RFC DI). It rides the
+	// terminal summary FinishRun already takes, rather than a second write,
+	// so the row becomes terminal and gains its answer in ONE statement. nil
+	// writes NULL — the deliberate value for a finish with nothing to report.
+	Result json.RawMessage
 }
 
 // TokenUsageRow is one LLM call's usage + cost, the append-only per-call ledger

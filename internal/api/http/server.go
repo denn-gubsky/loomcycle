@@ -938,7 +938,7 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 	//
 	if td, ok := t.(*builtin.TeamDef); ok {
 		if td.Spawn == nil {
-			td.Spawn = func(ctx context.Context, name string, p teamrun.Prompt, defID string) (string, error) {
+			td.Spawn = func(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
 				// p.System is the STATE's role, appended to the agent's own system
 				// prompt rather than replacing it (see runSubAgent's systemExtra).
 				// This is what makes a fan-out of N roles one AgentDef and N states.
@@ -946,9 +946,12 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				// Team members thread results as strings today; a stateful member's
 				// Σ hand-off is a separate follow-on (teamrun is string-only
 				// end-to-end). Drop state here — the Agent-tool fan-out carries it.
-				out, _, _, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID,
+				// The child run id makes the member addressable (RFC DI); it is
+				// returned on failure too, since a failed member is the one worth
+				// opening.
+				out, _, childRunID, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID,
 					p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
-				return out, err
+				return teamrun.SpawnResult{Output: out, RunID: childRunID}, err
 			}
 		}
 		if td.Admit == nil {
@@ -3458,6 +3461,8 @@ func (s *Server) Mux() http.Handler {
 	// Read back what a run holds. Its sibling above is the write; without this
 	// the overrides were write-only — settable and never readable.
 	mux.Handle("GET /v1/runs/{run_id}/config", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunConfig))))
+	// RFC DI: the prompt the run's first model call received.
+	mux.Handle("GET /v1/runs/{run_id}/prompt", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunPrompt))))
 	// The assembled answer: every overridable field, the value this run will
 	// actually use, and WHICH layer decided it. Its sibling above reports only
 	// what the run itself overrode.
@@ -5782,8 +5787,14 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// Even on the store-less path, multiple concurrent callers
 		// could write to fwd in parallel. fwd itself (stream.send)
 		// is already mutex-protected for the SSE path, so the bare
-		// fwd is safe; just return it.
-		return fwd
+		// fwd is safe. A store-only record has nowhere to go without a
+		// store, and it must not leak onto the live stream instead.
+		return func(ev providers.Event) {
+			if ev.Type == providers.EventPromptSnapshot {
+				return
+			}
+			fwd(ev)
+		}
 	}
 	var mu sync.Mutex
 	var usageCallIdx int // RFC AV: per-call ledger row index within this run
@@ -5839,6 +5850,21 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// live SSE/gRPC consumers: it's not a client-facing event, and eventToProto
 		// carries no SpawnChild payload (a gRPC client would get a typed-but-empty
 		// frame). Persist, don't forward.
+		// RFC DI: the prompt snapshot is the same kind of store-side record — the
+		// read behind GET /v1/runs/{id}/prompt, not a stream event. Its text
+		// passes through the redactor like every other persisted surface.
+		if ev.Type == providers.EventPromptSnapshot {
+			if ev.PromptSnapshot != nil && s.redactor.Enabled() {
+				snap := redactPromptSnapshot(s.redactor, *ev.PromptSnapshot)
+				ev.PromptSnapshot = &snap
+			}
+			if payload, err := json.Marshal(ev); err == nil {
+				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
+					log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+				}
+			}
+			return
+		}
 		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult {
 			payload, err := json.Marshal(ev)
 			if err == nil {
@@ -6938,6 +6964,11 @@ type agentResponse struct {
 	// cancel handle. Empty (and omitted from JSON) in single-replica
 	// deployments so the UI stays uncluttered for the common case.
 	ReplicaID string `json:"replica_id,omitempty"`
+	// Result is the run's answer (RFC DI): {final_text, state}. Only on the
+	// SINGLE-run read (GET /v1/agents/{agent_id}); list responses omit it,
+	// since a final text per row would make a runs list as large as every
+	// transcript's last turn.
+	Result json.RawMessage `json:"result,omitempty"`
 	// v0.12.x parent_context — the opaque caller-tracking lineage this
 	// run carries (inherited from its root for sub-agents). Echoed here
 	// alongside Usage so a consumer can attribute a child sub-agent's
@@ -7070,6 +7101,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		fillAwaitedStateForRunning(r.Context(), s.store, single)
 		resp = single[0]
 	}
+	resp.Result = run.Result
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -8192,6 +8224,8 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	}
 	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFn()
+	// No result (RFC DI): the loop never ran, so there is no answer — the
+	// reason is the run's error, and it already has a column.
 	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
 		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
 	}
@@ -8241,6 +8275,9 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		// below from the ledger (the calls that completed before cancel).
 		CredentialSource:  runSummarySource(res.Usage),
 		CredentialScopeID: res.Usage.CredentialScopeID,
+		// RFC DI: a cancelled run keeps the text it had produced before the
+		// cancel — often exactly what an operator stopped it to read.
+		Result: runResultJSON(res),
 	}
 	// runs.cost = Σ(the run's per-call ledger) — the calls that completed before the
 	// cancel. Authoritative over pricing cumulative tokens at the final model (which
@@ -8399,6 +8436,9 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		// ledger (not priced here) so runs.cost == Σ(ledger).
 		CredentialSource:  runSummarySource(res.Usage),
 		CredentialScopeID: res.Usage.CredentialScopeID,
+		// RFC DI: the answer, written with the terminal status. A failed run
+		// keeps whatever text it had produced before the failure.
+		Result: runResultJSON(res),
 	}
 	// runs.cost is the SUM of the run's per-call ledger costs (authoritative) — NOT
 	// the final model × cumulative tokens, which disagrees with the ledger on a

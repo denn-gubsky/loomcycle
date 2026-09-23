@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -41,9 +42,9 @@ const teamWalkAgentPrefix = "team:"
 // keeps the request's ctx VALUES (auth principal, tenant, admission) but is not
 // cancelled when the handler returns, mirroring how an interactive run survives
 // the client navigating away.
-func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bool) (context.Context, string, func(error), error) {
+func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bool) (context.Context, string, func(string, error), error) {
 	if s.store == nil {
-		return ctx, "", func(error) {}, fmt.Errorf("run tracking requires a store")
+		return ctx, "", func(string, error) {}, fmt.Errorf("run tracking requires a store")
 	}
 	ident := tools.RunIdentity(ctx)
 	agent := teamWalkAgentPrefix + teamName
@@ -52,7 +53,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		UserID:  ident.UserID,
 	})
 	if err != nil {
-		return ctx, "", func(error) {}, err
+		return ctx, "", func(string, error) {}, err
 	}
 
 	walkCtx := ctx
@@ -76,7 +77,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		Kinds:   []string{"question"},
 	})
 
-	finish := func(walkErr error) {
+	finish := func(finalText string, walkErr error) {
 		s.walks.remove(runID)
 		status, stopReason, msg := store.RunCompleted, "", ""
 		if cause := context.Cause(walkCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
@@ -92,7 +93,10 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		// A survival ctx: the run row must be closed even when the walk failed
 		// because its ctx was cancelled, or a cancelled walk would sit in the
 		// runs list as running forever.
-		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, store.Usage{}, msg); ferr != nil {
+		// The walk's answer is its last state's output (RFC DI) — what a caller
+		// holding only the walk's run id wants to read once it is over.
+		usage := store.Usage{Result: runResultJSON(loop.RunResult{FinalText: finalText})}
+		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, usage, msg); ferr != nil {
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}
 		cancelWalk(nil) // release the ctx; a no-op after a cancel

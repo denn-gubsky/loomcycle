@@ -158,6 +158,7 @@ export type {
   Agent,
   AgentStatus,
   AgentUsage,
+  RunResult,
   CancelAgentResult,
   ListAgentsResponse,
   // Fan-out (RFC Y) + compaction
@@ -366,6 +367,9 @@ export type {
   RetuneRunResponse,
   RunConfigRecord,
   RunConfigResponse,
+  RunPromptResponse,
+  RunPromptSnapshot,
+  PromptBlock,
   TokenLimit,
   TokenLimitsResponse,
   ConfigResponse,

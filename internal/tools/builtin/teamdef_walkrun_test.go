@@ -13,14 +13,15 @@ import (
 
 // walkRunRecorder stands in for the server's run opener.
 type walkRunRecorder struct {
-	mu       sync.Mutex
-	opened   int
-	finished int
-	lastErr  error
-	detach   bool
+	mu         sync.Mutex
+	opened     int
+	finished   int
+	lastErr    error
+	lastOutput string
+	detach     bool
 }
 
-func (w *walkRunRecorder) open(ctx context.Context, _ string, detach bool) (context.Context, string, func(error), error) {
+func (w *walkRunRecorder) open(ctx context.Context, _ string, detach bool) (context.Context, string, func(string, error), error) {
 	w.mu.Lock()
 	w.opened++
 	w.detach = detach
@@ -30,10 +31,11 @@ func (w *walkRunRecorder) open(ctx context.Context, _ string, detach bool) (cont
 	if detach {
 		ctx = context.WithoutCancel(ctx)
 	}
-	return ctx, "r_walk1", func(err error) {
+	return ctx, "r_walk1", func(finalText string, err error) {
 		w.mu.Lock()
 		w.finished++
 		w.lastErr = err
+		w.lastOutput = finalText
 		w.mu.Unlock()
 	}, nil
 }
@@ -81,11 +83,11 @@ func TestTeamDefTool_Run_DetachReturnsTheHandleBeforeTheWalkFinishes(t *testing.
 
 	release := make(chan struct{})
 	spawned := make(chan struct{}, 8)
-	tool.Spawn = func(context.Context, string, teamrun.Prompt, string) (string, error) {
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
 		spawned <- struct{}{}
 		<-release // hold the walk open
 		return "reviewed", nil
-	}
+	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x","mode":"detach"}`))
 	if res.IsError {
@@ -132,10 +134,10 @@ func TestTeamDefTool_Run_DetachReleasesBreakpointsWhenTheWALKEnds(t *testing.T) 
 		return src, func() { mu.Lock(); released++; mu.Unlock() }, err
 	}
 	gate := make(chan struct{})
-	tool.Spawn = func(context.Context, string, teamrun.Prompt, string) (string, error) {
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
 		<-gate
 		return "reviewed", nil
-	}
+	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x","mode":"detach"}`))
 	if res.IsError {
@@ -289,5 +291,35 @@ func TestTeamDefTool_Run_WalkIDFallsBackWhenThereIsNoRun(t *testing.T) {
 	defer mu.Unlock()
 	if len(seen) == 0 || seen[0] == "" {
 		t.Fatalf("spawned runs went unstamped with no run tracking: %v", seen)
+	}
+}
+
+// A walk ends at a terminal state, which produces no output of its own, so the
+// walk's answer is the last output threaded into it — never the empty terminal.
+func TestWalkFinalOutput_IsTheLastNonEmptyStateOutput(t *testing.T) {
+	trace := []teamrun.StepRecord{{State: "draft", Output: "v1"}, {State: "review", Output: "v2 approved"}, {State: "done"}}
+	if got := walkFinalOutput(trace); got != "v2 approved" {
+		t.Errorf("walkFinalOutput = %q, want the last non-empty output", got)
+	}
+	if got := walkFinalOutput(nil); got != "" {
+		t.Errorf("walkFinalOutput(nil) = %q, want empty", got)
+	}
+}
+
+// The walk run's finish is handed that output, so the walk's result is what it
+// answered rather than nothing.
+func TestTeamDefTool_Run_FinishReceivesTheWalksOutput(t *testing.T) {
+	tool, ctx, _, _, done := breakFixture(t)
+	defer done()
+	rec := &walkRunRecorder{}
+	tool.WalkRun = rec.open
+
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`)); res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.lastOutput == "" {
+		t.Error("the walk's finish received no output — its run would have no result")
 	}
 }

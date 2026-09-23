@@ -1,0 +1,15 @@
+-- RFC DI: persist the run's ANSWER — stop reason, final text, the stateful
+-- state and the error — on the run row.
+--
+-- Until now the final text lived only in the event stream: finishRun dropped
+-- it, and every reader (get_run, the gRPC Agent, a blocking spawn, resume)
+-- rebuilt it from events, each slightly differently. The events stay the
+-- durable log and the replay source; this column is the answer, computed once
+-- at the only moment it is known for certain.
+--
+-- Written by FinishRun in the same UPDATE that makes the run terminal, so a
+-- reader never sees a finished run without its result. Opaque JSONB, like
+-- run_config. Additive and nullable: NULL while running, on every legacy row,
+-- and on a finish with nothing to report. Deleted with the run row, so it has
+-- the transcript's retention and erasure.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS result JSONB;

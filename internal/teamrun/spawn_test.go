@@ -12,7 +12,7 @@ import (
 // under mu, then delegates to fn. calls/inputs are safe to read after Walk
 // returns (Walk joins all goroutines before returning).
 func recordingSpawn(mu *sync.Mutex, calls *[]string, inputs map[string]string, fn func(ctx context.Context, agent, input string) (string, error)) SpawnFunc {
-	return func(ctx context.Context, agent string, p Prompt, defID string) (string, error) {
+	return textSpawn(func(ctx context.Context, agent string, p Prompt, defID string) (string, error) {
 		input := effectiveInput(p)
 
 		mu.Lock()
@@ -22,7 +22,7 @@ func recordingSpawn(mu *sync.Mutex, calls *[]string, inputs map[string]string, f
 		}
 		mu.Unlock()
 		return fn(ctx, agent, input)
-	}
+	})
 }
 
 func TestAgentRunner_WalksLinearTeamViaSpawn(t *testing.T) {
@@ -31,12 +31,12 @@ func TestAgentRunner_WalksLinearTeamViaSpawn(t *testing.T) {
 	// Fake spawn: echoes which agent ran + the input, so we can assert the
 	// output threads state to state.
 	var spawned []string
-	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+	spawn := textSpawn(func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
 		input := effectiveInput(p)
 
 		spawned = append(spawned, agent)
 		return fmt.Sprintf("%s(%s)", agent, input), nil
-	}
+	})
 
 	task := &Task{Input: "go"}
 	trace, err := Walk(context.Background(), d, task, NewAgentRunner(spawn))
@@ -57,13 +57,13 @@ func TestAgentRunner_WalksLinearTeamViaSpawn(t *testing.T) {
 
 func TestAgentRunner_SpawnErrorStopsWalk(t *testing.T) {
 	d := mustParse(t, linearJSON)
-	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+	spawn := textSpawn(func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
 
 		if agent == "agent-b" {
 			return "", fmt.Errorf("boom")
 		}
 		return "ok", nil
-	}
+	})
 	_, err := Walk(context.Background(), d, &Task{}, NewAgentRunner(spawn))
 	if err == nil || !contains(err.Error(), "boom") {
 		t.Fatalf("spawn error should abort the walk, got %v", err)
@@ -209,7 +209,7 @@ func TestAgentRunner_ParallelWaitAtLeastCancelsOnceThresholdMet(t *testing.T) {
 func TestAgentRunner_ParallelWaitAllAgentErrorAborts(t *testing.T) {
 	d := mustParse(t, parallelJSON)
 	consolidatorCalled := false
-	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+	spawn := textSpawn(func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
 
 		switch agent {
 		case "a":
@@ -221,7 +221,7 @@ func TestAgentRunner_ParallelWaitAllAgentErrorAborts(t *testing.T) {
 			return "signal: success", nil
 		}
 		return "", fmt.Errorf("unexpected agent %q", agent)
-	}
+	})
 	_, err := Walk(context.Background(), d, &Task{}, NewAgentRunner(spawn))
 	if err == nil || !contains(err.Error(), "parallel handler") || !contains(err.Error(), "boom") {
 		t.Fatalf("wait:all agent error should abort with a clear error naming the failure, got %v", err)
@@ -292,7 +292,7 @@ func TestAgentRunner_PushbackCycleHitsIterationCap(t *testing.T) {
 	// A judge that ALWAYS pushes back never converges; the per-state cap must
 	// bound the loop rather than spin forever.
 	d := mustParse(t, pushbackJSON) // max_iterations:3
-	spawn := func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+	spawn := textSpawn(func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
 
 		switch agent {
 		case "coder":
@@ -301,7 +301,7 @@ func TestAgentRunner_PushbackCycleHitsIterationCap(t *testing.T) {
 			return "still wrong\nsignal: pushback:redo", nil
 		}
 		return "", fmt.Errorf("unexpected agent %q", agent)
-	}
+	})
 	_, err := Walk(context.Background(), d, &Task{}, NewAgentRunner(spawn))
 	var capErr *ErrIterationCap
 	if !errors.As(err, &capErr) {

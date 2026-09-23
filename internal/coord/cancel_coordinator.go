@@ -165,7 +165,9 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 		// real cancel may still succeed if the replica responds.
 		log.Printf("coord: IsReplicaAlive probe for %s failed: %v (proceeding with broadcast)", run.ReplicaID, err)
 	} else if !alive {
-		// Owner is gone. Mark the run failed and return success.
+		// Owner is gone. Mark the run failed and return success. No result
+		// (RFC DI): the answer was in the dead replica's memory, and this
+		// replica has only the row.
 		if ferr := c.store.FinishRun(ctx, run.ID, store.RunFailed, "owner_replica_dead", store.Usage{}, "owner replica heartbeat stale; marked failed by cancel handler"); ferr != nil {
 			log.Printf("coord: mark run %s failed after dead-owner detection: %v", run.ID, ferr)
 		}

@@ -1338,6 +1338,12 @@ message Agent {
   // cancellable" from "running per the row but the registry doesn't
   // know about it" (process restart leaves the latter).
   bool live = 13;
+  // result is the run's answer as JSON (RFC DI): {"final_text": ..., "state":
+  // {...}} — what the run row had no column for; stop_reason, error and usage
+  // are the fields above. Set on GetAgent only; ListUserAgents leaves it empty so
+  // a listing stays small. Empty while running and for a finish with nothing
+  // to report.
+  bytes result = 14;
 }
 
 // AgentUsage mirrors agentResponseUsage.

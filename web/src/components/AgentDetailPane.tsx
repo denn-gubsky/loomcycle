@@ -299,7 +299,10 @@ function visible(ev: TranscriptEvent): boolean {
   // transcript. Before v0.9.x user_input was filtered because there
   // was no renderer for it; the new switch branches in detailFor /
   // summaryFor / labelFor handle both.
-  return t !== "started" && t !== "usage" && t !== "session" && t !== "agent";
+  // prompt_snapshot is a store-side record read through
+  // GET /v1/runs/{run_id}/prompt, not a timeline event; the system_prompt
+  // and user_input cards already show what the agent received.
+  return t !== "started" && t !== "usage" && t !== "session" && t !== "agent" && t !== "prompt_snapshot";
 }
 
 // AwaitedState is what the agent is currently blocked on (or

@@ -497,7 +497,8 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			cost = $12,
 			cost_currency = $13,
 			credential_source = $14,
-			credential_scope_id = $15
+			credential_scope_id = $15,
+			result = $17::jsonb
 		 WHERE id = $1 AND status = $16`,
 		runID, string(status), completed, nullableText(stopReason),
 		usage.InputTokens, usage.OutputTokens,
@@ -506,6 +507,7 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 		costArg, nullableText(usage.CostCurrency),
 		nullableText(usage.CredentialSource), nullableText(usage.CredentialScopeID),
 		string(store.RunRunning),
+		nullableJSONArg(usage.Result),
 	)
 	if err != nil {
 		return fmt.Errorf("finish run: %w", err)
@@ -1061,7 +1063,7 @@ func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.R
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.session_id = $1
@@ -1536,7 +1538,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.agent_id = $1 ORDER BY r.started_at DESC LIMIT 1`, agentID,
@@ -1567,7 +1569,7 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.idempotency_key = $1 LIMIT 1`, key,
@@ -1594,7 +1596,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.id = $1`, runID,
@@ -1668,7 +1670,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1
@@ -1681,7 +1683,7 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status 
 			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 			        s.agent
 			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 			 WHERE r.user_id = $1 AND r.status = $2
@@ -1708,7 +1710,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.parent_agent_id = $1
@@ -1843,7 +1845,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
 		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text,
+		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
 		 WHERE r.pause_state = $1
@@ -8462,6 +8464,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		cost                                              *float64
 		costCurrency, credentialSource, credentialScopeID *string
 		runConfig                                         *string
+		result                                            *string
 
 		interactive           bool
 		operatorKeyRestricted bool
@@ -8478,6 +8481,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&interactive, &operatorKeyRestricted, &isolated,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&runConfig,
+		&result,
 		&sessAgent,
 	); err != nil {
 		return store.Run{}, err
@@ -8556,6 +8560,9 @@ func scanRun(r rowScanner) (store.Run, error) {
 	}
 	if runConfig != nil {
 		out.RunConfig = json.RawMessage(*runConfig)
+	}
+	if result != nil {
+		out.Result = json.RawMessage(*result)
 	}
 	if sessAgent != nil {
 		out.Agent = *sessAgent

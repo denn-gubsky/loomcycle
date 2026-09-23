@@ -48,12 +48,12 @@ func breakFixture(t *testing.T) (*TeamDef, context.Context, *stubChannelIO, *int
 	io := &stubChannelIO{}
 	spawned := 0
 	var mu sync.Mutex
-	tool.Spawn = func(_ context.Context, _ string, _ teamrun.Prompt, _ string) (string, error) {
+	tool.Spawn = textSpawn(func(_ context.Context, _ string, _ teamrun.Prompt, _ string) (string, error) {
 		mu.Lock()
 		spawned++
 		mu.Unlock()
 		return "reviewed", nil
-	}
+	})
 	tool.Channels = func(context.Context, teamgraph.Definition) teamrun.ChannelIO { return io }
 	actx := authoringCtx([]string{"verdicts"}, []string{"pr-events"})
 	createTeam(t, tool, actx, "triage",
