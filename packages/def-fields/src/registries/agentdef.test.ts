@@ -21,7 +21,7 @@ const AGENTDEF_OVERLAY_KEYS = [
   "retry_attempts",
   "run_timeout_seconds", "sampling",
   "schedule_def_scopes", "search_providers", "skills", "sql_quota_bytes",
-  "sql_scopes", "system_prompt", "system_prompt_base", "tier", "tools",
+  "sql_scopes", "system_prompt", "system_prompt_base", "tier", "tool_choice", "tools",
   "unbounded_iterations", "volume_def_scopes", "volumes",
 ] as const;
 
