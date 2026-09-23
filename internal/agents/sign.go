@@ -206,8 +206,12 @@ type AgentContent struct {
 	Model                 string                     `json:"model,omitempty"`
 	Models                map[string][]TierCandidate `json:"models,omitempty"`
 	Name                  string                     `json:"name,omitempty"`
-	Provider              string                     `json:"provider,omitempty"`
-	Providers             []string                   `json:"providers,omitempty"`
+	// OutputFormat (RFC DI) is content-identifying: a fork that changes only
+	// the answer's schema is a different definition. Tag "output_format" sorts
+	// between name and provider; omitempty keeps pre-feature rows byte-stable.
+	OutputFormat *OutputFormat `json:"output_format,omitempty"`
+	Provider     string        `json:"provider,omitempty"`
+	Providers    []string      `json:"providers,omitempty"`
 	// SearchProviders is the per-agent web-search fallback list (RFC BB) —
 	// content-identifying like Providers (a fork that changes it must mint a
 	// distinct content_sha256). omitempty keeps pre-feature rows byte-stable;
@@ -348,6 +352,9 @@ func normalize(c *AgentContent) {
 		c.Sampling.TopK == nil && c.Sampling.FrequencyPenalty == nil && c.Sampling.PresencePenalty == nil &&
 		c.Sampling.Seed == nil && len(c.Sampling.Stop) == 0 {
 		c.Sampling = nil
+	}
+	if c.OutputFormat != nil && c.OutputFormat.Type == "" && len(c.OutputFormat.Schema) == 0 {
+		c.OutputFormat = nil
 	}
 	// An empty or auto tool_choice asks for nothing, so it hashes as absent.
 	if c.ToolChoice != nil && (c.ToolChoice.Mode == "" || c.ToolChoice.Mode == "auto") {

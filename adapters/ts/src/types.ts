@@ -859,6 +859,19 @@ export interface RunOptions extends RunOverrideOptions {
  *  (RFC DI). Same shape per-agent (AgentDef `tool_choice`) and per-run; a
  *  per-run value REPLACES the agent's whole. A model that cannot enforce it
  *  runs anyway, with a `capability_inert` event naming what was not enforced. */
+/** The JSON schema a run's final answer must follow (RFC DI) — structured
+ *  output. Same shape per-agent (AgentDef `output_format`) and per-run; a
+ *  per-run value REPLACES the agent's whole. The parsed answer is
+ *  `result.structured`. A model that cannot enforce it runs anyway, with a
+ *  `capability_inert` event naming what was not enforced. */
+export interface OutputFormatOptions {
+  type: "json_schema";
+  /** Label where a provider needs one (OpenAI does). Default "output". */
+  name?: string;
+  /** A JSON Schema whose root is `type: "object"`. */
+  schema: Record<string, unknown>;
+}
+
 export interface ToolChoiceOptions {
   /** `auto` (provider default), `none` (no tool calls), `required` (some
    *  tool), `tool` (the tool named in `name`). */
@@ -3179,6 +3192,8 @@ export interface AgentDefOverlay {
   effort?: string;
   /** Whether and which tool the model must call (RFC DI). */
   tool_choice?: ToolChoiceOptions;
+  /** The JSON schema the answer must follow (RFC DI). */
+  output_format?: OutputFormatOptions;
   max_tokens?: number;
   max_iterations?: number;
   max_concurrent_children?: number;

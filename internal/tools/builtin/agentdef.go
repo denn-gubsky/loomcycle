@@ -790,6 +790,9 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := ov.ToolChoice.Validate(); err != nil {
 			return mergedDef{}, err
 		}
+		if err := ov.OutputFormat.Validate(); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
@@ -980,6 +983,9 @@ type mergedDef struct {
 	// Content-identifying; an overlay REPLACES it whole (its fields constrain
 	// each other, so a per-field merge could mix two layers' intent).
 	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
+	// OutputFormat (RFC DI): the JSON schema the answer must follow.
+	// Content-identifying; an overlay REPLACES it whole.
+	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
 	// Compaction: per-agent context-compaction settings. Same PER-FIELD overlay +
 	// content-identifying treatment as Sampling.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
@@ -1123,6 +1129,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// ToolChoice is replaced WHOLE when the overlay sets it (MergeToolChoice).
 	if ov.ToolChoice != nil {
 		d.ToolChoice = config.MergeToolChoice(d.ToolChoice, ov.ToolChoice)
+	}
+	if ov.OutputFormat != nil {
+		d.OutputFormat = config.MergeOutputFormat(d.OutputFormat, ov.OutputFormat)
 	}
 	// Compaction merges PER FIELD, same as Sampling.
 	if !ov.Compaction.IsZero() {
@@ -1362,6 +1371,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Effort:                s.Effort,
 		Sampling:              s.Sampling.Clone(),
 		ToolChoice:            s.ToolChoice.Clone(),
+		OutputFormat:          s.OutputFormat.Clone(),
 		Compaction:            s.Compaction.Clone(),
 		Context:               s.Context.Clone(),
 		MaxTokens:             s.MaxTokens,
@@ -1549,6 +1559,9 @@ func signFromMergedDef(name string, def mergedDef) string {
 	// ToolChoice is content-identifying, same as Sampling.
 	if tc := def.ToolChoice; !tc.IsZero() {
 		c.ToolChoice = &agents.ToolChoice{Mode: tc.Mode, Name: tc.Name, Until: tc.Until}
+	}
+	if of := def.OutputFormat; !of.IsZero() {
+		c.OutputFormat = &agents.OutputFormat{Type: of.Type, Name: of.Name, Schema: of.Schema}
 	}
 	// Compaction is content-identifying, same as Sampling.
 	if cp := def.Compaction; !cp.IsZero() {

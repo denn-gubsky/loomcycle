@@ -285,6 +285,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"effort":                  true,
 		"sampling":                true, // per-agent LLM sampling params (temperature, top_p, …)
 		"tool_choice":             true, // RFC DI: whether and which tool the model must call
+		"output_format":           true, // RFC DI: the JSON schema the answer must follow
 		"compaction":              true, // per-agent context-compaction settings
 		"context":                 true, // RFC CR — per-agent layered-context / retention block (content-identifying; mirror mergedDef)
 		"max_tokens":              true,
