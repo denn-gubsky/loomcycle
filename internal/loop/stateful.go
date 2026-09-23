@@ -138,12 +138,13 @@ func emitStateToolSpec() providers.ToolSpec {
 		Description: "Advance the task by emitting your state update and next action. Call this EXACTLY ONCE per step. " +
 			"`patch` is a JSON merge-patch applied to the state object (a null value deletes a key) — keep the state the single " +
 			"source of truth for everything you must remember. `action` names the next tool to run; omit it (or set done=true) to " +
-			"finish, putting your answer in `final`.",
+			"finish, putting your answer in `final`. `final`, `done` and `action` are fields of this call, next to `patch` — " +
+			"never keys inside it: an answer written into the state is not shown to anyone.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "reasoning": {"type": "string", "description": "your step reasoning; it is discarded after this step, so record durable facts in the patch instead"},
-    "patch": {"type": "object", "description": "a JSON merge-patch applied to the state; a null value deletes a key"},
+    "patch": {"type": "object", "description": "a JSON merge-patch applied to the state; a null value deletes a key. State only — your answer goes in final, not here"},
     "action": {"type": "object", "properties": {"tool": {"type": "string"}, "input": {"type": "object"}}, "description": "the next tool to run; omit to finish"},
     "done": {"type": "boolean", "description": "true when the task is complete"},
     "final": {"type": "string", "description": "the final answer text, when done"},
@@ -177,6 +178,84 @@ func parseEmitState(input json.RawMessage) (*emitStateOut, error) {
 		out.Patch = map[string]any{} // a step with no state change is legal
 	}
 	return &out, nil
+}
+
+// protocolFields are emit_state's OWN fields — the reply channel, not state.
+var protocolFields = []string{"final", "done", "action", "reasoning"}
+
+// liftNestedProtocolFields moves emit_state's own fields out of the patch when
+// a model nested them there, and deletes them from Σ.
+//
+// ⚠️ OBSERVED LIVE, and the answer was LOST. A local model (ornith-1.5:35b)
+// ended its turns with `{"patch": {"done": true, "final": "<the whole
+// answer>"}}` — the reply written INTO the state. The runtime reads only the
+// top-level `final`, so the operator saw an empty turn while the answer sat in
+// Σ. Re-prompting did not help: asked for its answer "in `final`", the model
+// believed it had given one, and repeated the same shape until the budget ran
+// out. The stale `final` and `done` then stayed in Σ into the next turn, where
+// the model read its previous answer as part of what it knew.
+//
+// Lifted only when the state schema does not declare the key, so a schema that
+// genuinely calls a Σ field `final` keeps it. A top-level value always wins
+// over a nested one; the nested key is still deleted, because it is the reply
+// channel leaking into Σ either way. Deleted as a null in the patch — the
+// merge's own deletion — so Σ loses a stale copy from an earlier turn too.
+func liftNestedProtocolFields(es *emitStateOut, schema map[string]any) {
+	declared, _ := schema["properties"].(map[string]any)
+	for _, k := range protocolFields {
+		v, ok := es.Patch[k]
+		if !ok || v == nil {
+			continue
+		}
+		if _, isState := declared[k]; isState {
+			continue
+		}
+		switch k {
+		case "final":
+			if s, ok := v.(string); ok && strings.TrimSpace(es.Final) == "" {
+				es.Final = s
+			}
+		case "done":
+			if b, ok := v.(bool); ok && b {
+				es.Done = true
+			}
+		case "reasoning":
+			if s, ok := v.(string); ok && strings.TrimSpace(es.Reasoning) == "" {
+				es.Reasoning = s
+			}
+		case "action":
+			if es.Action == nil {
+				if b, err := json.Marshal(v); err == nil {
+					var a stateAction
+					if json.Unmarshal(b, &a) == nil && strings.TrimSpace(a.Tool) != "" {
+						es.Action = &a
+					}
+				}
+			}
+		}
+		es.Patch[k] = nil
+	}
+	// The same model, finishing, named emit_state itself as its action. When
+	// the step also carries an answer or says it is done, that is a turn end
+	// written the wrong way round — not a request to run a tool. An
+	// emit_state action with neither is still refused as before.
+	if es.Action != nil && es.Action.Tool == emitStateToolName {
+		var in struct {
+			Final *string `json:"final"`
+			Done  *bool   `json:"done"`
+		}
+		if json.Unmarshal(es.Action.Input, &in) == nil {
+			if in.Final != nil && strings.TrimSpace(es.Final) == "" {
+				es.Final = *in.Final
+			}
+			if in.Done != nil && *in.Done {
+				es.Done = true
+			}
+		}
+		if es.Done || strings.TrimSpace(es.Final) != "" {
+			es.Action = nil
+		}
+	}
 }
 
 // retryToolUseID is the id a correction request replays the model's rejected
@@ -237,7 +316,7 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 	b.WriteString("- `reasoning`: your thinking for this step. It is DISCARDED afterwards, so put anything you must remember into the patch.\n")
 	b.WriteString("- `patch`: a JSON merge-patch applied to the state. Set keys to record progress; a null value deletes a key.\n")
 	b.WriteString("- `action`: the next tool to run, as {\"tool\": <name>, \"input\": {…}}. The runtime executes it and hands you its output as the next observation.\n")
-	b.WriteString("- Finish by omitting `action` (or setting `done: true`) and putting your answer in `final`.\n")
+	b.WriteString("- Finish by omitting `action` (or setting `done: true`) and putting your answer in `final`. `final`, `done` and `action` sit NEXT TO `patch` in the call, never inside it — an answer written into the state is never shown.\n")
 	if interactive {
 		// ⚠️ ADDED ONLY FOR AN INTERACTIVE RUN, so an autonomous one's prompt
 		// stays byte-identical — this paragraph describes a thing that cannot
@@ -757,6 +836,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			parsed, perr := parseEmitState(input)
 			var verr error
 			if perr == nil {
+				liftNestedProtocolFields(parsed, schema)
 				verr = statepatch.ValidatePatch(schema, parsed.Patch)
 			}
 			if perr != nil || verr != nil {
@@ -791,7 +871,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}},
 						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig},
 					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state not accepted: " +
-						"it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in `final`."}}})
+						"it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in the top-level " +
+						"`final` field of emit_state — next to `patch`, not inside it."}}})
 				continue
 			}
 			es = parsed
