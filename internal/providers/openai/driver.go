@@ -113,6 +113,9 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// response_format json_schema; per-model refined by
 		// EnforcesStructuredOutput. The wrappers inherit it and refine it too.
 		SupportsStructuredOutput: true,
+		// OpenAI shows the schema to the model; the wrappers that reuse this
+		// driver against a grammar-only server (vllm, llamacpp) clear it.
+		StructuredOutputNative: true,
 	})
 }
 

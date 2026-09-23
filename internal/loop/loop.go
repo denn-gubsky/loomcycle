@@ -2677,6 +2677,12 @@ outerLoop:
 		// RFC DI: re-checked per request so a fallback onto a target that cannot
 		// enforce the choice is reported too; a no-op while the target is unchanged.
 		toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
+		// RFC DI: a target that does not show the model the schema gets it in
+		// the system prompt. Appended to a copy, per call, so a fallback onto a
+		// native target drops it again and the canonical system stays untouched.
+		if note, ok := outputFormat.promptNote(opts.Provider, opts.Model, len(toolSpecs) > 0); ok {
+			reqSystem = append(reqSystem[:len(reqSystem):len(reqSystem)], note)
+		}
 		req := providers.Request{
 			Model:            opts.Model,
 			System:           reqSystem,

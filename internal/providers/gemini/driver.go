@@ -126,6 +126,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// RFC DI: generationConfig.responseJsonSchema; with tools only on the
 		// Gemini 3 line (EnforcesStructuredOutput).
 		SupportsStructuredOutput: true,
+		StructuredOutputNative:   true,
 		// gemini-2.5-pro tops out at 2M; gemini-2.5-flash at 1M.
 		// (gemini-2.0-flash was retired by Google 2026-05 — no
 		// longer available to new users; replaced by 2.5-flash.)

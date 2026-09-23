@@ -104,6 +104,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// Opus 4.5-4.8, Sonnet 4.5+, Haiku 4.5). The grammar applies to the
 		// final text only, so tools may ride along.
 		SupportsStructuredOutput: true,
+		StructuredOutputNative:   true,
 	})
 }
 

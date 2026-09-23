@@ -103,6 +103,14 @@ func (d *Driver) Capabilities() providers.Capabilities {
 	return d.inner.Capabilities()
 }
 
+// EnforcesStructuredOutput delegates too: the inner driver refuses a schema on
+// the models that predate it, and without this the loop would read the coarse
+// capability bit, send one the inner driver drops, and leave it out of the
+// prompt as well.
+func (d *Driver) EnforcesStructuredOutput(model string, hasTools bool) bool {
+	return d.inner.EnforcesStructuredOutput(model, hasTools)
+}
+
 // Call applies the mask + delegates to the inner driver. The mask
 // rewrites the outbound Request.Tools[] and previous-turn `tool_use`
 // blocks in Request.Messages to use `mcp__loomcycle__*` names; on the

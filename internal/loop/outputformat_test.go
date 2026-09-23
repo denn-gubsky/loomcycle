@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -16,6 +17,7 @@ type answerProvider struct {
 	mu         sync.Mutex
 	final      string
 	structured bool
+	native     bool
 	requests   []providers.Request
 }
 
@@ -23,7 +25,7 @@ func (p *answerProvider) ID() string                                   { return 
 func (p *answerProvider) Probe(context.Context) error                  { return nil }
 func (p *answerProvider) ListModels(context.Context) ([]string, error) { return []string{"m"}, nil }
 func (p *answerProvider) Capabilities() providers.Capabilities {
-	return providers.Capabilities{Streaming: true, SupportsStructuredOutput: p.structured}
+	return providers.Capabilities{Streaming: true, SupportsStructuredOutput: p.structured, StructuredOutputNative: p.native}
 }
 func (p *answerProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	p.mu.Lock()
@@ -76,7 +78,7 @@ func runWithFormat(t *testing.T, prov *answerProvider, of *config.OutputFormat) 
 // the model cannot know which turn is its last. The answer is parsed into
 // Structured and the text is kept as it came.
 func TestOutputFormat_EveryCallCarriesTheSchemaAndTheAnswerIsParsed(t *testing.T) {
-	prov := &answerProvider{final: `{"ok":true}`, structured: true}
+	prov := &answerProvider{final: `{"ok":true}`, structured: true, native: true}
 	res, reports := runWithFormat(t, prov, answerFormat)
 	if len(prov.requests) != 2 {
 		t.Fatalf("calls = %d, want 2", len(prov.requests))
@@ -183,5 +185,44 @@ func TestStripJSONFence(t *testing.T) {
 		if got := stripJSONFence(in); got != want {
 			t.Errorf("stripJSONFence(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func schemaNoteIn(r providers.Request) bool {
+	for _, b := range r.System {
+		if strings.Contains(b.Text, "follows this JSON Schema") && strings.Contains(b.Text, `"ok"`) {
+			return true
+		}
+	}
+	return false
+}
+
+// Only a native structured-output API that enforces the schema shows it to the
+// model itself. A grammar-only backend enforces it without the model ever
+// seeing it, and an unenforcing target has only the prompt, so both get the
+// schema in the system prompt — on every call, since every call may answer.
+func TestOutputFormat_TheSchemaIsInThePromptUnlessANativeAPIShowsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		structured, native bool
+		wantNote           bool
+	}{
+		{"native and enforced", true, true, false},
+		{"grammar-only", true, false, true},
+		{"not enforced", false, false, true},
+		{"native model that cannot enforce it", false, true, true},
+	} {
+		prov := &answerProvider{final: `{"ok":true}`, structured: tc.structured, native: tc.native}
+		runWithFormat(t, prov, answerFormat)
+		for i, r := range prov.requests {
+			if got := schemaNoteIn(r); got != tc.wantNote {
+				t.Errorf("%s, call %d: schema in the system prompt = %v, want %v", tc.name, i, got, tc.wantNote)
+			}
+		}
+	}
+	prov := &answerProvider{final: "x", structured: false}
+	runWithFormat(t, prov, nil)
+	if schemaNoteIn(prov.requests[0]) {
+		t.Error("the schema note was added to a run with no output_format")
 	}
 }

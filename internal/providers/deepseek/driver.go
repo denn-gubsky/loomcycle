@@ -114,6 +114,7 @@ func (d *Driver) Capabilities() providers.Capabilities {
 	// DeepSeek's chat API has only json_object mode, not a schema (RFC DI), so
 	// an output_format is not sent (Call drops it) and the run reports it.
 	caps.SupportsStructuredOutput = false
+	caps.StructuredOutputNative = false
 	// RFC BF operator override applies last, so an operator can, e.g., re-enable
 	// vision for a self-hosted multimodal DeepSeek mirror behind base_url.
 	return d.capsPatch.Apply(caps)

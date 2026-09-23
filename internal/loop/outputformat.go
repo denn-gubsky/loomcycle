@@ -44,7 +44,7 @@ func (p *outputFormatPolicy) forCall(prov providers.Provider, model string, hasT
 	if key != p.reported {
 		p.reported = key
 		msg := fmt.Sprintf("output_format %q is not enforced by model %q on provider %q: the answer is not "+
-			"held to the schema, and result.structured is set only if it happens to parse", p.of.EffectiveName(), model, prov.ID())
+			"held to the schema — it is given in the system prompt instead — and result.structured is set only if the answer parses", p.of.EffectiveName(), model, prov.ID())
 		emit(providers.Event{
 			Type:            providers.EventCapabilityInert,
 			Text:            msg,
@@ -52,6 +52,23 @@ func (p *outputFormatPolicy) forCall(prov providers.Provider, model string, hasT
 		})
 	}
 	return nil
+}
+
+// promptNote is the system block that shows the model the schema, or false
+// when the target already does (it enforces the format AND is a native
+// structured-output API). A grammar-only backend constrains the tokens but
+// never shows the schema, so the model fills well-formed fields with little
+// idea of what they mean; a target that cannot enforce it at all has only the
+// prompt to go on. Code-js replays a script and reads no prompt.
+func (p *outputFormatPolicy) promptNote(prov providers.Provider, model string, hasTools bool) (providers.ContentBlock, bool) {
+	if p.wire == nil || prov == nil || prov.ID() == codeJSProviderID {
+		return providers.ContentBlock{}, false
+	}
+	if prov.Capabilities().StructuredOutputNative && providers.EnforcesStructuredOutput(prov, model, hasTools) {
+		return providers.ContentBlock{}, false
+	}
+	return providers.ContentBlock{Type: "text", Text: "Your final answer must be a single JSON object that follows this " +
+		"JSON Schema, with no text before or after it:\n" + string(p.wire.Schema)}, true
 }
 
 // structured parses the run's final answer for RunResult.Structured. A JSON

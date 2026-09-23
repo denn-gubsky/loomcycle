@@ -99,3 +99,33 @@ func TestOutputFormat_DriversWithoutItSayFalseAndSendNothing(t *testing.T) {
 		}
 	}
 }
+
+// StructuredOutputNative is read by the loop to leave the schema OUT of the
+// prompt, so a wrapper that inherits the OpenAI driver's capabilities against a
+// grammar-only server must not inherit the claim — the model there would write
+// fields it was never told the meaning of.
+func TestOutputFormat_OnlyTheHostedAPIsClaimToShowTheSchema(t *testing.T) {
+	want := map[string]bool{"anthropic": true, "openai": true, "gemini": true}
+	seen := 0
+	for _, name := range append(providers.RegisteredDrivers(), "ollama-local") {
+		driver, id := name, name
+		if name == "ollama-local" {
+			driver = "ollama"
+		}
+		p, err := providers.NewDriver(driver, providers.DriverOptions{ID: id, BaseURL: "http://127.0.0.1:1", APIKey: "k"})
+		if err != nil {
+			continue
+		}
+		seen++
+		caps := p.Capabilities()
+		if caps.StructuredOutputNative != want[name] {
+			t.Errorf("%s: StructuredOutputNative = %v, want %v", name, caps.StructuredOutputNative, want[name])
+		}
+		if caps.StructuredOutputNative && !caps.SupportsStructuredOutput {
+			t.Errorf("%s claims to show a schema it cannot send", name)
+		}
+	}
+	if seen < 6 {
+		t.Fatalf("only %d drivers constructed — the guard reads almost nothing", seen)
+	}
+}

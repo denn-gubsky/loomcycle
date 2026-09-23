@@ -130,6 +130,14 @@ type Capabilities struct {
 	// the format is dropped from the request and the run reports it.
 	SupportsStructuredOutput bool
 
+	// StructuredOutputNative: the API also SHOWS the schema to the model
+	// (Anthropic, OpenAI, Gemini build it into the prompt themselves). A
+	// grammar-only backend (Ollama format, vLLM, llama.cpp) merely constrains
+	// the tokens, so the model writes a well-formed object without knowing
+	// what the fields mean; for those, and for every target that cannot
+	// enforce the schema, the loop puts the schema in the system prompt.
+	StructuredOutputNative bool
+
 	// SupportsEffort signals that the driver translates Request.Effort
 	// into a native wire parameter when set. Anthropic maps it to a
 	// `thinking.budget_tokens` block; OpenAI to `reasoning_effort`;

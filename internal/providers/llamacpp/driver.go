@@ -77,6 +77,9 @@ func (d *Driver) SetKeyEnvName(name string) { d.inner.SetKeyEnvName(name) }
 // max_context_tokens set to its `-c` value.
 func (d *Driver) Capabilities() providers.Capabilities {
 	base := d.inner.Capabilities()
+	// A grammar over the tokens, not a schema the model is shown: the loop
+	// puts the schema in the prompt (RFC DI).
+	base.StructuredOutputNative = false
 	base.Local = true // RFC CR tier-routing: llama.cpp is a self-hosted backend
 	return d.capsPatch.Apply(base)
 }
