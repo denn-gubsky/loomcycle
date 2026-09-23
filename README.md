@@ -182,7 +182,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.91.0) fixed a local model's answers going missing in
+The most recent line (v1.92.0) made the Run the unit a caller reads and steers:
+a run keeps its final answer and the exact prompt its first model call was sent
+(`GET /v1/runs/{run_id}/prompt`), and an agent or a single run can say which
+tool the model must call and for how long (`tool_choice` with `until`). It also
+closed two security gaps — a tenant hook could reach private addresses, and MCP
+`get_run` could read another tenant's runs — stopped current Anthropic models
+rejecting the request shape (which broke every stateful run on them), and made a
+stateful step that only plans its next move go back to the model instead of
+being shown as the answer.
+
+Before it, v1.91.0 fixed a local model's answers going missing in
 that mode: it wrote its reply INTO the state (`{"patch":{"final":…}}`) rather
 than beside it, so the operator saw an empty turn while the answer sat in Σ. The
 loop now moves the reply fields out of the patch and deletes them from the state.

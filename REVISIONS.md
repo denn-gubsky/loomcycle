@@ -8,6 +8,61 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.92.0
+
+*A run keeps its answer and its prompt, an operator can tell an agent which tool to call first, and a local model's stateful chat stops mid-task no more.*
+
+Eight PRs. Two start RFC DI (the Run as the unit a caller configures and reads), two close security gaps, and the rest are fixes found by live use and by review.
+
+### A run keeps its result and its prompt (#1342, RFC DI-P1)
+
+Nothing durable answered "what did this run say?" or "what was it asked?".
+
+- **`runs.result`** holds the run's final text (and a stateful run's final Σ). It is written by `FinishRun` in the same update that makes the run terminal, and returned on single-run reads: HTTP `GET /v1/agents/{id}`, MCP `get_run`, gRPC `Agent.result`, TS `Agent.result`, Python `result`. Listings omit it to stay small. It has the transcript's retention and erasure tier. **Migration 0079.**
+- **`GET /v1/runs/{run_id}/prompt`** returns the request the run's first model call was actually sent — the node role, injected metadata, `{{…}}` expansion and the stateful loop's instructions included. It is recorded once per loop entry as a store-only `prompt_snapshot` event. The recorded text is redacted, it is never streamed, and the Web UI hides it. TS `getRunPrompt()`.
+- **Team members are addressable:** starter sink messages and parallel result envelopes carry each member's `run_id`, a failed member's included.
+- **⚠️ Security, found on the way:** MCP `get_run` / `list_runs` could read **other tenants'** runs over a per-tenant MCP session. They are tenant-gated now, as HTTP and gRPC already were.
+
+### `tool_choice` per agent and per run (#1344, RFC DI-P2a)
+
+```
+"tool_choice": {"mode": "auto|none|required|tool", "name": "WebSearch", "until": "first_call|until_called|always"}
+```
+
+- **What it is for:** "this agent must search before it answers", "this classifier must answer through its schema tool".
+- **Where it is set:** agent yaml, the AgentDef overlay (with a Web UI editor), and per run on `POST /v1/runs`, continuation, gRPC, MCP `spawn_run(s)`, TS `toolChoice` and Python `tool_choice`.
+- **`until` exists because a choice forced on every call never lets a run finish.** `first_call` (the default) forces only the first call; `until_called` forces until the model makes the call; `always` is refused for `required` and `tool`.
+- **A provider that cannot enforce the choice** runs on and emits `capability_inert` (re-checked after a fallback).
+- **Resume** does not force a choice the run already spent. A stateful run reports that it ignores the setting.
+
+### Stateful mode: a plan is not an answer (#1343, #1345)
+
+Observed live on `ornith-1.5:35b`: a stateful step carried a patch and a plan — "I will run a web search for the exact figures" — with **no action and no answer**. The loop read "no action" as "turn over" and showed the plan as the reply, so the chat stopped mid-task two turns running. Replaying that step against the model reproduced the shape in 4 of 9 replies.
+
+- **A turn ends only when the model says so** — `done`, or an answer in `final`. A step that would end one without an answer is sent back, told what it missed, on the `max_patch_retries` budget. The same rule stops the model's inner monologue ("Operator said continue…") being shown as its reply.
+- **The stateful prompt now shows the two accepted reply shapes as examples**, and names the wrong ones. Measured on the same model, first reply only: 5/9 → **10/10** valid at a working step, 5/8 → **7/8** at an answer step.
+- **(#1345)** The stdio MCP client could report a delivered result as `server exited` when a server answered and exited straight after — a Go `select` picking at random between two ready cases. That was the flaky `TestServerCrashFailsInFlightCalls`, and a real defect for one-shot MCP servers.
+
+### Fixes
+
+- **⚠️ Tenant hook callbacks can no longer reach private addresses (#1339).** A hook receives every matching tool input, and a `substrate:tenant` operator could point one at the cloud metadata endpoint or an internal service — SSRF plus exfiltration. Tenant hooks now dial through the network guard (checked after DNS and on every redirect). Operator-global hooks are unchanged.
+- **Anthropic: stop sending parameters current models reject (#1340).** Opus 4.7 and later, Sonnet 5, Fable and Mythos 400'd on the old request shape:
+  - reasoning depth now goes out as `output_config.effort` with adaptive thinking, not a thinking budget;
+  - non-default sampling is dropped on those models;
+  - a forced `tool_choice` is dropped on Opus 5.5, Fable 5.1 and Mythos 5.1, which refuse it under any configuration. That forced choice is exactly what broke **every stateful run** on those models.
+
+  Older ids are byte-identical.
+- **A Post hook no longer strips a tool's error classification (#1338).** The server always wires a hook dispatcher, so the category, retry hint and backoff (RFC DA) were being dropped from every tool call in production.
+- **A running team walk can be cancelled (#1341)** through `POST /v1/runs/{run_id}/cancel` and gRPC `CancelTurn`. Every member run it spawned stops with it, and the walk's row finishes `cancelled` with the reason. Single replica for now.
+
+### Upgrade notes
+
+- **Migration 0079** adds `runs.result`. It runs at startup, like every migration.
+- **⚠️ A tenant hook whose callback is on a private network now needs the operator to allowlist that host** — `hooks.private_host_allowlist`, or `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST`. Until then the call follows the hook's `fail_mode`.
+- **Anthropic on current models:** a configured `temperature` / `top_p` / `top_k` is now dropped (with a log line) instead of failing the request.
+- **Stateful agents on weaker models** may spend a retry where they used to end a turn early. That is the intended trade: a correction call instead of a wrong answer.
+- **The adapters are bumped to 1.92.0 WITH new surface:** `getRunPrompt`, `toolChoice`, `Agent.result` (TS) and `tool_choice`, `result` (Python).
+
 ## What's in v1.91.0
 
 *A stateful answer the model wrote into its state reaches the operator.*
