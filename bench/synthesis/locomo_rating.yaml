@@ -61,22 +61,39 @@ agents:
   #
   # tier must be cleared explicitly on each: a layer that only ADDS model: merges onto the
   # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
+  #
+  # ⚠️ max_context_tokens: 131072 ON EVERY ORNITH AGENT, because ornith-1.5:35b on this
+  # Spark CUDA-faults ("illegal memory access") at a SMALL num_ctx. The bundle declares
+  # 32768 (extractor, ontologist) and 8192 (judge, conflict-judge), and the driver sends
+  # that as options.num_ctx. Replayed directly against Ollama, the requests that failed in
+  # the run failed 15 of 15 at 32768 or 8192 and passed 24 of 24 at 131072, streamed or
+  # not — so it is the window, not the input and not concurrency. On conv-26 it failed
+  # 157 extractor calls and left 8 of 19 chats never extracted, every pass.
+  #
+  # Measurement-neutral: the consolidator cuts parts by max_part_chars (12000), and its
+  # extractor_context_tokens is only a CEILING on that, so the parts the extractor reads
+  # are byte-identical — only the KV window Ollama allocates changes. It also matches the
+  # answerer's global 131072, so Ollama does not reload the model between agents.
   memory/extractor:
     tier: ""
     provider: ollama-local
     model: ornith-1.5:35b
+    max_context_tokens: 131072
   memory/ontologist:
     tier: ""
     provider: ollama-local
     model: ornith-1.5:35b
+    max_context_tokens: 131072
   memory/judge:
     tier: ""
     provider: ollama-local
     model: ornith-1.5:35b
+    max_context_tokens: 131072
   memory/conflict-judge:
     tier: ""
     provider: ollama-local
     model: ornith-1.5:35b
+    max_context_tokens: 131072
 
   # ingest.yaml's default answerer is cloud. The rating answers with locomo/orn-l2k24-sp
   # and never names this one — pinned anyway so a mistyped -answerer flag costs nothing.
