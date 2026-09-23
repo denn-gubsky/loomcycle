@@ -40,14 +40,23 @@ agents:
   # database holds (498 runs). A benchmark cannot have its extractor chosen by a
   # reachability probe: which model distilled the facts is part of what is being measured.
   #
-  # deepseek-flash, the alias the judge already runs on (-> deepseek/deepseek-v4-flash).
-  # Pinning is right HERE and wrong in a product config: a deployment should let the tier
-  # policy route, a measurement must hold the model fixed.
+  # The EXTRACTOR is local — ornith-1.5:35b on the Spark, the same model that answers —
+  # because this rating is of a local deployment, and which model distilled the facts is
+  # the half of the pipeline that decides what the reader can find. The bundle dispatches
+  # extraction serially, so it is one request at a time against the box that CUDA-faulted
+  # at concurrency 4. `effort: low` (the bundle's) maps to think:false on Ollama, so the
+  # output budget is not spent on a reasoning trace.
+  #
+  # The other three have no local requirement; they get deepseek-flash, the alias the judge
+  # already runs on (-> deepseek/deepseek-v4-flash), so nothing can reach v4-pro. Pinning
+  # is right HERE and wrong in a product config: a deployment should let the tier policy
+  # route, a measurement must hold the model fixed.
   memory/extractor:
     # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
     # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
     tier: ""
-    model: deepseek-flash
+    provider: ollama-local
+    model: ornith-1.5:35b
   memory/ontologist:
     # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
     # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
