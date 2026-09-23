@@ -356,3 +356,53 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Errorf("second Close errored: %v", err)
 	}
 }
+
+// ⚠️ A plain select over "the result arrived" and "the child exited" picks at
+// random when both are ready, so a delivered result was intermittently
+// reported as "mcp: server exited" — the flaky TestServerCrashFailsInFlightCalls
+// failure ("Initialize: initialized notify: mcp: server exited"). These drive
+// the both-ready state directly, many times, because a random pick passes on a
+// single try half the time.
+func TestAwaitWrite_AWriteThatLandedIsASuccessEvenIfTheChildThenExited(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+	for i := 0; i < 200; i++ {
+		done := make(chan error, 1)
+		done <- nil
+		if err := awaitWrite(context.Background(), done, exited, time.Second); err != nil {
+			t.Fatalf("iteration %d: a write that landed was reported as %v", i, err)
+		}
+	}
+}
+
+func TestAwaitWrite_AWriteThatNeverLandsReportsTheExit(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+	done := make(chan error) // the write never reports
+	err := awaitWrite(context.Background(), done, exited, 10*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "server exited") {
+		t.Fatalf("err = %v, want server exited", err)
+	}
+}
+
+func TestAwaitResponse_AResponseThatArrivedIsNotLostToTheExit(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+	for i := 0; i < 200; i++ {
+		respCh := make(chan mcp.Response, 1)
+		respCh <- mcp.Response{Result: json.RawMessage(`{"ok":true}`)}
+		resp, err := awaitResponse(context.Background(), respCh, exited, func() error { return nil })
+		if err != nil || string(resp.Result) != `{"ok":true}` {
+			t.Fatalf("iteration %d: a delivered response was reported as err=%v", i, err)
+		}
+	}
+}
+
+func TestAwaitResponse_NoResponseReportsTheExit(t *testing.T) {
+	exited := make(chan struct{})
+	close(exited)
+	_, err := awaitResponse(context.Background(), make(chan mcp.Response, 1), exited, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "server exited") {
+		t.Fatalf("err = %v, want server exited", err)
+	}
+}
