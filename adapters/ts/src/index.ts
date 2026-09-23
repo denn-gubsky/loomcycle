@@ -159,6 +159,7 @@ export type {
   AgentStatus,
   AgentUsage,
   RunResult,
+  RunSpec,
   ToolChoiceOptions,
   CancelAgentResult,
   ListAgentsResponse,

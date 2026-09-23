@@ -20,6 +20,23 @@ describe("a run's result and prompt", () => {
     expect(a.result?.state).toEqual({ k: 1 });
   });
 
+  it("getAgent surfaces the run's spec, typed by its snake_case keys", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        agent_id: "a_1", run_id: "r_1", session_id: "s_1", agent: "chat",
+        parent_agent_id: null, user_id: "u", status: "completed",
+        started_at: "2026-09-23T00:00:00Z", completed_at: "2026-09-23T00:00:05Z",
+        stop_reason: "end_turn", error: null, usage: { input_tokens: 1, output_tokens: 2 },
+        last_heartbeat_at: null, live: false,
+        spec: { tool_choice: { mode: "required" }, sampling: { temperature: 0.2 }, interactive: true },
+      }),
+    ]);
+    const a = await client.getAgent("a_1");
+    expect(a.spec?.tool_choice?.mode).toBe("required");
+    expect(a.spec?.sampling).toEqual({ temperature: 0.2 });
+    expect(a.spec?.interactive).toBe(true);
+  });
+
   it("getRunPrompt GETs /prompt and returns the recorded system and input", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({

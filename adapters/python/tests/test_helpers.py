@@ -133,3 +133,11 @@ def test_agent_to_dict_decodes_the_run_result():
     out = _agent_to_dict(a)
     assert out["result"] == {"final_text": "done", "state": {"k": 1}}
     assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="running"))["result"] is None
+
+
+def test_agent_to_dict_decodes_the_run_spec():
+    # RFC DI: the run's own configuration record rides the Agent message as JSON
+    # bytes beside the result; a run that overrode nothing has None.
+    a = pb.Agent(agent_id="ag-1", status="completed", spec=b'{"tool_choice": {"mode": "required"}}')
+    assert _agent_to_dict(a)["spec"] == {"tool_choice": {"mode": "required"}}
+    assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="completed"))["spec"] is None
