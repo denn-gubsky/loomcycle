@@ -118,7 +118,8 @@ type TeamDef struct {
 	// WalkRun, if set, gives an op=run walk its OWN run: a session, a `runs`
 	// row, a run id on ctx, and the Interruption policy the pause machinery
 	// needs. It returns the walk's ctx, the run id, and the finish to call when
-	// the walk ends.
+	// the walk ends — with the walk's final output, which becomes the walk
+	// run's result, and its error.
 	//
 	// WHY A WALK IS A RUN. Everything that makes a walk observable or
 	// controllable from outside is addressed by run id — the breakpoint set,
@@ -136,7 +137,7 @@ type TeamDef struct {
 	// nil = the walk runs under the caller's own ctx (an in-band agent run
 	// already has a run id; a direct API call gets none, and its breakpoints
 	// are unaddressable — the behaviour before this existed).
-	WalkRun func(ctx context.Context, teamName string, detach bool) (walkCtx context.Context, runID string, finish func(error), err error)
+	WalkRun func(ctx context.Context, teamName string, detach bool) (walkCtx context.Context, runID string, finish func(finalText string, err error), err error)
 
 	// LiveBreakpoints, if set, opens the MUTABLE armed set for this run's walk,
 	// seeded with the run argument, and returns it plus the release to call when
@@ -887,7 +888,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// the walk addressable: breakpoints, the Interruption ask a pause is
 	// answered through, and cancel all key on it.
 	runID := ""
-	finishRun := func(error) {}
+	finishRun := func(string, error) {}
 	if t.WalkRun != nil {
 		var werr error
 		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, row.Name, detach)
@@ -1068,7 +1069,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
 		trace, werr := teamrun.Walk(walkCtx, def, task, runner, opts...)
-		finishRun(werr)
+		finishRun(walkFinalOutput(trace), werr)
 		return trace, werr
 	}
 
@@ -1465,4 +1466,16 @@ func mintTeamDefID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return "tdf_" + hex.EncodeToString(b[:])
+}
+
+// walkFinalOutput is what a walk answered: the last output any of its states
+// produced. A walk ends at a terminal state, which produces nothing itself, so
+// the answer is the output that was threaded INTO it.
+func walkFinalOutput(trace []teamrun.StepRecord) string {
+	for i := len(trace) - 1; i >= 0; i-- {
+		if trace[i].Output != "" {
+			return trace[i].Output
+		}
+	}
+	return ""
 }

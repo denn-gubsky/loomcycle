@@ -308,6 +308,9 @@ type Run struct {
 	StopReason    string           `json:"stop_reason,omitempty"`
 	Usage         *providers.Usage `json:"usage,omitempty"`
 	Error         string           `json:"error,omitempty"`
+	// Result is the run's answer (RFC DI): {final_text, state}. Set by GetRun
+	// only; ListRuns leaves it empty so a listing stays small.
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 // ListRunsFilter selects which runs ListRuns returns. Empty fields

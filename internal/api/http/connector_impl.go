@@ -313,7 +313,9 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	if err != nil {
 		return connector.Run{}, err
 	}
-	return storeRunToConnector(r), nil
+	out := storeRunToConnector(r)
+	out.Result = r.Result
+	return out, nil
 }
 
 // ListRuns enumerates runs. Today only the UserID filter has an

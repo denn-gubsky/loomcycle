@@ -6938,6 +6938,11 @@ type agentResponse struct {
 	// cancel handle. Empty (and omitted from JSON) in single-replica
 	// deployments so the UI stays uncluttered for the common case.
 	ReplicaID string `json:"replica_id,omitempty"`
+	// Result is the run's answer (RFC DI): {final_text, state}. Only on the
+	// SINGLE-run read (GET /v1/agents/{agent_id}); list responses omit it,
+	// since a final text per row would make a runs list as large as every
+	// transcript's last turn.
+	Result json.RawMessage `json:"result,omitempty"`
 	// v0.12.x parent_context — the opaque caller-tracking lineage this
 	// run carries (inherited from its root for sub-agents). Echoed here
 	// alongside Usage so a consumer can attribute a child sub-agent's
@@ -7070,6 +7075,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		fillAwaitedStateForRunning(r.Context(), s.store, single)
 		resp = single[0]
 	}
+	resp.Result = run.Result
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -8192,6 +8198,8 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	}
 	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFn()
+	// No result (RFC DI): the loop never ran, so there is no answer — the
+	// reason is the run's error, and it already has a column.
 	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, reason); err != nil {
 		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
 	}
@@ -8241,6 +8249,9 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		// below from the ledger (the calls that completed before cancel).
 		CredentialSource:  runSummarySource(res.Usage),
 		CredentialScopeID: res.Usage.CredentialScopeID,
+		// RFC DI: a cancelled run keeps the text it had produced before the
+		// cancel — often exactly what an operator stopped it to read.
+		Result: runResultJSON(res),
 	}
 	// runs.cost = Σ(the run's per-call ledger) — the calls that completed before the
 	// cancel. Authoritative over pricing cumulative tokens at the final model (which
@@ -8399,6 +8410,9 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		// ledger (not priced here) so runs.cost == Σ(ledger).
 		CredentialSource:  runSummarySource(res.Usage),
 		CredentialScopeID: res.Usage.CredentialScopeID,
+		// RFC DI: the answer, written with the terminal status. A failed run
+		// keeps whatever text it had produced before the failure.
+		Result: runResultJSON(res),
 	}
 	// runs.cost is the SUM of the run's per-call ledger costs (authoritative) — NOT
 	// the final model × cumulative tokens, which disagrees with the ledger on a

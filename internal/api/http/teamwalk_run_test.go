@@ -70,7 +70,7 @@ func TestOpenTeamWalkRun_GrantsWhatThePauseMachineryNeeds(t *testing.T) {
 
 	// And finishing records the outcome, so a failed walk is never left looking
 	// like one still going.
-	finish(context.DeadlineExceeded)
+	finish("", context.DeadlineExceeded)
 	run, err = srv.store.GetRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("GetRun after finish: %v", err)
@@ -152,7 +152,7 @@ func TestCancelTurn_StopsALiveTeamWalk(t *testing.T) {
 		t.Error("a run the walk spawned kept running after the walk was cancelled")
 	}
 
-	finish(walkCtx.Err()) // the walk returns with its ctx error
+	finish("", walkCtx.Err()) // the walk returns with its ctx error
 	run, err := srv.store.GetRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
@@ -182,7 +182,7 @@ func TestCancelTurn_AnotherTenantCannotStopAWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	defer finish(nil)
+	defer finish("", nil)
 
 	stopped, _, err := srv.CancelTurn(tenantOperatorCtx("other"), runID, "")
 	if stopped || !errors.Is(err, connector.ErrRunNotInFlight) {
@@ -205,7 +205,7 @@ func TestHandleCancelTurn_StopsATeamWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	defer finish(nil)
+	defer finish("", nil)
 
 	req := httptest.NewRequest("POST", "/v1/runs/"+runID+"/cancel", strings.NewReader(`{"reason":"stop"}`))
 	req.SetPathValue("run_id", runID)
