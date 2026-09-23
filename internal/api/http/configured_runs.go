@@ -411,7 +411,7 @@ func (s *Server) handleStartConfiguredRun(w http.ResponseWriter, r *http.Request
 		// The loop already emitted its error event for a failure it saw; an
 		// error RunOnce returns after registration without one still reaches
 		// the caller rather than ending the stream silently.
-		stream.send(providers.Event{Type: providers.EventError, Error: runErr.Error()})
+		stream.send(runErrorEvent(runErr))
 	}
 }
 

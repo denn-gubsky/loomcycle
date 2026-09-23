@@ -176,6 +176,10 @@ var deliberatelyUnclassified = map[string]string{
 	// that do not currently surface to a tool caller. Classify when they do.
 	"runner.ErrSessionBusy":  "not reachable from a tool caller today",
 	"runner.ErrAgentIDInUse": "not reachable from a tool caller today",
+	// Starting a configured run that has already started or been discarded:
+	// only the HTTP /start route returns it today. Classify when a tool can
+	// start a configured run.
+	"runner.ErrRunNotConfigured": "not reachable from a tool caller today",
 
 	// Transport capability, decided before any tool call is made.
 	"runner.ErrStreamingUnsupported": "transport capability, not a tool outcome",
@@ -205,6 +209,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrTokenLimitExceeded":           runner.ErrTokenLimitExceeded,
 			"ErrInternal":                     runner.ErrInternal,
 			"ErrStreamingUnsupported":         runner.ErrStreamingUnsupported,
+			"ErrRunNotConfigured":             runner.ErrRunNotConfigured,
 		},
 		"resolve": {
 			"ErrTierUnavailable":       resolve.ErrTierUnavailable,
