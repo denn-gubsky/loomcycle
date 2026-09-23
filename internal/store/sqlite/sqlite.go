@@ -1187,6 +1187,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// RFC DI: the run's answer, written in the same UPDATE as the terminal
 		// status. See internal/store/postgres/migrations/0079_runs_result.
 		`ALTER TABLE runs ADD COLUMN result TEXT`,
+		// RFC DI D5: a configured run's draft — the raw request that will start
+		// it, minus secrets. See internal/store/postgres/migrations/0080_runs_draft.
+		`ALTER TABLE runs ADD COLUMN draft TEXT`,
 		// RFC BE — human/organizational chat metadata on the session row (the
 		// History tool's browse/search/annotate surface). All additive + nullable
 		// so legacy rows read the zero value. tags is a JSON array (NULL = never
@@ -1282,6 +1285,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS runs_by_user_active     ON runs(user_id, status) WHERE user_id IS NOT NULL`,
 		// RFC L / Web-UI multi-tenant authz — tenant-scoped workspace lists.
 		`CREATE INDEX IF NOT EXISTS runs_by_tenant_active   ON runs(tenant_id, status) WHERE tenant_id IS NOT NULL`,
+		// RFC DI D5: the draft expiry sweep reads configured runs by age; the
+		// partial index stays as small as the set of live drafts.
+		`CREATE INDEX IF NOT EXISTS runs_configured_by_age  ON runs(started_at)       WHERE status = 'configured'`,
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
 		// v0.8.5: facets cost retros + experiment audits by which
 		// agent_def_id the run actually ran against. Partial index
@@ -1550,6 +1556,12 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 // supply identity fields (agent_id, parent linkage, denormalised user_id)
 // for v0.4+ tracking; an empty RunIdentity behaves as v0.3 did.
 func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
+	return s.createRun(ctx, sessionID, identity, store.RunRunning, nil)
+}
+
+// createRun is CreateRun and CreateConfiguredRun: one INSERT, so a draft is
+// never visible in any other status on its way in.
+func (s *Store) createRun(ctx context.Context, sessionID string, identity store.RunIdentity, status store.RunStatus, draft json.RawMessage) (store.Run, error) {
 	// Verify the session exists so a missing ID surfaces as ErrNotFound,
 	// not a foreign-key error.
 	if _, err := s.GetSession(ctx, sessionID); err != nil {
@@ -1566,9 +1578,9 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, sessionID, store.RunRunning, now.UnixNano(),
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, sessionID, string(status), now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
 		nilIfEmpty(identity.ParentRunID),
@@ -1583,6 +1595,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		boolToInt(identity.OperatorKeyRestricted),
 		boolToInt(identity.Isolated),
 		nilIfEmptyRaw(identity.RunConfig),
+		nilIfEmptyRaw(draft),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1601,7 +1614,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	return store.Run{
 		ID:                    id,
 		SessionID:             sessionID,
-		Status:                store.RunRunning,
+		Status:                status,
 		StartedAt:             now,
 		AgentID:               identity.AgentID,
 		ParentAgentID:         identity.ParentAgentID,
@@ -2263,6 +2276,9 @@ func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, 
 		innerConds = append(innerConds, "INSTR(LOWER(s.title), LOWER(?)) > 0")
 		innerArgs = append(innerArgs, f.TitleContains)
 	}
+	// RFC DI D5: a draft lives in its own session, which is not a chat until
+	// the draft starts — leave it out rather than list a "configured" chat.
+	innerConds = append(innerConds, "NOT EXISTS (SELECT 1 FROM runs rd WHERE rd.session_id = s.id AND rd.status = 'configured')")
 	innerWhere := ""
 	if len(innerConds) > 0 {
 		innerWhere = "WHERE " + strings.Join(innerConds, " AND ")

@@ -189,15 +189,20 @@ type Session struct {
 	SummaryUpdatedAt time.Time `json:"summary_updated_at,omitempty"`
 }
 
-// RunStatus is the terminal state of a run, or "running" while it's still in
-// flight. Transitions: running → (completed | failed | cancelled).
+// RunStatus is the terminal state of a run, "running" while it's still in
+// flight, or "configured" for a created-but-not-started draft (RFC DI D5).
+// Transitions: configured → running (StartConfiguredRun) or the row is
+// deleted (DeleteConfiguredRun, the expiry sweep); running → (completed |
+// failed | cancelled). FinishRun moves only running rows, so it cannot end a
+// draft by accident.
 type RunStatus string
 
 const (
-	RunRunning   RunStatus = "running"
-	RunCompleted RunStatus = "completed"
-	RunFailed    RunStatus = "failed"
-	RunCancelled RunStatus = "cancelled"
+	RunConfigured RunStatus = "configured"
+	RunRunning    RunStatus = "running"
+	RunCompleted  RunStatus = "completed"
+	RunFailed     RunStatus = "failed"
+	RunCancelled  RunStatus = "cancelled"
 )
 
 // SessionFilter narrows a ListSessions query (RFC BE — the History tool's
@@ -1231,6 +1236,51 @@ type Store interface {
 	// identity carries the v0.4 tracking fields; pass a zero value to
 	// behave as v0.3.
 	CreateRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
+
+	// CreateConfiguredRun inserts a DRAFT (RFC DI D5): a run in status
+	// "configured" that holds no slot and runs nothing until StartConfiguredRun.
+	// draft is the raw request that will start it, minus secrets — opaque to
+	// the store, like run_config. Returns ErrNotFound if sessionID doesn't
+	// exist.
+	CreateConfiguredRun(ctx context.Context, sessionID string, identity RunIdentity, draft json.RawMessage) (Run, error)
+
+	// GetRunDraft returns a configured run's draft. ErrRunNotConfigured once the
+	// run has started (the draft is cleared then); ErrNotFound for no such run.
+	GetRunDraft(ctx context.Context, runID string) (json.RawMessage, error)
+
+	// UpdateRunDraft replaces a configured run's draft, guarded on the status so
+	// an edit racing a start cannot land on a running run. ErrRunNotConfigured
+	// when the run is no longer configured; ErrNotFound for no such run.
+	UpdateRunDraft(ctx context.Context, runID string, draft json.RawMessage) error
+
+	// StartConfiguredRun moves a draft to "running" in one guarded UPDATE
+	// (WHERE status = 'configured'), so of two concurrent starts exactly one
+	// wins; the loser gets ErrRunNotConfigured. It re-stamps started_at and the
+	// heartbeat to now — a draft's started_at is its creation time, and the
+	// stale-run sweeper would otherwise reap a long-waiting draft as a run that
+	// never heartbeated — and records what was resolved at start from identity:
+	// agent_def_id, model, user_tier, interactive, the confinement bits,
+	// run_config, and (Postgres) replica_id, so cross-replica cancel routes to
+	// the replica actually running it. The draft is cleared. The identity
+	// fields fixed at create (agent_id, user_id, tenant_id, parents) are not
+	// changed.
+	StartConfiguredRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
+
+	// DeleteConfiguredRun discards a draft: its events, the run row, and its
+	// session when nothing else is in it. ErrRunNotConfigured for a run that is
+	// not a draft (cancel is the verb for a live run); ErrNotFound for none.
+	DeleteConfiguredRun(ctx context.Context, runID string) error
+
+	// CountConfiguredRuns counts the drafts one (tenant, user) holds — the
+	// per-user draft cap. Empty tenant or user matches the empty value, not
+	// "any".
+	CountConfiguredRuns(ctx context.Context, tenantID, userID string) (int, error)
+
+	// SweepExpiredConfiguredRuns discards every draft created before cutoff,
+	// as DeleteConfiguredRun does, and returns how many. Without it a draft
+	// would pin its session forever: retention prunes only sessions whose runs
+	// are all terminal.
+	SweepExpiredConfiguredRuns(ctx context.Context, cutoff time.Time) (int, error)
 
 	// AppendEvent persists one event for a run. Implementations should be
 	// safe to call from the loop's goroutine on the hot path; bulk-insert
@@ -5034,6 +5084,11 @@ func (e *ErrConflict) Error() string { return e.Kind + " already exists: " + e.I
 // treating this as a failure. It is a sentinel (errors.Is-comparable),
 // distinct from *ErrConflict whose Kind/ID vary per call.
 var ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency_key")
+
+// ErrRunNotConfigured is returned by the draft operations (RFC DI D5) when the
+// run exists but is not in status "configured" — it has started, or it never
+// was a draft. A sentinel (errors.Is-comparable), distinct from ErrNotFound.
+var ErrRunNotConfigured = errors.New("run is not configured")
 
 // SnapshotRow is the persisted shape of one snapshots row, used by
 // SnapshotCreate/Get. The JSONContent is the full envelope per the
