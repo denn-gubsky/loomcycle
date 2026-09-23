@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -310,6 +311,37 @@ func TestConfiguredRun_TenantGateAndIdentityAtStart(t *testing.T) {
 	got, _ := st.GetRun(ctx, run.ID)
 	if got.TenantID != "acme" || got.UserID != "alice" || !got.Isolated {
 		t.Errorf("started by an admin = tenant %q user %q isolated %v, want acme/alice/confined", got.TenantID, got.UserID, got.Isolated)
+	}
+
+	// The discriminating case. The row's tenant/user are fixed at create and
+	// the start transition never rewrites them, so the ROW cannot show a start
+	// that re-derived identity from the starter — the RUN would still execute
+	// as the starter (memory scope, usage, fairness). The run-state bus carries
+	// the run's effective identity: a start by a same-tenant operator (subject
+	// "op") must publish alice's run as alice's.
+	bus := runstate.NewBus()
+	srv.SetRunStateBus(bus)
+	sub := bus.Subscribe("alice")
+	defer sub.Close()
+	sess2, _ := st.CreateSession(ctx, "acme", "agent", "alice")
+	run2, err := st.CreateConfiguredRun(ctx, sess2.ID, store.RunIdentity{AgentID: "a_acme2", TenantID: "acme", UserID: "alice"}, json.RawMessage(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = srv.RunOnce(tenantOperatorCtx("acme"), runner.RunInput{
+		Agent: "agent", ConfiguredRunID: run2.ID, AgentID: run2.AgentID, TenantID: run2.TenantID, UserID: run2.UserID,
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+	}, runner.RunCallbacks{})
+	if err != nil {
+		t.Fatalf("RunOnce start by a tenant operator: %v", err)
+	}
+	select {
+	case ev := <-sub.C:
+		if ev.RunID != run2.ID || ev.TenantID != "acme" {
+			t.Errorf("run-state event = %+v, want alice's run in acme", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("no run-state event reached alice: the started draft ran as the operator who started it")
 	}
 }
 
