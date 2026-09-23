@@ -8,6 +8,7 @@ internal/api/grpc/server_test.go.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import grpc.aio
@@ -249,3 +250,28 @@ async def test_run_streaming_threads_tool_choice():
     async for _ in client.run_streaming(agent="default", segments=[]):
         pass
     assert not stub.last_run_req.HasField("tool_choice")
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_threads_output_format():
+    """RFC DI: a per-run output_format reaches the wire with the schema as
+    JSON bytes; an unset one leaves the field absent (inherit the agent's)."""
+    stub = _CaptureRunStub()
+    client = _make_client()
+    client._stub = stub  # type: ignore[assignment]
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    async for _ in client.run_streaming(
+        agent="default",
+        segments=[],
+        output_format={"type": "json_schema", "name": "verdict", "schema": schema},
+    ):
+        pass
+    req = stub.last_run_req
+    assert req.HasField("output_format")
+    assert (req.output_format.type, req.output_format.name) == ("json_schema", "verdict")
+    assert json.loads(req.output_format.schema) == schema
+
+    async for _ in client.run_streaming(agent="default", segments=[]):
+        pass
+    assert not stub.last_run_req.HasField("output_format")
