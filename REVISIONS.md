@@ -8,6 +8,62 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.90.0
+
+*A stateful chat keeps its state and stays live — v1.88.0 made it park, and this makes the park worth something.*
+
+One PR (#1333), 23 commits, one per finding of a code review of the structured-state loop. The review and the per-commit status are in the doc store at `/loomcycle/docs/stateful-context-review-digest` (§10, §11).
+
+### ⚠️ An interactive `mode: stateful` chat threw its state away every turn
+
+v1.88.0 gave the stateful loop a park, and the runtime did park — but the embedded `/run` terminal saw something else.
+
+1. The loop emitted `done` at **every** turn boundary before parking. `done` is terminal to every consumer, so the terminal marked the chat **completed** after its first answer.
+2. The terminal then sent the operator's next message as a **session continuation**: a new, non-interactive run.
+3. That run started from an **empty state**, and its first observation was the whole replayed transcript, relabelled `Task:` — the history stateful mode exists not to feed back.
+4. The original run stayed parked forever, heartbeating and holding its concurrency slot.
+
+So a chat looked like it worked while discarding its state each turn and leaking a run per chat.
+
+Now:
+
+- The run emits **one** `done`, when it actually ends. The turn boundary is `awaiting_input`, exactly as in the append loop.
+- The terminal steers a parked run whatever its status says.
+- Resume and session continuation start a stateful run from its **last recorded state** and the observation it was waiting on — the result of the action it chose, or the operator's message — never from the replayed transcript.
+- An action that was mid-flight when the process stopped is reported to the model as interrupted and is **not** re-run.
+
+### The stateful loop skipped what every other run gets
+
+`runStateful` branched out of the run before most of what a run sets up. Each of these is fixed:
+
+| missing | consequence |
+|---|---|
+| **heartbeat** | a working stateful run sent none, so the stale-run sweeper failed it as `heartbeat_timeout` 10 minutes in, while it kept running and spending tokens |
+| **tool-use hooks** | an operator's Pre-hook **deny did not apply** to a `mode: stateful` agent; Post-hooks, host-widening audit and the parallel_spawn ledger were skipped too |
+| **context-transform plugins** | the `redact` secret scrubber never saw a stateful request — and Σ and the observation are where tool output lands |
+| **secret masking on persist** | tool results were masked in the events BLOB, but the copy of them in Σ, stored on every step, was not |
+| **retry and fallback** | one 429 or "overloaded" killed a stateful run that an append run would ride out |
+| **runtime pause** | a stateful run kept calling its provider while the runtime reported itself paused, and never reached the one state resume re-dispatches |
+| **`context_size` / `op=self`** | a per-agent context size never reached the provider (Ollama used its own), and `Context op=self` reported no provider, model or footprint |
+
+### Smaller fixes
+
+- **`POST /v1/runs/{id}/compact` on a stateful run returns 409 `stateful_run`.** It used to summarise the replayed transcript (a model call), bank the span, answer `compacted: true`, and then the loop dropped the summary.
+- **A turn whose answer went into the state instead of `final` is asked again**, and is never shown as an empty message.
+- **An action missing a required input field is named back to the model** before dispatch, e.g. `{"tool":"Interruption","input":{}}`.
+- **The Web UI matched tool results by a field the server never sends**, so an `Interruption` chip read `interrupted: ?` and the busy hint named a tool as running for the rest of the run. This affected every mode.
+- Stateful action ids are unique across a session's runs.
+- A large patch is weighed before the next request goes out, not one step late.
+- A correction request replays the model's own thinking block (Anthropic and DeepSeek reject a replayed turn without it).
+- An object patched where there was none drops its nulls (RFC 7386).
+
+### Upgrade notes
+
+- **Consumers of the event stream:** an interactive stateful run no longer emits a per-turn `done` — only one, when it ends. That is what the append loop has always done. A client that rendered each stateful answer on `done` should use `text` / `awaiting_input`, as it already must for append runs.
+- **`mode: auto` still sends an interactive run to recap.** This is kept on purpose until interactive stateful chats have been proven in the field. An explicit `mode: stateful` is honoured.
+- **Still not wired for stateful runs:** turn-cancel (`POST /v1/runs/{id}/cancel` still 409s) and a per-turn step budget (RFC DH P3).
+- **No wire, schema or config change.** The adapters are bumped to 1.90.0 with **no surface change**, to keep the client version matching the runtime.
+
 ## What's in v1.89.0
 
 *A stateful run reports the tokens it spends — and until now it spent them against no budget at all.*
