@@ -345,6 +345,12 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (store.Session
 // referenced session exists with a pre-check so we surface ErrNotFound
 // instead of a foreign-key constraint violation.
 func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
+	return s.createRun(ctx, sessionID, identity, store.RunRunning, nil)
+}
+
+// createRun is CreateRun and CreateConfiguredRun: one INSERT, so a draft is
+// never visible in any other status on its way in.
+func (s *Store) createRun(ctx context.Context, sessionID string, identity store.RunIdentity, status store.RunStatus, draft json.RawMessage) (store.Run, error) {
 	// Pre-check: surfacing FK violation as ErrNotFound is a contract
 	// requirement (the SQLite adapter does the same, and the storetest
 	// suite asserts the wrapped error type). Wrapped in
@@ -375,9 +381,9 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb)`,
-			id, sessionID, string(store.RunRunning), now,
+				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb)`,
+			id, sessionID, string(status), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
 			nullableText(identity.ParentRunID),
@@ -393,6 +399,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 			identity.OperatorKeyRestricted,
 			identity.Isolated,
 			nullableJSONArg(identity.RunConfig),
+			nullableJSONArg(draft),
 		)
 		return err
 	}); err != nil {
@@ -413,7 +420,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string, identity store.
 	return store.Run{
 		ID:                    id,
 		SessionID:             sessionID,
-		Status:                store.RunRunning,
+		Status:                status,
 		StartedAt:             now,
 		AgentID:               identity.AgentID,
 		ParentAgentID:         identity.ParentAgentID,
@@ -1147,6 +1154,9 @@ func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, 
 		args = append(args, f.TitleContains)
 		i++
 	}
+	// RFC DI D5: a draft lives in its own session, which is not a chat until
+	// the draft starts — leave it out rather than list a "configured" chat.
+	conds = append(conds, "NOT EXISTS (SELECT 1 FROM runs rd WHERE rd.session_id = s.id AND rd.status = 'configured')")
 	innerWhere := ""
 	if len(conds) > 0 {
 		innerWhere = "WHERE " + strings.Join(conds, " AND ")
