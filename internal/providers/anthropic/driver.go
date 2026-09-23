@@ -218,9 +218,16 @@ type wireRequest struct {
 	// the field is nil it's omitted from the wire — non-reasoning
 	// models would 400 on its presence.
 	Thinking *wireThinking `json:"thinking,omitempty"`
+	// OutputConfig carries effort on models whose reasoning depth is set by
+	// effort rather than by a thinking budget (see anthropicModelRules).
+	OutputConfig *wireOutputConfig `json:"output_config,omitempty"`
 	// ToolChoice constrains which tool the model may call (RFC DG). Omitted
 	// unless the caller asked for it, so an unopted body is byte-identical.
 	ToolChoice *wireToolChoice `json:"tool_choice,omitempty"`
+}
+
+type wireOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // wireToolChoice is Anthropic's shape: {"type":"auto"|"any"|"tool"|"none"}
@@ -249,13 +256,14 @@ func anthropicToolChoice(tc providers.ToolChoice) *wireToolChoice {
 	}
 }
 
-// wireThinking is Anthropic's extended-thinking opt-in. The API spec
-// uses {"type":"enabled","budget_tokens":N} with budget ≥ 1024 and
-// ≤ MaxTokens. We never send a disabled form; "no thinking" = field
-// omitted entirely.
+// wireThinking is Anthropic's extended-thinking opt-in: either
+// {"type":"enabled","budget_tokens":N} (budget ≥ 1024, < MaxTokens) on
+// models that still take a budget, or {"type":"adaptive"} on those that
+// only reason adaptively. We never send a disabled form; "no thinking" =
+// field omitted entirely.
 type wireThinking struct {
-	Type         string `json:"type"`          // always "enabled"
-	BudgetTokens int    `json:"budget_tokens"` // ≥ 1024 per Anthropic spec
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type wireSystemBlock struct {
@@ -342,7 +350,10 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	// fast, don't reason" — the cheapest behaviour the wire
 	// supports. Medium and high pick conservative budgets that
 	// fit comfortably under the default 8192 max_tokens.
-	if budget := anthropicEffortBudget(req.Effort, req.Model); budget > 0 {
+	rules := anthropicModelRules(req.Model)
+	if rules.adaptiveOnly {
+		applyAdaptiveEffort(&w, req.Effort)
+	} else if budget := anthropicEffortBudget(req.Effort, req.Model); budget > 0 {
 		// Anthropic requires budget < max_tokens. When the requested
 		// budget would equal or exceed max_tokens, leave a 1024-token
 		// response margin (matches Anthropic's stated 1024 minimum
@@ -364,6 +375,16 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	// drop the sampling overrides for this call and log the conflict (mirrors
 	// the "effort dropped" signal) — thinking wins, since the operator opted
 	// into reasoning. Only fires for the misconfigured both-set case.
+	//
+	// Models that reason adaptively reject non-default sampling outright,
+	// thinking or not, so there the knobs never reach the wire.
+	if rules.adaptiveOnly && (w.Temperature != nil || w.TopP != nil || w.TopK != nil) {
+		log.Printf("anthropic: dropped temperature/top_p/top_k — model %q rejects non-default sampling; "+
+			"tune it with effort instead", req.Model)
+		w.Temperature = nil
+		w.TopP = nil
+		w.TopK = nil
+	}
 	if w.Thinking != nil && (w.Temperature != nil || w.TopP != nil) {
 		log.Printf("anthropic: dropped temperature/top_p — incompatible with extended thinking (effort) on model %q; "+
 			"set effort OR temperature, not both", req.Model)
@@ -385,8 +406,20 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	// optimisation of a contract the prompt already carries. Dropped and
 	// logged rather than errored, so an effort-bearing agent keeps running.
 	// "none" survives — the API accepts it under thinking.
-	if w.Thinking != nil && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
+	//
+	// Only MANUAL (budgeted) thinking conflicts: adaptive thinking accepts a
+	// forced choice on the Claude API.
+	if w.Thinking != nil && w.Thinking.Type == "enabled" && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
 		log.Printf("anthropic: dropped tool_choice %q — incompatible with extended thinking (effort) on model %q; "+
+			"the model is asked for the tool in the prompt instead", w.ToolChoice.Type, req.Model)
+		w.ToolChoice = nil
+	}
+	// Some models refuse a forced choice under any configuration. Same
+	// treatment: drop it and let the prompt carry the instruction, so a run
+	// that forces a tool (the stateful loop's emit_state) keeps working on
+	// them instead of failing every call with a 400.
+	if rules.noForcedChoice && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
+		log.Printf("anthropic: dropped tool_choice %q — model %q does not accept a forced tool choice; "+
 			"the model is asked for the tool in the prompt instead", w.ToolChoice.Type, req.Model)
 		w.ToolChoice = nil
 	}
@@ -747,6 +780,60 @@ func (d *Driver) Probe(ctx context.Context) error {
 // + periodic probe to populate the Listed flag in ModelStatus.
 func (d *Driver) ListModels(ctx context.Context) ([]string, error) {
 	return d.fetchModels(ctx)
+}
+
+// anthropicRules is what a model family refuses on the wire. Each field
+// names a parameter the API answers with a 400, so getting one wrong is a
+// failed call rather than a quality difference.
+type anthropicRules struct {
+	// adaptiveOnly: thinking is adaptive or nothing — a thinking budget
+	// ({"type":"enabled","budget_tokens":N}) is refused, as are non-default
+	// temperature / top_p / top_k. Reasoning depth is output_config.effort.
+	adaptiveOnly bool
+	// noForcedChoice: tool_choice "any" / "tool" is refused ("auto" and
+	// "none" are fine).
+	noForcedChoice bool
+}
+
+// anthropicModelRules classifies a model id by family, matching on the name
+// the way anthropicEffortBudget does (ids may carry a date suffix or a
+// platform prefix). Unknown ids get the permissive zero value — the legacy
+// behaviour — so a model this table predates keeps working as it did.
+//
+// Families (from Anthropic's model documentation):
+//   - adaptive only: Opus 4.7, Opus 4.8, Opus 5 and 5.5, Sonnet 5, and the
+//     Fable and Mythos lines. Opus 4.6 / Sonnet 4.6 still accept a budget.
+//   - no forced choice: Opus 5.5, Fable 5.1, Mythos 5.1, Mythos Preview.
+func anthropicModelRules(model string) anthropicRules {
+	m := strings.ToLower(model)
+	has := func(subs ...string) bool {
+		for _, s := range subs {
+			if strings.Contains(m, s) {
+				return true
+			}
+		}
+		return false
+	}
+	return anthropicRules{
+		adaptiveOnly:   has("opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-", "mythos-"),
+		noForcedChoice: has("opus-5-5", "fable-5-1", "mythos-5-1", "mythos-preview"),
+	}
+}
+
+// applyAdaptiveEffort maps the effort hint for an adaptive-only model.
+// Effort is sent as-is (the API takes low/medium/high directly). medium and
+// high also switch adaptive thinking on — some of these models run without
+// thinking when the field is omitted — while low leaves it off, keeping the
+// "answer fast, don't reason" meaning low has on the budgeted models. Models
+// that always think ignore the omission and simply think less.
+func applyAdaptiveEffort(w *wireRequest, effort string) {
+	switch effort {
+	case "low":
+		w.OutputConfig = &wireOutputConfig{Effort: effort}
+	case "medium", "high":
+		w.Thinking = &wireThinking{Type: "adaptive"}
+		w.OutputConfig = &wireOutputConfig{Effort: effort}
+	}
 }
 
 // anthropicEffortBudget translates the operator's effort hint into a

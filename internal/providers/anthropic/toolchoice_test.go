@@ -80,6 +80,9 @@ func TestToolChoice_AnthropicAutoSendsNothing(t *testing.T) {
 // reasoning explicitly, while forcing is an optimisation of a prompt contract.
 func TestToolChoice_AnthropicDropsForcingUnderExtendedThinking(t *testing.T) {
 	req := baseReq()
+	// A model that still reasons on a manual budget: adaptive thinking does
+	// not conflict with a forced choice, so only these models reach this guard.
+	req.Model = "claude-sonnet-4-6"
 	req.Effort = "high"
 	// max_tokens must leave room for the budget: the driver skips thinking
 	// entirely when the 8192-token high budget cannot fit under it, which is

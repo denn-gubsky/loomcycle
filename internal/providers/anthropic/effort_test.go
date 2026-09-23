@@ -43,7 +43,7 @@ func TestEffortTranslation_OpusHighUses8192Budget(t *testing.T) {
 	// max_tokens-1024 to leave response room — exercised in
 	// TestEffortTranslation_BudgetClampsAgainstMaxTokens below.)
 	body, err := buildRequestBody(providers.Request{
-		Model:     "claude-opus-4-7",
+		Model:     "claude-opus-4-6",
 		Messages:  []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "x"}}}},
 		Effort:    "high",
 		MaxTokens: 16384,
