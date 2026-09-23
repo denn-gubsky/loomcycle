@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -119,20 +120,42 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 		return nil, fmt.Errorf("write: %w", err)
 	}
 
+	resp, err := awaitResponse(ctx, respCh, c.doneCh, func() error { return c.exitErr })
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, resp.Error
+	}
+	return resp.Result, nil
+}
+
+// awaitResponse waits for a Call's response.
+//
+// ⚠️ A RESPONSE THAT ARRIVED IS NOT LOST TO THE EXIT THAT FOLLOWED IT. A server
+// that answers and then exits leaves BOTH channels ready: the reader delivers
+// the response into the buffered respCh, keeps reading, hits EOF and closes
+// doneCh. A plain select picks between ready cases at random, so the answer
+// was reported as "server exited" roughly half the times the scheduler got
+// there late. The reader is sequential, so once doneCh is closed any
+// response it delivered is already in respCh — checking there first is exact.
+func awaitResponse(ctx context.Context, respCh <-chan mcp.Response, doneCh <-chan struct{}, exitErr func() error) (mcp.Response, error) {
 	select {
 	case resp := <-respCh:
-		if resp.Error != nil {
-			return nil, resp.Error
-		}
-		return resp.Result, nil
+		return resp, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.doneCh:
-		// Reader exited (child died). Surface a useful error.
-		if c.exitErr != nil {
-			return nil, fmt.Errorf("mcp: server exited: %w", c.exitErr)
+		return mcp.Response{}, ctx.Err()
+	case <-doneCh:
+		select {
+		case resp := <-respCh:
+			return resp, nil
+		default:
 		}
-		return nil, errors.New("mcp: server exited")
+		// Reader exited (child died). Surface a useful error.
+		if err := exitErr(); err != nil {
+			return mcp.Response{}, fmt.Errorf("mcp: server exited: %w", err)
+		}
+		return mcp.Response{}, errors.New("mcp: server exited")
 	}
 }
 
@@ -166,13 +189,41 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	}
 	done := make(chan error, 1)
 	go func() { done <- c.write(n) }()
+	return awaitWrite(ctx, done, c.doneCh, notifyExitGrace)
+}
+
+// notifyExitGrace bounds how long Notify waits, once the child has exited,
+// for a write that may already have landed to report it.
+const notifyExitGrace = 100 * time.Millisecond
+
+// awaitWrite waits for a Notify's write.
+//
+// ⚠️ A WRITE THAT LANDED IS A SUCCESS, even if the child exits straight
+// after reading it. That is exactly what the "crash" test server does — it
+// reads notifications/initialized and exits — and a plain select over the
+// write's result and the child's exit picked between them at random, so
+// Initialize intermittently failed with "initialized notify: server exited"
+// (a flaky CI failure). The two are not causally ordered here (the write
+// result comes from a separate goroutine), so after an exit the write gets a
+// short grace to report: a write to a dead child's pipe fails fast, and
+// one that already returned is just waiting to be read.
+func awaitWrite(ctx context.Context, done <-chan error, doneCh <-chan struct{}, grace time.Duration) error {
 	select {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-c.doneCh:
-		// Reader goroutine exited (child died) — write is doomed.
+	case <-doneCh:
+		select {
+		case err := <-done:
+			if err == nil {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(grace):
+		}
+		// The child is gone and the write did not land — it is doomed.
 		return errors.New("mcp: server exited")
 	}
 }
