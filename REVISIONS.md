@@ -8,6 +8,44 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.91.0
+
+*A stateful answer the model wrote into its state reaches the operator.*
+
+One runtime fix (#1336), found the morning after v1.90.0 shipped, on the same local model that produced v1.90.0's report.
+
+### ⚠️ The answer was in the state, and the operator saw an empty turn
+
+Observed live on `ornith-1.5:35b` (ollama-local, `mode: stateful`). The model ended its turns with its reply fields **inside** the patch:
+
+```
+{"patch": {"done": true, "final": "<the whole answer>"},
+ "action": {"tool": "emit_state", "input": {}}}
+```
+
+The loop reads only the top-level `final`. What followed:
+
+- The answer was merged into Σ, and naming `emit_state` as the action drew a "not an action" error.
+- v1.90.0's empty-turn re-prompt could not help. Asked for its answer "in `final`", the model believed it had given one and repeated the same shape, so the operator saw *"(the model ended its turn without an answer; it updated its state: done, final)"*.
+- The stale answer then stayed in Σ into the next turn, where the model read it back as something it knew.
+
+What changed:
+
+- emit_state's own fields — `final`, `done`, `action`, `reasoning` — found inside the patch are moved to where they belong and **deleted from the state**. That also clears a stale copy left there by an earlier turn.
+- A field the **state schema declares** is left alone.
+- An `emit_state` action that carries an answer, or says it is done, ends the turn instead of being refused. One with neither is still refused as before.
+- The tool description, the system prompt and the re-prompt now say plainly that these fields sit **next to** `patch`, never inside it.
+
+### Also on main
+
+- **Memory benchmarks (#1335):** the cascade gate's routing measured on LoCoMo, with results under `bench/` and a section in `docs/MEMORY-ARCHITECTURE.md`. Docs and data only; no runtime change.
+
+### Upgrade notes
+
+- **No wire, schema or config change.**
+- **An existing stateful session may already carry a stale `final` / `done` in Σ** from before this release. It is removed the next time the model writes that field into its patch again. A model that now answers correctly, at the top level, leaves the stale copy in place — start a new chat if one is confusing the model.
+- **The adapters are bumped to 1.91.0 with no surface change**, to keep the client version matching the runtime.
+
 ## What's in v1.90.0
 
 *A stateful chat keeps its state and stays live — v1.88.0 made it park, and this makes the park worth something.*

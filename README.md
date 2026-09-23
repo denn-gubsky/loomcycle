@@ -182,7 +182,12 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.90.0) made an interactive structured-state chat keep
+The most recent line (v1.91.0) fixed a local model's answers going missing in
+that mode: it wrote its reply INTO the state (`{"patch":{"final":…}}`) rather
+than beside it, so the operator saw an empty turn while the answer sat in Σ. The
+loop now moves the reply fields out of the patch and deletes them from the state.
+
+Before it, v1.90.0 made an interactive structured-state chat keep
 its state. v1.88.0 gave the stateful loop a park, but it emitted `done` after every
 answer, so the embedded terminal marked the chat completed and sent the next
 message as a new run — one that started from an empty state with the whole
