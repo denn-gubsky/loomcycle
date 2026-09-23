@@ -175,6 +175,7 @@ func TestSpawnRuns_CarriesEveryAdvertisedFieldToTheConnector(t *testing.T) {
 		"metadata":                 map[string]any{"repo": "loomcycle"},
 		"sampling":                 map[string]any{"temperature": 0.25, "top_p": 0.9, "seed": float64(7), "stop": []any{"END"}},
 		"tool_choice":              map[string]any{"mode": "tool", "name": "WebSearch", "until": "until_called"},
+		"output_format":            map[string]any{"type": "json_schema", "name": "verdict", "schema": map[string]any{"type": "object"}},
 		"compaction":               map[string]any{"enabled": true, "keep_last_n": float64(2)},
 		"context":                  map[string]any{"mode": "recap", "keep_last_n": float64(3)},
 		"max_context_tokens":       float64(131072),
@@ -267,7 +268,8 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	          "max_tokens":100,"max_iterations":9,"max_concurrent_children":2,
 	          "retry_attempts":0,"memory_inject_max_tokens":0,"memory_index_max_bytes":0,
 	          "inject_tool_guide":false,"unbounded_iterations":false,
-	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"}}`
+	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"},
+	          "output_format":{"type":"json_schema","name":"verdict","schema":{"type":"object"}}}`
 	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
 		t.Fatalf("handleSpawnRun: %v", err)
 	}
@@ -301,6 +303,9 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	}
 	if in.ToolChoice == nil || in.ToolChoice.Name != "WebSearch" || in.ToolChoice.Until != "until_called" {
 		t.Errorf("ToolChoice = %+v, want tool/WebSearch/until_called — dropped by the streaming path's hand-copy", in.ToolChoice)
+	}
+	if in.OutputFormat == nil || in.OutputFormat.Name != "verdict" {
+		t.Errorf("OutputFormat = %+v, want verdict — dropped by the streaming path's hand-copy", in.OutputFormat)
 	}
 	if in.UserCredentials["github"] != "g" {
 		t.Errorf("UserCredentials = %v, want github=g", in.UserCredentials)

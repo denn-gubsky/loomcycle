@@ -802,6 +802,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
 		Sampling:         samplingFromProto(req.GetSampling()),
 		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
+		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Metadata:         metadataFromProto(req.GetMetadata()),
@@ -856,6 +857,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
 		Sampling:         samplingFromProto(req.GetSampling()),
 		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
+		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Metadata:         metadataFromProto(req.GetMetadata()),
@@ -1007,6 +1009,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		UserCredentials:  req.GetUserCredentials(),
 		Sampling:         samplingFromProto(req.GetSampling()),
 		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
+		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		// RFC DC per-run overrides. One helper for all three call sites, so a
@@ -1176,6 +1179,7 @@ type runInputProtoArgs struct {
 	UserCredentials  map[string]string            // v1.x RFC F per-tool named credentials
 	Sampling         *config.Sampling             // v0.28.0 per-run sampling override
 	ToolChoice       *config.ToolChoice           // RFC DI per-run tool_choice
+	OutputFormat     *config.OutputFormat         // RFC DI per-run answer schema
 	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
 	Interactive      bool                         // RFC AI — park at end_turn for steering
 	Interruption     *config.AgentInterruptionACL // per-run override of whether the agent may ask a human
@@ -1232,6 +1236,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		UserCredentials:       a.UserCredentials, // v1.x RFC F per-tool named credentials
 		Sampling:              a.Sampling,        // v0.28.0 per-run sampling override
 		ToolChoice:            a.ToolChoice,      // RFC DI per-run tool_choice
+		OutputFormat:          a.OutputFormat,    // RFC DI per-run answer schema
 		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
 		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
 		Metadata:              a.Metadata,
@@ -1261,6 +1266,25 @@ func toolChoiceFromProto(p *loomcyclepb.ToolChoice) *config.ToolChoice {
 		return nil
 	}
 	return &config.ToolChoice{Mode: p.GetMode(), Name: p.GetName(), Until: p.GetUntil()}
+}
+
+// outputFormatFromProto maps the wire message to config.OutputFormat; nil stays
+// nil (inherit the agent's). The schema travels as JSON bytes, like metadata. A
+// schema that is not a JSON object is passed on EMPTY so RunOnce's validation
+// refuses it — the same InvalidArgument as any other bad format, rather than a
+// second error path here.
+func outputFormatFromProto(p *loomcyclepb.OutputFormat) *config.OutputFormat {
+	if p == nil {
+		return nil
+	}
+	of := &config.OutputFormat{Type: p.GetType(), Name: p.GetName()}
+	if len(p.GetSchema()) > 0 {
+		var schema map[string]any
+		if err := json.Unmarshal(p.GetSchema(), &schema); err == nil {
+			of.Schema = schema
+		}
+	}
+	return of
 }
 
 func samplingFromProto(p *loomcyclepb.Sampling) *config.Sampling {

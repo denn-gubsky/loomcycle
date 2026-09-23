@@ -55,7 +55,9 @@ var agentDefOverridability = map[string]overridability{
 	// Which tool the model must call shapes the run; it grants no reach — the
 	// named tool must already be one the run holds, and the loop refuses one
 	// it does not.
-	"ToolChoice":            runMayChoose,
+	"ToolChoice": runMayChoose,
+	// The shape of the answer; grants no reach.
+	"OutputFormat":          runMayChoose,
 	"Compaction":            runMayChoose,
 	"Context":               runMayChoose,
 	"MaxContextTokens":      runMayChoose,

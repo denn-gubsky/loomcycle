@@ -632,6 +632,9 @@ message RunRequest {
   // Per-run tool_choice (RFC DI): whether and which tool the model must call,
   // and for how many calls. Replaces the agent's own whole. Unset = the agent's.
   ToolChoice tool_choice = 33;
+  // Per-run answer schema (RFC DI): the final answer is held to it where the
+  // model supports it and returned parsed. Replaces the agent's whole.
+  OutputFormat output_format = 34;
 }
 
 message ContinueRequest {
@@ -712,6 +715,8 @@ message ContinueRequest {
   ParentContext parent_context = 29;
   // Per-run tool_choice for this continuation — see RunRequest.tool_choice.
   ToolChoice tool_choice = 30;
+  // Per-run answer schema for this continuation — see RunRequest.output_format.
+  OutputFormat output_format = 31;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -771,6 +776,16 @@ message ToolChoice {
   string mode = 1;
   string name = 2;
   string until = 3;
+}
+
+// OutputFormat mirrors config.OutputFormat (RFC DI). type: json_schema (the
+// default when empty); name
+// defaults to "output"; schema is the JSON Schema as UTF-8 JSON bytes (root
+// type object).
+message OutputFormat {
+  string type = 1;
+  string name = 2;
+  bytes schema = 3;
 }
 
 // Compaction mirrors config.Compaction — the per-run context-compaction

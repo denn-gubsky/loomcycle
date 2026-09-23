@@ -64,6 +64,7 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		Metadata:         req.Metadata,         // non-secret trusted agent metadata
 		Sampling:         req.Sampling,         // per-run LLM sampling override
 		ToolChoice:       req.ToolChoice,       // per-run tool_choice (RFC DI)
+		OutputFormat:     req.OutputFormat,     // per-run answer schema (RFC DI)
 		Compaction:       req.Compaction,       // per-run context-compaction override
 		Context:          req.Context,          // per-run layered-context override (RFC CR)
 		MaxContextTokens: req.MaxContextTokens, // RFC CJ per-run context-window override

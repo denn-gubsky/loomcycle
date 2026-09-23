@@ -161,6 +161,7 @@ export type {
   RunResult,
   RunSpec,
   ToolChoiceOptions,
+  OutputFormatOptions,
   CancelAgentResult,
   ListAgentsResponse,
   // Fan-out (RFC Y) + compaction

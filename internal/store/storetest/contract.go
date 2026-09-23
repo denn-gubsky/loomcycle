@@ -123,6 +123,13 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
 		{"FinishRunPersistsResult", testFinishRunPersistsResult},
+		// RFC DI D5: configured (created, not started) runs.
+		{"ConfiguredRunLifecycle", testConfiguredRunLifecycle},
+		{"ConfiguredRunStartIsGuarded", testConfiguredRunStartIsGuarded},
+		{"ConfiguredRunDeleteTakesItsSession", testConfiguredRunDeleteTakesItsSession},
+		{"ConfiguredRunCountAndExpiry", testConfiguredRunCountAndExpiry},
+		{"ConfiguredRunHiddenFromChatListings", testConfiguredRunHiddenFromChatListings},
+		{"ConfiguredRunNotReapedAsStale", testConfiguredRunNotReapedAsStale},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},
 		{"SetRunPauseStateMissingRunReturnsNotFound", testSetRunPauseStateMissingRunReturnsNotFound},

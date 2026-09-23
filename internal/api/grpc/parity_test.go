@@ -472,3 +472,27 @@ func TestToolChoiceFromProto_MapsAndLeavesUnsetNil(t *testing.T) {
 		t.Errorf("spawnRequestFromProto dropped tool_choice: %+v", got.ToolChoice)
 	}
 }
+
+// RFC DI: the wire OutputFormat maps with its schema decoded from JSON bytes;
+// unset stays nil (inherit the agent's), and a schema that is not a JSON
+// object arrives EMPTY so RunOnce refuses it like any invalid format.
+func TestOutputFormatFromProto_MapsDecodesAndLeavesUnsetNil(t *testing.T) {
+	got := runInputFromProto(runInputProtoArgs{Agent: "a", OutputFormat: outputFormatFromProto(&loomcyclepb.OutputFormat{
+		Type: "json_schema", Name: "verdict", Schema: []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)})})
+	if got.OutputFormat == nil || got.OutputFormat.Name != "verdict" || got.OutputFormat.Schema["type"] != "object" {
+		t.Errorf("OutputFormat = %+v, want json_schema/verdict with the decoded schema", got.OutputFormat)
+	}
+	if err := got.OutputFormat.Validate(); err != nil {
+		t.Errorf("a well-formed wire format fails validation: %v", err)
+	}
+	if outputFormatFromProto(nil) != nil {
+		t.Error("an unset wire OutputFormat must map to nil (inherit the agent's)")
+	}
+	bad := outputFormatFromProto(&loomcyclepb.OutputFormat{Type: "json_schema", Schema: []byte(`[1]`)})
+	if bad == nil || bad.Validate() == nil {
+		t.Errorf("a non-object schema must reach validation and be refused: %+v", bad)
+	}
+	if got := spawnRequestFromProto(&loomcyclepb.RunRequest{Agent: "a", OutputFormat: &loomcyclepb.OutputFormat{Type: "json_schema", Schema: []byte(`{"type":"object"}`)}}); got.OutputFormat == nil {
+		t.Error("spawnRequestFromProto dropped output_format")
+	}
+}

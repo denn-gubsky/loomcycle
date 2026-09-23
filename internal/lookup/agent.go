@@ -194,6 +194,8 @@ type SubstrateAgentDef struct {
 	Sampling *config.Sampling `json:"sampling,omitempty"`
 	// ToolChoice (RFC DI): mirrors config.ToolChoice / mergedDef.
 	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
+	// OutputFormat (RFC DI): mirrors config.OutputFormat / mergedDef.
+	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
 	// Compaction: per-agent context-compaction settings (mirrors config.Compaction
 	// / mergedDef).
 	Compaction *config.Compaction `json:"compaction,omitempty"`
@@ -314,6 +316,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Effort:                 def.Effort,
 		Sampling:               def.Sampling,
 		ToolChoice:             def.ToolChoice,
+		OutputFormat:           def.OutputFormat,
 		Compaction:             def.Compaction,
 		Context:                def.Context,
 		MaxTokens:              def.MaxTokens,
@@ -368,6 +371,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Effort:                s.Effort,
 		Sampling:              s.Sampling,
 		ToolChoice:            s.ToolChoice,
+		OutputFormat:          s.OutputFormat,
 		Compaction:            s.Compaction,
 		Context:               s.Context,
 		MaxTokens:             s.MaxTokens,

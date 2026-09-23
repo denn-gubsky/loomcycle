@@ -114,6 +114,11 @@ type SpawnRunRequest struct {
 	// verbatim to runner.RunInput, which validates it.
 	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
 
+	// OutputFormat is an optional per-RUN answer schema (RFC DI), REPLACING
+	// the agent's whole. Mirrors the HTTP /v1/runs `output_format` field;
+	// carried verbatim to runner.RunInput, which validates it.
+	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
+
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely. Mirrors the HTTP /v1/runs

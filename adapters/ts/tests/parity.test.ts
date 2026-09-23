@@ -276,3 +276,50 @@ describe("per-run tool_choice on the run body (RFC DI)", () => {
     expect("tool_choice" in body).toBe(false);
   });
 });
+
+describe("per-run output_format on the run body (RFC DI)", () => {
+  const format = {
+    type: "json_schema" as const,
+    name: "verdict",
+    schema: { type: "object", properties: { ok: { type: "boolean" } } },
+  };
+
+  it("runStreaming and continueSession send output_format as given", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+      outputFormat: format,
+    })) {
+      void _;
+    }
+    for await (const _ of client.continueSession({
+      sessionId: "s1",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "more" }] }],
+      outputFormat: format,
+    })) {
+      void _;
+    }
+    const run = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    const cont = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(run.output_format).toEqual(format);
+    expect(cont.output_format).toEqual(format);
+  });
+
+  it("omits output_format when unset", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+    })) {
+      void _;
+    }
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect("output_format" in body).toBe(false);
+  });
+});

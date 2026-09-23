@@ -813,6 +813,10 @@ export interface RunOptions extends RunOverrideOptions {
   /** Per-run tool choice (RFC DI): whether and which tool the model must
    *  call, and for how many calls. REPLACES the agent's own whole. */
   toolChoice?: ToolChoiceOptions;
+  /** Per-run answer schema (RFC DI): the final answer is held to it where
+   *  the model supports it, and returned parsed as `result.structured`.
+   *  REPLACES the agent's own whole. */
+  outputFormat?: OutputFormatOptions;
   /** Per-run context-compaction override (v0.32.0), merged PER FIELD over
    *  the agent's own compaction block (this wins; unset fields inherit).
    *  Omitted = inherit entirely. Trigger compaction mid-run with
@@ -850,11 +854,20 @@ export interface RunOptions extends RunOverrideOptions {
   signal?: AbortSignal;
 }
 
-/** Per-run LLM sampling override (v0.28.0). Mirrors config.Sampling — every
- *  field optional; an unset field inherits the agent's value. An explicit
- *  `temperature: 0` is deterministic, NOT "unset". Each provider maps what it
- *  supports (e.g. topK is Anthropic/Gemini/Ollama; frequencyPenalty/
- *  presencePenalty/seed are OpenAI/DeepSeek/Ollama). */
+/** The JSON schema a run's final answer must follow (RFC DI) — structured
+ *  output. Same shape per-agent (AgentDef `output_format`) and per-run; a
+ *  per-run value REPLACES the agent's whole. The parsed answer is
+ *  `result.structured`. A model that cannot enforce it runs anyway, with a
+ *  `capability_inert` event naming what was not enforced. */
+export interface OutputFormatOptions {
+  /** The only kind, and the default when omitted. */
+  type?: "json_schema";
+  /** Label where a provider needs one (OpenAI does). Default "output". */
+  name?: string;
+  /** A JSON Schema whose root is `type: "object"`. */
+  schema: Record<string, unknown>;
+}
+
 /** Whether and which tool the model must call, and for how many calls
  *  (RFC DI). Same shape per-agent (AgentDef `tool_choice`) and per-run; a
  *  per-run value REPLACES the agent's whole. A model that cannot enforce it
@@ -871,6 +884,11 @@ export interface ToolChoiceOptions {
   until?: "first_call" | "until_called" | "always";
 }
 
+/** Per-run LLM sampling override (v0.28.0). Mirrors config.Sampling — every
+ *  field optional; an unset field inherits the agent's value. An explicit
+ *  `temperature: 0` is deterministic, NOT "unset". Each provider maps what it
+ *  supports (e.g. topK is Anthropic/Gemini/Ollama; frequencyPenalty/
+ *  presencePenalty/seed are OpenAI/DeepSeek/Ollama). */
 export interface SamplingOptions {
   temperature?: number;
   topP?: number;
@@ -1070,6 +1088,10 @@ export interface ContinueOptions extends RunOverrideOptions {
   /** Per-run tool choice (RFC DI): whether and which tool the model must
    *  call, and for how many calls. REPLACES the agent's own whole. */
   toolChoice?: ToolChoiceOptions;
+  /** Per-run answer schema (RFC DI): the final answer is held to it where
+   *  the model supports it, and returned parsed as `result.structured`.
+   *  REPLACES the agent's own whole. */
+  outputFormat?: OutputFormatOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
   /** Per-continuation context-distillation override — see
@@ -1182,6 +1204,9 @@ export interface RunResult {
   final_text?: string;
   /** The final structured state of a stateful run. */
   state?: Record<string, unknown>;
+  /** The final answer parsed against the run's `outputFormat`; absent when
+   *  the run had none or the answer was not a JSON object. */
+  structured?: Record<string, unknown>;
 }
 
 export interface ListAgentsResponse {
@@ -3206,6 +3231,8 @@ export interface AgentDefOverlay {
   effort?: string;
   /** Whether and which tool the model must call (RFC DI). */
   tool_choice?: ToolChoiceOptions;
+  /** The JSON schema the answer must follow (RFC DI). */
+  output_format?: OutputFormatOptions;
   max_tokens?: number;
   max_iterations?: number;
   max_concurrent_children?: number;

@@ -282,6 +282,10 @@ type RunInput struct {
 	// agent's whole; validated by the server before the run starts.
 	ToolChoice *config.ToolChoice
 
+	// OutputFormat is an optional per-RUN answer schema (RFC DI). REPLACES
+	// the agent's whole; validated by the server before the run starts.
+	OutputFormat *config.OutputFormat
+
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own Compaction. nil = inherit the agent's entirely.
 	Compaction *config.Compaction

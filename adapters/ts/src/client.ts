@@ -258,6 +258,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
   // Same keys on the wire as in the option (mode / name / until).
   if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
+  if (opts.outputFormat !== undefined) body.output_format = opts.outputFormat;
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
   if (opts.context !== undefined) body.context = contextToWire(opts.context);
   if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
@@ -370,6 +371,7 @@ export class LoomcycleClient {
     if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
     if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
+    if (opts.outputFormat !== undefined) body.output_format = opts.outputFormat;
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
     if (opts.context !== undefined) body.context = contextToWire(opts.context);
     if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;

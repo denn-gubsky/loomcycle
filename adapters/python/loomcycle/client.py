@@ -1518,6 +1518,7 @@ class LoomcycleClient:
         user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
+        output_format: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
@@ -1597,6 +1598,7 @@ class LoomcycleClient:
             user_credentials=user_credentials,
             sampling=sampling,
             tool_choice=tool_choice,
+            output_format=output_format,
             compaction=compaction,
             max_context_tokens=max_context_tokens,
             interactive=interactive,
@@ -1637,6 +1639,7 @@ class LoomcycleClient:
         user_credentials: Optional[Mapping[str, str]] = None,
         sampling: Optional[Mapping[str, Any]] = None,
         tool_choice: Optional[Mapping[str, Any]] = None,
+        output_format: Optional[Mapping[str, Any]] = None,
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
@@ -1708,6 +1711,8 @@ class LoomcycleClient:
             req.sampling.CopyFrom(_build_sampling(sampling))
         if tool_choice is not None:
             req.tool_choice.CopyFrom(_build_tool_choice(tool_choice))
+        if output_format is not None:
+            req.output_format.CopyFrom(_build_output_format(output_format))
         if compaction is not None:
             req.compaction.CopyFrom(_build_compaction(compaction))
         if context is not None:
@@ -1981,6 +1986,21 @@ def _build_tool_choice(d: Mapping[str, Any]) -> "pb.ToolChoice":
     )
 
 
+def _build_output_format(d: Mapping[str, Any]) -> "pb.OutputFormat":
+    """Map an output_format dict (``type``, ``name``, ``schema``) →
+    pb.OutputFormat, the schema sent as JSON bytes.
+
+    The run's final answer is held to the schema where the model supports it
+    and comes back parsed as ``result.structured``; it replaces the agent's
+    own format whole. The server validates it, so this only maps."""
+    schema = d.get("schema")
+    return pb.OutputFormat(
+        type=d.get("type", ""),
+        name=d.get("name", ""),
+        schema=json.dumps(schema).encode() if schema is not None else b"",
+    )
+
+
 def _build_sampling(d: Mapping[str, Any]) -> "pb.Sampling":
     """Map a sampling dict → pb.Sampling, setting only the keys the
     caller provided. Presence (proto3 optional) preserves an explicit
@@ -2043,6 +2063,7 @@ def _build_run_request(
     user_credentials: Optional[Mapping[str, str]] = None,
     sampling: Optional[Mapping[str, Any]] = None,
     tool_choice: Optional[Mapping[str, Any]] = None,
+    output_format: Optional[Mapping[str, Any]] = None,
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
     interactive: bool = False,
@@ -2125,6 +2146,8 @@ def _build_run_request(
         req.sampling.CopyFrom(_build_sampling(sampling))
     if tool_choice is not None:
         req.tool_choice.CopyFrom(_build_tool_choice(tool_choice))
+    if output_format is not None:
+        req.output_format.CopyFrom(_build_output_format(output_format))
     if compaction is not None:
         req.compaction.CopyFrom(_build_compaction(compaction))
     return req
@@ -2150,6 +2173,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         user_credentials=spawn.get("user_credentials"),
         sampling=spawn.get("sampling"),
         tool_choice=spawn.get("tool_choice"),
+        output_format=spawn.get("output_format"),
         compaction=spawn.get("compaction"),
         max_context_tokens=spawn.get("max_context_tokens", 0),
         model=spawn.get("model", ""),
