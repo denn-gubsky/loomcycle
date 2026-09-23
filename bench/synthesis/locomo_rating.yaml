@@ -40,35 +40,46 @@ agents:
   # database holds (498 runs). A benchmark cannot have its extractor chosen by a
   # reachability probe: which model distilled the facts is part of what is being measured.
   #
-  # The EXTRACTOR is local — ornith-1.5:35b on the Spark, the same model that answers —
-  # because this rating is of a local deployment, and which model distilled the facts is
-  # the half of the pipeline that decides what the reader can find. The bundle dispatches
-  # extraction serially, so it is one request at a time against the box that CUDA-faulted
-  # at concurrency 4. `effort: low` (the bundle's) maps to think:false on Ollama, so the
-  # output budget is not spent on a reasoning trace.
+  # ⚠️ ONLY THE JUDGE MAY REACH THE CLOUD. Everything else in the pipeline is local —
+  # ornith-1.5:35b on the Spark, the same model that answers — because this rating is of a
+  # local deployment, and a cloud call anywhere else is both a different measurement and a
+  # bill. The judge stays on deepseek-flash because grading has to be the same instrument
+  # across every conversation and every published table it is compared against.
   #
-  # The other three have no local requirement; they get deepseek-flash, the alias the judge
-  # already runs on (-> deepseek/deepseek-v4-flash), so nothing can reach v4-pro. Pinning
-  # is right HERE and wrong in a product config: a deployment should let the tier policy
-  # route, a measurement must hold the model fixed.
+  # Every memory agent is pinned, not left to tier: the base preset's tier:middle lists
+  # ollama-local FIRST and deepseek-v4-pro after it, the resolver marked the local
+  # candidate unavailable on this host and fell through WITHOUT A WORD, and the extractor
+  # ran on paid v4-pro for every store this database held (498 runs). A pinned agent
+  # re-resolves to its own pin on fallback, so it cannot cascade to a cloud candidate.
+  #
+  # The bundle dispatches extraction serially — one request at a time against a host that
+  # CUDA-faulted at concurrency 4 — and its effort:low maps to think:false on Ollama, so
+  # the output budget is not spent on a reasoning trace.
+  #
+  # Pinning is right HERE and wrong in a product config: a deployment should let the tier
+  # policy route, a measurement must hold the model fixed.
+  #
+  # tier must be cleared explicitly on each: a layer that only ADDS model: merges onto the
+  # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
   memory/extractor:
-    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
-    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
     tier: ""
     provider: ollama-local
     model: ornith-1.5:35b
   memory/ontologist:
-    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
-    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
     tier: ""
-    model: deepseek-flash
+    provider: ollama-local
+    model: ornith-1.5:35b
   memory/judge:
-    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
-    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
     tier: ""
-    model: deepseek-flash
+    provider: ollama-local
+    model: ornith-1.5:35b
   memory/conflict-judge:
-    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
-    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
     tier: ""
-    model: deepseek-flash
+    provider: ollama-local
+    model: ornith-1.5:35b
+
+  # ingest.yaml's default answerer is cloud. The rating answers with locomo/orn-l2k24-sp
+  # and never names this one — pinned anyway so a mistyped -answerer flag costs nothing.
+  locomo/answerer:
+    provider: ollama-local
+    model: ornith-1.5:35b
