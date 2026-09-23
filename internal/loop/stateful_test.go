@@ -735,6 +735,8 @@ func (p *actionScriptProvider) Call(_ context.Context, req providers.Request) (<
 	close(ch)
 	return ch, nil
 }
+func (p *actionScriptProvider) calls() int { p.mu.Lock(); defer p.mu.Unlock(); return p.turn }
+
 func (p *actionScriptProvider) sawObservation(sub string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1909,5 +1911,186 @@ func TestRun_Stateful_ARetryReplaysTheModelsThinking(t *testing.T) {
 	}
 	if len(asst.Content) == 0 || asst.Content[0].ToolUseID != "toolu_0" {
 		t.Errorf("replayed tool_use id = %v, want the model's own toolu_0", asst.Content)
+	}
+}
+
+// stateCapture records every context_state's Σ and every text frame.
+type stateCapture struct {
+	mu     sync.Mutex
+	states []map[string]any
+	texts  []string
+}
+
+func (c *stateCapture) on(ev providers.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch ev.Type {
+	case providers.EventContextState:
+		if ev.ContextState != nil {
+			c.states = append(c.states, ev.ContextState.State)
+		}
+	case providers.EventText:
+		c.texts = append(c.texts, ev.Text)
+	}
+}
+
+// ⚠️ OBSERVED LIVE on ornith-1.5:35b, v1.90.0: the model ended its turn with
+// its whole answer INSIDE the patch — `{"patch":{"done":true,"final":"…"}}` —
+// and top-level `final` empty. The runtime read only the top-level field, so
+// the operator was told the model had no answer while the answer sat in Σ,
+// and re-prompting could not help: the model believed it had answered.
+func TestRun_Stateful_AnAnswerNestedInThePatchIsShown(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"notes":"kept","done":true,"final":"The answer is 42.","reasoning":"thought"}}`,
+	}}
+	var c stateCapture
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  statefulCtx(nil),
+		OnEvent:  c.on,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.FinalText != "The answer is 42." {
+		t.Errorf("final = %q, want the answer the model nested in its patch", res.FinalText)
+	}
+	if prov.calls() != 1 {
+		t.Errorf("calls = %d; the answer was there on the first call and needed no re-prompt", prov.calls())
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	last := c.states[len(c.states)-1]
+	for _, k := range []string{"final", "done", "reasoning"} {
+		if _, ok := last[k]; ok {
+			t.Errorf("Σ kept the reply field %q — the answer leaked into the state: %v", k, last)
+		}
+	}
+	if last["notes"] != "kept" {
+		t.Errorf("the real state was lost with the reply fields: %v", last)
+	}
+}
+
+// The same model, finishing, named emit_state itself as its action with the
+// answer in the patch. That is a turn end written the wrong way round; it used
+// to cost a step and an error observation, and the answer never reached the
+// operator.
+func TestRun_Stateful_EmitStateAsTheActionWithAnAnswerEndsTheTurn(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"done":true,"final":"Here it is."},"action":{"tool":"emit_state","input":{}}}`,
+	}}
+	var c stateCapture
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  statefulCtx(nil),
+		OnEvent:  c.on,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.FinalText != "Here it is." || prov.calls() != 1 {
+		t.Errorf("final=%q calls=%d, want the answer on the first call", res.FinalText, prov.calls())
+	}
+	if prov.sawObservation("is not an action") {
+		t.Error("an emit_state action carrying an answer was refused as a tool call")
+	}
+}
+
+// An emit_state action with NO answer is still the confused case it was, and
+// is still refused with the explanation.
+func TestRun_Stateful_EmitStateAsTheActionWithoutAnAnswerIsStillRefused(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"emit_state","input":{}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	echo := &echoTool{reply: "observed"}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !prov.sawObservation("is not an action") {
+		t.Errorf("an answerless emit_state action was not explained: %v", prov.observed)
+	}
+}
+
+// A stale answer from an earlier turn — carried in Σ by a run that predates the
+// lift — is removed the next time the model writes one there, rather than
+// being read back as something the run knows.
+func TestRun_Stateful_ANestedReplyAlsoClearsAStaleOne(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{"done":true,"final":"new answer"}}`}}
+	var c stateCapture
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments:     statefulTaskSegs(),
+		Context:      statefulCtx(nil),
+		InitialState: map[string]any{"final": "an answer to a different question", "done": true, "topic": "8700G"},
+		OnEvent:      c.on,
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	last := c.states[len(c.states)-1]
+	if _, ok := last["final"]; ok {
+		t.Errorf("a stale answer survived in Σ: %v", last)
+	}
+	if last["topic"] != "8700G" {
+		t.Errorf("state lost: %v", last)
+	}
+}
+
+// A schema that genuinely names a state field `final` keeps it: the lift is for
+// the reply channel leaking into Σ, not for a key the operator declared.
+func TestRun_Stateful_ASchemaDeclaredFieldIsNotLifted(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{
+		"final": map[string]any{"type": "string"}}}
+	prov := &actionScriptProvider{scripts: []string{`{"patch":{"final":"draft v2"},"done":true,"final":"shipped"}`}}
+	var c stateCapture
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Segments: statefulTaskSegs(),
+		Context:  statefulCtx(schema),
+		OnEvent:  c.on,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if last := c.states[len(c.states)-1]; last["final"] != "draft v2" {
+		t.Errorf("a schema-declared Σ field was stripped: %v", last)
+	}
+	if res.FinalText != "shipped" {
+		t.Errorf("final = %q, want the top-level answer", res.FinalText)
+	}
+}
+
+// A model that nests its next action in the patch still gets it run.
+func TestRun_Stateful_AnActionNestedInThePatchIsRun(t *testing.T) {
+	echo := &echoTool{reply: "observed"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"action":{"tool":"Echo","input":{}}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    func(providers.Event) {},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if echo.callCount() != 1 {
+		t.Errorf("tool ran %d time(s), want 1 — the nested action was dropped", echo.callCount())
 	}
 }
