@@ -182,7 +182,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.89.0) closed a token-budget bypass: the structured-state
+The most recent line (v1.90.0) made an interactive structured-state chat keep
+its state. v1.88.0 gave the stateful loop a park, but it emitted `done` after every
+answer, so the embedded terminal marked the chat completed and sent the next
+message as a new run — one that started from an empty state with the whole
+transcript as its input, while the parked run leaked. It now stays live, resume
+and continuation start from the recorded state, and the loop gets what every
+other run gets: heartbeat, tool-use hooks, the `redact` plugin, retry and
+fallback, and runtime pause.
+
+Before it, v1.89.0 closed a token-budget bypass: the structured-state
 loop never emitted a per-call usage event, so a `mode: stateful` run wrote no
 ledger rows, reported no cost, and — the part that matters — incremented no
 per-scope budget counter. An operator who had set a hard token limit was not
