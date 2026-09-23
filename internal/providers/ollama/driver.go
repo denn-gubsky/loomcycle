@@ -434,7 +434,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// phase (and is unavailable on the hosted "ollama" registration, which
 		// does not support structured outputs).
 		SupportsToolChoice: false,
-		SupportsThinking:   true,
+		// RFC DI: `format` takes a JSON schema on a self-hosted Ollama; the
+		// hosted "ollama" does not support structured outputs.
+		SupportsStructuredOutput: d.providerID == "ollama-local",
+		SupportsThinking:         true,
 		// The effort hint drives Ollama's top-level `think` flag (see
 		// buildRequestBody): medium/high enable a reasoning model's
 		// thinking trace, low disables it, empty leaves the model default.
@@ -567,6 +570,9 @@ type wireRequest struct {
 	// hint. Ollama populates message.thinking only when this is true, and
 	// errors if the resolved model isn't thinking-capable.
 	Think *bool `json:"think,omitempty"`
+	// Format holds the answer to a JSON schema (RFC DI) — /api/chat accepts
+	// the schema itself here. Only a self-hosted registration sends it.
+	Format json.RawMessage `json:"format,omitempty"`
 }
 
 type wireOptions struct {
@@ -643,6 +649,10 @@ func (d *Driver) buildRequestBody(req providers.Request, numCtx int) ([]byte, er
 	if os.Getenv("LOOMCYCLE_OLLAMA_DEBUG_THINK") == "1" {
 		log.Printf("ollama think-diag: provider=%s model=%q effort=%q think_set=%v",
 			d.providerID, req.Model, req.Effort, w.Think != nil)
+	}
+
+	if req.OutputFormat != nil && d.EnforcesStructuredOutput(req.Model, len(req.Tools) > 0) {
+		w.Format = req.OutputFormat.Schema
 	}
 
 	if req.Temperature != nil || req.MaxTokens > 0 || numCtx > 0 || d.numGpu > 0 ||
@@ -1335,4 +1345,12 @@ func (d *Driver) fetchTags(ctx context.Context) ([]string, error) {
 		out = append(out, m.Name)
 	}
 	return out, nil
+}
+
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
+// `format` is a grammar over every sampled token, and Ollama parses tool calls
+// out of that same text, so with tools in the request a schema would stop the
+// model from calling any; it is enforced only on a tool-free request.
+func (d *Driver) EnforcesStructuredOutput(_ string, hasTools bool) bool {
+	return d.Capabilities().SupportsStructuredOutput && !hasTools
 }

@@ -1099,6 +1099,12 @@ type AgentDef struct {
 	// tool name. Content-identifying, like Sampling.
 	ToolChoice *ToolChoice `yaml:"tool_choice,omitempty"`
 
+	// OutputFormat constrains the model's final answer to a JSON schema
+	// (RFC DI) — structured output, the portable replacement for assistant
+	// prefill. nil = free text. A per-run output_format REPLACES it whole.
+	// Content-identifying, like Sampling.
+	OutputFormat *OutputFormat `yaml:"output_format,omitempty"`
+
 	// Compaction is the per-agent context-compaction block (yaml/JSON
 	// `compaction:`). Controls keep-last-N / keep-first, the auto-compact
 	// trigger, the summary target size, and an optional cheaper summary model.
@@ -1637,6 +1643,88 @@ type ToolChoice struct {
 	// makes a call that satisfies it), "always" (every call — refused for the
 	// forcing modes, which could then never finish).
 	Until string `json:"until,omitempty" yaml:"until"`
+}
+
+// OutputFormat is the per-agent / per-run `output_format:` block (RFC DI): the
+// JSON schema the model's answer must follow. The parsed answer lands in the
+// run's result as `structured`.
+type OutputFormat struct {
+	// Type is "json_schema" — the one kind today, named so a later kind is an
+	// addition rather than a reinterpretation. Empty means json_schema, so a
+	// caller (or an editor with no defaults) need only give the schema.
+	Type string `json:"type,omitempty" yaml:"type"`
+	// Name labels the schema where a provider requires one (OpenAI does).
+	// Defaults to "output". [A-Za-z0-9_-]{1,64}.
+	Name string `json:"name,omitempty" yaml:"name"`
+	// Schema is the JSON Schema. Its root must be an object: every provider
+	// that constrains output requires one.
+	Schema map[string]any `json:"schema" yaml:"schema"`
+}
+
+// OutputFormatJSONSchema is the one output_format type.
+const OutputFormatJSONSchema = "json_schema"
+
+var outputFormatNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// IsZero reports whether the block asks for nothing.
+func (o *OutputFormat) IsZero() bool { return o == nil || (o.Type == "" && len(o.Schema) == 0) }
+
+// EffectiveType is Type with its default applied.
+func (o *OutputFormat) EffectiveType() string {
+	if o == nil || o.Type == "" {
+		return OutputFormatJSONSchema
+	}
+	return o.Type
+}
+
+// EffectiveName is Name with its default applied.
+func (o *OutputFormat) EffectiveName() string {
+	if o == nil || o.Name == "" {
+		return "output"
+	}
+	return o.Name
+}
+
+// Validate refuses a block no provider could apply.
+func (o *OutputFormat) Validate() error {
+	if o == nil {
+		return nil
+	}
+	if o.EffectiveType() != OutputFormatJSONSchema {
+		return fmt.Errorf("output_format.type %q is not supported (want json_schema)", o.Type)
+	}
+	if o.Name != "" && !outputFormatNameRe.MatchString(o.Name) {
+		return fmt.Errorf("output_format.name %q must match [A-Za-z0-9_-]{1,64}", o.Name)
+	}
+	if len(o.Schema) == 0 {
+		return fmt.Errorf("output_format.schema is required")
+	}
+	if t, _ := o.Schema["type"].(string); t != "object" {
+		return fmt.Errorf("output_format.schema must have type \"object\" at its root (got %v)", o.Schema["type"])
+	}
+	return nil
+}
+
+// Clone returns a deep copy (via JSON, since Schema is an arbitrary tree).
+func (o *OutputFormat) Clone() *OutputFormat {
+	if o == nil {
+		return nil
+	}
+	c := &OutputFormat{Type: o.Type, Name: o.Name}
+	if o.Schema != nil {
+		b, _ := json.Marshal(o.Schema)
+		_ = json.Unmarshal(b, &c.Schema)
+	}
+	return c
+}
+
+// MergeOutputFormat: `over` REPLACES `base` whole when set. A schema is one
+// object; merging two would describe an answer neither layer asked for.
+func MergeOutputFormat(base, over *OutputFormat) *OutputFormat {
+	if over != nil {
+		return over.Clone()
+	}
+	return base.Clone()
 }
 
 // Tool-choice modes and until values.
@@ -6987,6 +7075,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.ToolChoice.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := agent.OutputFormat.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Compaction.Validate(); err != nil {

@@ -111,6 +111,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 	// loop then gates an image to DeepSeek upstream with a clear error rather
 	// than the inner OpenAI wire builder producing an image_url DeepSeek 400s on.
 	caps.SupportsVision = false
+	// DeepSeek's chat API has only json_object mode, not a schema (RFC DI), so
+	// an output_format is not sent (Call drops it) and the run reports it.
+	caps.SupportsStructuredOutput = false
+	caps.StructuredOutputNative = false
 	// RFC BF operator override applies last, so an operator can, e.g., re-enable
 	// vision for a self-hosted multimodal DeepSeek mirror behind base_url.
 	return d.capsPatch.Apply(caps)
@@ -189,6 +193,9 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	// Use the instance ID() (not the literal "deepseek") so a config-declared
 	// provider id (RFC BF P2a) shows up correctly on the inner OpenAI driver's
 	// span; defaults to "deepseek" so the stock case is unchanged.
+	// Never forward a schema the inner OpenAI encoder would turn into a
+	// json_schema response_format DeepSeek does not accept.
+	req.OutputFormat = nil
 	return d.inner.Call(lcotel.WithProviderOverride(ctx, d.ID()), req)
 }
 

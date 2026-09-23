@@ -123,6 +123,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		Streaming:         true,
 		// RFC DG: toolConfig.functionCallingConfig carries the constraint.
 		SupportsToolChoice: true,
+		// RFC DI: generationConfig.responseJsonSchema; with tools only on the
+		// Gemini 3 line (EnforcesStructuredOutput).
+		SupportsStructuredOutput: true,
+		StructuredOutputNative:   true,
 		// gemini-2.5-pro tops out at 2M; gemini-2.5-flash at 1M.
 		// (gemini-2.0-flash was retired by Google 2026-05 — no
 		// longer available to new users; replaced by 2.5-flash.)
@@ -320,6 +324,10 @@ type wireGenConfig struct {
 	Seed           *int                `json:"seed,omitempty"`
 	StopSequences  []string            `json:"stopSequences,omitempty"`
 	ThinkingConfig *wireThinkingConfig `json:"thinkingConfig,omitempty"`
+	// RFC DI: a JSON answer held to a schema. responseJsonSchema takes plain
+	// JSON Schema; the older responseSchema (an OpenAPI subset) is deprecated.
+	ResponseMimeType   string          `json:"responseMimeType,omitempty"`
+	ResponseJSONSchema json.RawMessage `json:"responseJsonSchema,omitempty"`
 }
 
 type wireThinkingConfig struct {
@@ -382,7 +390,7 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	}
 	w.ToolConfig = geminiToolConfig(req.ToolChoice)
 
-	if req.MaxTokens > 0 || req.Temperature != nil || req.Effort != "" ||
+	if req.MaxTokens > 0 || req.Temperature != nil || req.Effort != "" || req.OutputFormat != nil ||
 		req.TopP != nil || req.TopK != nil || req.Seed != nil || len(req.Stop) > 0 {
 		gc := &wireGenConfig{
 			MaxOutputTokens: req.MaxTokens,
@@ -394,6 +402,10 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		}
 		if budget := geminiEffortBudget(req.Effort, req.MaxTokens); budget >= 0 {
 			gc.ThinkingConfig = &wireThinkingConfig{ThinkingBudget: budget}
+		}
+		if req.OutputFormat != nil {
+			gc.ResponseMimeType = "application/json"
+			gc.ResponseJSONSchema = req.OutputFormat.Schema
 		}
 		w.GenerationConfig = gc
 	}
@@ -967,4 +979,14 @@ func deepCopyJSON(v any) any {
 		return out
 	}
 	return v
+}
+
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer:
+// a schema combines with function calling only on the Gemini 3 line; earlier
+// models take one or the other, so a request with tools is not held there.
+func (d *Driver) EnforcesStructuredOutput(model string, hasTools bool) bool {
+	if !d.Capabilities().SupportsStructuredOutput {
+		return false
+	}
+	return !hasTools || strings.HasPrefix(strings.ToLower(model), "gemini-3")
 }

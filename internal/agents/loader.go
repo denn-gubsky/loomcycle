@@ -180,6 +180,15 @@ type Sampling struct {
 	Stop             []string `json:"stop,omitempty"`
 }
 
+// OutputFormat mirrors config.OutputFormat locally (the agents package stays
+// config-free). Schema is an arbitrary tree; json.Marshal sorts its map keys,
+// so it hashes canonically. json: tags are LOAD-BEARING for content_sha256.
+type OutputFormat struct {
+	Type   string         `json:"type,omitempty"`
+	Name   string         `json:"name,omitempty"`
+	Schema map[string]any `json:"schema,omitempty"`
+}
+
 // ToolChoice mirrors config.ToolChoice locally (the agents package stays
 // config-free). json: tags are LOAD-BEARING for content_sha256.
 type ToolChoice struct {

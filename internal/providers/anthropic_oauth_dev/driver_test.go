@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // TestOAuthTransport_AppliesAuthHeaders pins the per-request header
@@ -201,5 +204,18 @@ func TestIsSubscriptionQuotaError(t *testing.T) {
 				t.Errorf("isSubscriptionQuotaError(%q) = %v, want %v", c.errText, got, c.want)
 			}
 		})
+	}
+}
+
+// The wrapper must give the inner driver's per-model answer, not the coarse
+// capability bit, or a pre-structured-output model would get neither the
+// schema on the wire nor the schema in the prompt.
+func TestEnforcesStructuredOutput_DelegatesThePerModelAnswer(t *testing.T) {
+	d := New(nil, streamhttp.Options{}, "", nil)
+	if providers.EnforcesStructuredOutput(d, "claude-3-5-haiku-20241022", false) {
+		t.Error("a Claude 3 model reported as enforcing structured output")
+	}
+	if !providers.EnforcesStructuredOutput(d, "claude-opus-5-5", false) {
+		t.Error("a current model reported as not enforcing structured output")
 	}
 }

@@ -77,8 +77,19 @@ func (d *Driver) SetKeyEnvName(name string) { d.inner.SetKeyEnvName(name) }
 // max_context_tokens set to its `-c` value.
 func (d *Driver) Capabilities() providers.Capabilities {
 	base := d.inner.Capabilities()
+	// A grammar over the tokens, not a schema the model is shown: the loop
+	// puts the schema in the prompt (RFC DI).
+	base.StructuredOutputNative = false
 	base.Local = true // RFC CR tier-routing: llama.cpp is a self-hosted backend
 	return d.capsPatch.Apply(base)
+}
+
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
+// llama.cpp applies response_format as a grammar over EVERY sampled token, so with
+// tools in the request the model could no longer emit a tool call; the format
+// is enforced only on a tool-free request.
+func (d *Driver) EnforcesStructuredOutput(_ string, hasTools bool) bool {
+	return d.Capabilities().SupportsStructuredOutput && !hasTools
 }
 
 // Call delegates to the openai driver; the ctx provider override makes the

@@ -169,6 +169,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		runCfg = runConfigRecord{
 			Sampling:          agentDef.Sampling,
 			ToolChoice:        agentDef.ToolChoice,
+			OutputFormat:      agentDef.OutputFormat,
 			Compaction:        agentDef.Compaction,
 			Context:           agentDef.Context,
 			MaxContextTokens:  agentDef.MaxContextTokens,
@@ -511,6 +512,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
 		ToolChoice:          resumedToolChoice, // restored, minus what the run already spent
+		OutputFormat:        runCfg.OutputFormat,
 		Compaction:          runCfg.Compaction, // restored from the run, not re-derived
 		Context:             runCfg.Context,    // restored from the run, not re-derived (RFC CR)
 		// BankCompactedSpan is deliberately ABSENT (RFC BL P3). A resumed run

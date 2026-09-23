@@ -265,6 +265,10 @@ type RunOptions struct {
 	// call, and for how many calls. nil = auto. See toolChoicePolicy.
 	ToolChoice *config.ToolChoice
 
+	// OutputFormat is the JSON schema the run's answer must follow (RFC DI).
+	// nil = free text. The parsed answer is RunResult.Structured.
+	OutputFormat *config.OutputFormat
+
 	// Compaction carries the resolved per-agent compaction settings (already
 	// merged: per-run/per-spawn > parent-inherited > child def). When Enabled
 	// and the provider reports a context window, the loop auto-compacts at a
@@ -870,6 +874,9 @@ type RunResult struct {
 	// State is the final structured execution state Σ of an L2 stateful run (RFC
 	// CR `context.mode: stateful`); nil for append/recap runs.
 	State map[string]any
+	// Structured is the final answer parsed as a JSON object when the run had an
+	// output_format (RFC DI); nil otherwise, or when the answer did not parse.
+	Structured map[string]any
 	// ProposedSchema is the LAST state_schema the model proposed during a stateful
 	// run (RFC CR model-proposed→operator-adopted), when it differs from the run's
 	// active schema. Inert — surfaced for an operator to review + adopt (by forking
@@ -2269,9 +2276,17 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
 				CapabilityInert: &providers.CapabilityInertInfo{Tool: opts.ToolChoice.Name, Gate: "tool_choice", Message: msg}})
 		}
+		if !opts.OutputFormat.IsZero() {
+			// A stateful run's product is its state Σ, shaped by state_schema; its
+			// steps are tool calls, so there is no free-text answer to hold.
+			msg := "output_format is not applied to a stateful run: its result is the state, shaped by context.state_schema"
+			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
+		}
 		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
 	}
 	toolChoice := newToolChoicePolicy(opts.ToolChoice)
+	outputFormat := newOutputFormatPolicy(opts.OutputFormat)
 	if err := toolChoice.checkTool(toolSpecs); err != nil {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 		return RunResult{}, err
@@ -2662,12 +2677,19 @@ outerLoop:
 		// RFC DI: re-checked per request so a fallback onto a target that cannot
 		// enforce the choice is reported too; a no-op while the target is unchanged.
 		toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
+		// RFC DI: a target that does not show the model the schema gets it in
+		// the system prompt. Appended to a copy, per call, so a fallback onto a
+		// native target drops it again and the canonical system stays untouched.
+		if note, ok := outputFormat.promptNote(opts.Provider, opts.Model, len(toolSpecs) > 0); ok {
+			reqSystem = append(reqSystem[:len(reqSystem):len(reqSystem)], note)
+		}
 		req := providers.Request{
 			Model:            opts.Model,
 			System:           reqSystem,
 			Messages:         reqMessages,
 			Tools:            toolSpecs,
 			ToolChoice:       toolChoice.forCall(),
+			OutputFormat:     outputFormat.forCall(opts.Provider, opts.Model, len(toolSpecs) > 0, emit),
 			MaxTokens:        opts.MaxTokens,        // 0 → driver default
 			MaxContextTokens: opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
 			Effort:           opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
@@ -3161,6 +3183,11 @@ outerLoop:
 		}
 	}
 
+	// Parsed before EventDone so an unparseable answer's report precedes it.
+	var structured map[string]any
+	if stopReason == "end_turn" {
+		structured = outputFormat.structured(finalText, emit)
+	}
 	emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})
 
 	return RunResult{
@@ -3168,6 +3195,7 @@ outerLoop:
 		FinalText:  finalText,
 		Iterations: iterationCount(messages),
 		Usage:      totalUsage,
+		Structured: structured,
 	}, nil
 }
 
