@@ -2094,3 +2094,105 @@ func TestRun_Stateful_AnActionNestedInThePatchIsRun(t *testing.T) {
 		t.Errorf("tool ran %d time(s), want 1 — the nested action was dropped", echo.callCount())
 	}
 }
+
+// ⚠️ OBSERVED LIVE on ornith-1.5:35b, v1.91.0, in 4 of 9 replays of one step:
+// a patch and a reasoning saying what it would do next — "I will run a web
+// search for the exact figures" — and NO action. The loop read "no action" as
+// the end of the turn and showed that plan to the operator as the answer, so a
+// chat stopped mid-task two turns running. The step is sent back instead.
+func TestRun_Stateful_AStepWithAPlanButNoActionIsSentBack(t *testing.T) {
+	echo := &echoTool{reply: "search results"}
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{"progress":"collecting figures"},"reasoning":"I will run a web search for the exact figures."}`,
+		`{"patch":{},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{},"done":true,"final":"Here is the forecast."}`,
+	}}
+	var c stateCapture
+	res, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		OnEvent:    c.on,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if echo.callCount() != 1 {
+		t.Errorf("the action ran %d time(s), want 1 — the step's plan ended the turn instead", echo.callCount())
+	}
+	if res.FinalText != "Here is the forecast." {
+		t.Errorf("final = %q", res.FinalText)
+	}
+	if !prov.sawObservation("names no `action` and gives no `final`") {
+		t.Errorf("the model was not told what its step was missing: %v", prov.observed)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, tx := range c.texts {
+		if strings.Contains(tx, "I will run a web search") {
+			t.Errorf("the operator was shown the model's plan as its answer: %q", c.texts)
+		}
+	}
+}
+
+// done with only a reasoning: the reasoning fallback used to show the model's
+// inner monologue ("Operator said continue. The state shows…") as the reply.
+func TestRun_Stateful_ADoneWithOnlyReasoningIsAskedForItsAnswer(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"done":true,"reasoning":"Operator said continue. The state shows I already answered."}`,
+		`{"patch":{},"done":true,"final":"The answer."}`,
+	}}
+	res, texts := runForText(t, prov, 2)
+	if res.FinalText != "The answer." || len(texts) != 1 || texts[0] != "The answer." {
+		t.Errorf("final=%q texts=%q, want only the corrected answer", res.FinalText, texts)
+	}
+}
+
+// And a model that cannot comply is never stuck: once the budget is spent the
+// turn ends, and the reasoning is shown rather than nothing.
+func TestRun_Stateful_AnUnfinishedStepEndsTheTurnWhenTheBudgetIsSpent(t *testing.T) {
+	prov := &actionScriptProvider{scripts: []string{
+		`{"patch":{},"reasoning":"I will search."}`,
+	}}
+	res, texts := runForText(t, prov, 0)
+	if res.StopReason != "end_turn" || len(texts) != 1 || texts[0] != "I will search." {
+		t.Errorf("stop=%q texts=%q, want the turn to end on the fallback", res.StopReason, texts)
+	}
+}
+
+// The prose field list did not prevent the shape errors a local model made —
+// answer inside the patch, a plan with no action, emit_state as the action —
+// so the prompt shows the two accepted shapes and names the wrong ones. The
+// example must use a tool this agent was actually offered, and a tool-less
+// agent must not be shown a shape it cannot use.
+func TestStatefulSystem_ShowsTheReplyShapes(t *testing.T) {
+	text := func(bs []providers.ContentBlock) string {
+		var b strings.Builder
+		for _, c := range bs {
+			b.WriteString(c.Text)
+		}
+		return b.String()
+	}
+	withTools := text(buildStatefulSystem(nil, []providers.ToolSpec{
+		{Name: "WebSearch", Description: "search"}, {Name: "Read", Description: "read"}}, nil, false))
+	for _, want := range []string{
+		`"action": {"tool": "WebSearch"`,
+		`"done": true, "final": "<the complete answer>"`,
+		`{"patch": {"final": "…"}}`,
+		"a plan with no action",
+		"`emit_state` as the action",
+	} {
+		if !strings.Contains(withTools, want) {
+			t.Errorf("the stateful prompt is missing %q", want)
+		}
+	}
+	noTools := text(buildStatefulSystem(nil, nil, nil, false))
+	if strings.Contains(noTools, `"action": {"tool":`) {
+		t.Error("a tool-less agent was shown an action shape it cannot use")
+	}
+	if !strings.Contains(noTools, `"done": true, "final":`) {
+		t.Error("a tool-less agent was not shown how to answer")
+	}
+}

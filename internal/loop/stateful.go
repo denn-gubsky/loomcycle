@@ -339,6 +339,7 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 			fmt.Fprintf(&b, "- `%s`: %s\n", t.Name, oneLineDesc(t.Description))
 		}
 	}
+	b.WriteString(statefulReplyShapes(toolSpecs))
 	if len(schema) > 0 {
 		if sj, err := json.Marshal(schema); err == nil {
 			fmt.Fprintf(&b, "\n### State schema (the state, and every patch, must conform)\n%s\n", string(sj))
@@ -346,6 +347,38 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 	}
 	out := append([]providers.ContentBlock(nil), base...)
 	return append(out, providers.ContentBlock{Type: "text", Text: b.String()})
+}
+
+// statefulReplyShapes shows the model the only two replies the loop accepts,
+// and the wrong ones by name.
+//
+// ⚠️ THE PROSE ABOVE WAS NOT ENOUGH, and the failures were all SHAPE errors a
+// field list does not prevent. A local model (ornith-1.5:35b) that had read it
+// wrote its answer INSIDE the patch, named emit_state as its action, and — in
+// 4 of 9 replays of one step — sent a patch and a plan ("I will search the
+// web next") with no action at all. The runtime now repairs or re-prompts
+// each of these, but every repair costs a call; an example of the right shape
+// is the cheapest fix, and the one a small model follows most reliably.
+//
+// The example tool is the first one this agent was actually offered, so the
+// example never names a tool the model cannot call.
+func statefulReplyShapes(toolSpecs []providers.ToolSpec) string {
+	var b strings.Builder
+	b.WriteString("\n### Your emit_state call is always one of these shapes\n")
+	if len(toolSpecs) > 0 {
+		fmt.Fprintf(&b, "1. Keep working — run a tool, and its output comes back as your next observation:\n"+
+			"   {\"reasoning\": \"…\", \"patch\": {\"progress\": \"…\"}, \"action\": {\"tool\": \"%s\", \"input\": {…}}}\n"+
+			"2. Answer — end your turn with the full answer, which is the ONLY text shown:\n"+
+			"   {\"patch\": {\"progress\": \"answered\"}, \"done\": true, \"final\": \"<the complete answer>\"}\n", toolSpecs[0].Name)
+	} else {
+		b.WriteString("This agent has no tools, so every reply is an answer — the ONLY text shown:\n" +
+			"   {\"patch\": {\"progress\": \"answered\"}, \"done\": true, \"final\": \"<the complete answer>\"}\n")
+	}
+	b.WriteString("Not accepted — nothing reaches anyone, and you will be asked again:\n" +
+		"- the answer inside the patch: {\"patch\": {\"final\": \"…\"}} — `final`, `done` and `action` go next to `patch`.\n" +
+		"- a plan with no action: {\"patch\": {…}, \"reasoning\": \"I will search next\"} — if you mean to use a tool, name it in `action` in THIS call.\n" +
+		"- `emit_state` as the action — it is how you reply, not a tool.\n")
+	return b.String()
 }
 
 func oneLineDesc(s string) string {
@@ -865,21 +898,40 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state rejected: " + cause.Error() + ". Emit a corrected emit_state."}}})
 				continue
 			}
-			// ⚠️ A TURN THAT ENDS WITH NOTHING TO SAY. A model that put its answer
-			// in the patch — `{"answer": "…"}` — with `final` and `reasoning`
-			// both empty ended the turn as an empty message, and nothing noticed.
-			// The model is the one who can fix that, so it is asked to, on the
-			// same budget as a rejected patch. Not treated as not-done: a model
-			// that cannot produce `final` would then loop.
-			if endsTurn(parsed) && strings.TrimSpace(parsed.Final) == "" && strings.TrimSpace(parsed.Reasoning) == "" &&
+			// ⚠️ A TURN THAT ENDS WITH NOTHING TO SAY. A turn ends only when the
+			// model says so — `done`, or an answer in `final` — and a step that
+			// ends one with no `final` is sent back, on the same budget as a
+			// rejected patch. Not treated as not-done: a model that cannot
+			// produce `final` would then loop.
+			//
+			// Two shapes reach here, and they need different words:
+			//
+			//   - UNFINISHED: no action, no `done`, no `final` — only a patch and
+			//     a reasoning that says what it will do next. Observed live on
+			//     ornith-1.5:35b in 4 of 9 replays of one step: "I will run a web
+			//     search for the exact figures", and no `action`. This used to END
+			//     THE TURN and show that plan to the operator as the answer, so
+			//     the chat stopped mid-task twice in a row.
+			//   - FINISHED WITHOUT AN ANSWER: `done` with `final` empty. The
+			//     reasoning fallback used to show the model's inner monologue
+			//     ("Operator said continue. The state shows…") as the reply.
+			//
+			// Once the budget is spent the turn still ends and the reasoning
+			// fallback applies, so a model that cannot comply is never stuck.
+			if endsTurn(parsed) && strings.TrimSpace(parsed.Final) == "" &&
 				onInvalid != "fail" && attempt < maxRetries {
 				tid := retryToolUseID(call.callID, iter, attempt)
+				why := "it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in the top-level " +
+					"`final` field of emit_state — next to `patch`, not inside it."
+				if !parsed.Done && parsed.Action == nil {
+					why = "it names no `action` and gives no `final`, so your turn would end with nothing shown. If you meant to run " +
+						"a tool next — as your reasoning describes — name it in `action` as {\"tool\": <name>, \"input\": {…}}. If you are " +
+						"finished, put your answer in the top-level `final` field with `done: true`."
+				}
 				msgs = append(msgs,
 					providers.Message{Role: "assistant", Content: []providers.ContentBlock{{Type: "tool_use", ToolUseID: tid, ToolName: emitStateToolName, ToolInput: input}},
 						Reasoning: call.reasoning, ReasoningSignature: call.reasoningSig},
-					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state not accepted: " +
-						"it ends your turn with no `final`, so nothing would be shown. Send it again with your answer in the top-level " +
-						"`final` field of emit_state — next to `patch`, not inside it."}}})
+					providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "tool_result", ToolUseID: tid, Text: "emit_state not accepted: " + why}}})
 				continue
 			}
 			es = parsed
