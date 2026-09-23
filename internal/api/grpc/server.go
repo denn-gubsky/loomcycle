@@ -800,6 +800,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		UserBearer:       req.GetUserBearer(),
 		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
 		Sampling:         samplingFromProto(req.GetSampling()),
+		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Metadata:         metadataFromProto(req.GetMetadata()),
@@ -853,6 +854,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		UserBearer:       req.GetUserBearer(),
 		UserCredentials:  req.GetUserCredentials(), // v1.x RFC F
 		Sampling:         samplingFromProto(req.GetSampling()),
+		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Metadata:         metadataFromProto(req.GetMetadata()),
@@ -1003,6 +1005,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		UserBearer:       req.GetUserBearer(),
 		UserCredentials:  req.GetUserCredentials(),
 		Sampling:         samplingFromProto(req.GetSampling()),
+		ToolChoice:       toolChoiceFromProto(req.GetToolChoice()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
 		// RFC DC per-run overrides. One helper for all three call sites, so a
@@ -1171,6 +1174,7 @@ type runInputProtoArgs struct {
 	UserBearer       string
 	UserCredentials  map[string]string            // v1.x RFC F per-tool named credentials
 	Sampling         *config.Sampling             // v0.28.0 per-run sampling override
+	ToolChoice       *config.ToolChoice           // RFC DI per-run tool_choice
 	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
 	Interactive      bool                         // RFC AI — park at end_turn for steering
 	Interruption     *config.AgentInterruptionACL // per-run override of whether the agent may ask a human
@@ -1226,6 +1230,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		UserBearer:            a.UserBearer,
 		UserCredentials:       a.UserCredentials, // v1.x RFC F per-tool named credentials
 		Sampling:              a.Sampling,        // v0.28.0 per-run sampling override
+		ToolChoice:            a.ToolChoice,      // RFC DI per-run tool_choice
 		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
 		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
 		Metadata:              a.Metadata,
@@ -1248,6 +1253,15 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 // preserving field presence (proto3 `optional` → a nil pointer means
 // "inherit"; an explicit 0.0 temperature stays 0.0, not unset). Returns nil
 // when the whole message is absent.
+// toolChoiceFromProto maps the wire message to config.ToolChoice; nil stays nil
+// (inherit the agent's). Validation happens in RunOnce, like the HTTP path.
+func toolChoiceFromProto(p *loomcyclepb.ToolChoice) *config.ToolChoice {
+	if p == nil {
+		return nil
+	}
+	return &config.ToolChoice{Mode: p.GetMode(), Name: p.GetName(), Until: p.GetUntil()}
+}
+
 func samplingFromProto(p *loomcyclepb.Sampling) *config.Sampling {
 	if p == nil {
 		return nil

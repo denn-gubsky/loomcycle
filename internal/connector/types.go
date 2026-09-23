@@ -109,6 +109,11 @@ type SpawnRunRequest struct {
 	// reaches the same per-run knob. Carried verbatim to runner.RunInput.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
 
+	// ToolChoice is an optional per-RUN tool_choice (RFC DI), REPLACING the
+	// agent's whole. Mirrors the HTTP /v1/runs `tool_choice` field; carried
+	// verbatim to runner.RunInput, which validates it.
+	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
+
 	// Compaction is an optional per-RUN context-compaction override, merged PER
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely. Mirrors the HTTP /v1/runs

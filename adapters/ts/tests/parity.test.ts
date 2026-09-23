@@ -235,3 +235,44 @@ describe("per-run sampling + compaction on the run body", () => {
     expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).max_context_tokens).toBe(8192);
   });
 });
+
+describe("per-run tool_choice on the run body (RFC DI)", () => {
+  it("runStreaming and continueSession send tool_choice as given", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+      toolChoice: { mode: "tool", name: "WebSearch", until: "until_called" },
+    })) {
+      void _;
+    }
+    for await (const _ of client.continueSession({
+      sessionId: "s1",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "more" }] }],
+      toolChoice: { mode: "none" },
+    })) {
+      void _;
+    }
+    const run = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    const cont = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(run.tool_choice).toEqual({ mode: "tool", name: "WebSearch", until: "until_called" });
+    expect(cont.tool_choice).toEqual({ mode: "none" });
+  });
+
+  it("omits tool_choice when unset", async () => {
+    const { client, fetchMock } = makeClient([
+      sseResponse(['event: done\ndata: {"type":"done","stop_reason":"end_turn"}\n\n']),
+    ]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+    })) {
+      void _;
+    }
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect("tool_choice" in body).toBe(false);
+  });
+});

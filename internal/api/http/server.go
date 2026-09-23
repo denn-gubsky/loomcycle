@@ -2414,6 +2414,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if in.AgentID != "" && !validIdent(in.AgentID) {
 		return fmt.Errorf("%w: agent_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
 	}
+	if err := in.ToolChoice.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	}
 
 	// ---- Session resolution (continuation only) ----
 	isContinuation := in.SessionID != ""
@@ -2635,6 +2638,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// by then.
 	runCfg := runConfigRecord{
 		Sampling:          config.MergeSampling(agentDef.Sampling, in.Sampling),       // per-run wins per field
+		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, in.ToolChoice), // per-run replaces whole
 		Compaction:        config.MergeCompaction(agentDef.Compaction, in.Compaction), // per-run wins per field
 		Context:           config.MergeContext(agentDef.Context, in.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, in.MaxContextTokens),
@@ -2906,6 +2910,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interactive:         in.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
 		Sampling:            runCfg.Sampling,   // merged once, above
+		ToolChoice:          runCfg.ToolChoice, // merged once, above
 		Compaction:          runCfg.Compaction, // merged once, above
 		Context:             mergedContext,     // merged once, above (RFC CR)
 		// Recall-augmented distillation: nil unless the agent set context.recall AND
@@ -3914,6 +3919,11 @@ type runRequest struct {
 	// unset fields inherit the agent's). nil = inherit the agent's entirely.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
 
+	// ToolChoice is an optional per-RUN tool_choice (RFC DI): whether and which
+	// tool the model must call, and for how many calls. REPLACES the agent's
+	// whole (its fields constrain each other). Validated at intake.
+	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
+
 	// Compaction is an optional per-RUN context-compaction override — merged PER
 	// FIELD over the agent's own compaction block (this wins; unset fields
 	// inherit). nil = inherit the agent's entirely.
@@ -4064,6 +4074,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := req.ToolChoice.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Agent == "" {
@@ -4333,6 +4347,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
 		Sampling:          config.MergeSampling(agentDef.Sampling, req.Sampling),       // per-run wins per field
+		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, req.ToolChoice), // per-run replaces whole
 		Compaction:        config.MergeCompaction(agentDef.Compaction, req.Compaction), // per-run wins per field
 		Context:           config.MergeContext(agentDef.Context, req.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, req.MaxContextTokens),
@@ -4646,6 +4661,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Interactive:         req.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, req.Interactive),
 		Sampling:            runCfg.Sampling,   // merged once, above
+		ToolChoice:          runCfg.ToolChoice, // merged once, above
 		Compaction:          runCfg.Compaction, // merged once, above
 		Context:             mergedContext,     // merged once, above (RFC CR)
 		// Recall-augmented distillation: nil unless context.recall is set AND an
@@ -4796,6 +4812,10 @@ type messagesRequest struct {
 	// merged per field over the agent's. Same semantics as runRequest.Sampling.
 	Sampling *config.Sampling `json:"sampling,omitempty"`
 
+	// ToolChoice: per-RUN tool_choice for this continuation. Same semantics as
+	// runRequest.ToolChoice.
+	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
+
 	// Compaction: per-RUN context-compaction override for this continuation,
 	// merged per field over the agent's. Same semantics as runRequest.Compaction.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
@@ -4882,6 +4902,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := body.ToolChoice.Validate(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -5092,6 +5116,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// with the run, and restored on resume (see runConfigRecord).
 	runCfg := runConfigRecord{
 		Sampling:          config.MergeSampling(agentDef.Sampling, body.Sampling),       // per-run wins per field
+		ToolChoice:        config.MergeToolChoice(agentDef.ToolChoice, body.ToolChoice), // per-run replaces whole
 		Compaction:        config.MergeCompaction(agentDef.Compaction, body.Compaction), // per-run wins per field
 		Context:           config.MergeContext(agentDef.Context, body.Context),          // per-run wins per field
 		MaxContextTokens:  config.MergeMaxContextTokens(agentDef.MaxContextTokens, body.MaxContextTokens),
@@ -5337,6 +5362,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		InteractiveNow:          s.interactiveNowFn(run.ID, body.Interactive),
 		ArmTurnCancel:           s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
 		Sampling:                runCfg.Sampling,                             // merged once, above
+		ToolChoice:              runCfg.ToolChoice,                           // merged once, above
 		Compaction:              runCfg.Compaction,                           // merged once, above
 		Context:                 runCfg.Context,                              // merged once, above (RFC CR)
 		ContextPlugins:          s.contextPlugins,                            // RFC Z runtime-wide chain (code-js exempt in the loop)
@@ -6450,6 +6476,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	subRunCfg := runConfigRecord{
 		Sampling:          def.Sampling,
+		ToolChoice:        def.ToolChoice, // the child's own, like sampling
 		Compaction:        subCompaction,
 		Context:           subContext,
 		MaxContextTokens:  def.MaxContextTokens,
@@ -6874,6 +6901,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		// Sub-agents use their OWN def's sampling (no per-spawn override yet —
 		// a breeder varies temperature by FORKING a def, then spawning it).
 		Sampling:               def.Sampling,
+		ToolChoice:             def.ToolChoice,
 		Compaction:             subCompaction,
 		Context:                subContext,       // RFC CR: inherited layered-context policy
 		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (sub-agents included; code-js exempt in the loop)

@@ -51,7 +51,11 @@ var agentDefOverridability = map[string]overridability{
 	"MaxConcurrentChildren": runMayNarrow,
 
 	// --- tuning: how the run is shaped, not what it may reach ---
-	"Sampling":              runMayChoose,
+	"Sampling": runMayChoose,
+	// Which tool the model must call shapes the run; it grants no reach — the
+	// named tool must already be one the run holds, and the loop refuses one
+	// it does not.
+	"ToolChoice":            runMayChoose,
 	"Compaction":            runMayChoose,
 	"Context":               runMayChoose,
 	"MaxContextTokens":      runMayChoose,

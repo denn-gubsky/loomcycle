@@ -222,3 +222,30 @@ async def test_run_streaming_threads_max_context_tokens():
     async for _ in client.run_streaming(agent="default", segments=[]):
         pass
     assert stub.last_run_req.max_context_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_run_streaming_threads_tool_choice():
+    """RFC DI: a per-run tool_choice reaches the wire field for field; an
+    unset one leaves the field absent so the run inherits the agent's."""
+    stub = _CaptureRunStub()
+    client = _make_client()
+    client._stub = stub  # type: ignore[assignment]
+
+    async for _ in client.run_streaming(
+        agent="default",
+        segments=[],
+        tool_choice={"mode": "tool", "name": "WebSearch", "until": "until_called"},
+    ):
+        pass
+    req = stub.last_run_req
+    assert req.HasField("tool_choice")
+    assert (req.tool_choice.mode, req.tool_choice.name, req.tool_choice.until) == (
+        "tool",
+        "WebSearch",
+        "until_called",
+    )
+
+    async for _ in client.run_streaming(agent="default", segments=[]):
+        pass
+    assert not stub.last_run_req.HasField("tool_choice")

@@ -629,6 +629,9 @@ message RunRequest {
   bytes metadata = 30;
   Context context = 31;
   ParentContext parent_context = 32;
+  // Per-run tool_choice (RFC DI): whether and which tool the model must call,
+  // and for how many calls. Replaces the agent's own whole. Unset = the agent's.
+  ToolChoice tool_choice = 33;
 }
 
 message ContinueRequest {
@@ -707,6 +710,8 @@ message ContinueRequest {
   bytes metadata = 27;
   Context context = 28;
   ParentContext parent_context = 29;
+  // Per-run tool_choice for this continuation — see RunRequest.tool_choice.
+  ToolChoice tool_choice = 30;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -757,6 +762,15 @@ message Sampling {
   optional double presence_penalty = 5;
   optional int32 seed = 6;
   repeated string stop = 7;
+}
+
+// ToolChoice mirrors config.ToolChoice (RFC DI). mode: auto | none | required |
+// tool; name only with mode tool; until: first_call (default) | until_called |
+// always (refused with a forcing mode).
+message ToolChoice {
+  string mode = 1;
+  string name = 2;
+  string until = 3;
 }
 
 // Compaction mirrors config.Compaction — the per-run context-compaction

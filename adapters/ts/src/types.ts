@@ -810,6 +810,9 @@ export interface RunOptions extends RunOverrideOptions {
    *  agent's own sampling (this wins; unset fields inherit). Omitted =
    *  inherit entirely. */
   sampling?: SamplingOptions;
+  /** Per-run tool choice (RFC DI): whether and which tool the model must
+   *  call, and for how many calls. REPLACES the agent's own whole. */
+  toolChoice?: ToolChoiceOptions;
   /** Per-run context-compaction override (v0.32.0), merged PER FIELD over
    *  the agent's own compaction block (this wins; unset fields inherit).
    *  Omitted = inherit entirely. Trigger compaction mid-run with
@@ -852,6 +855,22 @@ export interface RunOptions extends RunOverrideOptions {
  *  `temperature: 0` is deterministic, NOT "unset". Each provider maps what it
  *  supports (e.g. topK is Anthropic/Gemini/Ollama; frequencyPenalty/
  *  presencePenalty/seed are OpenAI/DeepSeek/Ollama). */
+/** Whether and which tool the model must call, and for how many calls
+ *  (RFC DI). Same shape per-agent (AgentDef `tool_choice`) and per-run; a
+ *  per-run value REPLACES the agent's whole. A model that cannot enforce it
+ *  runs anyway, with a `capability_inert` event naming what was not enforced. */
+export interface ToolChoiceOptions {
+  /** `auto` (provider default), `none` (no tool calls), `required` (some
+   *  tool), `tool` (the tool named in `name`). */
+  mode: "auto" | "none" | "required" | "tool";
+  /** The tool to call — required with mode `tool`, refused otherwise. */
+  name?: string;
+  /** How long it applies: `first_call` (default), `until_called` (until the
+   *  model makes a call that satisfies it), `always` (refused for `required`
+   *  and `tool`, which could then never finish). */
+  until?: "first_call" | "until_called" | "always";
+}
+
 export interface SamplingOptions {
   temperature?: number;
   topP?: number;
@@ -1048,6 +1067,9 @@ export interface ContinueOptions extends RunOverrideOptions {
   runTimeoutSeconds?: number;
   /** Per-continuation LLM sampling override — see {@link RunOptions.sampling}. */
   sampling?: SamplingOptions;
+  /** Per-run tool choice (RFC DI): whether and which tool the model must
+   *  call, and for how many calls. REPLACES the agent's own whole. */
+  toolChoice?: ToolChoiceOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
   /** Per-continuation context-distillation override — see
@@ -3155,6 +3177,8 @@ export interface AgentDefOverlay {
   code_body?: string;
   tier?: string;
   effort?: string;
+  /** Whether and which tool the model must call (RFC DI). */
+  tool_choice?: ToolChoiceOptions;
   max_tokens?: number;
   max_iterations?: number;
   max_concurrent_children?: number;

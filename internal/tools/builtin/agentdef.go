@@ -785,6 +785,11 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
 			return mergedDef{}, err
 		}
+		// The same rule operator yaml is held to: a def whose tool_choice
+		// could never let a run finish is refused at authoring time.
+		if err := ov.ToolChoice.Validate(); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
@@ -971,6 +976,10 @@ type mergedDef struct {
 	// object; applyOverlay merges it PER FIELD (a fork that sets only
 	// temperature keeps the parent's top_p). Content-identifying (hashed).
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// ToolChoice (RFC DI): whether and which tool the model must call.
+	// Content-identifying; an overlay REPLACES it whole (its fields constrain
+	// each other, so a per-field merge could mix two layers' intent).
+	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
 	// Compaction: per-agent context-compaction settings. Same PER-FIELD overlay +
 	// content-identifying treatment as Sampling.
 	Compaction *config.Compaction `json:"compaction,omitempty"`
@@ -1110,6 +1119,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// parent's top_p (MergeSampling overlays non-nil fields onto the base).
 	if !ov.Sampling.IsZero() {
 		d.Sampling = config.MergeSampling(d.Sampling, ov.Sampling)
+	}
+	// ToolChoice is replaced WHOLE when the overlay sets it (MergeToolChoice).
+	if ov.ToolChoice != nil {
+		d.ToolChoice = config.MergeToolChoice(d.ToolChoice, ov.ToolChoice)
 	}
 	// Compaction merges PER FIELD, same as Sampling.
 	if !ov.Compaction.IsZero() {
@@ -1348,6 +1361,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		Sampling:              s.Sampling.Clone(),
+		ToolChoice:            s.ToolChoice.Clone(),
 		Compaction:            s.Compaction.Clone(),
 		Context:               s.Context.Clone(),
 		MaxTokens:             s.MaxTokens,
@@ -1531,6 +1545,10 @@ func signFromMergedDef(name string, def mergedDef) string {
 			Seed:             s.Seed,
 			Stop:             s.Stop,
 		}
+	}
+	// ToolChoice is content-identifying, same as Sampling.
+	if tc := def.ToolChoice; !tc.IsZero() {
+		c.ToolChoice = &agents.ToolChoice{Mode: tc.Mode, Name: tc.Name, Until: tc.Until}
 	}
 	// Compaction is content-identifying, same as Sampling.
 	if cp := def.Compaction; !cp.IsZero() {

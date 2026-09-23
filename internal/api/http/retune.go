@@ -151,6 +151,7 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	next := in.split()
 	merged := runConfigRecord{
 		Sampling:          cur.Sampling,
+		ToolChoice:        cur.ToolChoice,
 		Compaction:        cur.Compaction,
 		Context:           cur.Context,
 		MaxContextTokens:  cur.MaxContextTokens,

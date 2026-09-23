@@ -174,6 +174,7 @@ func TestSpawnRuns_CarriesEveryAdvertisedFieldToTheConnector(t *testing.T) {
 		"segments":                 []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "trusted-text", "text": "hi"}}}},
 		"metadata":                 map[string]any{"repo": "loomcycle"},
 		"sampling":                 map[string]any{"temperature": 0.25, "top_p": 0.9, "seed": float64(7), "stop": []any{"END"}},
+		"tool_choice":              map[string]any{"mode": "tool", "name": "WebSearch", "until": "until_called"},
 		"compaction":               map[string]any{"enabled": true, "keep_last_n": float64(2)},
 		"context":                  map[string]any{"mode": "recap", "keep_last_n": float64(3)},
 		"max_context_tokens":       float64(131072),
@@ -265,7 +266,8 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	          "max_context_tokens":4096,"model":"m","provider":"p","tier":"middle","effort":"high",
 	          "max_tokens":100,"max_iterations":9,"max_concurrent_children":2,
 	          "retry_attempts":0,"memory_inject_max_tokens":0,"memory_index_max_bytes":0,
-	          "inject_tool_guide":false,"unbounded_iterations":false}`
+	          "inject_tool_guide":false,"unbounded_iterations":false,
+	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"}}`
 	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
 		t.Fatalf("handleSpawnRun: %v", err)
 	}
@@ -296,6 +298,9 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	}
 	if len(in.Segments) == 0 {
 		t.Error("Segments were dropped — the run would reach the model with an empty prompt")
+	}
+	if in.ToolChoice == nil || in.ToolChoice.Name != "WebSearch" || in.ToolChoice.Until != "until_called" {
+		t.Errorf("ToolChoice = %+v, want tool/WebSearch/until_called — dropped by the streaming path's hand-copy", in.ToolChoice)
 	}
 	if in.UserCredentials["github"] != "g" {
 		t.Errorf("UserCredentials = %v, want github=g", in.UserCredentials)

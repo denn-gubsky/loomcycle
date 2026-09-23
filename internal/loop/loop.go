@@ -261,6 +261,10 @@ type RunOptions struct {
 	// provider defaults.
 	Sampling *config.Sampling
 
+	// ToolChoice is the run's tool_choice (RFC DI): which tool the model must
+	// call, and for how many calls. nil = auto. See toolChoicePolicy.
+	ToolChoice *config.ToolChoice
+
 	// Compaction carries the resolved per-agent compaction settings (already
 	// merged: per-run/per-spawn > parent-inherited > child def). When Enabled
 	// and the provider reports a context window, the loop auto-compacts at a
@@ -2258,7 +2262,19 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// P (`system`) and the action-tool catalog are resolved, into the self-
 	// contained stateful loop. The append/recap machinery below does not apply.
 	if contextStatefulMode(opts.Context) {
+		if !opts.ToolChoice.IsZero() {
+			// Said rather than silently dropped: a stateful step already forces
+			// its own state tool, so a second forced choice has nothing to apply to.
+			msg := "tool_choice is not applied to a stateful run: every step already calls its state tool"
+			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+				CapabilityInert: &providers.CapabilityInertInfo{Tool: opts.ToolChoice.Name, Gate: "tool_choice", Message: msg}})
+		}
 		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
+	}
+	toolChoice := newToolChoicePolicy(opts.ToolChoice)
+	if err := toolChoice.checkTool(toolSpecs); err != nil {
+		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+		return RunResult{}, err
 	}
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
@@ -2643,11 +2659,15 @@ outerLoop:
 			disarmTurn = opts.ArmTurnCancel(turnCancelFn)
 		}
 
+		// RFC DI: re-checked per request so a fallback onto a target that cannot
+		// enforce the choice is reported too; a no-op while the target is unchanged.
+		toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
 		req := providers.Request{
 			Model:            opts.Model,
 			System:           reqSystem,
 			Messages:         reqMessages,
 			Tools:            toolSpecs,
+			ToolChoice:       toolChoice.forCall(),
 			MaxTokens:        opts.MaxTokens,        // 0 → driver default
 			MaxContextTokens: opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
 			Effort:           opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
@@ -3016,6 +3036,7 @@ outerLoop:
 
 		stopReason = iterStop
 		finalText = iterText
+		toolChoice.observe(pendingTools) // a COMPLETED turn advances the tool_choice
 
 		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
 		// the model was streaming. Keep the partial assistant output (appended
