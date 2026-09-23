@@ -153,10 +153,10 @@ func TestTeamDef_RunCarriesAuthorshipOntoEveryNodePrompt(t *testing.T) {
 			ctx := tc.as(base)
 
 			var seen []teamrun.Prompt
-			tool.Spawn = func(_ context.Context, agent string, p teamrun.Prompt, _ string) (string, error) {
+			tool.Spawn = textSpawn(func(_ context.Context, agent string, p teamrun.Prompt, _ string) (string, error) {
 				seen = append(seen, p)
 				return agent + " done", nil
-			}
+			})
 			createTeam(t, tool, ctx, "walked", validTeamGraph)
 
 			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"walked","input":"go"}`))

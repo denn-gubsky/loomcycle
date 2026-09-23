@@ -53,7 +53,7 @@ func TestBreakpoint_ArmingMidWalkPausesTheNextWave(t *testing.T) {
 	// would pass even if the source were read once and cached, which is exactly
 	// the bug this is about.
 	ch := threeMessages()
-	r := starterRunner(ch, spawn.fn)
+	r := starterRunner(ch, textSpawn(spawn.fn))
 	WithBreakpoints(src, ask)(r)
 
 	// Wave 1: nobody has armed anything. It must run straight through.
@@ -90,14 +90,14 @@ func TestBreakpoint_ArmingMidWaveHoldsWhatHasNotPublished(t *testing.T) {
 	firstDone := make(chan struct{}) // run 0 has returned
 	release := make(chan struct{})   // runs 1+2 may proceed
 	var once sync.Once
-	spawn := func(ctx context.Context, _ string, p Prompt, _ string) (string, error) {
+	spawn := textSpawn(func(ctx context.Context, _ string, p Prompt, _ string) (string, error) {
 		if p.DataSlots[StarterMessageSlot] == `{"pr":1}` {
 			once.Do(func() { close(firstDone) })
 			return "first", nil
 		}
 		<-release
 		return "later", nil
-	}
+	})
 
 	var seen []BreakpointResult
 	r := starterRunner(ch, spawn)
@@ -142,7 +142,7 @@ func TestBreakpoint_DisarmingMidWalkStopsPausing(t *testing.T) {
 	asks := 0
 
 	ch := threeMessages()
-	r := starterRunner(ch, spawn.fn)
+	r := starterRunner(ch, textSpawn(spawn.fn))
 	WithBreakpoints(src, func(context.Context, Breakpoint) (BreakDecision, error) {
 		asks++
 		// Turn Debug off from inside the pause, the way an operator would.

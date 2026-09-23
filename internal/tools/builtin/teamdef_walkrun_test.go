@@ -83,11 +83,11 @@ func TestTeamDefTool_Run_DetachReturnsTheHandleBeforeTheWalkFinishes(t *testing.
 
 	release := make(chan struct{})
 	spawned := make(chan struct{}, 8)
-	tool.Spawn = func(context.Context, string, teamrun.Prompt, string) (string, error) {
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
 		spawned <- struct{}{}
 		<-release // hold the walk open
 		return "reviewed", nil
-	}
+	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x","mode":"detach"}`))
 	if res.IsError {
@@ -134,10 +134,10 @@ func TestTeamDefTool_Run_DetachReleasesBreakpointsWhenTheWALKEnds(t *testing.T) 
 		return src, func() { mu.Lock(); released++; mu.Unlock() }, err
 	}
 	gate := make(chan struct{})
-	tool.Spawn = func(context.Context, string, teamrun.Prompt, string) (string, error) {
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
 		<-gate
 		return "reviewed", nil
-	}
+	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x","mode":"detach"}`))
 	if res.IsError {

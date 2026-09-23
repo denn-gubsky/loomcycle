@@ -938,7 +938,7 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 	//
 	if td, ok := t.(*builtin.TeamDef); ok {
 		if td.Spawn == nil {
-			td.Spawn = func(ctx context.Context, name string, p teamrun.Prompt, defID string) (string, error) {
+			td.Spawn = func(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
 				// p.System is the STATE's role, appended to the agent's own system
 				// prompt rather than replacing it (see runSubAgent's systemExtra).
 				// This is what makes a fan-out of N roles one AgentDef and N states.
@@ -946,9 +946,12 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				// Team members thread results as strings today; a stateful member's
 				// Σ hand-off is a separate follow-on (teamrun is string-only
 				// end-to-end). Drop state here — the Agent-tool fan-out carries it.
-				out, _, _, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID,
+				// The child run id makes the member addressable (RFC DI); it is
+				// returned on failure too, since a failed member is the one worth
+				// opening.
+				out, _, childRunID, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID,
 					p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
-				return out, err
+				return teamrun.SpawnResult{Output: out, RunID: childRunID}, err
 			}
 		}
 		if td.Admit == nil {
