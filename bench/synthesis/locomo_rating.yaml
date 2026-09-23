@@ -1,0 +1,65 @@
+# A LoCoMo rating run under the rovemark protocol — layered OVER ingest.yaml and
+# lme_gate_arms.yaml, which supply the scribe, the extractor, the judge and the answerer.
+#
+#   ./bin/loomcycle --config bench/synthesis/ingest.yaml \
+#                   --config bench/synthesis/lme_gate_arms.yaml \
+#                   --config bench/synthesis/locomo_rating.yaml
+#
+# WHY A RATING RUN NEEDS ITS OWN LAYER. The published LoCoMo tables are not one protocol:
+# one source scores 250 questions (25 per conversation) with a deliberately generous
+# rubric on gemini-2.5-pro, another scores all 1,540 with gpt-4o-mini as both answerer and
+# judge. They disagree by nine points on the same system (Zep: 75.14 against 66.0), so a
+# number is meaningless without saying which protocol produced it.
+#
+# This targets the 1,540-question one, because our loader already agrees with it exactly:
+# categories 1-4 yield 1,535 scoreable plus 5 dropped for unusable evidence = 1,540. And
+# it has a shared calibration point — its full-context baseline is 72.9 against our own
+# raw-turns measurement of 0.738, inside a point.
+
+agents:
+  # ⚠️ 1500s (25 min) is not enough for the larger conversations. A LoCoMo conversation is
+  # 400-660 turns against a LongMemEval instance's ~20, and consolidation pass 1 blew the
+  # cap on conv-26 and conv-30 during a previous run — the arm reported "failed" with no
+  # store to answer from.
+  #
+  # 1740 and not higher because the consolidator's own code holds a 1,800,000 ms lease and
+  # the bundle requires the run budget stay under it: a pass that outlives its lease is a
+  # pass another worker may start underneath. Raising the ceiling properly means raising
+  # BOTH, which is a bundle edit and a separate decision.
+  #
+  # This buys 16%, not a fix. A conversation that still exceeds it fails its own
+  # checkpoint and is retried rather than silently producing a partial store.
+  memory/consolidator:
+    run_timeout_seconds: 1740
+
+  # ⚠️ EVERY MEMORY AGENT THAT RESOLVES BY TIER IS PINNED HERE, and the reason is a
+  # silent fallback rather than a preference. The base preset's tier:middle cascade lists
+  # ollama-local/qwen3.6* FIRST and deepseek-v4-pro after it. On this host the resolver
+  # marked the local candidate unavailable and fell through without a word, so the
+  # extractor — meant to be local — ran on paid cloud deepseek-v4-pro for every store this
+  # database holds (498 runs). A benchmark cannot have its extractor chosen by a
+  # reachability probe: which model distilled the facts is part of what is being measured.
+  #
+  # deepseek-flash, the alias the judge already runs on (-> deepseek/deepseek-v4-flash).
+  # Pinning is right HERE and wrong in a product config: a deployment should let the tier
+  # policy route, a measurement must hold the model fixed.
+  memory/extractor:
+    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
+    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
+    tier: ""
+    model: deepseek-flash
+  memory/ontologist:
+    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
+    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
+    tier: ""
+    model: deepseek-flash
+  memory/judge:
+    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
+    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
+    tier: ""
+    model: deepseek-flash
+  memory/conflict-judge:
+    # tier must be cleared explicitly: a layer that only ADDS model: merges onto the
+    # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
+    tier: ""
+    model: deepseek-flash
