@@ -42,12 +42,11 @@ var _ connector.Connector = (*Server)(nil)
 
 // --- 1. Run lifecycle ---
 
-// SpawnRun translates a connector.SpawnRunRequest into a runner.RunInput
-// and drives RunOnce. The blocking shape matches the Connector contract;
-// transports that want streaming (MCP notifications, gRPC stream) hold a
-// runner.Runner field separately and use it directly for that path.
-func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
-	in := runner.RunInput{
+// spawnRequestToRunInput maps a connector spawn request onto a RunInput. One
+// function, used by SpawnRun and by the start of a configured run (whose draft
+// is a spawn request), so the two cannot carry different fields.
+func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
+	return runner.RunInput{
 		Agent:            req.Agent,
 		SessionID:        req.SessionID,
 		TenantID:         req.TenantID,
@@ -83,6 +82,14 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		MemoryIndexMaxBytes:   req.MemoryIndexMaxBytes,
 		InjectToolGuide:       req.InjectToolGuide,
 	}
+}
+
+// SpawnRun translates a connector.SpawnRunRequest into a runner.RunInput
+// and drives RunOnce. The blocking shape matches the Connector contract;
+// transports that want streaming (MCP notifications, gRPC stream) hold a
+// runner.Runner field separately and use it directly for that path.
+func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
+	in := spawnRequestToRunInput(req)
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;
 	// OnEvent accumulates text deltas + the final usage/stop_reason.

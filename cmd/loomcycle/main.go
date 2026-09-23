@@ -2478,6 +2478,13 @@ func main() {
 		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
 	}
 
+	// RFC DI D5: discard configured runs (drafts) older than their TTL. Each
+	// discard is one guarded transaction, so every replica may run it without
+	// a lock; LOOMCYCLE_CONFIGURED_RUN_TTL_MS=0 turns it off.
+	if srv != nil && storeIface != nil && cfg.Env.ConfiguredRunTTL > 0 {
+		go srv.RunConfiguredRunSweeper(bgCtx)
+	}
+
 	// Usage rollup-and-prune sweeper (RFC AV Phase 2b) — same placement
 	// rationale as the heartbeat sweeper above: runs AFTER the cluster
 	// block so it can pick up the advisoryLock. In single-replica mode

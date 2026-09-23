@@ -115,6 +115,10 @@ var (
 	// surfaces only on HTTP.
 	// Wire: HTTP 500 / gRPC Internal.
 	ErrStreamingUnsupported = errors.New("streaming unsupported")
+
+	// ErrRunNotConfigured: a start of a configured run (RFC DI D5) found the
+	// run no longer a draft — it has started already, or was discarded.
+	ErrRunNotConfigured = errors.New("run is not configured")
 )
 
 // RunInput is the unified input shape both wire surfaces translate
@@ -343,6 +347,17 @@ type RunInput struct {
 	// unconfined (fail-open); the principal-on-ctx paths ignore this and derive
 	// isolation from the live principal instead.
 	Isolated bool
+
+	// ConfiguredRunID starts an existing DRAFT (RFC DI D5) instead of creating a
+	// run: RunOnce runs its usual validation and admission, then moves that row
+	// configured → running in one guarded store transition and runs the loop in
+	// the draft's own session. The caller fills the rest of RunInput from the
+	// draft and the draft's row: TenantID / UserID / AgentID are the row's (the
+	// identity fixed at create, NOT re-derived from whoever starts it), and
+	// Isolated / OperatorKeyRestricted are the bits captured at create, OR-ed
+	// with the starter's so a start never loosens the creator's confinement.
+	// SessionID must be empty.
+	ConfiguredRunID string
 }
 
 // RunCallbacks is how the wire surfaces observe the run.

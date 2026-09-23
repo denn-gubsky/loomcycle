@@ -2420,6 +2420,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := in.OutputFormat.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
+	startingDraft := in.ConfiguredRunID != ""
+	if startingDraft && s.store == nil {
+		return runner.ErrSessionRequired
+	}
+	if startingDraft && in.SessionID != "" {
+		return fmt.Errorf("%w: a configured run starts in its own session; session_id must be empty", runner.ErrInvalidArgument)
+	}
 
 	// ---- Session resolution (continuation only) ----
 	isContinuation := in.SessionID != ""
@@ -2432,7 +2439,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// session's identity, set authoritatively when the session was
 	// created. Un-authed programmatic callers (scheduler / webhook /
 	// A2A) carry no principal and keep their Def-supplied identity.
-	if !isContinuation {
+	// A draft being started keeps the identity it was created with: the
+	// caller hands RunOnce the row's own tenant/user, and the starter's
+	// principal must not re-attribute the run (an admin starting a tenant's
+	// draft does not make it the admin's run).
+	if !isContinuation && !startingDraft {
 		effectiveTenantID, effectiveUserID = s.applyPrincipal(ctx, in.TenantID, in.UserID)
 	}
 	var priorMessages []providers.Message
@@ -2475,6 +2486,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// bit CAPTURED on the trigger def and supplied via RunInput.Isolated. Confines
 	// the fired run's data tools to its own user/agent scope (anti-bypass).
 	isolated := s.isolatedOrCaptured(ctx, in.Isolated)
+	if startingDraft {
+		// Fail toward confinement: the bits captured when the draft was
+		// created still bind, whoever starts it.
+		operatorKeyRestricted = operatorKeyRestricted || in.OperatorKeyRestricted
+		isolated = isolated || in.Isolated
+	}
 
 	if effectiveAgentName == "" {
 		return fmt.Errorf("%w: agent is required", runner.ErrInvalidArgument)
@@ -2655,7 +2672,24 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// ---- Session+run creation ----
 	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
-	sessionID, runID, sessErr := s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
+	var sessionID, runID string
+	var sessErr error
+	if startingDraft {
+		// RFC DI D5: after admission, so a refusal above leaves the draft as it
+		// was; before registration, so every failure path below finds a
+		// running row that FinishRun can end.
+		started, err := s.store.StartConfiguredRun(ctx, in.ConfiguredRunID, identity)
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.Is(err, store.ErrRunNotConfigured) || errors.As(err, &nf) {
+				return fmt.Errorf("%w: %s", runner.ErrRunNotConfigured, in.ConfiguredRunID)
+			}
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		sessionID, runID = started.SessionID, started.ID
+	} else {
+		sessionID, runID, sessErr = s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
+	}
 	if sessErr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(sessErr, &nf) {
@@ -3484,6 +3518,10 @@ func (s *Server) Mux() http.Handler {
 	// Re-attach to a running (or finished) run's event stream — the operator
 	// leaves the interactive /run terminal and returns to the same live run.
 	mux.Handle("GET /v1/runs/{run_id}/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunStream))))
+	// RFC DI D5: configured (created, not started) runs.
+	mux.Handle("PATCH /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePatchConfiguredRun))))
+	mux.Handle("DELETE /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteConfiguredRun))))
+	mux.Handle("POST /v1/runs/{run_id}/start", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStartConfiguredRun))))
 	// RFC BC: the client-tool host WebSocket. auth runs on the initial GET before
 	// the upgrade (authMiddleware wraps a plain handler), so the principal is on
 	// ctx by the time handleClientTools upgrades.
@@ -3818,6 +3856,10 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 // runRequest is the JSON body shape for POST /v1/runs.
 type runRequest struct {
 	Agent string `json:"agent"`
+	// Start false creates the run as a configured DRAFT (RFC DI D5) instead of
+	// starting it: validated now, admitted and run by POST
+	// /v1/runs/{run_id}/start. Absent or true starts it, as always.
+	Start *bool `json:"start,omitempty"`
 	// Segments is the explicit, typed input form (role + content blocks).
 	Segments []loop.PromptSegment `json:"segments"`
 	// Prompt is convenience sugar (F47): a bare top-level user prompt. When
@@ -4204,6 +4246,12 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	})
 	if oerr != nil {
 		writeResolveError(w, oerr)
+		return
+	}
+	// RFC DI D5: start:false stops here — validated, not admitted. Which
+	// provider serves it, and every slot and budget check, is decided at start.
+	if req.Start != nil && !*req.Start {
+		s.createConfiguredRun(w, r, req, operatorKeyRestricted, isolated)
 		return
 	}
 	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
@@ -7030,6 +7078,10 @@ type agentResponse struct {
 	// same record while the run is in flight; this is how it stays readable
 	// once the run has ended.
 	Spec json.RawMessage `json:"spec,omitempty"`
+	// Draft is a CONFIGURED run's request as it will start (RFC DI D5) — what
+	// PATCH /v1/runs/{run_id} edits. Single-run read only, and only while the
+	// run is configured; it never holds a secret.
+	Draft json.RawMessage `json:"draft,omitempty"`
 	// v0.12.x parent_context — the opaque caller-tracking lineage this
 	// run carries (inherited from its root for sub-agents). Echoed here
 	// alongside Usage so a consumer can attribute a child sub-agent's
@@ -7164,6 +7216,11 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Result = run.Result
 	resp.Spec = run.RunConfig
+	if run.Status == store.RunConfigured {
+		if d, err := s.store.GetRunDraft(r.Context(), run.ID); err == nil {
+			resp.Draft = d
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -7676,6 +7733,11 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 
+	// RFC DI D5: a draft has no conversation to compact until it starts.
+	if run.Status == store.RunConfigured {
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "run_not_configured",
+			msg: "the run is configured but not started; there is nothing to compact yet"}
+	}
 	terminal := isTerminalRunStatus(run.Status)
 	live := s.steerReg != nil && func() bool { _, ok := s.steerReg.Get(runID); return ok }()
 	// Boundary gate (user-chosen: safe boundary only). A LOCAL live run must be

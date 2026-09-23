@@ -898,6 +898,14 @@ func requiredScopeFor(method, path string) string {
 	// default empty arm, letting a read-only bearer steer a run.)
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/input"):
 		return auth.ScopeRunsCreate
+	// RFC DI D5: starting, editing and discarding a configured run are run
+	// writes, the same scope that creates one. PATCH / DELETE address the run
+	// itself (/v1/runs/{run_id}, no further segment).
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/start"):
+		return auth.ScopeRunsCreate
+	case (method == http.MethodPatch || method == http.MethodDelete) && strings.HasPrefix(path, "/v1/runs/") &&
+		!strings.Contains(strings.TrimPrefix(path, "/v1/runs/"), "/"):
+		return auth.ScopeRunsCreate
 	// Arming a team walk's breakpoints holds work back and releases it — a
 	// run-state mutation, same scope as steer/cancel/compact. Without this case
 	// the PUT falls through to the default-deny admin arm, which would lock a
