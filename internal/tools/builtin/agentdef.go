@@ -1561,7 +1561,9 @@ func signFromMergedDef(name string, def mergedDef) string {
 		c.ToolChoice = &agents.ToolChoice{Mode: tc.Mode, Name: tc.Name, Until: tc.Until}
 	}
 	if of := def.OutputFormat; !of.IsZero() {
-		c.OutputFormat = &agents.OutputFormat{Type: of.Type, Name: of.Name, Schema: of.Schema}
+		// The effective type, so `type` omitted and `type: json_schema` — the
+		// same format — hash the same.
+		c.OutputFormat = &agents.OutputFormat{Type: of.EffectiveType(), Name: of.Name, Schema: of.Schema}
 	}
 	// Compaction is content-identifying, same as Sampling.
 	if cp := def.Compaction; !cp.IsZero() {

@@ -20,6 +20,7 @@ func TestOutputFormatValidate(t *testing.T) {
 		{OutputFormat{Type: "json_schema", Name: "review_verdict", Schema: verdictSchema()}, ""},
 		{OutputFormat{Type: "json_object", Schema: verdictSchema()}, "not supported"},
 		{OutputFormat{Type: "json_schema"}, "schema is required"},
+		{OutputFormat{Schema: verdictSchema()}, ""}, // type defaults to json_schema
 		{OutputFormat{Type: "json_schema", Schema: map[string]any{"type": "array"}}, `type "object" at its root`},
 		{OutputFormat{Type: "json_schema", Name: "has space", Schema: verdictSchema()}, "must match"},
 	} {

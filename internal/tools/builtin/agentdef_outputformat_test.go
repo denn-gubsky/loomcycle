@@ -47,3 +47,18 @@ func TestStaticToMergedDef_PreservesOutputFormat(t *testing.T) {
 		t.Errorf("staticToMergedDef dropped output_format: %+v", md.OutputFormat)
 	}
 }
+
+// `type` is optional and means json_schema, so the two spellings of the same
+// format must be the same content — else re-saving a def through an editor
+// that omits the type would fork it for nothing.
+func TestSignFromMergedDef_OutputFormatTypeOmittedHashesAsJSONSchema(t *testing.T) {
+	schema := map[string]any{"type": "object"}
+	explicit := signFromMergedDef("judge", mergedDef{SystemPrompt: "j", OutputFormat: &config.OutputFormat{Type: "json_schema", Schema: schema}})
+	omitted := signFromMergedDef("judge", mergedDef{SystemPrompt: "j", OutputFormat: &config.OutputFormat{Schema: schema}})
+	if explicit != omitted {
+		t.Errorf("content_sha256 explicit %q != omitted %q", explicit, omitted)
+	}
+	if none := signFromMergedDef("judge", mergedDef{SystemPrompt: "j"}); none == explicit {
+		t.Error("an output_format did not change the hash at all")
+	}
+}

@@ -1650,8 +1650,9 @@ type ToolChoice struct {
 // run's result as `structured`.
 type OutputFormat struct {
 	// Type is "json_schema" — the one kind today, named so a later kind is an
-	// addition rather than a reinterpretation.
-	Type string `json:"type" yaml:"type"`
+	// addition rather than a reinterpretation. Empty means json_schema, so a
+	// caller (or an editor with no defaults) need only give the schema.
+	Type string `json:"type,omitempty" yaml:"type"`
 	// Name labels the schema where a provider requires one (OpenAI does).
 	// Defaults to "output". [A-Za-z0-9_-]{1,64}.
 	Name string `json:"name,omitempty" yaml:"name"`
@@ -1668,6 +1669,14 @@ var outputFormatNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // IsZero reports whether the block asks for nothing.
 func (o *OutputFormat) IsZero() bool { return o == nil || (o.Type == "" && len(o.Schema) == 0) }
 
+// EffectiveType is Type with its default applied.
+func (o *OutputFormat) EffectiveType() string {
+	if o == nil || o.Type == "" {
+		return OutputFormatJSONSchema
+	}
+	return o.Type
+}
+
 // EffectiveName is Name with its default applied.
 func (o *OutputFormat) EffectiveName() string {
 	if o == nil || o.Name == "" {
@@ -1681,7 +1690,7 @@ func (o *OutputFormat) Validate() error {
 	if o == nil {
 		return nil
 	}
-	if o.Type != OutputFormatJSONSchema {
+	if o.EffectiveType() != OutputFormatJSONSchema {
 		return fmt.Errorf("output_format.type %q is not supported (want json_schema)", o.Type)
 	}
 	if o.Name != "" && !outputFormatNameRe.MatchString(o.Name) {
