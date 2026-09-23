@@ -154,6 +154,11 @@ type Server struct {
 	// terminates). Always non-nil after New(); armed only for interactive runs.
 	turnCancelReg *turncancel.Registry
 
+	// walks maps a live team walk's run_id → the cancel func of the ctx it
+	// walks under, so POST /v1/runs/{run_id}/cancel can stop it. Zero value
+	// works (test fixtures build a Server without a constructor).
+	walks walkCancels
+
 	// breakpointReg maps a live run_id → the armed breakpoint set of the team
 	// walk running under it, so an operator can arm a Starter state while the
 	// walk is already going. Always non-nil (a debugger that silently is not

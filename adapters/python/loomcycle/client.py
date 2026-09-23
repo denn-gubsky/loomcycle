@@ -1097,6 +1097,8 @@ class LoomcycleClient:
         ``POST /v1/runs/{run_id}/cancel``). This is NOT whole-run cancel
         (:meth:`cancel_agent`), which terminates the run. ``reason`` is an
         optional operator annotation. Returns ``{run_id, stopped, parked}``.
+        A team walk's run has no turns, so this ends the walk and the runs it
+        spawned (``stopped=True, parked=False``, recorded as cancelled).
         A run that isn't mid-turn / isn't interactive maps to
         :class:`NotPausedError` (FailedPrecondition); an unknown /
         cross-tenant run to :class:`AgentNotFoundError` (NotFound)."""

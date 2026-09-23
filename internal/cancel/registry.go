@@ -404,6 +404,18 @@ func (c *cancelWithReason) Is(target error) bool {
 // this to populate runs.stop_reason when the cause is API-cancel.
 func (c *cancelWithReason) Reason() string { return c.reason }
 
+// CauseWithReason builds the API-cancel cause Cancel attaches, for a caller
+// that owns its own cancel func rather than a registry entry: ErrCancelledByAPI
+// when reason is empty, the reason-carrying wrapper otherwise. Either way
+// errors.Is(cause, ErrCancelledByAPI) holds, so the run is recorded as
+// cancelled rather than failed.
+func CauseWithReason(reason string) error {
+	if reason == "" {
+		return ErrCancelledByAPI
+	}
+	return &cancelWithReason{reason: reason}
+}
+
 // ReasonFromCause extracts the reason text from a context.Cause value
 // produced by Cancel. Returns "" for non-API causes (e.g. plain
 // context.Canceled from client-disconnect, or a sentinel without a
