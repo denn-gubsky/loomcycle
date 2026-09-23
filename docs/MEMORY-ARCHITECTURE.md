@@ -185,6 +185,78 @@ The mechanism is **abstention**, not retrieval: the answerer correctly says it c
 
 **Placement.** On a two-user corpus, duplicate copies fell from 30 to 23 — a 23% reduction, not elimination, because cross-user duplication was replaced by tenant-to-owner duplication. The payoff that does hold is sharing: 94 facts readable by both users where none were before. An unpredicted second-order effect was cross-user type stability — subjects keep one identity across users instead of one per scope.
 
+## Reaching past the fact tier: the trace grant, what it costs, and the cascade that gates it
+
+The section above measures the fact tier losing to raw turns by a wide margin, and names the mechanism: **abstention**, because distillation removed the detail the question asked for. This section is what was built in answer to that, what it costs, and the shape adopted to bound the cost.
+
+### The grant
+
+**`recall_attach_traces`** is an agent-definition field. When recall runs for an agent that has it, the runtime also searches the trace index with the caller's own query and returns those turns as a **separate, unranked `source_turns` block** beside `memories`, under its own budget. Expansion, not re-ranking.
+
+Two properties are load-bearing and easy to lose:
+
+- **There is deliberately no tool parameter for it.** Offered as a parameter the model may pass, a local reader passed it on 51 of 128 calls; offered as a prompt instruction, accuracy collapsed to 0.0034. Offered as an operator grant applied by the runtime, the same turns are worth **+24.5pp** (LongMemEval) and **+25.9pp** (LoCoMo), measured twice. A tool parameter is a model decision, and so is the op — the grant must be consulted on **every** dispatch path, `search` as well as `recall`; when it covered only one, the effect halved.
+- **The trace index is forward-only and off by default** (`LOOMCYCLE_MEMORY_TRACE_INDEX`). A store ingested before the flag returns zero turns while looking like it worked, which is why the response reports `source_turns_found`. The flag gates **writes only** — reads work with it off, which is how a measurement avoids the run indexing its own prompts.
+
+### ⚠️ What it costs: the reader treats on-topic material as sufficient
+
+Retrieval always returns something. For a question whose answer is **not** in the history, the reader receives material about the topic and reads "relevant material present" as "the answer is here". Measured on questions built to have no answer, the grant made the reader stop refusing and start confabulating.
+
+**The size of that cost is a property of the configuration, not of the mechanism** — the same lever cost eight questions of thirty in one prompt configuration and one in another, rebuilt from the same source prompt. Do not plan against a number from someone else's deployment; measure it on yours.
+
+**A prompt cannot repair it.** One added sentence ("material *about* the question is not an *answer* to it") restored the abstention slice completely and **collapsed the answerable slice from 0.7857 to 0.2353** — below its own control. Abstention there rose only 0.03 → 0.13, far too little to explain a 55-point fall, so the sentence degraded the answering as well. That is the second independent demonstration that **added instruction on a small reader is not free**; the first was a mandated tool protocol reaching 0.0034.
+
+The gate therefore has to be a **runtime** control, decided before the turns are handed over.
+
+### ⚠️ Retrieval-shape statistics cannot be that control
+
+The cheap candidate — decide from the score vector the retriever already computes — was measured across three negative classes and ruled out. Set homogeneity (entropy/perplexity of the scores) is not independent evidence: it correlates with the top-1 score at r ≈ −0.45, *within each class*, and adding it to a model costs **−0.005 out of fold on both corpora**. Two scores are not better than one when they are the same score.
+
+The plain top-1 score is a weak router whose quality **depends on the corpus**:
+
+| negative class | how built | top-1 AUC |
+|---|---|---|
+| cross-store | a different conversation entirely | 1.000 — saturated |
+| LongMemEval `_abs` | on-topic, answer absent | 0.759 |
+| LoCoMo adversarial | **minimal pairs**, one entity changed | **0.586** |
+
+A minimal pair retrieves on-topic material *by construction*, so its score is not low. Build the negative class the easy way and any gate will look excellent.
+
+### ⭐ What does work: a model that reads the material
+
+Asked whether the retrieved material answers the question — a verdict on material, never an answer — a **local** model of the same class as the reader beats the geometry decisively, compared at equal withhold volume:
+
+| | catches unanswerable | recall | precision |
+|---|---|---|---|
+| verifier, LoCoMo minimal pairs | 57 / 59 | **0.966** | 0.792 |
+| top-1 threshold, same volume | 43 / 59 | 0.729 | 0.597 |
+| verifier, LongMemEval `_abs` | 29 / 29 | **1.000** | 0.460 |
+| top-1 threshold, same volume | 24 / 29 | 0.828 | 0.381 |
+
+It separates *"Senior Software Engineer"* from *"Software Engineer Manager"* where the retrieved set is nearly the same set — a distinction no threshold on that set can make at any operating point. **This is the finding that survived every change of corpus and negative-class construction.**
+
+⚠️ **It is too eager to use alone.** It withholds material on a third of answerable questions, and where the cost it prevents is small, that trade is bad: on LongMemEval it spent **23 correct answers** to protect a cost of one question.
+
+### ⭐⭐ The adopted shape: cascade
+
+**A cheap router decides who gets asked; the expensive decider answers only for those.** Above a score threshold the turns are attached without asking; below it, the verifier decides.
+
+Both deciders correct the other's characteristic error, and both effects are countable cases rather than statistics:
+
+- **The router protects the verifier from its own false positives.** The verifier's eagerness costs most on high-confidence questions — exactly the ones a threshold can pass through unasked.
+- **The verifier rescues rather than confirms.** Below the threshold it says *attach* for questions a pure threshold would discard; on LongMemEval nine of those were answerable questions the reader had answered correctly.
+
+And the cost axis is where it earns its place: measured on the harder corpus, **9% of the calls buy 40% of the available gain at no cost to the answerable slice**, and 39% of the calls buy 60%. The expensive decider is not needed on every question.
+
+#### ⚠️ What an implementer must calibrate, and must not assume
+
+- **The threshold is corpus-dependent and is not a constant.** It routes well where unanswerable questions cluster at low scores (16 of 29 in the bottom two deciles on LongMemEval) and poorly where they do not (18 of 59 on minimal pairs, the rest spread). Calibrate on the deployment's own distribution.
+- **The efficiency curve is not established.** On the corpus where it was measured the whole available gain was five questions of fifty-nine, and the curve is non-monotonic — 50% of the calls returned 0% of the gain, 39% returned 60%. That is scatter. The shape is justified by mechanism; the operating point is not justified by these numbers.
+- **The verifier needs a graded verdict.** Its recall is the asset and its eagerness is the price; a binary yes/no spends the one to pay the other. Nothing here measures a confidence-graded version.
+- **Some unanswerable questions bypass the router by design.** That is the trade being made, and it should be sized, not assumed away.
+
+Measurements: `bench/results/locomo/2026-09-20-longmemeval/`, `2026-09-21-qpp-probe/`, `2026-09-21-gate-arms/`, `2026-09-23-cascade-locomo/`.
+
 ## Known limitations
 
 **The default path is the losing one.** `Memory add` stores no retrievable row, so a deployment's recall path is facts-only — the arm that scored 0.157. Recall-augmented distillation exists to close this and has only recently become reachable.
