@@ -1937,6 +1937,10 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         } if a.HasField("usage") else None,
         "last_heartbeat_at": _ts_to_iso(a.last_heartbeat_at) if a.HasField("last_heartbeat_at") else None,
         "live": a.live,
+        # The run's answer (RFC DI): {"final_text", "state"}. get_agent only;
+        # list_user_agents leaves it empty. None while running and when the run
+        # finished with nothing to report.
+        "result": json.loads(a.result) if a.result else None,
     }
 
 

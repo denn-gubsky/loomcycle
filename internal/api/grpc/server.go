@@ -241,7 +241,10 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 		return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
 	}
 	_, live := s.cancelReg.Get(agentID)
-	return runToProto(run, live), nil
+	out := runToProto(run, live)
+	// Single-run read only, like HTTP GET /v1/agents/{id} (RFC DI).
+	out.Result = run.Result
+	return out, nil
 }
 
 // CancelAgent mirrors HTTP's POST /v1/agents/{agent_id}/cancel.

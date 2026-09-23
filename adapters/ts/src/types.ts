@@ -1090,6 +1090,19 @@ export interface Agent {
    *  can attribute a child sub-agent's cost to the user-initiated request
    *  in a single fetch. Omitted when the run carried no context. */
   parent_context?: ParentContext;
+  /** The run's answer (RFC DI) — what the row had no field for; `stop_reason`,
+   *  `error` and `usage` are above. Present on {@link LoomcycleClient.getAgent}
+   *  only (listings omit it), and only once the run has finished with
+   *  something to report. */
+  result?: RunResult;
+}
+
+/** A finished run's answer (RFC DI). */
+export interface RunResult {
+  /** The text of the run's last assistant turn. */
+  final_text?: string;
+  /** The final structured state of a stateful run. */
+  state?: Record<string, unknown>;
 }
 
 export interface ListAgentsResponse {

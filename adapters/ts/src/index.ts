@@ -158,6 +158,7 @@ export type {
   Agent,
   AgentStatus,
   AgentUsage,
+  RunResult,
   CancelAgentResult,
   ListAgentsResponse,
   // Fan-out (RFC Y) + compaction

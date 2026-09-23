@@ -124,3 +124,12 @@ def test_agent_to_dict_handles_missing_usage_as_none():
     assert out["usage"] is None
     assert out["completed_at"] is None
     assert out["last_heartbeat_at"] is None
+
+
+def test_agent_to_dict_decodes_the_run_result():
+    # RFC DI: the finished run's answer rides the Agent message as JSON bytes
+    # and surfaces as a dict; an unset result is None, not an empty dict.
+    a = pb.Agent(agent_id="ag-1", status="completed", result=b'{"final_text": "done", "state": {"k": 1}}')
+    out = _agent_to_dict(a)
+    assert out["result"] == {"final_text": "done", "state": {"k": 1}}
+    assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="running"))["result"] is None

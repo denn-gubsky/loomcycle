@@ -1256,3 +1256,36 @@ func (m *mockConnector) DirectoryInspect(context.Context, string, string) (direc
 func (m *mockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
 	return nil, nil
 }
+
+// RFC DI: the single-run read returns the finished run's result as JSON bytes;
+// the listing does not, so it stays small.
+func TestGetAgent_ReturnsTheResultListingDoesNot(t *testing.T) {
+	client, _, st, cleanup := startTestServer(t, "")
+	defer cleanup()
+	ctx := context.Background()
+	sess, _ := st.CreateSession(ctx, "t", "default", "alice")
+	run, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_res", UserID: "alice"})
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn",
+		store.Usage{Result: json.RawMessage(`{"final_text":"done"}`)}, ""); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+
+	got, err := client.GetAgent(ctx, &loomcyclepb.GetAgentRequest{AgentId: "a_res"})
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(got.Result, &res); err != nil || res["final_text"] != "done" {
+		t.Errorf("GetAgent result = %q (%v), want the final text", got.Result, err)
+	}
+
+	list, err := client.ListUserAgents(ctx, &loomcyclepb.ListUserAgentsRequest{UserId: "alice", Status: string(store.RunCompleted)})
+	if err != nil {
+		t.Fatalf("ListUserAgents: %v", err)
+	}
+	for _, a := range list.Agents {
+		if len(a.Result) != 0 {
+			t.Errorf("ListUserAgents row %s carries a result; listings must stay small", a.AgentId)
+		}
+	}
+}
