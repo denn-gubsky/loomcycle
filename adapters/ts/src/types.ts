@@ -810,6 +810,9 @@ export interface RunOptions extends RunOverrideOptions {
    *  agent's own sampling (this wins; unset fields inherit). Omitted =
    *  inherit entirely. */
   sampling?: SamplingOptions;
+  /** Per-run tool choice (RFC DI): whether and which tool the model must
+   *  call, and for how many calls. REPLACES the agent's own whole. */
+  toolChoice?: ToolChoiceOptions;
   /** Per-run context-compaction override (v0.32.0), merged PER FIELD over
    *  the agent's own compaction block (this wins; unset fields inherit).
    *  Omitted = inherit entirely. Trigger compaction mid-run with
@@ -1064,6 +1067,9 @@ export interface ContinueOptions extends RunOverrideOptions {
   runTimeoutSeconds?: number;
   /** Per-continuation LLM sampling override — see {@link RunOptions.sampling}. */
   sampling?: SamplingOptions;
+  /** Per-run tool choice (RFC DI): whether and which tool the model must
+   *  call, and for how many calls. REPLACES the agent's own whole. */
+  toolChoice?: ToolChoiceOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
   /** Per-continuation context-distillation override — see

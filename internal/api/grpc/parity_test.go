@@ -456,3 +456,19 @@ func (m *parityMock) DirectoryInspect(context.Context, string, string) (director
 func (m *parityMock) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
 	return nil, nil
 }
+
+// RFC DI: the wire ToolChoice maps field for field, and an unset one stays nil
+// so the run inherits the agent's rather than getting an empty choice.
+func TestToolChoiceFromProto_MapsAndLeavesUnsetNil(t *testing.T) {
+	got := runInputFromProto(runInputProtoArgs{Agent: "a",
+		ToolChoice: toolChoiceFromProto(&loomcyclepb.ToolChoice{Mode: "tool", Name: "WebSearch", Until: "until_called"})})
+	if got.ToolChoice == nil || got.ToolChoice.Mode != "tool" || got.ToolChoice.Name != "WebSearch" || got.ToolChoice.Until != "until_called" {
+		t.Errorf("ToolChoice = %+v, want tool/WebSearch/until_called", got.ToolChoice)
+	}
+	if toolChoiceFromProto(nil) != nil {
+		t.Error("an unset wire ToolChoice must map to nil (inherit the agent's)")
+	}
+	if got := spawnRequestFromProto(&loomcyclepb.RunRequest{Agent: "a", ToolChoice: &loomcyclepb.ToolChoice{Mode: "required"}}); got.ToolChoice == nil || got.ToolChoice.Mode != "required" {
+		t.Errorf("spawnRequestFromProto dropped tool_choice: %+v", got.ToolChoice)
+	}
+}
