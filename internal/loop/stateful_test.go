@@ -2161,3 +2161,38 @@ func TestRun_Stateful_AnUnfinishedStepEndsTheTurnWhenTheBudgetIsSpent(t *testing
 		t.Errorf("stop=%q texts=%q, want the turn to end on the fallback", res.StopReason, texts)
 	}
 }
+
+// The prose field list did not prevent the shape errors a local model made —
+// answer inside the patch, a plan with no action, emit_state as the action —
+// so the prompt shows the two accepted shapes and names the wrong ones. The
+// example must use a tool this agent was actually offered, and a tool-less
+// agent must not be shown a shape it cannot use.
+func TestStatefulSystem_ShowsTheReplyShapes(t *testing.T) {
+	text := func(bs []providers.ContentBlock) string {
+		var b strings.Builder
+		for _, c := range bs {
+			b.WriteString(c.Text)
+		}
+		return b.String()
+	}
+	withTools := text(buildStatefulSystem(nil, []providers.ToolSpec{
+		{Name: "WebSearch", Description: "search"}, {Name: "Read", Description: "read"}}, nil, false))
+	for _, want := range []string{
+		`"action": {"tool": "WebSearch"`,
+		`"done": true, "final": "<the complete answer>"`,
+		`{"patch": {"final": "…"}}`,
+		"a plan with no action",
+		"`emit_state` as the action",
+	} {
+		if !strings.Contains(withTools, want) {
+			t.Errorf("the stateful prompt is missing %q", want)
+		}
+	}
+	noTools := text(buildStatefulSystem(nil, nil, nil, false))
+	if strings.Contains(noTools, `"action": {"tool":`) {
+		t.Error("a tool-less agent was shown an action shape it cannot use")
+	}
+	if !strings.Contains(noTools, `"done": true, "final":`) {
+		t.Error("a tool-less agent was not shown how to answer")
+	}
+}

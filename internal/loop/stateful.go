@@ -339,6 +339,7 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 			fmt.Fprintf(&b, "- `%s`: %s\n", t.Name, oneLineDesc(t.Description))
 		}
 	}
+	b.WriteString(statefulReplyShapes(toolSpecs))
 	if len(schema) > 0 {
 		if sj, err := json.Marshal(schema); err == nil {
 			fmt.Fprintf(&b, "\n### State schema (the state, and every patch, must conform)\n%s\n", string(sj))
@@ -346,6 +347,38 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 	}
 	out := append([]providers.ContentBlock(nil), base...)
 	return append(out, providers.ContentBlock{Type: "text", Text: b.String()})
+}
+
+// statefulReplyShapes shows the model the only two replies the loop accepts,
+// and the wrong ones by name.
+//
+// ⚠️ THE PROSE ABOVE WAS NOT ENOUGH, and the failures were all SHAPE errors a
+// field list does not prevent. A local model (ornith-1.5:35b) that had read it
+// wrote its answer INSIDE the patch, named emit_state as its action, and — in
+// 4 of 9 replays of one step — sent a patch and a plan ("I will search the
+// web next") with no action at all. The runtime now repairs or re-prompts
+// each of these, but every repair costs a call; an example of the right shape
+// is the cheapest fix, and the one a small model follows most reliably.
+//
+// The example tool is the first one this agent was actually offered, so the
+// example never names a tool the model cannot call.
+func statefulReplyShapes(toolSpecs []providers.ToolSpec) string {
+	var b strings.Builder
+	b.WriteString("\n### Your emit_state call is always one of these shapes\n")
+	if len(toolSpecs) > 0 {
+		fmt.Fprintf(&b, "1. Keep working — run a tool, and its output comes back as your next observation:\n"+
+			"   {\"reasoning\": \"…\", \"patch\": {\"progress\": \"…\"}, \"action\": {\"tool\": \"%s\", \"input\": {…}}}\n"+
+			"2. Answer — end your turn with the full answer, which is the ONLY text shown:\n"+
+			"   {\"patch\": {\"progress\": \"answered\"}, \"done\": true, \"final\": \"<the complete answer>\"}\n", toolSpecs[0].Name)
+	} else {
+		b.WriteString("This agent has no tools, so every reply is an answer — the ONLY text shown:\n" +
+			"   {\"patch\": {\"progress\": \"answered\"}, \"done\": true, \"final\": \"<the complete answer>\"}\n")
+	}
+	b.WriteString("Not accepted — nothing reaches anyone, and you will be asked again:\n" +
+		"- the answer inside the patch: {\"patch\": {\"final\": \"…\"}} — `final`, `done` and `action` go next to `patch`.\n" +
+		"- a plan with no action: {\"patch\": {…}, \"reasoning\": \"I will search next\"} — if you mean to use a tool, name it in `action` in THIS call.\n" +
+		"- `emit_state` as the action — it is how you reply, not a tool.\n")
+	return b.String()
 }
 
 func oneLineDesc(s string) string {
