@@ -6997,6 +6997,12 @@ type agentResponse struct {
 	// since a final text per row would make a runs list as large as every
 	// transcript's last turn.
 	Result json.RawMessage `json:"result,omitempty"`
+	// Spec is the run's own configuration record (RFC DI): the overrides it
+	// ran with after merging over its definition — the persisted run_config.
+	// Single-run read only, like Result. GET /v1/runs/{id}/config serves the
+	// same record while the run is in flight; this is how it stays readable
+	// once the run has ended.
+	Spec json.RawMessage `json:"spec,omitempty"`
 	// v0.12.x parent_context — the opaque caller-tracking lineage this
 	// run carries (inherited from its root for sub-agents). Echoed here
 	// alongside Usage so a consumer can attribute a child sub-agent's
@@ -7130,6 +7136,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		resp = single[0]
 	}
 	resp.Result = run.Result
+	resp.Spec = run.RunConfig
 	writeJSON(w, http.StatusOK, resp)
 }
 
