@@ -26,12 +26,13 @@ import (
 // internal/store, so the store cannot name these types — and deliberately does
 // not interpret the record. It stores bytes.
 type runConfigRecord struct {
-	Sampling          *config.Sampling   `json:"sampling,omitempty"`
-	ToolChoice        *config.ToolChoice `json:"tool_choice,omitempty"` // RFC DI
-	Compaction        *config.Compaction `json:"compaction,omitempty"`
-	Context           *config.Context    `json:"context,omitempty"`
-	MaxContextTokens  int                `json:"max_context_tokens,omitempty"`
-	RunTimeoutSeconds int                `json:"run_timeout_seconds,omitempty"`
+	Sampling          *config.Sampling     `json:"sampling,omitempty"`
+	ToolChoice        *config.ToolChoice   `json:"tool_choice,omitempty"`   // RFC DI
+	OutputFormat      *config.OutputFormat `json:"output_format,omitempty"` // RFC DI
+	Compaction        *config.Compaction   `json:"compaction,omitempty"`
+	Context           *config.Context      `json:"context,omitempty"`
+	MaxContextTokens  int                  `json:"max_context_tokens,omitempty"`
+	RunTimeoutSeconds int                  `json:"run_timeout_seconds,omitempty"`
 
 	// Routing is the run's own answer to which model serves it (RFC DC P1).
 	// It lives here rather than beside it on the run row for the same reason
