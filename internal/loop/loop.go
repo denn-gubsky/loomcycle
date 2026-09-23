@@ -3231,7 +3231,18 @@ func dispatchOneTool(
 	}
 
 	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError})
-	return tools.Result{Text: post.Text, IsError: post.IsError}
+	// The hook wire carries only text and is_error, so a Post chain can
+	// replace those two and nothing else. Rebuilding the result from them
+	// alone dropped Error and Count on EVERY call — the server always wires
+	// a dispatcher, matching hooks or not — so a classified failure reached
+	// the model with no classification. Keep the tool's structured fields;
+	// a hook that turns a failure into a success takes the failure's
+	// classification with it, since Error is nil on success by contract.
+	r.Text, r.IsError = post.Text, post.IsError
+	if !r.IsError {
+		r.Error = nil
+	}
+	return r
 }
 
 // extractToolURL best-effort pulls a URL string out of common tool

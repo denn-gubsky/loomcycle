@@ -3,6 +3,8 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -263,5 +265,94 @@ func TestExecutePendingTools_UnclassifiedIsUnchangedOnBothPaths(t *testing.T) {
 		if ev.Type == providers.EventToolResult && ev.Text != raw {
 			t.Errorf("event text altered: %q", ev.Text)
 		}
+	}
+}
+
+// transientFailure is the classified failure the hook-path tests run through.
+func transientFailure() tools.Result {
+	return tools.Result{
+		Text:    "upstream: connection reset",
+		IsError: true,
+		Error: &tools.ErrorInfo{
+			Category:    tools.CategoryTransient,
+			Retryable:   true,
+			Description: "The upstream dropped the connection.",
+		},
+	}
+}
+
+// postHookServer answers every Post call with rewrite(original).
+func postHookServer(t *testing.T, rewrite func(hooks.ToolResult) *hooks.ToolResult) *hooks.Dispatcher {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var call hooks.PostHookCall
+		if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(hooks.PostHookResult{Result: rewrite(call.ToolResult)})
+	}))
+	t.Cleanup(srv.Close)
+	reg := hooks.NewRegistry()
+	if _, err := reg.Register(&hooks.Hook{
+		Owner: "test", Name: "post", Phase: hooks.PhasePost,
+		CallbackURL: srv.URL, Tools: []string{"failer"},
+	}); err != nil {
+		t.Fatalf("register hook: %v", err)
+	}
+	return hooks.NewDispatcher(reg, nil)
+}
+
+func runFailerThrough(t *testing.T, hd *hooks.Dispatcher) string {
+	t.Helper()
+	blocks := executePendingTools(
+		context.Background(),
+		tools.NewDispatcher([]tools.Tool{&classifiedTool{res: transientFailure()}}),
+		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
+		1, hd, hooks.Identity{},
+		func(providers.Event) {},
+	)
+	if len(blocks) != 1 {
+		t.Fatalf("expected one block, got %d", len(blocks))
+	}
+	return blocks[0].Text
+}
+
+// The server ALWAYS wires a hook dispatcher, whether or not any hook matches,
+// so the dispatcher path is the production path. The tests above pass nil and
+// never took it — which is how rebuilding the result from the hook's two wire
+// fields dropped every classification in production while they stayed green.
+func TestExecutePendingTools_ClassificationSurvivesAnIdleHookDispatcher(t *testing.T) {
+	text := runFailerThrough(t, hooks.NewDispatcher(hooks.NewRegistry(), nil))
+	if !strings.Contains(text, "[transient") {
+		t.Errorf("a dispatcher with no matching hook dropped the classification:\n%s", text)
+	}
+}
+
+// The canonical Post hook wraps the text and leaves the failure a failure.
+// The classification still describes the call, so it must still reach the model.
+func TestExecutePendingTools_ClassificationSurvivesAWrappingPostHook(t *testing.T) {
+	hd := postHookServer(t, func(r hooks.ToolResult) *hooks.ToolResult {
+		return &hooks.ToolResult{Text: "<untrusted>" + r.Text + "</untrusted>", IsError: r.IsError}
+	})
+	text := runFailerThrough(t, hd)
+	if !strings.Contains(text, "[transient") {
+		t.Errorf("a wrapping Post hook dropped the classification:\n%s", text)
+	}
+	if !strings.Contains(text, "<untrusted>upstream: connection reset</untrusted>") {
+		t.Errorf("the hook's rewrite did not reach the model:\n%s", text)
+	}
+}
+
+// A hook that turns a failure into a success must not leave the model reading
+// a retry instruction over a successful result.
+func TestExecutePendingTools_PostHookSuccessDropsTheFailureClassification(t *testing.T) {
+	hd := postHookServer(t, func(hooks.ToolResult) *hooks.ToolResult {
+		return &hooks.ToolResult{Text: "served from cache"}
+	})
+	text := runFailerThrough(t, hd)
+	if text != "served from cache" {
+		t.Errorf("a success rewrite still carries the failure's classification:\n%s", text)
 	}
 }
