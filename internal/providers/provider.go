@@ -590,6 +590,14 @@ const (
 	EventSpawnChildStarted EventType = "spawn_child_started"
 	EventSpawnChildResult  EventType = "spawn_child_result"
 
+	// EventPromptSnapshot records the prompt a run's FIRST model call received
+	// (RFC DI): the system blocks and the run's input, as the loop assembled
+	// them — after skills, memory injection, {{...}} expansion, metadata and any
+	// loop-side additions. Emitted once per loop entry. Store-only like the
+	// spawn ledger: persisted, never forwarded to live SSE / gRPC consumers.
+	// replayTranscript ignores it (no case), so it never enters a conversation.
+	EventPromptSnapshot EventType = "prompt_snapshot"
+
 	// EventContextCompaction marks where an interactive run's conversation was
 	// compacted: everything before it is replaced by a summary. The loop emits
 	// it (persisted + forwarded) when it applies a steer.KindCompact control at
@@ -794,6 +802,10 @@ type Event struct {
 	// SpawnChild carries the structured payload on EventSpawnChildStarted /
 	// EventSpawnChildResult (RFC X Phase 3 spawn ledger). Nil otherwise.
 	SpawnChild *SpawnChildEventInfo `json:"spawn_child,omitempty"`
+
+	// PromptSnapshot carries the structured payload on EventPromptSnapshot.
+	// Nil otherwise.
+	PromptSnapshot *PromptSnapshotInfo `json:"prompt_snapshot,omitempty"`
 
 	// ContextCompaction carries the structured payload on EventContextCompaction
 	// (the conversation summary that replaces prior history). Nil otherwise.
@@ -1024,6 +1036,39 @@ type TurnCancelledEventInfo struct {
 // carry the finished child's result (so a child that completed BEFORE the
 // snapshot — whose run row isn't captured — still has its result in the
 // parent's captured transcript).
+// PromptSnapshotInfo is what a run's first model call was sent: the system
+// blocks and the run's own input (the request's last user turn — for a
+// continuation, the new message rather than the whole history). Image bytes
+// are dropped (MediaType is kept, Data emptied): a snapshot is for reading what
+// the model was asked, and a base64 image would make it as large as the image.
+type PromptSnapshotInfo struct {
+	System []ContentBlock `json:"system"`
+	Input  []ContentBlock `json:"input"`
+}
+
+// NewPromptSnapshot builds the snapshot of a request.
+func NewPromptSnapshot(system []ContentBlock, messages []Message) *PromptSnapshotInfo {
+	snap := &PromptSnapshotInfo{System: withoutImageBytes(system), Input: []ContentBlock{}}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			snap.Input = withoutImageBytes(messages[i].Content)
+			break
+		}
+	}
+	return snap
+}
+
+func withoutImageBytes(blocks []ContentBlock) []ContentBlock {
+	out := make([]ContentBlock, len(blocks))
+	copy(out, blocks)
+	for i := range out {
+		if out[i].Type == "image" {
+			out[i].Data = ""
+		}
+	}
+	return out
+}
+
 type SpawnChildEventInfo struct {
 	ToolUseID string `json:"tool_use_id"`
 	Index     int    `json:"index"`

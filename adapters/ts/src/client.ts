@@ -63,6 +63,7 @@ import type {
   EffectiveConfigResponse,
   RetuneRunResponse,
   RunConfigResponse,
+  RunPromptResponse,
   CreateSnapshotOptions,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
@@ -461,6 +462,25 @@ export class LoomcycleClient {
     return jsonFetch<RunConfigResponse>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/config`,
+      opts,
+    );
+  }
+
+  /** Read the prompt a run's first model call received (RFC DI). Mirrors
+   *  `GET /v1/runs/{run_id}/prompt`. Recorded when the model was called, not
+   *  re-derived now, so it is what the model saw even if a document or memory
+   *  it quoted has changed since.
+   *
+   *  Raises {@link NotFoundError} (404) for an unknown run and for another
+   *  tenant's run alike, and also — with code `no_prompt_snapshot` — for a run
+   *  that never reached a model call or predates prompt snapshots. */
+  async getRunPrompt(
+    runId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<RunPromptResponse> {
+    return jsonFetch<RunPromptResponse>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/prompt`,
       opts,
     );
   }

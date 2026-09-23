@@ -137,6 +137,9 @@ function coalesceTextTerminal(events: TranscriptEvent[]): TranscriptEvent[] {
   for (const ev of events) {
     const last = out[out.length - 1];
     const kind = ev.event?.type ?? ev.type;
+    // A store-side record (read via GET /v1/runs/{run_id}/prompt), not a line
+    // of the conversation.
+    if (kind === "prompt_snapshot") continue;
     const lastKind = last ? (last.event?.type ?? last.type) : "";
     if (last && (kind === "text" || kind === "thinking") && kind === lastKind) {
       out[out.length - 1] = {

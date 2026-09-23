@@ -675,6 +675,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	}
 	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
+	promptSnapshotted := false // RFC DI: the first request is recorded once
 	for iter := 0; iter < maxIter; iter++ {
 		if err := ctx.Err(); err != nil {
 			return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, err
@@ -733,6 +734,12 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				OnEvent:          emit, // a driver's retry-while-rate-limited event reaches the stream
 			}
 			applyStatefulSampling(&req, opts.Sampling)
+			if !promptSnapshotted {
+				// RFC DI: the stateful loop's first request, as sent — its system
+				// carries the state instructions the main loop never adds.
+				promptSnapshotted = true
+				emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
+			}
 			call, err := callForEmitState(ctx, opts.Provider, req)
 			input, usage := call.input, call.usage
 			addUsage(&total, usage)

@@ -92,6 +92,9 @@ export type EventType =
   // in-flight child durable across a pause.
   | "spawn_child_started"
   | "spawn_child_result"
+  // The prompt a run's first model call received (RFC DI). A transcript
+  // record read via getRunPrompt; never sent on the live stream.
+  | "prompt_snapshot"
   // v0.9.x — client-synthesized lifecycle events emitted ONLY when the
   // streaming caller passes `debug: true`. Never originate from the
   // server. The leading underscore signals "synthetic, not on the wire."
@@ -227,6 +230,31 @@ export interface RunConfigResponse {
   /** The model the run last resolved to, as recorded on the run row. */
   model: string;
   config: RunConfigRecord;
+}
+
+/** Payload on a `prompt_snapshot` transcript event (RFC DI): the system blocks
+ *  and the run's input its first model call received. */
+export interface RunPromptSnapshot {
+  system: PromptBlock[];
+  input: PromptBlock[];
+}
+
+/** One block of a {@link RunPromptResponse}. `text` blocks carry the prompt
+ *  text; an `image` block keeps its `media_type` but not its bytes. */
+export interface PromptBlock {
+  type: string;
+  text?: string;
+  media_type?: string;
+}
+
+/** The reply from `GET /v1/runs/{run_id}/prompt` (RFC DI) — what the run's first
+ *  model call was sent, as assembled: skills, memory injection, `{{...}}`
+ *  expansion and metadata already applied. `input` is this run's own input
+ *  (for a continuation, the new message rather than the whole history). */
+export interface RunPromptResponse {
+  run_id: string;
+  system: PromptBlock[];
+  input: PromptBlock[];
 }
 
 /** The reply from `GET /v1/runs/{run_id}/effective-config` — for every
@@ -589,6 +617,8 @@ export interface AgentEvent {
   turn_cancelled?: TurnCancelledInfo;
   /** Payload on `spawn_child_started` / `spawn_child_result`. */
   spawn_child?: SpawnChildInfo;
+  /** Payload on `prompt_snapshot` (transcript only). */
+  prompt_snapshot?: RunPromptSnapshot;
   /** The assistant turn's accumulated reasoning trace, on `done`. Empty for
    *  non-thinking models. */
   reasoning?: string;

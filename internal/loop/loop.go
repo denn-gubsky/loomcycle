@@ -2449,6 +2449,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 	}
 
+	promptSnapshotted := false // RFC DI: the first request is recorded once
 outerLoop:
 	for iter := 0; !parkAbandoned && iter < iterCap; iter++ {
 		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
@@ -2666,6 +2667,12 @@ outerLoop:
 			req.PresencePenalty = s.PresencePenalty
 			req.Seed = s.Seed
 			req.Stop = s.Stop
+		}
+		if !promptSnapshotted {
+			// RFC DI: what the model was first asked, exactly as sent. Once
+			// per loop entry; a resumed run records the prompt it resumed with.
+			promptSnapshotted = true
+			emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
 		}
 		ch, err := opts.Provider.Call(turnCtx, req)
 		if err != nil {

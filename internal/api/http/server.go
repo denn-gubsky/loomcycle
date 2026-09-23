@@ -3458,6 +3458,8 @@ func (s *Server) Mux() http.Handler {
 	// Read back what a run holds. Its sibling above is the write; without this
 	// the overrides were write-only — settable and never readable.
 	mux.Handle("GET /v1/runs/{run_id}/config", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunConfig))))
+	// RFC DI: the prompt the run's first model call received.
+	mux.Handle("GET /v1/runs/{run_id}/prompt", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRunPrompt))))
 	// The assembled answer: every overridable field, the value this run will
 	// actually use, and WHICH layer decided it. Its sibling above reports only
 	// what the run itself overrode.
@@ -5782,8 +5784,14 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// Even on the store-less path, multiple concurrent callers
 		// could write to fwd in parallel. fwd itself (stream.send)
 		// is already mutex-protected for the SSE path, so the bare
-		// fwd is safe; just return it.
-		return fwd
+		// fwd is safe. A store-only record has nowhere to go without a
+		// store, and it must not leak onto the live stream instead.
+		return func(ev providers.Event) {
+			if ev.Type == providers.EventPromptSnapshot {
+				return
+			}
+			fwd(ev)
+		}
 	}
 	var mu sync.Mutex
 	var usageCallIdx int // RFC AV: per-call ledger row index within this run
@@ -5839,6 +5847,21 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// live SSE/gRPC consumers: it's not a client-facing event, and eventToProto
 		// carries no SpawnChild payload (a gRPC client would get a typed-but-empty
 		// frame). Persist, don't forward.
+		// RFC DI: the prompt snapshot is the same kind of store-side record — the
+		// read behind GET /v1/runs/{id}/prompt, not a stream event. Its text
+		// passes through the redactor like every other persisted surface.
+		if ev.Type == providers.EventPromptSnapshot {
+			if ev.PromptSnapshot != nil && s.redactor.Enabled() {
+				snap := redactPromptSnapshot(s.redactor, *ev.PromptSnapshot)
+				ev.PromptSnapshot = &snap
+			}
+			if payload, err := json.Marshal(ev); err == nil {
+				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
+					log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+				}
+			}
+			return
+		}
 		if ev.Type == providers.EventSpawnChildStarted || ev.Type == providers.EventSpawnChildResult {
 			payload, err := json.Marshal(ev)
 			if err == nil {
