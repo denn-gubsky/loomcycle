@@ -37,10 +37,21 @@ VAL = {"correct": 1.0, "partial": 0.5, "wrong": 0.0}
 
 
 def load():
-    shape = {r["question"]: r for r in json.load(open(f"{D}/retrieval-shape.json"))["rows"]}
-    verd = json.load(open(f"{D}/verifier-verdicts.json"))
-    ctl = {r["question"]: r for r in json.load(open(f"{D}/arm-control.json"))["results"]}
-    l2 = {r["question"]: r for r in json.load(open(f"{D}/arm-l2.json"))["results"]}
+    # Two naming generations: bench/results ignores everything but README.md,
+    # summary-*.json and *.py, so a results file that is not named summary-* is simply
+    # not in the repo. Accept both rather than silently failing on the committed set.
+    def pick(*names):
+        for n in names:
+            if os.path.exists(f"{D}/{n}"):
+                return json.load(open(f"{D}/{n}"))
+        raise SystemExit(f"none of {names} under {D}")
+
+    shape = {r["question"]: r for r in pick("summary-retrieval-shape.json",
+                                            "retrieval-shape.json")["rows"]}
+    verd = pick("summary-verifier-verdicts.json", "verifier-verdicts.json")
+    ctl = {r["question"]: r for r in pick("summary-arm-control.json",
+                                          "arm-control.json")["results"]}
+    l2 = {r["question"]: r for r in pick("summary-arm-l2.json", "arm-l2.json")["results"]}
     # only questions present everywhere: a verdict the model never produced is not a
     # "yes", and folding it into either class would invent data.
     qs = [q for q in shape if q in verd and q in ctl and q in l2]
