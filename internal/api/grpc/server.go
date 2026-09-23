@@ -244,6 +244,7 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 	out := runToProto(run, live)
 	// Single-run read only, like HTTP GET /v1/agents/{id} (RFC DI).
 	out.Result = run.Result
+	out.Spec = run.RunConfig
 	return out, nil
 }
 

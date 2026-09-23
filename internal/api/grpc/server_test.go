@@ -1289,3 +1289,34 @@ func TestGetAgent_ReturnsTheResultListingDoesNot(t *testing.T) {
 		}
 	}
 }
+
+// RFC DI: GetAgent returns the run's own configuration record as JSON bytes,
+// beside the result; a listing leaves it out.
+func TestGetAgent_ReturnsTheSpecListingDoesNot(t *testing.T) {
+	client, _, st, cleanup := startTestServer(t, "")
+	defer cleanup()
+	ctx := context.Background()
+	sess, _ := st.CreateSession(ctx, "t", "default", "alice")
+	run, _ := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_spec", UserID: "alice",
+		RunConfig: json.RawMessage(`{"tool_choice":{"mode":"required"}}`)})
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+	got, err := client.GetAgent(ctx, &loomcyclepb.GetAgentRequest{AgentId: "a_spec"})
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	var spec map[string]map[string]any
+	if err := json.Unmarshal(got.Spec, &spec); err != nil || spec["tool_choice"]["mode"] != "required" {
+		t.Errorf("GetAgent spec = %q (%v), want the run's record", got.Spec, err)
+	}
+	list, err := client.ListUserAgents(ctx, &loomcyclepb.ListUserAgentsRequest{UserId: "alice", Status: string(store.RunCompleted)})
+	if err != nil || len(list.Agents) == 0 {
+		t.Fatalf("ListUserAgents = %v (%v)", list, err)
+	}
+	for _, a := range list.Agents {
+		if len(a.Spec) != 0 {
+			t.Errorf("ListUserAgents row %s carries a spec; listings must stay small", a.AgentId)
+		}
+	}
+}

@@ -321,6 +321,9 @@ type Run struct {
 	// Result is the run's answer (RFC DI): {final_text, state}. Set by GetRun
 	// only; ListRuns leaves it empty so a listing stays small.
 	Result json.RawMessage `json:"result,omitempty"`
+	// Spec is the run's own configuration record (RFC DI) — the overrides it
+	// ran with, merged over its definition. Set by GetRun only, like Result.
+	Spec json.RawMessage `json:"spec,omitempty"`
 }
 
 // ListRunsFilter selects which runs ListRuns returns. Empty fields

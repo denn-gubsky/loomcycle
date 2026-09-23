@@ -1951,6 +1951,10 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         # list_user_agents leaves it empty. None while running and when the run
         # finished with nothing to report.
         "result": json.loads(a.result) if a.result else None,
+        # The run's own configuration record (RFC DI): the overrides it ran
+        # with, merged over its definition. get_agent only; None when the run
+        # overrode nothing.
+        "spec": json.loads(a.spec) if a.spec else None,
     }
 
 

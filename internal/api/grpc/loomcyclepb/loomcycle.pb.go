@@ -4866,7 +4866,12 @@ type Agent struct {
 	// are the fields above. Set on GetAgent only; ListUserAgents leaves it empty so
 	// a listing stays small. Empty while running and for a finish with nothing
 	// to report.
-	Result        []byte `protobuf:"bytes,14,opt,name=result,proto3" json:"result,omitempty"`
+	Result []byte `protobuf:"bytes,14,opt,name=result,proto3" json:"result,omitempty"`
+	// spec is the run's own configuration record as JSON (RFC DI): the overrides
+	// it ran with, merged over its definition (sampling, tool_choice, routing,
+	// resources, tuning, interactive, …). GetAgent only, like result. Empty when
+	// the run overrode nothing.
+	Spec          []byte `protobuf:"bytes,15,opt,name=spec,proto3" json:"spec,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4995,6 +5000,13 @@ func (x *Agent) GetLive() bool {
 func (x *Agent) GetResult() []byte {
 	if x != nil {
 		return x.Result
+	}
+	return nil
+}
+
+func (x *Agent) GetSpec() []byte {
+	if x != nil {
+		return x.Spec
 	}
 	return nil
 }
@@ -9939,7 +9951,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04type\x18\x05 \x01(\tR\x04type\x12\x18\n" +
 	"\apayload\x18\x06 \x01(\fR\apayload\",\n" +
 	"\x0fGetAgentRequest\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\x86\x04\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\x9a\x04\n" +
 	"\x05Agent\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
@@ -9958,7 +9970,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x05usage\x18\v \x01(\v2\x18.loomcycle.v1.AgentUsageR\x05usage\x12F\n" +
 	"\x11last_heartbeat_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x0flastHeartbeatAt\x12\x12\n" +
 	"\x04live\x18\r \x01(\bR\x04live\x12\x16\n" +
-	"\x06result\x18\x0e \x01(\fR\x06result\"\xca\x01\n" +
+	"\x06result\x18\x0e \x01(\fR\x06result\x12\x12\n" +
+	"\x04spec\x18\x0f \x01(\fR\x04spec\"\xca\x01\n" +
 	"\n" +
 	"AgentUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +

@@ -317,6 +317,7 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	}
 	out := storeRunToConnector(r)
 	out.Result = r.Result
+	out.Spec = r.RunConfig
 	return out, nil
 }
 

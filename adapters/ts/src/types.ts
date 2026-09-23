@@ -1169,6 +1169,34 @@ export interface Agent {
    *  only (listings omit it), and only once the run has finished with
    *  something to report. */
   result?: RunResult;
+  /** The run's own configuration (RFC DI): the overrides it ran with, merged
+   *  over its definition. {@link LoomcycleClient.getAgent} only, like
+   *  `result`; absent when the run overrode nothing. */
+  spec?: RunSpec;
+}
+
+/** A run's own configuration record (RFC DI), as persisted — the values it
+ *  ran with after its per-run overrides were merged over its definition.
+ *  Keys and nested values are the server's snake_case wire names (not the
+ *  camelCase request options), so nested blocks are left untyped. */
+export interface RunSpec {
+  sampling?: Record<string, unknown>;
+  tool_choice?: ToolChoiceOptions;
+  output_format?: OutputFormatOptions;
+  compaction?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  max_context_tokens?: number;
+  run_timeout_seconds?: number;
+  /** Which model serves the run: model / provider / tier / effort. */
+  routing?: Record<string, unknown>;
+  /** The run's budget: max_tokens / max_iterations / … */
+  resources?: Record<string, unknown>;
+  tuning?: Record<string, unknown>;
+  /** Whether the run parks at its turn boundaries (current, after any retune). */
+  interactive?: boolean;
+  interruption?: Record<string, unknown>;
+  /** The caller's host narrowing. */
+  hosts?: Record<string, unknown>;
 }
 
 /** A finished run's answer (RFC DI). */

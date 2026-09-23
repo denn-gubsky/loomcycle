@@ -1373,6 +1373,11 @@ message Agent {
   // a listing stays small. Empty while running and for a finish with nothing
   // to report.
   bytes result = 14;
+  // spec is the run's own configuration record as JSON (RFC DI): the overrides
+  // it ran with, merged over its definition (sampling, tool_choice, routing,
+  // resources, tuning, interactive, …). GetAgent only, like result. Empty when
+  // the run overrode nothing.
+  bytes spec = 15;
 }
 
 // AgentUsage mirrors agentResponseUsage.
