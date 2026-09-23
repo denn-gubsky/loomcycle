@@ -2,9 +2,14 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 
+	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -42,7 +47,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	}
 	ident := tools.RunIdentity(ctx)
 	agent := teamWalkAgentPrefix + teamName
-	_, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
+	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
 		AgentID: agent,
 		UserID:  ident.UserID,
 	})
@@ -54,6 +59,12 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	if detach {
 		walkCtx = context.WithoutCancel(ctx)
 	}
+	// The walk's own cancel. Every member run spawns under walkCtx, so firing
+	// it stops them too; before this nothing could stop a running walk short
+	// of a breakpoint's `abort` answer — the run-id cancel route refused it as
+	// not interactive, and the agents route cannot address `team:<name>`.
+	walkCtx, cancelWalk := context.WithCancelCause(walkCtx)
+	s.walks.add(runID, sessionID, cancelWalk)
 	walkCtx = tools.WithRunID(walkCtx, runID)
 	// The pause machinery is the Interruption tool's `ask`, which is gated on
 	// the CALLING AGENT's policy. A walk has no AgentDef to carry one, so the
@@ -66,16 +77,80 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	})
 
 	finish := func(walkErr error) {
-		status, msg := store.RunCompleted, ""
-		if walkErr != nil {
+		s.walks.remove(runID)
+		status, stopReason, msg := store.RunCompleted, "", ""
+		if cause := context.Cause(walkCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
+			// Cancelled on purpose: recorded as cancelled, with the operator's
+			// reason, the way an agent run's API cancel is.
+			status, stopReason = store.RunCancelled, cancel.ReasonFromCause(cause)
+			if stopReason == "" {
+				stopReason = "cancelled by api"
+			}
+		} else if walkErr != nil {
 			status, msg = store.RunFailed, walkErr.Error()
 		}
 		// A survival ctx: the run row must be closed even when the walk failed
 		// because its ctx was cancelled, or a cancelled walk would sit in the
 		// runs list as running forever.
-		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, "", store.Usage{}, msg); ferr != nil {
+		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, store.Usage{}, msg); ferr != nil {
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}
+		cancelWalk(nil) // release the ctx; a no-op after a cancel
 	}
 	return walkCtx, runID, finish, nil
+}
+
+// walkCancels is the live-walk cancel table. In-process only: a walk on
+// another replica is not reachable here, and the cancel route answers that as
+// "no in-flight run" rather than pretending it stopped something — the same
+// single-replica limit the breakpoint set has.
+type walkCancels struct {
+	mu sync.Mutex
+	m  map[string]walkCancel
+}
+
+type walkCancel struct {
+	sessionID string
+	cancel    context.CancelCauseFunc
+}
+
+func (w *walkCancels) add(runID, sessionID string, fn context.CancelCauseFunc) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.m == nil {
+		w.m = map[string]walkCancel{}
+	}
+	w.m[runID] = walkCancel{sessionID: sessionID, cancel: fn}
+}
+
+func (w *walkCancels) remove(runID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.m, runID)
+}
+
+func (w *walkCancels) get(runID string) (walkCancel, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	e, ok := w.m[runID]
+	return e, ok
+}
+
+// cancelTeamWalk stops a live walk by its run id. isWalk reports whether runID
+// names a walk live on this replica; when false the caller handles the id as
+// an ordinary run. A walk the caller does not own folds into the same opaque
+// not-in-flight answer an unknown run gets.
+func (s *Server) cancelTeamWalk(ctx context.Context, runID, reason string) (stopped, isWalk bool, err error) {
+	e, ok := s.walks.get(runID)
+	if !ok {
+		return false, false, nil
+	}
+	if e.sessionID != "" && s.store != nil {
+		sess, gerr := s.store.GetSession(ctx, e.sessionID)
+		if gerr != nil || !sessionOwnershipOK(ctx, sess) {
+			return false, true, connector.ErrRunNotInFlight
+		}
+	}
+	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
+	return true, true, nil
 }

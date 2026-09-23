@@ -102,6 +102,11 @@ func (s *Server) StreamRunEvents(ctx context.Context, runID string, fromSeq int6
 //     fallback. Single-process (no coordinator) folds back to ErrRunNotInFlight,
 //     byte-identical to P1's steer-miss.
 func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bool, error) {
+	// A team walk has no turns to stop — it is a container for the runs it
+	// spawns — so cancelling it ends it: stopped, not parked.
+	if stopped, isWalk, err := s.cancelTeamWalk(ctx, runID, reason); isWalk {
+		return stopped, false, err
+	}
 	if s.turnCancelReg == nil || s.steerReg == nil {
 		return false, false, connector.ErrTurnCancelUnavailable
 	}

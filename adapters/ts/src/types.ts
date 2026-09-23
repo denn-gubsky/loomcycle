@@ -1272,7 +1272,8 @@ export interface ReplaySessionResult {
 /** Result of {@link LoomcycleClient.cancelTurn} (RFC BH) — the current turn was
  *  stopped and the interactive run parked at awaiting_input (session +
  *  transcript intact). This is NOT whole-run cancel ({@link
- *  LoomcycleClient.cancelAgent}). */
+ *  LoomcycleClient.cancelAgent}). For a team walk `parked` is false: the walk
+ *  was ended, not parked. */
 export interface CancelTurnResult {
   run_id: string;
   stopped: boolean;

@@ -726,6 +726,11 @@ export class LoomcycleClient {
    * NOT whole-run cancel ({@link LoomcycleClient.cancelAgent}), which terminates
    * the run. Returns `{ run_id, stopped, parked }`.
    *
+   * A team walk's run (the `run_id` a detached `runTeam` returns) has no turns,
+   * so this ENDS the walk and the runs it spawned: `{ stopped: true, parked:
+   * false }`, recorded as cancelled. Walks are reachable on the replica running
+   * them only.
+   *
    * Rejects with RunBusyError (409) when the run isn't mid-turn or isn't
    * interactive, and AgentNotFoundError (404) for an unknown / cross-tenant run.
    * Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
