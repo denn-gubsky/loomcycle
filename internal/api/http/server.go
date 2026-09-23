@@ -543,7 +543,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		turnCancelReg:  turncancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookRegistry:   hookReg,
-		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
+		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(hookReg, nil, cfg.Hooks.PrivateHostAllowlist),
 		startedAt:      time.Now(),
 	}
 	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
@@ -2981,7 +2981,7 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 // with request handling (a hot-reload path would need a guard added here).
 func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 	s.hookRegistry = r
-	s.hookDispatcher = hooks.NewDispatcher(r, nil)
+	s.hookDispatcher = hooks.NewDispatcherWithPrivateHosts(r, nil, s.cfgHolder.Load().Hooks.PrivateHostAllowlist)
 }
 
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
