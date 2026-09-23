@@ -168,6 +168,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	if !haveRunCfg {
 		runCfg = runConfigRecord{
 			Sampling:          agentDef.Sampling,
+			ToolChoice:        agentDef.ToolChoice,
 			Compaction:        agentDef.Compaction,
 			Context:           agentDef.Context,
 			MaxContextTokens:  agentDef.MaxContextTokens,
@@ -476,6 +477,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		// none — which is exactly the replayed conversation it must not see.
 		priorMessages = nil
 	}
+	resumedToolChoice := runCfg.ToolChoice
+	if toolChoiceSpent(ctx, s.store, run.ID, resumedToolChoice) {
+		resumedToolChoice = nil
+	}
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
@@ -505,6 +510,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
 		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
+		ToolChoice:          resumedToolChoice, // restored, minus what the run already spent
 		Compaction:          runCfg.Compaction, // restored from the run, not re-derived
 		Context:             runCfg.Context,    // restored from the run, not re-derived (RFC CR)
 		// BankCompactedSpan is deliberately ABSENT (RFC BL P3). A resumed run

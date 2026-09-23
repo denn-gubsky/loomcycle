@@ -100,6 +100,9 @@ var runFieldReaders = map[string]func(runConfigRecord) (any, bool){
 	},
 
 	"Sampling": func(r runConfigRecord) (any, bool) { return pick(r.Sampling != nil, func() any { return r.Sampling }) },
+	"ToolChoice": func(r runConfigRecord) (any, bool) {
+		return pick(r.ToolChoice != nil, func() any { return r.ToolChoice })
+	},
 	"Compaction": func(r runConfigRecord) (any, bool) {
 		return pick(r.Compaction != nil, func() any { return r.Compaction })
 	},

@@ -1,10 +1,13 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -24,6 +27,7 @@ import (
 // not interpret the record. It stores bytes.
 type runConfigRecord struct {
 	Sampling          *config.Sampling   `json:"sampling,omitempty"`
+	ToolChoice        *config.ToolChoice `json:"tool_choice,omitempty"` // RFC DI
 	Compaction        *config.Compaction `json:"compaction,omitempty"`
 	Context           *config.Context    `json:"context,omitempty"`
 	MaxContextTokens  int                `json:"max_context_tokens,omitempty"`
@@ -152,4 +156,44 @@ func decodeRunConfig(raw json.RawMessage) (runConfigRecord, bool) {
 		return runConfigRecord{}, false
 	}
 	return rc, true
+}
+
+// toolChoiceSpent reports whether a paused run already used up its tool_choice
+// before it paused (RFC DI), read from the run's OWN events.
+//
+// Resume re-enters the loop, and the loop starts each entry with a fresh
+// policy, so without this a resumed run would force its first call a second
+// time — after the run's actual first call happened hours earlier. A session
+// continuation is unaffected: it is a new run with no events of its own yet.
+//
+// A store read failure counts as not spent: re-forcing once is a smaller harm
+// than dropping a choice the run never got to use.
+func toolChoiceSpent(ctx context.Context, st store.Store, runID string, tc *config.ToolChoice) bool {
+	if tc.IsZero() || st == nil || tc.EffectiveUntil() == config.ToolChoiceUntilAlways {
+		return false
+	}
+	const page = 500
+	var after int64
+	for {
+		evs, err := st.GetRunEventsSince(ctx, runID, after, page)
+		if err != nil {
+			return false
+		}
+		for _, ev := range evs {
+			after = ev.Seq
+			switch {
+			case tc.EffectiveUntil() == config.ToolChoiceUntilFirstCall && ev.Type == string(providers.EventUsage):
+				return true // a model call completed
+			case tc.EffectiveUntil() == config.ToolChoiceUntilUntilCalled && ev.Type == string(providers.EventToolCall):
+				var pe providers.Event
+				if json.Unmarshal(ev.Payload, &pe) == nil && pe.ToolUse != nil &&
+					(tc.Mode == config.ToolChoiceModeRequired || pe.ToolUse.Name == tc.Name) {
+					return true
+				}
+			}
+		}
+		if len(evs) < page {
+			return false
+		}
+	}
 }
