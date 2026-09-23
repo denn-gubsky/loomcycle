@@ -284,7 +284,9 @@ func TestDispatcher_PreAllowHosts_TenantScopedPermit(t *testing.T) {
 			Tenant: hookTenant, Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
 			CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"},
 		})
-		return NewDispatcher(r, nil)
+		// The fake hook listens on loopback, which a TENANT hook may reach
+		// only when the operator vouches for the host.
+		return NewDispatcherWithPrivateHosts(r, nil, []string{"127.0.0.1"})
 	}
 
 	// The jobember run: its hook IS permitted → widens.
@@ -526,5 +528,71 @@ func TestDispatcher_NoMatchIsCheap(t *testing.T) {
 	}
 	if string(out.Input) != `{}` {
 		t.Errorf("no-match Input = %s, want unchanged", out.Input)
+	}
+}
+
+// tenantHookOnLoopback registers one fail-closed Pre hook whose callback is the
+// fake server on 127.0.0.1, owned by the given tenant.
+func tenantHookOnLoopback(t *testing.T, tenant string) (*fakeHook, *Registry) {
+	t.Helper()
+	hook := newFakeHook(t, `{"input":{"rewritten":true}}`)
+	r := NewRegistry()
+	mustRegister(t, r, &Hook{
+		Tenant: tenant, Owner: "app", Name: "gate", Phase: PhasePre,
+		CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"}, FailMode: FailClosed,
+	})
+	return hook, r
+}
+
+// A tenant operator's hook receives every matching tool input. Left unguarded,
+// its callback URL let a tenant stream those inputs to the cloud metadata
+// endpoint or any internal service the runtime can reach — the dial must be
+// refused, and the refusal must fail the hook the way its fail_mode says.
+func TestDispatcher_TenantHookCannotReachAPrivateAddress(t *testing.T) {
+	hook, r := tenantHookOnLoopback(t, "acme")
+	d := NewDispatcher(r, nil)
+
+	out := d.RunPre(context.Background(),
+		Identity{Agent: "a", Tenant: "acme"},
+		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{"secret":"tool input"}`)},
+	)
+	if n := atomic.LoadInt32(&hook.calls); n != 0 {
+		t.Fatalf("a tenant hook reached a loopback callback %d time(s); the tool input left the runtime", n)
+	}
+	if out.Deny == nil || !out.Deny.IsError {
+		t.Errorf("a refused fail-closed hook must deny the call, got %+v", out)
+	}
+}
+
+// The operator's own escape hatch: a private host it vouched for is reachable.
+func TestDispatcher_TenantHookReachesAnOperatorVouchedPrivateHost(t *testing.T) {
+	hook, r := tenantHookOnLoopback(t, "acme")
+	d := NewDispatcherWithPrivateHosts(r, nil, []string{"127.0.0.1"})
+
+	out := d.RunPre(context.Background(),
+		Identity{Agent: "a", Tenant: "acme"},
+		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
+	)
+	if n := atomic.LoadInt32(&hook.calls); n != 1 {
+		t.Fatalf("vouched host: hook called %d times, want 1", n)
+	}
+	if out.Deny != nil || !strings.Contains(string(out.Input), "rewritten") {
+		t.Errorf("vouched host: hook result not applied, got %+v", out)
+	}
+}
+
+// An operator-global hook (admin / legacy / open mode register with no tenant)
+// is the operator's own code — commonly a localhost sidecar — and must keep
+// working exactly as before the guard existed.
+func TestDispatcher_OperatorGlobalHookStillReachesLoopback(t *testing.T) {
+	hook, r := tenantHookOnLoopback(t, "")
+	d := NewDispatcher(r, nil)
+
+	d.RunPre(context.Background(),
+		Identity{Agent: "a", Tenant: "acme"},
+		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
+	)
+	if n := atomic.LoadInt32(&hook.calls); n != 1 {
+		t.Fatalf("operator-global hook: called %d times, want 1 (the guard must not break sidecar hooks)", n)
 	}
 }

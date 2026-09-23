@@ -2802,3 +2802,27 @@ func TestEphemeralVolumeSweepInterval_DefaultAndDisable(t *testing.T) {
 		}
 	})
 }
+
+// TestHooksPrivateHostAllowlistEnvAppends pins the yaml→env wiring for the
+// operator's vouch list a TENANT hook's callback needs to reach a private host.
+func TestHooksPrivateHostAllowlistEnvAppends(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+hooks:
+  private_host_allowlist: ["hooks.internal"]
+`), 0o600)
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "sidecar.local, gate.svc")
+
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"hooks.internal", "sidecar.local", "gate.svc"}
+	if got := cfg.Hooks.PrivateHostAllowlist; !equalStrings(got, want) {
+		t.Fatalf("PrivateHostAllowlist = %v, want %v (env should append to yaml)", got, want)
+	}
+}

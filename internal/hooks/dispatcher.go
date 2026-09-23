@@ -46,11 +46,20 @@ func (d *Dispatcher) Stats() DispatcherStats {
 
 // NewDispatcher returns a Dispatcher backed by the given registry.
 // httpClient may be nil (uses a default http.Client without a
-// per-client timeout — per-hook timeouts apply via ctx).
+// per-client timeout — per-hook timeouts apply via ctx). It serves
+// operator-global hooks only; tenant hooks always dial through the
+// private-address guard, here with no host vouched for.
 func NewDispatcher(reg RegistryInterface, httpClient *http.Client) *Dispatcher {
+	return NewDispatcherWithPrivateHosts(reg, httpClient, nil)
+}
+
+// NewDispatcherWithPrivateHosts is NewDispatcher plus the operator's
+// hooks.private_host_allowlist: hosts (suffix-matched) a TENANT hook's
+// callback may reach even though they resolve to a private address.
+func NewDispatcherWithPrivateHosts(reg RegistryInterface, httpClient *http.Client, privateHostAllowlist []string) *Dispatcher {
 	return &Dispatcher{
 		registry: reg,
-		client:   newWebhookClient(httpClient),
+		client:   newWebhookClient(httpClient, privateHostAllowlist),
 	}
 }
 
@@ -282,5 +291,5 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 	hookCtx, cancel := context.WithTimeout(ctx, h.Timeout)
 	defer cancel()
-	return d.client.post(hookCtx, h.CallbackURL, body, out)
+	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, body, out)
 }

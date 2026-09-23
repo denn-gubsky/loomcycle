@@ -498,6 +498,17 @@ type HooksConfig struct {
 	// Env-var equivalent: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
 	// (comma-separated, same `[tenant:]owner` syntax). Env appends to yaml.
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
+
+	// PrivateHostAllowlist names hosts (suffix-matched, like
+	// http_private_host_allowlist) that a TENANT operator's hook callback
+	// may reach although they resolve to a private / loopback / link-local
+	// address. A tenant hook receives every matching tool input, so its
+	// callback dials through the SSRF guard by default; operator-global
+	// hooks (registered by admin / legacy / open mode) are not guarded.
+	//
+	// Env-var equivalent: LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST
+	// (comma-separated). Env appends to yaml.
+	PrivateHostAllowlist []string `yaml:"private_host_allowlist"`
 }
 
 // MemoryConfig is the v0.9.0 top-level Memory tool config block.
@@ -4258,6 +4269,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		for _, owner := range splitCSV(v) {
 			cfg.Hooks.PermitHostWiden.Owners = append(cfg.Hooks.PermitHostWiden.Owners, owner)
 		}
+	}
+	if v := os.Getenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST"); v != "" {
+		cfg.Hooks.PrivateHostAllowlist = append(cfg.Hooks.PrivateHostAllowlist, splitCSV(v)...)
 	}
 
 	// gRPC server (v0.5.5+). Disabled by default; operator opts in
