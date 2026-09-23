@@ -180,6 +180,14 @@ type Sampling struct {
 	Stop             []string `json:"stop,omitempty"`
 }
 
+// ToolChoice mirrors config.ToolChoice locally (the agents package stays
+// config-free). json: tags are LOAD-BEARING for content_sha256.
+type ToolChoice struct {
+	Mode  string `json:"mode,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Until string `json:"until,omitempty"`
+}
+
 // Compaction mirrors config.Compaction locally (the agents package stays
 // config-free). json: tags mirror the persisted snake_case and are LOAD-BEARING
 // for content_sha256. Pointers so an unset field omits.

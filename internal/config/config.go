@@ -1092,6 +1092,13 @@ type AgentDef struct {
 	// Effort). Pointer so a no-sampling agent stays byte-identical pre-feature.
 	Sampling *Sampling `yaml:"sampling,omitempty"`
 
+	// ToolChoice constrains whether and which tool the model must call, and
+	// for how many calls (RFC DI). nil = the provider's own default (auto).
+	// A per-run tool_choice REPLACES it whole: its fields depend on each
+	// other, so a per-field merge could pair one layer's mode with another's
+	// tool name. Content-identifying, like Sampling.
+	ToolChoice *ToolChoice `yaml:"tool_choice,omitempty"`
+
 	// Compaction is the per-agent context-compaction block (yaml/JSON
 	// `compaction:`). Controls keep-last-N / keep-first, the auto-compact
 	// trigger, the summary target size, and an optional cheaper summary model.
@@ -1611,6 +1618,105 @@ func (s *Sampling) Validate() error {
 		return fmt.Errorf("sampling.stop has %d sequences (max 8)", len(s.Stop))
 	}
 	return nil
+}
+
+// ToolChoice is the per-agent / per-run `tool_choice:` block (RFC DI): whether
+// and which tool the model must call, and for how many calls.
+//
+// Until exists because a forced choice is a property of a CALL, not of a run:
+// a choice forced on every call never lets the model give a final answer, so
+// the run can only end at its iteration cap.
+type ToolChoice struct {
+	// Mode: "auto" (the provider default), "none" (no tool calls), "required"
+	// (some tool), "tool" (the tool named in Name).
+	Mode string `json:"mode" yaml:"mode"`
+	// Name is the tool to call; required with mode "tool", refused otherwise.
+	Name string `json:"name,omitempty" yaml:"name"`
+	// Until bounds how long the choice applies: "first_call" (the default: the
+	// run's first model call only), "until_called" (every call until the model
+	// makes a call that satisfies it), "always" (every call — refused for the
+	// forcing modes, which could then never finish).
+	Until string `json:"until,omitempty" yaml:"until"`
+}
+
+// Tool-choice modes and until values.
+const (
+	ToolChoiceModeAuto     = "auto"
+	ToolChoiceModeNone     = "none"
+	ToolChoiceModeRequired = "required"
+	ToolChoiceModeTool     = "tool"
+
+	ToolChoiceUntilFirstCall   = "first_call"
+	ToolChoiceUntilUntilCalled = "until_called"
+	ToolChoiceUntilAlways      = "always"
+)
+
+// IsZero reports whether the block asks for nothing: absent, or plain auto.
+func (t *ToolChoice) IsZero() bool {
+	return t == nil || t.Mode == "" || t.Mode == ToolChoiceModeAuto
+}
+
+// EffectiveUntil is Until with its default applied.
+func (t *ToolChoice) EffectiveUntil() string {
+	if t == nil || t.Until == "" {
+		return ToolChoiceUntilFirstCall
+	}
+	return t.Until
+}
+
+// Forces reports whether the choice makes the model call a tool.
+func (t *ToolChoice) Forces() bool {
+	return t != nil && (t.Mode == ToolChoiceModeRequired || t.Mode == ToolChoiceModeTool)
+}
+
+// Validate refuses a block that could not mean what it says.
+func (t *ToolChoice) Validate() error {
+	if t == nil {
+		return nil
+	}
+	switch t.Mode {
+	case ToolChoiceModeAuto, ToolChoiceModeNone, ToolChoiceModeRequired, ToolChoiceModeTool:
+	case "":
+		return fmt.Errorf("tool_choice.mode is required (auto, none, required or tool)")
+	default:
+		return fmt.Errorf("tool_choice.mode %q is not one of auto, none, required, tool", t.Mode)
+	}
+	if t.Mode == ToolChoiceModeTool && t.Name == "" {
+		return fmt.Errorf("tool_choice.mode \"tool\" needs a tool name")
+	}
+	if t.Mode != ToolChoiceModeTool && t.Name != "" {
+		return fmt.Errorf("tool_choice.name %q is only meaningful with mode \"tool\"", t.Name)
+	}
+	switch t.Until {
+	case "", ToolChoiceUntilFirstCall, ToolChoiceUntilUntilCalled, ToolChoiceUntilAlways:
+	default:
+		return fmt.Errorf("tool_choice.until %q is not one of first_call, until_called, always", t.Until)
+	}
+	if t.Until == ToolChoiceUntilAlways && t.Forces() {
+		return fmt.Errorf("tool_choice.until \"always\" with mode %q would force a tool on every call, "+
+			"so the model could never give a final answer — use first_call or until_called", t.Mode)
+	}
+	return nil
+}
+
+// Clone returns a copy that aliases nothing.
+func (t *ToolChoice) Clone() *ToolChoice {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	return &c
+}
+
+// MergeToolChoice returns the effective choice: `over` REPLACES `base` whole
+// when set. Not per field, unlike MergeSampling — the fields constrain each
+// other (a name is only valid with mode tool), so mixing layers could produce
+// a combination neither layer asked for. Never aliases either input.
+func MergeToolChoice(base, over *ToolChoice) *ToolChoice {
+	if over != nil {
+		return over.Clone()
+	}
+	return base.Clone()
 }
 
 // Compaction is the per-agent context-compaction block (the yaml/JSON
@@ -6875,6 +6981,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: invalid effort %q (want one of low/medium/high or empty)", name, agent.Effort)
 		}
 		if err := agent.Sampling.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := agent.ToolChoice.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Compaction.Validate(); err != nil {

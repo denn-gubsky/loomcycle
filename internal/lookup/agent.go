@@ -192,6 +192,8 @@ type SubstrateAgentDef struct {
 	// mergedDef). Pointer so substrate JSON persists nil (provider default)
 	// vs an explicit temperature:0.0 (deterministic).
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// ToolChoice (RFC DI): mirrors config.ToolChoice / mergedDef.
+	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
 	// Compaction: per-agent context-compaction settings (mirrors config.Compaction
 	// / mergedDef).
 	Compaction *config.Compaction `json:"compaction,omitempty"`
@@ -311,6 +313,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Tier:                   def.Tier,
 		Effort:                 def.Effort,
 		Sampling:               def.Sampling,
+		ToolChoice:             def.ToolChoice,
 		Compaction:             def.Compaction,
 		Context:                def.Context,
 		MaxTokens:              def.MaxTokens,
@@ -364,6 +367,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Tier:                  s.Tier,
 		Effort:                s.Effort,
 		Sampling:              s.Sampling,
+		ToolChoice:            s.ToolChoice,
 		Compaction:            s.Compaction,
 		Context:               s.Context,
 		MaxTokens:             s.MaxTokens,

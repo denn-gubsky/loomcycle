@@ -253,6 +253,12 @@ type AgentContent struct {
 	SqlScopes     []string `json:"sql_scopes,omitempty"`
 	SystemPrompt  string   `json:"system_prompt,omitempty"`
 	Tier          string   `json:"tier,omitempty"`
+	// ToolChoice (RFC DI) is content-identifying, like Sampling: a fork that
+	// only changes which tool the model must call must mint a distinct
+	// content_sha256. Pointer + omitempty so an agent without one hashes
+	// byte-identical to pre-feature rows. Tag "tool_choice" sorts between tier
+	// and tools.
+	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
 	// Tools is the agent's tool allowlist (the capability ceiling). Tag
 	// "tools" sorts between tier and unbounded_iterations.
 	Tools []string `json:"tools,omitempty"`
@@ -342,6 +348,10 @@ func normalize(c *AgentContent) {
 		c.Sampling.TopK == nil && c.Sampling.FrequencyPenalty == nil && c.Sampling.PresencePenalty == nil &&
 		c.Sampling.Seed == nil && len(c.Sampling.Stop) == 0 {
 		c.Sampling = nil
+	}
+	// An empty or auto tool_choice asks for nothing, so it hashes as absent.
+	if c.ToolChoice != nil && (c.ToolChoice.Mode == "" || c.ToolChoice.Mode == "auto") {
+		c.ToolChoice = nil
 	}
 	// Same all-nil collapse for compaction (a substrate read of a no-compaction
 	// def yields `"compaction":{}`) → hashes identically to a pre-feature row.
