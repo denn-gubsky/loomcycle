@@ -81,6 +81,14 @@ func (d *Driver) Capabilities() providers.Capabilities {
 	return d.capsPatch.Apply(base)
 }
 
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
+// llama.cpp applies response_format as a grammar over EVERY sampled token, so with
+// tools in the request the model could no longer emit a tool call; the format
+// is enforced only on a tool-free request.
+func (d *Driver) EnforcesStructuredOutput(_ string, hasTools bool) bool {
+	return d.Capabilities().SupportsStructuredOutput && !hasTools
+}
+
 // Call delegates to the openai driver; the ctx provider override makes the
 // inner per-attempt span carry loomcycle.provider="llamacpp".
 func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {

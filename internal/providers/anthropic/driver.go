@@ -100,6 +100,10 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// when an extended-thinking block rides along, which depends on the
 		// call's effort hint and so cannot be answered here.
 		SupportsToolChoice: true,
+		// output_config.format: every current model (Fable, Mythos, Opus 5/5.5,
+		// Opus 4.5-4.8, Sonnet 4.5+, Haiku 4.5). The grammar applies to the
+		// final text only, so tools may ride along.
+		SupportsStructuredOutput: true,
 	})
 }
 
@@ -228,6 +232,14 @@ type wireRequest struct {
 
 type wireOutputConfig struct {
 	Effort string `json:"effort,omitempty"`
+	// Format constrains the final text to a JSON schema (RFC DI). It rides in
+	// the same object as effort; there is no schema name on this API.
+	Format *wireOutputFormat `json:"format,omitempty"`
+}
+
+type wireOutputFormat struct {
+	Type   string          `json:"type"` // "json_schema"
+	Schema json.RawMessage `json:"schema"`
 }
 
 // wireToolChoice is Anthropic's shape: {"type":"auto"|"any"|"tool"|"none"}
@@ -390,6 +402,14 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 			"set effort OR temperature, not both", req.Model)
 		w.Temperature = nil
 		w.TopP = nil
+	}
+
+	// RFC DI: the answer's schema, beside effort in output_config.
+	if req.OutputFormat != nil && !anthropicModelRules(req.Model).noStructuredOutput {
+		if w.OutputConfig == nil {
+			w.OutputConfig = &wireOutputConfig{}
+		}
+		w.OutputConfig.Format = &wireOutputFormat{Type: "json_schema", Schema: anthropicSchema(req.OutputFormat.Schema)}
 	}
 
 	// RFC DG. Mapped here rather than at the call site so the "auto" case never
@@ -793,6 +813,9 @@ type anthropicRules struct {
 	// noForcedChoice: tool_choice "any" / "tool" is refused ("auto" and
 	// "none" are fine).
 	noForcedChoice bool
+	// noStructuredOutput: output_config.format is refused — the families that
+	// predate structured outputs (Claude 3.x and older, Sonnet 4 / Opus 4.0).
+	noStructuredOutput bool
 }
 
 // anthropicModelRules classifies a model id by family, matching on the name
@@ -804,6 +827,8 @@ type anthropicRules struct {
 //   - adaptive only: Opus 4.7, Opus 4.8, Opus 5 and 5.5, Sonnet 5, and the
 //     Fable and Mythos lines. Opus 4.6 / Sonnet 4.6 still accept a budget.
 //   - no forced choice: Opus 5.5, Fable 5.1, Mythos 5.1, Mythos Preview.
+//   - no structured output: Claude 3.x and older, Sonnet 4 and Opus 4.0
+//     (Opus 4.1 and every later family accept it).
 func anthropicModelRules(model string) anthropicRules {
 	m := strings.ToLower(model)
 	has := func(subs ...string) bool {
@@ -817,6 +842,8 @@ func anthropicModelRules(model string) anthropicRules {
 	return anthropicRules{
 		adaptiveOnly:   has("opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-", "mythos-"),
 		noForcedChoice: has("opus-5-5", "fable-5-1", "mythos-5-1", "mythos-preview"),
+		noStructuredOutput: has("claude-2", "claude-instant", "claude-3",
+			"sonnet-4-0", "sonnet-4-2025", "opus-4-0", "opus-4-2025"),
 	}
 }
 
@@ -837,6 +864,12 @@ func (d *Driver) EnforcesToolChoice(model, effort string, tc providers.ToolChoic
 		return false
 	}
 	return true
+}
+
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
+// Tools do not matter here: the grammar applies to the final text only.
+func (d *Driver) EnforcesStructuredOutput(model string, _ bool) bool {
+	return !anthropicModelRules(model).noStructuredOutput
 }
 
 // applyAdaptiveEffort maps the effort hint for an adaptive-only model.
@@ -926,4 +959,57 @@ func (d *Driver) fetchModels(ctx context.Context) ([]string, error) {
 		out = append(out, m.ID)
 	}
 	return out, nil
+}
+
+// anthropicUnsupportedKeywords are the JSON Schema keywords the structured-
+// output grammar refuses with a 400 (numeric and string-length bounds, array
+// maximums). They are stripped the way Anthropic's own SDKs strip them, so a
+// schema written once works across providers; the shape and every required
+// field are still enforced, only these bounds are not.
+var anthropicUnsupportedKeywords = []string{
+	"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+	"minLength", "maxLength", "maxItems",
+}
+
+// anthropicSchema rewrites a schema into what output_config.format accepts:
+// unsupported bounds removed, minItems kept only at 0/1, and every object that
+// does not say otherwise closed with additionalProperties:false (required on
+// this API). An object that explicitly allows extra properties is left alone,
+// and the API's 400 then says why — narrowing a stated true would change what
+// the author asked for.
+func anthropicSchema(raw json.RawMessage) json.RawMessage {
+	var node any
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return raw
+	}
+	var walk func(any)
+	walk = func(n any) {
+		switch v := n.(type) {
+		case map[string]any:
+			for _, k := range anthropicUnsupportedKeywords {
+				delete(v, k)
+			}
+			if mi, ok := v["minItems"].(float64); ok && mi > 1 {
+				delete(v, "minItems")
+			}
+			if v["type"] == "object" || v["properties"] != nil {
+				if _, set := v["additionalProperties"]; !set {
+					v["additionalProperties"] = false
+				}
+			}
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(node)
+	out, err := json.Marshal(node)
+	if err != nil {
+		return raw
+	}
+	return out
 }

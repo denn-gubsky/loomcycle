@@ -92,6 +92,14 @@ func (d *Driver) Capabilities() providers.Capabilities {
 	return d.capsPatch.Apply(base)
 }
 
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
+// vLLM applies response_format as a grammar over EVERY sampled token, so with
+// tools in the request the model could no longer emit a tool call; the format
+// is enforced only on a tool-free request.
+func (d *Driver) EnforcesStructuredOutput(_ string, hasTools bool) bool {
+	return d.Capabilities().SupportsStructuredOutput && !hasTools
+}
+
 // Call delegates to the openai driver. Setting a provider override on ctx
 // makes the inner driver's per-attempt span carry loomcycle.provider="vllm"
 // (matching the deepseek driver's OTEL handling — a wrapping span here would

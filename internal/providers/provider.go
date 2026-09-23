@@ -123,6 +123,13 @@ type Capabilities struct {
 	// unrunnable to buy a guarantee it never had.
 	SupportsToolChoice bool
 
+	// SupportsStructuredOutput signals a wire parameter that constrains the
+	// answer to a JSON schema (RFC DI). Coarse like SupportsToolChoice; a
+	// driver whose support varies by model (or by whether tools ride along)
+	// refines it through ModelStructuredOutputEnforcer. False is not an error:
+	// the format is dropped from the request and the run reports it.
+	SupportsStructuredOutput bool
+
 	// SupportsEffort signals that the driver translates Request.Effort
 	// into a native wire parameter when set. Anthropic maps it to a
 	// `thinking.budget_tokens` block; OpenAI to `reasoning_effort`;
@@ -235,6 +242,33 @@ func EnforcesToolChoice(p Provider, model, effort string, tc ToolChoice) bool {
 	return p.Capabilities().SupportsToolChoice
 }
 
+// OutputFormat is the provider-neutral answer schema (RFC DI). Each driver
+// maps it to its own field — or leaves it off when it cannot apply it, which
+// EnforcesStructuredOutput lets the loop learn ahead of time.
+type OutputFormat struct {
+	// Name labels the schema where a provider needs one (OpenAI).
+	Name string
+	// Schema is the JSON Schema, root type object.
+	Schema json.RawMessage
+}
+
+// ModelStructuredOutputEnforcer is implemented by a driver whose ability to
+// apply an OutputFormat depends on the model, or on whether the request also
+// carries tools (Gemini combines the two only on its 3 series).
+type ModelStructuredOutputEnforcer interface {
+	EnforcesStructuredOutput(model string, hasTools bool) bool
+}
+
+// EnforcesStructuredOutput reports whether (p, model) will hold the answer to
+// the schema: the driver's per-model answer when it has one, else the
+// Capabilities bit.
+func EnforcesStructuredOutput(p Provider, model string, hasTools bool) bool {
+	if e, ok := p.(ModelStructuredOutputEnforcer); ok {
+		return e.EnforcesStructuredOutput(model, hasTools)
+	}
+	return p.Capabilities().SupportsStructuredOutput
+}
+
 // Request is one round-trip to the provider. The loop builds a fresh Request
 // for each iteration, appending the previous tool_result(s) to Messages.
 type Request struct {
@@ -286,6 +320,9 @@ type Request struct {
 	// with no such parameter DROPS it. Dropping is the documented outcome, not
 	// a failure: see Capabilities.SupportsToolChoice.
 	ToolChoice ToolChoice `json:"-"`
+	// OutputFormat constrains the answer to a JSON schema (RFC DI). nil = free
+	// text. A driver that cannot apply it sends nothing for it.
+	OutputFormat *OutputFormat `json:"-"`
 
 	// OnEvent, when set, is called for events that occur BEFORE the
 	// response channel exists — most importantly, EventRetry frames

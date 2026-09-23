@@ -110,6 +110,9 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		// shipped; the wrapper drivers (deepseek, vllm, llamacpp) inherit this
 		// through inner.Capabilities() and may override it via capsPatch.
 		SupportsToolChoice: true,
+		// response_format json_schema; per-model refined by
+		// EnforcesStructuredOutput. The wrappers inherit it and refine it too.
+		SupportsStructuredOutput: true,
 	})
 }
 
@@ -259,6 +262,22 @@ type wireRequest struct {
 	// (gpt-5.4-mini, etc.) with a 400; operators using effort with
 	// those models should expect the rejection rather than silent drop.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
+	// ResponseFormat constrains the answer to a JSON schema (RFC DI). The
+	// nested json_schema object is the Chat Completions shape; vLLM and
+	// llama.cpp's servers accept the same.
+	ResponseFormat *wireResponseFormat `json:"response_format,omitempty"`
+}
+
+type wireResponseFormat struct {
+	Type       string             `json:"type"` // "json_schema"
+	JSONSchema wireJSONSchemaSpec `json:"json_schema"`
+}
+
+type wireJSONSchemaSpec struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict"`
 }
 
 type wireStreamOptions struct {
@@ -414,6 +433,12 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		})
 	}
 	w.ToolChoice = openaiToolChoice(req.ToolChoice)
+	if req.OutputFormat != nil {
+		schema, strict := openaiSchema(req.OutputFormat.Schema)
+		w.ResponseFormat = &wireResponseFormat{Type: "json_schema", JSONSchema: wireJSONSchemaSpec{
+			Name: req.OutputFormat.Name, Schema: schema, Strict: strict,
+		}}
+	}
 
 	return json.Marshal(w)
 }
@@ -535,6 +560,74 @@ func openaiSupportsVision(model string) bool {
 		return false
 	}
 	return !openaiTextOnlyModels[m]
+}
+
+// EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
+// json_schema arrived with gpt-4o-2024-08-06; the families before it (gpt-3.5,
+// every gpt-4-* snapshot incl. turbo, the first gpt-4o snapshot, o1-preview /
+// o1-mini) answer it with a 400. Unknown models default to supported, the
+// policy openaiSupportsVision follows: a wrong guess is a loud 400.
+func (d *Driver) EnforcesStructuredOutput(model string, _ bool) bool {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "gpt-3.5"), strings.HasPrefix(m, "gpt-4-"), m == "gpt-4",
+		m == "gpt-4o-2024-05-13", strings.HasPrefix(m, "o1-preview"), strings.HasPrefix(m, "o1-mini"):
+		return false
+	}
+	return true
+}
+
+// openaiSchema closes every object that does not say otherwise with
+// additionalProperties:false and reports whether the result is eligible for
+// strict mode: strict also requires every property to be listed in required.
+// A schema with optional properties is sent non-strict — the model is steered
+// to it but not held — rather than having its optional fields made mandatory,
+// which would change what the author asked for.
+func openaiSchema(raw json.RawMessage) (json.RawMessage, bool) {
+	var node any
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return raw, false
+	}
+	strict := true
+	var walk func(any)
+	walk = func(n any) {
+		switch v := n.(type) {
+		case map[string]any:
+			if props, ok := v["properties"].(map[string]any); ok || v["type"] == "object" {
+				if _, set := v["additionalProperties"]; !set {
+					v["additionalProperties"] = false
+				} else if v["additionalProperties"] != false {
+					strict = false
+				}
+				req := map[string]bool{}
+				if list, ok := v["required"].([]any); ok {
+					for _, r := range list {
+						if s, ok := r.(string); ok {
+							req[s] = true
+						}
+					}
+				}
+				for k := range props {
+					if !req[k] {
+						strict = false
+					}
+				}
+			}
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(node)
+	out, err := json.Marshal(node)
+	if err != nil {
+		return raw, false
+	}
+	return out, strict
 }
 
 // openaiTextOnlyModels are the exact original gpt-4 snapshots that predate
