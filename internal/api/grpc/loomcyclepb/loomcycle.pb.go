@@ -165,9 +165,13 @@ type RunRequest struct {
 	// Hold the run for an operator's verdict each time its model finishes,
 	// instead of completing (RFC DJ): approve, or reject with feedback it revises
 	// from, via the ReviewRun RPC. Mirrors POST /v1/runs `review`.
-	Review        bool `protobuf:"varint,35,opt,name=review,proto3" json:"review,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Review bool `protobuf:"varint,35,opt,name=review,proto3" json:"review,omitempty"`
+	// End a held answer that gets no verdict within this many seconds as
+	// rejected (stop reason "review_expired"). Each hold gets the full window.
+	// 0 = no deadline. Mirrors POST /v1/runs `review_ttl_seconds`.
+	ReviewTtlSeconds int32 `protobuf:"varint,36,opt,name=review_ttl_seconds,json=reviewTtlSeconds,proto3" json:"review_ttl_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RunRequest) Reset() {
@@ -445,6 +449,13 @@ func (x *RunRequest) GetReview() bool {
 	return false
 }
 
+func (x *RunRequest) GetReviewTtlSeconds() int32 {
+	if x != nil {
+		return x.ReviewTtlSeconds
+	}
+	return 0
+}
+
 type ContinueRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	SessionId       string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -518,9 +529,11 @@ type ContinueRequest struct {
 	OutputFormat *OutputFormat `protobuf:"bytes,31,opt,name=output_format,json=outputFormat,proto3" json:"output_format,omitempty"`
 	// review (RFC DJ) — hold this continuation for an operator's verdict when its
 	// model finishes. Mirrors the HTTP continuation `review` field.
-	Review        bool `protobuf:"varint,32,opt,name=review,proto3" json:"review,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Review bool `protobuf:"varint,32,opt,name=review,proto3" json:"review,omitempty"`
+	// review_ttl_seconds — the continuation's review deadline, as on RunRequest.
+	ReviewTtlSeconds int32 `protobuf:"varint,33,opt,name=review_ttl_seconds,json=reviewTtlSeconds,proto3" json:"review_ttl_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ContinueRequest) Reset() {
@@ -775,6 +788,13 @@ func (x *ContinueRequest) GetReview() bool {
 		return x.Review
 	}
 	return false
+}
+
+func (x *ContinueRequest) GetReviewTtlSeconds() int32 {
+	if x != nil {
+		return x.ReviewTtlSeconds
+	}
+	return 0
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -4476,6 +4496,7 @@ type AwaitingReview struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SinceTurn     int32                  `protobuf:"varint,1,opt,name=since_turn,json=sinceTurn,proto3" json:"since_turn,omitempty"` // the iteration the run was held at
 	Round         int32                  `protobuf:"varint,2,opt,name=round,proto3" json:"round,omitempty"`                          // 1 on the first answer, +1 for each revision
+	ExpiresAt     string                 `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`  // RFC 3339 UTC; when the hold ends as rejected. Empty = no deadline
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4522,6 +4543,13 @@ func (x *AwaitingReview) GetRound() int32 {
 		return x.Round
 	}
 	return 0
+}
+
+func (x *AwaitingReview) GetExpiresAt() string {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return ""
 }
 
 // UserInput is the type=steer payload (RFC AI). Mirrors
@@ -9993,7 +10021,7 @@ var File_loomcycle_proto protoreflect.FileDescriptor
 
 const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
-	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc7\r\n" +
+	"\x0floomcycle.proto\x12\floomcycle.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf5\r\n" +
 	"\n" +
 	"RunRequest\x12\x14\n" +
 	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x1d\n" +
@@ -10037,7 +10065,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vtool_choice\x18! \x01(\v2\x18.loomcycle.v1.ToolChoiceR\n" +
 	"toolChoice\x12?\n" +
 	"\routput_format\x18\" \x01(\v2\x1a.loomcycle.v1.OutputFormatR\foutputFormat\x12\x16\n" +
-	"\x06review\x18# \x01(\bR\x06review\x1aB\n" +
+	"\x06review\x18# \x01(\bR\x06review\x12,\n" +
+	"\x12review_ttl_seconds\x18$ \x01(\x05R\x10reviewTtlSeconds\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +
@@ -10046,7 +10075,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x19_memory_inject_max_tokensB\x19\n" +
 	"\x17_memory_index_max_bytesB\x14\n" +
 	"\x12_inject_tool_guideB\x0f\n" +
-	"\r_interruption\"\x85\r\n" +
+	"\r_interruption\"\xb3\r\n" +
 	"\x0fContinueRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x127\n" +
@@ -10086,7 +10115,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vtool_choice\x18\x1e \x01(\v2\x18.loomcycle.v1.ToolChoiceR\n" +
 	"toolChoice\x12?\n" +
 	"\routput_format\x18\x1f \x01(\v2\x1a.loomcycle.v1.OutputFormatR\foutputFormat\x12\x16\n" +
-	"\x06review\x18  \x01(\bR\x06review\x1aB\n" +
+	"\x06review\x18  \x01(\bR\x06review\x12,\n" +
+	"\x12review_ttl_seconds\x18! \x01(\x05R\x10reviewTtlSeconds\x1aB\n" +
 	"\x14UserCredentialsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x17\n" +
@@ -10446,11 +10476,13 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x06fields\x18\x04 \x03(\tR\x06fields\".\n" +
 	"\rAwaitingInput\x12\x1d\n" +
 	"\n" +
-	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\"E\n" +
+	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\"d\n" +
 	"\x0eAwaitingReview\x12\x1d\n" +
 	"\n" +
 	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\x12\x14\n" +
-	"\x05round\x18\x02 \x01(\x05R\x05round\"P\n" +
+	"\x05round\x18\x02 \x01(\x05R\x05round\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x03 \x01(\tR\texpiresAt\"P\n" +
 	"\tUserInput\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x17\n" +

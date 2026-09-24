@@ -818,6 +818,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Review:           req.GetReview(),      // RFC DJ — hold for an operator's verdict
+		ReviewTTLSeconds: int(req.GetReviewTtlSeconds()),
 		Metadata:         metadataFromProto(req.GetMetadata()),
 		Context:          contextFromProto(req.GetContext()),
 		ParentContext:    parentContextFromProto(req.GetParentContext()),
@@ -874,6 +875,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
 		Review:           req.GetReview(),      // RFC DJ — hold for an operator's verdict
+		ReviewTTLSeconds: int(req.GetReviewTtlSeconds()),
 		Metadata:         metadataFromProto(req.GetMetadata()),
 		Context:          contextFromProto(req.GetContext()),
 		ParentContext:    parentContextFromProto(req.GetParentContext()),
@@ -1046,6 +1048,7 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		review := true
 		r.Review = &review
 	}
+	r.ReviewTTLSeconds = int(req.GetReviewTtlSeconds())
 	if hosts := req.GetAllowedHosts(); hosts != nil {
 		list := hosts.GetList()
 		r.AllowedHosts = &list
@@ -1201,6 +1204,7 @@ type runInputProtoArgs struct {
 	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
 	Interactive      bool                         // RFC AI — park at end_turn for steering
 	Review           bool                         // RFC DJ — hold for an operator's verdict when done
+	ReviewTTLSeconds int                          // RFC DJ — end an unreviewed hold as rejected after this long
 	Interruption     *config.AgentInterruptionACL // per-run override of whether the agent may ask a human
 	Metadata         map[string]any               // non-secret structured metadata handed to the run
 	Context          *config.Context              // per-run layered-context / retention override
@@ -1259,6 +1263,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
 		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
 		Review:                a.Review,          // RFC DJ — hold for an operator's verdict when done
+		ReviewTTLSeconds:      a.ReviewTTLSeconds,
 		Metadata:              a.Metadata,
 		Context:               a.Context,
 		ParentContext:         a.ParentContext,
@@ -1481,6 +1486,7 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 		out.AwaitingReview = &loomcyclepb.AwaitingReview{
 			SinceTurn: int32(ev.AwaitingReview.SinceTurn),
 			Round:     int32(ev.AwaitingReview.Round),
+			ExpiresAt: ev.AwaitingReview.ExpiresAt,
 		}
 	}
 	if ev.AwaitingInput != nil {

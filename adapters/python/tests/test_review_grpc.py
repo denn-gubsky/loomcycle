@@ -119,3 +119,26 @@ async def test_retune_and_run_input_carry_review_with_false_distinct_from_unset(
     client._stub.RunInput = fake  # type: ignore[attr-defined]
     await client.run_input("r1", "go on")
     assert not captured["req"].HasField("review"), "an unset review reached the wire set"
+
+
+@pytest.mark.asyncio
+async def test_run_and_continue_carry_the_review_deadline():
+    for method, kwargs in (
+        ("run_streaming", {"agent": "default"}),
+        ("continue_session", {"session_id": "s_1"}),
+    ):
+        stub = _CaptureStub()
+        client = _make_client()
+        client._stub = stub  # type: ignore[assignment]
+        async for _ in getattr(client, method)(segments=[], review=True, review_ttl_seconds=90, **kwargs):
+            pass
+        assert stub.req.review_ttl_seconds == 90, f"{method} dropped review_ttl_seconds"
+    child = client_mod._run_request_from_dict({"agent": "a", "segments": [], "review_ttl_seconds": 30})
+    assert child.review_ttl_seconds == 30
+
+
+def test_the_held_event_carries_its_deadline():
+    from loomcycle.events import AgentEvent
+
+    ev = pb.Event(type="awaiting_review", awaiting_review=pb.AwaitingReview(round=1, expires_at="2026-09-24T12:00:00Z"))
+    assert AgentEvent._from_proto(ev).awaiting_review.expires_at == "2026-09-24T12:00:00Z"

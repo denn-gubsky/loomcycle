@@ -1621,6 +1621,7 @@ class LoomcycleClient:
         max_context_tokens: int = 0,
         interactive: bool = False,
         review: bool = False,
+        review_ttl_seconds: int = 0,
         # RFC DC per-run overrides. Routing selects WITHIN what the agent's
         # definition declares; the budget knobs are raisable except
         # max_concurrent_children, which may only be LOWERED. The tuning
@@ -1702,6 +1703,7 @@ class LoomcycleClient:
             max_context_tokens=max_context_tokens,
             interactive=interactive,
             review=review,
+            review_ttl_seconds=review_ttl_seconds,
             model=model,
             provider=provider,
             tier=tier,
@@ -1744,6 +1746,7 @@ class LoomcycleClient:
         max_context_tokens: int = 0,
         interactive: bool = False,
         review: bool = False,
+        review_ttl_seconds: int = 0,
         # RFC DC per-run overrides. Routing selects WITHIN what the agent's
         # definition declares; the budget knobs are raisable except
         # max_concurrent_children, which may only be LOWERED. The tuning
@@ -1792,6 +1795,7 @@ class LoomcycleClient:
             max_context_tokens=max_context_tokens,
             interactive=interactive,
             review=review,
+            review_ttl_seconds=review_ttl_seconds,
             model=model,
             provider=provider,
             tier=tier,
@@ -2182,8 +2186,10 @@ def _build_run_request(
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
     interactive: bool = False,
-    # Hold the finished answer for an operator's verdict (review_run).
+    # Hold the finished answer for an operator's verdict (review_run), and end
+    # a hold nobody rules on within review_ttl_seconds as rejected (0 = never).
     review: bool = False,
+    review_ttl_seconds: int = 0,
     # Per-run overrides. Routing selects WITHIN what the agent's definition
     # declares; the budget knobs are raisable except max_concurrent_children,
     # which may only be LOWERED. These are plain proto3 fields, so "" / 0 IS
@@ -2234,6 +2240,7 @@ def _build_run_request(
         max_context_tokens=max_context_tokens,
         interactive=interactive,
         review=review,
+        review_ttl_seconds=review_ttl_seconds,
         # Canonical JSON bytes: the value is map[string]any by definition, so
         # there is no typed message to map it onto.
         metadata=json.dumps(metadata).encode() if metadata is not None else b"",
@@ -2310,6 +2317,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         inject_tool_guide=spawn.get("inject_tool_guide"),
         interruption=spawn.get("interruption"),
         review=bool(spawn.get("review", False)),
+        review_ttl_seconds=int(spawn.get("review_ttl_seconds", 0)),
     )
 
 

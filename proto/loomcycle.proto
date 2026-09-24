@@ -671,6 +671,10 @@ message RunRequest {
   // instead of completing (RFC DJ): approve, or reject with feedback it revises
   // from, via the ReviewRun RPC. Mirrors POST /v1/runs `review`.
   bool review = 35;
+  // End a held answer that gets no verdict within this many seconds as
+  // rejected (stop reason "review_expired"). Each hold gets the full window.
+  // 0 = no deadline. Mirrors POST /v1/runs `review_ttl_seconds`.
+  int32 review_ttl_seconds = 36;
 }
 
 message ContinueRequest {
@@ -756,6 +760,8 @@ message ContinueRequest {
   // review (RFC DJ) — hold this continuation for an operator's verdict when its
   // model finishes. Mirrors the HTTP continuation `review` field.
   bool review = 32;
+  // review_ttl_seconds — the continuation's review deadline, as on RunRequest.
+  int32 review_ttl_seconds = 33;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -1316,6 +1322,7 @@ message AwaitingInput {
 message AwaitingReview {
   int32 since_turn = 1;  // the iteration the run was held at
   int32 round = 2;       // 1 on the first answer, +1 for each revision
+  string expires_at = 3; // RFC 3339 UTC; when the hold ends as rejected. Empty = no deadline
 }
 
 // UserInput is the type=steer payload (RFC AI). Mirrors
