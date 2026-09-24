@@ -13,10 +13,12 @@ func TestParseSpec(t *testing.T) {
 	}{
 		{"wave", "wave", "", true},
 		{"wave:before_dispatch", "wave", BeforeDispatch, true},
-		{"wave:after_collection", "wave", AfterCollection, true},
+		{"wave:review", "wave", Review, true},
+		// Removed, and refused rather than read as a state id.
+		{"wave:after_collection", "", "", false},
 		// A state id may itself contain a colon, so only the LAST segment is a
 		// phase candidate.
-		{"team:wave:after_collection", "team:wave", AfterCollection, true},
+		{"team:wave:before_dispatch", "team:wave", BeforeDispatch, true},
 		{"wave:typo", "", "", false},
 		{"", "", "", false},
 		{":before_dispatch", "", "", false},
@@ -29,17 +31,16 @@ func TestParseSpec(t *testing.T) {
 	}
 }
 
-// TestSet_BareStateArmsBothPhases: "wave" means "stop at this state", which is
-// what an operator means when they click one node.
-func TestSet_BareStateArmsBothPhases(t *testing.T) {
+// TestSet_BareStateArmsTheDispatchPause: "wave" means "stop at this state",
+// which is what an operator means when they click one node — the one pause
+// there is. It does not arm review, which is a decision, not a debug mode.
+func TestSet_BareStateArmsTheDispatchPause(t *testing.T) {
 	s, err := NewSet([]string{"wave"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{BeforeDispatch, AfterCollection} {
-		if !s.Armed("wave", p) {
-			t.Errorf("a bare state did not arm %s", p)
-		}
+	if !s.Armed("wave", BeforeDispatch) || s.Armed("wave", Review) {
+		t.Errorf("a bare state armed %v, want before_dispatch only", s.List())
 	}
 	if s.Armed("other", BeforeDispatch) {
 		t.Error("armed a state nobody named")
@@ -70,14 +71,14 @@ func TestSet_ReplaceIsAtomicAndValidatesFirst(t *testing.T) {
 	if s.Armed("wave", BeforeDispatch) {
 		t.Error("Replace merged instead of replacing")
 	}
-	if !s.Armed("review", AfterCollection) {
+	if !s.Armed("review", BeforeDispatch) {
 		t.Error("Replace did not apply the new set")
 	}
 	// Disarming everything is the empty list — how a canvas turns Debug off.
 	if err := s.Replace(nil); err != nil {
 		t.Fatal(err)
 	}
-	if s.Armed("review", AfterCollection) || len(s.List()) != 0 {
+	if s.Armed("review", BeforeDispatch) || len(s.List()) != 0 {
 		t.Errorf("the empty list must disarm everything, got %v", s.List())
 	}
 }
@@ -85,9 +86,9 @@ func TestSet_ReplaceIsAtomicAndValidatesFirst(t *testing.T) {
 // TestSet_ListIsCanonical: a caller reading back its own arming should see what
 // the walk will do, not an echo of its shorthand.
 func TestSet_ListIsCanonical(t *testing.T) {
-	s, _ := NewSet([]string{"zeta", "alpha:after_collection"})
+	s, _ := NewSet([]string{"zeta", "alpha:review"})
 	got := strings.Join(s.List(), " ")
-	want := "alpha:after_collection zeta:after_collection zeta:before_dispatch"
+	want := "alpha:review zeta:before_dispatch"
 	if got != want {
 		t.Errorf("List() = %q, want %q", got, want)
 	}
@@ -189,7 +190,7 @@ func TestSet_ConcurrentArmAndReplace(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 200; i++ { // the operator
-		if err := s.Replace([]string{"wave", "review:after_collection"}); err != nil {
+		if err := s.Replace([]string{"wave", "review:before_dispatch"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.Replace(nil); err != nil {
@@ -212,5 +213,14 @@ func TestSet_ReviewPhaseIsArmedOnlyWhenNamed(t *testing.T) {
 	}
 	if s.Armed("other", Review) || !s.Armed("other", BeforeDispatch) {
 		t.Error("the bare form armed review, or lost a debug pause")
+	}
+}
+
+// Arming the removed pause live is refused, and the refusal says what to arm
+// instead.
+func TestParseSpec_TheRemovedPauseNamesItsReplacement(t *testing.T) {
+	_, _, err := ParseSpec("wave:after_collection")
+	if err == nil || !strings.Contains(err.Error(), "was removed") || !strings.Contains(err.Error(), `"wave:review"`) {
+		t.Errorf("err = %v, want a refusal naming \"wave:review\"", err)
 	}
 }

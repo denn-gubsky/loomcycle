@@ -49,10 +49,11 @@ func (s *Server) handleGetRunBreakpoints(w http.ResponseWriter, r *http.Request)
 // handlePutRunBreakpoints serves PUT /v1/runs/{run_id}/breakpoints — replace
 // the armed set of the team walk running under this run.
 //
-// It takes effect at the NEXT pause point the walk reaches: the before_dispatch
-// of a wave that has not started, or the after_collection of one whose results
-// have not gone out yet. It cannot un-publish a result the next stage has
-// already seen, and does not pretend to.
+// It takes effect at the NEXT point the walk consults it: the before_dispatch
+// of a wave that has not started, and — for "<state>:review" — each member run
+// as it finishes its answer, so arming mid-wave holds the members still out. It
+// cannot un-publish a result the next stage has already seen, and does not
+// pretend to.
 func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request) {
 	set, runID, ok := s.liveBreakpointSet(w, r)
 	if !ok {

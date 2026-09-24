@@ -62,11 +62,10 @@ func breakFixture(t *testing.T) (*TeamDef, context.Context, *stubChannelIO, *int
 	return tool, actx, io, &spawned, done
 }
 
-// TestTeamDefTool_Run_BreakpointAsksAtBothPhasesAndReleases: the end-to-end
-// debug path — a breakpoint on a starter pauses twice (before dispatch, after
-// collection), the human's answer releases each, and the run reports what
-// happened.
-func TestTeamDefTool_Run_BreakpointAsksAtBothPhasesAndReleases(t *testing.T) {
+// TestTeamDefTool_Run_BreakpointAsksBeforeDispatchAndReleases: the end-to-end
+// debug path — a breakpoint on a starter pauses before dispatch, the human's
+// answer releases the wave, and the run reports what happened.
+func TestTeamDefTool_Run_BreakpointAsksBeforeDispatchAndReleases(t *testing.T) {
 	tool, ctx, io, spawned, done := breakFixture(t)
 	defer done()
 
@@ -88,18 +87,14 @@ func TestTeamDefTool_Run_BreakpointAsksAtBothPhasesAndReleases(t *testing.T) {
 	if out["status"] != "completed" {
 		t.Fatalf("status = %v, want completed", out["status"])
 	}
-	if len(questions) != 2 {
-		t.Fatalf("asked %d times, want 2 (before_dispatch + after_collection):\n%s",
+	if len(questions) != 1 {
+		t.Fatalf("asked %d times, want 1 (before_dispatch):\n%s",
 			len(questions), strings.Join(questions, "\n---\n"))
 	}
-	// Pause 1 happens with nothing spawned; pause 2 with everything spawned and
-	// nothing published. Those two numbers ARE the feature.
-	if spawnedAtAsk[0] != 0 {
-		t.Errorf("%d runs already spawned at the before_dispatch pause, want 0", spawnedAtAsk[0])
-	}
-	if spawnedAtAsk[1] != 2 || publishedAtAsk[1] != 0 {
-		t.Errorf("at the after_collection pause: spawned=%d published=%d, want 2 and 0",
-			spawnedAtAsk[1], publishedAtAsk[1])
+	// The pause happens with nothing spawned and nothing published.
+	if spawnedAtAsk[0] != 0 || publishedAtAsk[0] != 0 {
+		t.Errorf("at the before_dispatch pause: spawned=%d published=%d, want 0 and 0",
+			spawnedAtAsk[0], publishedAtAsk[0])
 	}
 	if !strings.Contains(questions[0], "BEFORE dispatching") || !strings.Contains(questions[0], `state "wave"`) {
 		t.Errorf("before_dispatch question does not say what it is:\n%s", questions[0])
@@ -107,37 +102,31 @@ func TestTeamDefTool_Run_BreakpointAsksAtBothPhasesAndReleases(t *testing.T) {
 	if !strings.Contains(questions[0], `{"pr":1}`) {
 		t.Errorf("before_dispatch question omits the composed prompt — the one thing no channel inspection shows:\n%s", questions[0])
 	}
-	if !strings.Contains(questions[1], "AFTER collecting") || !strings.Contains(questions[1], "reviewed") {
-		t.Errorf("after_collection question omits the results:\n%s", questions[1])
-	}
 	if io.count() != 2 {
 		t.Errorf("published %d sink messages, want 2", io.count())
 	}
-	if out["breakpoints_hit"].(float64) != 2 {
-		t.Errorf("breakpoints_hit = %v, want 2", out["breakpoints_hit"])
+	if out["breakpoints_hit"].(float64) != 1 {
+		t.Errorf("breakpoints_hit = %v, want 1", out["breakpoints_hit"])
 	}
 	if out["break_decision"] != "continue" {
 		t.Errorf("break_decision = %v, want continue", out["break_decision"])
 	}
 }
 
-// TestTeamDefTool_Run_BreakpointAbortWithholdsTheSink: an unanswerable or
-// refused ask aborts, and nothing reaches the sink.
-func TestTeamDefTool_Run_BreakpointAbortWithholdsTheSink(t *testing.T) {
+// TestTeamDefTool_Run_BreakpointAbortRunsNothing: a refused ask aborts before
+// anything is dispatched, so nothing runs and nothing reaches the sink.
+func TestTeamDefTool_Run_BreakpointAbortRunsNothing(t *testing.T) {
 	tool, ctx, io, spawned, done := breakFixture(t)
 	defer done()
 	tool.AskHuman = func(context.Context, string) (string, error) { return "abort", nil }
 
 	res, _ := tool.Execute(ctx, json.RawMessage(
-		`{"op":"run","name":"triage","input":"x","breakpoints":["wave:after_collection"]}`))
+		`{"op":"run","name":"triage","input":"x","breakpoints":["wave:before_dispatch"]}`))
 	if !res.IsError {
 		t.Fatalf("an aborted breakpoint must fail the run, got: %s", res.Text)
 	}
-	if *spawned != 2 {
-		t.Errorf("spawned %d, want 2 (after_collection aborts AFTER the runs)", *spawned)
-	}
-	if io.count() != 0 {
-		t.Errorf("published %d sink messages after an abort, want 0 — withholding the result is the point", io.count())
+	if *spawned != 0 || io.count() != 0 {
+		t.Errorf("spawned %d, published %d after an abort before dispatch, want 0 and 0", *spawned, io.count())
 	}
 }
 
@@ -242,15 +231,15 @@ func TestParseBreakAnswer(t *testing.T) {
 	}
 }
 
-// TestFormatBreakpoint_TruncatesAnOversizedPreview: an agent's output can be a
+// TestFormatBreakpoint_TruncatesAnOversizedPreview: a source message can be a
 // whole document; the question a human answers must stay readable and say that
 // it was cut rather than hand over a prefix they would read as the whole thing.
 func TestFormatBreakpoint_TruncatesAnOversizedPreview(t *testing.T) {
 	q := formatBreakpoint("triage", teamrun.Breakpoint{
-		State: "wave", Phase: teamrun.AfterCollection, Wave: "wav_x",
+		State: "wave", Phase: teamrun.BeforeDispatch, Wave: "wav_x",
 		WaveSize: 1, Pending: 1,
-		Results: []teamrun.BreakpointResult{{Index: 0, Agent: "reviewer", Ok: true,
-			Output: strings.Repeat("x", maxBreakPreview*3)}},
+		Prompts: []teamrun.PromptPreview{{Index: 0, Agent: "reviewer",
+			Message: strings.Repeat("x", maxBreakPreview*3)}},
 	})
 	if len(q) > maxBreakPreview*2 {
 		t.Errorf("question is %d bytes — an oversized output was not bounded", len(q))
@@ -295,5 +284,20 @@ func TestTeamDefTool_Run_OpensALiveSetEvenWithNoBreakpoints(t *testing.T) {
 	}
 	if io.count() != 2 {
 		t.Errorf("published %d sink messages, want 2 — an unarmed run must be unaffected", io.count())
+	}
+}
+
+// Arming the removed pause is refused at the run boundary, naming what to arm
+// instead.
+func TestTeamDefTool_Run_TheRemovedPauseIsRefused(t *testing.T) {
+	tool, ctx, _, spawned, done := breakFixture(t)
+	defer done()
+	tool.AskHuman = func(context.Context, string) (string, error) { return "continue", nil }
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x","breakpoints":["wave:after_collection"]}`))
+	if !res.IsError || !strings.Contains(res.Text, "was removed") || !strings.Contains(res.Text, `"wave:review"`) {
+		t.Errorf("isError=%v %q, want a refusal naming \"wave:review\"", res.IsError, res.Text)
+	}
+	if *spawned != 0 {
+		t.Errorf("a refused run spawned %d members", *spawned)
 	}
 }

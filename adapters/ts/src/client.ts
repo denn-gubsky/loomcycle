@@ -2167,10 +2167,11 @@ export class LoomcycleClient {
    *  off switch. A malformed entry is refused whole and leaves the previous
    *  arming exactly as it was.
    *
-   *  Each entry is a starter state id — `"review"` arms both phases,
-   *  `"review:before_dispatch"` or `"review:after_collection"` arms one. An arm
-   *  takes effect at the next pause the walk reaches; disarming RELEASES
-   *  whatever is still pending rather than stranding it.
+   *  Each entry is a starter state id — `"wave"` (or `"wave:before_dispatch"`)
+   *  pauses the state before it dispatches, and `"wave:review"` holds its member
+   *  runs for a verdict ({@link LoomcycleClient.reviewRun}). An arm takes effect
+   *  at the next point the walk reaches; disarming RELEASES whatever is still
+   *  pending rather than stranding it.
    *
    *  A pause is read and answered through the run's interrupts. */
   async setRunBreakpoints(

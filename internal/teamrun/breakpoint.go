@@ -25,13 +25,18 @@ import (
 // BreakpointPhase is where in a wave the walk paused.
 type BreakpointPhase string
 
+// RemovedAfterCollection is the phase a wave used to pause at once its results
+// were in, before any reached the sink. It was removed (RFC DJ): holding a
+// wave's RESULTS is what a per-run review hold does better — a held run can be
+// sent back with feedback and revise, where a paused wave could only publish or
+// withhold, and the Starter no longer holds agent outputs at all. Arming it is
+// refused with a reason that names the replacement.
+const RemovedAfterCollection = "after_collection"
+
 const (
 	// BeforeDispatch — the source has been read, binds applied and every prompt
 	// composed, and NOTHING has been spawned. Step into.
 	BeforeDispatch BreakpointPhase = "before_dispatch"
-	// AfterCollection — the wave is complete and NOTHING has been published to
-	// the sink. Step over.
-	AfterCollection BreakpointPhase = "after_collection"
 	// Review — not a pause of the walk. A state armed here holds each of its
 	// member runs for an operator's verdict when the run finishes its answer
 	// (the run's own review hold), so a person can approve it, send it back
@@ -63,25 +68,10 @@ type Breakpoint struct {
 	// release works through it — so "3 of 8" means the same thing at every
 	// pause.
 	WaveSize int
-	// Pending is how many of the wave are still waiting at this phase: still to
-	// dispatch at BeforeDispatch, still to publish at AfterCollection.
+	// Pending is how many of the wave are still waiting to dispatch.
 	Pending int
-	// Prompts is set at BeforeDispatch — the pending runs, in wave order.
+	// Prompts are the pending runs, in wave order.
 	Prompts []PromptPreview
-	// Results is set at AfterCollection — the finished runs whose sink messages
-	// have not been published yet.
-	Results []BreakpointResult
-}
-
-// BreakpointResult is one finished run at AfterCollection. It is a VIEW, not a
-// store: the run itself is durable and carries the transcript, the tokens and
-// the cost. This is the summary that answers "should the next stage see this".
-type BreakpointResult struct {
-	Index  int
-	Agent  string
-	Ok     bool
-	Output string
-	Error  string
 }
 
 // BreakAction is what the operator decided.
@@ -149,7 +139,6 @@ func NewStaticBreakpoints(specs []string) (StaticBreakpoints, error) {
 		}
 		if phase == "" {
 			out[id][BeforeDispatch] = true
-			out[id][AfterCollection] = true
 			continue
 		}
 		out[id][phase] = true
@@ -159,14 +148,11 @@ func NewStaticBreakpoints(specs []string) (StaticBreakpoints, error) {
 
 // stage walks a shrinking set of pending items in operator-sized steps.
 //
-// It is the shared loop behind both pauses, because "release one, look, release
-// three, look, release the rest" is the same gesture whether what is being
-// released is a dispatch or a publish.
+// It is the loop behind the before_dispatch pause: "release one, look, release
+// three, look, release the rest".
 //
-// pending is RE-READ each round rather than tracked as a range, because the set
-// is not always a suffix: a state armed part-way through a wave holds only the
-// results that had not been published yet, and those are whatever indices
-// happened to still be running.
+// pending is RE-READ each round rather than tracked as a range, so act only has
+// to retire what it released; the loop asks again about whatever is left.
 func stage(ctx context.Context, pending func() []int, ask func([]int) (BreakDecision, error), act func([]int) error) error {
 	for last := -1; ; {
 		p := pending()
@@ -215,13 +201,12 @@ func stage(ctx context.Context, pending func() []int, ask func([]int) (BreakDeci
 // ParseBreakpoint splits one breakpoint argument into a state id and the phase
 // it arms:
 //
-//	"review"                   both phases of state `review`
-//	"review:after_collection"  that phase only
+//	"wave"                  the before_dispatch pause of state `wave`
+//	"wave:before_dispatch"  the same, spelled out
+//	"wave:review"           hold the state's member runs for review
 //
-// Both forms exist because the two pauses answer different questions — "what is
-// about to run" and "what came back" — and a canvas stepping through a wave
-// wants one at a time, while an operator who just wants the walk to stop at a
-// state should not have to know there are two.
+// The bare form is the pause; review is named explicitly because it is not a
+// debugging mode but a decision about each member's answer.
 //
 // It reports ok=false for an empty id or an unknown phase, so a typo is REFUSED
 // at the run boundary rather than arming nothing and leaving the operator
@@ -230,7 +215,7 @@ func ParseBreakpoint(s string) (id string, phase BreakpointPhase, ok bool) {
 	id = s
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		id, phase = s[:i], BreakpointPhase(s[i+1:])
-		if phase != BeforeDispatch && phase != AfterCollection && phase != Review {
+		if phase != BeforeDispatch && phase != Review {
 			return "", "", false
 		}
 	}
@@ -245,8 +230,13 @@ func ParseBreakpoint(s string) (id string, phase BreakpointPhase, ok bool) {
 func ValidateBreakpoints(bps []string) error {
 	for _, b := range bps {
 		if _, _, ok := ParseBreakpoint(b); !ok {
-			return fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\"|\"<state>:%s\"|\"<state>:%s\"",
-				b, BeforeDispatch, AfterCollection, Review)
+			if state, ok := strings.CutSuffix(b, ":"+RemovedAfterCollection); ok {
+				return fmt.Errorf("breakpoint %q: the after_collection pause was removed — to hold a wave's results "+
+					"before they reach the sink, arm \"%s:%s\" instead: each member run is held for a verdict, and can "+
+					"be approved, sent back with feedback, or rejected", b, state, Review)
+			}
+			return fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\"|\"<state>:%s\"",
+				b, BeforeDispatch, Review)
 		}
 	}
 	return nil
@@ -285,19 +275,6 @@ func previewPrompts(h teamgraph.Handler, msgs []ChannelMessage, agentFor func(in
 			p.Message = slots[StarterMessagesSlot]
 		}
 		out = append(out, p)
-	}
-	return out
-}
-
-// previewResults renders the finished runs still awaiting publication.
-func previewResults(all []agentResult, idx []int) []BreakpointResult {
-	out := make([]BreakpointResult, 0, len(idx))
-	for _, i := range idx {
-		res := all[i]
-		out = append(out, BreakpointResult{
-			Index: res.Index, Agent: res.Agent, Ok: res.Ok,
-			Output: res.Output, Error: res.Error,
-		})
 	}
 	return out
 }

@@ -223,22 +223,6 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 	var mu sync.Mutex // guards successes and published
 	successes := 0
 
-	// Whether a result may reach the sink is asked LIVE, at the moment it would
-	// be published — not latched when the wave started. A state armed part-way
-	// through a wave therefore holds whatever has not gone out yet, which is the
-	// case an operator is in when they watch a wave go wrong and hit Debug.
-	//
-	// What has already been published stays published: the next stage has seen
-	// it, and pretending otherwise would be a debugger that lies. So arming
-	// mid-wave holds a SUFFIX of the wave in the general case, and the whole
-	// wave when it was armed before dispatch.
-	//
-	// It is a deferral either way, never a durable cache — the runs themselves
-	// hold the outputs, and if this process dies while parked, no sink message
-	// arrives: the orchestrator-died-mid-wave case the design already documents
-	// and the downstream wait_ms already backstops.
-	holdSink := func() bool { return r.armed(st, AfterCollection) }
-
 	// A staged dispatch must not short-circuit. The wait threshold exists to
 	// stop runs nobody is waiting for, but an operator stepping through a wave
 	// released each batch deliberately — cancelling one because an earlier batch
@@ -259,21 +243,6 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 		mu.Unlock()
 		r.publishSink(ctx, st, waveID, dispatches, results[i])
 	}
-	// unpublished is the pending set for the AfterCollection pause. Recomputed
-	// rather than tracked, because which indices are still held depends on when
-	// the operator armed the state.
-	unpublished := func() []int {
-		mu.Lock()
-		defer mu.Unlock()
-		var out []int
-		for i := range published {
-			if !published[i] {
-				out = append(out, i)
-			}
-		}
-		return out
-	}
-
 	dispatched := 0
 	dispatch := func(idx []int) error {
 		var wg sync.WaitGroup
@@ -291,9 +260,7 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 					// Cancelled before it ever ran — still a result, and still
 					// a sink message, because the count is the contract.
 					results[i] = agentResult{Index: i, Agent: agent, Ok: false, Error: runCtx.Err().Error()}
-					if !holdSink() {
-						emit(i)
-					}
+					emit(i)
 					return
 				}
 				res := r.dispatchOne(runCtx, st, env, agent, waveID, i, slots)
@@ -310,9 +277,7 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 					}
 				}
 				mu.Unlock()
-				if !holdSink() {
-					emit(i)
-				}
+				emit(i)
 			}()
 		}
 		wg.Wait()
@@ -327,7 +292,10 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 		return out
 	}
 
-	// PAUSE 1 — before_dispatch. Every prompt is composed and nothing has run.
+	// The one pause — before_dispatch. Every prompt is composed and nothing has
+	// run. (There used to be a second, after the wave, holding its results off
+	// the sink; holding results is now each member run's review hold, so the
+	// Starter publishes every result as it settles and holds none itself.)
 	if r.armed(st, BeforeDispatch) {
 		err = stage(ctx, pendingDispatch,
 			func(idx []int) (BreakDecision, error) {
@@ -351,40 +319,6 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 		return results, err
 	}
 
-	// PAUSE 2 — after_collection. The wave is complete; whatever the live check
-	// held back is still off the sink.
-	//
-	// Aborting here publishes NOTHING further, and that is the point: an
-	// operator who rejects a wave is saying the next stage must not see it. A
-	// flush-on-abort would make the one thing this breakpoint exists to do —
-	// withhold a result — untrue. Runs already released stay published, because
-	// the operator released them (or the state was not yet armed when they
-	// went out). Nothing downstream is left hanging either way: the abort fails
-	// the walk, so there is no next stage.
-	if r.armed(st, AfterCollection) {
-		if err := stage(ctx, unpublished,
-			func(idx []int) (BreakDecision, error) {
-				// Same rule as the dispatch pause: disarming publishes the rest
-				// rather than withholding it forever.
-				if !r.armed(st, AfterCollection) {
-					return BreakDecision{Action: BreakContinue}, nil
-				}
-				return r.onBreak(ctx, Breakpoint{
-					State: st.ID, Phase: AfterCollection, Wave: waveID,
-					WaveSize: dispatches, Pending: len(idx),
-					Results: previewResults(results, idx),
-				})
-			},
-			func(idx []int) error {
-				for _, i := range idx {
-					emit(i)
-				}
-				return nil
-			}); err != nil {
-			return results, err
-		}
-	}
-
 	if successes < need {
 		wait := h.Fanout.Wait
 		if wait == "" {
@@ -405,9 +339,8 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 // dispatchOne spawns one run of the wave and ALWAYS returns a result, including
 // for a panic in the spawner.
 //
-// It returns the result rather than publishing it, because whether a result may
-// be published is the caller's question once a breakpoint can withhold one. The
-// guarantee the recover protects is unchanged and still load-bearing: a fan-in
+// It returns the result rather than publishing it: the wave publishes, through
+// its exactly-once emit. The guarantee the recover protects is load-bearing: a fan-in
 // counting sink messages cannot tell "still running" from "died", so a wave that
 // produced fewer results than runs would turn a downstream wait into a hang.
 // The count is the contract.
@@ -454,7 +387,7 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 }
 
 // publishSink writes one run's outcome to the sink. Called through the wave's
-// emit, which claims each index once so a staged release cannot double-publish.
+// emit, which claims each index once, so no path can publish a run twice.
 func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveID string, waveSize int, res agentResult) {
 	if st.Handler.Sink == nil {
 		return

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
@@ -65,8 +66,8 @@ func TestHandleBreakpoints_ArmsAWalkThatIsAlreadyRunning(t *testing.T) {
 	if !set.Armed("wave", breakpoints.BeforeDispatch) {
 		t.Error("the walk's own set did not see the arming")
 	}
-	if set.Armed("wave", breakpoints.AfterCollection) {
-		t.Error("a phase-qualified spec armed the other phase too")
+	if set.Armed("wave", breakpoints.Review) {
+		t.Error("a phase-qualified spec armed another phase too")
 	}
 }
 
@@ -76,7 +77,7 @@ func TestHandleBreakpoints_GetReadsBackCanonically(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	_, release, _ := srv.breakpointReg.Open(runID, []string{"wave"})
+	_, release, _ := srv.breakpointReg.Open(runID, []string{"wave", "wave:review"})
 	defer release()
 
 	rec := doJSON(t, srv, "GET", "/v1/runs/"+runID+"/breakpoints", "")
@@ -84,8 +85,8 @@ func TestHandleBreakpoints_GetReadsBackCanonically(t *testing.T) {
 		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
 	}
 	got := armedFrom(t, rec.Body.String())
-	if len(got) != 2 || got[0] != "wave:after_collection" || got[1] != "wave:before_dispatch" {
-		t.Errorf("armed = %v, want both phases, canonical and sorted", got)
+	if len(got) != 2 || got[0] != "wave:before_dispatch" || got[1] != "wave:review" {
+		t.Errorf("armed = %v, want the bare form spelled out, canonical and sorted", got)
 	}
 }
 
@@ -159,17 +160,37 @@ func TestBreakpointPhases_MatchTheRegistrys(t *testing.T) {
 		t.Errorf("before_dispatch spelled %q in teamrun and %q in breakpoints",
 			teamrun.BeforeDispatch, breakpoints.BeforeDispatch)
 	}
-	if string(teamrun.AfterCollection) != breakpoints.AfterCollection {
-		t.Errorf("after_collection spelled %q in teamrun and %q in breakpoints",
-			teamrun.AfterCollection, breakpoints.AfterCollection)
+	if string(teamrun.Review) != breakpoints.Review {
+		t.Errorf("review spelled %q in teamrun and %q in breakpoints",
+			teamrun.Review, breakpoints.Review)
 	}
 	// And the adapter actually bridges them.
-	set, _ := breakpoints.NewSet([]string{"wave:after_collection"})
+	set, _ := breakpoints.NewSet([]string{"wave:review"})
 	var src teamrun.BreakpointSource = liveBreakpoints{set}
-	if !src.Armed("wave", teamrun.AfterCollection) {
+	if !src.Armed("wave", teamrun.Review) {
 		t.Error("the adapter did not translate the phase")
 	}
 	if src.Armed("wave", teamrun.BeforeDispatch) {
 		t.Error("the adapter armed the wrong phase")
+	}
+}
+
+// Arming the removed pause live is refused, with the replacement named, and the
+// arming the walk already had is left as it was.
+func TestHandleBreakpoints_TheRemovedPauseIsRefused(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["wave:after_collection"]}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "wave:review") {
+		t.Errorf("status = %d body=%s, want 400 naming \"wave:review\"", rec.Code, rec.Body.String())
+	}
+	if !set.Armed("wave", breakpoints.Review) {
+		t.Error("a refused arming disarmed what the walk had")
 	}
 }

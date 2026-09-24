@@ -284,7 +284,7 @@ describe("runTeam debug arguments", () => {
       name: "triage",
       input: "go",
       mode: "detach",
-      breakpoints: ["wave", "review:after_collection"],
+      breakpoints: ["wave", "review:before_dispatch"],
     });
     // Detaching returns the HANDLE, not a trace — that is the point: op=run is
     // otherwise synchronous, so there is no moment at which a caller can arm a
@@ -300,7 +300,7 @@ describe("runTeam debug arguments", () => {
       name: "triage",
       input: "go",
       mode: "detach",
-      breakpoints: ["wave", "review:after_collection"],
+      breakpoints: ["wave", "review:before_dispatch"],
     });
   });
 
@@ -343,7 +343,7 @@ describe("getRunBreakpoints / setRunBreakpoints", () => {
 
   it("PUTs the WHOLE set, not a delta", async () => {
     const { client, fetchMock } = makeClient([
-      jsonResponse({ run_id: "r_1", armed: ["wave:after_collection", "wave:before_dispatch"] }),
+      jsonResponse({ run_id: "r_1", armed: ["wave:before_dispatch", "wave:review"] }),
     ]);
 
     await client.setRunBreakpoints("r_1", ["wave"]);

@@ -79,61 +79,6 @@ func TestBreakpoint_ArmingMidWalkPausesTheNextWave(t *testing.T) {
 	}
 }
 
-// TestBreakpoint_ArmingMidWaveHoldsWhatHasNotPublished: arming while a wave is
-// in flight holds the results that have not reached the sink yet. What already
-// went out stays out — the next stage has seen it, and a debugger that claimed
-// otherwise would be lying.
-func TestBreakpoint_ArmingMidWaveHoldsWhatHasNotPublished(t *testing.T) {
-	src := newMutableSource()
-	ch := threeMessages()
-
-	firstDone := make(chan struct{}) // run 0 has returned
-	release := make(chan struct{})   // runs 1+2 may proceed
-	var once sync.Once
-	spawn := textSpawn(func(ctx context.Context, _ string, p Prompt, _ string) (string, error) {
-		if p.DataSlots[StarterMessageSlot] == `{"pr":1}` {
-			once.Do(func() { close(firstDone) })
-			return "first", nil
-		}
-		<-release
-		return "later", nil
-	})
-
-	var seen []BreakpointResult
-	r := starterRunner(ch, spawn)
-	WithBreakpoints(src, func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
-		seen = bp.Results
-		return BreakDecision{Action: BreakContinue}, nil
-	})(r)
-
-	go func() {
-		<-firstDone
-		// Run 0's sink message is already out; arm, then let the rest finish.
-		for len(ch.sinks(t)) == 0 {
-		}
-		src.arm("wave", AfterCollection)
-		close(release)
-	}()
-
-	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"}); err != nil {
-		t.Fatalf("starter: %v", err)
-	}
-	// The pause saw only what was still held — never the one already published.
-	if len(seen) != 2 {
-		t.Fatalf("the pause offered %d results, want the 2 that had not published: %+v", len(seen), seen)
-	}
-	for _, res := range seen {
-		if res.Index == 0 {
-			t.Errorf("the pause offered a result that had already reached the sink: %+v", res)
-		}
-	}
-	// And every run still produced exactly one sink message — the count is the
-	// contract, whatever the arming did.
-	if got := len(ch.sinks(t)); got != 3 {
-		t.Errorf("published %d sink messages, want 3", got)
-	}
-}
-
 // TestBreakpoint_DisarmingMidWalkStopsPausing: Debug goes off as well as on.
 func TestBreakpoint_DisarmingMidWalkStopsPausing(t *testing.T) {
 	src := newMutableSource()
