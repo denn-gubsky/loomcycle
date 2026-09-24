@@ -143,6 +143,11 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 		Kinds:      []string{"question"},
 		MaxPending: tools.InterruptionPolicy(ctx).MaxPending,
 	})
+	// ctx can carry the loop's hooked executor (a post hook runs on the tool
+	// call's ctx). An ask delivered through a consumer's tool would then go
+	// through the hooks again — reaching this hook, which asks again, without
+	// end. A hook's own calls run outside the hooks.
+	askCtx = tools.WithoutHookedExecute(askCtx)
 
 	var recorded []record
 	for {
