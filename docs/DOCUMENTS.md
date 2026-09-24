@@ -152,8 +152,8 @@ Phase 3 = `import_md` + the agent.)
 ## Where it lives
 
 `internal/tools/builtin/document.go` (the tool + the 4-table schema). The
-`document` help topic (`Context op=help topic=document`) is the in-agent
-reference; `docs/SQL_MEMORY.md` covers the backing store and `docs/PATH.md` the
+`Document` tool article (`Context op=help topic=Document`, one article per
+operation as `Document/<op>`) is the in-agent reference; `docs/SQL_MEMORY.md` covers the backing store and `docs/PATH.md` the
 naming layer.
 
 ---
