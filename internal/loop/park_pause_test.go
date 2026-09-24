@@ -101,8 +101,8 @@ func TestPark_AWaitingRunTakesPartInAPause(t *testing.T) {
 	}
 }
 
-// A verdict that arrives while the runtime is paused releases the record: the
-// run moves on and, if it has work, stops at the loop's own pause gate.
+// A verdict that arrives while the runtime is paused is acted on when the
+// pause lifts, and the run that leaves its wait then holds no record.
 func TestPark_LeavingTheWaitReleasesThePauseRecord(t *testing.T) {
 	gate := newIdleGate()
 	r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.PauseGate = gate })
@@ -110,6 +110,7 @@ func TestPark_LeavingTheWaitReleasesThePauseRecord(t *testing.T) {
 	gate.declare()
 	waitCount(t, "paused records", gate.paused.Load, 1)
 	r.q <- steer.Message{Kind: steer.KindApprove, EnqueuedAt: time.Now()}
+	gate.lift()
 	r.result(t)
 	if gate.paused.Load() != 0 {
 		t.Error("an approved run is still recorded as paused")

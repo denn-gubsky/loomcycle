@@ -134,7 +134,9 @@ const (
 //
 // heldSince is when the hold began, which the review deadline runs from
 // (opts.ReviewTTL; none when zero). A deadline that passes while the runtime is
-// paused waits for the pause to lift: a paused runtime does not end runs.
+// paused waits for the pause to lift: a paused runtime does not end runs. For
+// the same reason a verdict that arrives while paused waits for the lift too,
+// and one that waited out the pause wins over a deadline that passed in it.
 //
 // heldBy names the agent_stop hook that took the hold, or is empty when review
 // arming took it. A hook's hold is not released by disarming review: arming
@@ -160,7 +162,46 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	pp := newParkPause(opts.PauseGate)
 	defer pp.done()
 	expiredWhilePaused := false
+	// handle acts on one message from the steer queue; the bool reports that
+	// it ended the hold, with the outcome.
+	handle := func(m steer.Message) (reviewOutcome, bool) {
+		if m.IsVerdict() && m.EnqueuedAt.Before(heldAt) {
+			return 0, false
+		}
+		switch {
+		case m.Kind == steer.KindCompact:
+			messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+			lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+			announce()
+			return 0, false
+		case m.Kind == steer.KindApprove:
+			return reviewApproved, true
+		case strings.TrimSpace(m.Text) == "":
+			if m.Kind == steer.KindReject {
+				return reviewRejected, true
+			}
+			return 0, false // an empty operator message says nothing
+		}
+		// Feedback: a reject with text, or a plain operator message.
+		messages = append(messages, providers.Message{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+		})
+		if opts.OnSteer != nil {
+			opts.OnSteer(m)
+		}
+		reResolveForOperatorTurn(ctx, opts, emit)
+		return reviewRevise, true
+	}
 	for {
+		// While the park records a pause, the queue is not read: a verdict
+		// that arrives then waits in it, in order, and is acted on when the
+		// pause lifts. A paused runtime does not end runs, and a verdict
+		// would end this one (or start its next turn) under the pause.
+		queue := opts.SteerQueue
+		if pp.recording() {
+			queue = nil
+		}
 		select {
 		case <-pp.declared():
 			pp.onDeclared()
@@ -168,7 +209,21 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 		case <-pp.lifted():
 			pp.onLifted()
 			if expiredWhilePaused {
-				return messages, lastCtxTokens, reviewExpired
+				// A verdict that waited out the pause was given before anyone
+				// could act on the deadline; it stands over the expiry.
+				for {
+					select {
+					case m, ok := <-opts.SteerQueue:
+						if !ok {
+							return messages, lastCtxTokens, reviewAborted
+						}
+						if outcome, done := handle(m); done {
+							return messages, lastCtxTokens, outcome
+						}
+					default:
+						return messages, lastCtxTokens, reviewExpired
+					}
+				}
 			}
 			continue
 		case <-deadline:
@@ -177,42 +232,20 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 				continue
 			}
 			return messages, lastCtxTokens, reviewExpired
-		case m, ok := <-opts.SteerQueue:
+		case m, ok := <-queue:
 			if !ok {
 				return messages, lastCtxTokens, reviewAborted
 			}
-			if m.IsVerdict() && m.EnqueuedAt.Before(heldAt) {
-				continue
+			if outcome, done := handle(m); done {
+				return messages, lastCtxTokens, outcome
 			}
-			switch {
-			case m.Kind == steer.KindCompact:
-				messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
-				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-				announce()
-				continue
-			case m.Kind == steer.KindApprove:
-				return messages, lastCtxTokens, reviewApproved
-			case strings.TrimSpace(m.Text) == "":
-				if m.Kind == steer.KindReject {
-					return messages, lastCtxTokens, reviewRejected
-				}
-				continue // an empty operator message says nothing
-			}
-			// Feedback: a reject with text, or a plain operator message.
-			messages = append(messages, providers.Message{
-				Role:    "user",
-				Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
-			})
-			if opts.OnSteer != nil {
-				opts.OnSteer(m)
-			}
-			reResolveForOperatorTurn(ctx, opts, emit)
-			return messages, lastCtxTokens, reviewRevise
+			continue
 		case <-t.C:
 			if opts.OnHeartbeat != nil {
 				opts.OnHeartbeat()
 			}
-			if heldBy == "" && !opts.reviewAtBoundary(ctx) {
+			// A disarm is an approval, held back while paused like any other.
+			if heldBy == "" && !pp.recording() && !opts.reviewAtBoundary(ctx) {
 				return messages, lastCtxTokens, reviewApproved
 			}
 		case <-ctx.Done():

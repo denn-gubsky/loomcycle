@@ -542,3 +542,74 @@ func TestRun_Review_FeedbackWithNoIterationLeftEndsRejected(t *testing.T) {
 		t.Errorf("result = %q %q after %d calls, want %q after 1", res.StopReason, res.FinalText, r.prov.calls(), StopReasonRejected)
 	}
 }
+
+// A verdict given while the runtime is paused waits for the pause to lift, as
+// an expiry does: a paused runtime does not end runs.
+func TestRun_Review_VerdictWhilePausedWaitsForTheLift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    steer.Message
+		want string
+	}{
+		{"approve", verdict(steer.KindApprove, ""), "end_turn"},
+		{"reject", verdict(steer.KindReject, ""), StopReasonRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := newIdleGate()
+			r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.PauseGate = gate })
+			r.waitFor(t, providers.EventAwaitingReview)
+			gate.declare()
+			waitCount(t, "paused records", gate.paused.Load, 1)
+			tc.v.EnqueuedAt = time.Now()
+			r.q <- tc.v
+			select {
+			case <-r.done:
+				t.Fatal("a verdict ended the run while the runtime was paused")
+			case <-time.After(150 * time.Millisecond):
+			}
+			gate.lift()
+			if res := r.result(t); res.StopReason != tc.want || r.prov.calls() != 1 {
+				t.Errorf("after the lift: %q after %d calls, want %q after 1", res.StopReason, r.prov.calls(), tc.want)
+			}
+		})
+	}
+}
+
+// Feedback given while paused starts no turn until the pause lifts.
+func TestRun_Review_FeedbackWhilePausedStartsNoTurnUntilTheLift(t *testing.T) {
+	gate := newIdleGate()
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.PauseGate = gate })
+	r.waitFor(t, providers.EventAwaitingReview)
+	gate.declare()
+	waitCount(t, "paused records", gate.paused.Load, 1)
+	r.q <- verdict(steer.KindReject, "redo it")
+	time.Sleep(150 * time.Millisecond)
+	if n := r.prov.calls(); n != 1 {
+		t.Fatalf("the model was called %d times while paused, want 1", n)
+	}
+	gate.lift()
+	ev := r.waitFor(t, providers.EventAwaitingReview)
+	if ev.AwaitingReview.Round != 2 || r.prov.lastUserText() != "redo it" {
+		t.Errorf("after the lift: round %d, last user turn %q", ev.AwaitingReview.Round, r.prov.lastUserText())
+	}
+	r.q <- verdict(steer.KindApprove, "")
+	r.result(t)
+}
+
+// A verdict that waited out a pause wins over a deadline that passed in it.
+func TestRun_Review_VerdictWhilePausedWinsOverAnExpiryInThePause(t *testing.T) {
+	gate := newIdleGate()
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		o.ReviewTTL = 80 * time.Millisecond
+		o.PauseGate = gate
+	})
+	r.waitFor(t, providers.EventAwaitingReview)
+	gate.declare()
+	waitCount(t, "paused records", gate.paused.Load, 1)
+	r.q <- verdict(steer.KindApprove, "")
+	time.Sleep(200 * time.Millisecond) // past the deadline, still paused
+	gate.lift()
+	if res := r.result(t); res.StopReason != "end_turn" {
+		t.Errorf("stop reason = %q, want the approval to stand", res.StopReason)
+	}
+}
