@@ -428,6 +428,7 @@ func Run(t *testing.T, factory Factory) {
 		// v0.8.21 awaited-state derivation needs last-event-per-run.
 		{"GetLastEventForRunEmpty", testGetLastEventForRunEmpty},
 		{"GetLastEventForRunReturnsHighestSeq", testGetLastEventForRunReturnsHighestSeq},
+		{"GetLastEventOfTypesSkipsOtherTypes", testGetLastEventOfTypesSkipsOtherTypes},
 		// v0.12.7 provider telemetry — FinishRun must persist the
 		// final-iteration provider so post-run analysis can count
 		// fallback-routed runs.
@@ -10471,6 +10472,41 @@ func testGetLastEventForRunReturnsHighestSeq(t *testing.T, s store.Store) {
 	}
 	if ev2.RunID != run.ID || ev2.Type != "tool_call" {
 		t.Errorf("scope leak: got %+v", ev2)
+	}
+}
+
+// testGetLastEventOfTypesSkipsOtherTypes: the latest event among the named
+// types, past later events of other types, never another run's — and not
+// found when the run has none of them.
+func testGetLastEventOfTypesSkipsOtherTypes(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "u")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_types"})
+	other, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_types_other"})
+	for _, p := range []struct{ run, typ, body string }{
+		{run.ID, "user_input", `{"n":1}`},
+		{run.ID, "awaiting_review", `{"n":2}`},
+		{run.ID, "override", `{"n":3}`},
+		{run.ID, "limit", `{"n":4}`},
+		{other.ID, "user_input", `{"n":5}`},
+	} {
+		if err := s.AppendEvent(ctx, p.run, p.typ, []byte(p.body)); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	ev, err := s.GetLastEventOfTypes(ctx, run.ID, []string{"awaiting_review", "user_input", "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Type != "awaiting_review" || !contains(string(ev.Payload), `"n":2`) || ev.RunID != run.ID {
+		t.Errorf("got %s %s on %s, want this run's awaiting_review", ev.Type, ev.Payload, ev.RunID)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.GetLastEventOfTypes(ctx, run.ID, []string{"done"}); !errors.As(err, &nf) {
+		t.Errorf("none of the types: err = %v, want *ErrNotFound", err)
+	}
+	if _, err := s.GetLastEventOfTypes(ctx, run.ID, nil); !errors.As(err, &nf) {
+		t.Errorf("no types: err = %v, want *ErrNotFound", err)
 	}
 }
 

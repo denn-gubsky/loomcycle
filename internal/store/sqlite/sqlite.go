@@ -2561,6 +2561,36 @@ func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Eve
 	return ev, nil
 }
 
+// GetLastEventOfTypes is GetLastEventForRun restricted to the given types.
+func (s *Store) GetLastEventOfTypes(ctx context.Context, runID string, types []string) (store.Event, error) {
+	if len(types) == 0 {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	args := make([]any, 0, len(types)+1)
+	args = append(args, runID)
+	for _, t := range types {
+		args = append(args, t)
+	}
+	var (
+		ev store.Event
+		ts int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = ? AND type IN (`+sqlitePlaceholders(len(types))+`)
+		 ORDER BY seq DESC LIMIT 1`,
+		args...,
+	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	if err != nil {
+		return store.Event{}, err
+	}
+	ev.Timestamp = time.Unix(0, ts)
+	return ev, nil
+}
+
 // ListEvents serves the v0.8.21 audit view's cross-session query.
 // Filter clauses are conditionally appended so unset dimensions don't
 // constrain the index lookup. Total is computed via a sibling COUNT(*)

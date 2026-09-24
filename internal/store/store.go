@@ -1556,6 +1556,12 @@ type Store interface {
 	// anything).
 	GetLastEventForRun(ctx context.Context, runID string) (Event, error)
 
+	// GetLastEventOfTypes returns the highest-seq event of the run whose type
+	// is one of types — "the latest of these", which the latest event overall
+	// cannot answer once other writers append to the run between them. Returns
+	// *ErrNotFound{Kind:"event"} when the run has none of them.
+	GetLastEventOfTypes(ctx context.Context, runID string, types []string) (Event, error)
+
 	// GetRunByAgentID returns the most recently started run carrying
 	// the given agent_id. Returns *ErrNotFound when no such row.
 	// Used by the GET /v1/agents/{agent_id} and cancel endpoints to

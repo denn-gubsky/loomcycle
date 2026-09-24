@@ -1446,6 +1446,31 @@ func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Eve
 	return ev, nil
 }
 
+// GetLastEventOfTypes is GetLastEventForRun restricted to the given types.
+func (s *Store) GetLastEventOfTypes(ctx context.Context, runID string, types []string) (store.Event, error) {
+	if len(types) == 0 {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	var (
+		ev store.Event
+		ts time.Time
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = $1 AND type = ANY($2)
+		 ORDER BY seq DESC LIMIT 1`,
+		runID, types,
+	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	if err != nil {
+		return store.Event{}, fmt.Errorf("get last event of types for run: %w", err)
+	}
+	ev.Timestamp = ts
+	return ev, nil
+}
+
 // ListEvents serves the v0.8.21 /v1/_events audit endpoint. Same
 // filter semantics as the SQLite adapter; uses $N placeholders and
 // numeric args. Index hint: events_by_ts / events_by_type_ts (added
