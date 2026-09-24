@@ -219,6 +219,17 @@ func (s *Set) ToolArticle(tool string) (*Topic, bool) {
 	return t, true
 }
 
+// Has reports whether a topic is named exactly name: no case folding, no
+// aliases. It backs the pointer a tool's description carries, which must name a
+// topic that resolves as written.
+func (s *Set) Has(name string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.topics[name]
+	return ok
+}
+
 // toolsDir is the subdirectory, under both the bundled corpus and an operator's
 // LOOMCYCLE_HELP_ROOT, that holds tool and operation articles:
 //

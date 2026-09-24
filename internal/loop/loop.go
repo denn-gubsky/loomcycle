@@ -2165,7 +2165,10 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	var toolSpecs []providers.ToolSpec
 	if opts.Dispatcher != nil {
-		toolSpecs = opts.Dispatcher.Specs(opts.Tools)
+		// Per run, not per tool: a tool's description points at its help only
+		// when this run can call Context, and a scoped tool's says which scopes
+		// this run's grants allow.
+		toolSpecs = opts.Dispatcher.SpecsFor(ctx, opts.Tools)
 	}
 
 	emit := func(ev providers.Event) {
