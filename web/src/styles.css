@@ -678,6 +678,7 @@ textarea::placeholder {
 .pill.completed { background: rgba(78, 201, 176, 0.2); color: var(--completed); }
 .pill.failed { background: rgba(255, 93, 104, 0.2); color: var(--failed); }
 .pill.cancelled { background: rgba(176, 139, 208, 0.2); color: var(--cancelled); }
+.pill.rejected { background: rgba(255, 93, 104, 0.12); color: var(--failed); }
 /* A configured run (a draft) has not run: neutral, not a run state colour. */
 .pill.configured { background: var(--bg-muted); color: var(--fg-muted); border: 1px dashed var(--border); }
 

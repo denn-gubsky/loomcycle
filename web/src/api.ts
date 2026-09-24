@@ -174,7 +174,8 @@ export interface Agent {
   parent_agent_id: string | null;
   user_id: string;
   // "configured" = created but not started (a draft; see createConfiguredRun).
-  status: "configured" | "running" | "completed" | "failed" | "cancelled";
+  // "rejected" = a reviewer turned the held answer down without feedback.
+  status: "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
   started_at: string;
   completed_at: string | null;
   stop_reason: string | null;
