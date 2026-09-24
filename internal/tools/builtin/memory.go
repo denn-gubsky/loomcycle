@@ -1269,7 +1269,7 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// Quota math charges only the k/v row's key + value bytes;
 	// embeddings are excluded per RFC §8. Operators don't pay for
 	// the vector's storage in their per-scope cap.
-	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(in.Value)); err != nil {
+	if err := m.checkQuota(ctx, "set", scope, scopeID, in.Key, len(in.Value)); err != nil {
 		return errResult(err.Error()), nil
 	}
 
@@ -2552,7 +2552,7 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	// representation is bounded by 20 bytes (max int64 width). Charge
 	// 32 bytes for safety; a counter row is negligible relative to
 	// any sane scope cap.
-	if err := m.checkQuota(ctx, scope, scopeID, in.Key, 32); err != nil {
+	if err := m.checkQuota(ctx, "incr", scope, scopeID, in.Key, 32); err != nil {
 		return errResult(err.Error()), nil
 	}
 	ttl := time.Duration(in.TTL) * time.Second
@@ -2601,9 +2601,13 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 		return errResult(fmt.Sprintf("merge: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
 	}
 	// RFC BL P1: refuse a read_only core block BEFORE taking the row lock — the
-	// mutation must not commit. The limit_bytes cap is checked post-reduction
-	// below (the merge grows the value), mirroring the quota re-check.
+	// mutation must not commit. The size caps run inside the reducer, on the
+	// merged value, for the same reason.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
+		return errResult(err.Error()), nil
+	}
+	capCheck, err := m.reducerCap(ctx, "merge", scope, scopeID, in.Key)
+	if err != nil {
 		return errResult(err.Error()), nil
 	}
 
@@ -2627,25 +2631,15 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
 				return nil, fmt.Errorf("merged value (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
 			}
+			// The post-merge size is what the caps charge; an error here rolls
+			// the merge back instead of reporting a write that already landed.
+			if err := capCheck(len(b)); err != nil {
+				return nil, err
+			}
 			return b, nil
 		})
 	if err != nil {
-		return errResult(fmt.Sprintf("merge: %s", err)), nil
-	}
-	// Core-block per-block cap on the post-merge size, at the same point as the
-	// quota re-check (RFC BL P1). Same commit caveat as the quota check below.
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", len(final)); err != nil {
-		return errResult(err.Error()), nil
-	}
-	// Quota check AFTER the merge — the post-merge size is what we
-	// charge against. checkQuota's existing-row subtraction means a
-	// merge that grows the row by N bytes costs N additional bytes.
-	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
-		// Roll back by rewriting the old value? We can't from here
-		// — the atomic update already committed. Documentation says
-		// quota is approximate; surface the error so the agent sees
-		// the over-cap state and can delete.
-		return errResult(err.Error()), nil
+		return reducerErrResult("merge", err), nil
 	}
 	return okJSON(map[string]any{"value": final})
 }
@@ -2667,9 +2661,13 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	if !json.Valid(in.Value) {
 		return errResult("append_dedupe: value is not valid JSON"), nil
 	}
-	// RFC BL P1: refuse a read_only core block before mutating; the limit_bytes
-	// cap is checked post-reduction below.
+	// RFC BL P1: refuse a read_only core block before mutating; the size caps
+	// run inside the reducer, on the appended value.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
+		return errResult(err.Error()), nil
+	}
+	capCheck, err := m.reducerCap(ctx, "append_dedupe", scope, scopeID, in.Key)
+	if err != nil {
 		return errResult(err.Error()), nil
 	}
 
@@ -2706,19 +2704,13 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
 				return nil, fmt.Errorf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
 			}
+			if err := capCheck(len(b)); err != nil {
+				return nil, err
+			}
 			return b, nil
 		})
 	if err != nil {
-		return errResult(fmt.Sprintf("append_dedupe: %s", err)), nil
-	}
-	// Core-block per-block cap on the post-append size (RFC BL P1).
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", len(final)); err != nil {
-		return errResult(err.Error()), nil
-	}
-	// Quota check on the final size; same caveat as execMerge — the
-	// store has already committed by here.
-	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
-		return errResult(err.Error()), nil
+		return reducerErrResult("append_dedupe", err), nil
 	}
 	return okJSON(map[string]any{"appended": appended, "value": final})
 }
@@ -2747,9 +2739,13 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 	if in.Limit > 10000 {
 		return errResult("bounded_list: limit must be <= 10000"), nil
 	}
-	// RFC BL P1: refuse a read_only core block before mutating; the limit_bytes
-	// cap is checked post-reduction below.
+	// RFC BL P1: refuse a read_only core block before mutating; the size caps
+	// run inside the reducer, on the trimmed value.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {
+		return errResult(err.Error()), nil
+	}
+	capCheck, err := m.reducerCap(ctx, "bounded_list", scope, scopeID, in.Key)
+	if err != nil {
 		return errResult(err.Error()), nil
 	}
 
@@ -2776,17 +2772,13 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
 				return nil, fmt.Errorf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
 			}
+			if err := capCheck(len(b)); err != nil {
+				return nil, err
+			}
 			return b, nil
 		})
 	if err != nil {
-		return errResult(fmt.Sprintf("bounded_list: %s", err)), nil
-	}
-	// Core-block per-block cap on the post-trim size (RFC BL P1).
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", len(final)); err != nil {
-		return errResult(err.Error()), nil
-	}
-	if err := m.checkQuota(ctx, scope, scopeID, in.Key, len(final)); err != nil {
-		return errResult(err.Error()), nil
+		return reducerErrResult("bounded_list", err), nil
 	}
 	return okJSON(map[string]any{"dropped": droppedCount, "value": final})
 }
@@ -2855,14 +2847,81 @@ type scopeUsageCounter interface {
 	ScopeUsage(ctx context.Context, scope store.MemoryScope, scopeID string) (keys int, bytes int, err error)
 }
 
-func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeID, key string, addBytes int) error {
+func (m *Memory) checkQuota(ctx context.Context, op string, scope store.MemoryScope, scopeID, key string, addBytes int) error {
+	quota, used, err := m.scopeUsageExcluding(ctx, scope, scopeID, key)
+	if err != nil {
+		return err
+	}
+	return quotaCheck(op, scope, quota, used, key, addBytes)
+}
+
+// quotaCheck is the comparison half of checkQuota, split out so a reducer can
+// run it on the value it is about to commit (see reducerCap). quota <= 0 means
+// no cap.
+func quotaCheck(op string, scope store.MemoryScope, quota, used int, key string, addBytes int) error {
+	if quota <= 0 {
+		return nil
+	}
+	if projected := used + len(key) + addBytes; projected > quota {
+		return &memoryCapError{fmt.Sprintf("Memory.%s: scope %q quota %d bytes would be exceeded by this write (current=%d, after=%d)",
+			op, scope, quota, used, projected)}
+	}
+	return nil
+}
+
+// memoryCapError is a size-cap refusal raised from inside an atomic reducer. It
+// is its own type so the op can report it as written, rather than behind the
+// "<op>: " prefix it puts on the reducer's other errors.
+type memoryCapError struct{ msg string }
+
+func (e *memoryCapError) Error() string { return e.msg }
+
+// reducerErrResult renders an atomic update's failure: a cap refusal as it was
+// written, anything else behind the op's name.
+func reducerErrResult(op string, err error) tools.Result {
+	var capErr *memoryCapError
+	if errors.As(err, &capErr) {
+		return errResult(capErr.Error())
+	}
+	return errResult(fmt.Sprintf("%s: %s", op, err))
+}
+
+// reducerCap returns the size check a read-modify-write op runs INSIDE its
+// atomic reducer, on the value it is about to commit: the core block's
+// limit_bytes and the scope quota. Inside, because an error there aborts the
+// transaction; the same check after the update returned would refuse a write
+// the store had already made.
+//
+// The scope's usage is measured here, before the update, because the reducer
+// runs inside the store's write transaction and must not read the store again
+// (on sqlite that is a second connection waiting on the lock this one holds).
+// A concurrent write to ANOTHER key can therefore still slip in between; the
+// quota was always approximate, and what it no longer does is commit a value
+// it then refuses.
+func (m *Memory) reducerCap(ctx context.Context, op string, scope store.MemoryScope, scopeID, key string) (func(valueLen int) error, error) {
+	quota, used, err := m.scopeUsageExcluding(ctx, scope, scopeID, key)
+	if err != nil {
+		return nil, err
+	}
+	return func(valueLen int) error {
+		if err := enforceCoreBlockWrite(ctx, scope, key, op, valueLen); err != nil {
+			return &memoryCapError{err.Error()}
+		}
+		return quotaCheck(op, scope, quota, used, key, valueLen)
+	}, nil
+}
+
+// scopeUsageExcluding returns the scope's quota (0 = no cap) and the bytes the
+// scope holds OTHER than key — the existing row at key is about to be replaced,
+// so its bytes are not additive.
+func (m *Memory) scopeUsageExcluding(ctx context.Context, scope store.MemoryScope, scopeID, key string) (quota, used int, err error) {
 	policy := tools.MemoryPolicy(ctx)
-	quota := policy.QuotaBytes
+	quota = policy.QuotaBytes
 	if quota <= 0 {
 		quota = m.DefaultQuotaBytes
 	}
 	if quota <= 0 {
-		return nil
+		return 0, 0, nil
 	}
 
 	// Preferred path: ask the backend to sum the scope in one query, excluding
@@ -2876,7 +2935,7 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	if sc, ok := m.backend(ctx).(scopeUsageCounter); ok {
 		_, used, err := sc.ScopeUsage(ctx, scope, scopeID)
 		if err != nil {
-			return fmt.Errorf("quota check: %w", err)
+			return 0, 0, fmt.Errorf("quota check: %w", err)
 		}
 		// An overwrite replaces the existing row, so its bytes are not additive.
 		if existing, gerr := m.backend(ctx).Get(ctx, scope, scopeID, key); gerr == nil {
@@ -2885,11 +2944,7 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 				used = 0
 			}
 		}
-		if projected := used + len(key) + addBytes; projected > quota {
-			return fmt.Errorf("Memory.set: scope %q quota %d bytes would be exceeded by this write (current=%d, after=%d)",
-				scope, quota, used, projected)
-		}
-		return nil
+		return quota, used, nil
 	}
 
 	// Fallback for a REMOTE backend, which cannot host Document chunk bodies
@@ -2900,11 +2955,6 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	// list call is expected to be small for a well-behaved agent — a
 	// noisy agent that writes thousands of keys hits the quota cap
 	// long before this loop becomes an issue.
-	//
-	// For a scope of 1 MB at 64 KB/value that's at most ~16 rows in
-	// the worst case; in practice scopes hold a handful of summary
-	// keys. If we ever need to scale this, we'll add a cached
-	// per-(scope, scope_id) byte counter via a SQL trigger.
 	//
 	// We treat truncation (>1000 keys in scope) as a quota refusal:
 	// undercounting would let a thousand-tiny-key agent slip past the
@@ -2919,27 +2969,19 @@ func (m *Memory) checkQuota(ctx context.Context, scope store.MemoryScope, scopeI
 	// configured, so this is equivalent for the common case.
 	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, "", listCap)
 	if err != nil {
-		return fmt.Errorf("quota check: %w", err)
+		return 0, 0, fmt.Errorf("quota check: %w", err)
 	}
 	if truncated {
-		return fmt.Errorf("Memory.set: scope %q has more than %d keys; quota check cannot run accurately — delete unused keys first",
+		return 0, 0, fmt.Errorf("Memory: scope %q has more than %d keys; quota check cannot run accurately — delete unused keys first",
 			scope, listCap)
 	}
-	used := 0
 	for _, e := range entries {
-		used += len(e.Key) + len(e.Value)
 		if e.Key == key {
-			// Subtract the existing row's bytes — we'll re-add
-			// the new size below to compute the post-write total.
-			used -= len(e.Key) + len(e.Value)
+			continue // being replaced; its new size is charged by the caller
 		}
+		used += len(e.Key) + len(e.Value)
 	}
-	projected := used + len(key) + addBytes
-	if projected > quota {
-		return fmt.Errorf("Memory.set: scope %q quota %d bytes would be exceeded by this write (current=%d, after=%d)",
-			scope, quota, used, projected)
-	}
-	return nil
+	return quota, used, nil
 }
 
 // okJSON marshals v as the tool_result text. JSON marshalling is

@@ -24,8 +24,9 @@ objects merge field by field; any other value (array, string, number, `null`)
 - `merge: value must be a JSON object` — wrap the fields in `{...}`.
 - `merge: existing value is not a JSON object (use set to overwrite)` — the
   key holds an array or scalar. Retrying is pointless; use `set`.
-- `merge: merged value (N bytes) exceeds max M bytes`, or a scope-quota
-  refusal — the object is too big; store less.
+- `merge: merged value (N bytes) exceeds max M bytes`, or a size-cap refusal
+  (`Memory.merge: … quota …` / `… limit_bytes …`). Nothing was written — the
+  object is too big; store less.
 - `Memory.merge: core block ... is read_only` — the operator owns that key.
 
 ## Examples
