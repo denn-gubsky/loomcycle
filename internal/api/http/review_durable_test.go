@@ -101,6 +101,11 @@ func TestPause_CountsAParkedInteractiveRunAsPaused(t *testing.T) {
 // shape a pause records and a restart has to bring back.
 func heldRunFixture(t *testing.T, interactive bool) (*Server, *httptest.Server, *recordingScriptedProvider, store.Run) {
 	t.Helper()
+	return heldRunFixtureWith(t, interactive, runConfigRecord{Review: reviewRecord(true)})
+}
+
+func heldRunFixtureWith(t *testing.T, interactive bool, rc runConfigRecord) (*Server, *httptest.Server, *recordingScriptedProvider, store.Run) {
+	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{
 		"writer": {Model: "stub-model", Tools: []string{}, SystemPrompt: "you write"},
@@ -123,7 +128,7 @@ func heldRunFixture(t *testing.T, interactive bool) (*Server, *httptest.Server, 
 	}
 	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{
 		AgentID: "a_held", UserID: "alice", Model: "stub-model", Interactive: interactive,
-		RunConfig: runConfigRecord{Review: reviewRecord(true)}.marshal(),
+		RunConfig: rc.marshal(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -207,4 +212,74 @@ func TestResume_FeedbackOnARestoredHoldRevises(t *testing.T) {
 	if !strings.Contains(messagesText(req.Messages), "the held plan") {
 		t.Error("the revision lost the answer it was revising")
 	}
+}
+
+// Through the real server: a run started with a review deadline that nobody
+// rules on ends rejected, with the reason on the row.
+func TestReview_AnUnreviewedHoldExpiresRejected(t *testing.T) {
+	h := newReviewHarness(t)
+	runID, _, frames, stop := h.start(`{"agent":"writer","review":true,"review_ttl_seconds":1,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"write the plan"}]}]}`)
+	defer stop()
+	h.waitFrame(frames, "awaiting_review")
+	deadline := time.Now().Add(4 * time.Second)
+	var run store.Run
+	for time.Now().Before(deadline) {
+		run, _ = h.st.GetRun(context.Background(), runID)
+		if run.Status != store.RunRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if run.Status != store.RunRejected || run.StopReason != "review_expired" {
+		t.Errorf("row = %s / %q, want rejected / review_expired", run.Status, run.StopReason)
+	}
+	if rec, _ := decodeRunConfig(run.RunConfig); rec.ReviewTTLSeconds != 1 {
+		t.Errorf("run_config review_ttl_seconds = %d, want the deadline kept for resume", rec.ReviewTTLSeconds)
+	}
+}
+
+// A restored hold keeps the deadline it had: its expiry runs from when the hold
+// began, not from the restart.
+func TestResume_ARestoredHoldKeepsItsDeadline(t *testing.T) {
+	srv, _, _, run := heldRunFixtureWith(t, false, runConfigRecord{Review: reviewRecord(true), ReviewTTLSeconds: 3600})
+	events, err := srv.store.GetTranscript(context.Background(), run.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var heldAt time.Time
+	for _, e := range events {
+		if e.Type == "awaiting_review" {
+			heldAt = e.Timestamp
+		}
+	}
+	time.Sleep(1100 * time.Millisecond) // a restart some time later
+	if n, warns := srv.ResumePausedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d (warnings: %v)", n, warns)
+	}
+	want := heldAt.Add(time.Hour).UTC().Format(time.RFC3339)
+	waitFor(t, "the restored hold to announce its deadline", func() bool {
+		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), `"expires_at":"`+want+`"`)
+	})
+}
+
+// The deadline is set at start and a retune of anything else keeps it: the
+// merge used to be field-by-field, and a field it did not name was dropped.
+func TestRetune_KeepsTheReviewDeadline(t *testing.T) {
+	h := newReviewHarness(t)
+	runID, _, frames, stop := h.start(`{"agent":"writer","review":true,"review_ttl_seconds":3600,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"write the plan"}]}]}`)
+	defer stop()
+	h.waitFrame(frames, "awaiting_review")
+	resp, err := http.Post(h.ts.URL+"/v1/runs/"+runID+"/retune", "application/json", strings.NewReader(`{"max_tokens":512}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	run, _ := h.st.GetRun(context.Background(), runID)
+	if rec, _ := decodeRunConfig(run.RunConfig); rec.ReviewTTLSeconds != 3600 {
+		t.Errorf("after a retune review_ttl_seconds = %d, want 3600 kept", rec.ReviewTTLSeconds)
+	}
+	if code, _ := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d", code)
+	}
+	h.waitStatus(runID, store.RunCompleted)
 }

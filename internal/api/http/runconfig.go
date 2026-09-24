@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -68,6 +69,10 @@ type runConfigRecord struct {
 	// record carries it from the start: true when the run began armed, and
 	// whatever a retune set since. Absent means never armed.
 	Review *bool `json:"review,omitempty"`
+
+	// ReviewTTLSeconds is the run's review deadline, kept so a restored hold
+	// expires when it would have, not a full window after the restart.
+	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
 
 	// Interruption is the run's own answer to whether the agent may ASK a human
 	// a question, overriding the definition's block.
@@ -213,4 +218,18 @@ func reviewRecord(armed bool) *bool {
 		return nil
 	}
 	return &armed
+}
+
+// reviewTTL is the run's review deadline as a duration (0 = none).
+func (rc runConfigRecord) reviewTTL() time.Duration {
+	return time.Duration(rc.ReviewTTLSeconds) * time.Second
+}
+
+// positiveOrZero treats a non-positive count as unset, the way
+// run_timeout_seconds does.
+func positiveOrZero(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
 }

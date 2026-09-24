@@ -145,6 +145,9 @@ type RunOptions struct {
 	// going. Disarming a held run releases it as approved.
 	Review    bool
 	ReviewNow func(ctx context.Context) bool
+	// ReviewTTL, when positive, ends a hold that gets no verdict within it as
+	// rejected (stop reason "review_expired"). Each hold gets the full window.
+	ReviewTTL time.Duration
 
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
@@ -2530,9 +2533,16 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		finalText = lastAssistantText(messages)
 		outcome := reviewApproved
 		if opts.reviewAtBoundary(ctx) {
-			messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, h.SinceTurn, h.Round, lastCtxTokens, preambleTokens, time.Time{}, emit)
+			heldSince := h.HeldAt
+			if heldSince.IsZero() {
+				heldSince = time.Now()
+			}
+			messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, h.SinceTurn, h.Round, lastCtxTokens, preambleTokens, time.Time{}, heldSince, emit)
 		}
 		switch outcome {
+		case reviewExpired:
+			stopReason = StopReasonReviewExpired
+			parkAbandoned = true
 		case reviewAborted:
 			err := ctx.Err()
 			if err == nil {
@@ -3167,8 +3177,13 @@ outerLoop:
 				disarmTurn()
 				reviewRound++
 				var outcome reviewOutcome
-				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, time.Now(), emit)
+				now := time.Now()
+				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, now, now, emit)
 				switch outcome {
+				case reviewExpired:
+					stopReason = StopReasonReviewExpired
+					iterSpan.End()
+					break outerLoop
 				case reviewRevise:
 					iterSpan.End()
 					continue outerLoop

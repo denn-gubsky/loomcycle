@@ -445,3 +445,87 @@ func TestRun_ResumeHeld_ApprovedInteractiveRunParksForInput(t *testing.T) {
 	cancel()
 	r.finish(t)
 }
+
+// A hold nobody rules on within the review deadline ends rejected — never
+// approved — and says when it will expire while it waits.
+func TestRun_Review_AnUnreviewedHoldExpiresRejected(t *testing.T) {
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.ReviewTTL = 60 * time.Millisecond })
+	ev := r.waitFor(t, providers.EventAwaitingReview)
+	if _, err := time.Parse(time.RFC3339, ev.AwaitingReview.ExpiresAt); err != nil {
+		t.Errorf("expires_at = %q, want an RFC 3339 time", ev.AwaitingReview.ExpiresAt)
+	}
+	res := r.result(t)
+	if res.StopReason != StopReasonReviewExpired || r.prov.calls() != 1 {
+		t.Errorf("result = %q after %d calls, want %q after 1", res.StopReason, r.prov.calls(), StopReasonReviewExpired)
+	}
+}
+
+// Without a deadline a hold says nothing about expiry and waits.
+func TestRun_Review_NoDeadlineNoExpiry(t *testing.T) {
+	r := startReviewRun(t, context.Background(), nil)
+	if ev := r.waitFor(t, providers.EventAwaitingReview); ev.AwaitingReview.ExpiresAt != "" {
+		t.Errorf("expires_at = %q with no deadline", ev.AwaitingReview.ExpiresAt)
+	}
+	select {
+	case <-r.done:
+		t.Fatal("a hold with no deadline ended on its own")
+	case <-time.After(100 * time.Millisecond):
+	}
+	r.q <- verdict(steer.KindApprove, "")
+	r.result(t)
+}
+
+// Each hold gets the whole window: a revision is not held on what was left of
+// the first round's.
+func TestRun_Review_EachHoldGetsTheFullWindow(t *testing.T) {
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.ReviewTTL = 300 * time.Millisecond })
+	r.waitFor(t, providers.EventAwaitingReview)
+	time.Sleep(200 * time.Millisecond) // most of round 1's window
+	r.q <- verdict(steer.KindReject, "again")
+	r.waitFor(t, providers.EventAwaitingReview)
+	time.Sleep(200 * time.Millisecond) // past round 1's deadline, inside round 2's
+	select {
+	case <-r.done:
+		t.Fatal("the revision expired on the first round's deadline")
+	default:
+	}
+	r.q <- verdict(steer.KindApprove, "")
+	if res := r.result(t); res.StopReason != "end_turn" {
+		t.Errorf("stop reason = %q", res.StopReason)
+	}
+}
+
+// A restored hold's deadline runs from when the hold began, so a restart does
+// not hand an unreviewed answer a fresh window.
+func TestRun_ResumeHeld_DeadlineRunsFromWhenTheHoldBegan(t *testing.T) {
+	r := startResumedHold(t, context.Background(), func(o *RunOptions) {
+		o.ReviewTTL = time.Minute
+		o.ResumeHeld.HeldAt = time.Now().Add(-time.Hour)
+	})
+	if res := r.result(t); res.StopReason != StopReasonReviewExpired || r.prov.calls() != 0 {
+		t.Errorf("result = %q after %d calls, want expired at once with no model call", res.StopReason, r.prov.calls())
+	}
+}
+
+// A deadline that passes while the runtime is paused waits for the pause to
+// lift: a paused runtime does not end runs.
+func TestRun_Review_ExpiryWaitsForAPauseToLift(t *testing.T) {
+	gate := newIdleGate()
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		o.ReviewTTL = 80 * time.Millisecond
+		o.PauseGate = gate
+	})
+	r.waitFor(t, providers.EventAwaitingReview)
+	gate.declare()
+	waitCount(t, "paused records", gate.paused.Load, 1)
+	time.Sleep(200 * time.Millisecond) // past the deadline, still paused
+	select {
+	case <-r.done:
+		t.Fatal("the hold expired while the runtime was paused")
+	default:
+	}
+	gate.lift()
+	if res := r.result(t); res.StopReason != StopReasonReviewExpired {
+		t.Errorf("stop reason after the lift = %q, want %q", res.StopReason, StopReasonReviewExpired)
+	}
+}

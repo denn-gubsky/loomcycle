@@ -114,9 +114,9 @@ func heldReviewFrom(events []store.Event) *loop.HeldReview {
 		}
 		var p providers.Event
 		if err := json.Unmarshal(ev.Payload, &p); err != nil || p.AwaitingReview == nil {
-			return &loop.HeldReview{Round: 1}
+			return &loop.HeldReview{Round: 1, HeldAt: ev.Timestamp}
 		}
-		return &loop.HeldReview{SinceTurn: p.AwaitingReview.SinceTurn, Round: p.AwaitingReview.Round}
+		return &loop.HeldReview{SinceTurn: p.AwaitingReview.SinceTurn, Round: p.AwaitingReview.Round, HeldAt: ev.Timestamp}
 	}
 	return nil
 }

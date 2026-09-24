@@ -87,6 +87,9 @@ class AwaitingReview:
 
     since_turn: int
     round: int
+    # RFC 3339 UTC: when the hold ends as rejected if nobody rules on it.
+    # Empty when the run has no review deadline.
+    expires_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -256,6 +259,7 @@ class AgentEvent:
             ar = AwaitingReview(
                 since_turn=ev.awaiting_review.since_turn,
                 round=ev.awaiting_review.round,
+                expires_at=ev.awaiting_review.expires_at,
             )
         ui: Optional[UserInput] = None
         if ev.HasField("user_input"):

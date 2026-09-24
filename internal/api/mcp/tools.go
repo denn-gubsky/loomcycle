@@ -42,6 +42,7 @@ const spawnPerRunProps = `
 	"inject_tool_guide": {"type": "boolean", "description": "Whether to inject the generated tool guide into this child's prompt."},
 	"interactive": {"type": "boolean", "description": "Park this child at its turn boundaries instead of finishing, so an operator can steer it. Also settable on a run that is ALREADY GOING \u2014 that is the point, since nobody knows at start that they will need to correct it. false releases a run that was started interactive."},
 	"review": {"type": "boolean", "description": "Hold this child's finished answer for an operator's verdict instead of completing. The call returns once the answer is approved, or when the run is rejected. Also settable on a run that is already going; false releases a held run as approved."},
+	"review_ttl_seconds": {"type": "integer", "minimum": 0, "description": "With review: end a held answer that gets no verdict within this many seconds as rejected. Each hold gets the full window. Omit or 0 for no deadline — a hold then waits for a person."},
 	"interruption": {"type": "object", "description": "Let this child ASK a human a question, overriding what its definition allows. It blocks and waits for a person, so the cost is the run stopping until someone answers \u2014 bounded by the run timeout and the interruption's own.", "properties": {"enabled": {"type": "boolean"}, "kinds": {"type": "array", "items": {"type": "string"}}, "max_pending": {"type": "integer", "minimum": 0}}}`
 
 // retuneProps is the JSON-schema fragment for a RETUNE, which accepts a

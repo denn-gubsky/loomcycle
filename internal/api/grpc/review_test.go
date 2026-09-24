@@ -139,3 +139,35 @@ func TestEventToProto_CarriesTheAwaitingReviewPayload(t *testing.T) {
 		t.Error("a text frame carries an awaiting_review payload")
 	}
 }
+
+// The review deadline reaches the runner from both run RPCs and the spawn
+// shape, and the held event carries when it expires.
+func TestRun_ReviewDeadlineReachesTheRunner(t *testing.T) {
+	fr := &fakeRunner{registered: registrationFrame{AgentID: "a", RunID: "r", SessionID: "s"}}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "default", Review: true, ReviewTtlSeconds: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	if fr.lastInput.ReviewTTLSeconds != 90 {
+		t.Errorf("Run: review_ttl_seconds = %d, want 90", fr.lastInput.ReviewTTLSeconds)
+	}
+	cs, err := client.Continue(context.Background(), &loomcyclepb.ContinueRequest{SessionId: "s", ReviewTtlSeconds: 45})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, cs)
+	if fr.lastInput.ReviewTTLSeconds != 45 {
+		t.Errorf("Continue: review_ttl_seconds = %d, want 45", fr.lastInput.ReviewTTLSeconds)
+	}
+	if r := spawnRequestFromProto(&loomcyclepb.RunRequest{ReviewTtlSeconds: 30}); r.ReviewTTLSeconds != 30 {
+		t.Errorf("spawnRequestFromProto: review_ttl_seconds = %d", r.ReviewTTLSeconds)
+	}
+	out := eventToProto(providers.Event{Type: providers.EventAwaitingReview,
+		AwaitingReview: &providers.AwaitingReviewEventInfo{Round: 1, ExpiresAt: "2026-09-24T12:00:00Z"}})
+	if out.GetAwaitingReview().GetExpiresAt() != "2026-09-24T12:00:00Z" {
+		t.Errorf("expires_at = %q", out.GetAwaitingReview().GetExpiresAt())
+	}
+}

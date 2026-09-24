@@ -524,10 +524,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
 		Review:              runCfg.Review != nil && *runCfg.Review,
 		ReviewNow:           s.reviewNowFn(run.ID, runCfg.Review != nil && *runCfg.Review),
-		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
-		ResumeHeld:          resumeHeld,        // it was held for a verdict; hold it again
-		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
-		ToolChoice:          resumedToolChoice, // restored, minus what the run already spent
+		ReviewTTL:           runCfg.reviewTTL(), // the deadline runs from when the hold began, restart or not
+		StartParked:         startParked,        // RFC DD Gap 3: it was waiting; put it back to waiting
+		ResumeHeld:          resumeHeld,         // it was held for a verdict; hold it again
+		Sampling:            runCfg.Sampling,    // restored from the run, not re-derived
+		ToolChoice:          resumedToolChoice,  // restored, minus what the run already spent
 		OutputFormat:        runCfg.OutputFormat,
 		Compaction:          runCfg.Compaction, // restored from the run, not re-derived
 		Context:             runCfg.Context,    // restored from the run, not re-derived (RFC CR)

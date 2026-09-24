@@ -1104,6 +1104,9 @@ type AwaitingReviewEventInfo struct {
 	// Round counts the holds so far: 1 on the first answer, 2 after the first
 	// rejection with feedback has been revised, and so on.
 	Round int `json:"round"`
+	// ExpiresAt (RFC 3339, UTC) is when the hold ends as rejected if nobody
+	// rules on it. Empty when the run has no review deadline.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 // TurnCancelledEventInfo is the structured payload on EventTurnCancelled — the

@@ -170,6 +170,9 @@ type SpawnRunRequest struct {
 	// Review holds the run for an operator's verdict when its model finishes.
 	// A blocking spawn returns once the answer is approved or rejected.
 	Review *bool `json:"review,omitempty"`
+	// ReviewTTLSeconds ends a held answer that gets no verdict within it as
+	// rejected. 0 = no deadline.
+	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
 
 	// Interruption lets this run's agent ask a human a question even when its
 	// definition does not enable it. nil = inherit the definition's.

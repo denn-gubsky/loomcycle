@@ -270,6 +270,9 @@ type RunInput struct {
 	// Review holds the run for an operator's verdict each time its model
 	// finishes (POST /v1/runs/{run_id}/review), instead of completing.
 	Review bool
+	// ReviewTTLSeconds ends a held answer that gets no verdict within it as
+	// rejected. 0 = no deadline.
+	ReviewTTLSeconds int
 
 	// Interruption is the run's own answer to whether the agent may ASK a human
 	// a question, overriding the definition's block. nil = inherit it.

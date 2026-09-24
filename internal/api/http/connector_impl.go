@@ -83,7 +83,8 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		InjectToolGuide:       req.InjectToolGuide,
 		// A blocking spawn honours review: the call returns once an operator
 		// approves the held answer or rejects it.
-		Review: req.Review != nil && *req.Review,
+		Review:           req.Review != nil && *req.Review,
+		ReviewTTLSeconds: req.ReviewTTLSeconds,
 	}
 }
 
