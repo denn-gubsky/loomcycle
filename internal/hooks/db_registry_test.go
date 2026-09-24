@@ -343,3 +343,58 @@ func TestDBBackedRegistry_ReRegisterThenDeleteLeavesNoRowToResurrect(t *testing.
 		t.Errorf("after a reboot the deleted hook came back: %+v", got[0])
 	}
 }
+
+// A hook reloaded from the database — at boot, or on a peer from a backplane
+// event — keeps its row's id, so deleting it by the id List shows deletes the
+// row, and a peer's "deleted" event evicts it. The reload used to mint a new
+// id: after a reboot the delete removed no row (the hook came back on the next
+// boot), and a peer kept firing a hook deleted on another replica.
+func TestDBBackedRegistry_AReloadedHookKeepsItsRowIDSoItCanBeDeleted(t *testing.T) {
+	hs := newStubHookStore()
+	a, _ := NewDBBackedRegistry(NewRegistry(), hs, newStubBackplane(), "rep-a")
+	rowID, err := a.Register(sampleHook())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bp := newStubBackplane()
+	peer, _ := NewDBBackedRegistry(NewRegistry(), hs, bp, "rep-b")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go peer.RunBackplaneConsumer(ctx)
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		for i := 0; i < 200 && !cond(); i++ {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !cond() {
+			t.Fatalf("peer: %s", what)
+		}
+	}
+	for _, op := range []string{"created", "deleted"} {
+		payload, _ := json.Marshal(hookBackplaneEvent{Op: op, HookID: rowID})
+		bp.feedCh <- coord.Event{Topic: "loomcycle.hook", Payload: payload}
+		if op == "created" {
+			waitFor("the created hook never arrived", func() bool { return len(peer.List()) == 1 })
+			if got := peer.List()[0].ID; got != rowID {
+				t.Errorf("peer knows the hook as %s, its row is %s", got, rowID)
+			}
+		}
+	}
+	waitFor("the hook deleted on another replica still fires here", func() bool { return len(peer.List()) == 0 })
+
+	rebooted, _ := NewDBBackedRegistry(NewRegistry(), hs, nil, "rep-a")
+	if err := rebooted.LoadFromDB(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	listed := rebooted.List()
+	if len(listed) != 1 || listed[0].ID != rowID {
+		t.Fatalf("after a reboot: %+v, want the hook under its row id %s", listed, rowID)
+	}
+	if err := rebooted.Delete(listed[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(hs.rows) != 0 {
+		t.Errorf("the delete after a reboot left the row: %v", hs.rows)
+	}
+}

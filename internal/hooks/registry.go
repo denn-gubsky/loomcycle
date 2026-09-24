@@ -167,44 +167,55 @@ func (r *Registry) IsHostWidenPermitted(tenant, owner string) bool {
 // Returns the assigned ID, or ErrInvalidRegistration if required
 // fields are missing or malformed.
 func (r *Registry) Register(h *Hook) (string, error) {
+	return r.register(h, "")
+}
+
+// restore adds a hook reloaded from the database — at boot, or from a peer's
+// backplane event — under the id its row carries. Register mints a new id, and
+// a hook known here by an id its row does not have can never be deleted: the
+// row is deleted by id (so it came back on the next boot), and a peer's
+// "deleted" event names the row's id (so the peer kept firing the hook).
+func (r *Registry) restore(h *Hook) (string, error) {
+	if h == nil || h.ID == "" {
+		return "", wrap(ErrInvalidRegistration, "a reloaded hook needs its id")
+	}
+	return r.register(h, h.ID)
+}
+
+// register is Register with the id given (restore) or, when id is "", minted.
+func (r *Registry) register(h *Hook, id string) (string, error) {
 	if err := validate(h); err != nil {
 		return "", err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if id == "" {
+		id = newHookID()
+		h.RegisteredAt = time.Now()
+	} else if h.RegisteredAt.IsZero() {
+		h.RegisteredAt = time.Now()
+	}
+	h.ID = id
+	h.Timeout = timeoutFor(h)
+	if h.FailMode == "" {
+		h.FailMode = FailOpen
+	}
 	key := hookKey{Tenant: h.Tenant, Owner: h.Owner, Name: h.Name}
-	now := time.Now()
 	if existing, ok := r.byKey[key]; ok {
 		// Replace in-place: keep the existing position in `order` so
 		// chain order is stable across re-registrations. New ID, same
 		// slot.
-		newID := newHookID()
-		h.ID = newID
-		h.RegisteredAt = now
-		h.Timeout = timeoutFor(h)
-		if h.FailMode == "" {
-			h.FailMode = FailOpen
-		}
-		// Replace position in order: find existing.ID, swap to newID.
-		for i, id := range r.order {
-			if id == existing.ID {
-				r.order[i] = newID
+		for i, oid := range r.order {
+			if oid == existing.ID {
+				r.order[i] = id
 				break
 			}
 		}
 		delete(r.byID, existing.ID)
-		r.byID[newID] = h
+		r.byID[id] = h
 		r.byKey[key] = h
-		return newID, nil
-	}
-
-	id := newHookID()
-	h.ID = id
-	h.RegisteredAt = now
-	h.Timeout = timeoutFor(h)
-	if h.FailMode == "" {
-		h.FailMode = FailOpen
+		return id, nil
 	}
 	r.byID[id] = h
 	r.byKey[key] = h

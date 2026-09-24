@@ -90,7 +90,7 @@ func (r *DBBackedRegistry) LoadFromDB(ctx context.Context) error {
 	}
 	for _, row := range rows {
 		h := rowToHook(row)
-		if _, err := r.inner.Register(h); err != nil {
+		if _, err := r.inner.restore(h); err != nil {
 			log.Printf("hooks: skipping invalid persisted hook %s: %v", row.ID, err)
 		}
 	}
@@ -123,7 +123,7 @@ func (r *DBBackedRegistry) RunBackplaneConsumer(ctx context.Context) {
 				log.Printf("hooks: backplane create-event fetch %s: %v", p.HookID, err)
 				continue
 			}
-			if _, err := r.inner.Register(rowToHook(row)); err != nil {
+			if _, err := r.inner.restore(rowToHook(row)); err != nil {
 				log.Printf("hooks: backplane create-event Register %s: %v", p.HookID, err)
 			}
 		case "deleted":
