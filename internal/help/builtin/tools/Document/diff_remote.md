@@ -10,8 +10,7 @@ with a `natural_key`), matched by that key.
 
 ## Arguments
 
-- `id` or `path` (one required) — the LOCAL document. This op does not read
-  `document_id`.
+- `document_id` (or `id`), or `path` — one is required: the LOCAL document.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 

@@ -22,8 +22,8 @@ unsupported are not copied.
 
 ## Arguments
 
-- `id` or `path` (one required) — the LOCAL document, as bound with
-  `set_remote`. This op does not read `document_id`.
+- `document_id` (or `id`), or `path` — one is required: the LOCAL document, as
+  bound with `set_remote`.
 - `direction` — `pull` (default): the peer's chunks are written into your
   document. `push`: your chunks are written to the peer.
 - `scope` — `user` (default), `agent` or `tenant`: the scope of the local
