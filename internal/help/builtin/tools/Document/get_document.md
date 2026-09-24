@@ -9,7 +9,7 @@ turn a path into a `document_id` and a `root_chunk_id`.
 
 ## Arguments
 
-- `id` — the document id. Or:
+- `id` (or `document_id`) — the document id. Or:
 - `path` — the document's Path-tree name, e.g. `/docs/launch-plan`. Used only
   when `id` is empty.
 - `scope` — `user` (default), `agent` or `tenant`. The path and the id are
@@ -31,7 +31,7 @@ knows the subject: `[{scope, document_id, entity_chunk_id, facts}]`.
 
 ## Errors
 
-- `get_document: missing required field: id (or path)`.
+- `get_document: missing required field: document_id (or id, or path)`.
 - `get_document: no such path: /...` — nothing is named there in THIS scope.
   Check `scope`, or list with `Path op=ls`.
 - `get_document: path /... is a directory, not a document` — the path names

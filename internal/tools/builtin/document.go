@@ -1827,11 +1827,22 @@ func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, d
 
 // docIDFromInput resolves a document id from in.ID or in.Path (Path-tree lookup).
 func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in docInput) (string, error) {
+	// A document is named by `id` on the ops that act on a document, and by
+	// `document_id` on the ops that act on something inside one — and a model
+	// that has just been handed a document_id passes document_id. Accepting
+	// both costs nothing; accepting both when they DISAGREE would mean silently
+	// acting on one of two documents the caller named, so that is refused.
+	if in.ID != "" && in.DocumentID != "" && in.ID != in.DocumentID {
+		return "", fmt.Errorf("id %q and document_id %q name different documents; pass one", in.ID, in.DocumentID)
+	}
 	if in.ID != "" {
 		return in.ID, nil
 	}
+	if in.DocumentID != "" {
+		return in.DocumentID, nil
+	}
 	if in.Path == "" {
-		return "", fmt.Errorf("missing required field: id (or path)")
+		return "", fmt.Errorf("missing required field: document_id (or id, or path)")
 	}
 	canonical, err := normalizePath(in.Path)
 	if err != nil {

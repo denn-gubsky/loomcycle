@@ -19,8 +19,9 @@ previous binding.
 - `remote_ref` (required) — the document's Path-tree path ON THE PEER, e.g.
   `/docs/runbook`. It must be a path starting with `/`; a document id is not
   resolved on the peer.
-- `id` or `path` (one required) — the LOCAL document: its document id, or its
-  path. This op does not read `document_id`.
+- `document_id` (or `id`), or `path` — one is required: the LOCAL document, by
+  its id or its path. Passing both `id` and `document_id` with different values
+  is refused.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`. `sync` and `diff_remote` read the peer's
   document in this same scope.
@@ -36,8 +37,8 @@ root shows it.
 - `set_remote: unknown document source "..."` — no source by that name is
   configured. Ask the operator; retrying with the same name is pointless.
 - `set_remote: missing required field: remote_ref ...`.
-- `set_remote: missing required field: id (or path)` — name the local document
-  with `id` or `path`, not `document_id`.
+- `set_remote: missing required field: document_id (or id, or path)` — name the
+  local document.
 - `set_remote: no such path: ...` — the local path is not in this scope.
 
 ## Examples

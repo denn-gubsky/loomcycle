@@ -32,7 +32,7 @@ not drawn — nodes are laid out on a board, not as a tree.
 
 ## Errors
 
-- `export_canvas: missing required field: id (or path)` — you passed none of
+- `export_canvas: missing required field: document_id (or id, or path)` — you passed none of
   `document_id`, `id` or `path`.
 - `export_canvas: no such document: ...` — not in this scope.
 

@@ -34,7 +34,7 @@ image chunk as an inline base64 data URL, which can make the output large.
 
 ## Errors
 
-- `export_md: missing required field: id (or path)` — you passed neither
+- `export_md: missing required field: document_id (or id, or path)` — you passed neither
   `document_id`, `id` nor `path`.
 - `export_md: no such document: ...` / `no such path: ...` — not in this
   scope. Look it up with `Path` `ls` or `query_documents`.

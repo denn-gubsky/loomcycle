@@ -10,7 +10,7 @@ part of a document, use `delete_chunk`; to correct a fact, use
 
 ## Arguments
 
-- `id` — the **document** id (not a chunk id). Or:
+- `id` (or `document_id`) — the **document** id (not a chunk id). Or:
 - `path` — the document's Path-tree name. Used only when `id` is empty.
 - `scope` — `user` (default), `agent` or `tenant`.
 
@@ -21,7 +21,7 @@ root too. A `document_id` that matched nothing returns `n_chunks_deleted: 0`.
 
 ## Errors
 
-- `delete_document: missing required field: id (or path)`.
+- `delete_document: missing required field: document_id (or id, or path)`.
 - `delete_document: no such path: /...` — nothing is named there in this scope.
 - `an agent may not modify the ontology document ...` — the tenant ontology can
   only be changed by an operator. Retrying is pointless.
