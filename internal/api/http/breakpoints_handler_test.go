@@ -3,9 +3,11 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -192,5 +194,45 @@ func TestHandleBreakpoints_TheRemovedPauseIsRefused(t *testing.T) {
 	}
 	if !set.Armed("wave", breakpoints.Review) {
 		t.Error("a refused arming disarmed what the walk had")
+	}
+}
+
+// An isolated member cannot read or change another user's walk arming — a
+// disarm would release that user's members held for review. It is the same
+// opaque 404 as a walk that is not there; the owner is served.
+func TestHandleBreakpoints_AnIsolatedMemberCannotReachAColleaguesWalk(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRunInTenant(t, srv.store, "acme", "alice", "team:triage")
+	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	call := func(p auth.Principal, method, body string) int {
+		req := httptest.NewRequest(method, "/v1/runs/"+runID+"/breakpoints", strings.NewReader(body))
+		req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+		req.SetPathValue("run_id", runID)
+		rec := httptest.NewRecorder()
+		if method == "PUT" {
+			srv.handlePutRunBreakpoints(rec, req)
+		} else {
+			srv.handleGetRunBreakpoints(rec, req)
+		}
+		return rec.Code
+	}
+	bob := auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeUser}}
+	for _, method := range []string{"GET", "PUT"} {
+		if code := call(bob, method, `{"breakpoints":[]}`); code != 404 {
+			t.Errorf("isolated colleague %s = %d, want the opaque 404", method, code)
+		}
+	}
+	if !set.Armed("wave", breakpoints.Review) {
+		t.Fatal("a refused PUT disarmed the walk")
+	}
+	alice := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeUser}}
+	if code := call(alice, "PUT", `{"breakpoints":[]}`); code != 200 || set.Armed("wave", breakpoints.Review) {
+		t.Errorf("owner PUT = %d, armed after = %v; want 200 and disarmed", code, set.Armed("wave", breakpoints.Review))
 	}
 }

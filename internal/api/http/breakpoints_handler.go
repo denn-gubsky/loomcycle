@@ -76,8 +76,8 @@ func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request)
 
 // liveBreakpointSet resolves the armed set for a run, or writes the refusal.
 //
-// A run the caller's tenant cannot see and a run with no walk in flight both
-// fold into the SAME 404: run_ids are not secret (they are returned to callers
+// A run the caller's tenant cannot see, one an isolated member does not own,
+// and a run with no walk in flight all fold into the SAME 404: run_ids are not secret (they are returned to callers
 // and shown in the UI), so the gate must not become an existence oracle.
 func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*breakpoints.Set, string, bool) {
 	if s.breakpointReg == nil {
@@ -89,9 +89,21 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 		writeJSONError(w, http.StatusBadRequest, "invalid_run_id", "run_id must match [A-Za-z0-9_-]{1,128}")
 		return nil, "", false
 	}
-	if _, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID); err != nil {
+	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
+	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "no_live_walk", "no live team walk for that run_id")
 		return nil, "", false
+	}
+	if run.SessionID != "" {
+		// The tenant read does not confine an isolated member to its own runs;
+		// the session gate does, as it does for the review verb and a walk's
+		// cancel. Disarming another user's walk would release their members
+		// held for review.
+		sess, serr := s.store.GetSession(r.Context(), run.SessionID)
+		if serr != nil || !sessionOwnershipOK(r.Context(), sess) {
+			writeJSONError(w, http.StatusNotFound, "no_live_walk", "no live team walk for that run_id")
+			return nil, "", false
+		}
 	}
 	set, ok := s.breakpointReg.Get(runID)
 	if !ok {
