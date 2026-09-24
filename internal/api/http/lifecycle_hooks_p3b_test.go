@@ -2,18 +2,23 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -218,5 +223,56 @@ func TestRunEnd_ReportsAFinishedRun(t *testing.T) {
 	}
 	if run, _ := h.st.GetRun(t.Context(), runID); run.Status != store.RunCompleted {
 		t.Errorf("a run_end deny changed the run: %q", run.Status)
+	}
+}
+
+// The crossing: a real parent run's Agent tool call goes through the
+// subagent hooks. A subagent_start deny reaches the parent's model as its tool
+// result, and the child never makes a model call.
+func TestSubagentHooks_TheAgentToolGoesThroughThem(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent"},
+			"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "you are the child"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	cfg.Env.AuthToken = ""
+	prov := &scriptedProvider{scripts: [][]providers.Event{
+		{
+			{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu_1", Name: "Agent", Input: json.RawMessage(`{"name":"child","prompt":"say hello"}`)}},
+			{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}},
+		},
+		{
+			{Type: providers.EventText, Text: "parent done"},
+			{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}},
+		},
+	}}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "subagent-hooks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	deny := newRecordingHook(t, `{"decision":"deny","reason":"no children today"}`)
+	register(t, srv, &hooks.Hook{Owner: "ops", Name: "gate", Phase: hooks.PhaseSubagentStart, Agents: []string{"parent"}, CallbackURL: deny.srv.URL})
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"parent","segments":[{"role":"user","content":[{"type":"trusted-text","text":"start"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "was not started: no children today") {
+		t.Fatalf("the parent's stream has no denied tool result: %s", body)
+	}
+	if n := prov.calls.Load(); n != 2 {
+		t.Errorf("model calls = %d, want 2 (the parent's two turns; the child made none)", n)
+	}
+	if !strings.Contains(deny.waitBody(t, `"subagent":"child"`), `"agent":"parent"`) {
+		t.Error("the hook did not see the parent as the agent")
 	}
 }
