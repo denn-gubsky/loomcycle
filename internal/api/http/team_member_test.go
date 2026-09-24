@@ -167,3 +167,35 @@ func TestTeamMember_RejectedStatusMatchesTheStore(t *testing.T) {
 		t.Errorf("teamrun.MemberRejected = %q, store.RunRejected = %q", teamrun.MemberRejected, store.RunRejected)
 	}
 }
+
+// Aborting the walk closes a member it is holding: the walk's cancellation
+// reaches the member through its context, and the member ends cancelled — not
+// completed on an answer nobody approved, and not left waiting for a verdict
+// nobody will give.
+func TestTeamMember_WalkAbortClosesAHeldMember(t *testing.T) {
+	h := newReviewHarness(t)
+	walkCtx, abort := context.WithCancel(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"}))
+	ctx := teamrun.WithReviewArming(walkCtx, func(context.Context) bool { return true })
+	done := make(chan teamrun.SpawnResult, 1)
+	go func() {
+		res, _ := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
+		done <- res
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	held := false
+	for !held && time.Now().Before(deadline) {
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		for _, r := range runs {
+			held = held || heldForReview(context.Background(), h.st, r.ID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !held {
+		t.Fatal("the member was never held")
+	}
+	abort()
+	res := awaitMember(t, done)
+	if res.Status != string(store.RunCancelled) {
+		t.Errorf("member after the walk aborted = %q, want cancelled", res.Status)
+	}
+}
