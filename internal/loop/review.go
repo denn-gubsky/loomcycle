@@ -50,6 +50,39 @@ const StopReasonRejected = "rejected"
 // to the rejected run status: an answer nobody looked at is never approved.
 const StopReasonReviewExpired = "review_expired"
 
+// EndsRejected reports whether a run that stopped for stopReason ended
+// rejected: its answer was turned down, or nobody ruled on it in time. Every
+// surface that reports a run's status derives it from this, so a blocking
+// spawn cannot call completed a run whose row says rejected.
+func EndsRejected(stopReason string) bool {
+	return stopReason == StopReasonRejected || stopReason == StopReasonReviewExpired
+}
+
+// AnswerText collects a run's answer from its streamed events. A run held for
+// review and sent back answers again; the revision replaces the answer it
+// revises, so only the text streamed since the last hold is the answer.
+type AnswerText struct {
+	b    strings.Builder
+	held bool
+}
+
+// Observe folds one event into the answer.
+func (a *AnswerText) Observe(ev providers.Event) {
+	switch ev.Type {
+	case providers.EventAwaitingReview:
+		a.held = true
+	case providers.EventText:
+		if a.held {
+			a.b.Reset()
+			a.held = false
+		}
+		a.b.WriteString(ev.Text)
+	}
+}
+
+// String is the answer so far.
+func (a *AnswerText) String() string { return a.b.String() }
+
 // StopReasonDeniedByHook is the stop reason of a run an agent_start hook
 // denied before any model call.
 const StopReasonDeniedByHook = "denied_by_hook"

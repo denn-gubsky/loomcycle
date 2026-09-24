@@ -8456,7 +8456,7 @@ func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) 
 	switch {
 	case runErr != nil:
 		return store.RunFailed
-	case res.StopReason == loop.StopReasonRejected, res.StopReason == loop.StopReasonReviewExpired:
+	case loop.EndsRejected(res.StopReason):
 		// A reviewer turned the answer down with nothing to revise from, or
 		// nobody ruled on it in time. Not a failure — the run did its work —
 		// and not a completion either: the answer is one nobody accepted.
