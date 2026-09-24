@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -93,6 +94,31 @@ var holdEndingEvents = []string{
 	"user_input",
 	string(providers.EventAwaitingInput),
 	string(providers.EventDone),
+}
+
+// heldReviewFrom is the hold a run was in when its events stop — the same rule
+// as heldForReview, read from events already in hand — or nil when its latest
+// hold-ending event is not a hold.
+func heldReviewFrom(events []store.Event) *loop.HeldReview {
+	ending := map[string]bool{}
+	for _, t := range holdEndingEvents {
+		ending[t] = true
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if !ending[ev.Type] {
+			continue
+		}
+		if ev.Type != string(providers.EventAwaitingReview) {
+			return nil
+		}
+		var p providers.Event
+		if err := json.Unmarshal(ev.Payload, &p); err != nil || p.AwaitingReview == nil {
+			return &loop.HeldReview{Round: 1}
+		}
+		return &loop.HeldReview{SinceTurn: p.AwaitingReview.SinceTurn, Round: p.AwaitingReview.Round}
+	}
+	return nil
 }
 
 // isHeld reports whether the run is held for review.

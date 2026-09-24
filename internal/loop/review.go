@@ -10,6 +10,31 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 )
 
+// HeldReview describes a hold a run was in when it paused: the turn it was held
+// at and its round. A resumed run given one is held again before any model call.
+type HeldReview struct {
+	SinceTurn int
+	Round     int
+}
+
+// lastAssistantText is the text of the conversation's last assistant turn —
+// the answer a restored hold was holding.
+func lastAssistantText(messages []providers.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range messages[i].Content {
+			if c.Type == "text" {
+				b.WriteString(c.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
 // StopReasonRejected is the stop reason of a run a reviewer rejected without
 // feedback. The server maps it to the rejected run status.
 const StopReasonRejected = "rejected"
@@ -49,8 +74,13 @@ const (
 // while held releases the hold as approved: the retune pushes an approval, and
 // the heartbeat re-reads the arming as a backstop for a disarm that lands just
 // as the hold begins.
-func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
-	heldAt := time.Now()
+//
+// acceptFrom is when verdicts start to count: the moment the hold began, or the
+// zero time for a hold restored after a restart, whose steer queue is new to
+// this process and so cannot hold a stale verdict — and may already hold a
+// fresh one, sent before the restored hold got here.
+func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, acceptFrom time.Time, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
+	heldAt := acceptFrom
 	announce := func() {
 		emit(providers.Event{Type: providers.EventAwaitingReview,
 			AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: sinceTurn, Round: round}})
@@ -58,8 +88,16 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	announce()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
+	pp := newParkPause(opts.PauseGate)
+	defer pp.done()
 	for {
 		select {
+		case <-pp.declared():
+			pp.onDeclared()
+			continue
+		case <-pp.lifted():
+			pp.onLifted()
+			continue
 		case m, ok := <-opts.SteerQueue:
 			if !ok {
 				return messages, lastCtxTokens, reviewAborted

@@ -42,12 +42,14 @@ import (
 //   - Per-run CALL-TIME OVERRIDES (allowed_hosts narrowing, per-run sampling,
 //     metadata, run-timeout) aren't persisted — resume re-derives everything
 //     from the agent definition (the operator's static floor applies for hosts).
-//   - A run that was IDLE awaiting operator input when paused (its conversation
-//     ends on an assistant turn, not a pending user/tool_result) is NOT
-//     auto-resumable — re-entering the loop would send the provider a trailing
-//     assistant turn. Such runs are flagged failed with a clear reason; the
-//     operator re-attaches + steers to continue. (Mid-execution runs — the F42
-//     repro — end on a clean tool_result boundary and resume cleanly.)
+//   - A run that was IDLE when paused (its conversation ends on an assistant
+//     turn, not a pending user/tool_result) cannot re-enter the loop directly —
+//     that would send the provider a trailing assistant turn. It is restored to
+//     what it was doing instead: an interactive run waiting for input parks
+//     again, and a run held for review is held again. An idle non-interactive
+//     run that was not held has nobody to wait for and is flagged failed.
+//     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
+//     and resume cleanly.)
 
 // ResumePausedRuns re-dispatches every pause_state='paused' run found in the
 // store. Returns the count successfully re-dispatched and any per-run warnings
@@ -281,12 +283,23 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	if stateful {
 		idle = seed.Observation == ""
 	}
+	//
+	// A run HELD FOR REVIEW when it paused is idle the same way — its
+	// conversation ends on the answer being reviewed — and is restored to the
+	// hold, interactive or not: it is waiting for a verdict, and a person owes
+	// it one. Refusing it would lose the answer under review.
+	var resumeHeld *loop.HeldReview
 	if !isFanout && idle {
-		if !run.Interactive || s.steerReg == nil {
+		held := heldReviewFrom(runEvents)
+		switch {
+		case held != nil && !stateful && s.steerReg != nil:
+			resumeHeld = held
+		case !run.Interactive || s.steerReg == nil:
 			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
+		default:
+			startParked = true
 		}
-		startParked = true
 	}
 
 	// System prompt segment (the conversation itself is in priorMessages).
@@ -512,6 +525,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Review:              runCfg.Review != nil && *runCfg.Review,
 		ReviewNow:           s.reviewNowFn(run.ID, runCfg.Review != nil && *runCfg.Review),
 		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
+		ResumeHeld:          resumeHeld,        // it was held for a verdict; hold it again
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
 		ToolChoice:          resumedToolChoice, // restored, minus what the run already spent
 		OutputFormat:        runCfg.OutputFormat,
