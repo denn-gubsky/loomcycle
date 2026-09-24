@@ -245,6 +245,12 @@ is why a tenant's code hooks need their own opt-in.
   security-shaped hooks (an injection or DLP scanner) where a down hook
   letting payloads through would be the bug.
 
+A security check must be `fail_mode: closed`. Under `open`, whatever makes the
+hook fail skips the check — and the model controls the input: an oversized
+input, or one slow to scan, can make the hook time out on purpose. This matters
+most for a code hook, whose default time budget is 50 ms and whose own default
+fail mode is `open` like any hook's.
+
 ## Per-call host-widening (the one audited exception)
 
 By default a hook can only **narrow** a call — it cannot reach past the
