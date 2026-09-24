@@ -351,3 +351,41 @@ func TestValidateSchema_EachRuleRejects(t *testing.T) {
 		t.Errorf("valid input rejected: %q", probs)
 	}
 }
+
+// A builtin tool's schema is one object. Anthropic and Gemini reject a
+// top-level oneOf/anyOf/allOf and flatten it, and the flattening keeps only one
+// branch's discriminator: Agent's seven ops reached those models as `spawn`
+// alone. Schema-reading surfaces (Context op=guide, the help checks) cannot see
+// the operations inside a combinator either.
+func TestBuiltinSchemas_HaveNoTopLevelCombinator(t *testing.T) {
+	for _, tl := range builtinToolCensus() {
+		var s map[string]json.RawMessage
+		if err := json.Unmarshal(tl.InputSchema(), &s); err != nil {
+			t.Fatalf("%s schema: %v", tl.Name(), err)
+		}
+		for _, k := range []string{"oneOf", "anyOf", "allOf"} {
+			if _, ok := s[k]; ok {
+				t.Errorf("%s schema has a top-level %s; write it as one object with an op enum", tl.Name(), k)
+			}
+		}
+	}
+}
+
+// The digest an agent reads to learn its tools lists every Agent operation.
+func TestContextGuide_ListsEveryAgentOperation(t *testing.T) {
+	c := &Context{Tools: []tools.Tool{&AgentTool{}}}
+	ctx := tools.WithAgentTools(context.Background(), []string{"Agent"})
+	res, _ := c.Execute(ctx, json.RawMessage(`{"op":"guide"}`))
+	var out struct {
+		Tools []struct {
+			Name string   `json:"name"`
+			Ops  []string `json:"ops"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil || len(out.Tools) != 1 {
+		t.Fatalf("guide: %s", res.Text)
+	}
+	if got := strings.Join(out.Tools[0].Ops, ","); got != "spawn,parallel_spawn,open,send,poll,cancel,close" {
+		t.Errorf("guide lists Agent ops %q", got)
+	}
+}
