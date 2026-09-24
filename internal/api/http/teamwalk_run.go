@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -66,6 +67,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	// not interactive, and the agents route cannot address `team:<name>`.
 	walkCtx, cancelWalk := context.WithCancelCause(walkCtx)
 	s.walks.add(runID, sessionID, cancelWalk)
+	stopHeartbeat := s.heartbeatWalk(walkCtx, runID)
 	walkCtx = tools.WithRunID(walkCtx, runID)
 	// The pause machinery is the Interruption tool's `ask`, which is gated on
 	// the CALLING AGENT's policy. A walk has no AgentDef to carry one, so the
@@ -79,6 +81,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 
 	finish := func(finalText string, walkErr error) {
 		s.walks.remove(runID)
+		stopHeartbeat()
 		status, stopReason, msg := store.RunCompleted, "", ""
 		if cause := context.Cause(walkCtx); errors.Is(cause, cancel.ErrCancelledByAPI) {
 			// Cancelled on purpose: recorded as cancelled, with the operator's
@@ -102,6 +105,39 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		cancelWalk(nil) // release the ctx; a no-op after a cancel
 	}
 	return walkCtx, runID, finish, nil
+}
+
+// heartbeatWalk pulses the walk run's heartbeat until the returned stop is
+// called (or ctx ends). A walk runs no loop of its own, so nothing else
+// heartbeats its row, and a walk waiting on members held for review can wait
+// far past the stale-run sweeper's window: it was failed as heartbeat_timeout
+// while still live, and its real finish could not correct the row.
+func (s *Server) heartbeatWalk(ctx context.Context, runID string) (stop func()) {
+	hb := s.makeHeartbeat(runID)
+	if hb == nil {
+		return func() {}
+	}
+	every := s.walkHeartbeatEvery
+	if every <= 0 {
+		every = loop.HeartbeatInterval()
+	}
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				hb()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // walkCancels is the live-walk cancel table. In-process only: a walk on

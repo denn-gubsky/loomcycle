@@ -1002,6 +1002,11 @@ const DefaultMaxIterations = 16
 // that actually leaked. Await your runs.
 var parkHeartbeatInterval = 30 * time.Second
 
+// HeartbeatInterval is how often a live run pulses its heartbeat. Work that
+// holds a run row open outside the loop (a team walk waiting on its members)
+// pulses at the same rate, so the stale-run sweeper judges both alike.
+func HeartbeatInterval() time.Duration { return parkHeartbeatInterval }
+
 // parkForInput blocks a persistent interactive run until an operator steering
 // message arrives or ctx is cancelled, ticking OnHeartbeat meanwhile so the
 // idle run isn't reaped, and recording itself paused while a runtime pause is

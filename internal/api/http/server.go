@@ -159,6 +159,9 @@ type Server struct {
 	// walks under, so POST /v1/runs/{run_id}/cancel can stop it. Zero value
 	// works (test fixtures build a Server without a constructor).
 	walks walkCancels
+	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
+	// zero means the loop's own interval. Tests set it.
+	walkHeartbeatEvery time.Duration
 
 	// breakpointReg maps a live run_id → the armed breakpoint set of the team
 	// walk running under it, so an operator can arm a Starter state while the
