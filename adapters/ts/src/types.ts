@@ -370,21 +370,27 @@ export interface ErrorInfo {
   retry_after_ms?: number;
 }
 
-/** What one tool-use hook did to one call (the `hook_decision` payload). */
+/** What one hook did to one call, or to the run (the `hook_decision`
+ *  payload). */
 export interface HookDecisionInfo {
   /** `"<owner>/<name>"`. */
   hook: string;
   phase: HookPhase;
-  tool_use_id: string;
-  tool_name: string;
-  decision: "deny" | "rewrite_input" | "rewrite_output" | "context" | "unavailable";
+  /** The call a tool hook decided on; absent for agent_start / agent_stop. */
+  tool_use_id?: string;
+  tool_name?: string;
+  /** `block` and `hold` are agent_stop's: the model was sent back with
+   *  `reason`, or the answer is held for a verdict. */
+  decision: "deny" | "rewrite_input" | "rewrite_output" | "context" | "block" | "hold" | "unavailable";
   /** For `unavailable`: `open` (the call went ahead) or `closed` (refused). */
   fail_mode?: "open" | "closed";
-  /** A deny's text, or the error that made the hook unavailable. */
+  /** A deny's or block's text, a hold's reason, or the error that made the
+   *  hook unavailable. */
   reason?: string;
   /** For `rewrite_input`: the input the tool actually ran with. */
   updated_input?: unknown;
-  /** For `context`: what was appended to the tool result. */
+  /** For `context`: what was appended to the tool result (or, for
+   *  agent_start, to the prompt). */
   additional_context?: string;
 }
 
@@ -594,8 +600,10 @@ export interface AgentEvent {
    *  run parked at end_turn. `since_turn` is the iteration it parked after. */
   awaiting_input?: { since_turn?: number };
   /** Payload on `event: awaiting_review` — the run is held for a verdict.
-   *  `round` is 1 on the first answer and counts up with each revision. */
-  awaiting_review?: { since_turn?: number; round?: number; expires_at?: string };
+   *  `round` is 1 on the first answer and counts up with each revision.
+   *  `held_by` names the agent_stop hook that held it; absent when review
+   *  arming did (and only that kind is released by disarming review). */
+  awaiting_review?: { since_turn?: number; round?: number; expires_at?: string; held_by?: string };
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };
@@ -2051,7 +2059,7 @@ export interface ResolveInterruptOptions {
 
 /** `post_failure` runs only when the tool failed, before the post chain, with
  *  the failure's classification in the payload. */
-export type HookPhase = "pre" | "post" | "post_failure";
+export type HookPhase = "pre" | "post" | "post_failure" | "agent_start" | "agent_stop";
 
 export type HookFailMode = "open" | "closed";
 

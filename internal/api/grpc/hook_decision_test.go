@@ -23,3 +23,13 @@ func TestEventToProto_CarriesTheHookDecision(t *testing.T) {
 		t.Error("a text frame carries a hook decision")
 	}
 }
+
+// A hook's hold reaches gRPC clients naming the hook, so they can tell it from
+// a hold review arming took.
+func TestEventToProto_ARunHeldByAHookNamesIt(t *testing.T) {
+	out := eventToProto(providers.Event{Type: providers.EventAwaitingReview,
+		AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: 1, Round: 1, HeldBy: "ops/hold"}})
+	if out.GetAwaitingReview().GetHeldBy() != "ops/hold" {
+		t.Errorf("proto = %+v", out.GetAwaitingReview())
+	}
+}

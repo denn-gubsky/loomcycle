@@ -35,3 +35,10 @@ def test_the_hook_decision_payload_is_decoded():
     got = AgentEvent._from_proto(ev).hook_decision
     assert got is not None
     assert (got.hook, got.decision, got.updated_input) == ("sec/pin", "rewrite_input", b'{"url":"https://safe/"}')
+
+
+def test_a_hold_names_the_hook_that_took_it():
+    ev = pb.Event(type="awaiting_review", awaiting_review=pb.AwaitingReview(
+        since_turn=1, round=1, held_by="ops/hold"))
+    got = AgentEvent._from_proto(ev).awaiting_review
+    assert got is not None and got.held_by == "ops/hold"

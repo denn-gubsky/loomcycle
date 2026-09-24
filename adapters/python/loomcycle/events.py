@@ -90,6 +90,9 @@ class AwaitingReview:
     # RFC 3339 UTC: when the hold ends as rejected if nobody rules on it.
     # Empty when the run has no review deadline.
     expires_at: str = ""
+    # The agent_stop hook ("<owner>/<name>") that held the answer. Empty when
+    # review arming held it; disarming review releases only that kind.
+    held_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -184,8 +187,10 @@ class ErrorInfo:
 @dataclass(frozen=True)
 class HookDecision:
     """Structured payload on ``hook_decision`` events (RFC DK) — what one
-    tool-use hook did to one call. ``decision`` is ``deny``,
-    ``rewrite_input``, ``rewrite_output``, ``context`` or ``unavailable``;
+    hook did to one tool call, or to the run. ``decision`` is ``deny``,
+    ``rewrite_input``, ``rewrite_output``, ``context``, ``block``, ``hold``
+    or ``unavailable``; ``block`` and ``hold`` are agent_stop's, and
+    ``tool_use_id`` / ``tool_name`` are empty for agent_start / agent_stop.
     ``updated_input`` (JSON bytes) is the input the tool ran with after a
     rewrite. Mirrors ``providers.HookDecisionInfo``."""
 
@@ -280,6 +285,7 @@ class AgentEvent:
                 since_turn=ev.awaiting_review.since_turn,
                 round=ev.awaiting_review.round,
                 expires_at=ev.awaiting_review.expires_at,
+                held_by=ev.awaiting_review.held_by,
             )
         hd: Optional[HookDecision] = None
         if ev.HasField("hook_decision"):

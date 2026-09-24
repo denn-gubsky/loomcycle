@@ -1,6 +1,6 @@
 ---
 name: hooks
-description: Tool-use hooks — register a webhook or a JavaScript body that wraps tool dispatch. Pre-hooks rewrite/deny/widen a tool call before it runs; post-hooks rewrite the result or add context; a code hook can ask an operator and decide on the answer. Selectors by (agent, tool, phase), fail-open vs fail-closed, opt-in per-call host-widening, DB-backed in cluster mode.
+description: Tool-use and run hooks — register a webhook or a JavaScript body that wraps tool dispatch or a run's start and finish. Pre-hooks rewrite/deny/widen a tool call before it runs; post-hooks rewrite the result or add context; agent_start may deny a run or add to its prompt; agent_stop may send an answer back or hold it for a person; a code hook can ask an operator and decide on the answer. Selectors by (agent, tool, phase), fail-open vs fail-closed, opt-in per-call host-widening, DB-backed in cluster mode.
 ---
 
 # Tool-use hooks
@@ -56,7 +56,7 @@ A registration body:
 {
   "owner": "dlp-scanner",          // app UID; (owner, name) is the identity
   "name": "scan-web-fetches",
-  "phase": "pre",                  // "pre" | "post" | "post_failure"
+  "phase": "pre",                  // "pre" | "post" | "post_failure" | "agent_start" | "agent_stop"
   "agents": ["researcher", "qa-*"], // exact or "prefix*"; omit = match all
   "tools": ["WebFetch", "mcp__jobs__*"],
   "callback_url": "https://dlp.internal/loomcycle-hook",
@@ -93,6 +93,47 @@ with the failure's classification in `tool_result.error`.
 When several hooks match, `pre` hooks run **earliest-registration-first**
 and `post` hooks run **LIFO** (classic middleware nesting), ordered by
 registration time.
+
+## Run hooks: agent_start and agent_stop
+
+Two phases are about the run rather than a tool call. They are selected by
+`agents` only; a `tools` selector is refused.
+
+**`agent_start`** runs once per run, after the prompt is composed and before
+the first model call. A resumed run has already started, so it does not run
+again. The payload is the run's identity (`agent`, `user_id`, `run_id`,
+`parent_run_id`). The response:
+
+- `{"decision": "deny", "reason": "..."}` — the run ends before any model
+  call, failed with the reason;
+- `{"additional_context": "..."}` — added to the prompt's user turn.
+
+**`agent_stop`** runs each time the model finishes an answer, before the run
+ends or waits for its next message. The payload adds `final_text`,
+`stop_reason`, and — when the answer is a retry — `stop_hook_active` and
+`stop_blocks`. The response:
+
+- `{"decision": "block", "reason": "..."}` — the reason goes back to the model
+  as a user turn and it answers again. A reason is required. More than 3 blocks
+  in a row fail the run, naming the hook and its last reason, so a check that
+  can never be satisfied cannot loop a run forever.
+- `{"decision": "hold", "reason": "..."}` — the answer is held for a person's
+  verdict, exactly as a run under review is held (`awaiting_review`, now with
+  `held_by` naming the hook), and decided with the review verb: approve lets it
+  through, reject with feedback sends it back, reject without ends it rejected.
+  Disarming review does not release a hook's hold. A run nothing can deliver a
+  verdict to (a sub-agent spawned by the Agent tool) ends rejected instead.
+- nothing, or `{"decision": "allow"}` — the answer stands.
+
+When several agent_stop hooks match, the first `block` wins and stops the
+chain; a `hold` does not stop it, so a later hook may still block. A hook that
+fails holds the answer if it is `fail_mode: closed`, and lets it through if
+`open`. agent_stop hooks do not apply to a stateful run, whose product is its
+state rather than an answer; the run says so.
+
+A code hook returns the same shapes (`ev.event` is `"agent_start"` or
+`"agent_stop"`), and can ask before deciding — an automated reviewer for the
+clear cases, a person for the rest.
 
 ## Code hooks
 
