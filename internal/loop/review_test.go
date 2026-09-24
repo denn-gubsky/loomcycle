@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // reviewProvider answers every call with "answer N" and records what it was
@@ -320,4 +321,36 @@ func TestRun_Review_VerdictIsNeverAnOperatorTurn(t *testing.T) {
 	}
 	cancel()
 	r.finish(t)
+}
+
+// A stateful run has no finished answer to hold, so it says review does not
+// apply to it and ends without holding.
+func TestRun_Review_StatefulRunReportsItIsNotApplied(t *testing.T) {
+	prov := &statefulScriptProvider{scripts: []string{`{"patch":{"n":1},"done":true,"final":"ok"}`}}
+	echo := &echoTool{reply: "observed"}
+	var reported, held bool
+	_, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+		SteerQueue: make(chan steer.Message, 1),
+		Review:     true,
+		OnEvent: func(ev providers.Event) {
+			switch ev.Type {
+			case providers.EventCapabilityInert:
+				reported = reported || ev.CapabilityInert.Gate == "review"
+			case providers.EventAwaitingReview:
+				held = true
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !reported || held {
+		t.Errorf("reported = %v, held = %v; want reported and not held", reported, held)
+	}
 }
