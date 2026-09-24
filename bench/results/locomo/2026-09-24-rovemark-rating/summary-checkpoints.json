@@ -1,0 +1,203 @@
+{
+ "checkpoints": [
+  {
+   "phase": "A",
+   "sample": "conv-26",
+   "status": "FAILED",
+   "detail": "rc=0 facts=358 traces=431 xok=444 xfail=84 queued=1",
+   "at": "18:52"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-26",
+   "status": "ok",
+   "detail": "rc=0 facts=585 traces=429 xok=355 xfail=0 queued=0",
+   "at": "21:17"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-30",
+   "status": "ok",
+   "detail": "rc=0 facts=330 traces=375 xok=198 xfail=0 queued=0",
+   "at": "21:30"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-41",
+   "status": "ok",
+   "detail": "rc=0 facts=390 traces=669 xok=179 xfail=0 queued=0",
+   "at": "21:42"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-42",
+   "status": "ok",
+   "detail": "rc=0 facts=424 traces=634 xok=169 xfail=0 queued=0",
+   "at": "21:55"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-43",
+   "status": "ok",
+   "detail": "rc=0 facts=444 traces=686 xok=180 xfail=0 queued=0",
+   "at": "22:09"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-44",
+   "status": "ok",
+   "detail": "rc=0 facts=397 traces=681 xok=179 xfail=0 queued=0",
+   "at": "22:21"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-47",
+   "status": "ok",
+   "detail": "rc=0 facts=478 traces=695 xok=185 xfail=0 queued=0",
+   "at": "22:35"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-48",
+   "status": "ok",
+   "detail": "rc=0 facts=432 traces=686 xok=179 xfail=0 queued=0",
+   "at": "22:47"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-49",
+   "status": "ok",
+   "detail": "rc=0 facts=317 traces=514 xok=136 xfail=0 queued=0",
+   "at": "22:56"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-50",
+   "status": "FAILED",
+   "detail": "rc=1 facts=120 traces=570 xok=44 xfail=18 queued=0",
+   "at": "23:30"
+  },
+  {
+   "phase": "A",
+   "sample": "conv-50",
+   "status": "ok",
+   "detail": "rc=0 facts=476 traces=576 xok=267 xfail=0 queued=0",
+   "at": "05:44"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-26",
+   "status": "ok",
+   "detail": "total=150 graded=148 ungraded=2 binary=0.6959 partial_credit=0.7601 not_found=9",
+   "at": "06:54"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-30",
+   "status": "ok",
+   "detail": "total=81 graded=80 ungraded=1 binary=0.7250 partial_credit=0.7750 not_found=4",
+   "at": "07:05"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-41",
+   "status": "ok",
+   "detail": "total=152 graded=151 ungraded=1 binary=0.7285 partial_credit=0.7947 not_found=9",
+   "at": "07:18"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-42",
+   "status": "FAILED",
+   "detail": "total=199 graded=193 ungraded=6 binary=0.6736 partial_credit=0.7435 not_found=15",
+   "at": "07:40"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-42",
+   "status": "ok",
+   "detail": "total=199 graded=199 ungraded=0 binary=0.6784 partial_credit=0.7462 not_found=15 rejudged=6",
+   "at": "07:45"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-43",
+   "status": "ok",
+   "detail": "total=178 graded=178 ungraded=0 binary=0.6910 partial_credit=0.7556 not_found=13 rejudged=2",
+   "at": "08:07"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-44",
+   "status": "ok",
+   "detail": "total=123 graded=123 ungraded=0 binary=0.7561 partial_credit=0.8049 not_found=7 rejudged=0",
+   "at": "08:25"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-47",
+   "status": "ok",
+   "detail": "total=150 graded=150 ungraded=0 binary=0.7267 partial_credit=0.7667 not_found=15 rejudged=3",
+   "at": "08:40"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-48",
+   "status": "ok",
+   "detail": "total=191 graded=191 ungraded=0 binary=0.7173 partial_credit=0.7827 not_found=10 rejudged=3",
+   "at": "09:02"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-49",
+   "status": "ok",
+   "detail": "total=156 graded=156 ungraded=0 binary=0.6731 partial_credit=0.7500 not_found=11 rejudged=2",
+   "at": "09:20"
+  },
+  {
+   "phase": "B",
+   "sample": "conv-50",
+   "status": "ok",
+   "detail": "total=155 graded=155 ungraded=0 binary=0.7097 partial_credit=0.7645 not_found=9 rejudged=2",
+   "at": "09:36"
+  }
+ ],
+ "invalid_attempts": [
+  {
+   "phase": "A",
+   "sample": "conv-26",
+   "status": "ok",
+   "detail": "facts=104 traces=431",
+   "at": "17:00",
+   "why": "extractor at num_ctx 32768 with gpt-oss co-resident on the Spark"
+  }
+ ],
+ "spark_coresidency_during_failed_conv26_build": {
+  "without_gpt_oss": {
+   "ok": 66,
+   "fail": 0
+  },
+  "with_gpt_oss": {
+   "ok": 257,
+   "fail": 77
+  },
+  "method": "/api/ps sampled every 30 s, joined to each extractor call's start time"
+ },
+ "spend_by_provider_tokens": {
+  "deepseek-flash (judge only)": {
+   "calls": 1458,
+   "input": 327550,
+   "output": 186083
+  },
+  "ollama-local ornith-1.5:35b": {
+   "calls": 6314,
+   "input": 53722689,
+   "output": 968616
+  },
+  "code-js": {
+   "calls": 37599,
+   "input": 0,
+   "output": 0
+  }
+ }
+}
