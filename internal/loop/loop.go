@@ -2244,9 +2244,8 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		out := opts.Hooks.RunAgentStart(ctx, hookIdentity(ctx, opts.AgentName, 0))
 		emitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
 		if out.Denied {
-			err := fmt.Errorf("the run was stopped before it began: %s", out.Reason)
-			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			return RunResult{StopReason: StopReasonDeniedByHook}, err
+			// Returned, not emitted: the server reports a failed run's error.
+			return RunResult{StopReason: StopReasonDeniedByHook}, fmt.Errorf("the run was stopped before it began: %s", out.Reason)
 		}
 		messages = appendStartContext(messages, out.AdditionalContext)
 	}
@@ -3209,9 +3208,8 @@ outerLoop:
 					if stopBlocks >= MaxStopBlocks {
 						iterSpan.End()
 						turnCancelFn(nil)
-						err := fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, stopBlocks+1, out.Reason)
-						emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage}, err
+						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
+							fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, stopBlocks+1, out.Reason)
 					}
 					stopBlocks++
 					// The reason goes back as a user turn and the model answers
