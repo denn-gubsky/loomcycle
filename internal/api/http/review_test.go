@@ -69,6 +69,7 @@ func (p *numberedProvider) seen() []string {
 
 type reviewHarness struct {
 	t    *testing.T
+	srv  *Server
 	ts   *httptest.Server
 	st   store.Store
 	prov *numberedProvider
@@ -91,7 +92,7 @@ func newReviewHarness(t *testing.T) *reviewHarness {
 	srv.SetSteerRegistry(steer.NewRegistry(0))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
-	return &reviewHarness{t: t, ts: ts, st: st, prov: prov}
+	return &reviewHarness{t: t, srv: srv, ts: ts, st: st, prov: prov}
 }
 
 // start posts a run and returns its ids plus a reader of its SSE frame types.

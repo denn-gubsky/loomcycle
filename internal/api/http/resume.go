@@ -281,12 +281,23 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	if stateful {
 		idle = seed.Observation == ""
 	}
+	//
+	// A run HELD FOR REVIEW when it paused is idle the same way — its
+	// conversation ends on the answer being reviewed — and is restored to the
+	// hold, interactive or not: it is waiting for a verdict, and a person owes
+	// it one. Refusing it would lose the answer under review.
+	var resumeHeld *loop.HeldReview
 	if !isFanout && idle {
-		if !run.Interactive || s.steerReg == nil {
+		held := heldReviewFrom(runEvents)
+		switch {
+		case held != nil && !stateful && s.steerReg != nil:
+			resumeHeld = held
+		case !run.Interactive || s.steerReg == nil:
 			s.flagRunUnresumable(run, "run was idle awaiting input when paused; re-attach + steer to continue")
 			return fmt.Errorf("not auto-resumable (no pending turn)")
+		default:
+			startParked = true
 		}
-		startParked = true
 	}
 
 	// System prompt segment (the conversation itself is in priorMessages).
@@ -512,6 +523,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Review:              runCfg.Review != nil && *runCfg.Review,
 		ReviewNow:           s.reviewNowFn(run.ID, runCfg.Review != nil && *runCfg.Review),
 		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
+		ResumeHeld:          resumeHeld,        // it was held for a verdict; hold it again
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
 		ToolChoice:          resumedToolChoice, // restored, minus what the run already spent
 		OutputFormat:        runCfg.OutputFormat,

@@ -4,13 +4,17 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+var _ loop.IdlePauser = (*pauseGate)(nil)
 
 // pauseGate is the per-run loop.PauseGate implementation (RFC X / F41). It
 // wraps the runtime pause Manager + store so the loop can cooperatively park
@@ -84,6 +88,33 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// PauseIdle records a run that is WAITING — parked for its next message, or
+// held for a review verdict — as paused, without moving it (loop.IdlePauser).
+// Same ordering as Park: the store row is durably 'paused' before the barrier
+// is credited, and a failed write earns no credit. The run keeps waiting where
+// it is; release undoes the record when the runtime resumes or the run moves on.
+func (g *pauseGate) PauseIdle() (<-chan struct{}, func(), bool) {
+	if g.mgr == nil {
+		return nil, nil, false
+	}
+	resume, shouldPark := g.mgr.BeginPark(g.runID)
+	if !shouldPark {
+		return nil, nil, false
+	}
+	if err := g.setPauseState(context.Background(), store.PauseStatePaused); err != nil {
+		log.Printf("pause: persist paused for waiting run %s failed: %v — no barrier credit", g.runID, err)
+	} else {
+		g.mgr.MarkParked(g.runID)
+	}
+	var once sync.Once
+	return resume, func() {
+		once.Do(func() {
+			g.mgr.EndPark(g.runID)
+			_ = g.setPauseState(context.Background(), store.PauseStateRunning)
+		})
+	}, true
 }
 
 // setPauseState writes runs.pause_state under a bounded, non-cancellable ctx so

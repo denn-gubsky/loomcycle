@@ -354,3 +354,94 @@ func TestRun_Review_StatefulRunReportsItIsNotApplied(t *testing.T) {
 		t.Errorf("reported = %v, held = %v; want reported and not held", reported, held)
 	}
 }
+
+// A conversation that ends on the answer under review, as a resumed held run
+// is handed it.
+func heldConversation() []providers.Message {
+	return []providers.Message{
+		{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "write the plan"}}},
+		{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "the held plan"}}},
+	}
+}
+
+func startResumedHold(t *testing.T, ctx context.Context, mutate func(*RunOptions)) *reviewRun {
+	return startReviewRun(t, ctx, func(o *RunOptions) {
+		o.Segments = nil
+		o.PriorMessages = heldConversation()
+		o.ResumeHeld = &HeldReview{SinceTurn: 3, Round: 2}
+		if mutate != nil {
+			mutate(o)
+		}
+	})
+}
+
+// A resumed held run is held again before any model call, at the round it was
+// in, and an approval ends it on the answer it was holding.
+func TestRun_ResumeHeld_IsHeldAgainAndApprovesTheHeldAnswer(t *testing.T) {
+	r := startResumedHold(t, context.Background(), nil)
+	ev := r.waitFor(t, providers.EventAwaitingReview)
+	if ev.AwaitingReview.Round != 2 || ev.AwaitingReview.SinceTurn != 3 {
+		t.Errorf("restored hold = %+v, want round 2 since turn 3", ev.AwaitingReview)
+	}
+	r.q <- verdict(steer.KindApprove, "")
+	res := r.result(t)
+	if res.StopReason != "end_turn" || res.FinalText != "the held plan" || r.prov.calls() != 0 {
+		t.Errorf("result = %q %q after %d calls, want end_turn on the held plan with no model call",
+			res.StopReason, res.FinalText, r.prov.calls())
+	}
+}
+
+// Feedback on a restored hold continues the run, and the revision is held as
+// the next round.
+func TestRun_ResumeHeld_FeedbackRevisesAsTheNextRound(t *testing.T) {
+	r := startResumedHold(t, context.Background(), nil)
+	r.waitFor(t, providers.EventAwaitingReview)
+	r.q <- verdict(steer.KindReject, "cover the rollback")
+	ev := r.waitFor(t, providers.EventAwaitingReview)
+	if ev.AwaitingReview.Round != 3 {
+		t.Errorf("revision round = %d, want 3", ev.AwaitingReview.Round)
+	}
+	if got := r.prov.lastUserText(); got != "cover the rollback" {
+		t.Errorf("revision was sent %q", got)
+	}
+	r.q <- verdict(steer.KindReject, "")
+	if res := r.result(t); res.StopReason != StopReasonRejected {
+		t.Errorf("stop reason = %q", res.StopReason)
+	}
+}
+
+// The restored hold's queue is new to the process, so a verdict already in it
+// — sent in the moment between the resume and the hold — is the operator's
+// real decision, not a stale duplicate.
+func TestRun_ResumeHeld_AcceptsAVerdictQueuedBeforeTheHold(t *testing.T) {
+	q := make(chan steer.Message, 1)
+	q <- steer.Message{Kind: steer.KindApprove, EnqueuedAt: time.Now().Add(-time.Second)}
+	r := startResumedHold(t, context.Background(), func(o *RunOptions) { o.SteerQueue = q })
+	if res := r.result(t); res.StopReason != "end_turn" || res.FinalText != "the held plan" {
+		t.Errorf("result = %q %q, want the queued approval acted on", res.StopReason, res.FinalText)
+	}
+}
+
+// A run whose review was disarmed while it was paused comes back approved,
+// not held.
+func TestRun_ResumeHeld_DisarmedMeansApproved(t *testing.T) {
+	r := startResumedHold(t, context.Background(), func(o *RunOptions) {
+		o.ReviewNow = func(context.Context) bool { return false }
+	})
+	if res := r.result(t); res.StopReason != "end_turn" || res.FinalText != "the held plan" {
+		t.Errorf("result = %q %q, want approved on the held plan", res.StopReason, res.FinalText)
+	}
+}
+
+// An approved interactive run then waits for its next message, as it would
+// have before the restart.
+func TestRun_ResumeHeld_ApprovedInteractiveRunParksForInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := startResumedHold(t, ctx, func(o *RunOptions) { o.Interactive = true })
+	r.waitFor(t, providers.EventAwaitingReview)
+	r.q <- verdict(steer.KindApprove, "")
+	r.waitFor(t, providers.EventAwaitingInput)
+	cancel()
+	r.finish(t)
+}

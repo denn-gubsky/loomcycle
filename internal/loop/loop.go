@@ -183,6 +183,13 @@ type RunOptions struct {
 	// non-interactive run has no operator to wait for.
 	StartParked bool
 
+	// ResumeHeld, for a resumed run, is the review hold it was in when it
+	// paused. The run is held again BEFORE any model call — its conversation
+	// ends on the answer being reviewed, so there is nothing to send — and the
+	// verdict then takes it on exactly as it would have before the restart.
+	// Requires SteerQueue. nil for every run that was not held.
+	ResumeHeld *HeldReview
+
 	// ArmTurnCancel, when non-nil, makes THIS run turn-cancellable (RFC BH). At
 	// the start of each turn the loop calls it with the turn's CancelCauseFunc to
 	// register the run's currently-armed per-turn cancel token; the returned
@@ -990,9 +997,11 @@ var parkHeartbeatInterval = 30 * time.Second
 
 // parkForInput blocks a persistent interactive run until an operator steering
 // message arrives or ctx is cancelled, ticking OnHeartbeat meanwhile so the
-// idle run isn't reaped. Returns (msg, true) on input; (zero, false) on
-// cancel or a closed queue.
-func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func()) (steer.Message, bool) {
+// idle run isn't reaped, and recording itself paused while a runtime pause is
+// in effect (pp, owned by the caller so the record survives the caller's
+// re-parks). Returns (msg, true) on input; (zero, false) on cancel or a closed
+// queue.
+func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func(), pp *parkPause) (steer.Message, bool) {
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
 	for {
@@ -1003,6 +1012,10 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 			if heartbeat != nil {
 				heartbeat()
 			}
+		case <-pp.declared():
+			pp.onDeclared()
+		case <-pp.lifted():
+			pp.onLifted()
 		case <-ctx.Done():
 			return steer.Message{}, false
 		}
@@ -1020,8 +1033,10 @@ func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func())
 func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
+	pp := newParkPause(opts.PauseGate)
+	defer pp.done()
 	for {
-		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat)
+		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat, pp)
 		if !resumed {
 			return messages, lastCtxTokens, false // ctx cancelled (or queue closed) → terminate
 		}
@@ -2506,6 +2521,38 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 	}
 
+	// A resumed run that was held for review is held again here, on the answer
+	// it was holding. Approve ends it on that answer (an interactive run then
+	// waits for its next message, as it would have); feedback continues the
+	// loop with the feedback appended; reject ends it rejected.
+	if h := opts.ResumeHeld; h != nil && !parkAbandoned && opts.SteerQueue != nil {
+		reviewRound = h.Round
+		finalText = lastAssistantText(messages)
+		outcome := reviewApproved
+		if opts.reviewAtBoundary(ctx) {
+			messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, h.SinceTurn, h.Round, lastCtxTokens, preambleTokens, time.Time{}, emit)
+		}
+		switch outcome {
+		case reviewAborted:
+			err := ctx.Err()
+			if err == nil {
+				err = errReviewAbandoned
+			}
+			return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
+		case reviewRejected:
+			stopReason = StopReasonRejected
+			parkAbandoned = true
+		case reviewApproved:
+			stopReason = "end_turn"
+			parkAbandoned = true
+			if opts.interactiveAtBoundary(ctx) {
+				var resumedWithInput bool
+				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, h.SinceTurn, lastCtxTokens, preambleTokens, emit)
+				parkAbandoned = !resumedWithInput
+			}
+		}
+	}
+
 	promptSnapshotted := false // RFC DI: the first request is recorded once
 outerLoop:
 	for iter := 0; !parkAbandoned && iter < iterCap; iter++ {
@@ -3120,7 +3167,7 @@ outerLoop:
 				disarmTurn()
 				reviewRound++
 				var outcome reviewOutcome
-				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, emit)
+				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, time.Now(), emit)
 				switch outcome {
 				case reviewRevise:
 					iterSpan.End()
