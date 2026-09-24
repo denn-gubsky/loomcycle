@@ -37,7 +37,7 @@ search_priority: [serper, exa, brave, searxng]   # the global fallback order
 ```
 
 With no `search_providers:` block, WebSearch defaults to Brave when
-`BRAVE_API_KEY` is set (the pre-RFC-BB behaviour, unchanged).
+`BRAVE_API_KEY` is set (the original behaviour, unchanged).
 
 ## Per-agent fallback list
 

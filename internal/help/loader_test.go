@@ -52,7 +52,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"n8n-integration",
 		"observability",
 		"openai-compat",
-		"path",
+		"Path", // tool article, tools/Path.md; `path` still resolves (case-folded)
 		"pause-resume-snapshot",
 		"scopes",
 		"search-providers",
