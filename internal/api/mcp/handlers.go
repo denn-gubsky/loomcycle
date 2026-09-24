@@ -7,6 +7,7 @@ import (
 	"fmt"
 	nethttp "net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -16,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -52,6 +54,7 @@ var handlersByName = map[string]toolHandler{
 	"compact_run":    handleCompactRun,
 	"configured_run": handleConfiguredRun,
 	"retune_run":     handleRetuneRun,
+	"review_run":     handleReviewRun,
 	"directory":      handleDirectory,
 	"erasure":        handleErasure,
 	"list_runs":      handleListRuns,
@@ -1370,7 +1373,7 @@ func handleRetuneRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		// Not an absorbed no-op: an empty set means the field names were
 		// misspelled, and reporting success for a call that changed nothing is
 		// how that mistake stays invisible.
-		return toolErr("retune_run: at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide, interactive, interruption)"), nil
+		return toolErr("retune_run: at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide, interactive, interruption, review)"), nil
 	}
 	run, err := env.connector.GetRun(ctx, p.AgentID)
 	if err != nil {
@@ -1383,6 +1386,59 @@ func handleRetuneRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		return toolErrFrom("retune_run", err), nil
 	}
 	return toolResultJSON(map[string]any{"run_id": run.RunID, "retuned": true}), nil
+}
+
+// handleReviewRun delivers an operator's verdict on a held run — the MCP twin of
+// POST /v1/runs/{run_id}/review and the ReviewRun RPC. The run is addressed by
+// agent_id, like every other run tool here, and resolved to its run_id.
+//
+// An MCP client of this server is an operator, not one of loomcycle's own
+// agents: the verdict is never offered to an agent as a built-in tool.
+func handleReviewRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("review_run: no connector wired")
+	}
+	var p struct {
+		AgentID  string `json:"agent_id"`
+		Decision string `json:"decision"`
+		Feedback string `json:"feedback"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErrValidation("invalid review_run arguments: "+err.Error(), "Send agent_id, decision and optionally feedback."), nil
+	}
+	if p.AgentID == "" {
+		return toolErrValidation("review_run: agent_id is required", "Pass the agent_id spawn_run returned."), nil
+	}
+	run, err := env.connector.GetRun(ctx, p.AgentID)
+	if err != nil {
+		return toolErrFrom("review_run", err), nil
+	}
+	if run.RunID == "" {
+		return toolErr("review_run: no run_id for agent_id " + p.AgentID), nil
+	}
+	delivered, err := env.connector.ReviewRun(ctx, run.RunID, p.Decision, p.Feedback, store.InterruptResolvedByAPI)
+	switch {
+	case errors.Is(err, connector.ErrInvalidReviewDecision):
+		return toolErrValidation("review_run: "+strings.TrimPrefix(err.Error(), "connector: "),
+			`Use decision "approve" with no feedback, or "reject" with or without it.`), nil
+	case errors.Is(err, connector.ErrRunNotHeld):
+		res := toolErr("review_run: the run is not held for review")
+		res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
+			Category:    tools.CategoryBusiness,
+			Description: "The run is still working or waiting for input. A verdict applies only once it is held (its awaiting_review event); check get_run and try again then.",
+		})
+		return res, nil
+	case errors.Is(err, connector.ErrSteerQueueFull):
+		res := toolErr("review_run: the run's input queue is full")
+		res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
+			Category: tools.CategoryTransient, Retryable: true,
+			Description: "Retry shortly.",
+		})
+		return res, nil
+	case err != nil:
+		return toolErrFrom("review_run", err), nil
+	}
+	return toolResultJSON(map[string]any{"run_id": run.RunID, "decision": p.Decision, "delivered": delivered}), nil
 }
 
 // handleConfiguredRun is the configured_run tool: a run created now and started

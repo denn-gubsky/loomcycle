@@ -51,6 +51,9 @@ var tenantConfinableTools = map[string]bool{
 	"get_run":     true,
 	"compact_run": true,
 	"retune_run":  true,
+	// review_run: the connector gates the verdict on the run's tenant and
+	// session owner, like steering.
+	"review_run": true,
 	// configured_run: create / edit / start / discard a draft; every op goes
 	// through the connector's tenant gate and keeps the draft's identity.
 	"configured_run": true,

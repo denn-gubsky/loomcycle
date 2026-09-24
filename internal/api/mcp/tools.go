@@ -222,6 +222,19 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name:        "review_run",
+			Description: "Rule on a run that is HELD FOR REVIEW — one started or retuned with review:true whose answer is waiting for a verdict. Targets the run by `agent_id`. decision \"approve\" lets it complete on the answer it was held on. decision \"reject\" with `feedback` sends the feedback to the agent as its next message; it revises and is held again for another verdict. decision \"reject\" without feedback ends the run with status \"rejected\". Returns {run_id, decision, delivered}. Use it only as the reviewer of someone else's work: it decides whether an answer stands. Do NOT use it on a run that is still working or waiting for input — it is refused as not held; wait for the hold. Do NOT pass feedback with approve — it is refused, because nobody would read it. Do NOT use it to talk to a run that is not held — spawn_run with its session_id sends a message.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["agent_id", "decision"],
+				"properties": {
+					"agent_id": {"type": "string", "description": "The handle spawn_run returned."},
+					"decision": {"type": "string", "enum": ["approve", "reject"]},
+					"feedback": {"type": "string", "description": "reject only: what to change. Omit to end the run rejected."}
+				}
+			}`),
+		},
+		{
 			Name:        "retune_run",
 			Description: "Change a RUNNING agent's settings without sending it a turn. Targets a run by `agent_id`. Use it to take hold of a run that is going the wrong way: move it to a different model, raise its iteration bound, or park it at its next turn boundary so a person can correct it (`interactive`). Returns the run's merged configuration, which is what it now holds — not an echo of what you sent, because the merge is not a field-wise union: naming a model clears the provider, and naming a tier clears the model. Overrides select WITHIN what the agent's definition already allows and cannot widen it; one it forbids is REFUSED here rather than applied and discovered later. Do NOT use it to send the agent a message — that is spawn_run with the run's session_id, and a retune deliberately writes nothing to the transcript that the operator did not say. At least one field is required: an empty call is refused rather than reported as a no-op change.",
 			InputSchema: rawJSON(`{
