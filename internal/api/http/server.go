@@ -2689,11 +2689,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// RFC DI D5: after admission, so a refusal above leaves the draft as it
 		// was; before registration, so every failure path below finds a
 		// running row that FinishRun can end.
-		started, err := s.store.StartConfiguredRun(ctx, in.ConfiguredRunID, identity)
+		started, err := s.store.StartConfiguredRun(ctx, in.ConfiguredRunID, identity, in.ConfiguredDraft)
 		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.Is(err, store.ErrRunNotConfigured) || errors.As(err, &nf) {
 				return fmt.Errorf("%w: %s", runner.ErrRunNotConfigured, in.ConfiguredRunID)
+			}
+			if errors.Is(err, store.ErrDraftChanged) {
+				return fmt.Errorf("%w: run %s was not started; start it again to run the edited draft", runner.ErrDraftChanged, in.ConfiguredRunID)
 			}
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}

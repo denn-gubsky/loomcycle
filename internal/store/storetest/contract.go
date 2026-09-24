@@ -131,6 +131,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ConfiguredRunHiddenFromChatListings", testConfiguredRunHiddenFromChatListings},
 		{"ConfiguredRunListedWhenIncluded", testConfiguredRunListedWhenIncluded},
 		{"RunJSONColumnsAcceptNUL", testRunJSONColumnsAcceptNUL},
+		{"ConfiguredRunStartIsConditionalOnTheDraft", testConfiguredRunStartIsConditionalOnTheDraft},
 		{"ConfiguredRunNotReapedAsStale", testConfiguredRunNotReapedAsStale},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},

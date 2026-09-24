@@ -1300,7 +1300,12 @@ type Store interface {
 	// the replica actually running it. The draft is cleared. The identity
 	// fields fixed at create (agent_id, user_id, tenant_id, parents) are not
 	// changed.
-	StartConfiguredRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
+	//
+	// draft, when non-empty, is the draft the start was built from, and the
+	// transition happens only while the stored draft is still that one: a start
+	// reads the draft before it waits for admission, and an edit landing in
+	// between must not be silently discarded. ErrDraftChanged when it moved.
+	StartConfiguredRun(ctx context.Context, runID string, identity RunIdentity, draft json.RawMessage) (Run, error)
 
 	// DeleteConfiguredRun discards a draft: its events, the run row, and its
 	// session when nothing else is in it. ErrRunNotConfigured for a run that is
@@ -5131,6 +5136,11 @@ var ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency_key")
 // run exists but is not in status "configured" — it has started, or it never
 // was a draft. A sentinel (errors.Is-comparable), distinct from ErrNotFound.
 var ErrRunNotConfigured = errors.New("run is not configured")
+
+// ErrDraftChanged is returned by StartConfiguredRun when the run is still a
+// draft but its draft is no longer the one the start was built from — it was
+// edited while the start waited. The draft is left as edited.
+var ErrDraftChanged = errors.New("the draft changed since this start read it")
 
 // SnapshotRow is the persisted shape of one snapshots row, used by
 // SnapshotCreate/Get. The JSONContent is the full envelope per the

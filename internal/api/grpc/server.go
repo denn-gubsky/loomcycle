@@ -1609,6 +1609,10 @@ func runnerErrStatus(err error) error {
 		// RFC DI: a start of a draft that has already started or been
 		// discarded — the state changed under the caller.
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, runner.ErrDraftChanged):
+		// A read-modify-write conflict: the draft was edited while this start
+		// waited. Starting again runs the edited draft.
+		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted):

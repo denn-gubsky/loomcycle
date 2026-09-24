@@ -401,6 +401,7 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = d.Interactive != nil && *d.Interactive
 	in.ConfiguredRunID = run.ID
+	in.ConfiguredDraft = raw
 	in.SessionID = ""
 	in.AgentID, in.TenantID, in.UserID = run.AgentID, run.TenantID, run.UserID
 	in.ParentContext = run.ParentContext
@@ -554,6 +555,8 @@ func writeRunOnceError(w http.ResponseWriter, err error) {
 		writeResolveError(w, err)
 	case errors.Is(err, runner.ErrRunNotConfigured):
 		writeJSONError(w, http.StatusConflict, "run_not_configured", err.Error())
+	case errors.Is(err, runner.ErrDraftChanged):
+		writeJSONError(w, http.StatusConflict, "draft_changed", err.Error())
 	case errors.Is(err, runner.ErrAgentIDInUse):
 		writeJSONError(w, http.StatusConflict, "agent_id_in_use", err.Error())
 	case errors.Is(err, runner.ErrInvalidArgument), errors.Is(err, runner.ErrUnknownAgent), errors.Is(err, runner.ErrUnknownProvider):

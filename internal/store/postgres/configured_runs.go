@@ -21,7 +21,8 @@ func (s *Store) CreateConfiguredRun(ctx context.Context, sessionID string, ident
 
 // draftGuardErr turns "the guarded statement matched no row" into the right
 // sentinel: ErrNotFound when there is no such run, ErrRunNotConfigured when
-// there is and it is not a draft.
+// there is and it is not a draft. A run still configured failed the only other
+// guard, StartConfiguredRun's on the draft itself: ErrDraftChanged.
 func (s *Store) draftGuardErr(ctx context.Context, runID string) error {
 	var status string
 	err := s.pool.QueryRow(ctx, `SELECT status FROM runs WHERE id = $1`, runID).Scan(&status)
@@ -30,6 +31,9 @@ func (s *Store) draftGuardErr(ctx context.Context, runID string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("read run status: %w", err)
+	}
+	if status == string(store.RunConfigured) {
+		return store.ErrDraftChanged
 	}
 	return store.ErrRunNotConfigured
 }
@@ -65,7 +69,7 @@ func (s *Store) UpdateRunDraft(ctx context.Context, runID string, draft json.Raw
 	return nil
 }
 
-func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity store.RunIdentity) (store.Run, error) {
+func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity store.RunIdentity, draft json.RawMessage) (store.Run, error) {
 	now := time.Now().UTC()
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE runs SET
@@ -81,7 +85,7 @@ func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity s
 			run_config              = $10::jsonb,
 			replica_id              = $11,
 			draft                   = NULL
-		WHERE id = $1 AND status = $12`,
+		WHERE id = $1 AND status = $12 AND ($13::jsonb IS NULL OR draft = $13::jsonb)`,
 		runID, string(store.RunRunning), now,
 		nullableText(identity.AgentDefID),
 		nullableText(identity.Model),
@@ -92,6 +96,7 @@ func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity s
 		nullableJSONArg(identity.RunConfig),
 		nullableText(identity.ReplicaID),
 		string(store.RunConfigured),
+		nullableJSONArg(draft),
 	)
 	if err != nil {
 		return store.Run{}, fmt.Errorf("start configured run: %w", err)

@@ -19,7 +19,8 @@ func (s *Store) CreateConfiguredRun(ctx context.Context, sessionID string, ident
 
 // draftGuardErr turns "the guarded statement matched no row" into the right
 // sentinel: ErrNotFound when there is no such run, ErrRunNotConfigured when
-// there is and it is not a draft.
+// there is and it is not a draft. A run still configured failed the only other
+// guard, StartConfiguredRun's on the draft itself: ErrDraftChanged.
 func (s *Store) draftGuardErr(ctx context.Context, runID string) error {
 	var status string
 	err := s.db.QueryRowContext(ctx, `SELECT status FROM runs WHERE id = ?`, runID).Scan(&status)
@@ -28,6 +29,9 @@ func (s *Store) draftGuardErr(ctx context.Context, runID string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if status == string(store.RunConfigured) {
+		return store.ErrDraftChanged
 	}
 	return store.ErrRunNotConfigured
 }
@@ -63,7 +67,7 @@ func (s *Store) UpdateRunDraft(ctx context.Context, runID string, draft json.Raw
 	return nil
 }
 
-func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity store.RunIdentity) (store.Run, error) {
+func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity store.RunIdentity, draft json.RawMessage) (store.Run, error) {
 	now := time.Now().UnixNano()
 	// SQLite's runs table has no replica_id column: a single-file store is a
 	// single-replica deployment, so there is nothing to route cancel to.
@@ -80,7 +84,7 @@ func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity s
 			isolated                = ?,
 			run_config              = ?,
 			draft                   = NULL
-		WHERE id = ? AND status = ?`,
+		WHERE id = ? AND status = ? AND (? IS NULL OR draft = ?)`,
 		string(store.RunRunning), now, now,
 		nilIfEmpty(identity.AgentDefID),
 		nilIfEmpty(identity.Model),
@@ -89,7 +93,7 @@ func (s *Store) StartConfiguredRun(ctx context.Context, runID string, identity s
 		boolToInt(identity.OperatorKeyRestricted),
 		boolToInt(identity.Isolated),
 		nilIfEmptyRaw(identity.RunConfig),
-		runID, string(store.RunConfigured),
+		runID, string(store.RunConfigured), nilIfEmptyRaw(draft), nilIfEmptyRaw(draft),
 	)
 	if err != nil {
 		return store.Run{}, err

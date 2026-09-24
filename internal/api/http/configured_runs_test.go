@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -514,5 +515,45 @@ func TestConfiguredRun_RunStartsRefuseADraftsAgentID(t *testing.T) {
 	code, body = do(t, "GET", ts.URL+"/v1/agents/a_reserved", "")
 	if code != 200 || !strings.Contains(body, c.RunID) || !strings.Contains(body, `"status":"configured"`) {
 		t.Errorf("GET /v1/agents/a_reserved = %d %s, want the draft", code, body)
+	}
+}
+
+// A start reads the draft, then waits for admission. A PATCH that lands in
+// that window answered 200 while the run started with the pre-PATCH draft.
+// The start is now conditional on the draft it read: it is refused with a
+// 409 draft_changed, nothing runs, and the edited draft is what the next
+// start runs.
+func TestConfiguredRun_AStartRacedByAPatchIsRefusedAndKeepsTheEdit(t *testing.T) {
+	srv, ts, prov, st := configuredServer(t, 4)
+	c := createDraft(t, ts, "")
+	in, err := srv.ConfiguredRunInput(context.Background(), c.RunID, connector.RunSecrets{})
+	if err != nil {
+		t.Fatalf("ConfiguredRunInput: %v", err)
+	}
+	// The PATCH lands while the start above is (notionally) queued.
+	if code, b := do(t, "PATCH", ts.URL+"/v1/runs/"+c.RunID, `{"prompt":"edited while queued"}`); code != 200 {
+		t.Fatalf("PATCH = %d %s", code, b)
+	}
+	err = srv.RunOnce(context.Background(), in, runner.RunCallbacks{})
+	if !errors.Is(err, runner.ErrDraftChanged) {
+		t.Fatalf("start built from the pre-PATCH draft = %v, want ErrDraftChanged", err)
+	}
+	rec := httptest.NewRecorder()
+	writeRunOnceError(rec, err)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "draft_changed") {
+		t.Errorf("HTTP mapping = %d %s, want 409 draft_changed", rec.Code, rec.Body)
+	}
+	if prov.last != nil {
+		t.Error("the refused start reached the provider")
+	}
+	if run, _ := st.GetRun(context.Background(), c.RunID); run.Status != store.RunConfigured {
+		t.Errorf("row after the refused start = %q, want configured", run.Status)
+	}
+	code, body := do(t, "POST", ts.URL+"/v1/runs/"+c.RunID+"/start", "")
+	if code != 200 || !strings.Contains(body, `"type":"done"`) {
+		t.Fatalf("start again = %d %s", code, body)
+	}
+	if !strings.Contains(firstUserTextOf(prov.last.Messages), "edited while queued") {
+		t.Errorf("the run saw %+v, want the edited prompt", prov.last.Messages)
 	}
 }

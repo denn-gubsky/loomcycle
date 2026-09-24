@@ -66,7 +66,7 @@ func testConfiguredRunLifecycle(t *testing.T, s store.Store) {
 	started, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{
 		Model: "m-1", AgentDefID: "def-1", UserTier: "pro", Interactive: true,
 		RunConfig: json.RawMessage(`{"tool_choice":{"mode":"required"}}`),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("StartConfiguredRun: %v", err)
 	}
@@ -97,17 +97,17 @@ func testConfiguredRunLifecycle(t *testing.T, s store.Store) {
 func testConfiguredRunStartIsGuarded(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	run := newDraft(t, s, "t", "bob", "a_guard")
-	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}); err != nil {
+	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}, nil); err != nil {
 		t.Fatalf("first start: %v", err)
 	}
-	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}); !errors.Is(err, store.ErrRunNotConfigured) {
+	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}, nil); !errors.Is(err, store.ErrRunNotConfigured) {
 		t.Errorf("second start = %v, want ErrRunNotConfigured", err)
 	}
 	if err := s.UpdateRunDraft(ctx, run.ID, json.RawMessage(`{}`)); !errors.Is(err, store.ErrRunNotConfigured) {
 		t.Errorf("UpdateRunDraft on a running run = %v, want ErrRunNotConfigured", err)
 	}
 	var nf *store.ErrNotFound
-	if _, err := s.StartConfiguredRun(ctx, "r_missing", store.RunIdentity{}); !errors.As(err, &nf) {
+	if _, err := s.StartConfiguredRun(ctx, "r_missing", store.RunIdentity{}, nil); !errors.As(err, &nf) {
 		t.Errorf("start of a missing run = %v, want ErrNotFound", err)
 	}
 	if err := s.UpdateRunDraft(ctx, "r_missing", json.RawMessage(`{}`)); !errors.As(err, &nf) {
@@ -205,7 +205,7 @@ func testConfiguredRunHiddenFromChatListings(t *testing.T, s store.Store) {
 	if got[draft.SessionID] || !got[sess.ID] {
 		t.Errorf("listed = %v, want the chat but not the draft's session", got)
 	}
-	if _, err := s.StartConfiguredRun(ctx, draft.ID, store.RunIdentity{}); err != nil {
+	if _, err := s.StartConfiguredRun(ctx, draft.ID, store.RunIdentity{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !listed()[draft.SessionID] {
@@ -236,6 +236,37 @@ func testConfiguredRunListedWhenIncluded(t *testing.T, s store.Store) {
 	}
 }
 
+// A start reads the draft before it waits for admission. An edit that lands
+// in between must not be discarded: the start conditioned on the draft it read
+// is refused with ErrDraftChanged and leaves the row a draft holding the edit;
+// a start conditioned on the current draft goes through.
+func testConfiguredRunStartIsConditionalOnTheDraft(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	run := newDraft(t, s, "tc", "hal", "a_cond")
+	read, err := s.GetRunDraft(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := json.RawMessage(`{"agent":"a","segments":[{"role":"user","content":[{"type":"trusted-text","text":"edited"}]}]}`)
+	if err := s.UpdateRunDraft(ctx, run.ID, edited); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}, read); !errors.Is(err, store.ErrDraftChanged) {
+		t.Fatalf("start with the pre-edit draft = %v, want ErrDraftChanged", err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.Status != store.RunConfigured {
+		t.Fatalf("row after the refused start = %+v (%v), want still configured", got.Status, err)
+	}
+	current, err := s.GetRunDraft(ctx, run.ID)
+	if err != nil || !jsonEqual(current, string(edited)) {
+		t.Fatalf("draft after the refused start = %s (%v), want the edit kept", current, err)
+	}
+	if started, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}, current); err != nil || started.Status != store.RunRunning {
+		t.Errorf("start with the current draft = %+v (%v), want running", started.Status, err)
+	}
+}
+
 // A draft is not a crashed run: the stale sweeper leaves it alone, and once it
 // starts, the re-stamped heartbeat keeps a draft that waited a long time from
 // being reaped as one that never heartbeated.
@@ -250,7 +281,7 @@ func testConfiguredRunNotReapedAsStale(t *testing.T, s store.Store) {
 	if got, _ := s.GetRun(ctx, run.ID); got.Status != store.RunConfigured {
 		t.Errorf("stale sweep changed a draft to %q", got.Status)
 	}
-	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}); err != nil {
+	if _, err := s.StartConfiguredRun(ctx, run.ID, store.RunIdentity{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SweepStaleRuns(ctx, cutoff); err != nil {

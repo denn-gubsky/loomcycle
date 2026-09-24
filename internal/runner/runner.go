@@ -27,6 +27,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -119,6 +120,11 @@ var (
 	// ErrRunNotConfigured: a start of a configured run (RFC DI D5) found the
 	// run no longer a draft — it has started already, or was discarded.
 	ErrRunNotConfigured = errors.New("run is not configured")
+
+	// ErrDraftChanged: a start of a configured run found its draft edited
+	// after the start read it (while it waited for admission). Nothing ran;
+	// the draft keeps the edit, and starting it again runs the edited draft.
+	ErrDraftChanged = errors.New("the draft was edited while this start waited")
 )
 
 // RunInput is the unified input shape both wire surfaces translate
@@ -365,6 +371,11 @@ type RunInput struct {
 	// with the starter's so a start never loosens the creator's confinement.
 	// SessionID must be empty.
 	ConfiguredRunID string
+	// ConfiguredDraft is the draft the rest of RunInput was built from. The
+	// start moves the row only while the stored draft is still this one, so an
+	// edit that lands while the start waits for admission is refused rather
+	// than silently dropped (ErrDraftChanged). Empty skips that check.
+	ConfiguredDraft json.RawMessage
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
