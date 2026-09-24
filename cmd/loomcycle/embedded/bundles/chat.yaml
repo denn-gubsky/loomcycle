@@ -54,7 +54,7 @@ agents:
     # (Anthropic defaults to 8192; ollama generates until the context fills).
     # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
     unbounded_iterations: true              # interactive chat parks at end_turn
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     memory_scopes: [user]
     # sql_scopes grants `Memory sql_query`/`sql_exec` — NOT Document, whose
     # structure writes are its own trusted SQL and which checks sql_scopes only at
@@ -145,7 +145,7 @@ agents:
     effort: medium
     # max_tokens OMITTED — each provider applies its own default.
     unbounded_iterations: true
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     memory_scopes: [user]
     sql_scopes: [user]
     sampling:
@@ -243,7 +243,7 @@ agents:
     # max_tokens OMITTED — ollama-local generates until the context window fills
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
-    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption]
+    tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
     memory_scopes: [user]
     sql_scopes: [user]
     sampling:
