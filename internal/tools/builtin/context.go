@@ -651,12 +651,26 @@ func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, e
 			return errResult(fmt.Sprintf("doc: tool %q is not in this agent's tools", in.Name)), nil
 		}
 		schema := t.InputSchema()
-		return okJSON(map[string]any{
+		out := map[string]any{
 			"name":              t.Name(),
 			"description":       t.Description(),
 			"input_schema":      json.RawMessage(schema),
 			"side_effect_class": sideEffectClassFor(t.Name()),
-		})
+		}
+		// The description and schema are what the model already has. What it
+		// came to op=doc for is how to CALL the tool, which is the article.
+		if art, ok := c.Help.ToolArticle(t.Name()); ok {
+			out["help"] = art.Content
+			var ops []string
+			for _, o := range c.Help.OpsOf(t.Name()) {
+				ops = append(ops, o.Name)
+			}
+			if len(ops) > 0 {
+				out["operation_topics"] = ops
+				out["hint"] = fmt.Sprintf("Read one operation, with examples, via op=help topic=<name>, e.g. topic=%s.", ops[0])
+			}
+		}
+		return okJSON(out)
 	}
 	return errResult(fmt.Sprintf("doc: tool %q not found (use op=tools to list available)", in.Name)), nil
 }

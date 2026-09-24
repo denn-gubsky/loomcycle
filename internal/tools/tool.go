@@ -125,6 +125,11 @@ func UsageHintOf(t Tool) string {
 type Dispatcher struct {
 	tools    map[string]Tool
 	fallback FallbackFunc
+	// help is the dispatcher's own HelpIndex tool (Context), found when it is
+	// built. A failed call to a documented tool points at that tool's help,
+	// and the pointer is only worth writing when this dispatcher can serve it.
+	help     HelpIndex
+	helpName string
 }
 
 // FallbackFunc is consulted by Dispatcher.Execute when a tool name isn't
@@ -144,10 +149,14 @@ type FallbackFunc func(ctx context.Context, name string, input json.RawMessage) 
 // unknown names always return "tool not found".
 func NewDispatcher(tools []Tool) *Dispatcher {
 	m := make(map[string]Tool, len(tools))
+	d := &Dispatcher{tools: m}
 	for _, t := range tools {
 		m[t.Name()] = t
+		if idx, ok := t.(HelpIndex); ok && d.help == nil {
+			d.help, d.helpName = idx, t.Name()
+		}
 	}
-	return &Dispatcher{tools: m}
+	return d
 }
 
 // NewDispatcherWithFallback is NewDispatcher plus a FallbackFunc consulted
@@ -1859,14 +1868,14 @@ func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMes
 		if res.IsError {
 			lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 		}
-		return res
+		return d.withHelpPointer(name, input, res)
 	}
 	if d.fallback != nil {
 		if res, handled := d.fallback(ctx, name, input); handled {
 			if res.IsError {
 				lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 			}
-			return res
+			return d.withHelpPointer(name, input, res)
 		}
 	}
 	lcotel.SetSpanErrorMessage(span, "tool not found")

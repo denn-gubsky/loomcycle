@@ -131,3 +131,59 @@ func TestSpecsFor_IsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// failingStub fails every call with the configured result.
+type failingStub struct {
+	pointerStub
+	res Result
+}
+
+func (f *failingStub) Execute(context.Context, json.RawMessage) (Result, error) { return f.res, nil }
+
+// A failed call to a documented tool points at the article for the operation
+// it tried; an operation without an article falls back to the tool's.
+func TestExecute_FailedCallPointsAtTheOperationsArticle(t *testing.T) {
+	path := &failingStub{pointerStub{name: "Path", schema: `{"type":"object"}`}, Result{Text: "destination already exists: /docs/b", IsError: true}}
+	d := NewDispatcher([]Tool{path, newHelp("Path", "Path/mv")})
+
+	got := d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv","path":"/docs/a","to":"/docs/b"}`)).Text
+	want := "destination already exists: /docs/b\n\n" + `How to call it: call Context with {"op":"help","topic":"Path/mv"}.`
+	if got != want {
+		t.Errorf("text =\n%s\nwant\n%s", got, want)
+	}
+	got = d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"frobnicate"}`)).Text
+	if !strings.HasSuffix(got, `{"op":"help","topic":"Path"}.`) {
+		t.Errorf("unknown op: text = %q, want the tool article", got)
+	}
+}
+
+// Successes, undocumented tools, dispatchers without Context and retryable
+// failures are returned exactly as the tool produced them.
+func TestExecute_NoPointerWhereItWouldNotHelp(t *testing.T) {
+	fail := Result{Text: "boom", IsError: true}
+	cases := []struct {
+		name string
+		res  Result
+		help *pointerHelp
+	}{
+		{"success", Result{Text: "ok"}, newPointerHelp("Path")},
+		{"undocumented tool", fail, newPointerHelp("Other")},
+		{"no Context in the run", fail, nil},
+		{"retryable failure", Result{Text: "upstream timed out", IsError: true, Error: &ErrorInfo{Category: "transient", Retryable: true}}, newPointerHelp("Path")},
+	}
+	for _, c := range cases {
+		tl := &failingStub{pointerStub{name: "Path", schema: `{"type":"object"}`}, c.res}
+		ts := []Tool{tl}
+		if c.help != nil {
+			ts = append(ts, c.help.stubHelp)
+		}
+		got := NewDispatcher(ts).Execute(context.Background(), "Path", json.RawMessage(`{"op":"ls"}`))
+		if got.Text != c.res.Text {
+			t.Errorf("%s: text = %q, want it untouched (%q)", c.name, got.Text, c.res.Text)
+		}
+	}
+}
+
+type pointerHelp struct{ stubHelp *stubHelp }
+
+func newPointerHelp(topics ...string) *pointerHelp { return &pointerHelp{newHelp(topics...)} }

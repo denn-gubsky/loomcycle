@@ -130,6 +130,33 @@ func helpPointer(ctx context.Context, t Tool, helpTool string, idx HelpIndex) st
 	return strings.Join(parts, " ")
 }
 
+// withHelpPointer adds the help call to a FAILED call of a documented tool.
+// A failed call is the moment a model is guaranteed to be reading, and the most
+// likely cause is a call shape it got wrong, so it gets the article for the
+// operation it tried (or the tool's, when that operation has none).
+//
+// Left alone: successes; a tool with no article; a dispatcher that cannot
+// serve help; and a failure marked retryable, where the fix is to send the
+// same call again and a pointer to the manual would only suggest otherwise.
+func (d *Dispatcher) withHelpPointer(name string, input json.RawMessage, res Result) Result {
+	if !res.IsError || d.help == nil || !d.help.HasHelpTopic(name) {
+		return res
+	}
+	if res.Error != nil && res.Error.Retryable {
+		return res
+	}
+	topic := name
+	var in struct {
+		Op string `json:"op"`
+	}
+	if json.Unmarshal(input, &in) == nil && in.Op != "" && d.help.HasHelpTopic(name+"/"+in.Op) {
+		topic = name + "/" + in.Op
+	}
+	res.Text = strings.TrimRight(res.Text, " \n") +
+		fmt.Sprintf("\n\nHow to call it: call %s with %s.", d.helpName, helpArgs(topic))
+	return res
+}
+
 // helpArgs renders the argument object of a help call. Marshalled, not
 // formatted, so a topic name can never break the JSON.
 func helpArgs(topic string) string {
