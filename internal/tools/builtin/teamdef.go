@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -191,7 +192,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
 	`a runnable flag. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and/or after collecting (showing each result, before any of ` +
-	`it reaches the sink) and asks a human to release all, release n, or abort. retire soft-retires one version; delete ` +
+	`it reaches the sink) and asks a human to release all, release n, or abort. run may also set review on starter states: ` +
+	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
+	`member reaches the sink as status "rejected". retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
 	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
 
@@ -225,7 +228,9 @@ const teamDefInputSchema = `{
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
     "mode":             {"type": "string", "enum": ["detach"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. Either way the response carries run_id."},
-    "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"review\" pauses both phases, \"review:before_dispatch\" or \"review:after_collection\" pauses one. At before_dispatch the wave is composed but nothing has run; at after_collection the runs are done but nothing has reached the sink. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS."}
+    "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"review\" pauses both phases, \"review:before_dispatch\" or \"review:after_collection\" pauses one. At before_dispatch the wave is composed but nothing has run; at after_collection the runs are done but nothing has reached the sink. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS. \"<state>:review\" arms review instead (see review), and may be set here or live."},
+    "review":           {"type": "array", "items": {"type": "string"}, "description": "run (optional): starter state ids whose member runs are held for an operator's verdict when they finish. A person approves each one, rejects it with feedback it revises from, or rejects it; a rejected member reaches the sink as status \"rejected\" and does not count toward the wave's wait. Can also be armed while the walk runs, as the breakpoint \"<state>:review\". A run-time argument, never part of the definition."},
+    "review_ttl_seconds": {"type": "integer", "minimum": 0, "description": "run (optional): with review, end a member hold nobody rules on within this many seconds as rejected. Omit for no deadline."}
   },
   "required": ["op"]
 }`
@@ -239,15 +244,17 @@ type teamDefInput struct {
 	Description    string          `json:"description,omitempty"`
 	Promote        *bool           `json:"promote,omitempty"`
 	Retired        *bool           `json:"retired,omitempty"`
-	ContentSHA256  string          `json:"content_sha256,omitempty"`   // input for op: verify
-	Format         string          `json:"format,omitempty"`           // render_diagram: mermaid (default) | d2
-	HighlightState string          `json:"highlight_state,omitempty"`  // render_diagram: mark a state
-	Input          string          `json:"input,omitempty"`            // run: initial input to the entry state
-	BoardChunkID   string          `json:"board_chunk_id,omitempty"`   // run: bind the walk to a Document chunk board
-	BoardScope     string          `json:"board_scope,omitempty"`      // run: board_chunk_id's Document scope (agent|user, default user)
-	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"` // run: escalate an iteration cap to a human instead of aborting
-	Breakpoints    []string        `json:"breakpoints,omitempty"`      // run: starter states to pause at (debug mode)
-	Mode           string          `json:"mode,omitempty"`             // run: "" (wait for the walk) | "detach" (return the run id now)
+	ContentSHA256  string          `json:"content_sha256,omitempty"`     // input for op: verify
+	Format         string          `json:"format,omitempty"`             // render_diagram: mermaid (default) | d2
+	HighlightState string          `json:"highlight_state,omitempty"`    // render_diagram: mark a state
+	Input          string          `json:"input,omitempty"`              // run: initial input to the entry state
+	BoardChunkID   string          `json:"board_chunk_id,omitempty"`     // run: bind the walk to a Document chunk board
+	BoardScope     string          `json:"board_scope,omitempty"`        // run: board_chunk_id's Document scope (agent|user, default user)
+	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"`   // run: escalate an iteration cap to a human instead of aborting
+	Breakpoints    []string        `json:"breakpoints,omitempty"`        // run: starter states to pause at (debug mode)
+	Review         []string        `json:"review,omitempty"`             // run: starter states whose member runs are held for a verdict
+	ReviewTTL      int             `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
+	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now)
 }
 
 // Name implements tools.Tool.
@@ -985,15 +992,29 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	breaks := 0
 	lastBreak := ""
 	var runnerOpts []teamrun.RunnerOption
-	if len(in.Breakpoints) > 0 {
-		if err := teamrun.ValidateBreakpoints(in.Breakpoints); err != nil {
+	// review is sugar for "<state>:review" in the same armed set, so arming it
+	// at start and arming it live are one mechanism with one reader.
+	seed := append([]string(nil), in.Breakpoints...)
+	for _, id := range in.Review {
+		seed = append(seed, id+":"+string(teamrun.Review))
+	}
+	// Only a debug PAUSE needs a human to ask. Review does not: its verdict
+	// arrives through each member run's own review verb.
+	needsAsk := false
+	for _, bp := range in.Breakpoints {
+		if _, phase, ok := teamrun.ParseBreakpoint(bp); ok && phase != teamrun.Review {
+			needsAsk = true
+		}
+	}
+	if len(seed) > 0 {
+		if err := teamrun.ValidateBreakpoints(seed); err != nil {
 			return errResult(fmt.Sprintf("run: %s", err)), nil
 		}
 		// A breakpoint on a state that does not exist — or on one that never
 		// dispatches a wave — would arm nothing, and the operator would sit
 		// watching a walk that runs to completion without ever pausing. Refuse
 		// the typo instead.
-		for _, bp := range in.Breakpoints {
+		for _, bp := range seed {
 			id, _, _ := teamrun.ParseBreakpoint(bp)
 			bst, known := teamgraph.StateByID(def, id)
 			if !known {
@@ -1008,7 +1029,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		// to aborting because the fallback is still safe; a breakpoint's whole
 		// job is to hold work back, so running at full speed because nobody can
 		// be asked is the opposite of what the caller requested.
-		if t.AskHuman == nil {
+		if needsAsk && t.AskHuman == nil {
 			return errResult("run: breakpoints require the Interruption machinery, which is not wired on this server"), nil
 		}
 	}
@@ -1020,19 +1041,27 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// An empty set answers false for every state, so a walk nobody arms takes
 	// the same path it took before any of this existed.
 	releaseBreakpoints := func() {}
-	if t.AskHuman != nil {
+	var armedSet teamrun.BreakpointSource
+	// Review arming lives in the same set, so the set opens for a run that can
+	// be armed live (LiveBreakpoints) or that armed anything at start — review
+	// included, in either spelling — not only for one that can pause.
+	if t.AskHuman != nil || t.LiveBreakpoints != nil || len(seed) > 0 {
 		// Opened on the WALK ctx, which now carries the run id — that is the key
 		// the arming endpoint addresses. Opening it on the caller's ctx would
 		// register the set under whatever run the CALLER is in, or under none.
-		src, release, serr := t.openBreakpoints(walkCtx, in.Breakpoints)
+		src, release, serr := t.openBreakpoints(walkCtx, seed)
 		if serr != nil {
 			return errResult(fmt.Sprintf("run: %s", serr)), nil
 		}
+		armedSet = src
 		// NOT a defer: a detached walk outlives this function, and releasing
 		// here would unregister the armed set the moment the caller got its run
 		// id back — leaving a running walk nobody could arm.
 		releaseBreakpoints = release
-		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(src,
+		runnerOpts = append(runnerOpts, teamrun.WithMemberReview(src, time.Duration(in.ReviewTTL)*time.Second))
+	}
+	if armedSet != nil && t.AskHuman != nil {
+		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(armedSet,
 			func(c context.Context, bp teamrun.Breakpoint) (teamrun.BreakDecision, error) {
 				breaks++
 				answer, aerr := t.AskHuman(c, formatBreakpoint(row.Name, bp))

@@ -140,3 +140,30 @@ func TestTerminalStatusOf_MatchesTheWrittenRow(t *testing.T) {
 		})
 	}
 }
+
+// The walk's review deadline reaches its member: a hold nobody rules on ends
+// the member rejected, and the walk is told so.
+func TestTeamMember_WalkDeadlineExpiresTheHold(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := teamrun.WithReviewArming(context.Background(), func(context.Context) bool { return true })
+	ctx = teamrun.WithReviewTTL(ctx, 150*time.Millisecond)
+	res, err := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != teamrun.MemberRejected {
+		t.Errorf("status = %q, want rejected on the deadline", res.Status)
+	}
+	if run, _ := h.st.GetRun(context.Background(), res.RunID); run.StopReason != "review_expired" {
+		t.Errorf("stop reason = %q, want review_expired", run.StopReason)
+	}
+}
+
+// teamrun cannot import the store, so it names the rejected status itself;
+// the two spellings must be the same value or a rejected member reads as a
+// success to the walk.
+func TestTeamMember_RejectedStatusMatchesTheStore(t *testing.T) {
+	if teamrun.MemberRejected != string(store.RunRejected) {
+		t.Errorf("teamrun.MemberRejected = %q, store.RunRejected = %q", teamrun.MemberRejected, store.RunRejected)
+	}
+}

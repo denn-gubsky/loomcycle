@@ -72,11 +72,15 @@ type SinkMessage struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// Sink statuses. `ok` and `error` today; `timeout` arrives with the per-run
-// wall clock in the fan-out phase.
+// Sink statuses. `timeout` arrives with the per-run wall clock in the fan-out
+// phase.
 const (
 	SinkOK    = "ok"
 	SinkError = "error"
+	// SinkRejected: a member held for review was turned down (or its review
+	// deadline passed). Not a success and not a failure; one message per run
+	// either way, so a downstream fan-in still gets its count.
+	SinkRejected = "rejected"
 )
 
 // runStarter executes one starter state: read, dispatch the wave, publish one
@@ -297,7 +301,11 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 				results[i] = res
 				if res.Ok {
 					successes++
-					if shortCircuit && successes >= need {
+					// Never while review is armed: the rest may be held, and
+					// cancelling a run a person is reviewing would throw their
+					// review away. Asked at the moment of deciding, so arming
+					// mid-wave protects the members still out.
+					if shortCircuit && !r.reviewArmed(st) && successes >= need {
 						cancel() // enough succeeded → stop the rest (no-op for wait:all)
 					}
 				}
@@ -423,10 +431,22 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	}
 	// The wave this run belongs to rides ctx to the run-creation seam, which
 	// stamps it on the run's ParentContext. A join, not a copy.
-	sp, err := r.spawn(r.withWave(ctx, env.WalkID, waveID, index), agent, prompt, "")
+	// The member's review arming rides ctx to its run, read live: a state armed
+	// part-way through a wave holds the members that have not finished yet.
+	mctx := r.withWave(ctx, env.WalkID, waveID, index)
+	if r.reviewAt != nil {
+		mctx = WithReviewArming(mctx, func(context.Context) bool { return r.reviewArmed(st) })
+		mctx = WithReviewTTL(mctx, r.reviewTTL)
+	}
+	sp, err := r.spawn(mctx, agent, prompt, "")
 	res.RunID = sp.RunID
 	if err != nil {
 		res.Error = err.Error()
+		return res
+	}
+	if sp.Status == MemberRejected {
+		// Rejected is not a success: it does not count toward the wave's wait.
+		res.Status, res.Output, res.Error = SinkRejected, sp.Output, "rejected by the reviewer"
 		return res
 	}
 	res.Ok, res.Output = true, sp.Output
@@ -443,7 +463,13 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 		Wave: waveID, WaveSize: waveSize, Index: res.Index, Agent: res.Agent, RunID: res.RunID,
 		Status: SinkOK, Output: res.Output,
 	}
-	if !res.Ok {
+	switch {
+	case res.Status == SinkRejected:
+		// The answer a person rejected is kept: the downstream decides what a
+		// rejection means, and it cannot decide without seeing what was
+		// rejected.
+		msg.Status, msg.Error = SinkRejected, res.Error
+	case !res.Ok:
 		msg.Status, msg.Output, msg.Error = SinkError, "", res.Error
 	}
 	payload, err := json.Marshal(msg)

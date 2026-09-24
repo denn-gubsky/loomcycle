@@ -199,3 +199,18 @@ func TestSet_ConcurrentArmAndReplace(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// review is a phase an operator arms live, and the bare state form does NOT
+// imply it: review is a separate decision, not a debugging mode.
+func TestSet_ReviewPhaseIsArmedOnlyWhenNamed(t *testing.T) {
+	s, err := NewSet([]string{"wave:review", "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Armed("wave", Review) || s.Armed("wave", BeforeDispatch) {
+		t.Error("wave:review armed the wrong phases")
+	}
+	if s.Armed("other", Review) || !s.Armed("other", BeforeDispatch) {
+		t.Error("the bare form armed review, or lost a debug pause")
+	}
+}

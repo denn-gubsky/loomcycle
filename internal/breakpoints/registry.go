@@ -36,6 +36,10 @@ import (
 const (
 	BeforeDispatch  = "before_dispatch"
 	AfterCollection = "after_collection"
+	// Review holds a starter's member runs for an operator's verdict. Never
+	// implied by the bare "<state>" form, which arms the two debug pauses:
+	// review is a separate decision, not a debugging mode.
+	Review = "review"
 )
 
 // Set is one run's armed breakpoints: state id → the phases armed on it.
@@ -134,9 +138,9 @@ func ParseSpec(spec string) (state, phase string, err error) {
 	state = spec
 	if i := strings.LastIndex(spec, ":"); i >= 0 {
 		state, phase = spec[:i], spec[i+1:]
-		if phase != BeforeDispatch && phase != AfterCollection {
-			return "", "", fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\" or \"<state>:%s\"",
-				spec, BeforeDispatch, AfterCollection)
+		if phase != BeforeDispatch && phase != AfterCollection && phase != Review {
+			return "", "", fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\", \"<state>:%s\" or \"<state>:%s\"",
+				spec, BeforeDispatch, AfterCollection, Review)
 		}
 	}
 	if strings.TrimSpace(state) == "" {

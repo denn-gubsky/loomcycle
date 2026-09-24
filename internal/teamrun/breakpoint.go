@@ -32,6 +32,11 @@ const (
 	// AfterCollection — the wave is complete and NOTHING has been published to
 	// the sink. Step over.
 	AfterCollection BreakpointPhase = "after_collection"
+	// Review — not a pause of the walk. A state armed here holds each of its
+	// member runs for an operator's verdict when the run finishes its answer
+	// (the run's own review hold), so a person can approve it, send it back
+	// with feedback, or reject it before it reaches the sink.
+	Review BreakpointPhase = "review"
 )
 
 // PromptPreview is one pending run, as the operator sees it at BeforeDispatch:
@@ -225,7 +230,7 @@ func ParseBreakpoint(s string) (id string, phase BreakpointPhase, ok bool) {
 	id = s
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		id, phase = s[:i], BreakpointPhase(s[i+1:])
-		if phase != BeforeDispatch && phase != AfterCollection {
+		if phase != BeforeDispatch && phase != AfterCollection && phase != Review {
 			return "", "", false
 		}
 	}
@@ -240,8 +245,8 @@ func ParseBreakpoint(s string) (id string, phase BreakpointPhase, ok bool) {
 func ValidateBreakpoints(bps []string) error {
 	for _, b := range bps {
 		if _, _, ok := ParseBreakpoint(b); !ok {
-			return fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\"|\"<state>:%s\"",
-				b, BeforeDispatch, AfterCollection)
+			return fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\"|\"<state>:%s\"|\"<state>:%s\"",
+				b, BeforeDispatch, AfterCollection, Review)
 		}
 	}
 	return nil
@@ -254,6 +259,13 @@ func ValidateBreakpoints(bps []string) error {
 // the source, so it takes the same path it took before any of this existed.
 func (r *agentRunner) armed(st teamgraph.State, phase BreakpointPhase) bool {
 	return r.onBreak != nil && r.breakAt != nil && r.breakAt.Armed(st.ID, phase)
+}
+
+// reviewArmed reports whether st's member runs are held for review. Asked live,
+// like armed: at a member's finish (through its run's review arming) and when
+// the wave decides whether to short-circuit.
+func (r *agentRunner) reviewArmed(st teamgraph.State) bool {
+	return r.reviewAt != nil && r.reviewAt.Armed(st.ID, Review)
 }
 
 // previewPrompts renders the pending runs for the BeforeDispatch pause, in wave
