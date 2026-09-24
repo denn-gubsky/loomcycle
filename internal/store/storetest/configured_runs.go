@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,5 +258,49 @@ func testConfiguredRunNotReapedAsStale(t *testing.T, s store.Store) {
 	}
 	if got, _ := s.GetRun(ctx, run.ID); got.Status != store.RunRunning {
 		t.Errorf("a just-started draft was reaped as stale: %q", got.Status)
+	}
+}
+
+// A NUL in a run's answer or in a draft's prompt is model- or caller-produced
+// text the store must hold, not a reason to refuse the write: a FinishRun that
+// failed would leave a finished run `running` with its answer lost. The
+// character may be replaced (JSONB cannot store U+0000) but the text around it
+// survives and the run is terminal.
+func testRunJSONColumnsAcceptNUL(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "tn", "default", "gus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_nul", UserID: "gus", TenantID: "tn",
+		RunConfig: json.RawMessage(`{"sampling":{"stop":["x\u0000y"]}}`)})
+	if err != nil {
+		t.Fatalf("CreateRun with a NUL in run_config: %v", err)
+	}
+	result := json.RawMessage(`{"final_text":"before\u0000after","state":{"k":"v\u0000w"}}`)
+	if err := s.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{Result: result}, ""); err != nil {
+		t.Fatalf("FinishRun with a NUL in the result: %v", err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.Status != store.RunCompleted {
+		t.Fatalf("run after FinishRun = %+v (%v), want completed", got.Status, err)
+	}
+	var rec struct {
+		FinalText string `json:"final_text"`
+	}
+	if err := json.Unmarshal(got.Result, &rec); err != nil || !strings.HasPrefix(rec.FinalText, "before") || !strings.HasSuffix(rec.FinalText, "after") {
+		t.Errorf("result = %s (%v), want the text around the NUL kept", got.Result, err)
+	}
+
+	draftBody := json.RawMessage(`{"agent":"a","segments":[{"role":"user","content":[{"type":"trusted-text","text":"p\u0000q"}]}]}`)
+	draft, err := s.CreateConfiguredRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_nul_draft", UserID: "gus", TenantID: "tn"}, draftBody)
+	if err != nil {
+		t.Fatalf("CreateConfiguredRun with a NUL in the draft: %v", err)
+	}
+	if err := s.UpdateRunDraft(ctx, draft.ID, draftBody); err != nil {
+		t.Fatalf("UpdateRunDraft with a NUL in the draft: %v", err)
+	}
+	if d, err := s.GetRunDraft(ctx, draft.ID); err != nil || !json.Valid(d) || !strings.Contains(string(d), "trusted-text") {
+		t.Errorf("draft = %s (%v), want it stored", d, err)
 	}
 }
