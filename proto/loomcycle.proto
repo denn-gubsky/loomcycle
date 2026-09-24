@@ -60,6 +60,27 @@ service Loomcycle {
   // Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
   rpc CompactRun(CompactRunRequest) returns (CompactRunResult);
 
+  // Configured runs (RFC DI): create a run now, start it later. A configured
+  // run is validated like a Run but admitted only at start — it takes no slot
+  // and no budget until then — and never stores a secret. Mirrors POST
+  // /v1/runs {start:false}, PATCH / DELETE /v1/runs/{run_id} and POST
+  // /v1/runs/{run_id}/start.
+  //
+  // CreateConfiguredRun takes the same RunRequest as Run; user_bearer,
+  // user_credentials and session_id are refused (InvalidArgument).
+  rpc CreateConfiguredRun(RunRequest) returns (ConfiguredRun);
+  // UpdateConfiguredRun replaces fields of the draft: `patch` is a JSON object
+  // in the wire's snake_case keys, where null removes a field. The agent, the
+  // identity and secrets cannot be patched. FailedPrecondition once started.
+  rpc UpdateConfiguredRun(UpdateConfiguredRunRequest) returns (ConfiguredRun);
+  // StartConfiguredRun starts the draft and streams it exactly as Run does.
+  // An admission refusal (ResourceExhausted / Unavailable) ends the call
+  // before any event and leaves the draft configured.
+  rpc StartConfiguredRun(StartConfiguredRunRequest) returns (stream Event);
+  // DeleteConfiguredRun discards the draft and its session. A live run is
+  // FailedPrecondition — cancel it instead.
+  rpc DeleteConfiguredRun(DeleteConfiguredRunRequest) returns (DeleteConfiguredRunResponse);
+
   // ErasureReport enumerates what this deployment holds about one subject, in
   // three tiers separated by what they guarantee. Read-only.
   //
@@ -977,6 +998,39 @@ message CompactRunResult {
   string applied = 5;  // live | marker | noop
 }
 
+// ConfiguredRun is a draft as the configured-run RPCs return it (RFC DI).
+message ConfiguredRun {
+  string run_id = 1;
+  string agent_id = 2;
+  string session_id = 3;
+  // status is "configured".
+  string status = 4;
+  // draft is the stored request, JSON in the wire's snake_case keys.
+  bytes draft = 5;
+}
+
+message UpdateConfiguredRunRequest {
+  string run_id = 1;
+  // patch is a JSON object; null removes a field.
+  bytes patch = 2;
+}
+
+message StartConfiguredRunRequest {
+  string run_id = 1;
+  // The secrets a draft never stores, supplied at start. Same rules as
+  // RunRequest.user_bearer / user_credentials.
+  string user_bearer = 2;
+  map<string, string> user_credentials = 3;
+}
+
+message DeleteConfiguredRunRequest {
+  string run_id = 1;
+}
+
+message DeleteConfiguredRunResponse {
+  bool deleted = 1;
+}
+
 message ReplaySessionRequest {
   string session_id = 1;  // SOURCE session whose transcript is carried over
   string agent = 2;       // target agent the new session binds
@@ -1378,6 +1432,10 @@ message Agent {
   // resources, tuning, interactive, …). GetAgent only, like result. Empty when
   // the run overrode nothing.
   bytes spec = 15;
+  // draft is a CONFIGURED run's request as it will start (RFC DI), JSON in the
+  // wire's snake_case keys — what UpdateConfiguredRun edits. GetAgent only,
+  // and only while the run is configured; it never holds a secret.
+  bytes draft = 16;
 }
 
 // AgentUsage mirrors agentResponseUsage.

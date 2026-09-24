@@ -448,8 +448,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 53 {
-		t.Errorf("got %d tools, want 53 (+retune_run on top of the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 54 {
+		t.Errorf("got %d tools, want 54 (+configured_run on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -459,7 +459,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 		t.Error("catalogue missing the credentialdef meta-tool")
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "history", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "configured_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "history", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}
@@ -1749,3 +1749,18 @@ func (m *mockConnector) DirectoryInspect(_ context.Context, tenant, _ string) (d
 func (m *mockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
 	return nil, nil
 }
+
+// Configured-run operations (RFC DI D5) — not exercised by this fake.
+func (m *mockConnector) CreateConfiguredRun(context.Context, connector.ConfiguredRunRequest) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *mockConnector) UpdateConfiguredRun(context.Context, string, json.RawMessage) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *mockConnector) StartConfiguredRun(context.Context, string, connector.RunSecrets) (connector.SpawnRunResult, error) {
+	return connector.SpawnRunResult{}, nil
+}
+func (m *mockConnector) ConfiguredRunInput(context.Context, string, connector.RunSecrets) (runner.RunInput, error) {
+	return runner.RunInput{}, nil
+}
+func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }

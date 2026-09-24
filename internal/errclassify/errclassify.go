@@ -166,6 +166,13 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			"No session exists with that id. Start a fresh run instead of continuing this one.",
 		), true
 
+	case errors.Is(err, runner.ErrRunNotConfigured):
+		return tools.ErrorInfo{
+			Category:    tools.CategoryBusiness,
+			Retryable:   false,
+			Description: "The configured run has already started or been discarded, so it cannot be started again. Read it with get_run.",
+		}, true
+
 	case errors.Is(err, runner.ErrSessionRequired):
 		return validation(
 			"That action is session-bound and this deployment has no store wired for it. Call it without a session, or use a deployment with persistence.",

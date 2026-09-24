@@ -1064,6 +1064,76 @@ class LoomcycleClient:
             "applied": resp.applied,
         }
 
+    async def create_configured_run(
+        self,
+        *,
+        agent: str,
+        segments: Iterable[PromptSegment],
+        **run_options: Any,
+    ) -> Mapping[str, Any]:
+        """Create a run WITHOUT starting it (RFC DI configured runs). It is
+        validated exactly as :meth:`run_streaming` would validate it, then
+        stored: it takes no concurrency slot and no token budget until
+        :meth:`start_configured_run`.
+
+        ``run_options`` are :meth:`run_streaming`'s keyword options
+        (``sampling``, ``tool_choice``, ``model``, ``max_iterations``, …).
+        ``user_bearer`` / ``user_credentials`` / ``session_id`` are refused
+        (INVALID_ARGUMENT): a configured run never stores a secret — pass them
+        to the start. Returns ``{run_id, agent_id, session_id, status, draft}``,
+        ``draft`` being the stored request as a dict."""
+        req = _build_run_request(agent=agent, segments=segments, **run_options)
+        try:
+            resp = await self._stub.CreateConfiguredRun(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _configured_run_to_dict(resp)
+
+    async def update_configured_run(
+        self, run_id: str, patch: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Replace fields of a configured run's request. ``patch`` uses the
+        wire's snake_case field names; a ``None`` value removes a field. The
+        agent, the identity and secrets cannot be patched; a run that has
+        started is FAILED_PRECONDITION."""
+        req = pb.UpdateConfiguredRunRequest(run_id=run_id, patch=json.dumps(dict(patch)).encode())
+        try:
+            resp = await self._stub.UpdateConfiguredRun(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _configured_run_to_dict(resp)
+
+    def start_configured_run(
+        self,
+        run_id: str,
+        *,
+        user_bearer: str = "",
+        user_credentials: Optional[Mapping[str, str]] = None,
+        on_handle: Optional[Callable[["RunHandle"], None]] = None,
+    ) -> AsyncIterator[AgentEvent]:
+        """Start a configured run and stream it exactly as
+        :meth:`run_streaming` streams a new one. Admission happens here: a
+        refusal (RESOURCE_EXHAUSTED / UNAVAILABLE) raises before any event and
+        leaves the run configured, to be started again later. The secrets the
+        draft never stored are passed here."""
+        req = pb.StartConfiguredRunRequest(run_id=run_id, user_bearer=user_bearer)
+        if user_credentials:
+            req.user_credentials.update(dict(user_credentials))
+        return self._drive_stream(
+            self._stub.StartConfiguredRun(req, metadata=self._auth_metadata()),
+            on_handle=on_handle,
+        )
+
+    async def delete_configured_run(self, run_id: str) -> bool:
+        """Discard a configured run and its session. A run that has started is
+        FAILED_PRECONDITION — cancel it instead."""
+        req = pb.DeleteConfiguredRunRequest(run_id=run_id)
+        try:
+            resp = await self._stub.DeleteConfiguredRun(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return resp.deleted
+
     async def replay_session(
         self, source_session_id: str, agent: str, *, compress: bool = False
     ) -> Mapping[str, Any]:
@@ -1955,6 +2025,19 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         # with, merged over its definition. get_agent only; None when the run
         # overrode nothing.
         "spec": json.loads(a.spec) if a.spec else None,
+        # A CONFIGURED run's request as it will start (RFC DI): what
+        # update_configured_run edits. None once the run has started.
+        "draft": json.loads(a.draft) if a.draft else None,
+    }
+
+
+def _configured_run_to_dict(r: pb.ConfiguredRun) -> Mapping[str, Any]:
+    return {
+        "run_id": r.run_id,
+        "agent_id": r.agent_id,
+        "session_id": r.session_id,
+        "status": r.status,
+        "draft": json.loads(r.draft) if r.draft else None,
     }
 
 

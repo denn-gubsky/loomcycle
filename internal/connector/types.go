@@ -886,3 +886,26 @@ func (o RunOverrides) IsZero() bool {
 		o.MemoryInjectMaxTokens == nil && o.MemoryIndexMaxBytes == nil &&
 		o.InjectToolGuide == nil && o.Interactive == nil && o.Interruption == nil
 }
+
+// ConfiguredRunRequest is a run to create without starting it: a spawn request
+// plus the one POST /v1/runs field a spawn request lacks.
+type ConfiguredRunRequest struct {
+	SpawnRunRequest
+	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
+}
+
+// ConfiguredRun is a draft as the operations return it. Draft is the stored
+// request in the wire's snake_case keys; it never holds a secret.
+type ConfiguredRun struct {
+	RunID     string          `json:"run_id"`
+	AgentID   string          `json:"agent_id,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+	Status    string          `json:"status"`
+	Draft     json.RawMessage `json:"draft,omitempty"`
+}
+
+// RunSecrets are what a configured run is given at start and never stores.
+type RunSecrets struct {
+	UserBearer      string            `json:"user_bearer,omitempty"`
+	UserCredentials map[string]string `json:"user_credentials,omitempty"`
+}

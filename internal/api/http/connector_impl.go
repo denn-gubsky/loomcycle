@@ -89,7 +89,13 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 // transports that want streaming (MCP notifications, gRPC stream) hold a
 // runner.Runner field separately and use it directly for that path.
 func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
-	in := spawnRequestToRunInput(req)
+	return s.runBlocking(ctx, spawnRequestToRunInput(req), req.ParentContext)
+}
+
+// runBlocking drives one run to completion and folds its events into a
+// SpawnRunResult — the blocking half of SpawnRun, shared with the start of a
+// configured run. parentContext is echoed back to the caller.
+func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentContext *store.ParentContext) (connector.SpawnRunResult, error) {
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;
 	// OnEvent accumulates text deltas + the final usage/stop_reason.
@@ -146,8 +152,8 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 		StopReason:    finalStopReason,
 		FinalText:     finalText,
 		Usage:         finalUsage,
-		Limits:        limitCrossings,    // RFC AW: budget crossings, omitempty
-		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
+		Limits:        limitCrossings, // RFC AW: budget crossings, omitempty
+		ParentContext: parentContext,  // v0.12.x: echo the lineage back to the caller
 	}
 	switch {
 	case runErr != nil && errors.Is(runErr, context.Canceled):

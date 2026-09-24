@@ -196,6 +196,31 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
+			Name:        "configured_run",
+			Description: "Create a run WITHOUT starting it, edit it, then start or discard it. op=create validates a run exactly as spawn_run would \u2014 same agent, segments and per-run overrides \u2014 but stores it instead of running it: it takes no concurrency slot and no token budget, and returns {run_id, agent_id, session_id, status:\"configured\", draft}. op=update replaces fields of the draft: pass `patch`, an object in the same field names, where null removes a field; the agent, the user, the agent_id and credentials cannot be changed. op=start runs the draft to completion and BLOCKS like spawn_run, returning the same result; admission happens here, so a busy or over-budget refusal leaves the run configured to start again later. op=delete discards the draft. Use it when a run should be reviewed or adjusted before it spends anything. Do NOT pass user_bearer or user_credentials to create \u2014 a configured run never stores them; give them to start. Do NOT use op=delete on a run that has started \u2014 cancel_run stops a live run.",
+			InputSchema: rawJSON(`{
+				"type": "object",
+				"required": ["op"],
+				"properties": {
+					"op":               {"type": "string", "enum": ["create", "update", "start", "delete"]},
+					"run_id":           {"type": "string", "description": "The configured run, from create. Required for update, start and delete."},
+					"agent":            {"type": "string", "description": "create: the registered agent to run."},
+					"segments":         {"type": "array", "description": "create: prompt segments, as for spawn_run.", "items": {"type": "object", "required": ["role", "content"], "properties": {"role": {"type": "string", "enum": ["system", "user"]}, "content": {"type": "array", "items": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string", "enum": ["trusted-text", "untrusted-block", "image"]}, "text": {"type": "string"}, "cacheable": {"type": "boolean"}, "kind": {"type": "string", "description": "untrusted-block source label (e.g. web_content)"}, "media_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"], "description": "image blocks only; valid only in a user segment"}, "data": {"type": "string", "description": "image blocks only: base64-encoded image bytes, NO data: prefix"}}}}}}},
+					"user_id":          {"type": "string"},
+					"agent_id":         {"type": "string", "description": "create: optional caller-chosen handle; refused if a live or configured run already holds it."},
+					"user_tier":        {"type": "string"},
+					"tools":            {"type": "array", "items": {"type": "string"}},
+					"allowed_hosts":    {"type": "array", "items": {"type": "string"}, "description": "OMIT for no narrowing. Empty array [] denies all outbound HTTP; a non-empty array intersects with the operator's list."},
+					"web_search_filter": {"type": "string", "enum": ["drop", "keep"]},
+					"run_timeout_seconds": {"type": "integer", "minimum": 1, "description": "create: the run's own wall-clock budget once started."},
+					"patch":            {"type": "object", "description": "update: the fields to replace, in the same names create takes; null removes one."},
+					"user_bearer":      {"type": "string", "description": "start: per-run MCP bearer, as for spawn_run."},
+					"user_credentials": {"type": "object", "additionalProperties": {"type": "string"}, "description": "start: per-tool named credentials, as for spawn_run."},
+					` + spawnPerRunProps + `
+				}
+			}`),
+		},
+		{
 			Name:        "retune_run",
 			Description: "Change a RUNNING agent's settings without sending it a turn. Targets a run by `agent_id`. Use it to take hold of a run that is going the wrong way: move it to a different model, raise its iteration bound, or park it at its next turn boundary so a person can correct it (`interactive`). Returns the run's merged configuration, which is what it now holds — not an echo of what you sent, because the merge is not a field-wise union: naming a model clears the provider, and naming a tier clears the model. Overrides select WITHIN what the agent's definition already allows and cannot widen it; one it forbids is REFUSED here rather than applied and discovered later. Do NOT use it to send the agent a message — that is spawn_run with the run's session_id, and a retune deliberately writes nothing to the transcript that the operator did not say. At least one field is required: an empty call is refused rather than reported as a no-op change.",
 			InputSchema: rawJSON(`{

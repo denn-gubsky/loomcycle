@@ -1320,3 +1320,18 @@ func TestGetAgent_ReturnsTheSpecListingDoesNot(t *testing.T) {
 		}
 	}
 }
+
+// Configured-run operations (RFC DI D5) — not exercised by this fake.
+func (m *mockConnector) CreateConfiguredRun(context.Context, connector.ConfiguredRunRequest) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *mockConnector) UpdateConfiguredRun(context.Context, string, json.RawMessage) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *mockConnector) StartConfiguredRun(context.Context, string, connector.RunSecrets) (connector.SpawnRunResult, error) {
+	return connector.SpawnRunResult{}, nil
+}
+func (m *mockConnector) ConfiguredRunInput(context.Context, string, connector.RunSecrets) (runner.RunInput, error) {
+	return runner.RunInput{}, nil
+}
+func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }

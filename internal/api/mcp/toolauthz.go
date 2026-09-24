@@ -51,7 +51,10 @@ var tenantConfinableTools = map[string]bool{
 	"get_run":     true,
 	"compact_run": true,
 	"retune_run":  true,
-	"list_runs":   true,
+	// configured_run: create / edit / start / discard a draft; every op goes
+	// through the connector's tenant gate and keeps the draft's identity.
+	"configured_run": true,
+	"list_runs":      true,
 
 	// Agent management.
 	"register_agent":   true,
