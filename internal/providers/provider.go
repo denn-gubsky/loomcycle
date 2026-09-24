@@ -1119,6 +1119,10 @@ type AwaitingReviewEventInfo struct {
 	// ExpiresAt (RFC 3339, UTC) is when the hold ends as rejected if nobody
 	// rules on it. Empty when the run has no review deadline.
 	ExpiresAt string `json:"expires_at,omitempty"`
+	// HeldBy names the agent_stop hook ("<owner>/<name>") that held the answer.
+	// Empty when review arming held it. Disarming review releases only the
+	// latter.
+	HeldBy string `json:"held_by,omitempty"`
 }
 
 // TurnCancelledEventInfo is the structured payload on EventTurnCancelled — the
@@ -1344,16 +1348,21 @@ type OverrideInfo struct {
 type HookDecisionInfo struct {
 	// Hook names it as "<owner>/<name>". A tenant sees the name of an operator
 	// hook that acted on its call, never its callback.
-	Hook      string `json:"hook"`
-	Phase     string `json:"phase"` // pre | post | post_failure
-	ToolUseID string `json:"tool_use_id"`
-	ToolName  string `json:"tool_name"`
-	// Decision: deny | rewrite_input | rewrite_output | context | unavailable.
+	Hook  string `json:"hook"`
+	Phase string `json:"phase"` // pre | post | post_failure | agent_start | agent_stop
+	// ToolUseID and ToolName name the call a tool hook decided on; empty for
+	// agent_start / agent_stop.
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	ToolName  string `json:"tool_name,omitempty"`
+	// Decision: deny | rewrite_input | rewrite_output | context | block | hold
+	// | unavailable.
 	Decision string `json:"decision"`
 	// FailMode is set for "unavailable": open (the call went ahead) or closed
 	// (it was refused).
 	FailMode string `json:"fail_mode,omitempty"`
-	// Reason is the deny's text, or the error that made the hook unavailable.
+	// Reason is the deny's or block's text (a block's is the user turn the
+	// model was sent back with), a hold's reason, or the error that made the
+	// hook unavailable.
 	Reason string `json:"reason,omitempty"`
 	// UpdatedInput is the input the tool actually ran with, for rewrite_input.
 	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`

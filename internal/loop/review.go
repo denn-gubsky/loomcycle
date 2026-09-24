@@ -18,6 +18,9 @@ type HeldReview struct {
 	// HeldAt is when the hold began. A review deadline runs from it, so a
 	// restart does not hand an unreviewed hold a fresh window.
 	HeldAt time.Time
+	// HeldBy names the agent_stop hook that took the hold; empty for a hold
+	// review arming took.
+	HeldBy string
 }
 
 // lastAssistantText is the text of the conversation's last assistant turn —
@@ -46,6 +49,44 @@ const StopReasonRejected = "rejected"
 // review deadline (RunOptions.ReviewTTL) with no verdict. The server maps it
 // to the rejected run status: an answer nobody looked at is never approved.
 const StopReasonReviewExpired = "review_expired"
+
+// StopReasonDeniedByHook is the stop reason of a run an agent_start hook
+// denied before any model call.
+const StopReasonDeniedByHook = "denied_by_hook"
+
+// StopReasonStopBlocked is the stop reason of a run whose answer agent_stop
+// hooks blocked more than MaxStopBlocks times in a row.
+const StopReasonStopBlocked = "stop_blocked"
+
+// MaxStopBlocks is how many times in a row agent_stop hooks may block an
+// answer and send the model back. One block past it fails the run: a
+// validator that can never be satisfied must not loop a run forever.
+const MaxStopBlocks = 3
+
+// blockTurn is the user turn an agent_stop block sends back to the model.
+func blockTurn(reason string) providers.Message {
+	return providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: reason}}}
+}
+
+// appendStartContext adds agent_start hooks' context to the prompt: into the
+// last user turn, as text of its own, so the prompt still ends on the user and
+// a transcript replay can put it back in the same place.
+func appendStartContext(messages []providers.Message, extra []string) []providers.Message {
+	if len(extra) == 0 {
+		return messages
+	}
+	blocks := make([]providers.ContentBlock, 0, len(extra))
+	for _, t := range extra {
+		blocks = append(blocks, providers.ContentBlock{Type: "text", Text: t})
+	}
+	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
+		last := messages[n-1]
+		last.Content = append(append([]providers.ContentBlock(nil), last.Content...), blocks...)
+		out := append([]providers.Message(nil), messages[:n-1]...)
+		return append(out, last)
+	}
+	return append(messages, providers.Message{Role: "user", Content: blocks})
+}
 
 // errReviewAbandoned ends a run whose hold stopped without a verdict for a
 // reason other than its context (the steer queue closed).
@@ -94,7 +135,11 @@ const (
 // heldSince is when the hold began, which the review deadline runs from
 // (opts.ReviewTTL; none when zero). A deadline that passes while the runtime is
 // paused waits for the pause to lift: a paused runtime does not end runs.
-func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, acceptFrom, heldSince time.Time, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
+//
+// heldBy names the agent_stop hook that took the hold, or is empty when review
+// arming took it. A hook's hold is not released by disarming review: arming
+// did not take it.
+func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, acceptFrom, heldSince time.Time, heldBy string, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
 	heldAt := acceptFrom
 	var deadline <-chan time.Time
 	expiresAt := ""
@@ -107,7 +152,7 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	}
 	announce := func() {
 		emit(providers.Event{Type: providers.EventAwaitingReview,
-			AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: sinceTurn, Round: round, ExpiresAt: expiresAt}})
+			AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: sinceTurn, Round: round, ExpiresAt: expiresAt, HeldBy: heldBy}})
 	}
 	announce()
 	t := time.NewTicker(parkHeartbeatInterval)
@@ -167,7 +212,7 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 			if opts.OnHeartbeat != nil {
 				opts.OnHeartbeat()
 			}
-			if !opts.reviewAtBoundary(ctx) {
+			if heldBy == "" && !opts.reviewAtBoundary(ctx) {
 				return messages, lastCtxTokens, reviewApproved
 			}
 		case <-ctx.Done():

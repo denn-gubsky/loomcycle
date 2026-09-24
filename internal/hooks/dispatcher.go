@@ -404,8 +404,164 @@ func (d *Dispatcher) invokeCode(ctx context.Context, h *Hook, body, out any) err
 			return err
 		}
 		*o = res
+	case *LifecycleHookResult:
+		res, err := dec.lifecycleResult()
+		if err != nil {
+			return err
+		}
+		*o = res
 	default:
 		return fmt.Errorf("hooks: unexpected response type %T", out)
 	}
 	return nil
+}
+
+// Matches reports whether any hook of this phase would fire for the run.
+func (d *Dispatcher) Matches(ident Identity, phase Phase) bool {
+	return len(d.registry.Match(ident.Tenant, ident.Agent, "", phase)) > 0
+}
+
+// lifecycleCall builds the payload for one agent_start / agent_stop hook.
+func lifecycleCall(h *Hook, ident Identity, stop StopInfo) LifecycleHookCall {
+	return LifecycleHookCall{
+		Phase: h.Phase, Owner: h.Owner, HookName: h.Name,
+		Agent: ident.Agent, UserID: ident.UserID, AgentID: ident.AgentID,
+		RunContext: ident.runContext(),
+		FinalText:  stop.FinalText, StopReason: stop.StopReason,
+		StopHookActive: stop.StopBlocks > 0, StopBlocks: stop.StopBlocks,
+	}
+}
+
+// invokeLifecycle runs one lifecycle hook and checks its result applies to
+// the phase.
+func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identity, stop StopInfo) (LifecycleHookResult, error) {
+	call := lifecycleCall(h, ident, stop)
+	var res LifecycleHookResult
+	if err := d.invoke(ctx, h, &call, &res); err != nil {
+		return LifecycleHookResult{}, err
+	}
+	if err := res.check(h.Phase); err != nil {
+		return LifecycleHookResult{}, err
+	}
+	return res, nil
+}
+
+// StartOutcome is what RunAgentStart returns to the loop.
+type StartOutcome struct {
+	// Denied stops the run before any model call; Reason says why.
+	Denied bool
+	Reason string
+	// AdditionalContext is what the hooks asked to add to the prompt, in
+	// chain order.
+	AdditionalContext []string
+	Decisions         []Decision
+}
+
+// RunAgentStart runs the agent_start chain, in registration order. The first
+// deny stops the chain. A hook that fails denies the run when it fails
+// closed, and is skipped when it fails open.
+func (d *Dispatcher) RunAgentStart(ctx context.Context, ident Identity) StartOutcome {
+	var out StartOutcome
+	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStart) {
+		res, err := d.invokeLifecycle(ctx, h, ident, StopInfo{})
+		if err != nil {
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+			if h.FailMode == FailClosed || ctx.Err() != nil {
+				log.Printf("hooks: agent_start %s/%s failed (fail_mode=%s): %v", h.Owner, h.Name, failModeOf(h), err)
+				out.Denied, out.Reason = true, "hook "+h.Owner+"/"+h.Name+" is unavailable"
+				out.AdditionalContext = nil
+				return out
+			}
+			log.Printf("hooks: agent_start %s/%s failed (fail_mode=open, passing through): %v", h.Owner, h.Name, err)
+			continue
+		}
+		if res.Decision == "deny" {
+			reason := res.Reason
+			if reason == "" {
+				reason = "denied by hook " + h.Owner + "/" + h.Name
+			}
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase, Kind: "deny", Reason: reason})
+			out.Denied, out.Reason = true, reason
+			out.AdditionalContext = nil
+			return out
+		}
+		if text := strings.TrimSpace(res.AdditionalContext); text != "" {
+			out.AdditionalContext = append(out.AdditionalContext, text)
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
+				Kind: "context", AdditionalContext: text})
+		}
+	}
+	return out
+}
+
+// StopInfo is the answer an agent_stop chain decides on.
+type StopInfo struct {
+	FinalText  string
+	StopReason string
+	// StopBlocks counts the blocks this answer has already had in a row.
+	StopBlocks int
+}
+
+// Stop outcomes.
+const (
+	StopAllow = "allow"
+	StopBlock = "block"
+	StopHold  = "hold"
+)
+
+// StopOutcome is what RunAgentStop returns to the loop.
+type StopOutcome struct {
+	// Kind is StopAllow, StopBlock or StopHold.
+	Kind string
+	// Reason is a block's feedback for the model, or why the answer is held.
+	Reason string
+	// By names the hook ("<owner>/<name>") whose block or hold this is.
+	By        string
+	Decisions []Decision
+}
+
+// RunAgentStop runs the agent_stop chain, in registration order.
+//
+// Precedence is block > hold > allow. The first block stops the chain: the
+// model has to try again anyway, and holding a person on an answer an
+// automated check has already rejected would waste their time. A hold does
+// not stop the chain, so a later hook may still block. A hook that fails holds
+// the answer when it fails closed — the gate a closed agent_stop hook stands
+// for is a person's — and is skipped when it fails open.
+func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop StopInfo) StopOutcome {
+	out := StopOutcome{Kind: StopAllow}
+	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStop) {
+		name := h.Owner + "/" + h.Name
+		res, err := d.invokeLifecycle(ctx, h, ident, stop)
+		if err != nil {
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+			if ctx.Err() != nil {
+				// The run is over; the loop ends it on its own.
+				return out
+			}
+			if h.FailMode == FailClosed {
+				log.Printf("hooks: agent_stop %s failed (fail_mode=closed, holding): %v", name, err)
+				if out.Kind == StopAllow {
+					out.Kind, out.Reason, out.By = StopHold, "hook "+name+" is unavailable", name
+				}
+				continue
+			}
+			log.Printf("hooks: agent_stop %s failed (fail_mode=open, passing through): %v", name, err)
+			continue
+		}
+		switch res.Decision {
+		case "block":
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase, Kind: "block", Reason: res.Reason})
+			out.Kind, out.Reason, out.By = StopBlock, res.Reason, name
+			return out
+		case "hold":
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase, Kind: "hold", Reason: res.Reason})
+			if out.Kind == StopAllow {
+				out.Kind, out.Reason, out.By = StopHold, res.Reason, name
+			}
+		}
+	}
+	return out
 }
