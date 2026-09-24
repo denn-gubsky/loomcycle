@@ -35,7 +35,7 @@ most common mistake:
 | id | What it names | Where you pass it |
 |---|---|---|
 | `document_id` | the document as a whole | `document_id` for `create_chunk`, `query_chunks`, `export_md`, `get_edges`; `id` for `get_document`, `delete_document`, `set_path` |
-| `root_chunk_id` | the document's top chunk (it holds the title) | `parent_id` when a chunk should sit directly under the title |
+| `root_chunk_id` | the document's top chunk (it holds the title) | `get_chunk`/`update_chunk` on the title itself. A chunk created or moved with no parent goes under it |
 | chunk `id` | one chunk | `id` for `get_chunk`, `update_chunk`, `delete_chunk`, `move_chunk`; `parent_id`, `after_id`, `from_id`, `to_id`, `seed_ids` |
 
 `id` means a DOCUMENT for `get_document`, `delete_document` and `set_path`, and
