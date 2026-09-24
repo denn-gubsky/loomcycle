@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -40,7 +41,22 @@ const (
 	// still sees failures too (it always has); this phase is for a hook that
 	// only cares about them.
 	PhasePostFailure Phase = "post_failure"
+	// PhaseAgentStart runs once per run, after the prompt is composed and
+	// before the first model call. The hook may deny the run or add context
+	// to its prompt.
+	PhaseAgentStart Phase = "agent_start"
+	// PhaseAgentStop runs each time the model finishes an answer, before the
+	// run ends (or parks). The hook may let it finish, block it (the reason is
+	// sent back as a user turn and the model tries again), or hold it for a
+	// person's verdict.
+	PhaseAgentStop Phase = "agent_stop"
 )
+
+// IsToolPhase reports whether hooks of this phase wrap a tool call. The
+// others are about the run itself, and are selected by agent only.
+func IsToolPhase(p Phase) bool {
+	return p == PhasePre || p == PhasePost || p == PhasePostFailure
+}
 
 // FailMode controls how the dispatcher treats webhook errors and timeouts.
 type FailMode string
@@ -204,6 +220,71 @@ type PostHookResult struct {
 	AdditionalContext string      `json:"additional_context,omitempty"`
 }
 
+// LifecycleHookCall is the payload an agent_start or agent_stop hook
+// receives. Like the tool payloads it carries no prompt or history; an
+// agent_stop hook gets the answer it is deciding on.
+type LifecycleHookCall struct {
+	Phase    Phase  `json:"phase"`
+	Owner    string `json:"owner"`
+	HookName string `json:"hook_name"`
+	Agent    string `json:"agent"`
+	UserID   string `json:"user_id,omitempty"`
+	AgentID  string `json:"agent_id,omitempty"`
+	RunContext
+	// FinalText and StopReason are the answer an agent_stop hook decides on.
+	FinalText  string `json:"final_text,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+	// StopHookActive is true when this answer is a retry after an agent_stop
+	// hook blocked the previous one, and StopBlocks counts those blocks in a
+	// row. A validator that would block forever can see it has already asked.
+	StopHookActive bool `json:"stop_hook_active,omitempty"`
+	StopBlocks     int  `json:"stop_blocks,omitempty"`
+}
+
+// LifecycleHookResult is what an agent_start or agent_stop hook returns.
+// Empty response / 204 = allow.
+//   - agent_start: decision "deny" (with a reason) stops the run before any
+//     model call; additional_context is added to the prompt.
+//   - agent_stop: decision "block" sends the reason back to the model as a
+//     user turn and it answers again; "hold" holds the answer for a person's
+//     verdict, as a run under review is held.
+type LifecycleHookResult struct {
+	Decision          string `json:"decision,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	AdditionalContext string `json:"additional_context,omitempty"`
+}
+
+// check refuses a result that does not apply to the phase, so a mistake in a
+// hook is reported rather than read as "allow".
+func (r LifecycleHookResult) check(p Phase) error {
+	switch p {
+	case PhaseAgentStart:
+		switch r.Decision {
+		case "", "allow":
+		case "deny":
+			if r.AdditionalContext != "" {
+				return fmt.Errorf("additional_context has no prompt to go into when the run is denied")
+			}
+		default:
+			return fmt.Errorf("decision %q does not apply to agent_start; it is \"allow\" or \"deny\"", r.Decision)
+		}
+	case PhaseAgentStop:
+		if r.AdditionalContext != "" {
+			return fmt.Errorf("additional_context does not apply to agent_stop; a block's reason is what the model is told")
+		}
+		switch r.Decision {
+		case "", "allow", "hold":
+		case "block":
+			if strings.TrimSpace(r.Reason) == "" {
+				return fmt.Errorf("a block needs a reason: it is what the model is told to fix")
+			}
+		default:
+			return fmt.Errorf("decision %q does not apply to agent_stop; it is \"allow\", \"block\" or \"hold\"", r.Decision)
+		}
+	}
+	return nil
+}
+
 // ToolCall is the wire shape for a tool invocation in hook payloads.
 // Mirrors providers.ToolUse but stays in this package to avoid a
 // circular import.
@@ -240,7 +321,8 @@ type Decision struct {
 	Name  string
 	Phase Phase
 	// Kind: "deny" | "rewrite_input" | "rewrite_output" | "context" |
-	// "unavailable" (the hook failed; FailMode says what that meant).
+	// "block" | "hold" | "unavailable" (the hook failed; FailMode says what
+	// that meant).
 	Kind              string
 	FailMode          FailMode
 	Reason            string
@@ -268,7 +350,7 @@ type CodeRunner interface {
 // mistake in a hook body is reported rather than silently ignored.
 type CodeDecision struct {
 	// Decision is "allow" (or empty) to let the call through, "deny" to stop
-	// it (pre only).
+	// it (pre and agent_start), "block" or "hold" (agent_stop).
 	Decision          string          `json:"decision,omitempty"`
 	Reason            string          `json:"reason,omitempty"`
 	UpdatedInput      json.RawMessage `json:"updated_input,omitempty"`
@@ -308,6 +390,14 @@ func (d CodeDecision) postResult() (PostHookResult, error) {
 	return PostHookResult{Result: d.UpdatedOutput, AdditionalContext: d.AdditionalContext}, nil
 }
 
+// lifecycleResult translates an agent_start / agent_stop hook's decision.
+func (d CodeDecision) lifecycleResult() (LifecycleHookResult, error) {
+	if len(d.UpdatedInput) > 0 || d.UpdatedOutput != nil || len(d.AllowHosts) > 0 {
+		return LifecycleHookResult{}, fmt.Errorf("updated_input, updated_output and allow_hosts apply to tool hooks only")
+	}
+	return LifecycleHookResult{Decision: d.Decision, Reason: d.Reason, AdditionalContext: d.AdditionalContext}, nil
+}
+
 // eventFor names the thing a hook in this phase decides on, as a code body
 // sees it.
 func eventFor(p Phase) string {
@@ -316,6 +406,8 @@ func eventFor(p Phase) string {
 		return "pre_tool_use"
 	case PhasePostFailure:
 		return "post_tool_use_failure"
+	case PhaseAgentStart, PhaseAgentStop:
+		return string(p)
 	default:
 		return "post_tool_use"
 	}

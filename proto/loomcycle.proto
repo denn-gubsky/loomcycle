@@ -1327,6 +1327,9 @@ message AwaitingReview {
   int32 since_turn = 1;  // the iteration the run was held at
   int32 round = 2;       // 1 on the first answer, +1 for each revision
   string expires_at = 3; // RFC 3339 UTC; when the hold ends as rejected. Empty = no deadline
+  // The agent_stop hook ("<owner>/<name>") that held the answer. Empty when
+  // review arming held it; disarming review releases only that kind.
+  string held_by = 4;
 }
 
 // UserInput is the type=steer payload (RFC AI). Mirrors
@@ -1393,10 +1396,10 @@ message Retry {
 // providers.HookDecisionInfo.
 message HookDecision {
   string hook = 1;          // "<owner>/<name>"
-  string phase = 2;         // pre | post | post_failure
-  string tool_use_id = 3;
+  string phase = 2;         // pre | post | post_failure | agent_start | agent_stop
+  string tool_use_id = 3;   // the call a tool hook decided on; empty for agent_start / agent_stop
   string tool_name = 4;
-  string decision = 5;      // deny | rewrite_input | rewrite_output | context | unavailable
+  string decision = 5;      // deny | rewrite_input | rewrite_output | context | block | hold | unavailable
   string fail_mode = 6;     // for unavailable: open | closed
   string reason = 7;
   bytes updated_input = 8;  // for rewrite_input: the JSON the tool ran with
@@ -1667,7 +1670,8 @@ message RegisterHookRequest {
   // same pair replaces the prior registration with a fresh id.
   string owner = 1;
   string name = 2;
-  // "pre" | "post" | "post_failure". Anything else → InvalidArgument.
+  // "pre" | "post" | "post_failure" | "agent_start" | "agent_stop". Anything
+  // else → InvalidArgument. agent_start / agent_stop take no tools selector.
   string phase = 3;
   // Agent name globs (exact match or trailing-* prefix). Empty list
   // matches every agent (equivalent to ["*"]).

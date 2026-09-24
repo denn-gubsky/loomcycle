@@ -5709,6 +5709,29 @@ func replayTranscript(events []store.Event) []providers.Message {
 			pendingToolResults = nil
 			asstReasoning = ""
 			asstReasoningSignature = ""
+		case string(providers.EventHookDecision):
+			// Two hook decisions put text into the conversation, and each one's
+			// event is the only record of it: an agent_stop block sent the model
+			// back with a user turn, and agent_start context was added to the
+			// prompt's last user turn.
+			var pe providers.Event
+			if err := json.Unmarshal(ev.Payload, &pe); err != nil || pe.HookDecision == nil {
+				continue
+			}
+			hd := pe.HookDecision
+			switch {
+			case hd.Phase == string(hooks.PhaseAgentStop) && hd.Decision == "block":
+				flushAssistant()
+				flushPendingTools()
+				messages = append(messages, providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: hd.Reason}}})
+			case hd.Phase == string(hooks.PhaseAgentStart) && hd.Decision == "context":
+				block := providers.ContentBlock{Type: "text", Text: hd.AdditionalContext}
+				if n := len(messages); n > 0 && messages[n-1].Role == "user" {
+					messages[n-1].Content = append(messages[n-1].Content, block)
+				} else {
+					messages = append(messages, providers.Message{Role: "user", Content: []providers.ContentBlock{block}})
+				}
+			}
 		}
 	}
 	flushAssistant()

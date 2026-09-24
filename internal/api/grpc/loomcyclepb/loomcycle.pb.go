@@ -4503,10 +4503,13 @@ func (x *AwaitingInput) GetSinceTurn() int32 {
 // AwaitingReview is the type=awaiting_review payload (RFC DJ). Mirrors
 // providers.AwaitingReviewEventInfo.
 type AwaitingReview struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SinceTurn     int32                  `protobuf:"varint,1,opt,name=since_turn,json=sinceTurn,proto3" json:"since_turn,omitempty"` // the iteration the run was held at
-	Round         int32                  `protobuf:"varint,2,opt,name=round,proto3" json:"round,omitempty"`                          // 1 on the first answer, +1 for each revision
-	ExpiresAt     string                 `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`  // RFC 3339 UTC; when the hold ends as rejected. Empty = no deadline
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SinceTurn int32                  `protobuf:"varint,1,opt,name=since_turn,json=sinceTurn,proto3" json:"since_turn,omitempty"` // the iteration the run was held at
+	Round     int32                  `protobuf:"varint,2,opt,name=round,proto3" json:"round,omitempty"`                          // 1 on the first answer, +1 for each revision
+	ExpiresAt string                 `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`  // RFC 3339 UTC; when the hold ends as rejected. Empty = no deadline
+	// The agent_stop hook ("<owner>/<name>") that held the answer. Empty when
+	// review arming held it; disarming review releases only that kind.
+	HeldBy        string `protobuf:"bytes,4,opt,name=held_by,json=heldBy,proto3" json:"held_by,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4558,6 +4561,13 @@ func (x *AwaitingReview) GetRound() int32 {
 func (x *AwaitingReview) GetExpiresAt() string {
 	if x != nil {
 		return x.ExpiresAt
+	}
+	return ""
+}
+
+func (x *AwaitingReview) GetHeldBy() string {
+	if x != nil {
+		return x.HeldBy
 	}
 	return ""
 }
@@ -4938,11 +4948,11 @@ func (x *Retry) GetReason() string {
 // providers.HookDecisionInfo.
 type HookDecision struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	Hook              string                 `protobuf:"bytes,1,opt,name=hook,proto3" json:"hook,omitempty"`   // "<owner>/<name>"
-	Phase             string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"` // pre | post | post_failure
-	ToolUseId         string                 `protobuf:"bytes,3,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
+	Hook              string                 `protobuf:"bytes,1,opt,name=hook,proto3" json:"hook,omitempty"`                              // "<owner>/<name>"
+	Phase             string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`                            // pre | post | post_failure | agent_start | agent_stop
+	ToolUseId         string                 `protobuf:"bytes,3,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"` // the call a tool hook decided on; empty for agent_start / agent_stop
 	ToolName          string                 `protobuf:"bytes,4,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	Decision          string                 `protobuf:"bytes,5,opt,name=decision,proto3" json:"decision,omitempty"`                 // deny | rewrite_input | rewrite_output | context | unavailable
+	Decision          string                 `protobuf:"bytes,5,opt,name=decision,proto3" json:"decision,omitempty"`                 // deny | rewrite_input | rewrite_output | context | block | hold | unavailable
 	FailMode          string                 `protobuf:"bytes,6,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"` // for unavailable: open | closed
 	Reason            string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
 	UpdatedInput      []byte                 `protobuf:"bytes,8,opt,name=updated_input,json=updatedInput,proto3" json:"updated_input,omitempty"` // for rewrite_input: the JSON the tool ran with
@@ -6670,7 +6680,8 @@ type RegisterHookRequest struct {
 	// same pair replaces the prior registration with a fresh id.
 	Owner string `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
 	Name  string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	// "pre" | "post" | "post_failure". Anything else → InvalidArgument.
+	// "pre" | "post" | "post_failure" | "agent_start" | "agent_stop". Anything
+	// else → InvalidArgument. agent_start / agent_stop take no tools selector.
 	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
 	// Agent name globs (exact match or trailing-* prefix). Empty list
 	// matches every agent (equivalent to ["*"]).
@@ -10618,13 +10629,14 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x06fields\x18\x04 \x03(\tR\x06fields\".\n" +
 	"\rAwaitingInput\x12\x1d\n" +
 	"\n" +
-	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\"d\n" +
+	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\"}\n" +
 	"\x0eAwaitingReview\x12\x1d\n" +
 	"\n" +
 	"since_turn\x18\x01 \x01(\x05R\tsinceTurn\x12\x14\n" +
 	"\x05round\x18\x02 \x01(\x05R\x05round\x12\x1d\n" +
 	"\n" +
-	"expires_at\x18\x03 \x01(\tR\texpiresAt\"P\n" +
+	"expires_at\x18\x03 \x01(\tR\texpiresAt\x12\x17\n" +
+	"\aheld_by\x18\x04 \x01(\tR\x06heldBy\"P\n" +
 	"\tUserInput\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12\x17\n" +

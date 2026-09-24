@@ -496,6 +496,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		resumedToolChoice = nil
 	}
 	runOpts := loop.RunOptions{
+		// Re-entered under its own run id: it already started, so its
+		// agent_start hooks do not run again.
+		Resumed:             true,
 		Provider:            provider,
 		Model:               model,
 		Tools:               allowedTools,

@@ -603,7 +603,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"properties": {
 					"owner":        {"type": "string", "description": "App UID; (owner, name) is the identity tuple."},
 					"name":         {"type": "string"},
-					"phase":        {"type": "string", "enum": ["pre", "post", "post_failure"], "description": "pre: before the tool runs. post: after it runs, success or failure. post_failure: only after a failure, before post, with the failure's classification."},
+					"phase":        {"type": "string", "enum": ["pre", "post", "post_failure", "agent_start", "agent_stop"], "description": "pre: before the tool runs. post: after it runs, success or failure. post_failure: only after a failure, before post, with the failure's classification. agent_start: once per run, before the first model call; may deny the run or add context to its prompt. agent_stop: each time the model finishes an answer; may block it (the reason goes back to the model, which answers again; more than 3 blocks in a row fail the run) or hold it for a person's verdict on review_run. agent_start / agent_stop take no tools selector."},
 					"agents":       {"type": "array", "items": {"type": "string"}, "description": "Agent name globs (exact or 'prefix*'). Empty = match all."},
 					"tools":        {"type": "array", "items": {"type": "string"}, "description": "Tool name globs (same syntax). Empty = match all."},
 					"callback_url": {"type": "string", "description": "http:// or https:// URL loomcycle POSTs to. Set this or code."},

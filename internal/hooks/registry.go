@@ -300,8 +300,14 @@ func validate(h *Hook) error {
 	if strings.TrimSpace(h.Name) == "" {
 		return wrap(ErrInvalidRegistration, "name required")
 	}
-	if h.Phase != PhasePre && h.Phase != PhasePost && h.Phase != PhasePostFailure {
-		return wrap(ErrInvalidRegistration, "phase must be \"pre\", \"post\" or \"post_failure\"")
+	switch h.Phase {
+	case PhasePre, PhasePost, PhasePostFailure:
+	case PhaseAgentStart, PhaseAgentStop:
+		if len(h.Tools) > 0 {
+			return wrap(ErrInvalidRegistration, "tools selects tool calls; an "+string(h.Phase)+" hook is selected by agents only")
+		}
+	default:
+		return wrap(ErrInvalidRegistration, "phase must be \"pre\", \"post\", \"post_failure\", \"agent_start\" or \"agent_stop\"")
 	}
 	hasURL, hasCode := strings.TrimSpace(h.CallbackURL) != "", strings.TrimSpace(h.Code) != ""
 	switch {

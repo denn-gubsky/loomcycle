@@ -1494,6 +1494,7 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			SinceTurn: int32(ev.AwaitingReview.SinceTurn),
 			Round:     int32(ev.AwaitingReview.Round),
 			ExpiresAt: ev.AwaitingReview.ExpiresAt,
+			HeldBy:    ev.AwaitingReview.HeldBy,
 		}
 	}
 	if ev.AwaitingInput != nil {

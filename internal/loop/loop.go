@@ -192,6 +192,10 @@ type RunOptions struct {
 	// verdict then takes it on exactly as it would have before the restart.
 	// Requires SteerQueue. nil for every run that was not held.
 	ResumeHeld *HeldReview
+	// Resumed marks a run re-entered under its existing run id (a paused run
+	// restored). It has already started, so its agent_start hooks do not run
+	// again. A continuation is a new run, and is not Resumed.
+	Resumed bool
 
 	// ArmTurnCancel, when non-nil, makes THIS run turn-cancellable (RFC BH). At
 	// the start of each turn the loop calls it with the turn's CancelCauseFunc to
@@ -2234,6 +2238,18 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	emit(providers.Event{Type: providers.EventStarted})
 
+	// agent_start hooks: once per run, now that the prompt is composed and
+	// before any model call, for both loops. A resumed run already started.
+	if opts.Hooks != nil && !opts.Resumed {
+		out := opts.Hooks.RunAgentStart(ctx, hookIdentity(ctx, opts.AgentName, 0))
+		emitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
+		if out.Denied {
+			// Returned, not emitted: the server reports a failed run's error.
+			return RunResult{StopReason: StopReasonDeniedByHook}, fmt.Errorf("the run was stopped before it began: %s", out.Reason)
+		}
+		messages = appendStartContext(messages, out.AdditionalContext)
+	}
+
 	// RFC CR tier-routing: `context.mode: auto` resolves to a concrete mode from
 	// the RESOLVED provider — a local backend → recap (schema-free, safe for a
 	// weaker model), a frontier API → stateful. An interactive run takes recap
@@ -2318,6 +2334,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			msg := "output_format is not applied to a stateful run: its result is the state, shaped by context.state_schema"
 			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
 				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
+		}
+		if opts.Hooks != nil && opts.Hooks.Matches(hookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
+			// Same reason as review below: the step loop's product is its
+			// state, not an answer an agent_stop hook could block or hold.
+			msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"
+			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+				CapabilityInert: &providers.CapabilityInertInfo{Gate: "agent_stop", Message: msg}})
 		}
 		if opts.reviewAtBoundary(ctx) {
 			// A stateful run ends by marking its state done; there is no
@@ -2465,6 +2488,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	var finalText string
 	var stopReason string
 	reviewRound := 0 // holds for review so far (reported on each hold)
+	stopBlocks := 0  // agent_stop blocks of the current answer, in a row
 	// fallbackAttempts counts cumulative v0.8.2 provider switches per
 	// run. tryProviderFallback bumps it on each successful switch;
 	// the FallbackPolicy.MaxAttempts cap (default 3) is enforced
@@ -2532,12 +2556,14 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		reviewRound = h.Round
 		finalText = lastAssistantText(messages)
 		outcome := reviewApproved
-		if opts.reviewAtBoundary(ctx) {
+		// A hook's hold is restored whether or not review is armed: arming
+		// never took it, so disarming cannot have released it.
+		if h.HeldBy != "" || opts.reviewAtBoundary(ctx) {
 			heldSince := h.HeldAt
 			if heldSince.IsZero() {
 				heldSince = time.Now()
 			}
-			messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, h.SinceTurn, h.Round, lastCtxTokens, preambleTokens, time.Time{}, heldSince, emit)
+			messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, h.SinceTurn, h.Round, lastCtxTokens, preambleTokens, time.Time{}, heldSince, h.HeldBy, emit)
 		}
 		switch outcome {
 		case reviewExpired:
@@ -3170,15 +3196,51 @@ outerLoop:
 
 		// Terminal: model is done.
 		if iterStop != "tool_use" || len(pendingTools) == 0 {
+			// agent_stop hooks decide first: an automated check that blocks the
+			// answer spares a person reviewing one that will change anyway.
+			heldBy := ""
+			if opts.Hooks != nil {
+				out := opts.Hooks.RunAgentStop(ctx, hookIdentity(ctx, opts.AgentName, iter),
+					hooks.StopInfo{FinalText: finalText, StopReason: iterStop, StopBlocks: stopBlocks})
+				emitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
+				switch out.Kind {
+				case hooks.StopBlock:
+					if stopBlocks >= MaxStopBlocks {
+						iterSpan.End()
+						turnCancelFn(nil)
+						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
+							fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, stopBlocks+1, out.Reason)
+					}
+					stopBlocks++
+					// The reason goes back as a user turn and the model answers
+					// again. The persisted hook_decision is what a transcript
+					// replay rebuilds this turn from.
+					messages = append(messages, blockTurn(out.Reason))
+					iterSpan.End()
+					continue outerLoop
+				case hooks.StopHold:
+					heldBy = out.By
+				}
+			}
+			stopBlocks = 0
+			if heldBy != "" && opts.SteerQueue == nil {
+				// Nothing can deliver a verdict to this run (a sub-agent the
+				// Agent tool spawned has no steer queue). It ends rejected, so
+				// the answer the hook would not let through is never accepted.
+				emit(providers.Event{Type: providers.EventError, Error: fmt.Sprintf("hook %s held the answer, but this run cannot be held for review; it ends rejected", heldBy)})
+				stopReason = StopReasonRejected
+				iterSpan.End()
+				break outerLoop
+			}
 			// Held for review: the answer is done but not accepted. Checked
 			// BEFORE the interactive park, because an approved answer still
 			// parks an interactive run for its next message afterwards.
-			if opts.SteerQueue != nil && opts.reviewAtBoundary(ctx) {
+			if opts.SteerQueue != nil && (heldBy != "" || opts.reviewAtBoundary(ctx)) {
 				disarmTurn()
 				reviewRound++
 				var outcome reviewOutcome
 				now := time.Now()
-				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, now, now, emit)
+				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, now, now, heldBy, emit)
 				switch outcome {
 				case reviewExpired:
 					stopReason = StopReasonReviewExpired
