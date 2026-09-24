@@ -9,10 +9,11 @@ import AgentsTree, { type TreeNode } from "./AgentsTree";
 // list, filter state, polling, and the bug-fix-on-filter-change
 // clear logic. This component just renders.
 
-export type StatusFilter = "all" | "running" | "completed" | "failed" | "cancelled";
+// "configured" = drafts: runs created but not started.
+export type StatusFilter = "all" | "configured" | "running" | "completed" | "failed" | "cancelled";
 
 export const STATUS_FILTERS: StatusFilter[] = [
-  "running", "completed", "failed", "cancelled", "all",
+  "running", "configured", "completed", "failed", "cancelled", "all",
 ];
 
 export interface AgentsTreePanelProps {

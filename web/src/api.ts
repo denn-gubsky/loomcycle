@@ -173,7 +173,8 @@ export interface Agent {
   agent: string;
   parent_agent_id: string | null;
   user_id: string;
-  status: "running" | "completed" | "failed" | "cancelled";
+  // "configured" = created but not started (a draft; see createConfiguredRun).
+  status: "configured" | "running" | "completed" | "failed" | "cancelled";
   started_at: string;
   completed_at: string | null;
   stop_reason: string | null;
@@ -198,6 +199,10 @@ export interface Agent {
   // the channel name or interruption kind respectively.
   awaited_state?: "channel" | "interrupted" | "";
   awaited_on?: string;
+  // draft is a CONFIGURED run's request as it will start, in the server's
+  // snake_case wire keys — what updateConfiguredRun edits. Present only while
+  // the run is configured; it never holds a secret.
+  draft?: Record<string, unknown>;
   // v0.12.x cluster mode: the replica owning this run's live cancel
   // handle. Absent in single-replica deployments (the server omits
   // the field when its replica_id is unset).
@@ -2493,6 +2498,13 @@ export interface StartRunRequest {
 // prompt is prepended server-side — do NOT send a system segment).
 // Resolves at stream EOF.
 export function startRun(req: StartRunRequest, h: RunStreamHandlers): Promise<void> {
+  return streamSSE("/v1/runs", startRunBody(req), h);
+}
+
+// startRunBody is the POST /v1/runs body for req — one builder, shared by
+// startRun and createConfiguredRun, so a run started now and one saved as a
+// draft carry the same fields.
+function startRunBody(req: StartRunRequest): Record<string, unknown> {
   const body: Record<string, unknown> = {
     agent: req.agent,
     segments: [
@@ -2509,7 +2521,59 @@ export function startRun(req: StartRunRequest, h: RunStreamHandlers): Promise<vo
     body.tools = req.tools;
   if (req.metadata) body.metadata = req.metadata;
   if (req.interactive) body.interactive = true;
-  return streamSSE("/v1/runs", body, h);
+  return body;
+}
+
+// ConfiguredRun is a run created but not started (a draft), as the configured-
+// run routes return it.
+export interface ConfiguredRun {
+  run_id: string;
+  agent_id: string;
+  session_id: string;
+  status: "configured";
+  draft: Record<string, unknown>;
+}
+
+// createConfiguredRun saves req as a DRAFT: validated exactly as startRun's
+// run would be, but stored instead of run — no concurrency slot, no token
+// budget — until startConfiguredRun.
+export function createConfiguredRun(req: StartRunRequest): Promise<ConfiguredRun> {
+  return jsonFetch<ConfiguredRun>("/v1/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...startRunBody(req), start: false }),
+  });
+}
+
+// updateConfiguredRun replaces fields of a draft (PATCH /v1/runs/{run_id}).
+// `patch` uses the wire's keys; `prompt` replaces the prompt; null removes a
+// field. The agent and the identity cannot be changed.
+export function updateConfiguredRun(runID: string, patch: Record<string, unknown>): Promise<ConfiguredRun> {
+  return jsonFetch<ConfiguredRun>(`/v1/runs/${encodeURIComponent(runID)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+// deleteConfiguredRun discards a draft and its session (204).
+export async function deleteConfiguredRun(runID: string): Promise<void> {
+  const resp = await fetch(`${baseURL}/v1/runs/${encodeURIComponent(runID)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return new Promise<void>(() => {});
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+  }
+}
+
+// startConfiguredRun starts a draft and streams it exactly as startRun
+// streams a new run. A refusal (busy / over budget) rejects before any frame
+// and leaves the draft as it was.
+export function startConfiguredRun(runID: string, h: RunStreamHandlers): Promise<void> {
+  return streamSSE(`/v1/runs/${encodeURIComponent(runID)}/start`, {}, h);
 }
 
 // sendRunInput injects an operator "steering" instruction into an IN-FLIGHT

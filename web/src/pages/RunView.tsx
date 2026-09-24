@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { listLibraryAgents, type StartRunRequest } from "../api";
+import { Link, useSearchParams } from "react-router-dom";
+import { createConfiguredRun, getAgent, listLibraryAgents, type ConfiguredRun, type StartRunRequest } from "../api";
+import { draftPromptText } from "../lib/draft";
 import { useUserId } from "../components/Layout";
 import { useRunStream } from "../hooks/useRunStream";
 import { useInteractiveSessions } from "../hooks/useInteractiveSessions";
@@ -135,6 +136,43 @@ function SingleRunTab({
     }
   }, [attachRunId, run, searchParams, setSearchParams]);
 
+  // `?start_draft=<run_id>&draft_agent=<agent_id>` STARTS a configured run (the
+  // runs list's Start button). Same once-then-drop handling as `?attach=`, so
+  // a reload never starts it twice. The draft's prompt is read first only to
+  // echo it into the transcript, as a typed prompt is.
+  const startDraftId = searchParams.get("start_draft");
+  const startDraftAgent = searchParams.get("draft_agent") ?? "";
+  const startedDraftRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!startDraftId || startedDraftRef.current === startDraftId) return;
+    startedDraftRef.current = startDraftId;
+    const next = new URLSearchParams(searchParams);
+    next.delete("start_draft");
+    next.delete("draft_agent");
+    setSearchParams(next, { replace: true });
+    const go = (prompt: string) => run.startDraft(startDraftId, prompt);
+    if (!startDraftAgent) {
+      go("");
+      return;
+    }
+    getAgent(startDraftAgent)
+      .then((a) => go(draftPromptText(a.draft) ?? ""))
+      .catch(() => go(""));
+  }, [startDraftId, startDraftAgent, run, searchParams, setSearchParams]);
+
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [savedDraft, setSavedDraft] = useState<ConfiguredRun | null>(null);
+  const [draftErr, setDraftErr] = useState<string | null>(null);
+  const saveDraft = (req: StartRunRequest) => {
+    setSavingDraft(true);
+    setDraftErr(null);
+    setSavedDraft(null);
+    createConfiguredRun(req)
+      .then(setSavedDraft)
+      .catch((e) => setDraftErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSavingDraft(false));
+  };
+
   const sessionCount = sessions.length;
   return (
     <div className="run-view-body">
@@ -183,7 +221,18 @@ function SingleRunTab({
             onSubmit={(req) => run.start(req)}
             defaultAgent={stagedAgent}
             defaultPrompt={stagedPrompt}
+            onSaveDraft={saveDraft}
+            savingDraft={savingDraft}
           />
+          {savedDraft && (
+            <div className="run-draft-saved">
+              Draft saved — nothing has run yet.{" "}
+              <Link to={`/agents?agent=${encodeURIComponent(savedDraft.agent_id)}`}>
+                Review, edit or start it
+              </Link>
+            </div>
+          )}
+          {draftErr && <div className="error-banner">Could not save the draft: {draftErr}</div>}
         </div>
       )}
       <div className="run-view-pane-col">

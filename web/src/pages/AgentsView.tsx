@@ -117,9 +117,14 @@ export default function AgentsView() {
   }, []);
 
   if (!userId) {
+    // A link to ONE run (?agent=, e.g. "Draft saved — review it") still shows
+    // that run: the list needs a user, the run itself does not.
     return (
-      <div className="empty">
-        <p>Enter a <code>user_id</code> in the top bar to see runs.</p>
+      <div>
+        <div className="empty">
+          <p>Enter a <code>user_id</code> in the top bar to see runs.</p>
+        </div>
+        {selectedId && <AgentDetailPane agentId={selectedId} onSelect={setSelected} />}
       </div>
     );
   }

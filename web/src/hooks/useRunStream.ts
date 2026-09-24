@@ -5,6 +5,7 @@ import {
   continueSession,
   resolveInterrupt,
   sendRunInput,
+  startConfiguredRun,
   startRun,
   streamRunByID,
   sseEventToTranscript,
@@ -68,6 +69,11 @@ export interface UseRunStream {
   // context-size gauge. null until the first usage event arrives.
   lastUsage: LiveUsage | null;
   start: (req: StartRunRequest) => void;
+  // startDraft STARTS a configured run (a draft) and streams it exactly as
+  // start streams a new one. `prompt` is the draft's prompt, echoed into the
+  // transcript the way start echoes the typed one (the persisted prompt is
+  // not on the live tail); "" when the draft's prompt is not a plain text.
+  startDraft: (runId: string, prompt: string) => void;
   // attach RE-CONNECTS to an already-running (or finished) run by id —
   // the operator returns to a detached interactive run from the runs list.
   // Replays the run's transcript then live-tails; the terminal prompt /
@@ -242,6 +248,30 @@ export function useRunStream(): UseRunStream {
     [onFrame, runStream],
   );
 
+  const startDraft = useCallback(
+    (rid: string, prompt: string) => {
+      if (!rid) return;
+      ctrlRef.current?.abort();
+      const ctrl = new AbortController();
+      ctrlRef.current = ctrl;
+      seqRef.current = 0;
+      const text = prompt.trim();
+      echoedRef.current = text ? [text] : [];
+      setEvents(text ? [userEchoTranscript(seqRef.current++, text)] : []);
+      setAgentId("");
+      setSessionId("");
+      setRunId(rid);
+      runIdRef.current = rid;
+      setError(null);
+      setPendingInterrupt(null);
+      setAwaitingInput(false);
+      setLastUsage(null);
+      setStatus("running");
+      runStream(startConfiguredRun(rid, { onFrame, signal: ctrl.signal }));
+    },
+    [onFrame, runStream],
+  );
+
   const attach = useCallback(
     (rid: string) => {
       if (!rid) return;
@@ -377,6 +407,7 @@ export function useRunStream(): UseRunStream {
     awaitingInput,
     lastUsage,
     start,
+    startDraft,
     attach,
     send,
     sendMessage,
