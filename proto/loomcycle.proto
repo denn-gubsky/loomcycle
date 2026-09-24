@@ -1295,6 +1295,10 @@ message Event {
   // DJ) — a run armed for review finished its answer and is held for a
   // verdict. Nil on every other event type.
   AwaitingReview awaiting_review = 16;
+
+  // hook_decision carries the payload on type=hook_decision frames (RFC DK) —
+  // what a tool-use hook did to a call. Nil on every other event type.
+  HookDecision hook_decision = 17;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1385,6 +1389,20 @@ message Retry {
 // the agent holds and cannot use, because the gate that tool reads grants
 // nothing. Carries the FIX as well as the fact — the governing yaml key is not
 // guessable from the tool name, which is most of why this was hard to act on.
+// HookDecision is the type=hook_decision payload (RFC DK). Mirrors
+// providers.HookDecisionInfo.
+message HookDecision {
+  string hook = 1;          // "<owner>/<name>"
+  string phase = 2;         // pre | post | post_failure
+  string tool_use_id = 3;
+  string tool_name = 4;
+  string decision = 5;      // deny | rewrite_input | rewrite_output | context | unavailable
+  string fail_mode = 6;     // for unavailable: open | closed
+  string reason = 7;
+  bytes updated_input = 8;  // for rewrite_input: the JSON the tool ran with
+  string additional_context = 9;
+}
+
 message CapabilityInertInfo {
   string tool = 1;
   string gate = 2;
@@ -1649,7 +1667,7 @@ message RegisterHookRequest {
   // same pair replaces the prior registration with a fresh id.
   string owner = 1;
   string name = 2;
-  // "pre" | "post". Anything else → InvalidArgument.
+  // "pre" | "post" | "post_failure". Anything else → InvalidArgument.
   string phase = 3;
   // Agent name globs (exact match or trailing-* prefix). Empty list
   // matches every agent (equivalent to ["*"]).
