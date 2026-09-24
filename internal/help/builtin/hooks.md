@@ -56,7 +56,7 @@ A registration body:
 {
   "owner": "dlp-scanner",          // app UID; (owner, name) is the identity
   "name": "scan-web-fetches",
-  "phase": "pre",                  // "pre" | "post" | "post_failure" | "agent_start" | "agent_stop"
+  "phase": "pre",                  // a tool phase: "pre" | "post" | "post_failure"; or a run phase (below)
   "agents": ["researcher", "qa-*"], // exact or "prefix*"; omit = match all
   "tools": ["WebFetch", "mcp__jobs__*"],
   "callback_url": "https://dlp.internal/loomcycle-hook",
@@ -94,10 +94,11 @@ When several hooks match, `pre` hooks run **earliest-registration-first**
 and `post` hooks run **LIFO** (classic middleware nesting), ordered by
 registration time.
 
-## Run hooks: agent_start and agent_stop
+## Run hooks
 
-Two phases are about the run rather than a tool call. They are selected by
-`agents` only; a `tools` selector is refused.
+These phases are about the run rather than a tool call. They are selected by
+`agents` only — the agent of the run they fire in; a `tools` selector is
+refused.
 
 **`agent_start`** runs once per run, after the prompt is composed and before
 the first model call. A resumed run has already started, so it does not run
@@ -131,9 +132,39 @@ fails holds the answer if it is `fail_mode: closed`, and lets it through if
 `open`. agent_stop hooks do not apply to a stateful run, whose product is its
 state rather than an answer; the run says so.
 
-A code hook returns the same shapes (`ev.event` is `"agent_start"` or
-`"agent_stop"`), and can ask before deciding — an automated reviewer for the
-clear cases, a person for the rest.
+**`subagent_start`** runs in the parent when it is about to start a child
+through the Agent tool (one-shot or `parallel_spawn`); `agents` selects the
+parent, and the payload names the child in `subagent`. `deny` refuses the child
+— the parent's Agent call gets the reason as an error, and the child is never
+created; `additional_context` is added to the child's prompt.
+
+**`subagent_stop`** runs in the parent after the child finished, before its
+result reaches the parent. The payload adds `subagent_run_id`, `status`
+(`completed` / `failed`), `final_text` and `error`. `deny` refuses the result:
+the parent gets the reason as an error and may try again. `additional_context`
+is appended to the result. To send a child back to revise, register an
+`agent_stop` hook: it fires on the child's own run (its `parent_run_id` names
+the parent).
+
+**`pre_compact`** runs before a compaction summarizes the conversation.
+`trigger` says what asked (`manual`, `auto`, `self`); `context_tokens` and
+`window` the footprint. `deny` refuses it: a manual compaction
+(`POST /v1/runs/{id}/compact`) gets a 409 with code `denied_by_hook`, before any
+summary is made; an automatic one is recorded as a declined compaction with
+reason `denied_by_hook`.
+
+**`post_compact`** and **`run_end`** only report. `post_compact` gets
+`trigger`, `before_tokens` and `after_tokens`; `run_end` gets `status`
+(`completed` / `failed` / `cancelled` / `rejected`), `stop_reason`, `error` and
+`final_text`, after the run's row is final. They run off the run's path, so
+they never delay it, bounded at 30 s; their answer is ignored and a failure is
+only logged. A run whose process died (marked failed by the stale-run sweep)
+never reaches run_end.
+
+A code hook returns the same shapes (`ev.event` is the phase name), and can
+ask before deciding — an automated reviewer for the clear cases, a person for
+the rest. A `post_compact` or `run_end` code hook may `notify` but not `ask`:
+what it reports on has already happened.
 
 ## Code hooks
 
