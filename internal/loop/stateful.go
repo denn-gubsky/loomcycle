@@ -119,6 +119,9 @@ func parkForStatefulTurn(ctx context.Context, opts *RunOptions, sinceTurn int, e
 			// transcript it never had.
 			continue
 		}
+		if m.IsVerdict() {
+			continue // a stateful run is never held for review
+		}
 		if opts.OnSteer != nil {
 			opts.OnSteer(m)
 		}

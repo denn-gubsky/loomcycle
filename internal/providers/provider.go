@@ -644,6 +644,14 @@ const (
 	// "waiting for input" state.
 	EventAwaitingInput EventType = "awaiting_input"
 
+	// EventAwaitingReview is emitted when a run armed for review finishes its
+	// answer: instead of completing, it is held until an operator approves it
+	// or rejects it (optionally with feedback it then revises from). Distinct
+	// from awaiting_input: that run waits for more work, this one waits for a
+	// verdict on work it considers done. Emitted again after a compaction while
+	// held, so the latest event still says the run is held.
+	EventAwaitingReview EventType = "awaiting_review"
+
 	// EventSpawnChildStarted / EventSpawnChildResult are the RFC X Phase 3
 	// "spawn ledger" — recorded on the PARENT run's transcript so a
 	// snapshotted+restored fan-out parent (blocked in Agent.parallel_spawn)
@@ -862,6 +870,10 @@ type Event struct {
 	// AwaitingInput carries the structured payload on EventAwaitingInput (a
 	// persistent interactive run parked at end_turn). Nil otherwise.
 	AwaitingInput *AwaitingInputEventInfo `json:"awaiting_input,omitempty"`
+
+	// AwaitingReview carries the structured payload on EventAwaitingReview.
+	// Nil otherwise.
+	AwaitingReview *AwaitingReviewEventInfo `json:"awaiting_review,omitempty"`
 
 	// TurnCancelled carries the structured payload on EventTurnCancelled (an
 	// operator turn-cancel, RFC BH). Nil on all other event types.
@@ -1082,6 +1094,15 @@ type AwaitingInputEventInfo struct {
 	// SinceTurn is the iteration index the run parked at. Informational —
 	// lets the UI show "idle after N turns".
 	SinceTurn int `json:"since_turn"`
+}
+
+// AwaitingReviewEventInfo is the structured payload on EventAwaitingReview.
+type AwaitingReviewEventInfo struct {
+	// SinceTurn is the iteration index the run was held at.
+	SinceTurn int `json:"since_turn"`
+	// Round counts the holds so far: 1 on the first answer, 2 after the first
+	// rejection with feedback has been revised, and so on.
+	Round int `json:"round"`
 }
 
 // TurnCancelledEventInfo is the structured payload on EventTurnCancelled — the
