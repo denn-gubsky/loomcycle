@@ -2669,6 +2669,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
 		Review:            reviewRecord(in.Review),
+		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
 	}
 
 	// ---- Session+run creation ----
@@ -2950,6 +2951,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
 		Review:              in.Review,
 		ReviewNow:           s.reviewNowFn(runID, in.Review),
+		ReviewTTL:           runCfg.reviewTTL(),
 		Sampling:            runCfg.Sampling,   // merged once, above
 		ToolChoice:          runCfg.ToolChoice, // merged once, above
 		OutputFormat:        runCfg.OutputFormat,
@@ -3968,6 +3970,10 @@ type runRequest struct {
 	// instead of completing: approve, or reject with feedback it revises from,
 	// via POST /v1/runs/{run_id}/review.
 	Review bool `json:"review,omitempty"`
+	// ReviewTTLSeconds ends a held answer that gets no verdict within this many
+	// seconds as rejected ("review_expired"). Each hold gets the full window.
+	// 0 = no deadline: a hold waits for a person.
+	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
 
 	// Sampling is an optional per-RUN LLM sampling override (temperature,
 	// top_p, …) — merged PER FIELD over the agent's own sampling (this wins;
@@ -4427,6 +4433,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
 		Review:            reviewRecord(req.Review),
+		ReviewTTLSeconds:  positiveOrZero(req.ReviewTTLSeconds),
 	}
 
 	// Persistence: resolve or create a session, create a run, route every
@@ -4738,6 +4745,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		InteractiveNow:      s.interactiveNowFn(runID, req.Interactive),
 		Review:              req.Review,
 		ReviewNow:           s.reviewNowFn(runID, req.Review),
+		ReviewTTL:           runCfg.reviewTTL(),
 		Sampling:            runCfg.Sampling,   // merged once, above
 		ToolChoice:          runCfg.ToolChoice, // merged once, above
 		OutputFormat:        runCfg.OutputFormat,
@@ -4888,6 +4896,10 @@ type messagesRequest struct {
 	Interactive bool `json:"interactive,omitempty"`
 	// Review: same semantics as runRequest.Review.
 	Review bool `json:"review,omitempty"`
+	// ReviewTTLSeconds ends a held answer that gets no verdict within this many
+	// seconds as rejected ("review_expired"). Each hold gets the full window.
+	// 0 = no deadline: a hold waits for a person.
+	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
 
 	// Sampling: per-RUN LLM sampling override for this continuation turn,
 	// merged per field over the agent's. Same semantics as runRequest.Sampling.
@@ -5216,6 +5228,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
 		Review:            reviewRecord(body.Review),
+		ReviewTTLSeconds:  positiveOrZero(body.ReviewTTLSeconds),
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -5453,6 +5466,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		InteractiveNow:          s.interactiveNowFn(run.ID, body.Interactive),
 		Review:                  body.Review,
 		ReviewNow:               s.reviewNowFn(run.ID, body.Review),
+		ReviewTTL:               runCfg.reviewTTL(),
 		ArmTurnCancel:           s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
 		Sampling:                runCfg.Sampling,                             // merged once, above
 		ToolChoice:              runCfg.ToolChoice,                           // merged once, above
@@ -8571,7 +8585,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	case runErr != nil:
 		status = store.RunFailed
 		errMsg = runErr.Error()
-	case res.StopReason == loop.StopReasonRejected:
+	case res.StopReason == loop.StopReasonRejected, res.StopReason == loop.StopReasonReviewExpired:
 		// A reviewer turned the answer down with nothing to revise from. Not a
 		// failure — the run did its work — and not a completion either: the
 		// answer on the row is one nobody accepted.

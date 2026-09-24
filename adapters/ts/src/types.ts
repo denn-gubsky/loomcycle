@@ -174,6 +174,7 @@ export interface RunConfigRecord {
   context?: Record<string, unknown>;
   max_context_tokens?: number;
   run_timeout_seconds?: number;
+  review_ttl_seconds?: number;
   routing?: {
     provider?: string;
     model?: string;
@@ -573,7 +574,7 @@ export interface AgentEvent {
   awaiting_input?: { since_turn?: number };
   /** Payload on `event: awaiting_review` — the run is held for a verdict.
    *  `round` is 1 on the first answer and counts up with each revision. */
-  awaiting_review?: { since_turn?: number; round?: number };
+  awaiting_review?: { since_turn?: number; round?: number; expires_at?: string };
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };
@@ -820,6 +821,10 @@ export interface RunOptions extends RunOverrideOptions {
    *  its budget spans that wait, so the CPU-oriented default is often too low.
    *  Ignored by LLM agents. 0 / omitted = inherit. */
   runTimeoutSeconds?: number;
+  /** With `review`: end a held answer that gets no verdict within this many
+   *  seconds as rejected (stop reason `review_expired`). Each hold gets the
+   *  full window; omit for no deadline. Set at start only. */
+  reviewTtlSeconds?: number;
   /** Per-run LLM sampling override (v0.28.0), merged PER FIELD over the
    *  agent's own sampling (this wins; unset fields inherit). Omitted =
    *  inherit entirely. */
@@ -1097,6 +1102,10 @@ export interface ContinueOptions extends RunOverrideOptions {
   /** Optional ad-hoc per-run code-js wall-clock budget (seconds) for the
    *  continuation's new run — see {@link RunOptions.runTimeoutSeconds}. */
   runTimeoutSeconds?: number;
+  /** With `review`: end a held answer that gets no verdict within this many
+   *  seconds as rejected (stop reason `review_expired`). Each hold gets the
+   *  full window; omit for no deadline. Set at start only. */
+  reviewTtlSeconds?: number;
   /** Per-continuation LLM sampling override — see {@link RunOptions.sampling}. */
   sampling?: SamplingOptions;
   /** Per-run tool choice (RFC DI): whether and which tool the model must
@@ -1226,6 +1235,7 @@ export interface RunSpec {
   context?: Record<string, unknown>;
   max_context_tokens?: number;
   run_timeout_seconds?: number;
+  review_ttl_seconds?: number;
   /** Which model serves the run: model / provider / tier / effort. */
   routing?: Record<string, unknown>;
   /** The run's budget: max_tokens / max_iterations / … */

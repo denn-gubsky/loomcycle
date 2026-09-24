@@ -50,10 +50,12 @@ describe("the review option", () => {
       agent: "qa",
       segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
       review: true,
+      reviewTtlSeconds: 600,
     })) {
       // drain
     }
     expect(sentBody(fetchMock.mock.calls[0]!).review).toBe(true);
+    expect(sentBody(fetchMock.mock.calls[0]!).review_ttl_seconds).toBe(600);
     await client.retuneRun("r_1", { review: false });
     expect(sentBody(fetchMock.mock.calls[1]!).review).toBe(false);
   });

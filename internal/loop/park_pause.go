@@ -39,6 +39,9 @@ func newParkPause(g PauseGate) *parkPause {
 	return pp
 }
 
+// recording reports whether the run is currently recorded as paused.
+func (pp *parkPause) recording() bool { return pp.release != nil }
+
 // declared is the channel to select on for "a pause was declared".
 func (pp *parkPause) declared() <-chan struct{} { return pp.pauseCh }
 

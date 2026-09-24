@@ -173,6 +173,8 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 		Interactive:  cur.Interactive,
 		Interruption: cur.Interruption,
 		Review:       cur.Review,
+		// Set at start only; a retune keeps it.
+		ReviewTTLSeconds: cur.ReviewTTLSeconds,
 	}
 	if in.Interactive != nil {
 		merged.Interactive = in.Interactive

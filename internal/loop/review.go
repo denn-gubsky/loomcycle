@@ -15,6 +15,9 @@ import (
 type HeldReview struct {
 	SinceTurn int
 	Round     int
+	// HeldAt is when the hold began. A review deadline runs from it, so a
+	// restart does not hand an unreviewed hold a fresh window.
+	HeldAt time.Time
 }
 
 // lastAssistantText is the text of the conversation's last assistant turn —
@@ -39,6 +42,11 @@ func lastAssistantText(messages []providers.Message) string {
 // feedback. The server maps it to the rejected run status.
 const StopReasonRejected = "rejected"
 
+// StopReasonReviewExpired is the stop reason of a run whose hold outlived its
+// review deadline (RunOptions.ReviewTTL) with no verdict. The server maps it
+// to the rejected run status: an answer nobody looked at is never approved.
+const StopReasonReviewExpired = "review_expired"
+
 // errReviewAbandoned ends a run whose hold stopped without a verdict for a
 // reason other than its context (the steer queue closed).
 var errReviewAbandoned = errors.New("the review hold ended without a verdict")
@@ -57,6 +65,9 @@ const (
 	reviewRejected
 	// reviewAborted: ctx cancelled or the queue closed while held.
 	reviewAborted
+	// reviewExpired: the review deadline passed with no verdict; the run
+	// ends rejected.
+	reviewExpired
 )
 
 // parkForReview holds a run whose model has finished until an operator's
@@ -79,17 +90,31 @@ const (
 // zero time for a hold restored after a restart, whose steer queue is new to
 // this process and so cannot hold a stale verdict — and may already hold a
 // fresh one, sent before the restored hold got here.
-func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, acceptFrom time.Time, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
+//
+// heldSince is when the hold began, which the review deadline runs from
+// (opts.ReviewTTL; none when zero). A deadline that passes while the runtime is
+// paused waits for the pause to lift: a paused runtime does not end runs.
+func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, acceptFrom, heldSince time.Time, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
 	heldAt := acceptFrom
+	var deadline <-chan time.Time
+	expiresAt := ""
+	if opts.ReviewTTL > 0 {
+		due := heldSince.Add(opts.ReviewTTL)
+		expiresAt = due.UTC().Format(time.RFC3339)
+		timer := time.NewTimer(time.Until(due))
+		defer timer.Stop()
+		deadline = timer.C
+	}
 	announce := func() {
 		emit(providers.Event{Type: providers.EventAwaitingReview,
-			AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: sinceTurn, Round: round}})
+			AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: sinceTurn, Round: round, ExpiresAt: expiresAt}})
 	}
 	announce()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
 	pp := newParkPause(opts.PauseGate)
 	defer pp.done()
+	expiredWhilePaused := false
 	for {
 		select {
 		case <-pp.declared():
@@ -97,7 +122,16 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 			continue
 		case <-pp.lifted():
 			pp.onLifted()
+			if expiredWhilePaused {
+				return messages, lastCtxTokens, reviewExpired
+			}
 			continue
+		case <-deadline:
+			if pp.recording() {
+				expiredWhilePaused = true
+				continue
+			}
+			return messages, lastCtxTokens, reviewExpired
 		case m, ok := <-opts.SteerQueue:
 			if !ok {
 				return messages, lastCtxTokens, reviewAborted
