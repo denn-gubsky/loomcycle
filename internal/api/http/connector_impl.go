@@ -85,6 +85,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		// approves the held answer or rejects it.
 		Review:           req.Review != nil && *req.Review,
 		ReviewTTLSeconds: req.ReviewTTLSeconds,
+		Interruption:     req.Interruption, // per-run "may this agent ask a human"
 	}
 }
 
