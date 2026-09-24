@@ -31,7 +31,13 @@ def main():
             d[r["arm"]][r["qid"]] = r
         passes.append(d)
     qids = sorted(json.loads(l)["qid"] for l in open(os.path.join(a.probe, "questions.jsonl")))
-    arms = [x for x in ["plain", "header", "both", "map", "map+hop", "desc", "mapctx", "mapall"] if all(x in p for p in passes)]
+    pref = ["plain", "header", "both", "map", "map+hop", "desc", "mapctx", "mapall",
+            "header+rr", "mapall+rr", "claims", "questions", "units", "units+rr"]
+    present = [x for x in pref if all(x in p for p in passes)]
+    arms = present + sorted(x for x in passes[0] if x not in present and all(x in p for p in passes))
+    incomplete = [x for x in arms if any(len(p[x]) < len(qids) for p in passes)]
+    if incomplete:
+        print("⚠️ incomplete arms (a pass is missing questions):", incomplete)
 
     def per_q(arm):
         return {q: sum(p[arm][q]["f1"] for p in passes) / len(passes) for q in qids}

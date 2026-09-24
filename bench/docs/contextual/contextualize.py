@@ -7,6 +7,9 @@
               it reads one unit and says what is in it, with no document around it to lean on.
   mapcontext  Anthropic's prompt, but with the DOCUMENT MAP (title + every section's
               description, in order) standing in for the whole document. Needs describe first.
+  units       the chunk alone → JSON {"claims": [...], "questions": [...]}: several atomic
+              claims (the real analogue of memory facts: one specific statement each) and the
+              questions the section answers (doc2query). Ollama's JSON mode, so it parses.
 
 One LOCAL model call per chunk, whole document in the prompt, straight to Ollama: nothing
 here can reach a paid provider, which is the point of calling Ollama directly rather than
@@ -56,10 +59,23 @@ def document_map(paper, descriptions):
     return "\n".join(lines)
 
 
-def call(host, model, prompt, num_ctx):
+UNITS = """Paper: {title}
+Section: {path}
+<section>
+{chunk}
+</section>
+From this section write:
+1. "claims": 3 to 6 atomic claims. Each is one self-contained sentence stating ONE specific fact from the section — a method, model, dataset, metric, number or finding — in the paper's own terms, understandable without the section.
+2. "questions": 3 to 6 questions that this section answers, phrased as a reader of the paper would ask them.
+If the section is very short, write fewer. Answer only with JSON: {{"claims": [...], "questions": [...]}}"""
+
+
+def call(host, model, prompt, num_ctx, num_predict=200, json_mode=False):
     body = {"model": model, "stream": False, "think": False,
-            "options": {"num_ctx": num_ctx, "temperature": 0, "num_predict": 200},
+            "options": {"num_ctx": num_ctx, "temperature": 0, "num_predict": num_predict},
             "messages": [{"role": "user", "content": prompt}]}
+    if json_mode:
+        body["format"] = "json"
     r = urllib.request.Request(host + "/api/chat", data=json.dumps(body).encode(),
                                headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(r, timeout=900) as x:
@@ -75,7 +91,8 @@ def main():
     # 16384 fits every prompt on this corpus. One value for every phase, because a change
     # makes Ollama reload the model, and reloads coincided with the CUDA faults.
     ap.add_argument("--num-ctx", type=int, default=16384)
-    ap.add_argument("--mode", choices=["context", "describe", "mapcontext"], default="context")
+    ap.add_argument("--mode", choices=["context", "describe", "mapcontext", "units"], default="context")
+    ap.add_argument("--limit", type=int, default=0, help="stop after N new chunks (smoke tests)")
     a = ap.parse_args()
 
     out = os.path.join(a.probe, "contexts.jsonl" if a.mode == "context" else a.mode + ".jsonl")
@@ -100,6 +117,8 @@ def main():
                     continue
                 if a.mode == "context":
                     prompt = PROMPT.format(doc=p["markdown"], chunk=s["text"])
+                elif a.mode == "units":
+                    prompt = UNITS.format(title=p["title"], path=" > ".join(s["path"]), chunk=s["text"])
                 elif a.mode == "describe":
                     prompt = DESCRIBE.format(title=p["title"], path=" > ".join(s["path"]), chunk=s["text"])
                 else:
@@ -107,7 +126,11 @@ def main():
                 for attempt in range(3):
                     try:
                         t = time.time()
-                        ctx, pin, pout = call(a.host, a.model, prompt, a.num_ctx)
+                        if a.mode == "units":
+                            ctx, pin, pout = call(a.host, a.model, prompt, a.num_ctx, 700, True)
+                            json.loads(ctx)  # JSON mode should guarantee this; a failure retries
+                        else:
+                            ctx, pin, pout = call(a.host, a.model, prompt, a.num_ctx)
                         break
                     except Exception as e:  # a CUDA fault or a dropped socket: retry, then record
                         err = str(e)
@@ -121,6 +144,9 @@ def main():
                                     "seconds": round(time.time() - t, 2)}) + "\n")
                 f.flush()
                 n += 1
+                if a.limit and n - len(done) >= a.limit:
+                    print("limit reached", flush=True)
+                    return
                 if n % 25 == 0:
                     rate = (time.time() - t0) / max(1, n - len(done))
                     print(f"{n}/{total} fails={fails} {rate:.1f}s/chunk eta={(total - n) * rate / 60:.0f}m", flush=True)

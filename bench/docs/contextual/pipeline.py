@@ -14,6 +14,13 @@ A hit is not always what a reader should get, which is what these arms test:
   mapall    mapctx's index plus the map in the root, shown to the reader as in `map`
   both      header + WHOLE-PAPER context in the index, hidden from the reader — the
             Anthropic arm, for comparison with the map-sourced context
+  claims / questions / units
+            mapall plus atomic claims / answerable questions / both as child chunks. A unit
+            hit resolves to its section, shown with the matched unit above it — the memory
+            pattern: find the small unit, mix the source into the reader's context
+  <arm>+rr  that arm's first 20 resolved items, reordered by the local model (one listwise
+            call per question), then the top 5 to the reader. An unparseable ranking keeps
+            the original order and is counted (rr_ok=false)
 
 Sections are deduplicated after resolution, so a description and its own section hitting
 together occupy one slot. The first 5 go to the reader; up to 10 are kept for recall.
@@ -42,6 +49,44 @@ def cos(a, b):
     return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
 
 
+RERANK = """Question about the paper "{title}": {question}
+
+Candidate passages:
+
+{cands}
+
+Rank the passages by how useful they are for answering the question, most useful first. Answer only with a JSON array of passage numbers, e.g. [3, 1, 7], listing at least the 8 most useful."""
+
+
+def rerank(host, model, q, items):
+    """Listwise rerank. Returns (order, ok): indexes into items. A ranking the model gets
+    wrong is repaired, not trusted — unknown or repeated numbers are dropped and anything
+    it left out keeps its original relative order after the ranked ones."""
+    cands = "\n\n".join("[%d] %s%s" % (i + 1, "(document map) " if k == "map" else "", b[:1200])
+                         for i, (k, _, b) in enumerate(items))
+    prompt = RERANK.format(title=q["paper_title"], question=q["question"], cands=cands)
+    out = None
+    for attempt in range(6):  # transport faults (a CUDA 500, a dropped socket) retry; only a
+        try:                  # bad RANKING falls back, so a fault is never counted as one
+            out = answer.ollama(host, model, prompt)
+            break
+        except Exception:
+            time.sleep(30 * (attempt + 1))
+    if out is None:
+        raise RuntimeError("rerank: model unreachable after 6 attempts")
+    try:
+        arr = json.loads(out[out.index("["): out.index("]") + 1])
+        order = []
+        for x in arr:
+            if isinstance(x, int) and 1 <= x <= len(items) and x - 1 not in order:
+                order.append(x - 1)
+        if not order:
+            raise ValueError("empty ranking")
+        return order + [i for i in range(len(items)) if i not in order], True
+    except Exception:
+        return list(range(len(items))), False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--probe", required=True)
@@ -58,9 +103,12 @@ def main():
     # The preceding prompt shares a prefix with the next one, and Ollama's prefix cache makes
     # the result depend on it, so passes that are meant to sample reader noise shuffle it.
     ap.add_argument("--shuffle-seed", type=int, default=0)
+    ap.add_argument("--limit-q", type=int, default=0, help="first N questions only (smoke tests)")
     a = ap.parse_args()
     tok = open(os.path.join(a.probe, "..", ".tok")).read().strip()
     qs = [json.loads(l) for l in open(os.path.join(a.probe, "questions.jsonl"))]
+    if a.limit_q:
+        qs = qs[: a.limit_q]
     if a.shuffle_seed:
         import random
         random.Random(a.shuffle_seed).shuffle(qs)
@@ -70,7 +118,8 @@ def main():
         path = os.path.join(a.probe, name)
         return {json.loads(l)["context"] for l in open(path)} if os.path.exists(path) else set()
     # The context each index prepended, which the reader must not see.
-    hidden = {"mapctx": ctx_set("mapcontext.jsonl"), "mapall": ctx_set("mapcontext.jsonl"),
+    mc = ctx_set("mapcontext.jsonl")
+    hidden = {"mapctx": mc, "mapall": mc, "claims": mc, "questions": mc, "units": mc,
               "both": ctx_set("contexts.jsonl")}
     struct = {}  # (arm, paper_id) -> record
     for r in map(json.loads, open(os.path.join(a.probe, "structure.jsonl"))):
@@ -79,10 +128,11 @@ def main():
     # Root → its sections in document order, with their descriptions: the map's links.
     map_links = {}
     for (arm, pid), r in struct.items():
-        if arm in ("map", "mapall"):
+        if arm in ("map", "mapall") or r.get("map_root"):
             p = papers[pid]
             map_links[r["root"]] = [(r["sections"][" > ".join(s["path"])], desc[(pid, tuple(s["path"]))]) for s in p["sections"]]
     desc_of = {cid: sec for r in struct.values() for cid, sec in r["desc_of"].items()}
+    unit_text = {cid: t for r in struct.values() for cid, t in (r.get("unit_text") or {}).items()}
     link_vecs = {}
 
     out_path = os.path.join(a.probe, a.out)
@@ -93,13 +143,15 @@ def main():
         for arm in a.arms.split(","):
             index = arm.split("+")[0]
             sid = index + "-pool"
-            t0, n = time.time(), 0
+            use_rr = arm.endswith("+rr")
+            depth = 20 if use_rr else 10
+            t0, n, rr_fail = time.time(), 0, 0
             for q in qs:
                 if (arm, q["qid"]) in done:
                     continue
                 text = 'In the paper "%s": %s' % (q["paper_title"], q["question"])
                 res = answer.post(a.base, tok, "/v1/_memory/search",
-                                  {"query": text, "scope": "user", "scope_id": sid, "top_k": 15, "sources": ["documents"]})
+                                  {"query": text, "scope": "user", "scope_id": sid, "top_k": 50, "sources": ["documents"]})
                 visible, seen, qvec = [], set(), None  # visible: (kind, id, text)
                 for e in res.get("entries") or []:
                     cid = e.get("chunk_id")
@@ -139,30 +191,41 @@ def main():
                                     head = head[: -len(c)].rstrip()
                                     break
                             b = (head + sep + rest) if head else rest
-                        visible.append(("desc" if sec != cid else "chunk", sec, b))
-                    if len(visible) >= 10:
+                        kind = "chunk"
+                        if sec != cid:
+                            kind = "unit" if cid in unit_text else "desc"
+                            if cid in unit_text:
+                                b = "Matched: " + unit_text[cid] + "\n\n" + b
+                        visible.append((kind, sec, b))
+                    if len(visible) >= depth:
                         break
+                visible = visible[:depth]
+                rr_ok = None
+                if use_rr and len(visible) > 1:
+                    order, rr_ok = rerank(a.host, a.model, q, visible)
+                    rr_fail += 0 if rr_ok else 1
+                    visible = [visible[i] for i in order]
                 visible = visible[:10]
                 ev = [retrieve.norm(x) for x in q["evidence"]]
                 ev_rank = next((i for i, (_, _, b) in enumerate(visible, 1) if any(x in retrieve.norm(b) for x in ev)), None)
                 excerpts = "\n\n".join("[%d] %s" % (i + 1, b) for i, (_, _, b) in enumerate(visible[: a.k]))
                 pred = None
-                for attempt in range(4):
+                for attempt in range(6):
                     try:
                         pred = answer.ollama(a.host, a.model, answer.PROMPT.format(excerpts=excerpts, question=q["question"]))
                         break
                     except Exception as e:
                         err = str(e) + " " + (e.read()[:300].decode("utf-8", "replace") if hasattr(e, "read") else "")
-                        time.sleep(10 * (attempt + 1))
+                        time.sleep(30 * (attempt + 1))
                 if pred is None:
                     print("FAIL", arm, q["qid"], err[:200], file=sys.stderr, flush=True)
                     continue
                 score = max((answer.f1(pred, g) for g in answer.gold_strings(q)), default=0.0)
                 f.write(json.dumps({"arm": arm, "qid": q["qid"], "pred": pred, "f1": score, "ev_rank": ev_rank,
-                                    "kinds": [k for k, _, _ in visible]}) + "\n")
+                                    "kinds": [k for k, _, _ in visible], "rr_ok": rr_ok}) + "\n")
                 f.flush()
                 n += 1
-            print("done", arm, n, "in %.0fs" % (time.time() - t0), flush=True)
+            print("done", arm, n, "in %.0fs" % (time.time() - t0), ("rerank_unparsed=%d" % rr_fail) if use_rr else "", flush=True)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,12 @@
           (contextualize.py --mode mapcontext), prepended for indexing only.
   mapall  mapctx's chunks AND map's root: the map-based context for retrieval, the map
           itself for the reader.
+  claims / questions / units
+          mapall plus, under each section, one child chunk per atomic claim / per question
+          the section answers / both (contextualize.py --mode units), each with the header so
+          it names its document and a `describes` edge to its section. The memory pattern
+          on documents: search the small units, mix the source section into the reader's
+          context.
 
 Records chunk ids in structure.jsonl so the pipeline can resolve a hit to what the reader
 should see, without re-deriving it from the store.
@@ -78,12 +84,16 @@ def main():
     with open(struct_path, "a") as sf:
         for arm in a.arms.split(","):
             sid = a.scope_prefix + arm + "-pool"
-            if arm in ("mapctx", "mapall"):
+            unit_arms = ("claims", "questions", "units")
+            if arm in ("mapctx", "mapall") + unit_arms:
                 ctx = load(os.path.join(a.probe, "mapcontext.jsonl"))
+            if arm in unit_arms:
+                units = {k: json.loads(v) for k, v in load(os.path.join(a.probe, "units.jsonl")).items()}
+                kinds = {"claims": ("claims",), "questions": ("questions",), "units": ("claims", "questions")}[arm]
             for p in papers:
                 if (arm, p["id"]) in done:
                     continue
-                if arm in ("mapctx", "mapall"):
+                if arm in ("mapctx", "mapall") + unit_arms:
                     md = ingest.arm_markdown("both", p, ctx)  # header + " " + map-based context
                 else:
                     md = ingest.arm_markdown("header", p, {})
@@ -91,7 +101,8 @@ def main():
                 root, ids = section_ids(a.base, tok, sid, doc_id, p)
                 rec = {"arm": arm, "paper_id": p["id"], "document_id": doc_id, "root": root,
                        "sections": {" > ".join(k): v for k, v in ids.items()}, "desc_of": {}}
-                if arm in ("map", "mapall"):
+                if arm in ("map", "mapall") + unit_arms:
+                    rec["map_root"] = True
                     lines = ["Document map of the paper: " + p["title"], ""]
                     for s in p["sections"]:
                         lines.append("- %s: %s" % (" > ".join(s["path"]), desc[(p["id"], tuple(s["path"]))]))
@@ -101,6 +112,24 @@ def main():
                     for s in p["sections"]:
                         call(a.base, tok, sid, {"op": "link_chunks", "scope": "user", "from_id": root,
                                                 "to_id": ids[tuple(s["path"])], "kind": "describes"})
+                if arm in unit_arms:
+                    rec["unit_text"] = {}
+                    for s in p["sections"]:
+                        sec = ids[tuple(s["path"])]
+                        u = units.get((p["id"], tuple(s["path"])), {})
+                        for kind in kinds:
+                            for text in (u.get(kind) or [])[:8]:
+                                if not isinstance(text, str) or not text.strip():
+                                    continue
+                                body = ingest.prefix("header", p, s, "") + " " + text.strip()
+                                c = call(a.base, tok, sid, {"op": "create_chunk", "scope": "user", "document_id": doc_id,
+                                                            "parent_id": sec, "title": kind[:-1].capitalize() + ": " + s["path"][-1],
+                                                            "type": kind[:-1], "body": body})
+                                cid = c.get("id") or c.get("chunk_id")
+                                call(a.base, tok, sid, {"op": "link_chunks", "scope": "user", "from_id": cid,
+                                                        "to_id": sec, "kind": "describes"})
+                                rec["desc_of"][cid] = sec
+                                rec["unit_text"][cid] = text.strip()
                 elif arm == "desc":
                     for s in p["sections"]:
                         sec = ids[tuple(s["path"])]
