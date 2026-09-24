@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1080,6 +1081,31 @@ var _ tools.Tool = (*Context)(nil)
 // HasHelpTopic implements tools.HelpIndex: an exact-name lookup, because the
 // pointer a tool's description carries must resolve exactly as written.
 func (c *Context) HasHelpTopic(name string) bool { return c.Help.Has(name) }
+
+// HelpExample implements tools.HelpIndex: the first call example in topic,
+// compacted to one line. Only examples for the topic's own tool count — an
+// article may show a neighbouring tool's call in passing.
+func (c *Context) HelpExample(topic string) (string, bool) {
+	if !c.Help.Has(topic) {
+		return "", false
+	}
+	t, _ := c.Help.Get(topic)
+	exs, err := t.Examples()
+	if err != nil {
+		return "", false
+	}
+	for _, ex := range exs {
+		if t.Tool != "" && ex.Tool != t.Tool {
+			continue
+		}
+		var buf bytes.Buffer
+		if json.Compact(&buf, ex.Input) != nil {
+			continue
+		}
+		return buf.String(), true
+	}
+	return "", false
+}
 
 // scopeFieldReport is one tools.ScopeField as op=self shows it: the granted
 // values as a list a model can read at a glance, the refused ones with the

@@ -143,3 +143,54 @@ func joinAny(v any) string {
 	}
 	return strings.Join(s, ",")
 }
+
+// Every operation article yields a correct call for its own tool, so every
+// failed call on a documented operation can carry one. Derived from the loaded
+// corpus: a new article without a usable example fails here.
+func TestContextHelpExample_EveryOperationArticleHasOne(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Context{Help: set}
+	n := 0
+	for _, topic := range set.All() {
+		if !topic.IsOpArticle() {
+			continue
+		}
+		n++
+		ex, ok := c.HelpExample(topic.Name)
+		if !ok {
+			t.Errorf("%s: no example for the error to carry", topic.Name)
+			continue
+		}
+		var in struct {
+			Op string `json:"op"`
+		}
+		if err := json.Unmarshal([]byte(ex), &in); err != nil || in.Op != topic.Op {
+			t.Errorf("%s: example %s does not call op %q", topic.Name, ex, topic.Op)
+		}
+		if strings.Contains(ex, "\n") {
+			t.Errorf("%s: example is not compacted to one line", topic.Name)
+		}
+	}
+	if n == 0 {
+		t.Fatal("no operation articles loaded; the check asserts nothing")
+	}
+}
+
+// The crossing: a real failed call through a real dispatcher, with the real
+// Context tool and corpus, carries that operation's example.
+func TestDispatcher_FailedPathCallCarriesTheArticlesExample(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxTool := &Context{Help: set}
+	want, _ := ctxTool.HelpExample("Path/mv")
+	d := tools.NewDispatcher([]tools.Tool{&Path{}, ctxTool})
+	res := d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv","path":"/a"}`))
+	if !res.IsError || !strings.Contains(res.Text, want) || !strings.Contains(res.Text, `"topic":"Path/mv"`) {
+		t.Errorf("failed Path mv result = %q, want the Path/mv example %s", res.Text, want)
+	}
+}

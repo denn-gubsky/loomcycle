@@ -340,7 +340,16 @@ func buildStatefulSystem(base []providers.ContentBlock, toolSpecs []providers.To
 	if len(toolSpecs) > 0 {
 		b.WriteString("\n### Action tools you may name\n")
 		for _, t := range toolSpecs {
-			fmt.Fprintf(&b, "- `%s`: %s\n", t.Name, oneLineDesc(t.Description))
+			// The per-run help instruction is appended to the description, so
+			// the 240-byte cut below always took it off: a stateful run never
+			// learned where a tool's call format was. Shorten the description
+			// alone and keep the instruction whole.
+			desc := strings.TrimSuffix(strings.TrimRight(t.Description, " \n"), t.Help)
+			line := oneLineDesc(desc)
+			if t.Help != "" {
+				line += " " + t.Help
+			}
+			fmt.Fprintf(&b, "- `%s`: %s\n", t.Name, line)
 		}
 	}
 	b.WriteString(statefulReplyShapes(toolSpecs))

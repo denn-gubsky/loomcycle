@@ -55,7 +55,7 @@ func TestRun_ToolDescriptionsCarryHelpPointerAndThisRunsScopes(t *testing.T) {
 	}
 	for _, want := range []string{
 		pathTool.Description(),
-		`call Context with {"op":"help","topic":"Path"}; for one operation: {"op":"help","topic":"Path/resolve"}.`,
+		`Before your first call to Path, read the call format for the operation you need: call Context with {"op":"help","topic":"Path/resolve"}`,
 		`Scopes this run may use: agent, tenant (not user).`,
 		`{"op":"help","topic":"scopes"}`,
 	} {
