@@ -7,7 +7,13 @@ Contextual Retrieval, improves retrieval — and whether an LLM is needed to wri
 **Answer: most of the gain is free.** A deterministic header naming the paper and the
 section path does the "which document" work. The LLM context helps only in finding the
 right section within one document (R@1 +9pp), and it barely names the document at all.
-The best arm is the header plus the context.
+The best retrieval arm is the header plus the context.
+
+**At the answer level the header is the whole gain.** A local reader answering from the top-5
+chunks scores Answer-F1 0.293 → 0.362 with the header (95% CI of the paired difference
++0.006…+0.131). Adding the LLM context on top changes nothing (0.363), and showing that
+context to the reader slightly hurts (0.347, not significant). With the gold evidence the
+same reader scores 0.510, so retrieval still costs about 0.15 F1.
 
 ## Setup
 
@@ -54,6 +60,28 @@ Paired tests against `plain`:
 - paper/hybrid, `context`: R@1 +19/−6 (p=0.015). `header` there is p=0.24 — not significant.
 - `both` vs `header` in the pool is not significant at R@5 or R@10.
 
+## Answering (Answer-F1, pooled store, hybrid top-5)
+
+Reader: ornith-1.5:35b, direct Ollama, temperature 0, told to answer with a short phrase,
+"Yes"/"No", or "Unanswerable". The metric is QASPER's official Answer-F1 (token F1, max over
+annotators). No judge. `oracle` gives the reader the gold evidence instead of retrieved
+chunks. `/hidden-ctx` retrieves with that arm's index but strips the LLM context from what
+the reader sees, which is how Anthropic uses it.
+
+| arm | F1 | Δ vs plain, 95% CI | wins/losses | extractive (86) | abstractive (44) | yes/no (16) |
+|---|---|---|---|---|---|---|
+| oracle | 0.510 | +0.148…+0.289 | +77/−23 | 0.586 | 0.363 | 0.509 |
+| plain | 0.293 | | | 0.336 | 0.219 | 0.265 |
+| **header** | **0.362** | **+0.006…+0.131** | +43/−31 | 0.424 | 0.299 | 0.195 |
+| context | 0.307 | −0.038…+0.064 | +35/−30 | 0.362 | 0.243 | 0.192 |
+| context/hidden-ctx | 0.298 | −0.045…+0.056 | +32/−30 | 0.342 | 0.248 | 0.202 |
+| both | 0.347 | −0.008…+0.115 | +40/−34 | 0.414 | 0.252 | 0.250 |
+| **both/hidden-ctx** | **0.363** | **+0.008…+0.131** | +46/−27 | 0.440 | 0.275 | 0.195 |
+
+Against `header`, `both/hidden-ctx` is +0.001 (CI −0.039…+0.043, +24/−23). Its retrieval
+edge (evidence in the top 5: 0.699 vs 0.671) is too small to move answers at this sample
+size. The yes/no column is 16 questions, which is noise.
+
 ## Why the LLM context did not do the document's job
 
 Only **14 of 647** contexts name the paper's full title; 165 carry most of its words. The
@@ -72,11 +100,15 @@ unprompted, and a header does it for free, every time.
   naming the paper returns the root at rank 1 on every question. The raw ranks
   (`ev_rank`, which `retrieve.py` records alongside) show this: pool/hybrid `plain` R@1 is 0.027. That is a
   real property of the store for an agent, and a candidate fix in its own right.
-- **Retrieval only.** Whether a reader answers better from these chunks (QASPER Answer-F1)
-  is not measured yet.
+- **One reader, one prompt.** A reader that is better at ignoring a context prefix, or one
+  given more than 5 chunks, may weigh the arms differently.
+- **The GPU faulted with ornith alone.** One reader call hit `CUDA error: an illegal memory
+  access` with only ornith and bge-m3 loaded (the same prompt twice, about 1 in 750 calls).
+  It passed on retry. gpt-oss co-residency is not the only trigger.
 
 ## Reproduce
 
 Scripts are in `bench/docs/contextual/`: `prepare.py` → `contextualize.py` → `ingest.py` →
-`retrieve.py` → `analyze.py --rank ev_rank_content`. `contexts.jsonl` here is the generated
+`retrieve.py` → `analyze.py --rank ev_rank_content`, then `answer.py` (plus
+`answer.py --arms both,context --hide-context`) → `analyze_answers.py`. `contexts.jsonl` here is the generated
 context set, so the arms can be rebuilt without re-running the model.
