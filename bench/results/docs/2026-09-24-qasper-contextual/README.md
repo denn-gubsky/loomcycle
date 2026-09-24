@@ -4,16 +4,21 @@ First probe of the document-processing epic. Structural (heading) chunking is ke
 the question is whether prepending a situating context to each chunk, as in Anthropic's
 Contextual Retrieval, improves retrieval — and whether an LLM is needed to write it.
 
-**Result.** The best pipeline is `mapall`, with Answer-F1 0.412 against 0.287 for plain
-chunks and 0.347 for the free header (95% CI of the paired difference against the header
-+0.018…+0.112). It works in two steps:
+**Result.** The best pipeline is `mapall+rr`, with Answer-F1 **0.438**, against 0.287 for
+plain chunks and 0.347 for the free header (95% CI of the paired difference against the
+header +0.035…+0.150). It closes 68% of the gap to the gold-evidence ceiling of 0.510.
+It combines three things:
 
-1. The model writes a short description of each section.
-2. The descriptions are assembled into a document map. The map (a) replaces Anthropic's
-   whole-paper prompt as the source for each chunk's context, and (b) becomes the document
-   root, which the reader sees whenever it is retrieved.
+1. **Descriptions → a document map.** The model writes a short description of each
+   section. The descriptions, assembled into a map, are the source for each chunk's
+   index-only context, and the map is stored as the document root, where the reader sees
+   it when it is retrieved.
+2. **A deterministic header** on every chunk (`Paper: <title>. Section: <path>.`).
+3. **A local listwise rerank** of the top 20: one call per question.
 
-The gold-evidence ceiling is 0.510, so this closes 56% of the gap from plain chunks.
+The rerank is the largest single lever for RETRIEVAL. It lifts `header` from R@1 0.205 to
+0.616 and R@5 from 0.671 to 0.870. The map is worth about as much for ANSWERS as that
+retrieval gain: `mapall` (0.412) roughly equals `header+rr` (0.416).
 
 What each piece does:
 
@@ -25,6 +30,10 @@ What each piece does:
   answers improve, and all of the gain is on the 124 questions where the reader saw it.
 - **Two uses of the descriptions add nothing:** as separate searchable units (`desc`), or
   as links followed to the best-matching sections (`map+hop`).
+- **The memory pattern — atomic claims and answerable questions as searchable units,
+  mixing in the source section — helps retrieval and costs answers.** R@10 rises to
+  0.93–0.95, but the units crowd the map out of the reader's top 5 (124 → 83–85 questions),
+  and F1 falls below `mapall` (0.372–0.380).
 
 ⚠️ The reader is not deterministic from one pass to the next. Answer comparisons use three
 passes averaged per question; see "Reader noise".
@@ -161,6 +170,60 @@ time, because output tokens set the pace and the descriptions are long. The whol
 prompt also grows with the square of document length and stops fitting in context long
 before a map does.
 
+## Round 3: rerank and claim/question units (overnight, three passes)
+
+- **Rerank (`+rr`):** that arm's first 20 resolved items (sections, and the map when hit)
+  go to the local model with the question; it returns a JSON array of passage numbers,
+  most useful first. The first 5 go to the reader. A malformed ranking is repaired
+  (unknown or repeated numbers dropped, omitted passages appended in original order). One
+  of 146 was unparseable in each `mapall+rr` pass and kept the original order.
+- **Units:** `contextualize.py --mode units` asks, per section, for 3–6 atomic claims and
+  3–6 questions the section answers, in Ollama's JSON mode. The model wrote more than
+  asked: a median of 8 claims and 6 questions, at most 8 of each kept. Each unit is a child
+  chunk of its section, with the header and a `describes` edge. `claims` has 5,081 chunks,
+  `questions` 4,587, `units` 8,944, all on the `mapall` base. A unit hit resolves to its
+  section, shown with `Matched: <unit>` above it.
+
+| arm | F1 | pass means | vs `mapall`, 95% CI | vs `header`, 95% CI | R@1 | R@3 | R@5 | R@10 |
+|---|---|---|---|---|---|---|---|---|
+| header | 0.347 | .346/.347/.347 | −0.113…−0.020 | | 0.205 | 0.507 | 0.671 | 0.904 |
+| mapall | 0.412 | .411/.411/.412 | | +0.018…+0.112 | 0.151 | 0.459 | 0.664 | 0.863 |
+| header+rr | 0.416 | .416/.416/.416 | −0.049…+0.054 | +0.010…+0.129 | 0.616 | 0.808 | 0.870 | 0.952 |
+| **mapall+rr** | **0.438** | .438/.438/.438 | −0.017…+0.072 | **+0.035…+0.150** | 0.582 | 0.774 | 0.842 | 0.925 |
+| claims | 0.372 | .380/.355/.380 | −0.089…+0.010 | −0.027…+0.077 | 0.226 | 0.548 | 0.712 | 0.932 |
+| questions | 0.380 | .378/.383/.380 | −0.082…+0.020 | −0.023…+0.091 | 0.288 | 0.541 | 0.726 | 0.945 |
+| units | 0.376 | .384/.360/.384 | −0.082…+0.011 | −0.024…+0.084 | 0.281 | 0.555 | 0.733 | 0.945 |
+| units+rr | 0.400 | .402/.402/.395 | −0.058…+0.033 | −0.003…+0.111 | 0.582 | 0.753 | 0.863 | 0.938 |
+
+**What the reader's top 5 held** (pass a):
+
+| arm | map in top 5 | slots: section / map / unit | evidence in top 5 reached via a unit |
+|---|---|---|---|
+| mapall | 124/146 | 83% / 17% / – | – |
+| mapall+rr | 66/146 | 91% / 9% / – | – |
+| claims | 85/146 | 20% / 12% / 69% | 71 |
+| questions | 84/146 | 17% / 12% / 71% | 84 |
+| units | 83/146 | 11% / 11% / 78% | 91 |
+| units+rr | 54/146 | 9% / 7% / 84% | 110 |
+
+Readings:
+
+- **The units do what memory facts do for retrieval.** Questions, the doc2query form, give
+  the best R@10 of any arm (0.945), and evidence reaches the reader through a unit on 84–110
+  questions.
+- **They cost answers**, and two things plausibly carry that cost. They push the map out of
+  the top 5, and the map was measured to help the reader. And the reader sees an extra
+  `Matched:` line on most excerpts. This probe does not separate the two.
+- **The rerank keeps its gain on every base,** and `mapall+rr` still answers best although
+  the rerank moves the map out of the top 5 on about half the questions (124 → 66).
+- `mapall+rr` against `mapall` is +0.026, and the CI includes zero. The rerank's retrieval
+  gain is large, but on top of the map its answer gain is not yet resolved at this sample
+  size.
+
+Cost of the rerank: one call per question with the 20 candidates, each truncated to 1,200
+characters (about 6K prompt tokens), about 4 s each locally. It is a query-time cost, unlike
+everything else here, which is paid once at import.
+
 ## Reader noise
 
 With retrieval held fixed, two `header` passes back-to-back on an idle GPU are identical
@@ -205,5 +268,8 @@ Scripts are in `bench/docs/contextual/`: `prepare.py` → `contextualize.py` →
 `answer.py --arms both,context --hide-context`) → `analyze_answers.py`. Second round:
 `contextualize.py --mode describe`, then `--mode mapcontext` → `build_arms.py` →
 `pipeline.py` (three passes: `--out answers3{a,c,d}.jsonl`, `--shuffle-seed` 0/11/23) →
-`analyze_passes.py`. `describe.jsonl` and `mapcontext.jsonl` are the generated texts. `contexts.jsonl` here is the generated
+`analyze_passes.py`. `describe.jsonl` and `mapcontext.jsonl` are the generated texts.
+Round 3: `contextualize.py --mode units` → `build_arms.py --arms claims,questions,units` →
+`pipeline.py` with the `+rr` arms, same three passes. `units.jsonl` is the generated units.
+The run had no loomcycle agent runs and no token_usage rows since it started: zero cloud calls. `contexts.jsonl` here is the generated
 context set, so the arms can be rebuilt without re-running the model.
