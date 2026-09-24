@@ -60,7 +60,8 @@ func EndsRejected(stopReason string) bool {
 
 // AnswerText collects a run's answer from its streamed events. A run held for
 // review and sent back answers again; the revision replaces the answer it
-// revises, so only the text streamed since the last hold is the answer.
+// revises, so only the text streamed since the last hold is the answer. An
+// answer an agent_stop hook blocked is replaced the same way.
 type AnswerText struct {
 	b    strings.Builder
 	held bool
@@ -71,6 +72,10 @@ func (a *AnswerText) Observe(ev providers.Event) {
 	switch ev.Type {
 	case providers.EventAwaitingReview:
 		a.held = true
+	case providers.EventHookDecision:
+		if d := ev.HookDecision; d != nil && d.Phase == "agent_stop" && d.Decision == "block" {
+			a.held = true
+		}
 	case providers.EventText:
 		if a.held {
 			a.b.Reset()

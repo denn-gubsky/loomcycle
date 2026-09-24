@@ -613,3 +613,39 @@ func TestRun_Review_VerdictWhilePausedWinsOverAnExpiryInThePause(t *testing.T) {
 		t.Errorf("stop reason = %q, want the approval to stand", res.StopReason)
 	}
 }
+
+// A blocked answer is replaced by its retry, as a reviewed one is by its
+// revision: only the answer that stands is the answer.
+func TestAnswerText_ABlockedAnswerIsReplacedByItsRetry(t *testing.T) {
+	var a AnswerText
+	for _, ev := range []providers.Event{
+		{Type: providers.EventText, Text: "draft"},
+		{Type: providers.EventHookDecision, HookDecision: &providers.HookDecisionInfo{Phase: "agent_stop", Decision: "block", Reason: "cite"}},
+		{Type: providers.EventText, Text: "cited draft"},
+	} {
+		a.Observe(ev)
+	}
+	if a.String() != "cited draft" {
+		t.Errorf("answer = %q", a.String())
+	}
+}
+
+// An operator turn that arrives on an interactive run's last allowed
+// iteration is never answered; the run reports the cap, not an end_turn on
+// the previous answer.
+func TestRun_AnOperatorTurnWithNoIterationLeftReportsTheCap(t *testing.T) {
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		o.Review = false
+		o.Interactive = true
+		o.MaxIterations = 1
+	})
+	r.waitFor(t, providers.EventAwaitingInput)
+	r.q <- steer.Message{Text: "and one more thing", EnqueuedAt: time.Now()}
+	o := r.finish(t)
+	if o.res.StopReason != "max_iterations" {
+		t.Fatalf("stop = %q, err = %v", o.res.StopReason, o.err)
+	}
+	if r.prov.calls() != 1 {
+		t.Errorf("model calls = %d", r.prov.calls())
+	}
+}

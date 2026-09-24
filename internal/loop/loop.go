@@ -3362,6 +3362,14 @@ outerLoop:
 	// tools ran on this final iteration. Surface that distinctly to the
 	// caller — they can decide whether to bump MaxIterations and retry, or
 	// surface a different error to the user.
+	// The same exhaustion after a turn the model never answered: an operator
+	// turn, a review's feedback or a hook's block appended on the last
+	// iteration, then `continue` found no iteration left. The stop reason is
+	// still the previous answer's end_turn, which would record the run as
+	// finished on an answer that was sent back, with the turn unanswered.
+	if stopReason == "end_turn" && len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+		stopReason = "max_iterations"
+	}
 	if stopReason == "tool_use" {
 		stopReason = "max_iterations"
 		// An unbounded-iterations provider (code-js) is exempt from the
