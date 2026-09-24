@@ -116,6 +116,11 @@ type SpawnResult struct {
 	Status string
 }
 
+// MemberRejected is the SpawnResult.Status of a member a reviewer turned down.
+// It is the run's own status value (store.RunRejected) — teamrun does not
+// import the store — and a test in the server pins the two equal.
+const MemberRejected = "rejected"
+
 type reviewArmingKey struct{}
 
 // WithReviewArming attaches a member's review arming to ctx for the SpawnFunc:
@@ -135,6 +140,23 @@ func WithReviewArming(ctx context.Context, armed func(context.Context) bool) con
 func ReviewArming(ctx context.Context) func(context.Context) bool {
 	armed, _ := ctx.Value(reviewArmingKey{}).(func(context.Context) bool)
 	return armed
+}
+
+type reviewTTLKey struct{}
+
+// WithReviewTTL attaches the walk's review deadline for its members: a hold
+// nobody rules on within it ends the member rejected.
+func WithReviewTTL(ctx context.Context, ttl time.Duration) context.Context {
+	if ttl <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, reviewTTLKey{}, ttl)
+}
+
+// ReviewTTL returns the member's review deadline, or 0 for none.
+func ReviewTTL(ctx context.Context) time.Duration {
+	ttl, _ := ctx.Value(reviewTTLKey{}).(time.Duration)
+	return ttl
 }
 
 // maxParallelConcurrency bounds how many of a parallel state's agents run at
@@ -214,6 +236,12 @@ type agentRunner struct {
 	// byte-identical paths to one from before this existed.
 	breakAt BreakpointSource
 	onBreak BreakpointFunc
+	// reviewAt answers whether a starter's members are held for review — the
+	// same live armed set the debugger reads, at its review phase. Separate from
+	// breakAt because review needs no human-ask machinery: the verdict comes
+	// through the member run's own review verb, not a walk pause.
+	reviewAt  BreakpointSource
+	reviewTTL time.Duration
 }
 
 // RunnerOption configures the production runner. Options rather than more
@@ -258,6 +286,19 @@ func WithBreakpoints(src BreakpointSource, f BreakpointFunc) RunnerOption {
 		}
 		r.breakAt = src
 		r.onBreak = f
+	}
+}
+
+// WithMemberReview makes the walk hold a starter's member runs for review when
+// the state is armed at the review phase in src — read live, so arming mid-wave
+// holds the members that have not finished yet. ttl, when positive, ends a hold
+// nobody rules on as rejected.
+func WithMemberReview(src BreakpointSource, ttl time.Duration) RunnerOption {
+	return func(r *agentRunner) {
+		if src == nil {
+			return
+		}
+		r.reviewAt, r.reviewTTL = src, ttl
 	}
 }
 
@@ -672,6 +713,11 @@ type agentResult struct {
 	Ok     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Status is set only for a member a reviewer REJECTED ("rejected"): not ok,
+	// but not a failure either — the run did its work and a person turned the
+	// answer down. Absent otherwise, so an envelope nobody reviewed is
+	// byte-identical to before review existed.
+	Status string `json:"status,omitempty"`
 }
 
 // resultsEnvelope serializes results as {"results":[…]} — the input a

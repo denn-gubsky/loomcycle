@@ -6374,6 +6374,7 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	if armed := teamrun.ReviewArming(ctx); armed != nil {
 		prep.Opts.ReviewNow = armed
 	}
+	prep.Opts.ReviewTTL = teamrun.ReviewTTL(ctx)
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 	s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
 	out := teamrun.SpawnResult{RunID: prep.RunID, Status: string(terminalStatusOf(prep.SteerCtx, res, runErr))}
