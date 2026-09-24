@@ -110,8 +110,8 @@ func TestDispatcher_PostLIFORewrite(t *testing.T) {
 		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
 		ToolResult{Text: "orig"},
 	)
-	if got.Text != "A(B(orig))" {
-		t.Errorf("Post chain output = %q, want %q (LIFO: B inner, A outer)", got.Text, "A(B(orig))")
+	if got.Result.Text != "A(B(orig))" {
+		t.Errorf("Post chain output = %q, want %q (LIFO: B inner, A outer)", got.Result.Text, "A(B(orig))")
 	}
 	// Confirm B saw the original, A saw B's rewrite.
 	if !strings.Contains(hookB.bodies[0], `"text":"orig"`) {
