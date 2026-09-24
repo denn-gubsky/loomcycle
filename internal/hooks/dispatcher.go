@@ -30,6 +30,10 @@ type Dispatcher struct {
 	// case a code hook (e.g. one reloaded from the database) is unavailable and
 	// its fail mode decides.
 	code CodeRunner
+	// tenantCode lets a tenant's code hook run (LOOMCYCLE_CODE_HOOKS_TENANTS).
+	// Registration refuses one without it; this also stops one persisted
+	// earlier, or registered before the operator turned the flag off.
+	tenantCode bool
 
 	hostWidenPermitted atomic.Int64
 	hostWidenDenied    atomic.Int64
@@ -74,6 +78,10 @@ func NewDispatcherWithPrivateHosts(reg RegistryInterface, httpClient *http.Clien
 // SetCodeRunner installs the runner for code-js hook bodies. Call it during
 // boot wiring, before the server serves requests.
 func (d *Dispatcher) SetCodeRunner(r CodeRunner) { d.code = r }
+
+// AllowTenantCodeHooks lets a tenant's code hook run, not only an
+// operator-global one. Same boot-wiring rule as SetCodeRunner.
+func (d *Dispatcher) AllowTenantCodeHooks(allow bool) { d.tenantCode = allow }
 
 // Identity carries the loop-side fields the dispatcher needs to
 // stamp onto the webhook payload. Filled by the loop from
@@ -401,6 +409,10 @@ func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 // errCodeHooksDisabled is a code hook met with no runner installed.
 var errCodeHooksDisabled = errors.New("code hooks are not enabled on this server")
 
+// errTenantCodeHooksDisabled is a tenant's code hook on a server that allows
+// only operator-global ones.
+var errTenantCodeHooksDisabled = errors.New("code hooks registered by a tenant are not enabled on this server")
+
 // invokeCode runs a code body and translates its decision into the response
 // shape the chain applies. The runner applies the hook's timeout to each run of
 // the JavaScript itself, so no deadline is put on ctx here: that would count a
@@ -408,6 +420,9 @@ var errCodeHooksDisabled = errors.New("code hooks are not enabled on this server
 func (d *Dispatcher) invokeCode(ctx context.Context, h *Hook, body, out any) error {
 	if d.code == nil {
 		return errCodeHooksDisabled
+	}
+	if h.Tenant != "" && !d.tenantCode {
+		return errTenantCodeHooksDisabled
 	}
 	dec, err := d.code.Run(ctx, h, eventFor(h.Phase), body)
 	if err != nil {

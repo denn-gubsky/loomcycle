@@ -176,7 +176,11 @@ what it reports on has already happened.
 Instead of `callback_url`, a registration may carry `code`: JavaScript that
 loomcycle runs in-process, with no network round-trip and no tokens. The
 operator enables it with `LOOMCYCLE_CODE_HOOKS_ENABLED=1`; otherwise a code
-registration is refused. Set exactly one of `callback_url` and `code`.
+registration is refused. A tenant operator's code hook (one registered by a
+non-admin tenant token) needs a second opt-in, `LOOMCYCLE_CODE_HOOKS_TENANTS=1`,
+because the sandbox bounds a body's time, not its memory, and every tenant shares the
+server; without it a tenant registers a `callback_url` hook instead. Set exactly
+one of `callback_url` and `code`.
 
 ```js
 function hook(ev) {
