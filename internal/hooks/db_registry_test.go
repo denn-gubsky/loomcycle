@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -65,14 +66,21 @@ func (s *stubHookStore) GetHookByID(_ context.Context, id string) (store.HookRow
 type stubBackplane struct {
 	publishCount atomic.Int32
 	feedCh       chan coord.Event
+	mu           sync.Mutex
+	published    []hookBackplaneEvent
 }
 
 func newStubBackplane() *stubBackplane {
 	return &stubBackplane{feedCh: make(chan coord.Event, 16)}
 }
 
-func (s *stubBackplane) Publish(_ context.Context, _ string, _ []byte) error {
+func (s *stubBackplane) Publish(_ context.Context, _ string, payload []byte) error {
 	s.publishCount.Add(1)
+	var ev hookBackplaneEvent
+	_ = json.Unmarshal(payload, &ev)
+	s.mu.Lock()
+	s.published = append(s.published, ev)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -287,5 +295,51 @@ func TestDBBackedRegistry_ACodeHookSurvivesAReload(t *testing.T) {
 	got := second.List()
 	if len(got) != 1 || got[0].Code != body || got[0].CallbackURL != "" || got[0].Timeout != 50*time.Millisecond {
 		t.Fatalf("reloaded = %+v", got)
+	}
+}
+
+// A re-registration replaces the hook's row, not just the cached hook, so the
+// table holds one row per (tenant, owner, name) and deleting the hook deletes
+// it for good. It used to insert a second row and leave the first: after the
+// delete, the next boot's LoadFromDB resurrected the old hook.
+func TestDBBackedRegistry_ReRegisterThenDeleteLeavesNoRowToResurrect(t *testing.T) {
+	hs := newStubHookStore()
+	bp := newStubBackplane()
+	r, err := NewDBBackedRegistry(NewRegistry(), hs, bp, "rep-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID, err := r.Register(sampleHook())
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := sampleHook()
+	again.CallbackURL = "https://example.com/v2"
+	newID, err := r.Register(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hs.rows[oldID]; ok || len(hs.rows) != 1 {
+		t.Errorf("rows after the re-registration = %v, want only the new hook's", hs.rows)
+	}
+	bp.mu.Lock()
+	last := bp.published[len(bp.published)-1]
+	bp.mu.Unlock()
+	if last != (hookBackplaneEvent{Op: "deleted", HookID: oldID}) {
+		t.Errorf("last backplane event = %+v, want the replaced hook's deletion", last)
+	}
+
+	if err := r.Delete(newID); err != nil {
+		t.Fatal(err)
+	}
+	rebooted, err := NewDBBackedRegistry(NewRegistry(), hs, nil, "rep-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rebooted.LoadFromDB(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := rebooted.List(); len(got) != 0 {
+		t.Errorf("after a reboot the deleted hook came back: %+v", got[0])
 	}
 }
