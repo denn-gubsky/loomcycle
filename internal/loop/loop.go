@@ -3492,6 +3492,12 @@ func dispatchOneTool(
 		r = executeTool(execCtx, dispatcher, running)
 	}
 
+	// Post hooks judge the result against the input the tool ran with: a pre
+	// hook's rewrite, not the model's original. (A denied call ran nothing;
+	// its post hooks see what the model asked for.)
+	if pre.Deny == nil && pre.Input != nil {
+		hookTC.Input = pre.Input
+	}
 	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError, Error: hookToolError(r.Error)})
 	EmitHookDecisions(emit, tu, post.Decisions)
 	// The hook wire carries only text and is_error, so a Post chain can
