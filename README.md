@@ -182,7 +182,19 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.92.0) made the Run the unit a caller reads and steers:
+The most recent line (v1.93.0) carried on making the Run the unit a caller
+configures: a run can answer to a JSON schema (`output_format`, parsed into
+`result.structured`), be saved as a draft and started later (`"start": false`,
+then `POST /v1/runs/{run_id}/start`, with a Web UI "Save as draft"), keep its
+spec readable after it ends, and be held for an operator's approve / reject
+before it counts (`review: true`), a hold that survives a pause or restart and
+expires as rejected. Every tool now names the `Context` call that returns its
+help article, and the scopes the run may use. The per-operation articles
+behind that, written from the code, corrected a dozen tool descriptions and
+found four bugs, among them a refused Memory write that was stored anyway and
+an Agent schema that Claude and Gemini saw as spawn-only.
+
+Before it, v1.92.0 made the Run the unit a caller reads and steers:
 a run keeps its final answer and the exact prompt its first model call was sent
 (`GET /v1/runs/{run_id}/prompt`), and an agent or a single run can say which
 tool the model must call and for how long (`tool_choice` with `until`). It also

@@ -8,6 +8,119 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.93.0
+
+*A run can answer to a schema, wait as a draft until someone starts it, and be held for an operator's verdict before it counts; every tool now says where its manual is, and the manual is written from the code.*
+
+Nineteen PRs. Six continue RFC DI (the Run as the unit a caller configures and reads), five build RFC DJ (operator review of a finished run), two are RFC DL (tool help), and four are fixes the help articles turned up when they were written against the code instead of the descriptions.
+
+### Structured answers: `output_format` per agent and per run (#1347, RFC DI-P2b)
+
+Assistant prefill was the old way to make a model answer in a given shape, and current Claude models refuse it. A JSON schema the provider enforces replaces it.
+
+```
+"output_format": {"type": "json_schema", "name": "city", "schema": {"type": "object", ...}}
+```
+
+- **Where it is set:** agent yaml, the AgentDef overlay (with a def-fields editor entry), and per run on `POST /v1/runs`, continuation, gRPC (`RunRequest.output_format = 34`, `ContinueRequest.output_format = 31`, schema as JSON bytes), MCP `spawn_run(s)`, TS `outputFormat` and Python `output_format`. A per-run value **replaces** the agent's whole, as `tool_choice` does. `type` may be omitted; it means `json_schema`. The schema's root must be an object.
+- **The answer is parsed** into `result.structured`, beside `final_text` (a surrounding ```json fence is tolerated). An answer that is not a JSON object leaves it unset and says so. TS `RunResult.structured`.
+- **Each driver maps it to its own field:** Anthropic `output_config.format`; OpenAI `response_format.json_schema` (strict only when every object is closed and every property required); Gemini `responseJsonSchema`; vLLM, llama.cpp and `ollama-local` a grammar, on a tool-free request only. DeepSeek and hosted Ollama cannot enforce it, nor can the model families that predate structured outputs. A target that cannot enforce it gets one `capability_inert` report, not a field it drops.
+- **The schema also goes in the system prompt** wherever the provider does not show it to the model itself. Found live: `ornith-1.5:35b` behind Ollama's grammar returned a well-formed object full of wrong values, because a grammar guarantees the shape and never shows the model what the fields mean. Only Anthropic, OpenAI and Gemini are treated as native.
+- It is sent on every model call, since the model cannot know which turn is its last. It is persisted in the run's config, so resume and retune keep it. A stateful run reports that it ignores it; its product is Σ.
+
+### A run's spec stays readable after it ends (#1348, RFC DI-P2c)
+
+`GET /v1/runs/{id}/config` found the run through the steer registry, so a run's configuration could be read only while it ran, and only on the replica that owned it.
+
+- The single-run reads now carry the persisted record as **`spec`**, beside `result` and under the same tenant gate: HTTP `GET /v1/agents/{id}`, MCP `get_run`, gRPC `GetAgent` (`bytes spec = 15`), TS `Agent.spec` (`RunSpec`), Python `get_agent`. Listings leave it out.
+- It is absent for a run that overrode nothing. It holds no secrets; per-run credentials are never persisted. `/config` stays the in-flight retune view.
+
+### Configured runs: create a run now, start it later (#1349, #1350, #1351, #1352, RFC DI-P3)
+
+A caller could prepare a run only by starting it. A **configured run** is a draft: validated exactly as a run would be (identity made authoritative, agent resolved, overrides checked), then stored. It holds no slot, no budget and runs nothing until it is started.
+
+- **HTTP (#1350):** `POST /v1/runs` with `"start": false` creates one; `PATCH /v1/runs/{run_id}` replaces fields (`null` removes one); `POST /v1/runs/{run_id}/start` starts it and streams SSE like `POST /v1/runs`; `DELETE /v1/runs/{run_id}` discards it and its session. All `runs:create`. `GET /v1/agents/{id}` shows the draft; the run's status is `configured`.
+- **gRPC and MCP (#1351):** `CreateConfiguredRun` / `UpdateConfiguredRun` / `StartConfiguredRun` (streams) / `DeleteConfiguredRun` RPCs, and one MCP tool, `configured_run` (`op=create|update|start|delete`; `start` blocks like `spawn_run`). The rules live in one connector core that every transport calls, so HTTP, gRPC and MCP cannot drift. TS `createConfiguredRun` / `updateConfiguredRun` / `startConfiguredRun` / `deleteConfiguredRun`; the Python client has the same four.
+- **Identity is the draft's, fixed at create.** A start does not re-derive tenant or user from whoever starts it, so an admin starting a tenant's draft does not make it the admin's run. Confinement bits captured at create are OR-ed with the starter's, so a start never loosens them. Secrets are never stored: `user_bearer` / `user_credentials` with `start:false` are a 400 and are given to `/start` instead.
+- **Starting goes through `RunOnce`**, the path gRPC, MCP, the scheduler and webhooks already share. One guarded store transition moves the row `configured → running`: of two concurrent starts exactly one wins (the other gets 409), and an admission refusal (429 / 503) leaves the draft as it was.
+- **Bounds:** a per-(tenant, user) cap, `LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER` (default 100, then 429 `configured_run_cap`); a caller-chosen `agent_id` reserved at create; an expiry sweep, `LOOMCYCLE_CONFIGURED_RUN_TTL_MS` (default 24h, 0 = off). A session holding a draft is left out of `ListSessions` until the draft starts.
+- **Web UI (#1352):** "Save as draft" beside "Run agent", built by the same request builder, so a draft carries exactly what the run would. The runs list has a `configured` filter. A draft's detail pane lets you edit the prompt, then Start or Discard; Start is disabled while an edit is unsaved. Only a plain-text prompt is editable, because a richer draft would be flattened.
+- **Migration 0080** adds `runs.draft`: the raw request that will start the run, minus secrets (the merge against the definition happens at start).
+- **Known gap, by decision:** a started draft does not get `POST /v1/runs`'s detached interactive goroutine or per-turn cancel until the start paths are unified.
+
+### Review: hold a finished run for an operator's verdict (#1354, #1356, #1357, #1359, RFC DJ-P2)
+
+An agent's finished answer counted the moment the model stopped. A run started with **`review: true`** is held instead: it emits `awaiting_review` and waits for an operator.
+
+```
+approve              the run completes on the held answer
+reject + feedback    the feedback is its next user turn; it revises and is held again
+reject               the run ends with the new terminal status "rejected"
+```
+
+- **HTTP and TS (#1354):** `POST /v1/runs/{run_id}/review` (`runs:create`, like steering; 409 `not_held` for a live run that is not held); TS `reviewRun()`. `review` is also a retune override, and disarming a held run releases it as approved. `GET /v1/agents` reports `awaited_state: "review"` while held. A held run started through `POST /v1/runs` detaches like an interactive one, so a slow reviewer does not cancel it by outlasting the client's connection.
+- **The verdict is never a tool,** so an agent cannot approve its own answer. It gates on the tenant-scoped store and the session owner rather than on the local steer registry, so a verdict sent to another replica still reaches the run.
+- **gRPC, MCP and Python (#1356):** a `ReviewRun` RPC; `review` on `RunRequest` / `ContinueRequest` and as an optional override on `RunInputRequest` / `RetuneRunRequest` (optional, so `false`, which releases a held run, differs from unset). An MCP `review_run` tool (tenant-confinable) plus `review` on `spawn_run` / `spawn_runs` / `retune_run`. Python `review_run()`, the `review` option, and an `AwaitingReview` payload on `AgentEvent`, which had been dropping it.
+- **A held run survives a pause and a restart (#1357).** A run blocked waiting on a person never reached the loop's pause gate, so a pause timed out on it and a snapshot or restart could not bring it back. Every park (review hold or interactive wait) now takes part in a pause: it records itself paused without leaving its wait. Resume restores a held run into the hold at the round it was in, before any model call. Previously it was refused as idle and marked failed, which lost the answer under review. A parked interactive chat is restored the same way.
+- **An unreviewed hold expires as rejected (#1359).** `review_ttl_seconds` ends a hold with no verdict as `rejected`, stop reason `review_expired`: an answer nobody looked at is never approved. Each hold gets the full window. The deadline is kept in the run's config, so a hold restored after a restart expires when it would have, and a deadline that passes during a pause waits for the pause to lift. `awaiting_review` carries `expires_at`. It is set at start only, on HTTP, continuations, drafts, MCP, TS, gRPC (`RunRequest` 36, `ContinueRequest` 33, `AwaitingReview.expires_at` 3) and Python.
+- A stateful run reports that review does not apply to it. The Web UI names the `rejected` status in the runs filter and status pill.
+
+### Team members are reachable, reviewable and report their status (#1364, RFC DJ-P1)
+
+This is the plumbing a team walk needs before review can apply to its members.
+
+- `SpawnResult.Status` carries a member's terminal status (`completed`, `failed`, `cancelled`, `rejected`). A rejected member did its work and returns no error, so the error alone could not tell it from a success. The status comes from the same rule `finishRun` writes the row with, and a test pins that the two agree.
+- Team members get a steer queue, as resident children do, so an operator can steer one and a verdict can reach one held for review. An ordinary Agent-tool sub-agent still has none, because its parent drives it.
+- A walk can attach a live review arming to each member's spawn. Nothing sets it yet; DJ-P3 will.
+
+### Tool help: an article per tool and per operation, and a pointer to it (#1355, #1358, RFC DL)
+
+Help was organised by feature, so most tools had no topic under their own name, and no topic showed a call. A model that misused a tool had its manual one call away and no way to know the call.
+
+- **Tool and operation articles (#1355):** `tools/<Tool>.md` indexes a tool's operations and `tools/<Tool>/<op>.md` documents one, with call examples. Articles resolve under the spellings a model uses (`Path/ls`, `Path.ls`, `"Path ls"`). A lint holds the corpus to its rules, and every call example is validated against the tool's live input schema. Operators can add articles under `LOOMCYCLE_HELP_ROOT/tools`, including for an MCP tool, named `mcp__<server>__<tool>`.
+- **A pointer in every tool description (#1355):** each run's tool array now carries, for a tool with an article, the exact `Context` call that returns it, and for every scoped tool, the scope values **this run** may use ("Scopes this run may use: agent, tenant (not user)"). The grants come from each tool's own scope check, so the report is the enforcement. It is rendered once per run, so the tool array stays byte-identical across a run's calls.
+- **`Context op=self` returns a `scopes` block**; `op=permissions` gains the `sql_scopes` and `history_scope` it left out. `op=help` returns a tool article with its `operations`, and an unknown operation lists the ones that exist.
+- **The scopes primer is rewritten (#1355).** It taught `agent | user | global` across Memory, Channel and Evaluation; Memory has no `global`, takes `tenant`, and Document, Path and History have their own values and defaults. The new primer has one table of every scoped tool with its values, default and grant.
+- **159 per-operation articles (#1358)** for Memory (25), Document (47), History (11), Channel (8), Context (14), Skill (2), plus Recall and Agent. Each covers the arguments with defaults, the real result keys, the errors a model meets and what to do about each, and one to three examples.
+- **A failed call points at its help (#1358).** A failed call on a documented tool now ends with the help call for the operation it tried (`How to call it: call Context with {"op":"help","topic":"Path/mv"}`). Successes, undocumented tools and failures marked retryable are left alone. `Context op=doc` now returns the tool's article too.
+- **Memory's input schema lists `path`** (#1358). `set` and `get` accepted it, but a model could learn that only from somewhere else.
+- **Descriptions corrected (#1355, #1358).** Writing the articles from the code turned up descriptions that taught behaviour the tools lack, on every request:
+  - Document declared `limit` twice, and the duplicate key lost `graph_recall`'s description. Its scope list and Memory's omitted `tenant`, and "transactions are refused" read as if `sql_begin` did not exist.
+  - History: an omitted scope means `self` while the default grant is `user`, so the most natural call was refused; the description now says to pass `scope`. It no longer claims content search is unavailable (`match=content` is), and the status filter lists `rejected`. The MCP `history` tool listed 7 of its 11 ops.
+  - Recall said results come newest-first; they are ranked by score.
+  - Channel promised at-least-once delivery, but `subscribe` commits past what it returns. Its hint named a nonexistent `scope` argument, and it misstated `peek`'s default start.
+  - Context's op list left out `compact` and `state`, and called itself side-effect-free, which `compact` is not. Path's hint said `mkdir` is a no-op; it creates an empty directory.
+- The `document` and `history` feature topics move into the Document and History tool articles. `topic=Skill` now reaches the Skill tool article, not the `skills` topic.
+
+### Fixes
+
+The first four were found by writing the help articles against the code.
+
+- **A refused Memory write was stored anyway (#1361).** `merge`, `append_dedupe` and `bounded_list` checked the core block's `limit_bytes` and the scope quota after the atomic update had committed, so an over-cap write was reported as refused and kept. The caps now run inside the reducer, on the value about to be committed, so a refusal rolls it back. Each refusal names its own op (they all said `Memory.set:`).
+- **Claude and Gemini saw Agent as spawn-only, with every field required (#1362).** Agent's schema was a top-level `oneOf`. Both drivers flatten a combinator by keeping the first branch's `op` enum and the union of every `required` list, so the model got `op: ["spawn"]`, `required: [name, prompt, op, spawns, child_run_id]`. The schema is now one flat object listing all seven ops, with nothing required at the top level (each op already checks its own). A guard forbids a top-level combinator in any builtin schema.
+- **A chunk with no parent went beside the document, not in it (#1363).** `create_chunk` without `parent_id`, and `move_chunk` with an empty `new_parent_id`, left the chunk parentless, and `export_md` rendered it as a second top-level heading. An omitted parent now means the document's root, and a mistyped `document_id` is refused ("document … not found in this scope") instead of creating a chunk no document shows. Existing parentless chunks are left as they are.
+- **Whole-document ops accept `document_id` (#1360).** `get_document`, `delete_document`, `set_remote`, `sync` and `diff_remote` took only `id` or `path`, so the call a model makes right after `create_document` failed. When `id` and `document_id` are both given and differ, the call is refused rather than acting on one of two documents.
+- **A compaction pushed to a run on another replica arrived as an operator turn (#1354).** The cross-replica steer payload carried only text, so the summary was appended as a user message and the history it replaced stayed. It now carries the control's kind.
+- **A held run whose caller disconnected was recorded completed (#1354),** on an answer nobody approved, on the paths that do not detach (MCP, gRPC, a draft's start). It is now recorded cancelled.
+- **The composed prompt leaked onto re-attach streams (#1354).** `prompt_snapshot` (v1.92.0) is store-only, but the re-attach tail did not skip it, so a re-attach, and a detached run's own stream, sent it as an SSE frame.
+- **The override parity guard checked nothing for two fields (#1356).** Its TS lookup returned `""` for `interactive` and `interruption`, which matched any optional field. An unmapped name is now an error.
+
+### Also
+
+- **Every `chat/*` agent holds History (#1365).** `chat/medium`, `chat/local` and `chat/local-small` can list, search, read and resume the user's past chats. Before this, the only answer to "what did we decide last week?" was whatever consolidation had distilled into Memory. No `history_scope` is set, so the grant is the default: the caller's own chats, nothing wider.
+- **bench (#1353):** a LoCoMo rating under the rovemark protocol on a fully local pipeline (everything but the judge on `ornith-1.5:35b`): binary-J **0.706** (95% CI 0.683–0.730) over 1,535 questions. It is not comparable to rovemark's gpt-4o-mini numbers. On the way it found that the earlier "local" runs' extractor had silently fallen through the tier cascade to paid cloud `deepseek-v4-pro`.
+
+### Upgrade notes
+
+- **Migration 0080** adds `runs.draft`. It runs at startup, like every migration.
+- **New run statuses:** `configured` (a draft) and `rejected` (a reviewer's reject, or an expired hold). A client that switches on run status should know both.
+- **New env knobs:** `LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER` (default 100) and `LOOMCYCLE_CONFIGURED_RUN_TTL_MS` (default 24h; 0 turns the sweep off).
+- **Document `create_chunk` / `move_chunk` with no parent** now put the chunk under the document's root. A caller that relied on the old parentless placement will see the chunk move into the document.
+- **The Agent tool's schema is flat.** A Claude or Gemini agent now sees all seven operations, where it saw only `spawn` before.
+- **Help topics moved:** the `document` and `history` topics are now the Document and History tool articles, and the `skill` alias is gone (use `Skill` for the tool, `skills` for the background).
+- **The MCP catalogue grows to 55** (`configured_run`, `review_run`).
+- **The adapters are bumped to 1.93.0 WITH new surface:** TS `createConfiguredRun` / `updateConfiguredRun` / `startConfiguredRun` / `deleteConfiguredRun`, `reviewRun`, `outputFormat`, `review`, `reviewTtlSeconds`, `RunResult.structured`, `Agent.spec`; Python the configured-run methods, `review_run`, `output_format`, `review`, `review_ttl_seconds`, `spec`.
+
 ## What's in v1.92.0
 
 *A run keeps its answer and its prompt, an operator can tell an agent which tool to call first, and a local model's stateful chat stops mid-task no more.*
