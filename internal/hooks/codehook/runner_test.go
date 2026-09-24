@@ -3,6 +3,7 @@ package codehook
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -260,5 +261,33 @@ func TestRunner_AnObserveHookMayNotifyButNotAsk(t *testing.T) {
 	}
 	if len(f.inputs) != 1 {
 		t.Errorf("the ask reached Interruption: %v", f.inputs)
+	}
+}
+
+// A body registration refuses is never cached, nor is any body only compiled;
+// the run-time cache is bounded; and an oversized body is refused before it is
+// parsed. The cache used to keep every body it ever saw, registration's
+// included, forever, and a 10 MB body was parsed before the size check.
+func TestRunner_TheProgramCacheHoldsOnlyRunBodiesAndIsBounded(t *testing.T) {
+	r := New(nil)
+	for i := 0; i < 10; i++ {
+		_ = r.Compile(fmt.Sprintf("function hook(ev) { return %d; }", i))
+		_ = r.Compile(fmt.Sprintf("function run() { return %d; }", i)) // refused: no hook(ev)
+	}
+	if n := r.lru.Len(); n != 0 {
+		t.Errorf("after compiling only, %d programs are cached", n)
+	}
+	for i := 0; i < maxCachedPrograms+20; i++ {
+		if _, err := r.Run(context.Background(), codeHook(fmt.Sprintf("function hook(ev) { var n = %d; }", i)), "pre_tool_use", preCall("Read", `{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, m := r.lru.Len(), len(r.cache); n != maxCachedPrograms || m != maxCachedPrograms {
+		t.Errorf("cache holds %d (index %d) programs, want the %d most recently run", n, m, maxCachedPrograms)
+	}
+
+	big := "function hook(ev) {" + strings.Repeat(" ", hooks.MaxCodeBytes) + "(" // a syntax error, too
+	if err := r.Compile(big); err == nil || !strings.Contains(err.Error(), "the limit is") {
+		t.Errorf("an oversized body: err = %v, want the size refusal before any parse", err)
 	}
 }
