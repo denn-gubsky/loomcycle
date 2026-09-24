@@ -8546,7 +8546,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		CredentialScopeID: res.Usage.CredentialScopeID,
 		// RFC DI: a cancelled run keeps the text it had produced before the
 		// cancel — often exactly what an operator stopped it to read.
-		Result: runResultJSON(res),
+		Result: runResultJSON(s.redactor, res),
 	}
 	// runs.cost = Σ(the run's per-call ledger) — the calls that completed before the
 	// cancel. Authoritative over pricing cumulative tokens at the final model (which
@@ -8706,7 +8706,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CredentialScopeID: res.Usage.CredentialScopeID,
 		// RFC DI: the answer, written with the terminal status. A failed run
 		// keeps whatever text it had produced before the failure.
-		Result: runResultJSON(res),
+		Result: runResultJSON(s.redactor, res),
 	}
 	// runs.cost is the SUM of the run's per-call ledger costs (authoritative) — NOT
 	// the final model × cumulative tokens, which disagrees with the ledger on a

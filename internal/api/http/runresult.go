@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 )
 
 // runResultRecord is what runs.result holds (RFC DI): the part of a run's
@@ -24,7 +25,12 @@ type runResultRecord struct {
 // runResultJSON renders a loop result for FinishRun. nil when the run produced
 // nothing to report — no text and no state — so the column stays NULL rather
 // than holding an empty object a reader would have to special-case.
-func runResultJSON(res loop.RunResult) json.RawMessage {
+//
+// Masked with r, like the events it summarises: the final text and the
+// context_state events that carry Σ are redacted before they are persisted, so
+// storing the same text and Σ here unmasked would put the secret back at rest
+// on the run row. The live caller already got the original.
+func runResultJSON(r *redact.Redactor, res loop.RunResult) json.RawMessage {
 	if res.FinalText == "" && len(res.State) == 0 && len(res.Structured) == 0 {
 		return nil
 	}
@@ -39,5 +45,5 @@ func runResultJSON(res loop.RunResult) json.RawMessage {
 			return nil
 		}
 	}
-	return b
+	return r.Bytes(b)
 }
