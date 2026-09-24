@@ -70,6 +70,7 @@ from .events import (
     Retry,
     HostWidening,
     AwaitingInput,
+    AwaitingReview,
     UserInput,
     LimitInfo,
 )
@@ -103,6 +104,7 @@ __all__ = [
     "Retry",
     "HostWidening",
     "AwaitingInput",
+    "AwaitingReview",
     "UserInput",
     "LimitInfo",
     "LoomcycleError",
