@@ -585,7 +585,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// keeps it for the parallel_spawn ledger (RFC X Phase 3). Both drive
 		// the same runSubAgent.
 		Run: func(ctx context.Context, name, prompt, defID string) (string, error) {
-			out, _, _, err := s.runSubAgent(ctx, name, "", prompt, defID)
+			out, _, _, err := s.runAgentToolChild(ctx, name, prompt, defID)
 			return out, err
 		},
 		// A closure rather than a bare method value: runSubAgent gained a
@@ -593,7 +593,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		// SubAgentRunnerDetailed deliberately has no way to set it — a spawning
 		// agent must not be able to prepend text to its child's system prompt.
 		RunDetailed: func(ctx context.Context, name, prompt, defID string) (string, map[string]any, string, error) {
-			return s.runSubAgent(ctx, name, "", prompt, defID)
+			return s.runAgentToolChild(ctx, name, prompt, defID)
 		},
 		// RFC BK resident sub-agents: open/send/poll/cancel/close drive a
 		// persistent interactive child (the interactive fork of runSubAgent).
@@ -6353,6 +6353,46 @@ func (s *Server) runSubAgent(ctx context.Context, name string, systemExtra strin
 	return s.runSubAgentWithValues(ctx, name, systemExtra, prompt, defID, nil, nil, false, false)
 }
 
+// runAgentToolChild is runSubAgent for a child the Agent tool spawns, inside
+// the parent's subagent_start and subagent_stop hooks. They fire in the
+// parent's run and decide on its behalf: subagent_start may refuse the child
+// (the parent's call gets the reason) or add to its prompt; subagent_stop may
+// refuse the result (the parent gets the reason as an error, and can try
+// again) or add to it. Sending the child back to revise is agent_stop's, on
+// the child's own run.
+func (s *Server) runAgentToolChild(ctx context.Context, name, prompt, defID string) (string, map[string]any, string, error) {
+	d := s.hookDispatcher
+	if d == nil {
+		return s.runSubAgent(ctx, name, "", prompt, defID)
+	}
+	ident := loop.HookIdentity(ctx, tools.AgentName(ctx), loop.IterationOf(ctx))
+	emit := tools.EventEmitter(ctx)
+	start := d.RunGate(ctx, ident, hooks.PhaseSubagentStart, hooks.LifecycleInfo{Subagent: name})
+	loop.EmitHookDecisions(emit, providers.ToolUse{}, start.Decisions)
+	if start.Denied {
+		return "", nil, "", fmt.Errorf("sub-agent %q was not started: %s", name, start.Reason)
+	}
+	for _, extra := range start.AdditionalContext {
+		prompt += "\n\n" + extra
+	}
+	out, state, runID, err := s.runSubAgent(ctx, name, "", prompt, defID)
+	info := hooks.LifecycleInfo{Subagent: name, SubagentRunID: runID, Status: string(store.RunCompleted), FinalText: out}
+	if err != nil {
+		info.Status, info.Error = string(store.RunFailed), err.Error()
+	}
+	stop := d.RunGate(ctx, ident, hooks.PhaseSubagentStop, info)
+	loop.EmitHookDecisions(emit, providers.ToolUse{}, stop.Decisions)
+	if stop.Denied {
+		return "", nil, runID, fmt.Errorf("the result of sub-agent %q was refused: %s", name, stop.Reason)
+	}
+	if err == nil {
+		for _, extra := range stop.AdditionalContext {
+			out += "\n\n" + extra
+		}
+	}
+	return out, state, runID, err
+}
+
 // values resolves ${var.*} / ${now.*} / ${team.*} in the caller's segments, in
 // the SAME pass as the {{...}} families. Non-nil only for a team state — see
 // teamrun.Prompt.Values for why the map travels instead of finished text.
@@ -6829,6 +6869,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		UserID:        parentIdentity.UserID,
 		TenantID:      parentIdentity.TenantID, // sub-agent inherits the parent run's tenant
 		ParentAgentID: parentIdentity.AgentID,
+		ParentRunID:   tools.RunID(ctx),
 		otelSpan:      subRunSpan,
 		// v0.12.x root lineage + RFC BT P4 board task (subIdentity's is the clone
 		// of the parent's plus any board stamp above), echoed on this sub-run's
@@ -7952,6 +7993,17 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 			Reason: fmt.Sprintf("keep_last_n %d pins all %d message(s) of this session, leaving nothing to summarize — lower compaction.keep_last_n",
 				keepLastN, len(msgs))}, nil
 	}
+	// pre_compact hooks may refuse the compaction — before the summary spends a
+	// model call. Refused as a 409 naming the hook, so the caller knows why.
+	hookIdent := hooks.Identity{Agent: run.Agent, UserID: run.UserID, AgentID: run.AgentID, Tenant: run.TenantID, RunID: runID}
+	if s.hookDispatcher != nil {
+		gate := s.hookDispatcher.RunGate(ctx, hookIdent, hooks.PhasePreCompact,
+			hooks.LifecycleInfo{Trigger: "manual", ContextTokens: before})
+		if gate.Denied {
+			return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "denied_by_hook",
+				msg: "the compaction was refused: " + gate.Reason}
+		}
+	}
 	// RFC AX: compaction summarizes via a provider.Call made OUTSIDE the run loop,
 	// so the summary ctx must carry the same credential context a run's loopCtx does
 	// (mirrors resume.go). Without WithOperatorKeyAllowed the driver backstop is
@@ -8054,6 +8106,10 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 				return connector.CompactResult{}, &compactErr{status: http.StatusInternalServerError, msg: "persist compaction marker: " + aerr.Error()}
 			}
 		}
+	}
+	if s.hookDispatcher != nil {
+		s.hookDispatcher.Observe(ctx, hookIdent, hooks.PhasePostCompact,
+			hooks.LifecycleInfo{Trigger: "manual", BeforeTokens: before, AfterTokens: after})
 	}
 	return connector.CompactResult{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied}, nil
 }
@@ -8272,6 +8328,9 @@ type runStateMeta struct {
 	UserID        string
 	TenantID      string // run's authoritative tenant — gates the user-agents stream
 	ParentAgentID string
+	// ParentRunID is the run that spawned this one; empty for a top-level run.
+	// Reported to run_end hooks.
+	ParentRunID string
 	// IsTopLevel marks a TOP-LEVEL run (handleRuns / handleMessages / resume)
 	// vs a sub-agent run (RFC AH Phase 2b). finishRun purges the run tree's
 	// ephemeral volumes ONLY for a top-level run — a sub-agent completing must
@@ -8494,6 +8553,7 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", reason, runID, err)
 	}
 	s.publishRunState(meta, "failed", "", reason)
+	s.observeRunEnd(meta, store.RunFailed, "", reason, "")
 	// RFC AH Phase 2b: a top-level run that fails (incl. mid-flight panic in
 	// the background-goroutine paths) must still purge its ephemeral subtree.
 	// A no-op for the pre-loop collision/register-fail bails (no volumes were
@@ -8555,6 +8615,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, "cancelled", reason, "")
+	s.observeRunEnd(meta, store.RunCancelled, reason, "", res.FinalText)
 }
 
 // releaseConsolidationLease frees the memory-cursor lease owned by runID, if it
@@ -8718,6 +8779,20 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
 	s.publishRunState(meta, string(status), res.StopReason, errMsg)
+	s.observeRunEnd(meta, status, res.StopReason, errMsg, res.FinalText)
+}
+
+// observeRunEnd reports a run's end to its run_end hooks, off the finishing
+// path: observe only, so nothing waits for them. After the terminal row is
+// written, so a hook that reads the run back sees it finished.
+func (s *Server) observeRunEnd(meta runStateMeta, status store.RunStatus, stopReason, errMsg, finalText string) {
+	if s.hookDispatcher == nil || meta.RunID == "" {
+		return
+	}
+	s.hookDispatcher.Observe(context.Background(), hooks.Identity{
+		Agent: meta.Agent, UserID: meta.UserID, AgentID: meta.AgentID, Tenant: meta.TenantID,
+		RunID: meta.RunID, ParentRunID: meta.ParentRunID,
+	}, hooks.PhaseRunEnd, hooks.LifecycleInfo{Status: string(status), StopReason: stopReason, Error: errMsg, FinalText: finalText})
 }
 
 // authMiddleware moved to auth_principal.go (RFC L): it now resolves the
