@@ -427,6 +427,11 @@ type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	// Help is the per-run instruction to read this tool's help, already
+	// appended to Description. Kept apart as well so a surface that shortens
+	// descriptions (the stateful loop's one-line tool list) can drop the long
+	// description and still keep the instruction. Never sent on the wire.
+	Help string `json:"-"`
 }
 
 // EventType discriminates the streamed Event union. The loop emits these on
