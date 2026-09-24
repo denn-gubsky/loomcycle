@@ -603,6 +603,7 @@ var grpcConsumerScopes = map[string]string{
 	"RunInput":         auth.ScopeRunsCreate, // RFC AI — steering injects instructions (mutation)
 	"RetuneRun":        auth.ScopeRunsCreate, // changes a run's settings (mutation; mirrors POST .../retune)
 	"CancelTurn":       auth.ScopeRunsCreate, // RFC BH — turn-cancel is a run mutation (mirrors POST .../cancel)
+	"ReviewRun":        auth.ScopeRunsCreate, // RFC DJ — a verdict on a held run (mirrors POST .../review)
 	"ResolveInterrupt": auth.ScopeRunsCreate, // RFC BH — resolve/decline steers the run (mirrors POST .../resolve)
 	"StreamRun":        auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
 	"SpawnRunBatch":    auth.ScopeRunsCreate,
@@ -816,6 +817,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
+		Review:           req.GetReview(),      // RFC DJ — hold for an operator's verdict
 		Metadata:         metadataFromProto(req.GetMetadata()),
 		Context:          contextFromProto(req.GetContext()),
 		ParentContext:    parentContextFromProto(req.GetParentContext()),
@@ -871,6 +873,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		Interactive:      req.GetInteractive(), // RFC AI
+		Review:           req.GetReview(),      // RFC DJ — hold for an operator's verdict
 		Metadata:         metadataFromProto(req.GetMetadata()),
 		Context:          contextFromProto(req.GetContext()),
 		ParentContext:    parentContextFromProto(req.GetParentContext()),
@@ -1039,6 +1042,10 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		MemoryIndexMaxBytes:   int32PtrToInt(req.MemoryIndexMaxBytes),
 		InjectToolGuide:       req.InjectToolGuide,
 	}
+	if req.GetReview() {
+		review := true
+		r.Review = &review
+	}
 	if hosts := req.GetAllowedHosts(); hosts != nil {
 		list := hosts.GetList()
 		r.AllowedHosts = &list
@@ -1193,6 +1200,7 @@ type runInputProtoArgs struct {
 	OutputFormat     *config.OutputFormat         // RFC DI per-run answer schema
 	Compaction       *config.Compaction           // v0.32.0 per-run compaction override
 	Interactive      bool                         // RFC AI — park at end_turn for steering
+	Review           bool                         // RFC DJ — hold for an operator's verdict when done
 	Interruption     *config.AgentInterruptionACL // per-run override of whether the agent may ask a human
 	Metadata         map[string]any               // non-secret structured metadata handed to the run
 	Context          *config.Context              // per-run layered-context / retention override
@@ -1250,6 +1258,7 @@ func runInputFromProto(a runInputProtoArgs) runner.RunInput {
 		OutputFormat:          a.OutputFormat,    // RFC DI per-run answer schema
 		Compaction:            a.Compaction,      // v0.32.0 per-run compaction override
 		Interactive:           a.Interactive,     // RFC AI — park at end_turn for steering
+		Review:                a.Review,          // RFC DJ — hold for an operator's verdict when done
 		Metadata:              a.Metadata,
 		Context:               a.Context,
 		ParentContext:         a.ParentContext,
@@ -1468,6 +1477,12 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 		}
 	}
 	// RFC AI interactive payloads — previously dropped on the gRPC wire.
+	if ev.AwaitingReview != nil {
+		out.AwaitingReview = &loomcyclepb.AwaitingReview{
+			SinceTurn: int32(ev.AwaitingReview.SinceTurn),
+			Round:     int32(ev.AwaitingReview.Round),
+		}
+	}
 	if ev.AwaitingInput != nil {
 		out.AwaitingInput = &loomcyclepb.AwaitingInput{
 			SinceTurn: int32(ev.AwaitingInput.SinceTurn),

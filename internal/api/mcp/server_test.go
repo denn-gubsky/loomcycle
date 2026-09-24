@@ -264,6 +264,10 @@ func (m *mockConnector) StreamRunEvents(context.Context, string, int64, connecto
 func (m *mockConnector) CancelTurn(context.Context, string, string) (bool, bool, error) {
 	return false, false, connector.ErrRunNotInFlight
 }
+
+func (m *mockConnector) ReviewRun(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
 func (m *mockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
 	return "", connector.ErrInterruptNotFound
 }

@@ -26,6 +26,8 @@ var overrideWireNames = []string{
 	// Take hold of a run that is already going: park it at its next boundary so
 	// an operator can correct it, and let it ask a question.
 	"interactive", "interruption",
+	// Hold its finished answer for an operator's verdict.
+	"review",
 }
 
 // The Go side first: RunInput and the connector's spawn shape must both be able
@@ -37,7 +39,7 @@ func TestOverrideParity_GoShapesCarryEveryOverride(t *testing.T) {
 		"unbounded_iterations": "UnboundedIterations", "max_concurrent_children": "MaxConcurrentChildren",
 		"retry_attempts": "RetryAttempts", "memory_inject_max_tokens": "MemoryInjectMaxTokens",
 		"memory_index_max_bytes": "MemoryIndexMaxBytes", "inject_tool_guide": "InjectToolGuide",
-		"interactive": "Interactive", "interruption": "Interruption",
+		"interactive": "Interactive", "interruption": "Interruption", "review": "Review",
 	}
 	for _, tc := range []struct {
 		name string
@@ -228,10 +230,18 @@ func TestOverrideParity_TypeScriptOptionTypesShareOneDeclaration(t *testing.T) {
 		"unbounded_iterations": "unboundedIterations", "max_concurrent_children": "maxConcurrentChildren",
 		"retry_attempts": "retryAttempts", "memory_inject_max_tokens": "memoryInjectMaxTokens",
 		"memory_index_max_bytes": "memoryIndexMaxBytes", "inject_tool_guide": "injectToolGuide",
+		"interactive": "interactive", "interruption": "interruption", "review": "review",
 	}
 	var missing []string
 	for _, wire := range overrideWireNames {
-		if !strings.Contains(decl, camel[wire]+"?:") {
+		name, ok := camel[wire]
+		if !ok {
+			// An unmapped name looked up as "" and matched any "?:" in the
+			// block — interactive and interruption were "checked" that way.
+			t.Errorf("no TS name for override %q; add it to this map", wire)
+			continue
+		}
+		if !strings.Contains(decl, name+"?:") {
 			missing = append(missing, camel[wire])
 		}
 	}

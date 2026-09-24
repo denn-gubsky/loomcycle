@@ -134,6 +134,10 @@ func (m *httpMockConnector) InterruptionResolve(context.Context, connector.Inter
 func (m *httpMockConnector) CancelTurn(context.Context, string, string) (bool, bool, error) {
 	return false, false, errors.New("not implemented")
 }
+
+func (m *httpMockConnector) ReviewRun(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
 func (m *httpMockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
 	return "", errors.New("not implemented")
 }

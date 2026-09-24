@@ -43,6 +43,11 @@ type parityMock struct {
 	lastResolve      resolveCall
 	resolveStatus    string
 	resolveErr       error
+
+	// RFC DJ review capture/inject.
+	lastReview      reviewCall
+	reviewDelivered bool
+	reviewErr       error
 }
 
 // resolveCall records the args the gRPC ResolveInterrupt handler forwarded.
@@ -70,6 +75,14 @@ func (m *parityMock) CancelTurn(_ context.Context, runID, reason string) (bool, 
 	m.lastCancelReason = reason
 	return m.cancelStopped, m.cancelParked, m.cancelErr
 }
+
+func (m *parityMock) ReviewRun(_ context.Context, runID, decision, feedback, source string) (bool, error) {
+	m.lastReview = reviewCall{runID, decision, feedback, source}
+	return m.reviewDelivered, m.reviewErr
+}
+
+// reviewCall records the args the gRPC ReviewRun handler forwarded.
+type reviewCall struct{ runID, decision, feedback, source string }
 
 func (m *parityMock) ResolveInterrupt(_ context.Context, runID, interruptID, kind, answer, resolvedBy, disposition string) (string, error) {
 	m.lastResolve = resolveCall{runID, interruptID, kind, answer, resolvedBy, disposition}

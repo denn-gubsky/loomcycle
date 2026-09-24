@@ -148,6 +148,17 @@ service Loomcycle {
   // Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
   rpc CancelTurn(CancelTurnRequest) returns (CancelTurnResponse);
 
+  // ReviewRun delivers an operator's verdict on a run held for review (RFC
+  // DJ): "approve" completes it on the held answer; "reject" with feedback
+  // sends the feedback as its next user turn and it revises and is held again;
+  // "reject" without feedback ends it with status "rejected". NotFound (opaque)
+  // for an unknown, finished or cross-tenant run; FailedPrecondition when the
+  // run is live but not held; InvalidArgument for another decision or feedback
+  // on an approval. Owner-routed cross-replica.
+  //
+  // Mirrors POST /v1/runs/{run_id}/review.
+  rpc ReviewRun(ReviewRunRequest) returns (ReviewRunResponse);
+
   // ResolveInterrupt resolves a pending interruption — either an answer
   // (disposition "" / "answer", validated against the declared options) or a
   // decline (disposition "declined": no answer, skips option validation) so the
@@ -656,6 +667,10 @@ message RunRequest {
   // Per-run answer schema (RFC DI): the final answer is held to it where the
   // model supports it and returned parsed. Replaces the agent's whole.
   OutputFormat output_format = 34;
+  // Hold the run for an operator's verdict each time its model finishes,
+  // instead of completing (RFC DJ): approve, or reject with feedback it revises
+  // from, via the ReviewRun RPC. Mirrors POST /v1/runs `review`.
+  bool review = 35;
 }
 
 message ContinueRequest {
@@ -738,6 +753,9 @@ message ContinueRequest {
   ToolChoice tool_choice = 30;
   // Per-run answer schema for this continuation — see RunRequest.output_format.
   OutputFormat output_format = 31;
+  // review (RFC DJ) — hold this continuation for an operator's verdict when its
+  // model finishes. Mirrors the HTTP continuation `review` field.
+  bool review = 32;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.
@@ -1078,6 +1096,9 @@ message RunInputRequest {
   // so an operator can correct it, and let it ask a question.
   optional bool interactive = 16;
   optional Interruption interruption = 17;
+  // Arm (true) or disarm (false) the hold for an operator's verdict when the
+  // model finishes. Disarming a held run releases it as approved.
+  optional bool review = 18;
 }
 
 // RetuneRunRequest changes a run's settings and delivers no turn. The override
@@ -1101,6 +1122,9 @@ message RetuneRunRequest {
   // so an operator can correct it, and let it ask a question.
   optional bool interactive = 14;
   optional Interruption interruption = 15;
+  // Arm (true) or disarm (false) the hold for an operator's verdict when the
+  // model finishes. Disarming a held run releases it as approved.
+  optional bool review = 16;
 }
 
 message RetuneRunResponse {
@@ -1125,6 +1149,20 @@ message CancelTurnResponse {
   string run_id = 1;
   bool stopped = 2;
   bool parked = 3;
+}
+
+// ReviewRunRequest is an operator's verdict on a held run (RFC DJ).
+message ReviewRunRequest {
+  string run_id = 1;
+  string decision = 2;  // "approve" | "reject"
+  string feedback = 3;  // with "reject": the next user turn; refused with "approve"
+}
+
+// ReviewRunResponse mirrors the HTTP POST /v1/runs/{run_id}/review reply.
+message ReviewRunResponse {
+  string run_id = 1;
+  string decision = 2;
+  bool delivered = 3;
 }
 
 // ResolveInterruptRequest resolves a pending interruption (RFC BH). The
@@ -1246,6 +1284,11 @@ message Event {
   // tool the agent holds and cannot use. SERVER-generated, emitted once at run
   // start. Nil on every other event type.
   CapabilityInertInfo capability_inert = 15;
+
+  // awaiting_review carries the payload on type=awaiting_review frames (RFC
+  // DJ) — a run armed for review finished its answer and is held for a
+  // verdict. Nil on every other event type.
+  AwaitingReview awaiting_review = 16;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1266,6 +1309,13 @@ message OverrideInfo {
 // providers.AwaitingInputEventInfo.
 message AwaitingInput {
   int32 since_turn = 1;  // the iteration the run parked after
+}
+
+// AwaitingReview is the type=awaiting_review payload (RFC DJ). Mirrors
+// providers.AwaitingReviewEventInfo.
+message AwaitingReview {
+  int32 since_turn = 1;  // the iteration the run was held at
+  int32 round = 2;       // 1 on the first answer, +1 for each revision
 }
 
 // UserInput is the type=steer payload (RFC AI). Mirrors
