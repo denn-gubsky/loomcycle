@@ -1,0 +1,104 @@
+# A LoCoMo rating run under the rovemark protocol — layered OVER ingest.yaml and
+# lme_gate_arms.yaml, which supply the scribe, the extractor, the judge and the answerer.
+#
+#   ./bin/loomcycle --config bench/synthesis/ingest.yaml \
+#                   --config bench/synthesis/lme_gate_arms.yaml \
+#                   --config bench/synthesis/locomo_rating.yaml
+#
+# WHY A RATING RUN NEEDS ITS OWN LAYER. The published LoCoMo tables are not one protocol:
+# one source scores 250 questions (25 per conversation) with a deliberately generous
+# rubric on gemini-2.5-pro, another scores all 1,540 with gpt-4o-mini as both answerer and
+# judge. They disagree by nine points on the same system (Zep: 75.14 against 66.0), so a
+# number is meaningless without saying which protocol produced it.
+#
+# This targets the 1,540-question one, because our loader already agrees with it exactly:
+# categories 1-4 yield 1,535 scoreable plus 5 dropped for unusable evidence = 1,540. And
+# it has a shared calibration point — its full-context baseline is 72.9 against our own
+# raw-turns measurement of 0.738, inside a point.
+
+agents:
+  # ⚠️ 1500s (25 min) is not enough for the larger conversations. A LoCoMo conversation is
+  # 400-660 turns against a LongMemEval instance's ~20, and consolidation pass 1 blew the
+  # cap on conv-26 and conv-30 during a previous run — the arm reported "failed" with no
+  # store to answer from.
+  #
+  # 1740 and not higher because the consolidator's own code holds a 1,800,000 ms lease and
+  # the bundle requires the run budget stay under it: a pass that outlives its lease is a
+  # pass another worker may start underneath. Raising the ceiling properly means raising
+  # BOTH, which is a bundle edit and a separate decision.
+  #
+  # This buys 16%, not a fix. A conversation that still exceeds it fails its own
+  # checkpoint and is retried rather than silently producing a partial store.
+  memory/consolidator:
+    run_timeout_seconds: 1740
+
+  # ⚠️ EVERY MEMORY AGENT THAT RESOLVES BY TIER IS PINNED HERE, and the reason is a
+  # silent fallback rather than a preference. The base preset's tier:middle cascade lists
+  # ollama-local/qwen3.6* FIRST and deepseek-v4-pro after it. On this host the resolver
+  # marked the local candidate unavailable and fell through without a word, so the
+  # extractor — meant to be local — ran on paid cloud deepseek-v4-pro for every store this
+  # database holds (498 runs). A benchmark cannot have its extractor chosen by a
+  # reachability probe: which model distilled the facts is part of what is being measured.
+  #
+  # ⚠️ ONLY THE JUDGE MAY REACH THE CLOUD. Everything else in the pipeline is local —
+  # ornith-1.5:35b on the Spark, the same model that answers — because this rating is of a
+  # local deployment, and a cloud call anywhere else is both a different measurement and a
+  # bill. The judge stays on deepseek-flash because grading has to be the same instrument
+  # across every conversation and every published table it is compared against.
+  #
+  # Every memory agent is pinned, not left to tier: the base preset's tier:middle lists
+  # ollama-local FIRST and deepseek-v4-pro after it, the resolver marked the local
+  # candidate unavailable on this host and fell through WITHOUT A WORD, and the extractor
+  # ran on paid v4-pro for every store this database held (498 runs). A pinned agent
+  # re-resolves to its own pin on fallback, so it cannot cascade to a cloud candidate.
+  #
+  # The bundle dispatches extraction serially — one request at a time against a host that
+  # CUDA-faulted at concurrency 4 — and its effort:low maps to think:false on Ollama, so
+  # the output budget is not spent on a reasoning trace.
+  #
+  # Pinning is right HERE and wrong in a product config: a deployment should let the tier
+  # policy route, a measurement must hold the model fixed.
+  #
+  # tier must be cleared explicitly on each: a layer that only ADDS model: merges onto the
+  # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
+  #
+  # max_context_tokens: 131072 ON EVERY ORNITH AGENT. The bundle declares 32768 (extractor,
+  # ontologist) and 8192 (judge, conflict-judge), sent as options.num_ctx; 131072 matches the
+  # answerer's global window, so Ollama does not reload ornith between agents.
+  #
+  # ⚠️ This is NOT the fix for the CUDA faults ("illegal memory access") seen while building
+  # conv-26, though it was first committed as one. Sampling /api/ps every 30 s and joining it
+  # to each extractor call: 0 of 66 calls failed with ornith alone on the Spark, 77 of 334
+  # failed while gpt-oss — another workload's model — was co-resident. A larger window had
+  # only looked like a cure because it made Ollama evict gpt-oss. The fix is keeping gpt-oss
+  # off the GPU for the run; with it off, all ten stores built with zero extractor failures.
+  #
+  # Measurement-neutral either way: the consolidator cuts parts by max_part_chars (12000),
+  # and extractor_context_tokens is only a CEILING on that, so the extractor reads the same
+  # parts — only the KV window Ollama allocates changes.
+  memory/extractor:
+    tier: ""
+    provider: ollama-local
+    model: ornith-1.5:35b
+    max_context_tokens: 131072
+  memory/ontologist:
+    tier: ""
+    provider: ollama-local
+    model: ornith-1.5:35b
+    max_context_tokens: 131072
+  memory/judge:
+    tier: ""
+    provider: ollama-local
+    model: ornith-1.5:35b
+    max_context_tokens: 131072
+  memory/conflict-judge:
+    tier: ""
+    provider: ollama-local
+    model: ornith-1.5:35b
+    max_context_tokens: 131072
+
+  # ingest.yaml's default answerer is cloud. The rating answers with locomo/orn-l2k24-sp
+  # and never names this one — pinned anyway so a mistyped -answerer flag costs nothing.
+  locomo/answerer:
+    provider: ollama-local
+    model: ornith-1.5:35b

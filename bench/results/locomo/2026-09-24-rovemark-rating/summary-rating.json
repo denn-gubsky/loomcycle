@@ -1,0 +1,87 @@
+{
+ "questions": 1535,
+ "graded": 1535,
+ "ungraded": 0,
+ "rejudged": 22,
+ "not_found": 102,
+ "binary_j": 0.7062,
+ "binary_j_ci95": [
+  0.6834,
+  0.7296
+ ],
+ "partial_credit": 0.7674,
+ "per_category": {
+  "multi-hop": {
+   "n": 282,
+   "binary_j": 0.4078,
+   "partial_credit": 0.6188
+  },
+  "temporal": {
+   "n": 320,
+   "binary_j": 0.7406,
+   "partial_credit": 0.7594
+  },
+  "open-domain": {
+   "n": 92,
+   "binary_j": 0.413,
+   "partial_credit": 0.4674
+  },
+  "single-hop": {
+   "n": 841,
+   "binary_j": 0.8252,
+   "partial_credit": 0.8532
+  }
+ },
+ "per_conversation": {
+  "conv-26": {
+   "n": 150,
+   "binary_j": 0.6867,
+   "partial_credit": 0.75
+  },
+  "conv-30": {
+   "n": 81,
+   "binary_j": 0.7284,
+   "partial_credit": 0.7778
+  },
+  "conv-41": {
+   "n": 152,
+   "binary_j": 0.7237,
+   "partial_credit": 0.7928
+  },
+  "conv-42": {
+   "n": 199,
+   "binary_j": 0.6784,
+   "partial_credit": 0.7462
+  },
+  "conv-43": {
+   "n": 178,
+   "binary_j": 0.691,
+   "partial_credit": 0.7556
+  },
+  "conv-44": {
+   "n": 123,
+   "binary_j": 0.7561,
+   "partial_credit": 0.8049
+  },
+  "conv-47": {
+   "n": 150,
+   "binary_j": 0.7267,
+   "partial_credit": 0.7667
+  },
+  "conv-48": {
+   "n": 191,
+   "binary_j": 0.7173,
+   "partial_credit": 0.7827
+  },
+  "conv-49": {
+   "n": 156,
+   "binary_j": 0.6731,
+   "partial_credit": 0.75
+  },
+  "conv-50": {
+   "n": 155,
+   "binary_j": 0.7097,
+   "partial_credit": 0.7645
+  }
+ }
+}
