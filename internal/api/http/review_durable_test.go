@@ -261,3 +261,25 @@ func TestResume_ARestoredHoldKeepsItsDeadline(t *testing.T) {
 		return strings.Contains(runTranscriptText(t, srv.store, run.SessionID, run.ID), `"expires_at":"`+want+`"`)
 	})
 }
+
+// The deadline is set at start and a retune of anything else keeps it: the
+// merge used to be field-by-field, and a field it did not name was dropped.
+func TestRetune_KeepsTheReviewDeadline(t *testing.T) {
+	h := newReviewHarness(t)
+	runID, _, frames, stop := h.start(`{"agent":"writer","review":true,"review_ttl_seconds":3600,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"write the plan"}]}]}`)
+	defer stop()
+	h.waitFrame(frames, "awaiting_review")
+	resp, err := http.Post(h.ts.URL+"/v1/runs/"+runID+"/retune", "application/json", strings.NewReader(`{"max_tokens":512}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	run, _ := h.st.GetRun(context.Background(), runID)
+	if rec, _ := decodeRunConfig(run.RunConfig); rec.ReviewTTLSeconds != 3600 {
+		t.Errorf("after a retune review_ttl_seconds = %d, want 3600 kept", rec.ReviewTTLSeconds)
+	}
+	if code, _ := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d", code)
+	}
+	h.waitStatus(runID, store.RunCompleted)
+}
