@@ -245,6 +245,11 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 	// Single-run read only, like HTTP GET /v1/agents/{id} (RFC DI).
 	out.Result = run.Result
 	out.Spec = run.RunConfig
+	if run.Status == store.RunConfigured {
+		if d, err := s.store.GetRunDraft(ctx, run.ID); err == nil {
+			out.Draft = d
+		}
+	}
 	return out, nil
 }
 
@@ -593,15 +598,21 @@ const grpcMethodPrefix = "/loomcycle.v1.Loomcycle/"
 // the channel surface uses the channel scopes. Health is handled before this
 // check (it bypasses auth entirely).
 var grpcConsumerScopes = map[string]string{
-	"Run":                 auth.ScopeRunsCreate,
-	"Continue":            auth.ScopeRunsCreate,
-	"RunInput":            auth.ScopeRunsCreate, // RFC AI — steering injects instructions (mutation)
-	"RetuneRun":           auth.ScopeRunsCreate, // changes a run's settings (mutation; mirrors POST .../retune)
-	"CancelTurn":          auth.ScopeRunsCreate, // RFC BH — turn-cancel is a run mutation (mirrors POST .../cancel)
-	"ResolveInterrupt":    auth.ScopeRunsCreate, // RFC BH — resolve/decline steers the run (mirrors POST .../resolve)
-	"StreamRun":           auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
-	"SpawnRunBatch":       auth.ScopeRunsCreate,
-	"CompactRun":          auth.ScopeRunsCreate,
+	"Run":              auth.ScopeRunsCreate,
+	"Continue":         auth.ScopeRunsCreate,
+	"RunInput":         auth.ScopeRunsCreate, // RFC AI — steering injects instructions (mutation)
+	"RetuneRun":        auth.ScopeRunsCreate, // changes a run's settings (mutation; mirrors POST .../retune)
+	"CancelTurn":       auth.ScopeRunsCreate, // RFC BH — turn-cancel is a run mutation (mirrors POST .../cancel)
+	"ResolveInterrupt": auth.ScopeRunsCreate, // RFC BH — resolve/decline steers the run (mirrors POST .../resolve)
+	"StreamRun":        auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
+	"SpawnRunBatch":    auth.ScopeRunsCreate,
+	"CompactRun":       auth.ScopeRunsCreate,
+	// RFC DI configured runs: creating, editing, starting and discarding a
+	// draft are run writes, the scope that creates a run (mirrors HTTP).
+	"CreateConfiguredRun": auth.ScopeRunsCreate,
+	"UpdateConfiguredRun": auth.ScopeRunsCreate,
+	"StartConfiguredRun":  auth.ScopeRunsCreate,
+	"DeleteConfiguredRun": auth.ScopeRunsCreate,
 	"ReplaySession":       auth.ScopeRunsCreate,
 	"CancelAgent":         auth.ScopeRunsCreate,
 	"GetTranscript":       auth.ScopeRunsRead,
@@ -1555,6 +1566,10 @@ func runnerErrStatus(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, runner.ErrAgentIDInUse):
 		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, runner.ErrRunNotConfigured):
+		// RFC DI: a start of a draft that has already started or been
+		// discarded — the state changed under the caller.
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
@@ -1898,4 +1913,90 @@ func parentContextFromProto(in *loomcyclepb.ParentContext) *store.ParentContext 
 		return nil
 	}
 	return out
+}
+
+// --- Configured runs (RFC DI): create now, start later. ---
+//
+// The rules are the connector's (shared with HTTP and MCP); these handlers map
+// its refusals — which carry an HTTP status — to gRPC codes.
+
+func (s *Server) CreateConfiguredRun(ctx context.Context, req *loomcyclepb.RunRequest) (*loomcyclepb.ConfiguredRun, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "CreateConfiguredRun requires a connector; this Server was constructed without one")
+	}
+	spawn := spawnRequestFromProto(req)
+	if req.GetInteractive() {
+		interactive := true
+		spawn.Interactive = &interactive
+	}
+	res, err := s.connector.CreateConfiguredRun(ctx, connector.ConfiguredRunRequest{SpawnRunRequest: spawn})
+	if err != nil {
+		return nil, configuredErrToStatus(err)
+	}
+	return configuredRunToProto(res), nil
+}
+
+func (s *Server) UpdateConfiguredRun(ctx context.Context, req *loomcyclepb.UpdateConfiguredRunRequest) (*loomcyclepb.ConfiguredRun, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "UpdateConfiguredRun requires a connector; this Server was constructed without one")
+	}
+	res, err := s.connector.UpdateConfiguredRun(ctx, req.GetRunId(), req.GetPatch())
+	if err != nil {
+		return nil, configuredErrToStatus(err)
+	}
+	return configuredRunToProto(res), nil
+}
+
+func (s *Server) StartConfiguredRun(req *loomcyclepb.StartConfiguredRunRequest, stream loomcyclepb.Loomcycle_StartConfiguredRunServer) error {
+	if s.connector == nil {
+		return status.Error(codes.Unimplemented, "StartConfiguredRun requires a connector; this Server was constructed without one")
+	}
+	ctx := stream.Context()
+	in, err := s.connector.ConfiguredRunInput(ctx, req.GetRunId(), connector.RunSecrets{
+		UserBearer: req.GetUserBearer(), UserCredentials: req.GetUserCredentials(),
+	})
+	if err != nil {
+		return configuredErrToStatus(err)
+	}
+	// The same driver Run uses: session + agent frames, then the events, and
+	// the runner's refusals mapped to codes. An admission refusal returns
+	// before OnRegistered, so the caller sees no event and the draft is left.
+	return s.driveStream(ctx, stream, in)
+}
+
+func (s *Server) DeleteConfiguredRun(ctx context.Context, req *loomcyclepb.DeleteConfiguredRunRequest) (*loomcyclepb.DeleteConfiguredRunResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "DeleteConfiguredRun requires a connector; this Server was constructed without one")
+	}
+	if err := s.connector.DeleteConfiguredRun(ctx, req.GetRunId()); err != nil {
+		return nil, configuredErrToStatus(err)
+	}
+	return &loomcyclepb.DeleteConfiguredRunResponse{Deleted: true}, nil
+}
+
+func configuredRunToProto(r connector.ConfiguredRun) *loomcyclepb.ConfiguredRun {
+	return &loomcyclepb.ConfiguredRun{
+		RunId: r.RunID, AgentId: r.AgentID, SessionId: r.SessionID, Status: r.Status, Draft: r.Draft,
+	}
+}
+
+// configuredErrToStatus maps a configured-run refusal (carrying an HTTP
+// status) to the gRPC code the same refusal gets elsewhere on this surface.
+func configuredErrToStatus(err error) error {
+	var hse interface{ HTTPStatus() int }
+	if errors.As(err, &hse) {
+		switch hse.HTTPStatus() {
+		case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
+			return status.Error(codes.InvalidArgument, err.Error())
+		case nethttp.StatusNotFound:
+			return status.Error(codes.NotFound, err.Error())
+		case nethttp.StatusConflict:
+			return status.Error(codes.FailedPrecondition, err.Error())
+		case nethttp.StatusTooManyRequests:
+			return status.Error(codes.ResourceExhausted, err.Error())
+		case nethttp.StatusServiceUnavailable:
+			return status.Error(codes.Unavailable, err.Error())
+		}
+	}
+	return mapRunnerErr(err)
 }
