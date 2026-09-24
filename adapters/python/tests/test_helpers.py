@@ -141,3 +141,11 @@ def test_agent_to_dict_decodes_the_run_spec():
     a = pb.Agent(agent_id="ag-1", status="completed", spec=b'{"tool_choice": {"mode": "required"}}')
     assert _agent_to_dict(a)["spec"] == {"tool_choice": {"mode": "required"}}
     assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="completed"))["spec"] is None
+
+
+def test_agent_to_dict_decodes_a_configured_runs_draft():
+    # RFC DI: a configured run's request rides the Agent message as JSON bytes;
+    # a started run has none.
+    a = pb.Agent(agent_id="ag-1", status="configured", draft=b'{"agent": "qa"}')
+    assert _agent_to_dict(a)["draft"] == {"agent": "qa"}
+    assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="completed"))["draft"] is None

@@ -58,6 +58,26 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.CompactRunRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CompactRunResult.FromString,
                 _registered_method=True)
+        self.CreateConfiguredRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/CreateConfiguredRun',
+                request_serializer=loomcycle__pb2.RunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ConfiguredRun.FromString,
+                _registered_method=True)
+        self.UpdateConfiguredRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/UpdateConfiguredRun',
+                request_serializer=loomcycle__pb2.UpdateConfiguredRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ConfiguredRun.FromString,
+                _registered_method=True)
+        self.StartConfiguredRun = channel.unary_stream(
+                '/loomcycle.v1.Loomcycle/StartConfiguredRun',
+                request_serializer=loomcycle__pb2.StartConfiguredRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.Event.FromString,
+                _registered_method=True)
+        self.DeleteConfiguredRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/DeleteConfiguredRun',
+                request_serializer=loomcycle__pb2.DeleteConfiguredRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.DeleteConfiguredRunResponse.FromString,
+                _registered_method=True)
         self.DirectoryUsers = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/DirectoryUsers',
                 request_serializer=loomcycle__pb2.DirectoryUsersRequest.SerializeToString,
@@ -394,6 +414,46 @@ class LoomcycleServicer:
         a mid-turn run returns FailedPrecondition. Keyed by run_id.
 
         Mirrors POST /v1/runs/{run_id}/compact + the compact_run MCP tool.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateConfiguredRun(self, request, context):
+        """Configured runs (RFC DI): create a run now, start it later. A configured
+        run is validated like a Run but admitted only at start — it takes no slot
+        and no budget until then — and never stores a secret. Mirrors POST
+        /v1/runs {start:false}, PATCH / DELETE /v1/runs/{run_id} and POST
+        /v1/runs/{run_id}/start.
+
+        CreateConfiguredRun takes the same RunRequest as Run; user_bearer,
+        user_credentials and session_id are refused (InvalidArgument).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def UpdateConfiguredRun(self, request, context):
+        """UpdateConfiguredRun replaces fields of the draft: `patch` is a JSON object
+        in the wire's snake_case keys, where null removes a field. The agent, the
+        identity and secrets cannot be patched. FailedPrecondition once started.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def StartConfiguredRun(self, request, context):
+        """StartConfiguredRun starts the draft and streams it exactly as Run does.
+        An admission refusal (ResourceExhausted / Unavailable) ends the call
+        before any event and leaves the draft configured.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteConfiguredRun(self, request, context):
+        """DeleteConfiguredRun discards the draft and its session. A live run is
+        FailedPrecondition — cancel it instead.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1089,6 +1149,26 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.CompactRunRequest.FromString,
                     response_serializer=loomcycle__pb2.CompactRunResult.SerializeToString,
             ),
+            'CreateConfiguredRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateConfiguredRun,
+                    request_deserializer=loomcycle__pb2.RunRequest.FromString,
+                    response_serializer=loomcycle__pb2.ConfiguredRun.SerializeToString,
+            ),
+            'UpdateConfiguredRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateConfiguredRun,
+                    request_deserializer=loomcycle__pb2.UpdateConfiguredRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.ConfiguredRun.SerializeToString,
+            ),
+            'StartConfiguredRun': grpc.unary_stream_rpc_method_handler(
+                    servicer.StartConfiguredRun,
+                    request_deserializer=loomcycle__pb2.StartConfiguredRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.Event.SerializeToString,
+            ),
+            'DeleteConfiguredRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteConfiguredRun,
+                    request_deserializer=loomcycle__pb2.DeleteConfiguredRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.DeleteConfiguredRunResponse.SerializeToString,
+            ),
             'DirectoryUsers': grpc.unary_unary_rpc_method_handler(
                     servicer.DirectoryUsers,
                     request_deserializer=loomcycle__pb2.DirectoryUsersRequest.FromString,
@@ -1487,6 +1567,114 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/CompactRun',
             loomcycle__pb2.CompactRunRequest.SerializeToString,
             loomcycle__pb2.CompactRunResult.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateConfiguredRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/CreateConfiguredRun',
+            loomcycle__pb2.RunRequest.SerializeToString,
+            loomcycle__pb2.ConfiguredRun.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateConfiguredRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/UpdateConfiguredRun',
+            loomcycle__pb2.UpdateConfiguredRunRequest.SerializeToString,
+            loomcycle__pb2.ConfiguredRun.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def StartConfiguredRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/StartConfiguredRun',
+            loomcycle__pb2.StartConfiguredRunRequest.SerializeToString,
+            loomcycle__pb2.Event.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteConfiguredRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/DeleteConfiguredRun',
+            loomcycle__pb2.DeleteConfiguredRunRequest.SerializeToString,
+            loomcycle__pb2.DeleteConfiguredRunResponse.FromString,
             options,
             channel_credentials,
             insecure,
