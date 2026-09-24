@@ -31,7 +31,7 @@ func (p *Path) Name() string { return "Path" }
 
 // UsageHint implements tools.HintedTool — surfaced by Context op=guide.
 func (p *Path) UsageHint() string {
-	return "Paths are absolute; segments are [A-Za-z0-9._-] with no '..'. op=mkdir is a no-op (directories are implicit) — just write to the path."
+	return "Paths are absolute; segments are [A-Za-z0-9._-] with no '..'. Directories are implicit — mkdir is only needed to keep an EMPTY one."
 }
 
 func (p *Path) Description() string {

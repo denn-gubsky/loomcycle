@@ -115,8 +115,8 @@ await client.path({ op: "mv", scope: "user", path: "/docs/launch", to: "/archive
 
 `internal/tools/builtin/pathtool.go` (the tool) + `pathnorm.go` (grammar); the
 `dirents` table + `Dirent*` methods on both the sqlite and postgres stores
-(`internal/store`). The `path` help topic (`Context op=help topic=path`) is the
-in-agent reference.
+(`internal/store`). The `Path` tool article (`Context op=help topic=Path`, one article per
+operation as `Path/<op>`) is the in-agent reference.
 
 ---
 
