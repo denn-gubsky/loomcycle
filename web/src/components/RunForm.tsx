@@ -13,11 +13,20 @@ export default function RunForm({
   onSubmit,
   defaultAgent = "",
   defaultPrompt = "",
+  onSaveDraft,
+  savingDraft = false,
 }: {
   agents: string[];
   defaultUserId: string;
   submitting: boolean;
   onSubmit: (req: StartRunRequest) => void;
+  /**
+   * Save the same request as a DRAFT instead of running it: stored, validated,
+   * not started (no slot, no budget) until it is started from the runs list.
+   * Omitted = no "Save as draft" button.
+   */
+  onSaveDraft?: (req: StartRunRequest) => void;
+  savingDraft?: boolean;
   /**
    * Prefill, for a link that arrives from elsewhere in the UI with a run in mind
    * (Settings → Ontology's "review suggestions"). STAGED, never submitted: a link
@@ -38,16 +47,18 @@ export default function RunForm({
   const [interactive, setInteractive] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  // buildRequest validates the form and builds the request, or reports why it
+  // cannot and returns null. One builder for both buttons, so a draft carries
+  // exactly what the same run would.
+  const buildRequest = (): StartRunRequest | null => {
     setFormErr(null);
     if (!agent) {
       setFormErr("Pick an agent.");
-      return;
+      return null;
     }
     if (!prompt.trim()) {
       setFormErr("Enter a prompt.");
-      return;
+      return null;
     }
 
     const req: StartRunRequest = { agent, prompt };
@@ -75,10 +86,16 @@ export default function RunForm({
         req.metadata = parsed as Record<string, unknown>;
       } catch (e) {
         setFormErr(`metadata JSON: ${e instanceof Error ? e.message : String(e)}`);
-        return;
+        return null;
       }
     }
-    onSubmit(req);
+    return req;
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const req = buildRequest();
+    if (req) onSubmit(req);
   };
 
   return (
@@ -212,9 +229,22 @@ export default function RunForm({
       {formErr && <div className="modal-err">{formErr}</div>}
 
       <div className="run-form-actions">
-        <button type="submit" className="primary" disabled={submitting}>
+        <button type="submit" className="primary" disabled={submitting || savingDraft}>
           {submitting ? "Running…" : "Run agent"}
         </button>
+        {onSaveDraft && (
+          <button
+            type="button"
+            disabled={submitting || savingDraft}
+            title="Store this run without starting it — no slot, no budget — to review, edit and start later from the runs list"
+            onClick={() => {
+              const req = buildRequest();
+              if (req) onSaveDraft(req);
+            }}
+          >
+            {savingDraft ? "Saving…" : "Save as draft"}
+          </button>
+        )}
       </div>
     </form>
   );

@@ -13,6 +13,7 @@ import {
   getTranscript,
 } from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
+import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
@@ -59,6 +60,10 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   const [cancelInFlight, setCancelInFlight] = useState(false);
   const [residentInFlight, setResidentInFlight] = useState(false); // RFC BK P3
   const [parentAgent, setParentAgent] = useState<Agent | null>(null);
+  // A draft discarded from this pane no longer exists: say so instead of
+  // showing (or re-fetching into an error) the run that was just deleted.
+  const [discarded, setDiscarded] = useState(false);
+  useEffect(() => setDiscarded(false), [agentId]);
   const tailRef = useRef<HTMLDivElement | null>(null);
 
   // Initial fetch + auto-refresh while running.
@@ -144,6 +149,14 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   // v0.9.x — sub-tab strip above the transcript. Default "transcript"
   // shows the existing event-card stream + view toggle.
   const [activeTab, setActiveTab] = useAgentTab();
+
+  if (discarded) {
+    return (
+      <div className="agent-detail">
+        <div className="empty">Draft discarded — it never ran, and its session is gone.</div>
+      </div>
+    );
+  }
 
   return (
     <div className="agent-detail">
@@ -261,6 +274,13 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
             )}
           </div>
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
+          {agent.status === "configured" && (
+            <DraftPanel
+              agent={agent}
+              onDraftChange={(draft) => setAgent({ ...agent, draft })}
+              onDiscarded={() => setDiscarded(true)}
+            />
+          )}
         </div>
       ) : (
         <div className="empty">loading…</div>
