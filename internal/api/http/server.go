@@ -7996,8 +7996,9 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// pre_compact hooks may refuse the compaction — before the summary spends a
 	// model call. Refused as a 409 naming the hook, so the caller knows why.
 	hookIdent := hooks.Identity{Agent: run.Agent, UserID: run.UserID, AgentID: run.AgentID, Tenant: run.TenantID, RunID: runID}
+	hookCtx := withHookRun(ctx, hookIdent)
 	if s.hookDispatcher != nil {
-		gate := s.hookDispatcher.RunGate(ctx, hookIdent, hooks.PhasePreCompact,
+		gate := s.hookDispatcher.RunGate(hookCtx, hookIdent, hooks.PhasePreCompact,
 			hooks.LifecycleInfo{Trigger: "manual", ContextTokens: before})
 		if gate.Denied {
 			return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "denied_by_hook",
@@ -8108,7 +8109,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 		}
 	}
 	if s.hookDispatcher != nil {
-		s.hookDispatcher.Observe(ctx, hookIdent, hooks.PhasePostCompact,
+		s.hookDispatcher.Observe(hookCtx, hookIdent, hooks.PhasePostCompact,
 			hooks.LifecycleInfo{Trigger: "manual", BeforeTokens: before, AfterTokens: after})
 	}
 	return connector.CompactResult{RunID: runID, Compacted: true, BeforeTokens: before, AfterTokens: after, Applied: applied}, nil
@@ -8789,10 +8790,21 @@ func (s *Server) observeRunEnd(meta runStateMeta, status store.RunStatus, stopRe
 	if s.hookDispatcher == nil || meta.RunID == "" {
 		return
 	}
-	s.hookDispatcher.Observe(context.Background(), hooks.Identity{
+	ident := hooks.Identity{
 		Agent: meta.Agent, UserID: meta.UserID, AgentID: meta.AgentID, Tenant: meta.TenantID,
 		RunID: meta.RunID, ParentRunID: meta.ParentRunID,
-	}, hooks.PhaseRunEnd, hooks.LifecycleInfo{Status: string(status), StopReason: stopReason, Error: errMsg, FinalText: finalText})
+	}
+	s.hookDispatcher.Observe(withHookRun(context.Background(), ident), ident, hooks.PhaseRunEnd,
+		hooks.LifecycleInfo{Status: string(status), StopReason: stopReason, Error: errMsg, FinalText: finalText})
+}
+
+// withHookRun puts the run a hook fires for on its context, for a hook fired
+// outside the run's own loop (a manual compaction, the run's end). A code body's
+// Interruption call is recorded on that run, and refuses without one.
+func withHookRun(ctx context.Context, ident hooks.Identity) context.Context {
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: ident.UserID, AgentID: ident.AgentID, TenantID: ident.Tenant})
+	ctx = tools.WithRunID(ctx, ident.RunID)
+	return tools.WithAgentName(ctx, ident.Agent)
 }
 
 // authMiddleware moved to auth_principal.go (RFC L): it now resolves the

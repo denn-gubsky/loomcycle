@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -274,5 +275,52 @@ func TestSubagentHooks_TheAgentToolGoesThroughThem(t *testing.T) {
 	}
 	if !strings.Contains(deny.waitBody(t, `"subagent":"child"`), `"agent":"parent"`) {
 		t.Error("the hook did not see the parent as the agent")
+	}
+}
+
+// runRecordingTool stands in for the Interruption tool and records the run
+// each call was made on.
+type runRecordingTool struct {
+	mu   sync.Mutex
+	runs []string
+}
+
+func (r *runRecordingTool) Name() string                 { return "Interruption" }
+func (r *runRecordingTool) Description() string          { return "" }
+func (r *runRecordingTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
+func (r *runRecordingTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
+	r.mu.Lock()
+	r.runs = append(r.runs, tools.RunID(ctx))
+	r.mu.Unlock()
+	return tools.Result{Text: `{}`}, nil
+}
+
+// A hook fired outside the run's loop still knows its run: a run_end code
+// hook's notify is made on the run that ended. It used to be made on no run,
+// and the Interruption tool refused it.
+func TestRunEnd_ACodeHooksNotifyIsMadeOnTheRun(t *testing.T) {
+	h := newReviewHarness(t)
+	rec := &runRecordingTool{}
+	h.srv.SetCodeHookRunner(codehook.New(rec))
+	register(t, h.srv, &hooks.Hook{Owner: "ops", Name: "tell", Phase: hooks.PhaseRunEnd,
+		Code: `function hook(ev) { Interruption.notify({message: "ended " + ev.status}); }`})
+	runID, _, frames, stop := h.start(`{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write the plan"}]}]}`)
+	defer stop()
+	h.waitFrame(frames, "done")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		rec.mu.Lock()
+		runs := append([]string(nil), rec.runs...)
+		rec.mu.Unlock()
+		if len(runs) > 0 {
+			if runs[0] != runID {
+				t.Fatalf("notify made on run %q, want %q", runs[0], runID)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run_end hook never notified")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
