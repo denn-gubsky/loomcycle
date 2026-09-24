@@ -114,6 +114,27 @@ func TestContextPermissions_IncludesSqlAndHistoryScopes(t *testing.T) {
 	}
 }
 
+// op=doc returns how to call the tool — its article and operation topics — and
+// not only the description and schema the model already holds.
+func TestContextDoc_ReturnsTheToolsArticle(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Context{Help: set, Tools: []tools.Tool{&Path{}}}
+	ctx := tools.WithAgentTools(context.Background(), []string{"Path", "Context"})
+	out, res := callContext(t, c, ctx, `{"op":"doc","name":"Path"}`)
+	if res.IsError {
+		t.Fatalf("op=doc failed: %s", res.Text)
+	}
+	if art, _ := out["help"].(string); !strings.Contains(art, "## Operations") {
+		t.Errorf("help = %.80q…, want the Path tool article", out["help"])
+	}
+	if got := joinAny(out["operation_topics"]); !strings.HasPrefix(got, "Path/ls,") {
+		t.Errorf("operation_topics = %s", got)
+	}
+}
+
 func joinAny(v any) string {
 	arr, _ := v.([]any)
 	s := make([]string, 0, len(arr))

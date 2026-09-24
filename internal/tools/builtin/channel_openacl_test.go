@@ -76,7 +76,7 @@ func TestChannel_UnrestrictedPolicyReachesADeclaredChannel(t *testing.T) {
 	// channel falling through to a later guard (an empty scope, say) would also
 	// produce an error while the closed set had in fact been lifted.
 	_, _, _, err := c.resolveChannel(ctx, open, "publish", "never-declared")
-	if err == nil || !strings.Contains(err.Error(), "not declared in operator config") {
+	if err == nil || !strings.Contains(err.Error(), "is not declared") {
 		t.Errorf("unrestricted policy reached an UNDECLARED channel — it lifts the allowlist, "+
 			"not the closed set; err = %v", err)
 	}

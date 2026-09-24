@@ -1,7 +1,6 @@
 ---
 name: skills
 description: "The Skill tool — discover and load domain-specific instruction sets on demand, governed by the agent's skills: pattern allowlist."
-aliases: [skill]
 ---
 A **skill** is a named, reusable block of instructions (a `SKILL.md`
 body) you load into context **only when you need it**. Skills are

@@ -72,9 +72,10 @@ func TestToolArticle_IsExactAndIgnoresFeatureTopics(t *testing.T) {
 	if _, ok := set.ToolArticle("path"); ok {
 		t.Error("ToolArticle(\"path\") resolved; tool names are case-sensitive")
 	}
-	// `skills` is a feature topic aliased as `skill`; it is not the Skill tool's article.
-	if _, ok := set.ToolArticle("Skill"); ok {
-		t.Error("ToolArticle(\"Skill\") resolved to a feature topic")
+	// `search-providers` is a feature topic aliased as `websearch`; it is not the
+	// WebSearch tool's article.
+	if _, ok := set.ToolArticle("WebSearch"); ok {
+		t.Error("ToolArticle(\"WebSearch\") resolved to a feature topic")
 	}
 	if _, ok := set.ToolArticle("Path/ls"); ok {
 		t.Error("ToolArticle returned an operation article")

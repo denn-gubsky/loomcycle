@@ -32,13 +32,13 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"compaction",
 		"content-signatures",
 		"credentials",
-		"document",
+		"Document", // tool article, tools/Document.md
 		"dynamic-mcp",
 		"experimentation",
 		"fairness",
 		"fan-out-patterns",
 		"getting-started",
-		"history",
+		"History", // tool article, tools/History.md
 		"hooks",
 		"input-webhooks",
 		"installation",
@@ -88,25 +88,31 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 	}
 }
 
-// TestGet_SkillsCaseInsensitiveAndAlias: RFC BA gave every agent the
-// `Skill` tool on demand, so agents probe `Context op=help topic=Skill`
-// (the tool's own name). Get must resolve the `skills` topic under the
-// tool name, any case, and the `skill` alias — the reported gap was
-// `topic="Skill"` → "not found".
+// TestGet_SkillsCaseInsensitiveAndAlias: every agent holds the `Skill` tool on
+// demand, so agents probe `Context op=help topic=Skill` (the tool's own name);
+// the reported gap was `topic="Skill"` → "not found". The tool's name, any case,
+// now reaches the Skill tool article (which points on to the `skills` topic),
+// and the topic's own name, any case, reaches the topic.
 func TestGet_SkillsCaseInsensitiveAndAlias(t *testing.T) {
 	set, err := LoadSet("")
 	if err != nil {
 		t.Fatalf("LoadSet: %v", err)
 	}
-	for _, q := range []string{"skills", "Skills", "SKILLS", "Skill", "skill", " skill "} {
+	for q, want := range map[string]string{
+		"skills": "skills", "Skills": "skills", "SKILLS": "skills",
+		"Skill": "Skill", "skill": "Skill", " skill ": "Skill",
+	} {
 		topic, ok := set.Get(q)
 		if !ok {
-			t.Errorf("Get(%q) not found; want the skills topic", q)
+			t.Errorf("Get(%q) not found; want %q", q, want)
 			continue
 		}
-		if topic.Name != "skills" {
-			t.Errorf("Get(%q) resolved %q, want canonical \"skills\"", q, topic.Name)
+		if topic.Name != want {
+			t.Errorf("Get(%q) resolved %q, want %q", q, topic.Name, want)
 		}
+	}
+	if art, _ := set.Get("Skill"); !strings.Contains(art.Content, `"topic":"skills"`) {
+		t.Error("the Skill tool article no longer points on to the skills topic")
 	}
 	// A miss is still a miss (the forgiving lookup must not become a
 	// fuzzy match that resolves anything).
