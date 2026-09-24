@@ -285,94 +285,44 @@ type ParallelSpawnResult struct {
 	RunID string `json:"-"`
 }
 
-// agentInputSchema is the JSON Schema the model sees. Discriminated
-// by `op`; both shapes documented in `oneOf` so providers that surface
-// schema-driven help (Claude, OpenAI) show the right field set per op.
-// v0.8.10's Gemini schema sanitizer merges `oneOf` branches so the
-// schema lands cleanly there too.
+// agentInputSchema is the JSON Schema the model sees: ONE object, with `op`
+// naming the operation and every field any operation reads.
+//
+// It used to be a top-level oneOf, one branch per op. Neither Anthropic nor
+// Gemini accepts a top-level combinator, so both drivers flatten one, and their
+// flattening kept the FIRST branch's op enum and the union of every branch's
+// required list: a Claude or Gemini model was told Agent could only `spawn`,
+// and that every call needed name, prompt, spawns and child_run_id at once.
+// Written flat here, every provider gets the same accurate schema, and
+// schema-reading surfaces (Context op=guide, the help articles' checks) can see
+// the ops. What each op requires is enforced in Execute and stated per field.
 const agentInputSchema = `{
   "type": "object",
-  "oneOf": [
-    {
-      "title": "spawn — single sub-agent (default)",
-      "properties": {
-        "op":     {"type": "string", "enum": ["spawn"], "description": "Optional; defaults to spawn when omitted."},
-        "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
-        "prompt": {"type": "string", "description": "User-message body the sub-agent sees. Treat as the task description; do not include auth tokens (the sub-agent gets its own auth context)."},
-        "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id (returned by AgentDef.create or AgentDef.fork). The row's name must match the 'name' field."},
-        "compaction": {"type": "object", "description": "Optional. Override this child's context-compaction settings (it inherits yours by default). Per field: enabled (auto-compact on/off), target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}}
-      },
-      "required": ["name", "prompt"]
+  "properties": {
+    "op": {"type": "string", "enum": ["spawn","parallel_spawn","open","send","poll","cancel","close"], "description": "Which operation (default spawn). spawn: run one sub-agent and return its final text. parallel_spawn: run several at once and return a per-child envelope. open: start a RESIDENT sub-agent you steer over several turns (returns child_run_id). send: give a resident child its next instruction. poll: check on a resident child without new input. cancel: stop a resident child's current turn (it stays alive). close: shut a resident child down and free its resources — always close what you open."},
+    "name": {"type": "string", "description": "spawn / open (required): the sub-agent's name, a key in the agents map."},
+    "prompt": {"type": "string", "description": "spawn / open / send (required): the instruction the child sees. For spawn and open, the task; for send, the next instruction — the child sees its whole prior conversation. Do not include auth tokens (the child gets its own auth context)."},
+    "def_id": {"type": "string", "description": "spawn / open (optional): pin the child to a specific agent_defs row id (from AgentDef.create or AgentDef.fork). The row's name must match the name field."},
+    "compaction": {"type": "object", "description": "spawn (optional): override this child's context-compaction settings (it inherits yours by default). Per field: enabled (auto-compact on/off), target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}},
+    "spawns": {
+      "type": "array",
+      "minItems": 1,
+      "description": "parallel_spawn (required): the sub-agents to run concurrently. Returns when ALL children finish; a child's failure is reported inside the result envelope, not raised.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name":   {"type": "string", "description": "The sub-agent's name, a key in the agents map."},
+          "prompt": {"type": "string", "description": "The instruction this child sees."},
+          "def_id": {"type": "string", "description": "Optional. Pin this child to a specific agent_defs row id."},
+          "compaction": {"type": "object", "description": "Optional per-child context-compaction override (inherits yours by default). Fields: enabled, target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}}
+        },
+        "required": ["name", "prompt"]
+      }
     },
-    {
-      "title": "parallel_spawn — fan out to N sub-agents concurrently",
-      "properties": {
-        "op": {"type": "string", "enum": ["parallel_spawn"], "description": "Required for the fan-out shape."},
-        "spawns": {
-          "type": "array",
-          "minItems": 1,
-          "description": "Sub-agents to spawn concurrently. Returns when ALL children complete (success or error). Per-child errors are captured inside the result envelope, not escalated.",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
-              "prompt": {"type": "string", "description": "User-message body the sub-agent sees."},
-              "def_id": {"type": "string", "description": "Optional. Pin this sub-run to a specific agent_defs row id."},
-              "compaction": {"type": "object", "description": "Optional per-child context-compaction override (inherits yours by default). Fields: enabled, target_percentage (10-50), keep_last_n, keep_first, autocompact_at_pct (50-95), model.", "properties": {"enabled": {"type": "boolean"}, "target_percentage": {"type": "integer"}, "keep_last_n": {"type": "integer"}, "keep_first": {"type": "boolean"}, "autocompact_at_pct": {"type": "integer"}, "model": {"type": "string"}}}
-            },
-            "required": ["name", "prompt"]
-          }
-        }
-      },
-      "required": ["op", "spawns"]
-    },
-    {
-      "title": "open — start a resident, steerable sub-agent",
-      "properties": {
-        "op":     {"type": "string", "enum": ["open"], "description": "Start a PERSISTENT sub-agent you can steer over multiple turns. Returns {child_run_id, state, output}. The child keeps its conversation AND any resources it holds (e.g. a warm sandbox container) between sends — use this instead of re-spawning when the child must stay stateful."},
-        "name":   {"type": "string", "description": "Sub-agent name. Must match a key in the loomcycle.yaml agents map."},
-        "prompt": {"type": "string", "description": "The first instruction for the child. It runs one turn, then parks awaiting your next send."},
-        "def_id": {"type": "string", "description": "Optional. Pin this child to a specific agent_defs row id."},
-        "idle_ttl_seconds": {"type": "integer", "description": "Optional. Reap the child after this many seconds with no send (0 = operator default). You own the child's lifecycle — close it when done."}
-      },
-      "required": ["op", "name", "prompt"]
-    },
-    {
-      "title": "send — give a resident sub-agent its next instruction",
-      "properties": {
-        "op":           {"type": "string", "enum": ["send"], "description": "Steer a resident child's next turn. Waits for the turn and returns its output."},
-        "child_run_id": {"type": "string", "description": "The child_run_id returned by op=open."},
-        "prompt":       {"type": "string", "description": "The next instruction for the child. It sees its full prior conversation."},
-        "timeout_ms":   {"type": "integer", "description": "Optional. 0 (default) blocks until the child parks. >0 returns early with state \"running\" + the partial output if the turn is still going after this long — then use op=poll to await it, or op=cancel to interrupt."}
-      },
-      "required": ["op", "child_run_id", "prompt"]
-    },
-    {
-      "title": "poll — check on a resident sub-agent without sending input",
-      "properties": {
-        "op":           {"type": "string", "enum": ["poll"], "description": "Return a resident child's current output-so-far + state, without giving it new input. Use it to await a child after send returned state \"running\"."},
-        "child_run_id": {"type": "string", "description": "The child_run_id to check."},
-        "timeout_ms":   {"type": "integer", "description": "Optional. 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
-      },
-      "required": ["op", "child_run_id"]
-    },
-    {
-      "title": "cancel — stop a resident sub-agent's current turn",
-      "properties": {
-        "op":           {"type": "string", "enum": ["cancel"], "description": "Turn-cancel a resident child: stop its in-flight turn and re-park it (the child stays alive — use op=close to shut it down). A no-op if it's already parked."},
-        "child_run_id": {"type": "string", "description": "The child_run_id whose current turn to stop."}
-      },
-      "required": ["op", "child_run_id"]
-    },
-    {
-      "title": "close — shut down a resident sub-agent",
-      "properties": {
-        "op":           {"type": "string", "enum": ["close"], "description": "Finalize a resident child and free its resources (idempotent). Always close a child you opened once you're done with it."},
-        "child_run_id": {"type": "string", "description": "The child_run_id to close."}
-      },
-      "required": ["op", "child_run_id"]
-    }
-  ]
+    "idle_ttl_seconds": {"type": "integer", "description": "open (optional): reap the child after this many seconds with no send (0 = operator default). You own the child's lifecycle — close it when done."},
+    "child_run_id": {"type": "string", "description": "send / poll / cancel / close (required): the child_run_id op=open returned."},
+    "timeout_ms": {"type": "integer", "description": "send / poll (optional). send: 0 (default) blocks until the child parks; >0 returns early with state \"running\" and the partial output — then poll to await it or cancel to interrupt. poll: 0 (default) is a non-blocking snapshot; >0 waits up to this long for the child to park."}
+  }
 }`
 
 const agentDescription = `Spawn or drive named sub-agents, each with its own tool allowlist (your tool set does not transfer). ` +
