@@ -211,11 +211,12 @@ class LoomcycleClient:
         owner: str,
         name: str,
         phase: str,
-        callback_url: str,
+        callback_url: str = "",
         agents: Optional[Sequence[str]] = None,
         tools: Optional[Sequence[str]] = None,
         fail_mode: str = "open",
         timeout_ms: int = 0,
+        code: str = "",
     ) -> Mapping[str, Any]:
         """Register a pre- or post-tool webhook. Returns
         ``{"id": "hook_..."}``.
@@ -230,7 +231,12 @@ class LoomcycleClient:
         (webhook errors fail the tool call). The callback half is
         HTTP — loomcycle POSTs ``PreHookCall`` / ``PostHookCall``
         payloads to ``callback_url``; the consumer runs the
-        receiver in whatever framework they use."""
+        receiver in whatever framework they use.
+
+        Instead of ``callback_url``, ``code`` gives a code-js body: a
+        top-level ``hook(ev)`` function run in-process by loomcycle,
+        whose only tool is ``Interruption``. Set exactly one; code
+        needs code hooks enabled on the server."""
         try:
             resp = await self._stub.RegisterHook(
                 pb.RegisterHookRequest(
@@ -242,6 +248,7 @@ class LoomcycleClient:
                     callback_url=callback_url,
                     fail_mode=fail_mode,
                     timeout_ms=timeout_ms,
+                    code=code,
                 ),
                 metadata=self._auth_metadata(),
             )
@@ -2010,6 +2017,7 @@ def _hook_to_dict(h: pb.Hook) -> Mapping[str, Any]:
         "fail_mode": h.fail_mode,
         "timeout_ms": h.timeout_ms,
         "registered_at": _ts_to_iso(h.registered_at) if h.HasField("registered_at") else "",
+        "code": h.code,
     }
 
 

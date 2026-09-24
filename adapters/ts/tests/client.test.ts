@@ -888,6 +888,25 @@ describe("hook management", () => {
     });
   });
 
+  it("registerHook sends a code body in place of a callback URL", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ id: "hook_code" }),
+    ]);
+    await client.registerHook({
+      owner: "ops",
+      name: "gate",
+      phase: "pre",
+      code: "function hook(ev) { return {}; }",
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body).toEqual({
+      owner: "ops",
+      name: "gate",
+      phase: "pre",
+      code: "function hook(ev) { return {}; }",
+    });
+  });
+
   it("registerHook on 400 raises InvalidArgumentError", async () => {
     const { client } = makeClient([
       errorResponse(400, "invalid_registration: callback_url required"),

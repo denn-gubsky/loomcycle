@@ -257,6 +257,9 @@ type Server struct {
 	// changes.
 	hookRegistry   hooks.RegistryInterface
 	hookDispatcher *hooks.Dispatcher
+	// codeHooks runs code-js hook bodies; nil unless code hooks are enabled,
+	// in which case registering one is refused.
+	codeHooks hooks.CodeRunner
 
 	// sessionLockPG is the v0.12.5 Phase 6 cluster-mode session lock.
 	// When set, trySessionLock dispatches to it instead of sessionLocks
@@ -3037,6 +3040,14 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 	s.hookRegistry = r
 	s.hookDispatcher = hooks.NewDispatcherWithPrivateHosts(r, nil, s.cfgHolder.Load().Hooks.PrivateHostAllowlist)
+	s.hookDispatcher.SetCodeRunner(s.codeHooks)
+}
+
+// SetCodeHookRunner enables code-js hook bodies. Same boot-wiring invariant as
+// SetHookRegistry, and either may be called first.
+func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
+	s.codeHooks = r
+	s.hookDispatcher.SetCodeRunner(r)
 }
 
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide

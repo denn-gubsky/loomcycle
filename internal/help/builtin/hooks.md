@@ -1,12 +1,13 @@
 ---
 name: hooks
-description: Tool-use hooks — register HTTP webhooks that wrap tool dispatch. Pre-hooks rewrite/deny/widen a tool call before it runs; Post-hooks rewrite the result. Selectors by (agent, tool, phase), fail-open vs fail-closed, opt-in per-call host-widening, DB-backed in cluster mode.
+description: Tool-use hooks — register a webhook or a JavaScript body that wraps tool dispatch. Pre-hooks rewrite/deny/widen a tool call before it runs; post-hooks rewrite the result or add context; a code hook can ask an operator and decide on the answer. Selectors by (agent, tool, phase), fail-open vs fail-closed, opt-in per-call host-widening, DB-backed in cluster mode.
 ---
 
 # Tool-use hooks
 
-A tool-use hook is an **operator- or app-registered HTTP webhook that the
-agent loop calls around every matching tool dispatch**. A `pre` hook runs
+A tool-use hook is an **operator- or app-registered HTTP webhook, or a
+JavaScript body (see *Code hooks* below), that the agent loop calls around
+every matching tool dispatch**. A `pre` hook runs
 *before* the tool, and can rewrite the input the tool sees, deny the call
 with a synthetic result the model receives instead, or (when explicitly
 permitted) widen the host allowlist for that one call. A `post` hook runs
@@ -55,7 +56,7 @@ A registration body:
 {
   "owner": "dlp-scanner",          // app UID; (owner, name) is the identity
   "name": "scan-web-fetches",
-  "phase": "pre",                  // "pre" | "post"
+  "phase": "pre",                  // "pre" | "post" | "post_failure"
   "agents": ["researcher", "qa-*"], // exact or "prefix*"; omit = match all
   "tools": ["WebFetch", "mcp__jobs__*"],
   "callback_url": "https://dlp.internal/loomcycle-hook",
@@ -84,18 +85,71 @@ empty body / `204` passes the call through unchanged:
   host-widening below); opt-in and gated.
 
 A `post` webhook response (`PostHookResult`): `result` replaces the tool
-result, or an empty body passes it through.
+result, `additional_context` is appended to the result's text, or an empty
+body passes it through. A `post` hook sees every result, failed or not; a
+`post_failure` hook runs only when the tool failed, before the `post` chain,
+with the failure's classification in `tool_result.error`.
 
 When several hooks match, `pre` hooks run **earliest-registration-first**
 and `post` hooks run **LIFO** (classic middleware nesting), ordered by
 registration time.
+
+## Code hooks
+
+Instead of `callback_url`, a registration may carry `code`: JavaScript that
+loomcycle runs in-process, with no network round-trip and no tokens. The
+operator enables it with `LOOMCYCLE_CODE_HOOKS_ENABLED=1`; otherwise a code
+registration is refused. Set exactly one of `callback_url` and `code`.
+
+```js
+function hook(ev) {
+  // ev: the payload a webhook would receive, plus ev.event —
+  // "pre_tool_use", "post_tool_use" or "post_tool_use_failure".
+  var url = ev.tool_call.input.url || "";
+  if (ev.event === "pre_tool_use" && /\.internal\//.test(url)) {
+    var a = Interruption.ask({question: "Let " + ev.agent + " fetch " + url + "?", options: ["allow", "deny"]});
+    return a === "allow" ? {} : {decision: "deny", reason: "the operator declined"};
+  }
+  // Returning nothing lets the call through.
+}
+```
+
+What the body returns:
+
+- **pre:** `{decision: "deny", reason}` stops the call (the reason is what
+  the model sees); `{updated_input}` rewrites the input; `{allow_hosts}` is
+  the same gated per-call grant as a webhook's.
+- **post / post_failure:** `{updated_output: {text, is_error}}` replaces the
+  result; `{additional_context}` is appended to it.
+
+A field that does not apply to the phase, or a misspelt field, counts as the
+hook failing, and `fail_mode` decides — a mistake is reported, not ignored.
+
+The body runs in the code-agent sandbox (no fetch, require, filesystem, eval
+or Function; a deterministic clock and RNG), and its **only tool is
+`Interruption`**:
+
+- `Interruption.ask({question, options, context, timeout_ms})` holds the
+  tool call until an operator answers. It returns the answer, or `null` if
+  the operator declined; a timeout or cancellation throws, so an uncaught one
+  fails the hook. The question is a pending interrupt on the run, answered
+  where any other is. The hook asks under its own grant, so it works whether
+  or not the agent itself may interrupt.
+- `Interruption.notify({message})` informs without waiting.
+
+Each ask runs the body again from the start, replaying the answers it
+already has. So a body must decide only from `ev` and those answers, and a
+global it sets does not survive to the next call. `timeout_ms` bounds each
+run of the code: 50 ms by default, at most 1 s. The time an operator takes
+to answer is not counted. A body may ask at most 16 times per call.
 
 ## Fail-open vs fail-closed
 
 `fail_mode` decides what a webhook timeout / 5xx / network error means:
 
 - **`open`** (default) — the original input or result passes through
-  unchanged. Right for telemetry-shaped hooks: a down hook must never
+  unchanged. A run that is cancelled while a hook is deciding still never
+  runs the tool. Right for telemetry-shaped hooks: a down hook must never
   block tool dispatch.
 - **`closed`** — the tool call fails with `is_error=true`. Right for
   security-shaped hooks (an injection or DLP scanner) where a down hook

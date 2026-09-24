@@ -33,6 +33,15 @@ func (s *Server) RegisterHook(ctx context.Context, req connector.RegisterHookReq
 	if allTenants {
 		hookTenant = ""
 	}
+	if req.Code != "" {
+		// A body that cannot run is refused now, not at its first matching call.
+		if s.codeHooks == nil {
+			return connector.RegisterHookResponse{}, fmt.Errorf("%w: code hooks are not enabled on this server (set LOOMCYCLE_CODE_HOOKS_ENABLED=1)", connector.ErrHookInvalidRegistration)
+		}
+		if err := s.codeHooks.Compile(req.Code); err != nil {
+			return connector.RegisterHookResponse{}, fmt.Errorf("%w: code: %s", connector.ErrHookInvalidRegistration, err.Error())
+		}
+	}
 	h := &hooks.Hook{
 		Tenant:      hookTenant,
 		Owner:       req.Owner,
@@ -43,6 +52,7 @@ func (s *Server) RegisterHook(ctx context.Context, req connector.RegisterHookReq
 		CallbackURL: req.CallbackURL,
 		FailMode:    req.FailMode,
 		TimeoutMs:   req.TimeoutMs,
+		Code:        req.Code,
 	}
 	id, err := s.hookRegistry.Register(h)
 	if err != nil {

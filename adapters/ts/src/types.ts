@@ -2070,6 +2070,8 @@ export interface Hook {
   fail_mode: HookFailMode;
   timeout_ms: number;
   registered_at: string; // ISO 8601
+  /** The code-js body, when the hook has one instead of a callback_url. */
+  code?: string;
 }
 
 /** RegisterHookOptions uses camelCase (JS norm for method parameters)
@@ -2087,12 +2089,18 @@ export interface RegisterHookOptions {
   /** Tool name globs (same syntax). Empty matches every tool. */
   tools?: string[];
   /** http:// or https:// URL loomcycle POSTs PreHookCall /
-   *  PostHookCall payloads to. */
-  callbackUrl: string;
+   *  PostHookCall payloads to. Set this or `code`. */
+  callbackUrl?: string;
+  /** A code-js body in place of a webhook: JavaScript defining a
+   *  top-level `hook(ev)` that returns the decision. Its only tool is
+   *  `Interruption` (ask, notify). Needs code hooks enabled on the
+   *  server. Set this or `callbackUrl`. */
+  code?: string;
   /** "open" (default) — webhook errors pass through. "closed" — webhook
    *  errors fail the tool call with IsError=true. */
   failMode?: HookFailMode;
-  /** Per-call timeout. 0 / omitted = registry default (5 s). */
+  /** Per-call timeout. 0 / omitted = registry default (5 s; 50 ms for a
+   *  code body, where it bounds each run of the code, capped at 1 s). */
   timeoutMs?: number;
 }
 
