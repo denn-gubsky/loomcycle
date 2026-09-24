@@ -129,7 +129,7 @@ const contextInputSchema = `{
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
     "depth":           {"type": "integer", "description": "lineage only: max depth to walk in each direction (default 10, cap 100)."},
     "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."},
-    "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. Omitted = return the topic index (name + description for each available topic)."},
+    "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. A tool's article is named after the tool (Path); one of its operations is <Tool>/<op> (Path/ls), with call examples. Omitted = return the topic index (name + description for each available topic)."},
     "query":           {"type": "string", "description": "help only: hybrid search across help topic SECTIONS; returns the top matches as {topic_slug, heading, snippet, score}. Then fetch a match's full content with topic=<topic_slug>. When set, topic is ignored."}
   },
   "required": ["op"],
@@ -273,6 +273,14 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// agent's definition may use, so an agent seeing an expansion refused
 		// can tell WHY rather than guessing.
 		"operator_authored": tools.OperatorAuthored(ctx),
+	}
+	// scopes: for each scoped tool this run holds, which values of its `scope`
+	// argument this run may use, and for the rest the refusal a call would get.
+	// Answered by each tool's own check, so it agrees with the tools by
+	// construction. agent_name, user_id and tenant_id above are what those
+	// scopes resolve to.
+	if sc := c.scopeReport(ctx); len(sc) > 0 {
+		out["scopes"] = sc
 	}
 	// sampling: the resolved LLM sampling params (temperature, top_p, …) in
 	// effect for this run (per-run > per-agent). Non-secret — the agent is
@@ -676,7 +684,11 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		"memory": map[string]any{
 			"allowed_scopes": memPol.AllowedScopes,
 			"quota_bytes":    memPol.QuotaBytes,
+			// The sql_* ops and Document's tenant scope check this grant, not
+			// allowed_scopes; without it the model sees half its memory policy.
+			"sql_scopes": tools.SqlMemPolicy(ctx).AllowedScopes,
 		},
+		"history_scopes": tools.HistoryPolicy(ctx).Scopes,
 		"channels": map[string]any{
 			"publish":   chPol.Publish,
 			"subscribe": chPol.Subscribe,
@@ -987,9 +999,12 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 			Description string `json:"description"`
 			Source      string `json:"source"`
 		}
-		all := c.Help.All()
-		out := make([]idxEntry, 0, len(all))
-		for _, t := range all {
+		// Operation articles are left out: there are hundreds, and each is
+		// listed by its tool article, which is in the index.
+		names := c.Help.IndexNames()
+		out := make([]idxEntry, 0, len(names))
+		for _, n := range names {
+			t, _ := c.Help.Get(n)
 			out = append(out, idxEntry{
 				Name:        t.Name,
 				Description: t.Description,
@@ -999,24 +1014,98 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 		return okJSON(map[string]any{
 			"topics": out,
 			"count":  len(out),
-			"hint":   "Call help with topic=<name> to read a topic's full content.",
+			"hint":   "Call help with topic=<name> to read a topic's full content. A tool's article lists its operations; read one as topic=<Tool>/<op>.",
 		})
 	}
 	t, ok := c.Help.Get(in.Topic)
 	if !ok {
-		// Surface the index in the error so the model can self-
-		// correct without a second round-trip.
-		return errResult(fmt.Sprintf("help: topic %q not found (available: %s)", in.Topic, strings.Join(c.Help.Names(), ", "))), nil
+		// Surface what exists in the error so the model can self-correct
+		// without a second round-trip: the tool's operations when it asked for
+		// one that has no article, else the index.
+		if tool, _, isOp := strings.Cut(opSpelling.Replace(strings.TrimSpace(in.Topic)), "/"); isOp {
+			if art, ok := c.Help.Get(tool); ok && art.Tool != "" {
+				var ops []string
+				for _, o := range c.Help.OpsOf(art.Tool) {
+					ops = append(ops, o.Name)
+				}
+				return errResult(fmt.Sprintf("help: topic %q not found; %s documents: %s", in.Topic, art.Tool, strings.Join(ops, ", "))), nil
+			}
+		}
+		return errResult(fmt.Sprintf("help: topic %q not found (available: %s)", in.Topic, strings.Join(c.Help.IndexNames(), ", "))), nil
 	}
-	return okJSON(map[string]any{
+	resp := map[string]any{
 		"name":        t.Name,
 		"description": t.Description,
 		"content":     t.Content,
 		"source":      t.Source,
-	})
+	}
+	// A tool article is an index of its operations; the list comes from what is
+	// loaded, so it cannot name an article that does not exist.
+	if t.Tool != "" && !t.IsOpArticle() {
+		type opEntry struct {
+			Topic       string `json:"topic"`
+			Description string `json:"description"`
+		}
+		var ops []opEntry
+		for _, o := range c.Help.OpsOf(t.Tool) {
+			ops = append(ops, opEntry{Topic: o.Name, Description: o.Description})
+		}
+		if len(ops) > 0 {
+			resp["operations"] = ops
+		}
+	}
+	return okJSON(resp)
 }
 
+// opSpelling folds the ways a model writes an operation topic (Memory.recall,
+// "Memory recall") onto the canonical Memory/recall.
+var opSpelling = strings.NewReplacer(".", "/", " ", "/")
+
 var _ tools.Tool = (*Context)(nil)
+
+// HasHelpTopic implements tools.HelpIndex: an exact-name lookup, because the
+// pointer a tool's description carries must resolve exactly as written.
+func (c *Context) HasHelpTopic(name string) bool { return c.Help.Has(name) }
+
+// scopeFieldReport is one tools.ScopeField as op=self shows it: the granted
+// values as a list a model can read at a glance, the refused ones with the
+// reason a call would be given.
+type scopeFieldReport struct {
+	Applies string            `json:"applies,omitempty"`
+	Granted []string          `json:"granted"`
+	Refused map[string]string `json:"refused,omitempty"`
+}
+
+// scopeReport is the per-tool scope grants of this run's scoped tools, keyed by
+// tool name. Filtered by the run's effective tools exactly as op=tools is: an
+// agent learns nothing about tools it does not hold.
+func (c *Context) scopeReport(ctx context.Context) map[string][]scopeFieldReport {
+	allowSet, ok := agentToolSet(ctx)
+	out := map[string][]scopeFieldReport{}
+	for _, t := range c.Tools {
+		st, scoped := t.(tools.ScopedTool)
+		if !scoped || (ok && !policy.Matches(t.Name(), allowSet)) {
+			continue
+		}
+		var fields []scopeFieldReport
+		for _, f := range st.ScopeGrants(ctx) {
+			r := scopeFieldReport{Applies: f.Applies, Granted: []string{}}
+			for _, g := range f.Grants {
+				if g.Granted {
+					r.Granted = append(r.Granted, g.Scope)
+					continue
+				}
+				if r.Refused == nil {
+					r.Refused = map[string]string{}
+				}
+				r.Refused[g.Scope] = g.Reason
+			}
+			fields = append(fields, r)
+		}
+		out[t.Name()] = fields
+	}
+	return out
+}
 
 // selfNames reads the names the end-user declared for themselves in their user-root
 // Document's Identity section.

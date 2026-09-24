@@ -1,64 +1,127 @@
 ---
 name: scopes
-description: agent vs user vs global scope — the same model across Memory, Channel, and (read-only) Evaluation.
+description: "Scopes — agent, user, tenant (and run): which store a call reads or writes, what each resolves to, which tools use which, and what this run is granted."
 ---
-Scopes are loomcycle's primary isolation axis. The model picks a
-SCOPE (a category); the runtime resolves SCOPE_ID server-side from
-your ctx. A model-supplied scope_id would let one user's agent
-read another user's keys; the split is the security invariant.
+A **scope** says WHOSE store a call reads or writes. You choose the scope; the
+runtime fills in the identity from the run itself. You never pass an id for
+it — which is what stops one user's agent from reading another user's data.
 
-## The three scopes
+**First, find out what you are granted.** Every scoped tool's description ends
+with the scopes this run may use, and `{"op":"self"}` on the Context tool
+returns a `scopes` block: for each scoped tool you hold, the granted values
+and, for each refused one, the exact reason a call would be given.
 
-| Scope | scope_id is resolved to | Use when |
-|---|---|---|
-| `agent` | yaml agent name (from `Context.self`) | per-agent state shared across every user and every run of that agent (counters, learned facts, per-agent voice) |
-| `user` | run's `user_id` (from `Context.self`) | per-end-user state shared across every agent that has user-scope access (preferences, conversation history facets) |
-| `global` | empty string (single key) | cross-tenant fan-out (alarm channels, runtime broadcasts). **Use sparingly** — operator yaml ACL is the only isolation here. |
+## The scopes
 
-## How Memory uses scopes
+| Scope | Resolves to | Shared with | Use it for |
+|---|---|---|---|
+| `agent` | this agent's name | every run of THIS agent, for every user | the agent's own counters, learned conventions, working notes |
+| `user` | the run's user id | every agent that works for THIS user | the user's preferences, their facts, their documents |
+| `tenant` | the run's tenant | every user and every agent in the tenant | curated reference material the whole team should read |
+| `run` | the top-level run | this run and the sub-agents it spawns; dropped when the run ends | scratch tables for one task (SQL only) |
 
-`Memory.set(scope=agent, key=foo, value=42)`:
+Widest to narrowest: tenant ⊃ user ⊃ agent. A wider scope is not a fallback
+for a narrower one: **each call reads exactly one scope.** A `user` search does
+not see `tenant` knowledge. To consult both, make two calls.
 
-- resolves scope_id to your agent's yaml name (e.g. "qa-bot")
-- writes to (scope=agent, scope_id="qa-bot", key="foo")
-- another qa-bot run reads it back with `Memory.get(scope=agent, key=foo)`
-- a *different* agent ("review-bot") with `memory_scopes: [agent]` reads
-  its own keyspace under (scope=agent, scope_id="review-bot") — there
-  is NO cross-agent leak.
+`user` needs a user id on the run. On a run started without one, every `user`
+call is refused whatever the grant says.
 
-Cross-agent shared state lives under `scope=user`:
+## Which tool uses which
 
+| Tool | `scope` values | Default when omitted | What grants each value |
+|---|---|---|---|
+| Memory (get/set/search/recall/…) | `agent`, `user`, `tenant` | none — `scope` is required | the agent's `memory_scopes`; unset means `user` (+ `tenant` for a team member) |
+| Memory (`sql_*` ops) | `agent`, `user`, `run`, `tenant` | none — required | the agent's `sql_scopes`; unset means `user` |
+| Document | `agent`, `user`, `tenant` | `user` | `agent` and `user` are open; `tenant` needs BOTH `memory_scopes` and `sql_scopes` to include `tenant` |
+| Path | `agent`, `user`, `tenant` | `agent` | open; the tree you name must match where the resource lives |
+| History | `self`, `user`, `tenant`, `global` | `self` | the agent's `history_scope`; unset means `user` |
+| CredentialDef | `tenant`, `user`, `agent` | `tenant` | open |
+
+Two traps in that table:
+
+- **History's `self` is not you.** It means this AGENT's chats across every
+  user — wider than `user`, which is the caller's own chats. The default grant
+  is `user` but the default scope is `self`, so **always pass `scope` to
+  History**.
+- **Defaults differ per tool.** Path defaults to `agent`, Document to `user`.
+  A document written with no scope and then looked up in Path with no scope
+  is looked up in the wrong tree. Pass `scope` on both calls.
+
+Channels are scoped differently: each channel declares its own scope when it is
+defined, and your agent's `channels` publish/subscribe patterns decide which
+you may use. There is no `scope` argument to choose.
+
+## Choosing a scope
+
+- A preference or fact the **user** told you → `user`. Every agent working for
+  them will see it, and no other user will.
+- Something about **how you work** — a convention, a counter, a lesson — →
+  `agent`.
+- Reference material **the whole team** should rely on → `tenant`. It is read
+  by every user and agent in the tenant as ground truth, so never put anything
+  there derived from untrusted text.
+- Intermediate results for **this task only** → SQL `run`.
+
+When unsure between `user` and `tenant`, Memory's `placement` op answers which
+scope a batch of facts belongs in, without writing anything.
+
+## Examples
+
+A user's preference, visible to every agent that works for them:
+
+```json tool=Memory
+{"op": "set", "scope": "user", "key": "preferred_language", "value": "en"}
 ```
-qa-bot:    Memory.set(scope=user, key=preferences, value={...})
-review-bot:Memory.get(scope=user, key=preferences)   ← reads the same row
+
+This agent's own counter, shared across all its runs:
+
+```json tool=Memory
+{"op": "incr", "scope": "agent", "key": "reports_written", "delta": 1}
 ```
 
-This works because review-bot's `memory_scopes: [user]` grants it
-read access, and the run's `user_id` is the shared scope_id.
+Searching the tenant's shared knowledge — a separate call from searching the
+user's own:
 
-## How Channel uses scopes
+```json tool=Memory
+{"op": "search", "scope": "tenant", "query": "release checklist"}
+```
 
-Same model — but cursor isolation matters more. Two agents
-subscribing to `findings` with scope=`agent` get DIFFERENT cursors
-(each tracks its own drain position). With scope=`user`, they share
-a cursor (work-distribution queue keyed by end-user).
+A scratch table for this task, gone when the run ends:
 
-## Quick lookup table
+```json tool=Memory
+{"op": "sql_exec", "scope": "run", "statement": "CREATE TABLE findings (id INTEGER PRIMARY KEY, note TEXT)"}
+```
 
-| You want… | Scope |
-|---|---|
-| State that survives across runs of THIS agent | `agent` |
-| State that follows THE USER across all agents | `user` |
-| A broadcast channel every subscriber sees | `global` |
-| A queue split between identical agent runs | `agent` |
-| A queue keyed by user (one user at a time consumes) | `user` |
+A document the whole tenant should read:
 
-## What you can't do
+```json tool=Document
+{"op": "create_document", "scope": "tenant", "title": "Onboarding guide", "path": "/docs/onboarding"}
+```
 
-- You can't pass `scope_id` directly. The runtime resolves it.
-- You can't write to a scope your agent yaml doesn't grant. If
-  `memory_scopes` is empty, every Memory call refuses.
-- You can't read another user's `scope=user` data — the resolved
-  scope_id locks it to your own user_id.
+The same document, found by path — in the SAME scope it was written to:
 
-Check what scopes you have with `Context.permissions`.
+```json tool=Path
+{"op": "resolve", "path": "/docs/onboarding", "scope": "tenant"}
+```
+
+The user's own past chats (not `self`, which is every user's chats with this
+agent):
+
+```json tool=History
+{"op": "search", "scope": "user", "query": "invoice"}
+```
+
+## What a refusal means
+
+- **Not granted** — "scope "tenant" not in this agent's memory_scopes": the
+  operator has not granted it. Use a scope you have; do not retry the same call.
+- **Cannot resolve** — "scope=user requires a user_id on the run": the grant
+  exists but this run has no user. Use `agent`, or tell the user the run needs
+  to be started for them.
+- **Team member confinement** — a user who is an isolated member of the tenant
+  may use only their own `user` and `agent` scopes; `tenant` is refused for
+  them whatever the agent is granted.
+
+None of these is fixed by retrying. `{"op":"self"}` on the Context tool shows
+the full picture before you try.
