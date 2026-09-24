@@ -373,7 +373,6 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 	in := spawnRequestToRunInput(d.SpawnRunRequest)
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = d.Interactive != nil && *d.Interactive
-	in.Review = d.Review != nil && *d.Review
 	in.ConfiguredRunID = run.ID
 	in.SessionID = ""
 	in.AgentID, in.TenantID, in.UserID = run.AgentID, run.TenantID, run.UserID

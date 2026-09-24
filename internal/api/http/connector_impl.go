@@ -81,6 +81,9 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		MemoryInjectMaxTokens: req.MemoryInjectMaxTokens,
 		MemoryIndexMaxBytes:   req.MemoryIndexMaxBytes,
 		InjectToolGuide:       req.InjectToolGuide,
+		// A blocking spawn honours review: the call returns once an operator
+		// approves the held answer or rejects it.
+		Review: req.Review != nil && *req.Review,
 	}
 }
 

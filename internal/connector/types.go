@@ -168,8 +168,7 @@ type SpawnRunRequest struct {
 	Interactive *bool `json:"interactive,omitempty"`
 
 	// Review holds the run for an operator's verdict when its model finishes.
-	// Like Interactive it applies to a run that is started to be driven — a
-	// configured run's start — not to a blocking spawn.
+	// A blocking spawn returns once the answer is approved or rejected.
 	Review *bool `json:"review,omitempty"`
 
 	// Interruption lets this run's agent ask a human a question even when its
