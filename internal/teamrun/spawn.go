@@ -107,6 +107,34 @@ type SpawnFunc func(ctx context.Context, agent string, p Prompt, defID string) (
 type SpawnResult struct {
 	Output string
 	RunID  string
+	// Status is the member run's terminal status — completed, failed,
+	// cancelled or rejected — decided by the same rule the run's own row is
+	// written with, so the walk and the row cannot disagree. A member a
+	// reviewer rejected is not a failure and not a success; the Starter needs
+	// to tell the three apart. Empty when the implementor has no run behind the
+	// call.
+	Status string
+}
+
+type reviewArmingKey struct{}
+
+// WithReviewArming attaches a member's review arming to ctx for the SpawnFunc:
+// armed, read live whenever the member run finishes an answer, reports whether
+// that answer is held for an operator's verdict. It is a callback rather than
+// a flag because arming can change while the member runs (a walk armed
+// mid-wave holds the members that have not finished yet).
+func WithReviewArming(ctx context.Context, armed func(context.Context) bool) context.Context {
+	if armed == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, reviewArmingKey{}, armed)
+}
+
+// ReviewArming returns the member's review arming, or nil when the walk never
+// armed review for it.
+func ReviewArming(ctx context.Context) func(context.Context) bool {
+	armed, _ := ctx.Value(reviewArmingKey{}).(func(context.Context) bool)
+	return armed
 }
 
 // maxParallelConcurrency bounds how many of a parallel state's agents run at
