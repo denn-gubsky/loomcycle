@@ -302,12 +302,13 @@ func validate(h *Hook) error {
 	}
 	switch h.Phase {
 	case PhasePre, PhasePost, PhasePostFailure:
-	case PhaseAgentStart, PhaseAgentStop:
+	case PhaseAgentStart, PhaseAgentStop, PhaseSubagentStart, PhaseSubagentStop,
+		PhasePreCompact, PhasePostCompact, PhaseRunEnd:
 		if len(h.Tools) > 0 {
 			return wrap(ErrInvalidRegistration, "tools selects tool calls; an "+string(h.Phase)+" hook is selected by agents only")
 		}
 	default:
-		return wrap(ErrInvalidRegistration, "phase must be \"pre\", \"post\", \"post_failure\", \"agent_start\" or \"agent_stop\"")
+		return wrap(ErrInvalidRegistration, "phase must be one of pre, post, post_failure, agent_start, agent_stop, subagent_start, subagent_stop, pre_compact, post_compact, run_end")
 	}
 	hasURL, hasCode := strings.TrimSpace(h.CallbackURL) != "", strings.TrimSpace(h.Code) != ""
 	switch {

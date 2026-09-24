@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -196,4 +198,62 @@ func TestLifecycle_AFailedClosedStopHookHolds(t *testing.T) {
 	}
 	r.q <- steer.Message{Kind: steer.KindApprove, EnqueuedAt: time.Now()}
 	r.result(t)
+}
+
+// A pre_compact hook may refuse a compaction: the history stays as it was, and
+// the refusal is a declined compaction naming the hook's reason — never
+// silent. post_compact reports one that happened, with its sizes, and runs off
+// the loop's path.
+func TestLifecycle_CompactionHooksGateAndReport(t *testing.T) {
+	deny := newScriptedHook(t, `{"decision":"deny","reason":"keep the whole history for the audit"}`)
+	opts := RunOptions{
+		Provider: &steerProvider{}, Model: "x", AgentName: "writer",
+		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
+		Hooks:      lifecycleHooks(t, &hooks.Hook{Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL}),
+	}
+	msgs := distillableConvo()
+	var declined *providers.ContextDistillDeclinedInfo
+	out, did := maybeAutoCompact(context.Background(), opts, msgs, 900, 1000, func(ev providers.Event) {
+		if ev.ContextDistill != nil {
+			declined = ev.ContextDistill
+		}
+	}, "auto")
+	if did || len(out) != len(msgs) {
+		t.Fatalf("a denied compaction ran: did=%v, %d -> %d messages", did, len(msgs), len(out))
+	}
+	if declined == nil || declined.Reason != providers.DistillDeclineDeniedByHook || !strings.Contains(declined.Message, "keep the whole history") {
+		t.Fatalf("declined = %+v", declined)
+	}
+
+	var mu sync.Mutex
+	var got string
+	report := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = string(b)
+		mu.Unlock()
+	}))
+	defer report.Close()
+	opts.Hooks = lifecycleHooks(t, &hooks.Hook{Owner: "ops", Name: "log", Phase: hooks.PhasePostCompact, CallbackURL: report.URL})
+	if _, did := maybeAutoCompact(context.Background(), opts, msgs, 900, 1000, func(providers.Event) {}, "self"); !did {
+		t.Fatal("the compaction did not run")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		body := got
+		mu.Unlock()
+		if body != "" {
+			for _, want := range []string{`"phase":"post_compact"`, `"trigger":"self"`, `"before_tokens":`, `"after_tokens":`} {
+				if !strings.Contains(body, want) {
+					t.Errorf("payload lacks %s: %s", want, body)
+				}
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("post_compact never reported")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

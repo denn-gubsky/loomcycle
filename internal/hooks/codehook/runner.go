@@ -159,6 +159,11 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 		if r.interruption == nil {
 			return hooks.CodeDecision{}, errors.New("Interruption is not configured on this server")
 		}
+		if hooks.IsObserve(ctx) && isAsk(next.input) {
+			// An observe-only hook reports on something that already happened;
+			// a question would hold nothing, and could outlive the run.
+			return hooks.CodeDecision{}, fmt.Errorf("Interruption.ask is not available to a %s hook, which only reports; use Interruption.notify", h.Phase)
+		}
 		res, err := r.interruption.Execute(askCtx, next.input)
 		if err != nil {
 			return hooks.CodeDecision{}, fmt.Errorf("Interruption: %w", err)
@@ -168,6 +173,14 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 		}
 		recorded = append(recorded, record{input: next.input, text: res.Text, isError: res.IsError})
 	}
+}
+
+// isAsk reports whether an Interruption call is an ask.
+func isAsk(input json.RawMessage) bool {
+	var in struct {
+		Op string `json:"op"`
+	}
+	return json.Unmarshal(input, &in) == nil && in.Op == "ask"
 }
 
 // record is one Interruption call already made in this invocation, replayed on

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Dispatcher is the front door the agent loop calls into. It looks
@@ -421,21 +422,25 @@ func (d *Dispatcher) Matches(ident Identity, phase Phase) bool {
 	return len(d.registry.Match(ident.Tenant, ident.Agent, "", phase)) > 0
 }
 
-// lifecycleCall builds the payload for one agent_start / agent_stop hook.
-func lifecycleCall(h *Hook, ident Identity, stop StopInfo) LifecycleHookCall {
+// lifecycleCall builds the payload for one run-lifecycle hook.
+func lifecycleCall(h *Hook, ident Identity, info LifecycleInfo) LifecycleHookCall {
 	return LifecycleHookCall{
 		Phase: h.Phase, Owner: h.Owner, HookName: h.Name,
 		Agent: ident.Agent, UserID: ident.UserID, AgentID: ident.AgentID,
 		RunContext: ident.runContext(),
-		FinalText:  stop.FinalText, StopReason: stop.StopReason,
-		StopHookActive: stop.StopBlocks > 0, StopBlocks: stop.StopBlocks,
+		FinalText:  info.FinalText, StopReason: info.StopReason,
+		StopHookActive: info.StopBlocks > 0, StopBlocks: info.StopBlocks,
+		Subagent: info.Subagent, SubagentRunID: info.SubagentRunID,
+		Status: info.Status, Error: info.Error,
+		Trigger: info.Trigger, ContextTokens: info.ContextTokens, Window: info.Window,
+		BeforeTokens: info.BeforeTokens, AfterTokens: info.AfterTokens,
 	}
 }
 
 // invokeLifecycle runs one lifecycle hook and checks its result applies to
 // the phase.
-func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identity, stop StopInfo) (LifecycleHookResult, error) {
-	call := lifecycleCall(h, ident, stop)
+func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identity, info LifecycleInfo) (LifecycleHookResult, error) {
+	call := lifecycleCall(h, ident, info)
 	var res LifecycleHookResult
 	if err := d.invoke(ctx, h, &call, &res); err != nil {
 		return LifecycleHookResult{}, err
@@ -446,34 +451,35 @@ func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identit
 	return res, nil
 }
 
-// StartOutcome is what RunAgentStart returns to the loop.
-type StartOutcome struct {
-	// Denied stops the run before any model call; Reason says why.
+// GateOutcome is what RunGate returns.
+type GateOutcome struct {
+	// Denied stops what the gate guards; Reason says why.
 	Denied bool
 	Reason string
-	// AdditionalContext is what the hooks asked to add to the prompt, in
-	// chain order.
+	// AdditionalContext is what the hooks asked to add, in chain order.
 	AdditionalContext []string
 	Decisions         []Decision
 }
 
-// RunAgentStart runs the agent_start chain, in registration order. The first
-// deny stops the chain. A hook that fails denies the run when it fails
-// closed, and is skipped when it fails open.
-func (d *Dispatcher) RunAgentStart(ctx context.Context, ident Identity) StartOutcome {
-	var out StartOutcome
-	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStart) {
-		res, err := d.invokeLifecycle(ctx, h, ident, StopInfo{})
+// RunGate runs a chain that may let something go ahead, deny it, or add
+// context to it: agent_start (the run), subagent_start (a child's start),
+// subagent_stop (a child's result reaching its parent) and pre_compact (a
+// compaction). Registration order; the first deny stops the chain. A hook that
+// fails denies when it fails closed, and is skipped when it fails open.
+func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) GateOutcome {
+	var out GateOutcome
+	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", phase) {
+		res, err := d.invokeLifecycle(ctx, h, ident, info)
 		if err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
 			if h.FailMode == FailClosed || ctx.Err() != nil {
-				log.Printf("hooks: agent_start %s/%s failed (fail_mode=%s): %v", h.Owner, h.Name, failModeOf(h), err)
+				log.Printf("hooks: %s %s/%s failed (fail_mode=%s): %v", phase, h.Owner, h.Name, failModeOf(h), err)
 				out.Denied, out.Reason = true, "hook "+h.Owner+"/"+h.Name+" is unavailable"
 				out.AdditionalContext = nil
 				return out
 			}
-			log.Printf("hooks: agent_start %s/%s failed (fail_mode=open, passing through): %v", h.Owner, h.Name, err)
+			log.Printf("hooks: %s %s/%s failed (fail_mode=open, passing through): %v", phase, h.Owner, h.Name, err)
 			continue
 		}
 		if res.Decision == "deny" {
@@ -495,12 +501,66 @@ func (d *Dispatcher) RunAgentStart(ctx context.Context, ident Identity) StartOut
 	return out
 }
 
-// StopInfo is the answer an agent_stop chain decides on.
-type StopInfo struct {
+// ObserveBudget bounds one Observe call end to end: every matching hook, one
+// after another. The run has moved on (or ended), so nothing waits for it, but
+// it must not live on as a goroutine.
+const ObserveBudget = 30 * time.Second
+
+// Observe runs a chain that only reports — post_compact and run_end — off the
+// caller's path. Their results are ignored and their failures only logged:
+// what they would observe has already happened. A code body may notify but not
+// ask, since a question has nothing to hold. The returned channel closes when
+// the chain is done, for a caller (or a test) that wants to wait.
+func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) <-chan struct{} {
+	done := make(chan struct{})
+	matched := d.registry.Match(ident.Tenant, ident.Agent, "", phase)
+	if len(matched) == 0 {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		octx, cancel := context.WithTimeout(WithObserve(context.WithoutCancel(ctx)), ObserveBudget)
+		defer cancel()
+		for _, h := range matched {
+			if _, err := d.invokeLifecycle(octx, h, ident, info); err != nil {
+				log.Printf("hooks: %s %s/%s failed (observe only, ignored): %v", phase, h.Owner, h.Name, err)
+			}
+		}
+	}()
+	return done
+}
+
+type observeKey struct{}
+
+// WithObserve marks ctx as an observe-only hook call.
+func WithObserve(ctx context.Context) context.Context {
+	return context.WithValue(ctx, observeKey{}, true)
+}
+
+// IsObserve reports whether ctx is an observe-only hook call, where a code body
+// may not ask.
+func IsObserve(ctx context.Context) bool { v, _ := ctx.Value(observeKey{}).(bool); return v }
+
+// LifecycleInfo is what a run-lifecycle hook decides or reports on. Each
+// phase fills the fields it has: agent_stop the answer; subagent_* the child;
+// pre/post_compact the compaction; run_end how the run ended.
+type LifecycleInfo struct {
 	FinalText  string
 	StopReason string
 	// StopBlocks counts the blocks this answer has already had in a row.
 	StopBlocks int
+
+	Subagent      string
+	SubagentRunID string
+	Status        string
+	Error         string
+
+	Trigger       string
+	ContextTokens int
+	Window        int
+	BeforeTokens  int
+	AfterTokens   int
 }
 
 // Stop outcomes.
@@ -529,7 +589,7 @@ type StopOutcome struct {
 // not stop the chain, so a later hook may still block. A hook that fails holds
 // the answer when it fails closed — the gate a closed agent_stop hook stands
 // for is a person's — and is skipped when it fails open.
-func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop StopInfo) StopOutcome {
+func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop LifecycleInfo) StopOutcome {
 	out := StopOutcome{Kind: StopAllow}
 	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStop) {
 		name := h.Owner + "/" + h.Name

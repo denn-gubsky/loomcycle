@@ -1121,7 +1121,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// (a deny did not apply to a stateful agent), Post-hooks, the
 			// tool-use id the parallel_spawn ledger keys on, and the RFC DA
 			// classification of a failure. It also emits the tool_result.
-			hookIdent := hookIdentity(ctx, opts.AgentName, iter)
+			hookIdent := HookIdentity(ctx, opts.AgentName, iter)
 			// What the append loop stamps per iteration, so Context op=self in a
 			// stateful action reports the provider/model it is actually running
 			// on (after any fallback), its sampling, and how full the window is.

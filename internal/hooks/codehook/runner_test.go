@@ -239,3 +239,26 @@ func TestRunner_CompileRefusesABrokenBody(t *testing.T) {
 		t.Errorf("a good body was refused: %v", err)
 	}
 }
+
+// An observe-only hook reports on something that already happened: it may
+// notify, but an ask is refused rather than left waiting on a finished run.
+func TestRunner_AnObserveHookMayNotifyButNotAsk(t *testing.T) {
+	f := &fakeInterruption{answer: func(int, string) tools.Result { return tools.Result{Text: `{}`} }}
+	ctx := hooks.WithObserve(context.Background())
+	notify := &hooks.Hook{ID: "h", Owner: "ops", Name: "n", Phase: hooks.PhaseRunEnd, Timeout: time.Second,
+		Code: `function hook(ev) { Interruption.notify({message: "run " + ev.run_id + " " + ev.status}); }`}
+	if _, err := New(f).Run(ctx, notify, "run_end", hooks.LifecycleHookCall{RunContext: hooks.RunContext{RunID: "r1"}, Status: "failed"}); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if len(f.inputs) != 1 || !strings.Contains(f.inputs[0], `"message":"run r1 failed"`) {
+		t.Errorf("notify calls = %v", f.inputs)
+	}
+	ask := &hooks.Hook{ID: "h", Owner: "ops", Name: "a", Phase: hooks.PhaseRunEnd, Timeout: time.Second,
+		Code: `function hook(ev) { Interruption.ask({question: "?"}); }`}
+	if _, err := New(f).Run(ctx, ask, "run_end", hooks.LifecycleHookCall{}); err == nil || !strings.Contains(err.Error(), "not available to a run_end hook") {
+		t.Fatalf("ask: err = %v", err)
+	}
+	if len(f.inputs) != 1 {
+		t.Errorf("the ask reached Interruption: %v", f.inputs)
+	}
+}

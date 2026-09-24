@@ -1428,6 +1428,10 @@ const (
 	// Not a fault; reported so that "nothing happened" is never silent, because
 	// an operator who did not realise keep disables this needs to see it once.
 	DistillDeclineReasoningKeep = "reasoning_keep"
+
+	// DistillDeclineDeniedByHook — a pre_compact hook refused the compaction.
+	// Message carries the hook's reason. Action: that hook's owner decides.
+	DistillDeclineDeniedByHook = "denied_by_hook"
 )
 
 // ContextDistillDeclinedInfo is the payload on EventContextDistillDeclined.
