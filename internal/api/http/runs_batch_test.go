@@ -23,11 +23,22 @@ import (
 // latchProvider models a run that takes measurable time and records the
 // high-water mark of concurrently in-flight Call()s — so a fan-out test can
 // prove children ran CONCURRENTLY (max-in-flight > 1) rather than serialized.
+//
+// rendezvous, when set, makes each Call wait (up to rendezvousWait) until that
+// many calls have been in flight together before it dwells. Without it the
+// overlap depended on two children starting within one dwell of each other,
+// which a slow race-detector runner does not guarantee: CI saw max-in-flight 1
+// from a fan-out that was concurrent. A serialized fan-out still never reaches
+// the rendezvous, so each of its calls waits out the timeout and the test
+// fails as before.
 type latchProvider struct {
-	dwell   time.Duration
-	inFlt   atomic.Int32
-	maxSeen atomic.Int32
+	dwell      time.Duration
+	rendezvous int32
+	inFlt      atomic.Int32
+	maxSeen    atomic.Int32
 }
+
+const rendezvousWait = 2 * time.Second
 
 func (p *latchProvider) ID() string                    { return "stub" }
 func (p *latchProvider) Probe(_ context.Context) error { return nil }
@@ -43,6 +54,12 @@ func (p *latchProvider) Call(ctx context.Context, _ providers.Request) (<-chan p
 		old := p.maxSeen.Load()
 		if n <= old || p.maxSeen.CompareAndSwap(old, n) {
 			break
+		}
+	}
+	if p.rendezvous > 0 {
+		deadline := time.Now().Add(rendezvousWait)
+		for p.maxSeen.Load() < p.rendezvous && time.Now().Before(deadline) && ctx.Err() == nil {
+			time.Sleep(time.Millisecond)
 		}
 	}
 	select {
@@ -113,7 +130,7 @@ func TestSpawnRunBatch_RejectsMalformed(t *testing.T) {
 // the envelope is index-aligned, and a bad-agent child surfaces as a failed
 // result WITHOUT failing the batch.
 func TestSpawnRunBatch_FanOutConcurrentAndInEnvelopeError(t *testing.T) {
-	p := &latchProvider{dwell: 80 * time.Millisecond}
+	p := &latchProvider{dwell: 80 * time.Millisecond, rendezvous: 2}
 	s := newBatchTestServer(t, p, 8)
 
 	req := connector.BatchSpawnRequest{Spawns: []connector.SpawnRunRequest{
