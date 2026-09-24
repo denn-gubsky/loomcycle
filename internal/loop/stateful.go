@@ -13,7 +13,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
-	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -1113,8 +1112,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// (a deny did not apply to a stateful agent), Post-hooks, the
 			// tool-use id the parallel_spawn ledger keys on, and the RFC DA
 			// classification of a failure. It also emits the tool_result.
-			ident := tools.RunIdentity(ctx)
-			hookIdent := hooks.Identity{Agent: opts.AgentName, UserID: ident.UserID, AgentID: ident.AgentID, Tenant: ident.TenantID}
+			hookIdent := hookIdentity(ctx, opts.AgentName, iter)
 			// What the append loop stamps per iteration, so Context op=self in a
 			// stateful action reports the provider/model it is actually running
 			// on (after any fallback), its sampling, and how full the window is.

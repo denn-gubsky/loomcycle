@@ -394,7 +394,9 @@ func (it *Interruption) execAskViaMCP(ctx context.Context, interruptID, mcpName 
 		defer cancel()
 	}
 
-	res := disp.Execute(callCtx, toolName, args)
+	// Through the run's hooks: this is a tool call made on the model's behalf,
+	// and calling the dispatcher directly was the one path no hook could see.
+	res := tools.ExecuteHooked(callCtx, disp, toolName, args)
 	if res.IsError {
 		// Consumer surfaced an error tool result — treat as a
 		// failed delivery, mark cancelled.

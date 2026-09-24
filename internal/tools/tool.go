@@ -1131,6 +1131,51 @@ func RunID(ctx context.Context) string {
 	return v
 }
 
+type ctxKeyParentRunID struct{}
+
+// WithParentRunID attaches the id of the run that spawned this one — set where
+// a sub-run is prepared, from the parent's own run id. Tool-use hooks report it
+// so a hook can tell a sub-agent's calls from its parent's.
+func WithParentRunID(ctx context.Context, runID string) context.Context {
+	if runID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyParentRunID{}, runID)
+}
+
+// ParentRunID returns the spawning run's id, or "" for a top-level run.
+func ParentRunID(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyParentRunID{}).(string)
+	return v
+}
+
+type ctxKeyHookedExecute struct{}
+
+// HookedExecuteFunc runs one tool the way the loop runs a model's tool call:
+// through the run's tool-use hooks.
+type HookedExecuteFunc func(ctx context.Context, name string, input json.RawMessage) Result
+
+// WithHookedExecute attaches the run's hooked executor. The loop sets it for
+// every tool call it dispatches.
+func WithHookedExecute(ctx context.Context, fn HookedExecuteFunc) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyHookedExecute{}, fn)
+}
+
+// ExecuteHooked runs a tool on the model's behalf from INSIDE another tool —
+// the Interruption tool delivering a question through a consumer's tool, say.
+// It goes through the run's tool-use hooks like any call the model makes; a
+// tool that called the dispatcher directly would be a path no hook could see.
+// Without a hooked executor on ctx (no hooks wired), it is d.Execute.
+func ExecuteHooked(ctx context.Context, d *Dispatcher, name string, input json.RawMessage) Result {
+	if fn, ok := ctx.Value(ctxKeyHookedExecute{}).(HookedExecuteFunc); ok && fn != nil {
+		return fn(ctx, name, input)
+	}
+	return d.Execute(ctx, name, input)
+}
+
 // ctxKeyToolUseID carries the current tool call's tool_use id (RFC X Phase 3).
 // The loop stamps it before dispatching each tool so a tool (the Agent tool's
 // parallel_spawn) can tag its spawn-ledger events with the parent tool_use id,
