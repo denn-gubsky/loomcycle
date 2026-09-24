@@ -339,6 +339,11 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	out := storeRunToConnector(r)
 	out.Result = r.Result
 	out.Spec = r.RunConfig
+	if r.Status == store.RunConfigured {
+		if d, err := s.store.GetRunDraft(ctx, r.ID); err == nil {
+			out.Draft = d
+		}
+	}
 	return out, nil
 }
 

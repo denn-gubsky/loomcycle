@@ -331,6 +331,10 @@ type Run struct {
 	// Spec is the run's own configuration record (RFC DI) — the overrides it
 	// ran with, merged over its definition. Set by GetRun only, like Result.
 	Spec json.RawMessage `json:"spec,omitempty"`
+	// Draft is a configured run's stored request — what it will start with —
+	// as HTTP GET /v1/agents/{id} and gRPC GetAgent return it. Set by GetRun
+	// only, and only while the run is configured.
+	Draft json.RawMessage `json:"draft,omitempty"`
 }
 
 // ListRunsFilter selects which runs ListRuns returns. Empty fields

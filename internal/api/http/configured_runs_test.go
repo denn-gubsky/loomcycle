@@ -557,3 +557,22 @@ func TestConfiguredRun_AStartRacedByAPatchIsRefusedAndKeepsTheEdit(t *testing.T)
 		t.Errorf("the run saw %+v, want the edited prompt", prov.last.Messages)
 	}
 }
+
+// MCP get_run (connector.GetRun) shows a configured run's draft, as HTTP
+// GET /v1/agents/{id} and gRPC GetAgent do — and behind the same rule, so an
+// isolated member does not read another user's draft through it.
+func TestConnectorGetRun_ReturnsAConfiguredRunsDraft(t *testing.T) {
+	srv, ts, _, _ := configuredServer(t, 4)
+	c := createDraft(t, ts, `,"sampling":{"temperature":0.3}`)
+	got, err := srv.GetRun(context.Background(), c.AgentID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != "configured" || !strings.Contains(string(got.Draft), "draft me") || !strings.Contains(string(got.Draft), "temperature") {
+		t.Errorf("get_run on a draft = status %q draft %s, want the draft", got.Status, got.Draft)
+	}
+	other := auth.WithPrincipal(context.Background(), auth.Principal{Subject: "u2", Scopes: []string{auth.ScopeUser}})
+	if _, err := srv.GetRun(other, c.AgentID); err == nil {
+		t.Error("an isolated member read another user's draft through get_run")
+	}
+}
