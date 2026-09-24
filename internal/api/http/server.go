@@ -6378,6 +6378,13 @@ func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, p
 		return "", nil, prep.RunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
 			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
 	}
+	if loop.EndsRejected(res.StopReason) {
+		// Ended without an error, but its answer was never accepted (a hook
+		// held it and nothing could rule on it here, or nobody ruled in time).
+		// Handing it back as output would pass on exactly what was refused.
+		return "", nil, prep.RunID, fmt.Errorf("the answer of sub-agent %q was rejected (%s; agent=%s session=%s run=%s)",
+			name, res.StopReason, prep.AgentID, prep.SessionID, prep.RunID)
+	}
 	// Surface the sub agent_id to the parent agent's transcript by
 	// prefixing the tool_result text. Parent caller's model sees this
 	// and can echo it to the UI. Cheap; unblocks future "cancel only

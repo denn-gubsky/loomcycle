@@ -147,3 +147,24 @@ func TestResume_DoesNotRunAgentStartAgain(t *testing.T) {
 		t.Errorf("agent_start ran %d times on resume", n)
 	}
 }
+
+// A sub-agent whose answer an agent_stop hook holds cannot be held (the Agent
+// tool gives it no steer queue), so it ends rejected. Its parent is told so,
+// as an error: the refused answer is not handed back as the child's output.
+func TestSubAgent_ARejectedChildIsAnErrorToItsParent(t *testing.T) {
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"decision":"hold","reason":"a person should read this"}`))
+	}))
+	defer hook.Close()
+	h := newReviewHarness(t)
+	if _, err := h.srv.hookRegistry.Register(&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
+		t.Fatal(err)
+	}
+	out, _, runID, err := h.srv.runSubAgent(context.Background(), "writer", "", "write the plan", "")
+	if err == nil || !strings.Contains(err.Error(), "was rejected") {
+		t.Fatalf("output %q, err %v; want the rejection as an error", out, err)
+	}
+	if run, _ := h.st.GetRun(context.Background(), runID); run.Status != store.RunRejected {
+		t.Errorf("child row = %q, want rejected", run.Status)
+	}
+}
