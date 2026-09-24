@@ -1031,6 +1031,13 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
+		// The same four Run maps: a configured run or a batch child built from
+		// this request must not silently lose them
+		// (TestSpawnRequestFromProto_MapsEveryFieldRunMaps guards the set).
+		Metadata:      metadataFromProto(req.GetMetadata()),
+		Context:       contextFromProto(req.GetContext()),
+		ParentContext: parentContextFromProto(req.GetParentContext()),
+		Interruption:  interruptionFromProto(req.GetInterruption()),
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
 		// validation — and so adding a field means editing one place.
