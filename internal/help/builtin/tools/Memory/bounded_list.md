@@ -25,8 +25,9 @@ array after, oldest first.
 - `bounded_list: limit must be >= 1` — you left `limit` out; add it.
 - `bounded_list: limit must be <= 10000`.
 - `bounded_list: existing value is not a JSON array (use set to overwrite)`.
-- `bounded_list: array (N bytes) exceeds max M bytes`, or a scope-quota
-  refusal — lower `limit` or store smaller items.
+- `bounded_list: array (N bytes) exceeds max M bytes`, or a size-cap refusal
+  (`Memory.bounded_list: … quota …` / `… limit_bytes …`). Nothing was written —
+  lower `limit` or store smaller items.
 - `Memory.bounded_list: core block ... is read_only`.
 
 ## Examples
