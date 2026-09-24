@@ -3128,7 +3128,14 @@ outerLoop:
 					break outerLoop
 				case reviewAborted:
 					iterSpan.End()
-					break outerLoop
+					// Returned as an error, like the pause park's cancel, so the
+					// run is recorded cancelled: leaving the loop cleanly would
+					// record an answer nobody approved as a completion.
+					err := ctx.Err()
+					if err == nil {
+						err = errReviewAbandoned
+					}
+					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
 				}
 			}
 			// Persistent interactive run: park instead of terminating. Wait

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -12,6 +13,10 @@ import (
 // StopReasonRejected is the stop reason of a run a reviewer rejected without
 // feedback. The server maps it to the rejected run status.
 const StopReasonRejected = "rejected"
+
+// errReviewAbandoned ends a run whose hold stopped without a verdict for a
+// reason other than its context (the steer queue closed).
+var errReviewAbandoned = errors.New("the review hold ended without a verdict")
 
 // reviewOutcome is how a hold for review ended.
 type reviewOutcome int

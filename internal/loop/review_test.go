@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -61,7 +62,7 @@ func (p *reviewProvider) lastUserText() string {
 type reviewRun struct {
 	q      chan steer.Message
 	events chan providers.Event
-	done   chan RunResult
+	done   chan runOutcome
 	prov   *reviewProvider
 	steers atomic.Int32
 }
@@ -71,7 +72,7 @@ func startReviewRun(t *testing.T, ctx context.Context, mutate func(*RunOptions))
 	r := &reviewRun{
 		q:      make(chan steer.Message, 8),
 		events: make(chan providers.Event, 64),
-		done:   make(chan RunResult, 1),
+		done:   make(chan runOutcome, 1),
 		prov:   &reviewProvider{},
 	}
 	opts := RunOptions{
@@ -93,10 +94,7 @@ func startReviewRun(t *testing.T, ctx context.Context, mutate func(*RunOptions))
 	}
 	go func() {
 		res, err := Run(ctx, opts)
-		if err != nil {
-			t.Errorf("Run: %v", err)
-		}
-		r.done <- res
+		r.done <- runOutcome{res, err}
 	}()
 	return r
 }
@@ -117,15 +115,31 @@ func (r *reviewRun) waitFor(t *testing.T, want providers.EventType) providers.Ev
 	}
 }
 
-func (r *reviewRun) result(t *testing.T) RunResult {
+type runOutcome struct {
+	res RunResult
+	err error
+}
+
+// finish waits for the run to end and returns how.
+func (r *reviewRun) finish(t *testing.T) runOutcome {
 	t.Helper()
 	select {
-	case res := <-r.done:
-		return res
+	case o := <-r.done:
+		return o
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not finish")
 	}
-	return RunResult{}
+	return runOutcome{}
+}
+
+// result waits for a run that must end without an error.
+func (r *reviewRun) result(t *testing.T) RunResult {
+	t.Helper()
+	o := r.finish(t)
+	if o.err != nil {
+		t.Errorf("Run: %v", o.err)
+	}
+	return o.res
 }
 
 // verdict is a verdict sent now, as the server would enqueue it.
@@ -240,13 +254,17 @@ func TestRun_Review_DisarmWhileHeldApproves(t *testing.T) {
 	}
 }
 
-// Cancelling a held run ends it.
-func TestRun_Review_CancelWhileHeldEndsTheRun(t *testing.T) {
+// Cancelling a held run ends it as cancelled, never as a clean finish: the
+// answer it was held on was not approved.
+func TestRun_Review_CancelWhileHeldIsNotACompletion(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := startReviewRun(t, ctx, nil)
 	r.waitFor(t, providers.EventAwaitingReview)
 	cancel()
-	r.result(t)
+	o := r.finish(t)
+	if !errors.Is(o.err, context.Canceled) || o.res.StopReason == "end_turn" {
+		t.Errorf("cancelled hold returned (%q, %v), want a cancellation error", o.res.StopReason, o.err)
+	}
 }
 
 // An approved answer on an interactive run is accepted, and the run then waits
@@ -259,7 +277,7 @@ func TestRun_Review_ApprovedInteractiveRunParksForInput(t *testing.T) {
 	r.q <- verdict(steer.KindApprove, "")
 	r.waitFor(t, providers.EventAwaitingInput)
 	cancel()
-	r.result(t)
+	r.finish(t)
 }
 
 // A compaction while held is applied, and the hold is announced again so the
@@ -301,5 +319,5 @@ func TestRun_Review_VerdictIsNeverAnOperatorTurn(t *testing.T) {
 		t.Errorf("OnSteer fired %d times for verdicts", r.steers.Load())
 	}
 	cancel()
-	r.result(t)
+	r.finish(t)
 }

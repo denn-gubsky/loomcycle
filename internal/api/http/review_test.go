@@ -18,7 +18,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -360,5 +362,53 @@ func TestReviewRun_OnlyTheOwnersMayDeliverAVerdict(t *testing.T) {
 func TestReview_RequiresRunsCreate(t *testing.T) {
 	if got := requiredScopeFor(http.MethodPost, "/v1/runs/r_1/review"); got != auth.ScopeRunsCreate {
 		t.Errorf("scope = %q, want %q", got, auth.ScopeRunsCreate)
+	}
+}
+
+// On a path that does not detach (RunOnce: MCP, gRPC, a configured run's
+// start), the caller leaving while the run is held cancels it. It must be
+// recorded cancelled — never completed on an answer nobody approved.
+func TestReview_AbandonedHoldIsCancelledNotCompleted(t *testing.T) {
+	cfg := &config.Config{
+		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents:      map[string]config.AgentDef{"writer": {Model: "stub-model", SystemPrompt: "write"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
+	}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "abandon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	srv := New(cfg, &stubResolver{p: &numberedProvider{}}, []tools.Tool{}, concurrency.New(4, 4, 100*time.Millisecond), st)
+	srv.SetSteerRegistry(steer.NewRegistry(0))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var runID string
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.RunOnce(ctx, runner.RunInput{
+			Agent: "writer", Review: true,
+			Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
+		}, runner.RunCallbacks{
+			OnRegistered: func(_, rid, _, _ string) { runID = rid },
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventAwaitingReview {
+					cancel()
+				}
+			},
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunOnce did not return after its caller left")
+	}
+	run, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunCancelled {
+		t.Errorf("abandoned hold recorded %q, want cancelled", run.Status)
 	}
 }
