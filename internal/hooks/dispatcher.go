@@ -568,11 +568,14 @@ const (
 	StopAllow = "allow"
 	StopBlock = "block"
 	StopHold  = "hold"
+	// StopCancelled: the run ended while a hook was deciding. Nobody approved
+	// the answer, so the run must end cancelled, never completed.
+	StopCancelled = "cancelled"
 )
 
 // StopOutcome is what RunAgentStop returns to the loop.
 type StopOutcome struct {
-	// Kind is StopAllow, StopBlock or StopHold.
+	// Kind is StopAllow, StopBlock, StopHold or StopCancelled.
 	Kind string
 	// Reason is a block's feedback for the model, or why the answer is held.
 	Reason string
@@ -588,7 +591,8 @@ type StopOutcome struct {
 // automated check has already rejected would waste their time. A hold does
 // not stop the chain, so a later hook may still block. A hook that fails holds
 // the answer when it fails closed — the gate a closed agent_stop hook stands
-// for is a person's — and is skipped when it fails open.
+// for is a person's — and is skipped when it fails open. If the run ends while
+// a hook is deciding, the outcome is StopCancelled, whatever the fail mode.
 func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop LifecycleInfo) StopOutcome {
 	out := StopOutcome{Kind: StopAllow}
 	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStop) {
@@ -598,7 +602,10 @@ func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop Life
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
 			if ctx.Err() != nil {
-				// The run is over; the loop ends it on its own.
+				// The run ended while the hook was deciding. Reported as allow,
+				// the loop left normally and recorded an answer nobody approved
+				// as a completion.
+				out.Kind, out.Reason, out.By = StopCancelled, "the run ended while hook "+name+" was deciding", name
 				return out
 			}
 			if h.FailMode == FailClosed {

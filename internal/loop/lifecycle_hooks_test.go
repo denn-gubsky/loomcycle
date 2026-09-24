@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -255,5 +256,32 @@ func TestLifecycle_CompactionHooksGateAndReport(t *testing.T) {
 			t.Fatal("post_compact never reported")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A run that ends while an agent_stop hook is deciding ends cancelled: nobody
+// approved its answer. It used to leave the loop normally and return the
+// answer with no error, recorded as a completion.
+func TestLifecycle_ARunCancelledWhileAStopHookDecidesEndsCancelled(t *testing.T) {
+	deciding := make(chan struct{}, 1)
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		deciding <- struct{}{}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(hs.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := startReviewRun(t, ctx, withHooks(lifecycleHooks(t,
+		&hooks.Hook{Owner: "ops", Name: "slow", Phase: hooks.PhaseAgentStop, CallbackURL: hs.URL}), nil))
+	select {
+	case <-deciding:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the agent_stop hook was never called")
+	}
+	cancel()
+	o := r.finish(t)
+	if !errors.Is(o.err, context.Canceled) || o.res.StopReason != "cancelled" {
+		t.Fatalf("outcome = %+v, %v; want the run cancelled", o.res, o.err)
 	}
 }

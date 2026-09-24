@@ -3239,6 +3239,17 @@ outerLoop:
 					continue outerLoop
 				case hooks.StopHold:
 					heldBy = out.By
+				case hooks.StopCancelled:
+					// Returned as an error, like an abandoned review hold, so the
+					// run is recorded cancelled: leaving the loop cleanly would
+					// record an answer no hook approved as a completion.
+					iterSpan.End()
+					turnCancelFn(nil)
+					err := ctx.Err()
+					if err == nil {
+						err = context.Canceled
+					}
+					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
 				}
 			}
 			stopBlocks = 0
