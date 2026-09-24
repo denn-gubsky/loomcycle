@@ -734,6 +734,14 @@ const (
 	// an unset one is not inert and an event for it would be noise on every run.
 	EventCapabilityInert EventType = "capability_inert"
 
+	// EventHookDecision records what a tool-use hook did to a call: denied it,
+	// rewrote its input or its output, added context, or failed. Emitted once
+	// per decision, in chain order, beside the tool_call it concerns — before
+	// this existed a hook's deny or rewrite was invisible, and the transcript
+	// kept the model's ORIGINAL input for a call that ran with another. A hook
+	// that passed the call through emits nothing.
+	EventHookDecision EventType = "hook_decision"
+
 	// EventContextDistillDeclined reports that context distillation was TRIED
 	// and did nothing — the threshold was crossed, the gate fired, and the
 	// distiller returned without shrinking anything.
@@ -908,6 +916,10 @@ type Event struct {
 	// CapabilityInert carries the structured payload on EventCapabilityInert.
 	// Nil on all other event types.
 	CapabilityInert *CapabilityInertInfo `json:"capability_inert,omitempty"`
+
+	// HookDecision carries the structured payload on EventHookDecision. Nil
+	// otherwise.
+	HookDecision *HookDecisionInfo `json:"hook_decision,omitempty"`
 
 	// ContextDistill carries the structured payload on
 	// EventContextDistillDeclined. Nil on all other event types.
@@ -1327,6 +1339,28 @@ type OverrideInfo struct {
 // month" without a follow-up fetch. No secrets: Scope/ScopeID are a
 // tenant/subject id (already non-secret, like user_id) and the counts are
 // integers. Wire-stable; field names are part of the RFC AW contract.
+
+// HookDecisionInfo is the payload on EventHookDecision.
+type HookDecisionInfo struct {
+	// Hook names it as "<owner>/<name>". A tenant sees the name of an operator
+	// hook that acted on its call, never its callback.
+	Hook      string `json:"hook"`
+	Phase     string `json:"phase"` // pre | post | post_failure
+	ToolUseID string `json:"tool_use_id"`
+	ToolName  string `json:"tool_name"`
+	// Decision: deny | rewrite_input | rewrite_output | context | unavailable.
+	Decision string `json:"decision"`
+	// FailMode is set for "unavailable": open (the call went ahead) or closed
+	// (it was refused).
+	FailMode string `json:"fail_mode,omitempty"`
+	// Reason is the deny's text, or the error that made the hook unavailable.
+	Reason string `json:"reason,omitempty"`
+	// UpdatedInput is the input the tool actually ran with, for rewrite_input.
+	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
+	// AdditionalContext is what a "context" decision appended to the result.
+	AdditionalContext string `json:"additional_context,omitempty"`
+}
+
 // CapabilityInertInfo is the structured payload on EventCapabilityInert: one
 // tool the agent holds and cannot use.
 //

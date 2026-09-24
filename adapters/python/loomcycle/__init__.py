@@ -71,6 +71,7 @@ from .events import (
     HostWidening,
     AwaitingInput,
     AwaitingReview,
+    HookDecision,
     UserInput,
     LimitInfo,
 )
@@ -105,6 +106,7 @@ __all__ = [
     "HostWidening",
     "AwaitingInput",
     "AwaitingReview",
+    "HookDecision",
     "UserInput",
     "LimitInfo",
     "LoomcycleError",

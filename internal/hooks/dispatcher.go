@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -74,6 +75,14 @@ type Identity struct {
 	// registry's Match uses it (RFC AF) so a tenant-scoped hook fires only on
 	// its tenant's runs; an operator/global hook (Hook.Tenant=="") fires on all.
 	Tenant string
+	// The run the call belongs to, stamped onto every payload.
+	RunID       string
+	ParentRunID string
+	Iteration   int
+}
+
+func (i Identity) runContext() RunContext {
+	return RunContext{RunID: i.RunID, ParentRunID: i.ParentRunID, Iteration: i.Iteration}
 }
 
 // PreOutcome is what RunPre returns to the loop:
@@ -105,6 +114,9 @@ type PreOutcome struct {
 	AllowHosts        []string
 	GrantingHookOwner string
 	GrantingHookName  string
+	// Decisions is what each hook in the chain did, in order, for the run to
+	// record. A hook that passed the call through reports nothing.
+	Decisions []Decision
 }
 
 // RunPre invokes the Pre chain for (agent, tool). Returns the
@@ -139,30 +151,34 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 		allowHostsSeen   map[string]struct{} // dedup set; lazy-init
 		grantingOwner    string
 		grantingHookName string
+		decisions        []Decision
 	)
 	for _, h := range hooks {
 		// Each hook in the chain sees the running input as it stands
 		// after upstream rewrites — that's the whole point of an
 		// ordered chain.
 		call := PreHookCall{
-			Phase:    PhasePre,
-			Owner:    h.Owner,
-			HookName: h.Name,
-			Agent:    ident.Agent,
-			UserID:   ident.UserID,
-			AgentID:  ident.AgentID,
-			ToolCall: ToolCall{ID: tu.ID, Name: tu.Name, Input: current},
+			Phase:      PhasePre,
+			Owner:      h.Owner,
+			HookName:   h.Name,
+			Agent:      ident.Agent,
+			UserID:     ident.UserID,
+			AgentID:    ident.AgentID,
+			RunContext: ident.runContext(),
+			ToolCall:   ToolCall{ID: tu.ID, Name: tu.Name, Input: current},
 		}
 		var res PreHookResult
 		if err := d.invoke(ctx, h, &call, &res); err != nil {
 			// Fail-mode branch: open → pass through, closed → synthesize
 			// a deny error so the loop short-circuits.
+			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
 			if h.FailMode == FailClosed {
 				log.Printf("hooks: pre %s/%s failed (fail_mode=closed): %v", h.Owner, h.Name, err)
 				return PreOutcome{Deny: &ToolResult{
 					IsError: true,
 					Text:    "tool_call denied: hook " + h.Owner + "/" + h.Name + " unavailable",
-				}}
+				}, Decisions: decisions}
 			}
 			log.Printf("hooks: pre %s/%s failed (fail_mode=open, passing through): %v", h.Owner, h.Name, err)
 			continue
@@ -172,10 +188,14 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 			// don't run — the synthetic result is what the model sees.
 			// Any AllowHosts accumulated from prior hooks is DISCARDED
 			// (we don't carry policy widenings into a denied call).
-			return PreOutcome{Deny: res.Deny}
+			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
+				Kind: "deny", Reason: res.Deny.Text})
+			return PreOutcome{Deny: res.Deny, Decisions: decisions}
 		}
 		if len(res.Input) > 0 {
 			current = res.Input
+			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
+				Kind: "rewrite_input", UpdatedInput: res.Input})
 		}
 		if len(res.AllowHosts) > 0 {
 			if !d.registry.IsHostWidenPermitted(h.Tenant, h.Owner) {
@@ -217,7 +237,16 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 		AllowHosts:        allowHosts,
 		GrantingHookOwner: grantingOwner,
 		GrantingHookName:  grantingHookName,
+		Decisions:         decisions,
 	}
+}
+
+// failModeOf is the hook's effective fail mode: unset means open.
+func failModeOf(h *Hook) FailMode {
+	if h.FailMode == FailClosed {
+		return FailClosed
+	}
+	return FailOpen
 }
 
 // normaliseHost lower-cases the host entry and trims surrounding
@@ -247,44 +276,76 @@ func normaliseHost(h string) string {
 	return string(out)
 }
 
-// RunPost invokes the Post chain for (agent, tool). Each hook sees
-// the result the prior hook produced — LIFO middleware ordering, so
-// the LAST registered hook runs FIRST (innermost), and the FIRST
-// registered hook runs LAST (outermost).
+// PostOutcome is what RunPost returns to the loop.
+type PostOutcome struct {
+	// Result is the result the model sees, after every rewrite.
+	Result ToolResult
+	// AdditionalContext is what the hooks asked to add, in chain order; the
+	// loop appends it to the result's text.
+	AdditionalContext []string
+	Decisions         []Decision
+}
+
+// RunPost invokes the Post chain for (agent, tool). Each hook sees the result
+// the prior hook produced — LIFO middleware ordering, so the LAST registered
+// hook runs FIRST (innermost), and the FIRST registered hook runs LAST
+// (outermost).
 //
-// Returns the rewritten result (or `original` if no hook produced a
-// rewrite).
-func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, original ToolResult) ToolResult {
-	hooks := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
-	current := original
-	for _, h := range hooks {
+// When the tool FAILED, the post_failure chain runs first, innermost to the
+// post chain: a hook registered only for failures sees the failure before any
+// general post hook has rewritten it.
+func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, original ToolResult) PostOutcome {
+	chain := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
+	if original.IsError {
+		chain = append(d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePostFailure), chain...)
+	}
+	out := PostOutcome{Result: original}
+	for _, h := range chain {
 		call := PostHookCall{
-			Phase:      PhasePost,
+			Phase:      h.Phase,
 			Owner:      h.Owner,
 			HookName:   h.Name,
 			Agent:      ident.Agent,
 			UserID:     ident.UserID,
 			AgentID:    ident.AgentID,
+			RunContext: ident.runContext(),
 			ToolCall:   tu,
-			ToolResult: current,
+			ToolResult: out.Result,
 		}
 		var res PostHookResult
 		if err := d.invoke(ctx, h, &call, &res); err != nil {
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
 			if h.FailMode == FailClosed {
-				log.Printf("hooks: post %s/%s failed (fail_mode=closed): %v", h.Owner, h.Name, err)
-				return ToolResult{
+				log.Printf("hooks: %s %s/%s failed (fail_mode=closed): %v", h.Phase, h.Owner, h.Name, err)
+				out.Result = ToolResult{
 					IsError: true,
 					Text:    "tool_result discarded: hook " + h.Owner + "/" + h.Name + " unavailable",
 				}
+				out.AdditionalContext = nil
+				return out
 			}
-			log.Printf("hooks: post %s/%s failed (fail_mode=open, passing through): %v", h.Owner, h.Name, err)
+			log.Printf("hooks: %s %s/%s failed (fail_mode=open, passing through): %v", h.Phase, h.Owner, h.Name, err)
 			continue
 		}
 		if res.Result != nil {
-			current = *res.Result
+			// A hook replaces text and is_error; the structured error stays the
+			// tool's, and only while the call is still a failure.
+			rewritten := *res.Result
+			rewritten.Error = nil
+			if rewritten.IsError {
+				rewritten.Error = out.Result.Error
+			}
+			out.Result = rewritten
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase, Kind: "rewrite_output"})
+		}
+		if ctxText := strings.TrimSpace(res.AdditionalContext); ctxText != "" {
+			out.AdditionalContext = append(out.AdditionalContext, ctxText)
+			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
+				Kind: "context", AdditionalContext: ctxText})
 		}
 	}
-	return current
+	return out
 }
 
 // invoke wraps the per-hook timeout around the webhook POST.

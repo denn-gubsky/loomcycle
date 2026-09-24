@@ -182,6 +182,25 @@ class ErrorInfo:
 
 
 @dataclass(frozen=True)
+class HookDecision:
+    """Structured payload on ``hook_decision`` events (RFC DK) — what one
+    tool-use hook did to one call. ``decision`` is ``deny``,
+    ``rewrite_input``, ``rewrite_output``, ``context`` or ``unavailable``;
+    ``updated_input`` (JSON bytes) is the input the tool ran with after a
+    rewrite. Mirrors ``providers.HookDecisionInfo``."""
+
+    hook: str
+    phase: str
+    tool_use_id: str
+    tool_name: str
+    decision: str
+    fail_mode: str = ""
+    reason: str = ""
+    updated_input: bytes = b""
+    additional_context: str = ""
+
+
+@dataclass(frozen=True)
 class AgentEvent:
     """One frame from a Run/Continue stream.
 
@@ -203,6 +222,7 @@ class AgentEvent:
     host_widening: Optional[HostWidening] = None
     awaiting_input: Optional[AwaitingInput] = None
     awaiting_review: Optional[AwaitingReview] = None
+    hook_decision: Optional[HookDecision] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
@@ -261,6 +281,20 @@ class AgentEvent:
                 round=ev.awaiting_review.round,
                 expires_at=ev.awaiting_review.expires_at,
             )
+        hd: Optional[HookDecision] = None
+        if ev.HasField("hook_decision"):
+            h = ev.hook_decision
+            hd = HookDecision(
+                hook=h.hook,
+                phase=h.phase,
+                tool_use_id=h.tool_use_id,
+                tool_name=h.tool_name,
+                decision=h.decision,
+                fail_mode=h.fail_mode,
+                reason=h.reason,
+                updated_input=h.updated_input,
+                additional_context=h.additional_context,
+            )
         ui: Optional[UserInput] = None
         if ev.HasField("user_input"):
             ui = UserInput(
@@ -315,6 +349,7 @@ class AgentEvent:
             host_widening=hw,
             awaiting_input=ai,
             awaiting_review=ar,
+            hook_decision=hd,
             user_input=ui,
             limit=li,
             capability_inert=ci,

@@ -33,6 +33,11 @@ const (
 	// real tool result and can rewrite it before the loop emits the
 	// EventToolResult and appends the user-turn content block.
 	PhasePost Phase = "post"
+	// PhasePostFailure runs after a tool FAILS, before the post chain, with
+	// the failure's structured classification in the payload. A post hook
+	// still sees failures too (it always has); this phase is for a hook that
+	// only cares about them.
+	PhasePostFailure Phase = "post_failure"
 )
 
 // FailMode controls how the dispatcher treats webhook errors and timeouts.
@@ -102,14 +107,25 @@ func (h *Hook) Matches(agent, tool string, phase Phase) bool {
 	return true
 }
 
+// RunContext places a hook call in its run: which run, which run spawned it,
+// and which loop iteration the tool call belongs to. Without it a hook could
+// not correlate the calls of one run, tell a sub-agent's call from its
+// parent's, or tell a retried call from the first one.
+type RunContext struct {
+	RunID       string `json:"run_id,omitempty"`
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	Iteration   int    `json:"iteration"`
+}
+
 // PreHookCall is the JSON payload sent to a Pre webhook.
 type PreHookCall struct {
-	Phase    Phase    `json:"phase"`
-	Owner    string   `json:"owner"`
-	HookName string   `json:"hook_name"`
-	Agent    string   `json:"agent"`
-	UserID   string   `json:"user_id,omitempty"`
-	AgentID  string   `json:"agent_id,omitempty"`
+	Phase    Phase  `json:"phase"`
+	Owner    string `json:"owner"`
+	HookName string `json:"hook_name"`
+	Agent    string `json:"agent"`
+	UserID   string `json:"user_id,omitempty"`
+	AgentID  string `json:"agent_id,omitempty"`
+	RunContext
 	ToolCall ToolCall `json:"tool_call"`
 }
 
@@ -154,20 +170,28 @@ type PreHookResult struct {
 
 // PostHookCall is the JSON payload sent to a Post webhook.
 type PostHookCall struct {
-	Phase      Phase      `json:"phase"`
-	Owner      string     `json:"owner"`
-	HookName   string     `json:"hook_name"`
-	Agent      string     `json:"agent"`
-	UserID     string     `json:"user_id,omitempty"`
-	AgentID    string     `json:"agent_id,omitempty"`
+	Phase    Phase  `json:"phase"`
+	Owner    string `json:"owner"`
+	HookName string `json:"hook_name"`
+	Agent    string `json:"agent"`
+	UserID   string `json:"user_id,omitempty"`
+	AgentID  string `json:"agent_id,omitempty"`
+	RunContext
 	ToolCall   ToolCall   `json:"tool_call"`
 	ToolResult ToolResult `json:"tool_result"`
 }
 
-// PostHookResult is the response a Post webhook returns. If Result is
-// nil (response empty / 204), the result passes through unchanged.
+// PostHookResult is the response a Post (or PostFailure) webhook returns.
+// Both fields may be set:
+//   - Result non-nil replaces the result the model sees.
+//   - AdditionalContext is appended to the result's text — INTO the
+//     tool_result rather than as a separate block, so tool results still lead
+//     the next user turn and the context survives a transcript replay.
+//
+// Empty response / 204 = pass through unchanged.
 type PostHookResult struct {
-	Result *ToolResult `json:"result,omitempty"`
+	Result            *ToolResult `json:"result,omitempty"`
+	AdditionalContext string      `json:"additional_context,omitempty"`
 }
 
 // ToolCall is the wire shape for a tool invocation in hook payloads.
@@ -184,4 +208,32 @@ type ToolCall struct {
 type ToolResult struct {
 	Text    string `json:"text"`
 	IsError bool   `json:"is_error,omitempty"`
+	// Error is the failure's structured classification, when the tool gave
+	// one. Carried TO a hook so it can branch on the category rather than
+	// parse the text; a hook's own returned result does not set it (the
+	// runtime keeps the tool's).
+	Error *ToolError `json:"error,omitempty"`
+}
+
+// ToolError is the wire shape of a classified tool failure (mirrors
+// tools.ErrorInfo).
+type ToolError struct {
+	Category    string `json:"category"`
+	Retryable   bool   `json:"retryable"`
+	Description string `json:"description,omitempty"`
+}
+
+// Decision is one thing a hook did to a tool call, reported so the run can
+// record it. A hook that passed the call through unchanged reports nothing.
+type Decision struct {
+	Owner string
+	Name  string
+	Phase Phase
+	// Kind: "deny" | "rewrite_input" | "rewrite_output" | "context" |
+	// "unavailable" (the hook failed; FailMode says what that meant).
+	Kind              string
+	FailMode          FailMode
+	Reason            string
+	UpdatedInput      json.RawMessage
+	AdditionalContext string
 }

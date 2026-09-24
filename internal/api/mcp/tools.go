@@ -603,7 +603,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"properties": {
 					"owner":        {"type": "string", "description": "App UID; (owner, name) is the identity tuple."},
 					"name":         {"type": "string"},
-					"phase":        {"type": "string", "enum": ["pre", "post"]},
+					"phase":        {"type": "string", "enum": ["pre", "post", "post_failure"], "description": "pre: before the tool runs. post: after it runs, success or failure. post_failure: only after a failure, before post, with the failure's classification."},
 					"agents":       {"type": "array", "items": {"type": "string"}, "description": "Agent name globs (exact or 'prefix*'). Empty = match all."},
 					"tools":        {"type": "array", "items": {"type": "string"}, "description": "Tool name globs (same syntax). Empty = match all."},
 					"callback_url": {"type": "string", "description": "http:// or https:// URL loomcycle POSTs to."},

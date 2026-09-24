@@ -6984,6 +6984,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(subCtx, def))
 	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))
+	// subCtx still carries the PARENT's run id here, which is exactly the
+	// parent id; it is replaced by the child's on the next line.
+	subCtx = tools.WithParentRunID(subCtx, tools.RunID(subCtx))
 	subCtx = tools.WithRunID(subCtx, subRunID)
 	subCtx = tools.WithDispatcher(subCtx, subDispatcher)
 

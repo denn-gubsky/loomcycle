@@ -44,6 +44,9 @@ export type EventType =
   // crossing (a soft warning at run start, or a soft crossing mid-run). The
   // structured payload rides `AgentEvent.limit`.
   | "capability_inert"
+  // What a tool-use hook did to a call: deny, rewrite_input, rewrite_output,
+  // context, or unavailable. Nothing is emitted for a call a hook passed.
+  | "hook_decision"
   | "limit"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
@@ -367,6 +370,24 @@ export interface ErrorInfo {
   retry_after_ms?: number;
 }
 
+/** What one tool-use hook did to one call (the `hook_decision` payload). */
+export interface HookDecisionInfo {
+  /** `"<owner>/<name>"`. */
+  hook: string;
+  phase: HookPhase;
+  tool_use_id: string;
+  tool_name: string;
+  decision: "deny" | "rewrite_input" | "rewrite_output" | "context" | "unavailable";
+  /** For `unavailable`: `open` (the call went ahead) or `closed` (refused). */
+  fail_mode?: "open" | "closed";
+  /** A deny's text, or the error that made the hook unavailable. */
+  reason?: string;
+  /** For `rewrite_input`: the input the tool actually ran with. */
+  updated_input?: unknown;
+  /** For `context`: what was appended to the tool result. */
+  additional_context?: string;
+}
+
 /** The payload on a `capability_inert` event: one tool the agent holds and
  *  cannot use, because the capability gate that tool reads grants nothing.
  *
@@ -583,6 +604,8 @@ export interface AgentEvent {
   limit?: LimitInfo;
   /** Set on `capability_inert` events: a tool the agent holds and cannot use. */
   capability_inert?: CapabilityInertInfo;
+  /** Payload on `event: hook_decision`. */
+  hook_decision?: HookDecisionInfo;
   /** Set on `event: override` frames — what the operator changed, and from
    *  what to what. */
   override?: OverrideInfo;
@@ -2026,7 +2049,9 @@ export interface ResolveInterruptOptions {
 // receiver code identically to the server's wire emit, but the adapter
 // itself never runs them — it only manages the registration.
 
-export type HookPhase = "pre" | "post";
+/** `post_failure` runs only when the tool failed, before the post chain, with
+ *  the failure's classification in the payload. */
+export type HookPhase = "pre" | "post" | "post_failure";
 
 export type HookFailMode = "open" | "closed";
 

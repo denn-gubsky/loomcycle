@@ -3239,16 +3239,7 @@ outerLoop:
 		// tools' results stream out first, slow ones last — because
 		// callers rendering live progress want "company 1 done" the
 		// moment company 1 is done, not after company 3 finishes too.
-		ident := tools.RunIdentity(ctx)
-		hookIdent := hooks.Identity{
-			Agent:   opts.AgentName,
-			UserID:  ident.UserID,
-			AgentID: ident.AgentID,
-			// RFC AF: the run's authoritative tenant so the registry fires a
-			// tenant-scoped hook only on its own tenant's runs (global hooks,
-			// Tenant=="", still fire on all).
-			Tenant: ident.TenantID,
-		}
+		hookIdent := hookIdentity(ctx, opts.AgentName, iter)
 		toolResults := executePendingTools(turnCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
 
@@ -3362,6 +3353,12 @@ func dispatchOneTool(
 	hookTC := hooks.ToolCall{ID: tu.ID, Name: tu.Name, Input: tu.Input}
 
 	pre := hookDispatcher.RunPre(ctx, ident, hookTC)
+	emitHookDecisions(emit, tu, pre.Decisions)
+	// A tool that runs another tool on the model's behalf goes through these
+	// same hooks; its call is named after this one.
+	ctx = tools.WithHookedExecute(ctx, func(c context.Context, name string, input json.RawMessage) tools.Result {
+		return dispatchOneTool(c, dispatcher, providers.ToolUse{ID: tu.ID + "/" + name, Name: name, Input: input}, hookDispatcher, ident, emit)
+	})
 	var r tools.Result
 	if pre.Deny != nil {
 		// A Pre-hook short-circuited; do NOT run the real tool. The
@@ -3403,7 +3400,8 @@ func dispatchOneTool(
 		r = executeTool(execCtx, dispatcher, running)
 	}
 
-	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError})
+	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError, Error: hookToolError(r.Error)})
+	emitHookDecisions(emit, tu, post.Decisions)
 	// The hook wire carries only text and is_error, so a Post chain can
 	// replace those two and nothing else. Rebuilding the result from them
 	// alone dropped Error and Count on EVERY call — the server always wires
@@ -3411,11 +3409,60 @@ func dispatchOneTool(
 	// the model with no classification. Keep the tool's structured fields;
 	// a hook that turns a failure into a success takes the failure's
 	// classification with it, since Error is nil on success by contract.
-	r.Text, r.IsError = post.Text, post.IsError
+	r.Text, r.IsError = post.Result.Text, post.Result.IsError
 	if !r.IsError {
 		r.Error = nil
 	}
+	// Into the tool_result text, not a separate block: tool results must lead
+	// the next user turn, and text in the result survives a transcript replay.
+	for _, extra := range post.AdditionalContext {
+		r.Text += "\n\n" + extra
+	}
 	return r
+}
+
+// hookToolError is the tool's failure classification as the hook wire carries it.
+func hookToolError(e *tools.ErrorInfo) *hooks.ToolError {
+	if e == nil {
+		return nil
+	}
+	return &hooks.ToolError{Category: string(e.Category), Retryable: e.Retryable, Description: e.Description}
+}
+
+// hookIdentity is the run, as a tool-use hook sees it. ONE builder for every
+// dispatch site, so the append loop and the stateful loop cannot report a call
+// differently.
+func hookIdentity(ctx context.Context, agent string, iteration int) hooks.Identity {
+	ident := tools.RunIdentity(ctx)
+	return hooks.Identity{
+		Agent:   agent,
+		UserID:  ident.UserID,
+		AgentID: ident.AgentID,
+		// RFC AF: the run's authoritative tenant so the registry fires a
+		// tenant-scoped hook only on its own tenant's runs (global hooks,
+		// Tenant=="", still fire on all).
+		Tenant:      ident.TenantID,
+		RunID:       tools.RunID(ctx),
+		ParentRunID: tools.ParentRunID(ctx),
+		Iteration:   iteration,
+	}
+}
+
+// emitHookDecisions records what the hooks did to one call. A hook that
+// passed the call through reported nothing, so a call no hook touched emits
+// nothing.
+func emitHookDecisions(emit func(providers.Event), tu providers.ToolUse, ds []hooks.Decision) {
+	if emit == nil {
+		return
+	}
+	for _, d := range ds {
+		emit(providers.Event{Type: providers.EventHookDecision, HookDecision: &providers.HookDecisionInfo{
+			Hook: d.Owner + "/" + d.Name, Phase: string(d.Phase),
+			ToolUseID: tu.ID, ToolName: tu.Name,
+			Decision: d.Kind, FailMode: string(d.FailMode), Reason: d.Reason,
+			UpdatedInput: d.UpdatedInput, AdditionalContext: d.AdditionalContext,
+		}})
+	}
 }
 
 // extractToolURL best-effort pulls a URL string out of common tool

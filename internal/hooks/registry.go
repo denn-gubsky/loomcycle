@@ -278,7 +278,7 @@ func (r *Registry) Match(tenant, agent, tool string, phase Phase) []*Hook {
 			out = append(out, h)
 		}
 	}
-	if phase == PhasePost {
+	if phase == PhasePost || phase == PhasePostFailure {
 		// Reverse for LIFO middleware ordering.
 		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 			out[i], out[j] = out[j], out[i]
@@ -299,8 +299,8 @@ func validate(h *Hook) error {
 	if strings.TrimSpace(h.Name) == "" {
 		return wrap(ErrInvalidRegistration, "name required")
 	}
-	if h.Phase != PhasePre && h.Phase != PhasePost {
-		return wrap(ErrInvalidRegistration, "phase must be \"pre\" or \"post\"")
+	if h.Phase != PhasePre && h.Phase != PhasePost && h.Phase != PhasePostFailure {
+		return wrap(ErrInvalidRegistration, "phase must be \"pre\", \"post\" or \"post_failure\"")
 	}
 	if strings.TrimSpace(h.CallbackURL) == "" {
 		return wrap(ErrInvalidRegistration, "callback_url required")

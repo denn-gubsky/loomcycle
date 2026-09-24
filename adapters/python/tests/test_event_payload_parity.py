@@ -26,3 +26,12 @@ def test_the_awaiting_review_payload_is_decoded():
     assert got.awaiting_review is not None
     assert (got.awaiting_review.since_turn, got.awaiting_review.round) == (3, 2)
     assert AgentEvent._from_proto(pb.Event(type="text", text="x")).awaiting_review is None
+
+
+def test_the_hook_decision_payload_is_decoded():
+    ev = pb.Event(type="hook_decision", hook_decision=pb.HookDecision(
+        hook="sec/pin", phase="pre", tool_use_id="c1", tool_name="WebFetch",
+        decision="rewrite_input", updated_input=b'{"url":"https://safe/"}'))
+    got = AgentEvent._from_proto(ev).hook_decision
+    assert got is not None
+    assert (got.hook, got.decision, got.updated_input) == ("sec/pin", "rewrite_input", b'{"url":"https://safe/"}')

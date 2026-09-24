@@ -1464,6 +1464,13 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Message:  ev.Limit.Message,
 		}
 	}
+	if hd := ev.HookDecision; hd != nil {
+		out.HookDecision = &loomcyclepb.HookDecision{
+			Hook: hd.Hook, Phase: hd.Phase, ToolUseId: hd.ToolUseID, ToolName: hd.ToolName,
+			Decision: hd.Decision, FailMode: hd.FailMode, Reason: hd.Reason,
+			UpdatedInput: hd.UpdatedInput, AdditionalContext: hd.AdditionalContext,
+		}
+	}
 	if ev.CapabilityInert != nil {
 		out.CapabilityInert = &loomcyclepb.CapabilityInertInfo{
 			Tool:    ev.CapabilityInert.Tool,
