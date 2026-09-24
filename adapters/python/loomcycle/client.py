@@ -1179,6 +1179,30 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return {"run_id": resp.run_id, "stopped": resp.stopped, "parked": resp.parked}
 
+    async def review_run(
+        self, run_id: str, decision: str, *, feedback: str = ""
+    ) -> Mapping[str, Any]:
+        """Deliver a verdict on a run held for review (RFC DJ; mirror of
+        ``POST /v1/runs/{run_id}/review``) — one started or retuned with
+        ``review=True`` whose stream emitted ``awaiting_review``.
+
+        ``decision="approve"`` completes it on the held answer.
+        ``decision="reject"`` with ``feedback`` sends the feedback as its next
+        user turn; it revises and is held again. ``"reject"`` without feedback
+        ends the run with status ``"rejected"``. Returns
+        ``{run_id, decision, delivered}``.
+
+        A run that is live but not held raises :class:`LoomcycleError` with
+        ``code=FAILED_PRECONDITION``; an unknown, finished or cross-tenant run
+        maps to :class:`AgentNotFoundError` (NotFound); another decision, or
+        feedback with an approval, to :class:`InvalidArgumentError`."""
+        req = pb.ReviewRunRequest(run_id=run_id, decision=decision, feedback=feedback)
+        try:
+            resp = await self._stub.ReviewRun(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {"run_id": resp.run_id, "decision": resp.decision, "delivered": resp.delivered}
+
     async def resolve_interrupt(
         self,
         run_id: str,
@@ -1239,6 +1263,7 @@ class LoomcycleClient:
         inject_tool_guide: Optional[bool] = None,
         interactive: Optional[bool] = None,
         interruption: Optional[Mapping[str, Any]] = None,
+        review: Optional[bool] = None,
     ) -> Mapping[str, Any]:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
@@ -1272,6 +1297,7 @@ class LoomcycleClient:
                 memory_index_max_bytes=memory_index_max_bytes,
                 inject_tool_guide=inject_tool_guide,
                 interactive=interactive,
+                review=review,
             ),
         )
         if interruption is not None:
@@ -1300,6 +1326,7 @@ class LoomcycleClient:
         inject_tool_guide: Optional[bool] = None,
         interactive: Optional[bool] = None,
         interruption: Optional[Mapping[str, Any]] = None,
+        review: Optional[bool] = None,
     ) -> Mapping[str, Any]:
         """Change a run's settings WITHOUT sending it a turn (mirror of
         ``POST /v1/runs/{run_id}/retune``).
@@ -1330,6 +1357,7 @@ class LoomcycleClient:
                 memory_index_max_bytes=memory_index_max_bytes,
                 inject_tool_guide=inject_tool_guide,
                 interactive=interactive,
+                review=review,
             ),
         )
         if interruption is not None:
@@ -1592,6 +1620,7 @@ class LoomcycleClient:
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
+        review: bool = False,
         # RFC DC per-run overrides. Routing selects WITHIN what the agent's
         # definition declares; the budget knobs are raisable except
         # max_concurrent_children, which may only be LOWERED. The tuning
@@ -1672,6 +1701,7 @@ class LoomcycleClient:
             compaction=compaction,
             max_context_tokens=max_context_tokens,
             interactive=interactive,
+            review=review,
             model=model,
             provider=provider,
             tier=tier,
@@ -1713,6 +1743,7 @@ class LoomcycleClient:
         compaction: Optional[Mapping[str, Any]] = None,
         max_context_tokens: int = 0,
         interactive: bool = False,
+        review: bool = False,
         # RFC DC per-run overrides. Routing selects WITHIN what the agent's
         # definition declares; the budget knobs are raisable except
         # max_concurrent_children, which may only be LOWERED. The tuning
@@ -1760,6 +1791,7 @@ class LoomcycleClient:
             user_credentials=dict(user_credentials or {}),
             max_context_tokens=max_context_tokens,
             interactive=interactive,
+            review=review,
             model=model,
             provider=provider,
             tier=tier,
@@ -2150,6 +2182,8 @@ def _build_run_request(
     compaction: Optional[Mapping[str, Any]] = None,
     max_context_tokens: int = 0,
     interactive: bool = False,
+    # Hold the finished answer for an operator's verdict (review_run).
+    review: bool = False,
     # Per-run overrides. Routing selects WITHIN what the agent's definition
     # declares; the budget knobs are raisable except max_concurrent_children,
     # which may only be LOWERED. These are plain proto3 fields, so "" / 0 IS
@@ -2199,6 +2233,7 @@ def _build_run_request(
         user_credentials=dict(user_credentials or {}),
         max_context_tokens=max_context_tokens,
         interactive=interactive,
+        review=review,
         # Canonical JSON bytes: the value is map[string]any by definition, so
         # there is no typed message to map it onto.
         metadata=json.dumps(metadata).encode() if metadata is not None else b"",
@@ -2274,6 +2309,7 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         memory_index_max_bytes=spawn.get("memory_index_max_bytes"),
         inject_tool_guide=spawn.get("inject_tool_guide"),
         interruption=spawn.get("interruption"),
+        review=bool(spawn.get("review", False)),
     )
 
 

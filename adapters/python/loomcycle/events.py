@@ -78,6 +78,18 @@ class AwaitingInput:
 
 
 @dataclass(frozen=True)
+class AwaitingReview:
+    """Structured payload on ``awaiting_review`` events (RFC DJ) — a run armed
+    for review finished its answer and is held for an operator's verdict
+    (:meth:`LoomcycleClient.review_run`). ``round`` is 1 on the first answer
+    and counts up with each revision. Mirrors
+    ``providers.AwaitingReviewEventInfo``."""
+
+    since_turn: int
+    round: int
+
+
+@dataclass(frozen=True)
 class UserInput:
     """Structured payload on ``steer`` events (RFC AI) — an operator
     steering message drained into the conversation, or (on a
@@ -187,6 +199,7 @@ class AgentEvent:
     retry: Optional[Retry] = None
     host_widening: Optional[HostWidening] = None
     awaiting_input: Optional[AwaitingInput] = None
+    awaiting_review: Optional[AwaitingReview] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
@@ -238,6 +251,12 @@ class AgentEvent:
         ai: Optional[AwaitingInput] = None
         if ev.HasField("awaiting_input"):
             ai = AwaitingInput(since_turn=ev.awaiting_input.since_turn)
+        ar: Optional[AwaitingReview] = None
+        if ev.HasField("awaiting_review"):
+            ar = AwaitingReview(
+                since_turn=ev.awaiting_review.since_turn,
+                round=ev.awaiting_review.round,
+            )
         ui: Optional[UserInput] = None
         if ev.HasField("user_input"):
             ui = UserInput(
@@ -291,6 +310,7 @@ class AgentEvent:
             retry=r,
             host_widening=hw,
             awaiting_input=ai,
+            awaiting_review=ar,
             user_input=ui,
             limit=li,
             capability_inert=ci,

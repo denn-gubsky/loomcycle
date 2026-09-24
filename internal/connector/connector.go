@@ -506,6 +506,22 @@ type Connector interface {
 	//   ErrTurnNotInteractive    — the run is not interactive. FailedPrecondition / 409.
 	CancelTurn(ctx context.Context, runID, reason string) (stopped, parked bool, err error)
 
+	// ReviewRun delivers an operator's verdict on a run held for review:
+	// decision "approve" completes it on the held answer; "reject" with feedback
+	// sends the feedback as its next user turn (it revises and is held again);
+	// "reject" without feedback ends it rejected. The transport-agnostic core
+	// of POST /v1/runs/{run_id}/review. `source` is resolved by the caller at
+	// its auth boundary. An operator act only — never offered to an agent as a
+	// tool, so an agent cannot approve its own answer.
+	//
+	// Typed errors:
+	//   ErrSteeringUnavailable   — no steer registry / store. Unavailable / 503.
+	//   ErrRunNotInFlight        — unknown, finished or cross-tenant. NotFound / 404.
+	//   ErrRunNotHeld            — live but not held. FailedPrecondition / 409.
+	//   ErrInvalidReviewDecision — another decision, or feedback on an approval. InvalidArgument / 400.
+	//   ErrSteerQueueFull        — the run's input queue is full. ResourceExhausted / 429.
+	ReviewRun(ctx context.Context, runID, decision, feedback, source string) (delivered bool, err error)
+
 	// ResolveInterrupt resolves a pending interruption — either an answer
 	// (disposition "" / "answer") or a decline (disposition "declined", which
 	// carries no answer and skips option validation so the agent proceeds). The

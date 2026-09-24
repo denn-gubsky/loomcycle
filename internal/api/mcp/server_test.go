@@ -264,6 +264,10 @@ func (m *mockConnector) StreamRunEvents(context.Context, string, int64, connecto
 func (m *mockConnector) CancelTurn(context.Context, string, string) (bool, bool, error) {
 	return false, false, connector.ErrRunNotInFlight
 }
+
+func (m *mockConnector) ReviewRun(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
 func (m *mockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
 	return "", connector.ErrInterruptNotFound
 }
@@ -448,8 +452,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 54 {
-		t.Errorf("got %d tools, want 54 (+configured_run on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 55 {
+		t.Errorf("got %d tools, want 55 (+review_run, +configured_run on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -459,7 +463,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 		t.Error("catalogue missing the credentialdef meta-tool")
 	}
 	// Spot-check across categories — through the v1.x additions.
-	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "configured_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "history", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
+	for _, want := range []string{"spawn_run", "spawn_runs", "compact_run", "configured_run", "review_run", "register_agent", "memory", "agentdef", "skilldef", "teamdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef", "memorybackenddef", "operatortokendef", "volumedef", "path", "document", "history", "pause_runtime", "create_snapshot", "get_snapshot", "resolve_probe", "interruption_resolve", "register_hook", "list_hooks", "delete_hook", "list_channels", "stream_user_run_states", "publish_channel", "subscribe_channel", "peek_channel", "ack_channel"} {
 		if !names[want] {
 			t.Errorf("missing tool %q in tools/list", want)
 		}

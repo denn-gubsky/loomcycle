@@ -48,6 +48,7 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 		RetryAttempts: req.RetryAttempts, MemInject: req.MemoryInjectMaxTokens,
 		MemIndex:    req.MemoryIndexMaxBytes,
 		Interactive: req.Interactive, Interruption: req.GetInterruption(),
+		Review: req.Review,
 	}); !ov.IsZero() {
 		switch err := s.connector.RetuneRun(ctx, runID, ov); {
 		case errors.Is(err, connector.ErrRunNotInFlight):
@@ -97,6 +98,37 @@ func (s *Server) CancelTurn(ctx context.Context, req *loomcyclepb.CancelTurnRequ
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &loomcyclepb.CancelTurnResponse{RunId: runID, Stopped: stopped, Parked: parked}, nil
+}
+
+// ReviewRun delivers an operator's verdict on a run held for review — the gRPC
+// twin of POST /v1/runs/{run_id}/review (RFC DJ). It dispatches through
+// connector.ReviewRun, which owns the tenant and session-owner gate and routes
+// the verdict to the replica that owns the run. gRPC has no cookie, so the
+// source is always "api".
+func (s *Server) ReviewRun(ctx context.Context, req *loomcyclepb.ReviewRunRequest) (*loomcyclepb.ReviewRunResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unavailable, "connector not wired")
+	}
+	runID := req.GetRunId()
+	if !validIdent(runID) {
+		return nil, status.Error(codes.InvalidArgument, "run_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	delivered, err := s.connector.ReviewRun(ctx, runID, req.GetDecision(), req.GetFeedback(), store.InterruptResolvedByAPI)
+	switch {
+	case errors.Is(err, connector.ErrInvalidReviewDecision):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, connector.ErrRunNotHeld):
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, connector.ErrRunNotInFlight):
+		return nil, status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, connector.ErrSteerQueueFull):
+		return nil, status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, connector.ErrSteeringUnavailable):
+		return nil, status.Error(codes.Unavailable, err.Error())
+	case err != nil:
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &loomcyclepb.ReviewRunResponse{RunId: runID, Decision: req.GetDecision(), Delivered: delivered}, nil
 }
 
 // ResolveInterrupt resolves a pending interruption — answer or decline — the
@@ -185,7 +217,7 @@ func (s *Server) StreamRun(req *loomcyclepb.StreamRunRequest, stream loomcyclepb
 type protoOverrideFields struct {
 	Model, Provider, Tier, Effort                   string
 	MaxTokens, MaxIterations, MaxConcurrentChildren int32
-	Unbounded, InjectToolGuide, Interactive         *bool
+	Unbounded, InjectToolGuide, Interactive, Review *bool
 	RetryAttempts, MemInject, MemIndex              *int32
 	Interruption                                    *loomcyclepb.Interruption
 }
@@ -208,6 +240,7 @@ func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
 		// inherit-the-definition, never as a block that DISABLES what it allows.
 		Interactive:  f.Interactive,
 		Interruption: interruptionFromProto(f.Interruption),
+		Review:       f.Review,
 	}
 }
 
@@ -231,6 +264,7 @@ func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunReques
 		RetryAttempts: req.RetryAttempts, MemInject: req.MemoryInjectMaxTokens,
 		MemIndex:    req.MemoryIndexMaxBytes,
 		Interactive: req.Interactive, Interruption: req.GetInterruption(),
+		Review: req.Review,
 	})
 	if ov.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "at least one override is required")

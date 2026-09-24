@@ -55,6 +55,7 @@ const (
 	Loomcycle_RunInput_FullMethodName            = "/loomcycle.v1.Loomcycle/RunInput"
 	Loomcycle_RetuneRun_FullMethodName           = "/loomcycle.v1.Loomcycle/RetuneRun"
 	Loomcycle_CancelTurn_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelTurn"
+	Loomcycle_ReviewRun_FullMethodName           = "/loomcycle.v1.Loomcycle/ReviewRun"
 	Loomcycle_ResolveInterrupt_FullMethodName    = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
 	Loomcycle_StreamRun_FullMethodName           = "/loomcycle.v1.Loomcycle/StreamRun"
 	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
@@ -216,6 +217,16 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
 	CancelTurn(ctx context.Context, in *CancelTurnRequest, opts ...grpc.CallOption) (*CancelTurnResponse, error)
+	// ReviewRun delivers an operator's verdict on a run held for review (RFC
+	// DJ): "approve" completes it on the held answer; "reject" with feedback
+	// sends the feedback as its next user turn and it revises and is held again;
+	// "reject" without feedback ends it with status "rejected". NotFound (opaque)
+	// for an unknown, finished or cross-tenant run; FailedPrecondition when the
+	// run is live but not held; InvalidArgument for another decision or feedback
+	// on an approval. Owner-routed cross-replica.
+	//
+	// Mirrors POST /v1/runs/{run_id}/review.
+	ReviewRun(ctx context.Context, in *ReviewRunRequest, opts ...grpc.CallOption) (*ReviewRunResponse, error)
 	// ResolveInterrupt resolves a pending interruption — either an answer
 	// (disposition "" / "answer", validated against the declared options) or a
 	// decline (disposition "declined": no answer, skips option validation) so the
@@ -713,6 +724,16 @@ func (c *loomcycleClient) CancelTurn(ctx context.Context, in *CancelTurnRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CancelTurnResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_CancelTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ReviewRun(ctx context.Context, in *ReviewRunRequest, opts ...grpc.CallOption) (*ReviewRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReviewRunResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ReviewRun_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1328,6 +1349,16 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
 	CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error)
+	// ReviewRun delivers an operator's verdict on a run held for review (RFC
+	// DJ): "approve" completes it on the held answer; "reject" with feedback
+	// sends the feedback as its next user turn and it revises and is held again;
+	// "reject" without feedback ends it with status "rejected". NotFound (opaque)
+	// for an unknown, finished or cross-tenant run; FailedPrecondition when the
+	// run is live but not held; InvalidArgument for another decision or feedback
+	// on an approval. Owner-routed cross-replica.
+	//
+	// Mirrors POST /v1/runs/{run_id}/review.
+	ReviewRun(context.Context, *ReviewRunRequest) (*ReviewRunResponse, error)
 	// ResolveInterrupt resolves a pending interruption — either an answer
 	// (disposition "" / "answer", validated against the declared options) or a
 	// decline (disposition "declined": no answer, skips option validation) so the
@@ -1684,6 +1715,9 @@ func (UnimplementedLoomcycleServer) RetuneRun(context.Context, *RetuneRunRequest
 }
 func (UnimplementedLoomcycleServer) CancelTurn(context.Context, *CancelTurnRequest) (*CancelTurnResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelTurn not implemented")
+}
+func (UnimplementedLoomcycleServer) ReviewRun(context.Context, *ReviewRunRequest) (*ReviewRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReviewRun not implemented")
 }
 func (UnimplementedLoomcycleServer) ResolveInterrupt(context.Context, *ResolveInterruptRequest) (*ResolveInterruptResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveInterrupt not implemented")
@@ -2131,6 +2165,24 @@ func _Loomcycle_CancelTurn_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).CancelTurn(ctx, req.(*CancelTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ReviewRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReviewRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ReviewRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ReviewRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ReviewRun(ctx, req.(*ReviewRunRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3047,6 +3099,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelTurn",
 			Handler:    _Loomcycle_CancelTurn_Handler,
+		},
+		{
+			MethodName: "ReviewRun",
+			Handler:    _Loomcycle_ReviewRun_Handler,
 		},
 		{
 			MethodName: "ResolveInterrupt",
