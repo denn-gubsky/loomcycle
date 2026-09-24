@@ -70,9 +70,12 @@ From this section write:
 If the section is very short, write fewer. Answer only with JSON: {{"claims": [...], "questions": [...]}}"""
 
 
-def call(host, model, prompt, num_ctx, num_predict=200, json_mode=False):
+def call(host, model, prompt, num_ctx, num_predict=200, json_mode=False, repeat_penalty=None):
+    opts = {"num_ctx": num_ctx, "temperature": 0, "num_predict": num_predict}
+    if repeat_penalty:
+        opts["repeat_penalty"] = repeat_penalty
     body = {"model": model, "stream": False, "think": False,
-            "options": {"num_ctx": num_ctx, "temperature": 0, "num_predict": num_predict},
+            "options": opts,
             "messages": [{"role": "user", "content": prompt}]}
     if json_mode:
         body["format"] = "json"
@@ -93,6 +96,9 @@ def main():
     ap.add_argument("--num-ctx", type=int, default=16384)
     ap.add_argument("--mode", choices=["context", "describe", "mapcontext", "units"], default="context")
     ap.add_argument("--limit", type=int, default=0, help="stop after N new chunks (smoke tests)")
+    # units output is JSON with up to 12 sentences; 700 tokens truncated 21 of 647 mid-string
+    # on long sections, and at temperature 0 a retry truncates the same way.
+    ap.add_argument("--units-max-tokens", type=int, default=2000)
     a = ap.parse_args()
 
     out = os.path.join(a.probe, "contexts.jsonl" if a.mode == "context" else a.mode + ".jsonl")
@@ -127,7 +133,11 @@ def main():
                     try:
                         t = time.time()
                         if a.mode == "units":
-                            ctx, pin, pout = call(a.host, a.model, prompt, a.num_ctx, 700, True)
+                            # A retry at temperature 0 repeats a degenerate loop exactly (seen on
+                            # LaTeX-heavy sections: `\textstyle` repeated to the cap), so retries
+                            # add a repeat penalty. Recorded per row, so it is never silent.
+                            rp = 1.2 if attempt else None
+                            ctx, pin, pout = call(a.host, a.model, prompt, a.num_ctx, a.units_max_tokens, True, rp)
                             json.loads(ctx)  # JSON mode should guarantee this; a failure retries
                         else:
                             ctx, pin, pout = call(a.host, a.model, prompt, a.num_ctx)
@@ -140,6 +150,7 @@ def main():
                     print("FAIL", p["id"], s["path"], err[:200], file=sys.stderr, flush=True)
                     continue
                 f.write(json.dumps({"paper_id": p["id"], "path": s["path"], "context": ctx,
+                                    "retry_attempt": attempt,
                                     "prompt_tokens": pin, "output_tokens": pout,
                                     "seconds": round(time.time() - t, 2)}) + "\n")
                 f.flush()
