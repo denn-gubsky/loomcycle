@@ -140,3 +140,41 @@ func TestGrpcChannelScope_ConfinedToSubjectAndAdmin(t *testing.T) {
 		}
 	}
 }
+
+// An isolated member (substrate:user alone) reads only its own runs: GetAgent
+// returns the run's prompt-bearing result, spec and draft, so another user's
+// run in the same tenant folds into the same NotFound a missing one gets. A
+// tenant operator keeps the whole-tenant view.
+func TestGrpcGetAgent_IsolatedMemberCannotReadAnotherUsersRun(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	seedRun(t, st, "acme", "alice", "a_alice")
+	seedRun(t, st, "acme", "bob", "a_bob")
+
+	bob := scopedCtx("acme", "bob", auth.ScopeUser)
+	if _, err := adapter.GetAgent(bob, &loomcyclepb.GetAgentRequest{AgentId: "a_alice"}); status.Code(err) != codes.NotFound {
+		t.Errorf("isolated member reading another user's run: code=%s, want NotFound", status.Code(err))
+	}
+	if _, err := adapter.GetAgent(bob, &loomcyclepb.GetAgentRequest{AgentId: "a_bob"}); err != nil {
+		t.Errorf("isolated member reading its own run: %v, want ok", err)
+	}
+	if _, err := adapter.GetAgent(scopedCtx("acme", "op", auth.ScopeTenant), &loomcyclepb.GetAgentRequest{AgentId: "a_alice"}); err != nil {
+		t.Errorf("tenant operator reading a member's run: %v, want ok", err)
+	}
+}
+
+// A transcript is a session's whole history: an isolated member reads only its
+// own, as tenantStore.GetSession confines it on HTTP.
+func TestGrpcGetTranscript_IsolatedMemberCannotReadAnotherUsersSession(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	ctx := context.Background()
+	aliceSess, _ := st.CreateSession(ctx, "acme", "default", "alice")
+	bobSess, _ := st.CreateSession(ctx, "acme", "default", "bob")
+
+	bob := scopedCtx("acme", "bob", auth.ScopeUser)
+	if _, err := adapter.GetTranscript(bob, &loomcyclepb.GetTranscriptRequest{SessionId: aliceSess.ID}); status.Code(err) != codes.NotFound {
+		t.Errorf("isolated member reading another user's transcript: code=%s, want NotFound", status.Code(err))
+	}
+	if _, err := adapter.GetTranscript(bob, &loomcyclepb.GetTranscriptRequest{SessionId: bobSess.ID}); err != nil {
+		t.Errorf("isolated member reading its own transcript: %v, want ok", err)
+	}
+}

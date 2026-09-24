@@ -332,6 +332,9 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	if err != nil {
 		return connector.Run{}, err
 	}
+	if !runOwnershipOK(ctx, r) {
+		return connector.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+	}
 	out := storeRunToConnector(r)
 	out.Result = r.Result
 	out.Spec = r.RunConfig

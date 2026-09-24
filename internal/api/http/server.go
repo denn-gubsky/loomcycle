@@ -7307,6 +7307,11 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	// covers both — a cross-tenant probe gets the identical opaque 404 (no
 	// existence oracle). Super-admin / legacy / open mode see all.
 	run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
+	if err == nil && !runOwnershipOK(r.Context(), run) {
+		// The row carries another user's prompt, result and draft: an
+		// isolated member gets the same opaque 404 a missing run does.
+		err = &store.ErrNotFound{Kind: "run", ID: agentID}
+	}
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {

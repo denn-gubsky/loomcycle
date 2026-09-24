@@ -429,6 +429,16 @@ func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
 	return sess.TenantID == p.TenantID
 }
 
+// runOwnershipOK is sessionOwnershipOK for a run: whether the ctx principal
+// may read the run's content — its prompt snapshot, result, spec or draft. The
+// tenant accessor alone admits an isolated member to another user's run in the
+// same tenant; every read that returns run content applies this on top of it
+// and answers a false with its own opaque not-found.
+func runOwnershipOK(ctx context.Context, run store.Run) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID)
+}
+
 // handleWhoami serves GET /v1/_me — the Web UI's role source (multi-tenant
 // UI authz). Returns the resolved principal so the SPA renders the
 // super-admin (all-tenants) vs tenant (own-workspace) experience. Any

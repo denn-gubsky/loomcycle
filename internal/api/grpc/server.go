@@ -234,10 +234,11 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	// Tenant isolation (RFC L/N): fold a cross-tenant run into the same opaque
-	// NotFound the HTTP handleGetAgent returns via tenantStore.GetRunByAgentID —
-	// agent ids are not secret, so the gate must not be an existence oracle.
-	if !grpcTenantVisible(ctx, run.TenantID) {
+	// Tenant isolation (RFC L/N): fold a cross-tenant run — or, for an isolated
+	// member, another user's — into the same opaque NotFound the HTTP
+	// handleGetAgent returns. Agent ids are not secret, so the gate must not be
+	// an existence oracle, and the reply carries the run's prompt and result.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) {
 		return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
 	}
 	_, live := s.cancelReg.Get(agentID)
@@ -424,8 +425,10 @@ func (s *Server) GetTranscript(ctx context.Context, req *loomcyclepb.GetTranscri
 	// Tenant isolation (RFC L/N): a transcript exposes the session's full
 	// history, so gate it on the session's tenant exactly as the HTTP
 	// handleTranscript does via tenantStore.GetSession — a cross-tenant session
-	// folds into the same opaque NotFound (session ids are not secret).
-	if !grpcTenantVisible(ctx, sess.TenantID) {
+	// folds into the same opaque NotFound (session ids are not secret). An
+	// isolated member reads only its own sessions, as tenantStore.GetSession
+	// confines it on HTTP.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, sess.TenantID, sess.UserID) {
 		return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
 	}
 	events, err := s.store.GetTranscript(ctx, sessionID)

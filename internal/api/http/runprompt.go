@@ -31,7 +31,9 @@ func redactPromptSnapshot(r *redact.Redactor, snap providers.PromptSnapshotInfo)
 // {{...}} expansion is per-stage and unmemoised: re-assembling now could show a
 // different prompt than the one the model saw.
 //
-// Tenant-gated with the same opaque 404 as every run read. The snapshot can
+// Gated like every run read that returns content (runOwnershipOK): another
+// tenant's run, or another user's for an isolated member, is the opaque 404 a
+// missing one gets. The snapshot can
 // hold resolved {{document:}} / {{memory:}} content the caller could not read
 // directly; that is the same content the run's transcript already holds, and
 // the same runs:read boundary covers both.
@@ -45,13 +47,18 @@ func (s *Server) handleGetRunPrompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run prompts require persistence (no store configured)", http.StatusServiceUnavailable)
 		return
 	}
-	if _, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID); err != nil {
+	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
+	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
 			writeJSONError(w, http.StatusNotFound, "unknown_run", "no run found for that run_id")
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !runOwnershipOK(r.Context(), run) {
+		writeJSONError(w, http.StatusNotFound, "unknown_run", "no run found for that run_id")
 		return
 	}
 	snap, found, err := s.firstPromptSnapshot(r, runID)
