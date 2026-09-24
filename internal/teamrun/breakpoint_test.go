@@ -338,6 +338,6 @@ func equalInts(a, b []int) bool {
 func TestValidateBreakpoints_TheRemovedPauseNamesItsReplacement(t *testing.T) {
 	err := ValidateBreakpoints([]string{"wave:after_collection"})
 	if err == nil || !strings.Contains(err.Error(), "was removed") || !strings.Contains(err.Error(), `"wave:review"`) {
-		t.Errorf("err = %v, want a refusal naming \"<state>:review\"", err)
+		t.Errorf("err = %v, want a refusal naming \"wave:review\"", err)
 	}
 }
