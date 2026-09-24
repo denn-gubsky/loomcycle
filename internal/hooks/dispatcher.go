@@ -3,6 +3,8 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -23,6 +25,10 @@ import (
 type Dispatcher struct {
 	registry RegistryInterface
 	client   *webhookClient
+	// code runs code-js hook bodies; nil when code hooks are disabled, in which
+	// case a code hook (e.g. one reloaded from the database) is unavailable and
+	// its fail mode decides.
+	code CodeRunner
 
 	hostWidenPermitted atomic.Int64
 	hostWidenDenied    atomic.Int64
@@ -63,6 +69,10 @@ func NewDispatcherWithPrivateHosts(reg RegistryInterface, httpClient *http.Clien
 		client:   newWebhookClient(httpClient, privateHostAllowlist),
 	}
 }
+
+// SetCodeRunner installs the runner for code-js hook bodies. Call it during
+// boot wiring, before the server serves requests.
+func (d *Dispatcher) SetCodeRunner(r CodeRunner) { d.code = r }
 
 // Identity carries the loop-side fields the dispatcher needs to
 // stamp onto the webhook payload. Filled by the loop from
@@ -173,6 +183,12 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 			// a deny error so the loop short-circuits.
 			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+			if ctx.Err() != nil {
+				// The run was cancelled while the hook ran (a code hook can be
+				// waiting on a person's answer). Fail-open must not run the tool
+				// of a run that is already over.
+				return PreOutcome{Deny: &ToolResult{IsError: true, Text: "tool_call cancelled: the run ended while hook " + h.Owner + "/" + h.Name + " was deciding"}, Decisions: decisions}
+			}
 			if h.FailMode == FailClosed {
 				log.Printf("hooks: pre %s/%s failed (fail_mode=closed): %v", h.Owner, h.Name, err)
 				return PreOutcome{Deny: &ToolResult{
@@ -348,9 +364,48 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 	return out
 }
 
-// invoke wraps the per-hook timeout around the webhook POST.
+// invoke runs one hook: a code body in the code-js runner, otherwise a
+// webhook POST under the per-hook timeout. out is *PreHookResult or
+// *PostHookResult.
 func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
+	if h.IsCode() {
+		return d.invokeCode(ctx, h, body, out)
+	}
 	hookCtx, cancel := context.WithTimeout(ctx, h.Timeout)
 	defer cancel()
 	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, body, out)
+}
+
+// errCodeHooksDisabled is a code hook met with no runner installed.
+var errCodeHooksDisabled = errors.New("code hooks are not enabled on this server")
+
+// invokeCode runs a code body and translates its decision into the response
+// shape the chain applies. The runner applies the hook's timeout to each run of
+// the JavaScript itself, so no deadline is put on ctx here: that would count a
+// person's answer to the hook's question against a budget meant for code.
+func (d *Dispatcher) invokeCode(ctx context.Context, h *Hook, body, out any) error {
+	if d.code == nil {
+		return errCodeHooksDisabled
+	}
+	dec, err := d.code.Run(ctx, h, eventFor(h.Phase), body)
+	if err != nil {
+		return err
+	}
+	switch o := out.(type) {
+	case *PreHookResult:
+		res, err := dec.preResult(h)
+		if err != nil {
+			return err
+		}
+		*o = res
+	case *PostHookResult:
+		res, err := dec.postResult()
+		if err != nil {
+			return err
+		}
+		*o = res
+	default:
+		return fmt.Errorf("hooks: unexpected response type %T", out)
+	}
+	return nil
 }

@@ -5171,6 +5171,8 @@ type HookRow struct {
 	TimeoutMs        int
 	CreatedAt        time.Time
 	CreatedByReplica string // nullable; observability only
+	// Code is a code-js hook body; '' for a webhook (CallbackURL set instead).
+	Code string
 }
 
 // SnapshotListEntry is the metadata-only projection returned by

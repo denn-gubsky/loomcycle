@@ -225,6 +225,7 @@ func rowToHook(r store.HookRow) *Hook {
 		TimeoutMs:    r.TimeoutMs,
 		Timeout:      timeout,
 		RegisteredAt: r.CreatedAt,
+		Code:         r.Code,
 	}
 }
 
@@ -243,6 +244,7 @@ func hookToRow(h *Hook, replicaID string) store.HookRow {
 		TimeoutMs:        h.TimeoutMs,
 		CreatedAt:        h.RegisteredAt,
 		CreatedByReplica: replicaID,
+		Code:             h.Code,
 	}
 }
 

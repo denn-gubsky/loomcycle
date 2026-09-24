@@ -264,3 +264,28 @@ func TestDBBackedRegistry_BackplaneDeletedEvent_EvictsFromCache(t *testing.T) {
 // Compile-time: stub satisfies the hookStore interface so the
 // constructor accepts it.
 var _ hookStore = (*stubHookStore)(nil)
+
+// A code hook survives the cluster-mode store: a replica that loads it from
+// the database gets the same body, and the code hook's own timeout.
+func TestDBBackedRegistry_ACodeHookSurvivesAReload(t *testing.T) {
+	st := newStubHookStore()
+	first, err := NewDBBackedRegistry(NewRegistry(), st, nil, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const body = `function hook(ev) { return {decision: "allow"}; }`
+	if _, err := first.Register(&Hook{Owner: "ops", Name: "gate", Phase: PhasePre, Code: body}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewDBBackedRegistry(NewRegistry(), st, nil, "r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.LoadFromDB(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := second.List()
+	if len(got) != 1 || got[0].Code != body || got[0].CallbackURL != "" || got[0].Timeout != 50*time.Millisecond {
+		t.Fatalf("reloaded = %+v", got)
+	}
+}
