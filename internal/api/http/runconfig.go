@@ -63,6 +63,12 @@ type runConfigRecord struct {
 	// them apart is what lets a resume restore a promoted run as promoted.
 	Interactive *bool `json:"interactive,omitempty"`
 
+	// Review holds the run for an operator's verdict when its model finishes.
+	// Unlike Interactive there is no column for the start-time answer, so the
+	// record carries it from the start: true when the run began armed, and
+	// whatever a retune set since. Absent means never armed.
+	Review *bool `json:"review,omitempty"`
+
 	// Interruption is the run's own answer to whether the agent may ASK a human
 	// a question, overriding the definition's block.
 	//
@@ -197,4 +203,14 @@ func toolChoiceSpent(ctx context.Context, st store.Store, runID string, tc *conf
 			return false
 		}
 	}
+}
+
+// reviewRecord is the record's Review for a run that starts armed or not: a
+// run that was never armed leaves the field absent, so its record is
+// byte-identical to one written before review existed.
+func reviewRecord(armed bool) *bool {
+	if !armed {
+		return nil
+	}
+	return &armed
 }

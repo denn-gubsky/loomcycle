@@ -136,6 +136,7 @@ import type {
   CompactRunResult,
   ReplaySessionResult,
   CancelTurnResult,
+  ReviewRunResult,
   CompactionOptions,
   ContextOptions,
   RunBatchOptions,
@@ -297,6 +298,7 @@ function applyOverridesToWire(body: Record<string, unknown>, opts: RunOverrideOp
   if (opts.injectToolGuide !== undefined) body.inject_tool_guide = opts.injectToolGuide;
   if (opts.interactive !== undefined) body.interactive = opts.interactive;
   if (opts.interruption !== undefined) body.interruption = opts.interruption;
+  if (opts.review !== undefined) body.review = opts.review;
 }
 
 
@@ -827,6 +829,35 @@ export class LoomcycleClient {
     return postJSON<CancelTurnResult>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/cancel`,
+      body,
+      opts,
+    );
+  }
+
+  /**
+   * Deliver a verdict on a run held for review (one started or retuned with
+   * `review: true`, whose stream has emitted `awaiting_review`).
+   *
+   * - `approve` — the run completes on the answer it was held on.
+   * - `reject` with `feedback` — the feedback becomes the run's next user turn;
+   *   it revises and is held again.
+   * - `reject` without feedback — the run ends with status `rejected`.
+   *
+   * Rejects with a LoomcycleError of status 409 (body code `not_held`) when
+   * the run is live but not held, NotFoundError (404) for an unknown, finished
+   * or cross-tenant run, and InvalidArgumentError (400) for feedback on an
+   * approval. Mirrors POST /v1/runs/{run_id}/review.
+   */
+  async reviewRun(
+    runId: string,
+    decision: "approve" | "reject",
+    opts?: { feedback?: string; signal?: AbortSignal },
+  ): Promise<ReviewRunResult> {
+    const body: Record<string, unknown> = { decision };
+    if (opts?.feedback !== undefined) body.feedback = opts.feedback;
+    return postJSON<ReviewRunResult>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}/review`,
       body,
       opts,
     );

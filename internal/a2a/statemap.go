@@ -53,6 +53,8 @@ var runStatusToTaskState = map[store.RunStatus]a2asdk.TaskState{
 	store.RunCompleted: a2asdk.TaskStateCompleted,
 	store.RunFailed:    a2asdk.TaskStateFailed,
 	store.RunCancelled: a2asdk.TaskStateCanceled,
+	// A reviewer refused the result (RFC DJ) — A2A's own "rejected".
+	store.RunRejected: a2asdk.TaskStateRejected,
 }
 
 // TaskStateForRunStatus maps a persisted loomcycle RunStatus to its A2A

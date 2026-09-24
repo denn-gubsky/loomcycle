@@ -176,6 +176,16 @@ var (
 	// renders 409 {code:"not_interactive"}; gRPC maps to FailedPrecondition.
 	ErrTurnNotInteractive = errors.New("connector: turn-cancel applies only to interactive runs")
 
+	// ErrRunNotHeld is returned by ReviewRun for a run that is live but not
+	// held for review (still working, or waiting for input). HTTP 409
+	// {code:"not_held"}; gRPC FailedPrecondition.
+	ErrRunNotHeld = errors.New("connector: run is not held for review")
+
+	// ErrInvalidReviewDecision is returned (wrapped with the reason) by
+	// ReviewRun for a verdict it cannot act on: a decision other than approve
+	// or reject, or feedback on an approval. HTTP 400; gRPC InvalidArgument.
+	ErrInvalidReviewDecision = errors.New("connector: invalid review verdict")
+
 	// --- RFC BH interruption resolve / decline ---
 	//
 	// ResolveInterrupt returns these wrapped via WithMessage so each transport

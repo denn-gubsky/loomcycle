@@ -167,3 +167,36 @@ func TestSteerCoordinator_ValidatesConfig(t *testing.T) {
 		}
 	}
 }
+
+// A control message crosses replicas as the control it is. The payload used
+// to carry only Text, so a compaction pushed to a run owned elsewhere reached
+// its loop as an ordinary operator turn — the summary appended as a user
+// message instead of replacing the history.
+func TestSteerCoordinator_CarriesTheMessageKind(t *testing.T) {
+	bp := newMemBackplane()
+	const owner = "replica-B"
+	runs := map[string]store.Run{"run-1": {ID: "run-1", Status: store.RunRunning, ReplicaID: owner}}
+	a := newSteerCoord(t, bp, "replica-A", runs, true)
+	b := newSteerCoord(t, bp, owner, runs, true)
+	ownerReg := steer.NewRegistry(4)
+	q, dereg := ownerReg.Register(steer.Entry{RunID: "run-1"})
+	defer dereg()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.RunSteerSubscriber(ctx, ownerReg)
+	go a.RunSteerAckSubscriber(ctx)
+	time.Sleep(30 * time.Millisecond)
+
+	sent := steer.Message{Kind: steer.KindCompact, Text: "summary", KeepN: 3, KeepFirst: true, Source: "api"}
+	if delivered, found, err := a.PushRemote(context.Background(), "run-1", sent); err != nil || !found || !delivered {
+		t.Fatalf("PushRemote = (%v, %v, %v)", delivered, found, err)
+	}
+	select {
+	case m := <-q:
+		if m.Kind != sent.Kind || m.Text != sent.Text || m.KeepN != sent.KeepN || m.KeepFirst != sent.KeepFirst || m.Source != sent.Source {
+			t.Errorf("owner got %+v, want %+v", m, sent)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner registry never received the message")
+	}
+}

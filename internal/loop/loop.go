@@ -137,6 +137,15 @@ type RunOptions struct {
 	// nil = use the static flag, which is every run that was never retuned.
 	InteractiveNow func(ctx context.Context) bool
 
+	// Review holds the run for an operator's verdict each time the model
+	// finishes its answer, instead of completing. Requires SteerQueue: the
+	// verdict arrives on it. ReviewNow, when non-nil, is read at each finish
+	// and during the hold instead of the static flag, the same way
+	// InteractiveNow is, so review can be armed or disarmed while the run is
+	// going. Disarming a held run releases it as approved.
+	Review    bool
+	ReviewNow func(ctx context.Context) bool
+
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
 	//
@@ -1025,6 +1034,9 @@ func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []provi
 			lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
 			continue // re-park: wait for the operator's actual next turn
 		}
+		if m.IsVerdict() {
+			continue // this run is waiting for work, not held for a verdict
+		}
 		messages = append(messages, providers.Message{
 			Role:    "user",
 			Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
@@ -1660,6 +1672,9 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 				compacted = true
 				continue
 			}
+			if m.IsVerdict() {
+				continue // only a run held for review acts on a verdict
+			}
 			messages = append(messages, providers.Message{
 				Role:    "user",
 				Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
@@ -2283,6 +2298,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
 				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
 		}
+		if opts.reviewAtBoundary(ctx) {
+			// A stateful run ends by marking its state done; there is no
+			// finished answer the loop could hold for a verdict.
+			msg := "review is not applied to a stateful run: it has no finished answer to hold, only its state"
+			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+				CapabilityInert: &providers.CapabilityInertInfo{Gate: "review", Message: msg}})
+		}
 		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
 	}
 	toolChoice := newToolChoicePolicy(opts.ToolChoice)
@@ -2421,6 +2443,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	var totalUsage providers.Usage
 	var finalText string
 	var stopReason string
+	reviewRound := 0 // holds for review so far (reported on each hold)
 	// fallbackAttempts counts cumulative v0.8.2 provider switches per
 	// run. tryProviderFallback bumps it on each successful switch;
 	// the FallbackPolicy.MaxAttempts cap (default 3) is enforced
@@ -3087,6 +3110,35 @@ outerLoop:
 
 		// Terminal: model is done.
 		if iterStop != "tool_use" || len(pendingTools) == 0 {
+			// Held for review: the answer is done but not accepted. Checked
+			// BEFORE the interactive park, because an approved answer still
+			// parks an interactive run for its next message afterwards.
+			if opts.SteerQueue != nil && opts.reviewAtBoundary(ctx) {
+				disarmTurn()
+				reviewRound++
+				var outcome reviewOutcome
+				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, emit)
+				switch outcome {
+				case reviewRevise:
+					iterSpan.End()
+					continue outerLoop
+				case reviewRejected:
+					stopReason = StopReasonRejected
+					iterSpan.End()
+					break outerLoop
+				case reviewAborted:
+					iterSpan.End()
+					// Returned as an error, like the pause park's cancel, so the
+					// run is recorded cancelled: leaving the loop cleanly would
+					// record an answer nobody approved as a completion.
+					turnCancelFn(nil)
+					err := ctx.Err()
+					if err == nil {
+						err = errReviewAbandoned
+					}
+					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
+				}
+			}
 			// Persistent interactive run: park instead of terminating. Wait
 			// for the operator's next instruction (or Cancel). The run holds
 			// its concurrency slot while idle — the documented fairness
@@ -3626,6 +3678,15 @@ func iterationCount(messages []providers.Message) int {
 }
 
 var _ = json.Valid // keep encoding/json in deps for json.RawMessage docs above
+
+// reviewAtBoundary reports whether this run should be held for review when the
+// model finishes. Read live for the same reason interactiveAtBoundary is.
+func (o *RunOptions) reviewAtBoundary(ctx context.Context) bool {
+	if o.ReviewNow != nil {
+		return o.ReviewNow(ctx)
+	}
+	return o.Review
+}
 
 // interactiveAtBoundary reports whether this run should PARK at a turn boundary
 // rather than finish.

@@ -2010,16 +2010,13 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, m
 		// (skip the clause → every session) is the destructive one.
 		return nil, nil
 	}
-	args := []any{
-		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
-		olderThan.UnixNano(),
-	}
+	args := append(store.TerminalRunStatusArgs(), olderThan.UnixNano())
 	agentCond := agentMatchCond(match, agents, &args)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT session_id FROM runs
 		 GROUP BY session_id
-		 HAVING SUM(CASE WHEN status NOT IN (?, ?, ?)
+		 HAVING SUM(CASE WHEN status NOT IN (`+sqlitePlaceholders(len(store.TerminalRunStatuses))+`)
 		                   OR pause_state IN ('paused', 'pausing')
 		                 THEN 1 ELSE 0 END) = 0
 		    AND MAX(completed_at) IS NOT NULL
@@ -2121,7 +2118,7 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 	if c := excludeAgentsCond("s.agent", excludeAgents, &args); c != "" {
 		conds = append(conds, c)
 	}
-	args = append(args, string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled))
+	args = append(args, store.TerminalRunStatusArgs()...)
 
 	// A zero watermark means "from the beginning" — drop the composite
 	// predicate entirely rather than relying on a zero time's (negative)
@@ -2139,7 +2136,7 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 		 FROM runs r JOIN sessions s ON s.id = r.session_id
 		 WHERE `+strings.Join(conds, " AND ")+`
 		 GROUP BY r.session_id, s.user_id, s.agent
-		 HAVING SUM(CASE WHEN r.status NOT IN (?, ?, ?)
+		 HAVING SUM(CASE WHEN r.status NOT IN (`+sqlitePlaceholders(len(store.TerminalRunStatuses))+`)
 		                   OR r.pause_state IN ('paused', 'pausing')
 		                 THEN 1 ELSE 0 END) = 0
 		    AND MAX(r.completed_at) IS NOT NULL`+having+`
@@ -2553,6 +2550,36 @@ func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Eve
 		`SELECT seq, session_id, run_id, ts, type, payload
 		 FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT 1`,
 		runID,
+	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	if err != nil {
+		return store.Event{}, err
+	}
+	ev.Timestamp = time.Unix(0, ts)
+	return ev, nil
+}
+
+// GetLastEventOfTypes is GetLastEventForRun restricted to the given types.
+func (s *Store) GetLastEventOfTypes(ctx context.Context, runID string, types []string) (store.Event, error) {
+	if len(types) == 0 {
+		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
+	}
+	args := make([]any, 0, len(types)+1)
+	args = append(args, runID)
+	for _, t := range types {
+		args = append(args, t)
+	}
+	var (
+		ev store.Event
+		ts int64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT seq, session_id, run_id, ts, type, payload
+		 FROM events WHERE run_id = ? AND type IN (`+sqlitePlaceholders(len(types))+`)
+		 ORDER BY seq DESC LIMIT 1`,
+		args...,
 	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
@@ -10177,4 +10204,9 @@ func (s *Store) ListTenants(ctx context.Context) ([]store.TenantSummary, error) 
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// sqlitePlaceholders is "?, ?, …" for n arguments.
+func sqlitePlaceholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }

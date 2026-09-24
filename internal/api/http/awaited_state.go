@@ -15,6 +15,8 @@ import (
 const (
 	awaitedStateChannel     = "channel"
 	awaitedStateInterrupted = "interrupted"
+	// awaitedStateReview: held for an operator's verdict on a finished answer.
+	awaitedStateReview = "review"
 )
 
 // payloadToolCall mirrors providers.Event's persisted JSON shape
@@ -46,6 +48,7 @@ type interruptionInput struct {
 //
 //	state="channel"     on=<channel name>   — open Channel.subscribe
 //	state="interrupted" on=<kind|op>        — open Interruption.ask
+//	state="review"      on=""               — held for an operator's verdict
 //	state=""            on=""               — agent is making progress
 //
 // Why "last event" suffices: the loomcycle loop is synchronous from
@@ -112,6 +115,11 @@ func fillAwaitedStateForRunning(ctx context.Context, st store.Store, items []age
 			continue
 		}
 		state, on := deriveAwaitedState(ev)
+		if state == "" && heldForReview(ctx, st, item.RunID) {
+			// Not from the latest event: other writers append to a held run
+			// without ending the hold (see holdEndingEvents).
+			state = awaitedStateReview
+		}
 		if state != "" {
 			items[i].AwaitedState = state
 			items[i].AwaitedOn = on

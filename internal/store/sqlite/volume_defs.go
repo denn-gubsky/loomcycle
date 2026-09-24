@@ -224,8 +224,8 @@ func (s *Store) EphemeralVolumeSweepCandidates(ctx context.Context) ([]store.Eph
 		`SELECT DISTINCT e.root_run_id, e.tenant_id
 		 FROM ephemeral_volume_defs e
 		 JOIN runs r ON r.id = e.root_run_id
-		 WHERE r.status IN ('completed', 'failed', 'cancelled')
-		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')`)
+		 WHERE r.status IN (`+sqlitePlaceholders(len(store.TerminalRunStatuses))+`)
+		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')`, store.TerminalRunStatusArgs()...)
 	if err != nil {
 		return nil, err
 	}

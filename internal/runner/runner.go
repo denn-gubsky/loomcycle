@@ -267,6 +267,10 @@ type RunInput struct {
 	// unbounded_iterations agent for a true always-on terminal. Cancel ends it.
 	Interactive bool
 
+	// Review holds the run for an operator's verdict each time its model
+	// finishes (POST /v1/runs/{run_id}/review), instead of completing.
+	Review bool
+
 	// Interruption is the run's own answer to whether the agent may ASK a human
 	// a question, overriding the definition's block. nil = inherit it.
 	//

@@ -898,6 +898,10 @@ func requiredScopeFor(method, path string) string {
 	// default empty arm, letting a read-only bearer steer a run.)
 	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/input"):
 		return auth.ScopeRunsCreate
+	// A review verdict decides whether a held run's answer stands — a run
+	// mutation like steering, at the same scope.
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/review"):
+		return auth.ScopeRunsCreate
 	// RFC DI D5: starting, editing and discarding a configured run are run
 	// writes, the same scope that creates one. PATCH / DELETE address the run
 	// itself (/v1/runs/{run_id}, no further segment).

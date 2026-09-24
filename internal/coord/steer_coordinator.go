@@ -106,6 +106,11 @@ type steerEventPayload struct {
 	Text        string `json:"text"`
 	Source      string `json:"source,omitempty"`
 	FromReplica string `json:"from_replica"`
+	// The control fields of steer.Message. Without them a control pushed to a
+	// run owned elsewhere arrives as a plain operator turn.
+	Kind      string `json:"kind,omitempty"`
+	KeepN     int    `json:"keep_n,omitempty"`
+	KeepFirst bool   `json:"keep_first,omitempty"`
 }
 
 type steerAckPayload struct {
@@ -171,6 +176,9 @@ func (c *SteerCoordinator) PushRemote(ctx context.Context, runID string, m steer
 		Text:        m.Text,
 		Source:      m.Source,
 		FromReplica: c.replicaID,
+		Kind:        m.Kind,
+		KeepN:       m.KeepN,
+		KeepFirst:   m.KeepFirst,
 	})
 	if err := c.bp.Publish(ctx, topicSteer, payload); err != nil {
 		return false, false, fmt.Errorf("publish steer: %w", err)
@@ -209,7 +217,11 @@ func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Re
 			log.Printf("coord: malformed steer event: %v", err)
 			continue
 		}
-		delivered, found := reg.PushLocal(p.RunID, steer.Message{Text: p.Text, Source: p.Source, EnqueuedAt: time.Now()})
+		delivered, found := reg.PushLocal(p.RunID, steer.Message{
+			Text: p.Text, Source: p.Source, Kind: p.Kind, KeepN: p.KeepN, KeepFirst: p.KeepFirst,
+			// The owner's clock: the loop compares it with when its park began.
+			EnqueuedAt: time.Now(),
+		})
 		if !found {
 			continue // not our run; the owner's subscriber will ack
 		}

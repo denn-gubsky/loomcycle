@@ -62,3 +62,15 @@ func TestRunEventToFrame_SelfSufficientReattach(t *testing.T) {
 		t.Errorf("empty-text user_input should be skipped, not emitted as a blank steer frame")
 	}
 }
+
+// A store-only record stays off a re-attach stream, as the live emitter keeps
+// it off the live one. The composed-prompt snapshot was added as store-only,
+// but the tail only knew to skip system_prompt, so every re-attach — and every
+// detached run's own stream, which is a tail — sent the composed prompt as a
+// frame.
+func TestRunEventToFrame_KeepsStoreOnlyRecordsOffTheStream(t *testing.T) {
+	payload, _ := json.Marshal(providers.Event{Type: providers.EventPromptSnapshot})
+	if _, ok := runEventToFrame(store.Event{Type: string(providers.EventPromptSnapshot), Payload: payload}); ok {
+		t.Error("a prompt_snapshot row became a stream frame")
+	}
+}

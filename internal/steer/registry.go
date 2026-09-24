@@ -41,6 +41,21 @@ var ErrQueueFull = errors.New("steer: run input queue full")
 // empty Kind ("") is the default — an ordinary steering/continuation message.
 const KindCompact = "compact"
 
+// KindApprove and KindReject are an operator's verdict on a run held for
+// review. Approve lets the held run complete. Reject with Text sends Text back
+// as feedback, and the run revises and is held again. Reject with no Text ends
+// the run rejected. Only a run parked for review acts on a verdict: every other
+// consumer of the queue drops one, so a verdict can never be read as an
+// operator turn.
+const (
+	KindApprove = "approve"
+	KindReject  = "reject"
+)
+
+// IsVerdict reports whether m is a review verdict rather than a turn or a
+// compaction.
+func (m Message) IsVerdict() bool { return m.Kind == KindApprove || m.Kind == KindReject }
+
 // Message is one operator-injected steering instruction (Kind == "") or a
 // control message (e.g. KindCompact). Carried over the same per-run queue so
 // the loop applies it at its next iteration / park boundary.

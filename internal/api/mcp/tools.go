@@ -41,11 +41,12 @@ const spawnPerRunProps = `
 	"memory_index_max_bytes": {"type": "integer", "minimum": 0, "description": "Byte budget for this child's memory index. 0 omits it."},
 	"inject_tool_guide": {"type": "boolean", "description": "Whether to inject the generated tool guide into this child's prompt."},
 	"interactive": {"type": "boolean", "description": "Park this child at its turn boundaries instead of finishing, so an operator can steer it. Also settable on a run that is ALREADY GOING \u2014 that is the point, since nobody knows at start that they will need to correct it. false releases a run that was started interactive."},
+	"review": {"type": "boolean", "description": "Hold this child's finished answer for an operator's verdict instead of completing. The call returns once the answer is approved, or when the run is rejected. Also settable on a run that is already going; false releases a held run as approved."},
 	"interruption": {"type": "object", "description": "Let this child ASK a human a question, overriding what its definition allows. It blocks and waits for a person, so the cost is the run stopping until someone answers \u2014 bounded by the run timeout and the interruption's own.", "properties": {"enabled": {"type": "boolean"}, "kinds": {"type": "array", "items": {"type": "string"}}, "max_pending": {"type": "integer", "minimum": 0}}}`
 
 // retuneProps is the JSON-schema fragment for a RETUNE, which accepts a
 // strictly smaller set than a spawn: the twelve per-run overrides plus
-// interactive and interruption, and NOT sampling / compaction / context /
+// interactive, interruption and review, and NOT sampling / compaction / context /
 // max_context_tokens / metadata.
 //
 // Spliced from spawnPerRunProps' own entries rather than rewritten, so the two
@@ -56,7 +57,7 @@ var retuneProps = filterProps(spawnPerRunProps, []string{
 	"model", "provider", "tier", "effort",
 	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
 	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes",
-	"inject_tool_guide", "interactive", "interruption",
+	"inject_tool_guide", "interactive", "interruption", "review",
 })
 
 // filterProps keeps the named entries of a schema-property fragment, in the

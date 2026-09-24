@@ -45,6 +45,11 @@ type runOverridesWire struct {
 	// already running.
 	Interactive *bool `json:"interactive,omitempty"`
 
+	// Review arms (true) or disarms (false) the hold for an operator's verdict
+	// when the model finishes. Disarming a run that is held releases it as
+	// approved.
+	Review *bool `json:"review,omitempty"`
+
 	// Interruption lets the run's agent ask a human a question even when its
 	// definition does not enable it. See the record's field for why this is not
 	// the "reach" class it used to be filed under.
@@ -66,7 +71,8 @@ func (w *runOverridesWire) isZero() bool {
 		w.MaxTokens == 0 && w.MaxIterations == 0 && w.UnboundedIterations == nil &&
 		w.MaxConcurrentChildren == 0 && w.RetryAttempts == nil &&
 		w.MemoryInjectMaxTokens == nil && w.MemoryIndexMaxBytes == nil &&
-		w.InjectToolGuide == nil && w.Interactive == nil && w.Interruption == nil
+		w.InjectToolGuide == nil && w.Interactive == nil && w.Interruption == nil &&
+		w.Review == nil
 }
 
 // split turns the wire object into the three records the run's configuration
@@ -166,9 +172,13 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 		// unless this call says otherwise" IS the merge.
 		Interactive:  cur.Interactive,
 		Interruption: cur.Interruption,
+		Review:       cur.Review,
 	}
 	if in.Interactive != nil {
 		merged.Interactive = in.Interactive
+	}
+	if in.Review != nil {
+		merged.Review = in.Review
 	}
 	if in.Interruption != nil {
 		merged.Interruption = in.Interruption
@@ -186,6 +196,9 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	// After the write, never before: a transcript line about a change that did
 	// not persist is worse than no line.
 	s.appendRetuneEvent(ctx, run.ID, in.setFields())
+	if in.Review != nil && !*in.Review {
+		s.releaseHeldRun(ctx, run.ID)
+	}
 	return merged, nil
 }
 
@@ -414,6 +427,26 @@ func (s *Server) interactiveNowFn(runID string, startedInteractive bool) func(co
 	}
 }
 
+// reviewNowFn returns the callback the loop reads when its model finishes, and
+// during a hold, to decide whether the run is held for review. The same shape
+// as interactiveNowFn: the start-time answer unless a retune recorded another.
+func (s *Server) reviewNowFn(runID string, startedArmed bool) func(context.Context) bool {
+	return func(ctx context.Context) bool {
+		if s == nil || s.store == nil || runID == "" {
+			return startedArmed
+		}
+		run, err := s.store.GetRun(ctx, runID)
+		if err != nil {
+			return startedArmed
+		}
+		rec, ok := decodeRunConfig(run.RunConfig)
+		if !ok || rec.Review == nil {
+			return startedArmed
+		}
+		return *rec.Review
+	}
+}
+
 // setFields returns the override keys this request actually set, in a stable
 // order, so a reader can see WHAT an operator changed.
 //
@@ -448,6 +481,7 @@ func (w *runOverridesWire) setFields() []string {
 	add("memory_index_max_bytes", w.MemoryIndexMaxBytes != nil)
 	add("inject_tool_guide", w.InjectToolGuide != nil)
 	add("interactive", w.Interactive != nil)
+	add("review", w.Review != nil)
 	add("interruption", w.Interruption != nil)
 	return f
 }

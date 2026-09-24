@@ -609,15 +609,9 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 	}
 }
 
-// isTerminal reports whether a run status is a terminal state. Mirrors the
-// store's RunStatus transitions (running → completed | failed | cancelled).
+// isTerminal reports whether a run status is a terminal state.
 func isTerminal(status string) bool {
-	switch store.RunStatus(status) {
-	case store.RunCompleted, store.RunFailed, store.RunCancelled:
-		return true
-	default:
-		return false
-	}
+	return store.IsTerminalRunStatus(store.RunStatus(status))
 }
 
 // finish stamps the verdict on the span AND records a triage entry in the

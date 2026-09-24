@@ -2668,6 +2668,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
+		Review:            reviewRecord(in.Review),
 	}
 
 	// ---- Session+run creation ----
@@ -2947,6 +2948,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         in.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
+		Review:              in.Review,
+		ReviewNow:           s.reviewNowFn(runID, in.Review),
 		Sampling:            runCfg.Sampling,   // merged once, above
 		ToolChoice:          runCfg.ToolChoice, // merged once, above
 		OutputFormat:        runCfg.OutputFormat,
@@ -3498,6 +3501,7 @@ func (s *Server) Mux() http.Handler {
 	// PR 2 / interactive terminal: inject an operator "steering" instruction
 	// into an in-flight run (appended to the live conversation mid-turn).
 	mux.Handle("POST /v1/runs/{run_id}/input", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInput))))
+	mux.Handle("POST /v1/runs/{run_id}/review", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunReview))))
 	// Change a run's settings WITHOUT sending it a turn. The retune also rides
 	// /input, and stays there; this exists because `text` is required there, so
 	// retuning a parked chat otherwise means writing a message nobody wanted to send.
@@ -3960,6 +3964,10 @@ type runRequest struct {
 	// POST /v1/runs/{run_id}/input; pair with an unbounded_iterations agent
 	// for a true always-on terminal. Cancel ends it.
 	Interactive bool `json:"interactive,omitempty"`
+	// Review holds the run for an operator's verdict when its model finishes,
+	// instead of completing: approve, or reject with feedback it revises from,
+	// via POST /v1/runs/{run_id}/review.
+	Review bool `json:"review,omitempty"`
 
 	// Sampling is an optional per-RUN LLM sampling override (temperature,
 	// top_p, …) — merged PER FIELD over the agent's own sampling (this wins;
@@ -4418,6 +4426,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
+		Review:            reviewRecord(req.Review),
 	}
 
 	// Persistence: resolve or create a session, create a run, route every
@@ -4443,8 +4452,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// cancelled when the client navigates away — it parks and the operator
 	// re-attaches via GET /v1/runs/{run_id}/stream. cancelFn (registered under
 	// agent_id) is the only thing that stops it.
+	//
+	// A run armed for REVIEW detaches for the same reason: it is held for a
+	// human's verdict, which can take far longer than the caller keeps its
+	// connection, and a disconnect must not cancel the run being reviewed.
+	detached := req.Interactive || req.Review
 	runParent := r.Context()
-	if req.Interactive {
+	if detached {
 		runParent = context.WithoutCancel(r.Context())
 	}
 	runCtx, cancelFn := context.WithCancelCause(runParent)
@@ -4573,7 +4587,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// to the live stream; it only persists. The handler (and any re-attach)
 	// streams by tailing the store. For a normal run, forward live as before.
 	streamFwd := stream.send
-	if req.Interactive {
+	if detached {
 		streamFwd = func(providers.Event) {}
 	}
 	// Stash the run's identity so the Agent built-in tool's SubAgentRunner can
@@ -4693,7 +4707,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// swap an already-released holder (which would acquire + leak a slot with no
 	// releaser). Synchronous runs get the real holder and swap on fallback.
 	fbSlot := provSlot
-	if req.Interactive && s.store != nil {
+	if detached && s.store != nil {
 		fbSlot = nil
 	}
 	fbPolicy, fbReResolve := s.fallbackForRun(req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, fbSlot, runRouting)
@@ -4722,6 +4736,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         req.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, req.Interactive),
+		Review:              req.Review,
+		ReviewNow:           s.reviewNowFn(runID, req.Review),
 		Sampling:            runCfg.Sampling,   // merged once, above
 		ToolChoice:          runCfg.ToolChoice, // merged once, above
 		OutputFormat:        runCfg.OutputFormat,
@@ -4758,7 +4774,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		runOpts.ArmTurnCancel = s.armTurnCancel(runID)
 	}
 
-	if req.Interactive && s.store != nil {
+	if detached && s.store != nil {
 		// Detached run: execute the loop in a background goroutine that
 		// OUTLIVES this handler, so navigating away (client disconnect) no
 		// longer kills the run — it parks and the operator re-attaches via
@@ -4870,6 +4886,8 @@ type messagesRequest struct {
 	// operator steering at end_turn (interactive terminal). Same semantics as
 	// runRequest.Interactive.
 	Interactive bool `json:"interactive,omitempty"`
+	// Review: same semantics as runRequest.Review.
+	Review bool `json:"review,omitempty"`
 
 	// Sampling: per-RUN LLM sampling override for this continuation turn,
 	// merged per field over the agent's. Same semantics as runRequest.Sampling.
@@ -5197,6 +5215,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
+		Review:            reviewRecord(body.Review),
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -5432,6 +5451,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		RunTimeoutSeconds:       runCfg.RunTimeoutSeconds,
 		Interactive:             body.Interactive,
 		InteractiveNow:          s.interactiveNowFn(run.ID, body.Interactive),
+		Review:                  body.Review,
+		ReviewNow:               s.reviewNowFn(run.ID, body.Review),
 		ArmTurnCancel:           s.armTurnCancelIf(body.Interactive, run.ID), // RFC BH: turn-cancellable when interactive
 		Sampling:                runCfg.Sampling,                             // merged once, above
 		ToolChoice:              runCfg.ToolChoice,                           // merged once, above
@@ -5926,7 +5947,9 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// run_ids not in the steer registry. SetParked takes its own lock.
 		if s.steerReg != nil {
 			switch ev.Type {
-			case providers.EventAwaitingInput:
+			case providers.EventAwaitingInput, providers.EventAwaitingReview:
+				// A held run is at the same clean boundary as one waiting for
+				// input, so it may be compacted while it waits.
 				s.steerReg.SetParked(runID, true)
 			case providers.EventSteer, providers.EventText, providers.EventToolCall:
 				s.steerReg.SetParked(runID, false)
@@ -7058,7 +7081,7 @@ type agentResponse struct {
 	// running rows where the agent is making progress (no
 	// unresolved Channel.subscribe / Interruption.ask). Two-field
 	// shape avoids encoding a parser into the wire:
-	//   AwaitedState = "" | "channel" | "interrupted"
+	//   AwaitedState = "" | "channel" | "interrupted" | "review"
 	//   AwaitedOn    = channel name (when state=channel) or
 	//                  interruption kind (when state=interrupted)
 	AwaitedState string `json:"awaited_state,omitempty"`
@@ -8544,9 +8567,15 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	s.indexAssistantTurns(bg, runID, meta)
 	status := store.RunCompleted
 	errMsg := ""
-	if runErr != nil {
+	switch {
+	case runErr != nil:
 		status = store.RunFailed
 		errMsg = runErr.Error()
+	case res.StopReason == loop.StopReasonRejected:
+		// A reviewer turned the answer down with nothing to revise from. Not a
+		// failure — the run did its work — and not a completion either: the
+		// answer on the row is one nobody accepted.
+		status = store.RunRejected
 	}
 	usage := store.Usage{
 		InputTokens:         res.Usage.InputTokens,
@@ -8578,11 +8607,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
 		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
 	}
-	publishStatus := "completed"
-	if runErr != nil {
-		publishStatus = "failed"
-	}
-	s.publishRunState(meta, publishStatus, res.StopReason, errMsg)
+	s.publishRunState(meta, string(status), res.StopReason, errMsg)
 }
 
 // authMiddleware moved to auth_principal.go (RFC L): it now resolves the
