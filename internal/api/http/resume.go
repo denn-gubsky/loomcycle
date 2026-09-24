@@ -509,6 +509,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         run.Interactive,
 		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
+		Review:              runCfg.Review != nil && *runCfg.Review,
+		ReviewNow:           s.reviewNowFn(run.ID, runCfg.Review != nil && *runCfg.Review),
 		StartParked:         startParked,       // RFC DD Gap 3: it was waiting; put it back to waiting
 		Sampling:            runCfg.Sampling,   // restored from the run, not re-derived
 		ToolChoice:          resumedToolChoice, // restored, minus what the run already spent

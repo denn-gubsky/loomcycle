@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -15,6 +16,8 @@ import (
 const (
 	awaitedStateChannel     = "channel"
 	awaitedStateInterrupted = "interrupted"
+	// awaitedStateReview: held for an operator's verdict on a finished answer.
+	awaitedStateReview = "review"
 )
 
 // payloadToolCall mirrors providers.Event's persisted JSON shape
@@ -46,6 +49,7 @@ type interruptionInput struct {
 //
 //	state="channel"     on=<channel name>   — open Channel.subscribe
 //	state="interrupted" on=<kind|op>        — open Interruption.ask
+//	state="review"      on=""               — held for an operator's verdict
 //	state=""            on=""               — agent is making progress
 //
 // Why "last event" suffices: the loomcycle loop is synchronous from
@@ -55,6 +59,9 @@ type interruptionInput struct {
 // This collapses what the client-side derivation needs (walking
 // unresolved tool_uses) into a single row lookup.
 func deriveAwaitedState(ev store.Event) (state, on string) {
+	if ev.Type == string(providers.EventAwaitingReview) {
+		return awaitedStateReview, ""
+	}
 	if ev.Type != "tool_call" {
 		return "", ""
 	}

@@ -167,6 +167,11 @@ type SpawnRunRequest struct {
 	// is what a retune of anything else must not disturb.
 	Interactive *bool `json:"interactive,omitempty"`
 
+	// Review holds the run for an operator's verdict when its model finishes.
+	// Like Interactive it applies to a run that is started to be driven — a
+	// configured run's start — not to a blocking spawn.
+	Review *bool `json:"review,omitempty"`
+
 	// Interruption lets this run's agent ask a human a question even when its
 	// definition does not enable it. nil = inherit the definition's.
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
@@ -869,6 +874,9 @@ type RunOverrides struct {
 	// it ask a human a question. Both nil = leave what the run has.
 	Interactive  *bool                        `json:"interactive,omitempty"`
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
+	// Review arms or disarms the hold for an operator's verdict; disarming a
+	// held run releases it as approved. nil = leave what the run has.
+	Review *bool `json:"review,omitempty"`
 }
 
 // IsZero reports whether the caller supplied no override at all. Transports
@@ -884,7 +892,8 @@ func (o RunOverrides) IsZero() bool {
 		o.MaxTokens == 0 && o.MaxIterations == 0 && o.UnboundedIterations == nil &&
 		o.MaxConcurrentChildren == 0 && o.RetryAttempts == nil &&
 		o.MemoryInjectMaxTokens == nil && o.MemoryIndexMaxBytes == nil &&
-		o.InjectToolGuide == nil && o.Interactive == nil && o.Interruption == nil
+		o.InjectToolGuide == nil && o.Interactive == nil && o.Interruption == nil &&
+		o.Review == nil
 }
 
 // ConfiguredRunRequest is a run to create without starting it: a spawn request
