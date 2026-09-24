@@ -2343,8 +2343,19 @@ export interface TeamRunTarget {
    *  A walk can also be armed AFTER it starts — see
    *  {@link LoomcycleClient.setRunBreakpoints} — which is the case this
    *  argument cannot serve: you start a run expecting it to work, watch a wave
-   *  go wrong, and want to stop before the next one. */
+   *  go wrong, and want to stop before the next one.
+   *
+   *  `"<state>:review"` arms review instead — see {@link TeamRunTarget.review}. */
   breakpoints?: string[];
+  /** Starter state ids whose member runs are held for an operator's verdict
+   *  when they finish: approve with {@link LoomcycleClient.reviewRun}, reject
+   *  with feedback the member revises from, or reject. A rejected member
+   *  reaches the sink as status `"rejected"` and does not count toward the
+   *  wave's `wait`. Also armable live as the breakpoint `"<state>:review"`. */
+  review?: string[];
+  /** With `review`: end a member hold nobody rules on within this many
+   *  seconds as rejected. Omit for no deadline. */
+  reviewTtlSeconds?: number;
 }
 
 /** What {@link LoomcycleClient.runTeam} returns for `mode: "detach"` — the

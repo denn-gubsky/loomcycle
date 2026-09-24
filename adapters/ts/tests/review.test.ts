@@ -60,3 +60,13 @@ describe("the review option", () => {
     expect(sentBody(fetchMock.mock.calls[1]!).review).toBe(false);
   });
 });
+
+describe("runTeam review", () => {
+  it("sends the review arming and its deadline", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_walk", status: "running" })]);
+    await client.runTeam({ name: "triage", input: "x", mode: "detach", review: ["wave"], reviewTtlSeconds: 600 });
+    const body = sentBody(fetchMock.mock.calls[0]!);
+    expect(body.review).toEqual(["wave"]);
+    expect(body.review_ttl_seconds).toBe(600);
+  });
+});

@@ -2143,6 +2143,8 @@ export class LoomcycleClient {
     if (target.boardScope !== undefined) body.board_scope = target.boardScope;
     if (target.mode !== undefined) body.mode = target.mode;
     if (target.breakpoints !== undefined) body.breakpoints = target.breakpoints;
+    if (target.review !== undefined) body.review = target.review;
+    if (target.reviewTtlSeconds !== undefined) body.review_ttl_seconds = target.reviewTtlSeconds;
     return postJSON<TeamRunResult>(this.ctx, "/v1/_teamdef", body, opts);
   }
 
