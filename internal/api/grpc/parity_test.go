@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -496,3 +498,18 @@ func TestOutputFormatFromProto_MapsDecodesAndLeavesUnsetNil(t *testing.T) {
 		t.Error("spawnRequestFromProto dropped output_format")
 	}
 }
+
+// Configured-run operations (RFC DI D5) — not exercised by this fake.
+func (m *parityMock) CreateConfiguredRun(context.Context, connector.ConfiguredRunRequest) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *parityMock) UpdateConfiguredRun(context.Context, string, json.RawMessage) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *parityMock) StartConfiguredRun(context.Context, string, connector.RunSecrets) (connector.SpawnRunResult, error) {
+	return connector.SpawnRunResult{}, nil
+}
+func (m *parityMock) ConfiguredRunInput(context.Context, string, connector.RunSecrets) (runner.RunInput, error) {
+	return runner.RunInput{}, nil
+}
+func (m *parityMock) DeleteConfiguredRun(context.Context, string) error { return nil }

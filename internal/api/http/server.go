@@ -4251,7 +4251,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// RFC DI D5: start:false stops here — validated, not admitted. Which
 	// provider serves it, and every slot and budget check, is decided at start.
 	if req.Start != nil && !*req.Start {
-		s.createConfiguredRun(w, r, req, operatorKeyRestricted, isolated)
+		s.createConfiguredRun(w, r, req)
 		return
 	}
 	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)

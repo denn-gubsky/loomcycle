@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 // Connector is the operation surface every wire transport exposes.
@@ -78,6 +79,31 @@ type Connector interface {
 	// live run must be parked; a mid-turn run is refused. Cross-tenant is an
 	// opaque not-found.
 	CompactRun(ctx context.Context, runID string) (CompactResult, error)
+
+	// --- Configured runs (created now, started later) ---
+	//
+	// The same operations as POST /v1/runs {start:false}, PATCH / DELETE
+	// /v1/runs/{run_id} and POST /v1/runs/{run_id}/start. A configured run is
+	// validated like a run but admitted only at start; it never stores a
+	// secret. Errors carry an HTTPStatus() so each transport maps them to its
+	// own codes. Cross-tenant runs are an opaque not-found.
+
+	// CreateConfiguredRun stores req as a draft. Identity fields (tenant,
+	// user, agent_id) are resolved as for SpawnRun; secrets and session_id are
+	// refused.
+	CreateConfiguredRun(ctx context.Context, req ConfiguredRunRequest) (ConfiguredRun, error)
+	// UpdateConfiguredRun applies patch — a JSON object in the wire's
+	// snake_case keys, where null removes a field — to a draft.
+	UpdateConfiguredRun(ctx context.Context, runID string, patch json.RawMessage) (ConfiguredRun, error)
+	// StartConfiguredRun starts a draft and blocks until it completes, like
+	// SpawnRun. An admission refusal returns an error and leaves the draft.
+	StartConfiguredRun(ctx context.Context, runID string, secrets RunSecrets) (SpawnRunResult, error)
+	// ConfiguredRunInput resolves a draft into the RunInput that starts it,
+	// for a transport that streams the run itself (gRPC): the caller hands it
+	// to its own RunOnce.
+	ConfiguredRunInput(ctx context.Context, runID string, secrets RunSecrets) (runner.RunInput, error)
+	// DeleteConfiguredRun discards a draft and its session.
+	DeleteConfiguredRun(ctx context.Context, runID string) error
 
 	// DirectoryUsers lists the subjects with activity in one tenant, and
 	// DirectoryInspect aggregates what one subject has across activity, chats,

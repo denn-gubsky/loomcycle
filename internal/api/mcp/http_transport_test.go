@@ -705,3 +705,18 @@ func (m *httpMockConnector) DirectoryInspect(context.Context, string, string) (d
 func (m *httpMockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
 	return nil, nil
 }
+
+// Configured-run operations (RFC DI D5) — not exercised by this fake.
+func (m *httpMockConnector) CreateConfiguredRun(context.Context, connector.ConfiguredRunRequest) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *httpMockConnector) UpdateConfiguredRun(context.Context, string, json.RawMessage) (connector.ConfiguredRun, error) {
+	return connector.ConfiguredRun{}, nil
+}
+func (m *httpMockConnector) StartConfiguredRun(context.Context, string, connector.RunSecrets) (connector.SpawnRunResult, error) {
+	return connector.SpawnRunResult{}, nil
+}
+func (m *httpMockConnector) ConfiguredRunInput(context.Context, string, connector.RunSecrets) (runner.RunInput, error) {
+	return runner.RunInput{}, nil
+}
+func (m *httpMockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }
