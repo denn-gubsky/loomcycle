@@ -202,6 +202,13 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 		}
 		return fn(goja.Undefined(), codejs.StableJSValue(rt, ev))
 	}()
+	if err == nil {
+		// The body returned. The watcher may still fire in the instant after
+		// (an interrupt then lands on a runtime nobody uses), so a finished body
+		// is never reported as timed out or cancelled.
+		out, err := exportDecision(ret)
+		return out, nil, err
+	}
 	switch cause := interruptCause(st.cause.Load()); {
 	case cause == causeCancel:
 		return nil, nil, ctx.Err()
@@ -211,11 +218,9 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 		return nil, nil, errors.New(st.diverged)
 	case st.next != nil:
 		return nil, st.next, nil
-	case err != nil:
+	default:
 		return nil, nil, thrown(err)
 	}
-	out, err := exportDecision(ret)
-	return out, nil, err
 }
 
 // newRuntime builds a sandboxed runtime: the code-js hardening, JSON field
