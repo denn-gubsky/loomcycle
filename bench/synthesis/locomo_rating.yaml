@@ -62,18 +62,20 @@ agents:
   # tier must be cleared explicitly on each: a layer that only ADDS model: merges onto the
   # preset's tier and the loader refuses the pair ("cannot set both ... pick one").
   #
-  # ⚠️ max_context_tokens: 131072 ON EVERY ORNITH AGENT, because ornith-1.5:35b on this
-  # Spark CUDA-faults ("illegal memory access") at a SMALL num_ctx. The bundle declares
-  # 32768 (extractor, ontologist) and 8192 (judge, conflict-judge), and the driver sends
-  # that as options.num_ctx. Replayed directly against Ollama, the requests that failed in
-  # the run failed 15 of 15 at 32768 or 8192 and passed 24 of 24 at 131072, streamed or
-  # not — so it is the window, not the input and not concurrency. On conv-26 it failed
-  # 157 extractor calls and left 8 of 19 chats never extracted, every pass.
+  # max_context_tokens: 131072 ON EVERY ORNITH AGENT. The bundle declares 32768 (extractor,
+  # ontologist) and 8192 (judge, conflict-judge), sent as options.num_ctx; 131072 matches the
+  # answerer's global window, so Ollama does not reload ornith between agents.
   #
-  # Measurement-neutral: the consolidator cuts parts by max_part_chars (12000), and its
-  # extractor_context_tokens is only a CEILING on that, so the parts the extractor reads
-  # are byte-identical — only the KV window Ollama allocates changes. It also matches the
-  # answerer's global 131072, so Ollama does not reload the model between agents.
+  # ⚠️ This is NOT the fix for the CUDA faults ("illegal memory access") seen while building
+  # conv-26, though it was first committed as one. Sampling /api/ps every 30 s and joining it
+  # to each extractor call: 0 of 66 calls failed with ornith alone on the Spark, 77 of 334
+  # failed while gpt-oss — another workload's model — was co-resident. A larger window had
+  # only looked like a cure because it made Ollama evict gpt-oss. The fix is keeping gpt-oss
+  # off the GPU for the run; with it off, all ten stores built with zero extractor failures.
+  #
+  # Measurement-neutral either way: the consolidator cuts parts by max_part_chars (12000),
+  # and extractor_context_tokens is only a CEILING on that, so the extractor reads the same
+  # parts — only the KV window Ollama allocates changes.
   memory/extractor:
     tier: ""
     provider: ollama-local
