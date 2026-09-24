@@ -99,7 +99,7 @@ func (c *Channel) shouldWarnTruncation(channel string) bool {
 }
 
 const channelDescription = `Persistent inter-agent message bus. ` +
-	`Publish JSON payloads to a named channel; subscribe to drain new messages with cursor-based at-least-once delivery. ` +
+	`Publish JSON payloads to a named channel; subscribe to drain new messages — subscribe moves your committed cursor past what it returns (at-most-once); to commit only after processing, see the Channel help. ` +
 	`Operations: publish, subscribe, ack, peek, release, list_channels, await, broadcast. ` +
 	`Channel ACLs are operator-configured; the tool refuses ops on channels not in this agent's publish/subscribe allowlists. ` +
 	`Scope (agent / user / global) is set by the operator per channel; cursor isolation matches that scope. ` +
@@ -122,7 +122,7 @@ const channelInputSchema = `{
     "value":        {"description": "publish / broadcast: the JSON payload to append (broadcast sends the same payload to every named channel)."},
     "ttl":          {"type": "integer", "description": "publish / broadcast: per-message TTL in seconds. Absent = channel default."},
     "deliver_at":   {"type": "string", "description": "publish / broadcast (optional): RFC3339 timestamp at which the message becomes deliverable. Absent or in the past = immediate. TTL counts from publish time, NOT deliver_at — size the TTL to cover both the deferral window AND the desired visibility window."},
-    "from_cursor":  {"type": "string", "description": "Subscribe/peek only: read starting after this cursor. Absent = since last ack. \"cur_0\" = replay from oldest."},
+    "from_cursor":  {"type": "string", "description": "Subscribe/peek only: read starting after this cursor. Absent = subscribe: after the last committed cursor; peek: from the oldest message. \"cur_0\" = replay from oldest."},
     "max_messages": {"type": "integer", "description": "Subscribe/peek only: max messages to return (default 10, cap 100)."},
     "wait_ms":      {"type": "integer", "description": "Subscribe only: long-poll budget in ms. 0 = return immediately. Capped by operator config."},
     "cursor":       {"type": "string", "description": "Ack only: the cursor to commit (must be >= currently committed)."},
@@ -153,7 +153,7 @@ func (c *Channel) Name() string { return "Channel" }
 
 // UsageHint implements tools.HintedTool — surfaced by Context op=guide.
 func (c *Channel) UsageHint() string {
-	return "Address a channel by name + scope; op=publish sends, subscribe/peek/ack read. A channel must be operator-declared or ACL-granted before use."
+	return "Address a channel by name — its scope is fixed by the channel definition, not chosen per call. publish sends; subscribe reads AND commits; peek reads without committing. A channel must be declared and ACL-granted before use."
 }
 
 // Description implements tools.Tool.
@@ -208,7 +208,7 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	}
 	def, ok := policy.Channels[name]
 	if !ok {
-		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q is not declared in operator config (channels: block)", name)
+		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q is not declared (neither in operator config nor created at runtime)", name)
 	}
 	all, allowed := policy.GrantsFor(side)
 	if !all && !channelAllowed(name, allowed) {

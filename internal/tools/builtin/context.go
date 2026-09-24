@@ -103,17 +103,17 @@ type BuildInfo struct {
 	Time    string
 }
 
-const contextDescription = `Read-only runtime introspection. ` +
+const contextDescription = `Runtime introspection. ` +
 	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
 	`what other agents exist? what's my def's lineage and evaluation history? ` +
 	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
-	`Operations: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, capabilities. ` +
+	`Operations: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities. ` +
 	`op=guide is a compact "how to call your tools" digest — per tool the op enum + required args + a usage hint — the fast way to avoid tool-call mistakes. ` +
 	`Use op=capabilities to find out what this deployment actually supports (vector/full-text memory, SQL memory, ` +
 	`documents, bash, sandbox, scheduler, webhooks, search providers, consolidation) BEFORE calling something that ` +
 	`would only refuse. ` +
 	`(To browse/search/read past chats, use the History tool, not this one.) ` +
-	`Always safe to call — no side effects, no storage writes, no network calls. ` +
+	`Every op except compact (which distils this run's own context) is read-only: no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
 	`their environment before deciding what to do. ` +
 	`Tip: start with op=help (no topic) to see the topic index, then op=help with topic=<name> ` +

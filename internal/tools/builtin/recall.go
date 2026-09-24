@@ -48,7 +48,7 @@ searches your durable memory, so a fact learned in an earlier session may surfac
 Prefer recalling a specific value over guessing it.
 
 Takes a free-text query and an optional limit; returns the matching original turns
-verbatim, newest-first, or nothing when this run has no evicted turns yet.
+verbatim, best match first, or "No earlier details matched that query." when nothing matches.
 
 Do NOT use it to look things up in ANOTHER conversation — it searches this run plus
 your own durable memory, nothing else; use History to find and resume a past chat.

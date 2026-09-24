@@ -92,7 +92,8 @@ func (h *History) Description() string {
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
 		"list/search/related hide chats served by the runtime's own maintenance agents; pass include_internal to see them. " +
-		"See Context op=help topic=history for the scope model and examples."
+		"Always pass scope: the default grant is user, but an omitted scope means self, which that grant refuses. " +
+		"See Context op=help topic=History for the scope model and examples."
 }
 
 // historyInputSchema is a package const so the LoomCycle MCP server can source
@@ -102,15 +103,15 @@ const historyInputSchema = `{
 	"type": "object",
 	"properties": {
 		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume","related","window"]},
-		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self. The owner id is resolved server-side from the run identity, never the wire."},
+		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self — but the default GRANT is user, so pass scope explicitly. The owner id is resolved server-side from the run identity, never the wire."},
 		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume/window: the chat (session) id to target — for window, the session recall reported on the fact. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
 		"match":           {"type": "string", "enum": ["title","content"], "description": "search: what to match the query against. \"title\" (default) is the cheap path — a case-insensitive match on the chat's name, which is usually auto-generated. \"content\" searches what was actually SAID in the chats, over the turns you typed; it needs an embedder and a user_id on the run, and returns each chat with the turn that matched it."},
-		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled)."},
+		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled/rejected)."},
 		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity."},
 		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity."},
 		"tag":             {"type": "string", "description": "list/search: return only chats carrying this exact tag."},
 		"title_contains":  {"type": "string", "description": "list: case-insensitive substring match on the title."},
-		"query":           {"type": "string", "description": "search: case-insensitive title match (metadata MVP; full-text content search is not yet available). related: free-text query to find semantically similar chats (use this OR session_id, not both)."},
+		"query":           {"type": "string", "description": "search: the text to find — matched against titles, or against what was said with match=content. related: free-text query to find semantically similar chats (use this OR session_id, not both)."},
 		"pinned_only":     {"type": "boolean", "description": "list/search: restrict to pinned chats."},
 		"include_archived":{"type": "boolean", "description": "list/search/related: include archived chats (excluded by default)."},
 		"include_internal":{"type": "boolean", "description": "list/search/related: include chats served by loomcycle's own maintenance agents (excluded by default — they are runtime bookkeeping, not conversations). Set it to debug a background pass."},
@@ -253,7 +254,7 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 	}
 	if in.Status != "" {
 		if !validChatStatus(in.Status) {
-			return store.SessionFilter{}, fmt.Errorf("history: unknown status %q (want one of: running, completed, failed, cancelled)", in.Status)
+			return store.SessionFilter{}, fmt.Errorf("history: unknown status %q (want one of: running, completed, failed, cancelled, rejected)", in.Status)
 		}
 		f.Status = store.RunStatus(in.Status)
 	}
