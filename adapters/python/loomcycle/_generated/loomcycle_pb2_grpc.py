@@ -123,6 +123,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.CancelTurnRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.CancelTurnResponse.FromString,
                 _registered_method=True)
+        self.ReviewRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ReviewRun',
+                request_serializer=loomcycle__pb2.ReviewRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ReviewRunResponse.FromString,
+                _registered_method=True)
         self.ResolveInterrupt = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ResolveInterrupt',
                 request_serializer=loomcycle__pb2.ResolveInterruptRequest.SerializeToString,
@@ -559,6 +564,21 @@ class LoomcycleServicer:
         Owner-routed cross-replica by runs.replica_id.
 
         Mirrors POST /v1/runs/{run_id}/cancel. (RFC BH)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReviewRun(self, request, context):
+        """ReviewRun delivers an operator's verdict on a run held for review (RFC
+        DJ): "approve" completes it on the held answer; "reject" with feedback
+        sends the feedback as its next user turn and it revises and is held again;
+        "reject" without feedback ends it with status "rejected". NotFound (opaque)
+        for an unknown, finished or cross-tenant run; FailedPrecondition when the
+        run is live but not held; InvalidArgument for another decision or feedback
+        on an approval. Owner-routed cross-replica.
+
+        Mirrors POST /v1/runs/{run_id}/review.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1213,6 +1233,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.CancelTurn,
                     request_deserializer=loomcycle__pb2.CancelTurnRequest.FromString,
                     response_serializer=loomcycle__pb2.CancelTurnResponse.SerializeToString,
+            ),
+            'ReviewRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReviewRun,
+                    request_deserializer=loomcycle__pb2.ReviewRunRequest.FromString,
+                    response_serializer=loomcycle__pb2.ReviewRunResponse.SerializeToString,
             ),
             'ResolveInterrupt': grpc.unary_unary_rpc_method_handler(
                     servicer.ResolveInterrupt,
@@ -1918,6 +1943,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/CancelTurn',
             loomcycle__pb2.CancelTurnRequest.SerializeToString,
             loomcycle__pb2.CancelTurnResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReviewRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ReviewRun',
+            loomcycle__pb2.ReviewRunRequest.SerializeToString,
+            loomcycle__pb2.ReviewRunResponse.FromString,
             options,
             channel_credentials,
             insecure,
