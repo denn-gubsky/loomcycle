@@ -275,6 +275,12 @@ type SessionFilter struct {
 	// IncludeArchived, when false (the default), EXCLUDES archived sessions;
 	// true includes them alongside the rest.
 	IncludeArchived bool
+	// IncludeConfigured, when true, also returns sessions that hold a
+	// configured (draft) run. They are left out by default because a draft's
+	// session is not a chat until the draft starts — but a caller accounting for
+	// everything a subject owns (erasure, the directory's count) must see them:
+	// a draft holds the subject's prompt.
+	IncludeConfigured bool
 }
 
 // SessionSummary is one row of ListSessions: a chat's metadata plus aggregates

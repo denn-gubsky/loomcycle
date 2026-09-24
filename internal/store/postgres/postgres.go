@@ -1154,7 +1154,9 @@ func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, 
 	}
 	// RFC DI D5: a draft lives in its own session, which is not a chat until
 	// the draft starts — leave it out rather than list a "configured" chat.
-	conds = append(conds, "NOT EXISTS (SELECT 1 FROM runs rd WHERE rd.session_id = s.id AND rd.status = 'configured')")
+	if !f.IncludeConfigured {
+		conds = append(conds, "NOT EXISTS (SELECT 1 FROM runs rd WHERE rd.session_id = s.id AND rd.status = 'configured')")
+	}
 	innerWhere := ""
 	if len(conds) > 0 {
 		innerWhere = "WHERE " + strings.Join(conds, " AND ")

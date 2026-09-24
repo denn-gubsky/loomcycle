@@ -129,6 +129,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ConfiguredRunDeleteTakesItsSession", testConfiguredRunDeleteTakesItsSession},
 		{"ConfiguredRunCountAndExpiry", testConfiguredRunCountAndExpiry},
 		{"ConfiguredRunHiddenFromChatListings", testConfiguredRunHiddenFromChatListings},
+		{"ConfiguredRunListedWhenIncluded", testConfiguredRunListedWhenIncluded},
 		{"ConfiguredRunNotReapedAsStale", testConfiguredRunNotReapedAsStale},
 		{"SetRunPauseStateRoundTrip", testSetRunPauseStateRoundTrip},
 		{"SetRunPauseStateUnknownStateRefused", testSetRunPauseStateUnknownStateRefused},

@@ -212,6 +212,29 @@ func testConfiguredRunHiddenFromChatListings(t *testing.T, s store.Store) {
 	}
 }
 
+// A caller that must account for everything a subject owns — erasure, the
+// directory's count — opts in and sees the draft's session, in the page and in
+// the total.
+func testConfiguredRunListedWhenIncluded(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	draft := newDraft(t, s, "ti", "fay", "a_included")
+	sess, _ := s.CreateSession(ctx, "ti", "default", "fay")
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{UserID: "fay", TenantID: "ti"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, total, err := s.ListSessions(ctx, store.SessionFilter{TenantID: "ti", UserID: "fay", IncludeConfigured: true}, 50, 0)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got := map[string]bool{}
+	for _, r := range rows {
+		got[r.SessionID] = true
+	}
+	if !got[draft.SessionID] || !got[sess.ID] || total != 2 {
+		t.Errorf("listed = %v (total %d), want both the chat and the draft's session", got, total)
+	}
+}
+
 // A draft is not a crashed run: the stale sweeper leaves it alone, and once it
 // starts, the re-stamped heartbeat keeps a draft that waited a long time from
 // being reaped as one that never heartbeated.

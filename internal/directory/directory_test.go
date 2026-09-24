@@ -156,3 +156,27 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// The chats count is what an erasure would delete, so a draft's session —
+// hidden from chat listings — is counted.
+func TestInspect_ChatsCountIncludesDrafts(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	seed(t, s, "acme", "alice")
+	sess, err := s.Store.CreateSession(ctx, "acme", "chat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store.CreateConfiguredRun(ctx, sess.ID,
+		store.RunIdentity{AgentID: "a_draft", UserID: "alice", TenantID: "acme"},
+		json.RawMessage(`{"agent":"chat"}`)); err != nil {
+		t.Fatal(err)
+	}
+	ins, err := s.Inspect(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ins.Chats != 2 {
+		t.Errorf("chats = %d, want 2 (a chat and a draft)", ins.Chats)
+	}
+}
