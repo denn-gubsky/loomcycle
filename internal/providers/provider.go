@@ -649,7 +649,8 @@ const (
 	// or rejects it (optionally with feedback it then revises from). Distinct
 	// from awaiting_input: that run waits for more work, this one waits for a
 	// verdict on work it considers done. Emitted again after a compaction while
-	// held, so the latest event still says the run is held.
+	// held, so a live view that just rendered the compaction shows the run as
+	// held again.
 	EventAwaitingReview EventType = "awaiting_review"
 
 	// EventSpawnChildStarted / EventSpawnChildResult are the RFC X Phase 3

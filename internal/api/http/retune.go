@@ -196,6 +196,9 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	// After the write, never before: a transcript line about a change that did
 	// not persist is worse than no line.
 	s.appendRetuneEvent(ctx, run.ID, in.setFields())
+	if in.Review != nil && !*in.Review {
+		s.releaseHeldRun(ctx, run.ID)
+	}
 	return merged, nil
 }
 

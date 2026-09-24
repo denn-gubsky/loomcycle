@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 	case "reject":
 		kind = steer.KindReject
 	default:
-		return false, connector.ErrInvalidReviewDecision
+		return false, fmt.Errorf(`%w: decision must be "approve" or "reject"`, connector.ErrInvalidReviewDecision)
 	}
 
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
@@ -69,17 +70,59 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 	if run.Status != store.RunRunning {
 		return false, connector.ErrRunNotInFlight
 	}
-	// Held means the run's latest event says so. A hold re-announces itself
-	// after anything it emits while waiting (a compaction), so this stays true
-	// for as long as the run is held.
-	last, err := s.store.GetLastEventForRun(ctx, runID)
-	if err != nil || last.Type != string(providers.EventAwaitingReview) {
+	if !s.isHeld(ctx, runID) {
 		return false, connector.ErrRunNotHeld
 	}
 
-	delivered, err := s.steerReg.Push(ctx, runID, steer.Message{
+	return s.pushVerdict(ctx, runID, steer.Message{
 		Kind: kind, Text: feedback, Source: source, EnqueuedAt: time.Now(),
 	})
+}
+
+// holdEndingEvents are what a run writes when it leaves a hold, whatever the
+// verdict: the feedback turn (user_input), the park an approved interactive run
+// moves to (awaiting_input), or the end (done). The run is held while its
+// latest awaiting_review is newer than all of them.
+//
+// Keyed on what ENDS a hold rather than on the run's latest event, because
+// other writers append to a held run without ending it — a retune's override
+// event, a budget limit, a compaction marker — and each of those would make
+// "the latest event is awaiting_review" false for a run that is still held.
+var holdEndingEvents = []string{
+	string(providers.EventAwaitingReview), // listed so the query can return it
+	"user_input",
+	string(providers.EventAwaitingInput),
+	string(providers.EventDone),
+}
+
+// isHeld reports whether the run is held for review.
+func (s *Server) isHeld(ctx context.Context, runID string) bool {
+	return heldForReview(ctx, s.store, runID)
+}
+
+func heldForReview(ctx context.Context, st store.Store, runID string) bool {
+	last, err := st.GetLastEventOfTypes(ctx, runID, holdEndingEvents)
+	return err == nil && last.Type == string(providers.EventAwaitingReview)
+}
+
+// releaseHeldRun approves a held run whose review was just disarmed, so the
+// retune takes effect now rather than at the hold's next heartbeat (which
+// remains the backstop for a disarm that lands as the hold begins). Best
+// effort: a run that is not held has nothing to release, and a failed push
+// is caught by that backstop.
+func (s *Server) releaseHeldRun(ctx context.Context, runID string) {
+	if s.steerReg == nil || s.store == nil || !s.isHeld(ctx, runID) {
+		return
+	}
+	if _, err := s.pushVerdict(ctx, runID, steer.Message{
+		Kind: steer.KindApprove, Source: "retune", EnqueuedAt: time.Now(),
+	}); err != nil {
+		log.Printf("review: releasing held run %s after its review was disarmed: %v", runID, err)
+	}
+}
+
+func (s *Server) pushVerdict(ctx context.Context, runID string, m steer.Message) (bool, error) {
+	delivered, err := s.steerReg.Push(ctx, runID, m)
 	switch {
 	case errors.Is(err, steer.ErrQueueFull):
 		return false, connector.ErrSteerQueueFull

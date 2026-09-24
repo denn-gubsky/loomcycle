@@ -181,9 +181,10 @@ var (
 	// {code:"not_held"}; gRPC FailedPrecondition.
 	ErrRunNotHeld = errors.New("connector: run is not held for review")
 
-	// ErrInvalidReviewDecision is returned by ReviewRun for a decision other
-	// than approve or reject. HTTP 400; gRPC InvalidArgument.
-	ErrInvalidReviewDecision = errors.New(`connector: decision must be "approve" or "reject"`)
+	// ErrInvalidReviewDecision is returned (wrapped with the reason) by
+	// ReviewRun for a verdict it cannot act on: a decision other than approve
+	// or reject, or feedback on an approval. HTTP 400; gRPC InvalidArgument.
+	ErrInvalidReviewDecision = errors.New("connector: invalid review verdict")
 
 	// --- RFC BH interruption resolve / decline ---
 	//

@@ -412,3 +412,56 @@ func TestReview_AbandonedHoldIsCancelledNotCompleted(t *testing.T) {
 		t.Errorf("abandoned hold recorded %q, want cancelled", run.Status)
 	}
 }
+
+// Disarming review on a held run releases it now — as approved — rather than
+// at the hold's next heartbeat, 30 seconds away.
+func TestReview_DisarmingAHeldRunReleasesItNow(t *testing.T) {
+	h := newReviewHarness(t)
+	runID, _, frames, stop := h.start(reviewRunBody)
+	defer stop()
+	h.waitFrame(frames, "awaiting_review")
+	h.waitHeld(runID, 1)
+	resp, err := http.Post(h.ts.URL+"/v1/runs/"+runID+"/retune", "application/json", strings.NewReader(`{"review":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("retune = %d", resp.StatusCode)
+	}
+	h.waitStatus(runID, store.RunCompleted)
+}
+
+// A retune of something else writes to a held run's transcript without ending
+// the hold: the run still reads as held and still takes a verdict. Gating on
+// the run's latest event got this wrong — the override event came after the
+// hold.
+func TestReview_ARetuneDoesNotEndTheHold(t *testing.T) {
+	h := newReviewHarness(t)
+	runID, agentID, frames, stop := h.start(reviewRunBody)
+	defer stop()
+	h.waitFrame(frames, "awaiting_review")
+	h.waitHeld(runID, 1)
+	resp, err := http.Post(h.ts.URL+"/v1/runs/"+runID+"/retune", "application/json", strings.NewReader(`{"max_tokens":512}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if last, _ := h.st.GetLastEventForRun(context.Background(), runID); last.Type == string(providers.EventAwaitingReview) {
+		t.Fatal("the retune wrote nothing after the hold, so this test would pass for the wrong reason")
+	}
+	resp, err = http.Get(h.ts.URL + "/v1/agents/" + agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a agentResponse
+	_ = json.NewDecoder(resp.Body).Decode(&a)
+	resp.Body.Close()
+	if a.AwaitedState != awaitedStateReview {
+		t.Errorf("awaited_state after a retune = %q, want review", a.AwaitedState)
+	}
+	if code, body := h.review(runID, `{"decision":"reject"}`); code != http.StatusOK {
+		t.Fatalf("verdict after a retune = %d %s, want 200", code, body)
+	}
+	h.waitStatus(runID, store.RunRejected)
+}

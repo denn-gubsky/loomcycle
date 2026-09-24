@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 
-	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -59,9 +58,6 @@ type interruptionInput struct {
 // This collapses what the client-side derivation needs (walking
 // unresolved tool_uses) into a single row lookup.
 func deriveAwaitedState(ev store.Event) (state, on string) {
-	if ev.Type == string(providers.EventAwaitingReview) {
-		return awaitedStateReview, ""
-	}
 	if ev.Type != "tool_call" {
 		return "", ""
 	}
@@ -119,6 +115,11 @@ func fillAwaitedStateForRunning(ctx context.Context, st store.Store, items []age
 			continue
 		}
 		state, on := deriveAwaitedState(ev)
+		if state == "" && heldForReview(ctx, st, item.RunID) {
+			// Not from the latest event: other writers append to a held run
+			// without ending the hold (see holdEndingEvents).
+			state = awaitedStateReview
+		}
 		if state != "" {
 			items[i].AwaitedState = state
 			items[i].AwaitedOn = on

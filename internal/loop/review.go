@@ -44,9 +44,11 @@ const (
 // message is the exception: one that arrived after the last turn drained the
 // queue is still the operator's intent, so it is read as feedback.
 //
-// A compaction is applied in place and the hold is announced again, so the
-// run's latest event still says it is held. Disarming review while held (a
-// retune) releases the hold as approved; it is noticed at the next heartbeat.
+// A compaction is applied in place and the hold is announced again, so a live
+// view that just rendered the compaction shows the run held. Disarming review
+// while held releases the hold as approved: the retune pushes an approval, and
+// the heartbeat re-reads the arming as a backstop for a disarm that lands just
+// as the hold begins.
 func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
 	heldAt := time.Now()
 	announce := func() {
