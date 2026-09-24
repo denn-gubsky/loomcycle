@@ -1867,6 +1867,19 @@ func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error
 	return nil
 }
 
+// SetRunReplica implements store.Store.
+func (s *Store) SetRunReplica(ctx context.Context, runID, replicaID string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET replica_id = $1 WHERE id = $2`, nullableText(replicaID), runID)
+	if err != nil {
+		return fmt.Errorf("set run replica_id: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return nil
+}
+
 // ListPausedRuns implements store.Store. Returns runs with
 // pause_state = 'paused' (at-rest only, not 'pausing'), ordered by
 // started_at ASC. Uses the partial index from 0012_runs_pause_state.

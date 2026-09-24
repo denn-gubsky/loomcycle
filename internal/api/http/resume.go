@@ -339,6 +339,16 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
 		log.Printf("resume: heartbeat stamp for %s failed: %v", run.ID, err)
 	}
+	// This replica now owns the run's live state (its steer queue, its cancel).
+	// The row still names the replica it was created on, and a cross-replica
+	// steer, verdict or cancel routes by the row: to a replica that is gone,
+	// it answers "not in flight". Logged, not fatal — the run itself is fine,
+	// and a verdict posted to this replica still reaches it.
+	if s.replicaID != "" && run.ReplicaID != s.replicaID {
+		if err := s.store.SetRunReplica(ctx, run.ID, s.replicaID); err != nil {
+			log.Printf("resume: replica stamp for %s failed: %v", run.ID, err)
+		}
+	}
 
 	// Detached background context: keep ctx VALUES but do NOT die when the
 	// caller (restore handler / boot) returns. Stops only via the cancel

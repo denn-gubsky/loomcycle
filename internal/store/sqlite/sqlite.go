@@ -3089,6 +3089,11 @@ func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMess
 	return nil
 }
 
+// SetRunReplica implements store.Store. SQLite's runs table has no replica_id
+// column: a single-file store is a single-replica deployment, so there is
+// nothing to route to and nothing to record.
+func (s *Store) SetRunReplica(context.Context, string, string) error { return nil }
+
 func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error {
 	switch state {
 	case store.PauseStateRunning, store.PauseStatePausing, store.PauseStatePaused:
