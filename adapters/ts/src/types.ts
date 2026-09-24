@@ -35,6 +35,9 @@ export type EventType =
   // replayed prior operator turn (user_input.source === "replay").
   // `context_compaction` marks a context summarization.
   | "awaiting_input"
+  // RFC DJ: a run armed for review finished its answer and is held for an
+  // operator's verdict ({@link LoomcycleClient.reviewRun}).
+  | "awaiting_review"
   | "steer"
   | "context_compaction"
   // RFC AW per-scope token budgets. `limit` = a server-generated token-budget
@@ -190,6 +193,7 @@ export interface RunConfigRecord {
     inject_tool_guide?: boolean;
   };
   interactive?: boolean;
+  review?: boolean;
   interruption?: { enabled?: boolean; kinds?: string[]; max_pending?: number };
   hosts?: Record<string, unknown>;
 }
@@ -567,6 +571,9 @@ export interface AgentEvent {
   /** Payload on `event: awaiting_input` (RFC AI) — a persistent interactive
    *  run parked at end_turn. `since_turn` is the iteration it parked after. */
   awaiting_input?: { since_turn?: number };
+  /** Payload on `event: awaiting_review` — the run is held for a verdict.
+   *  `round` is 1 on the first answer and counts up with each revision. */
+  awaiting_review?: { since_turn?: number; round?: number };
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };
@@ -718,6 +725,13 @@ export interface RunOverrideOptions {
    *  `false` releases a run that was started interactive. Omit to keep whatever
    *  the run has; a retune of anything else must not disturb this. */
   interactive?: boolean;
+
+  /** Hold the run for an operator's verdict each time its model finishes,
+   *  instead of completing: {@link LoomcycleClient.reviewRun} approves it, or
+   *  rejects it with feedback it revises from (and is held again), or rejects
+   *  it outright (status `rejected`). Settable while the run is going; `false`
+   *  on a run that is held releases it as approved. */
+  review?: boolean;
 
   /** Let this run's agent ASK a human a question, overriding what its
    *  definition allows.
@@ -1129,7 +1143,8 @@ export interface ClientOptions {
 // ---- Agent metadata ----
 
 /** `configured` is a run created but not yet started (RFC DI). */
-export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled";
+/** `rejected` is a run a reviewer turned down without feedback (RFC DJ). */
+export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
 
 export interface AgentUsage {
   input_tokens?: number;
@@ -1218,6 +1233,8 @@ export interface RunSpec {
   tuning?: Record<string, unknown>;
   /** Whether the run parks at its turn boundaries (current, after any retune). */
   interactive?: boolean;
+  /** Whether the run is held for review when it finishes (current, after any retune). */
+  review?: boolean;
   interruption?: Record<string, unknown>;
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
@@ -1416,6 +1433,13 @@ export interface ReplaySessionResult {
  *  transcript intact). This is NOT whole-run cancel ({@link
  *  LoomcycleClient.cancelAgent}). For a team walk `parked` is false: the walk
  *  was ended, not parked. */
+/** Result of {@link LoomcycleClient.reviewRun}. */
+export interface ReviewRunResult {
+  run_id: string;
+  decision: "approve" | "reject";
+  delivered: boolean;
+}
+
 export interface CancelTurnResult {
   run_id: string;
   stopped: boolean;

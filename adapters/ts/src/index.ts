@@ -180,6 +180,7 @@ export type {
   ErasureResult,
   ErasureTier,
   CancelTurnResult,
+  ReviewRunResult,
   // Transcript
   TranscriptEvent,
   TranscriptResponse,
