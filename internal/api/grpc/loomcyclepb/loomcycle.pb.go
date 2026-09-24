@@ -6683,8 +6683,13 @@ type RegisterHookRequest struct {
 	// "open" (default) | "closed". Open = webhook errors pass through;
 	// closed = errors fail the tool call with IsError=true.
 	FailMode string `protobuf:"bytes,7,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"`
-	// Per-call timeout. 0 = registry default (5 s).
-	TimeoutMs     int32 `protobuf:"varint,8,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	// Per-call timeout. 0 = registry default (5 s; 50 ms for a code body,
+	// where it bounds each run of the code, capped at 1 s).
+	TimeoutMs int32 `protobuf:"varint,8,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	// A code-js body — a top-level hook(ev) function returning the decision —
+	// in place of callback_url; set exactly one. Refused unless the server
+	// enables code hooks.
+	Code          string `protobuf:"bytes,9,opt,name=code,proto3" json:"code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6775,6 +6780,13 @@ func (x *RegisterHookRequest) GetTimeoutMs() int32 {
 	return 0
 }
 
+func (x *RegisterHookRequest) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
 type RegisterHookResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Loomcycle-assigned id. Caller uses this on DeleteHook.
@@ -6861,17 +6873,19 @@ func (*ListHooksRequest) Descriptor() ([]byte, []int) {
 // duration; we don't surface it on the wire (callers care about
 // timeout_ms which is the source).
 type Hook struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Owner         string                 `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
-	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	Phase         string                 `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
-	Agents        []string               `protobuf:"bytes,5,rep,name=agents,proto3" json:"agents,omitempty"`
-	Tools         []string               `protobuf:"bytes,6,rep,name=tools,proto3" json:"tools,omitempty"`
-	CallbackUrl   string                 `protobuf:"bytes,7,opt,name=callback_url,json=callbackUrl,proto3" json:"callback_url,omitempty"`
-	FailMode      string                 `protobuf:"bytes,8,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"`
-	TimeoutMs     int32                  `protobuf:"varint,9,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	RegisteredAt  *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=registered_at,json=registeredAt,proto3" json:"registered_at,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Id           string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Owner        string                 `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Name         string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Phase        string                 `protobuf:"bytes,4,opt,name=phase,proto3" json:"phase,omitempty"`
+	Agents       []string               `protobuf:"bytes,5,rep,name=agents,proto3" json:"agents,omitempty"`
+	Tools        []string               `protobuf:"bytes,6,rep,name=tools,proto3" json:"tools,omitempty"`
+	CallbackUrl  string                 `protobuf:"bytes,7,opt,name=callback_url,json=callbackUrl,proto3" json:"callback_url,omitempty"`
+	FailMode     string                 `protobuf:"bytes,8,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"`
+	TimeoutMs    int32                  `protobuf:"varint,9,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	RegisteredAt *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=registered_at,json=registeredAt,proto3" json:"registered_at,omitempty"`
+	// The code-js body, when the hook has one instead of a callback_url.
+	Code          string `protobuf:"bytes,11,opt,name=code,proto3" json:"code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6974,6 +6988,13 @@ func (x *Hook) GetRegisteredAt() *timestamppb.Timestamp {
 		return x.RegisteredAt
 	}
 	return nil
+}
+
+func (x *Hook) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
 }
 
 type ListHooksResponse struct {
@@ -10776,7 +10797,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x14\n" +
 	"\x05built\x18\x03 \x01(\tR\x05built\x12%\n" +
-	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds\"\xe2\x01\n" +
+	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds\"\xf6\x01\n" +
 	"\x13RegisterHookRequest\x12\x14\n" +
 	"\x05owner\x18\x01 \x01(\tR\x05owner\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -10786,10 +10807,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\fcallback_url\x18\x06 \x01(\tR\vcallbackUrl\x12\x1b\n" +
 	"\tfail_mode\x18\a \x01(\tR\bfailMode\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\b \x01(\x05R\ttimeoutMs\"&\n" +
+	"timeout_ms\x18\b \x01(\x05R\ttimeoutMs\x12\x12\n" +
+	"\x04code\x18\t \x01(\tR\x04code\"&\n" +
 	"\x14RegisterHookResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x12\n" +
-	"\x10ListHooksRequest\"\xa4\x02\n" +
+	"\x10ListHooksRequest\"\xb8\x02\n" +
 	"\x04Hook\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05owner\x18\x02 \x01(\tR\x05owner\x12\x12\n" +
@@ -10802,7 +10824,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"timeout_ms\x18\t \x01(\x05R\ttimeoutMs\x12?\n" +
 	"\rregistered_at\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\fregisteredAt\"=\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\fregisteredAt\x12\x12\n" +
+	"\x04code\x18\v \x01(\tR\x04code\"=\n" +
 	"\x11ListHooksResponse\x12(\n" +
 	"\x05hooks\x18\x01 \x03(\v2\x12.loomcycle.v1.HookR\x05hooks\"#\n" +
 	"\x11DeleteHookRequest\x12\x0e\n" +

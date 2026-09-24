@@ -17,7 +17,9 @@
 package hooks
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -90,7 +92,15 @@ type Hook struct {
 	// Determines chain order across owners — earlier registrations run
 	// first in the Pre chain (LIFO in the Post chain, as middleware).
 	RegisteredAt time.Time `json:"registered_at"`
+	// Code is a code-js hook body: JavaScript defining a top-level
+	// hook(ev) function that returns the decision. A hook has exactly one
+	// body — CallbackURL or Code. A code body runs in-process in the code-js
+	// sandbox, with Interruption as its only tool (see CodeRunner).
+	Code string `json:"code,omitempty"`
 }
+
+// IsCode reports whether the hook's body is code-js rather than a webhook.
+func (h *Hook) IsCode() bool { return h.Code != "" }
 
 // Matches returns true when this hook's selector matches the given
 // (agent, tool, phase). Empty selector lists match anything.
@@ -236,4 +246,77 @@ type Decision struct {
 	Reason            string
 	UpdatedInput      json.RawMessage
 	AdditionalContext string
+}
+
+// CodeRunner runs a code-js hook body. It lives outside this package so the
+// dispatcher does not depend on the JavaScript engine; the server installs one
+// only when code hooks are enabled.
+type CodeRunner interface {
+	// Compile parses a code body without running it, so a broken body is
+	// refused at registration rather than at its first matching call.
+	Compile(src string) error
+	// Run executes the hook for one call. event names what is being decided
+	// ("pre_tool_use", "post_tool_use", "post_tool_use_failure"); payload is
+	// the same call a webhook would receive. It returns the hook's decision,
+	// or an error that the dispatcher treats like an unreachable webhook.
+	Run(ctx context.Context, h *Hook, event string, payload any) (CodeDecision, error)
+}
+
+// CodeDecision is what a code-js hook returns. A pre hook may deny, rewrite
+// the input or grant hosts; a post hook may replace the output or add
+// context. A field that does not apply to the hook's phase is refused, so a
+// mistake in a hook body is reported rather than silently ignored.
+type CodeDecision struct {
+	// Decision is "allow" (or empty) to let the call through, "deny" to stop
+	// it (pre only).
+	Decision          string          `json:"decision,omitempty"`
+	Reason            string          `json:"reason,omitempty"`
+	UpdatedInput      json.RawMessage `json:"updated_input,omitempty"`
+	UpdatedOutput     *ToolResult     `json:"updated_output,omitempty"`
+	AdditionalContext string          `json:"additional_context,omitempty"`
+	AllowHosts        []string        `json:"allow_hosts,omitempty"`
+}
+
+// preResult translates a pre hook's decision into the webhook response shape
+// the pre chain already applies.
+func (d CodeDecision) preResult(h *Hook) (PreHookResult, error) {
+	if d.UpdatedOutput != nil || d.AdditionalContext != "" {
+		return PreHookResult{}, fmt.Errorf("updated_output and additional_context apply to post hooks only")
+	}
+	switch d.Decision {
+	case "", "allow":
+		return PreHookResult{Input: d.UpdatedInput, AllowHosts: d.AllowHosts}, nil
+	case "deny":
+		text := d.Reason
+		if text == "" {
+			text = "tool_call denied by hook " + h.Owner + "/" + h.Name
+		}
+		return PreHookResult{Deny: &ToolResult{IsError: true, Text: text}}, nil
+	default:
+		return PreHookResult{}, fmt.Errorf("decision %q is not one of \"allow\", \"deny\"", d.Decision)
+	}
+}
+
+// postResult translates a post / post_failure hook's decision.
+func (d CodeDecision) postResult() (PostHookResult, error) {
+	if len(d.UpdatedInput) > 0 || len(d.AllowHosts) > 0 {
+		return PostHookResult{}, fmt.Errorf("updated_input and allow_hosts apply to pre hooks only")
+	}
+	if d.Decision != "" && d.Decision != "allow" {
+		return PostHookResult{}, fmt.Errorf("decision %q does not apply after the tool ran; return updated_output to change its result", d.Decision)
+	}
+	return PostHookResult{Result: d.UpdatedOutput, AdditionalContext: d.AdditionalContext}, nil
+}
+
+// eventFor names the thing a hook in this phase decides on, as a code body
+// sees it.
+func eventFor(p Phase) string {
+	switch p {
+	case PhasePre:
+		return "pre_tool_use"
+	case PhasePostFailure:
+		return "post_tool_use_failure"
+	default:
+		return "post_tool_use"
+	}
 }

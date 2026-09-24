@@ -43,6 +43,7 @@ func (s *Server) RegisterHook(ctx context.Context, req *loomcyclepb.RegisterHook
 		CallbackURL: req.GetCallbackUrl(),
 		FailMode:    hooks.FailMode(req.GetFailMode()),
 		TimeoutMs:   int(req.GetTimeoutMs()),
+		Code:        req.GetCode(),
 	})
 	if err != nil {
 		return nil, translateHookError(err, "register_hook")
@@ -114,5 +115,6 @@ func hookToProto(h *hooks.Hook) *loomcyclepb.Hook {
 		FailMode:     string(h.FailMode),
 		TimeoutMs:    int32(h.TimeoutMs),
 		RegisteredAt: timestamppb.New(h.RegisteredAt),
+		Code:         h.Code,
 	}
 }

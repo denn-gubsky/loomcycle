@@ -3623,6 +3623,12 @@ type Env struct {
 	// field rather than bumping this global for every code agent. Exceeding
 	// the budget surfaces as code_agent_timeout (not a throw at a JS line).
 	CodeAgentsRunTimeout time.Duration
+	// CodeHooksEnabled lets a hook's body be code-js (RFC DK) instead of a
+	// webhook. Default OFF, separate from CodeAgentsEnabled: a code hook runs
+	// on every matching tool call of every agent in its scope, which is a
+	// different decision from letting one agent be JavaScript. Env:
+	// LOOMCYCLE_CODE_HOOKS_ENABLED=1.
+	CodeHooksEnabled bool
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
@@ -4934,6 +4940,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// main.go only when enabled. Root defaults to ./agent_code (mirrors
 	// the skills bundling convention). Timeout floored at 1s.
 	cfg.Env.CodeAgentsEnabled = os.Getenv("LOOMCYCLE_CODE_AGENTS_ENABLED") == "1"
+	cfg.Env.CodeHooksEnabled = os.Getenv("LOOMCYCLE_CODE_HOOKS_ENABLED") == "1"
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
 		cfg.Env.CodeAgentsRoot = v

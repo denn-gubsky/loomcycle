@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -181,7 +182,7 @@ func (r *Registry) Register(h *Hook) (string, error) {
 		newID := newHookID()
 		h.ID = newID
 		h.RegisteredAt = now
-		h.Timeout = resolveTimeout(h.TimeoutMs)
+		h.Timeout = timeoutFor(h)
 		if h.FailMode == "" {
 			h.FailMode = FailOpen
 		}
@@ -201,7 +202,7 @@ func (r *Registry) Register(h *Hook) (string, error) {
 	id := newHookID()
 	h.ID = id
 	h.RegisteredAt = now
-	h.Timeout = resolveTimeout(h.TimeoutMs)
+	h.Timeout = timeoutFor(h)
 	if h.FailMode == "" {
 		h.FailMode = FailOpen
 	}
@@ -302,12 +303,19 @@ func validate(h *Hook) error {
 	if h.Phase != PhasePre && h.Phase != PhasePost && h.Phase != PhasePostFailure {
 		return wrap(ErrInvalidRegistration, "phase must be \"pre\", \"post\" or \"post_failure\"")
 	}
-	if strings.TrimSpace(h.CallbackURL) == "" {
-		return wrap(ErrInvalidRegistration, "callback_url required")
-	}
+	hasURL, hasCode := strings.TrimSpace(h.CallbackURL) != "", strings.TrimSpace(h.Code) != ""
+	switch {
+	case hasURL && hasCode:
+		return wrap(ErrInvalidRegistration, "set callback_url or code, not both")
+	case hasCode:
+		if len(h.Code) > MaxCodeBytes {
+			return wrap(ErrInvalidRegistration, fmt.Sprintf("code is %d bytes; the limit is %d", len(h.Code), MaxCodeBytes))
+		}
+	case !hasURL:
+		return wrap(ErrInvalidRegistration, "callback_url or code required")
 	// Reject obvious URL malformation; we don't dial it here, that
 	// happens lazily on first invocation.
-	if !strings.HasPrefix(h.CallbackURL, "http://") && !strings.HasPrefix(h.CallbackURL, "https://") {
+	case !strings.HasPrefix(h.CallbackURL, "http://") && !strings.HasPrefix(h.CallbackURL, "https://"):
 		return wrap(ErrInvalidRegistration, "callback_url must be http:// or https://")
 	}
 	if h.FailMode != "" && h.FailMode != FailOpen && h.FailMode != FailClosed {
@@ -317,6 +325,28 @@ func validate(h *Hook) error {
 		return wrap(ErrInvalidRegistration, "timeout_ms must be ≥ 0")
 	}
 	return nil
+}
+
+// MaxCodeBytes bounds a code hook's body. A hook runs on every matching call,
+// so its source is kept small; bigger logic belongs in a webhook.
+const MaxCodeBytes = 256 << 10
+
+// timeoutFor is a hook's resolved timeout. For a webhook it bounds the whole
+// call. For a code body it bounds each run of the JavaScript: a hook is on the
+// hot path of every matching tool call, so the default is tight, and the time
+// a person takes to answer the hook's Interruption.ask is not counted.
+func timeoutFor(h *Hook) time.Duration {
+	if !h.IsCode() {
+		return resolveTimeout(h.TimeoutMs)
+	}
+	if h.TimeoutMs <= 0 {
+		return 50 * time.Millisecond
+	}
+	d := time.Duration(h.TimeoutMs) * time.Millisecond
+	if d > time.Second {
+		d = time.Second
+	}
+	return d
 }
 
 // resolveTimeout converts the wire-friendly TimeoutMs into a

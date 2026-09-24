@@ -596,19 +596,20 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		// --- Hook management (hooks-connector series, PR B) ---
 		{
 			Name:        "register_hook",
-			Description: "Register a pre- or post-tool webhook. The callback_url must be an http:// or https:// endpoint the consumer runs \u2014 loomcycle POSTs PreHookCall/PostHookCall payloads to it. Returns {id}. Re-registering the same (owner, name) replaces the prior entry with a fresh id (idempotent app-restart contract). Use the id with delete_hook. Use it to observe or gate tool calls from outside \u2014 an audit trail, a policy check, a dashboard. Do NOT use it to add capability to an agent: a hook watches tool calls, it does not provide a tool. Registering an MCP server is mcpserverdef. Hooks are IN-MEMORY and gone after a restart, so a consumer is expected to re-register on startup \u2014 which is why re-registering the same (owner, name) replaces rather than duplicates.",
+			Description: "Register a pre- or post-tool hook. Its body is either a webhook \u2014 callback_url, an http:// or https:// endpoint the consumer runs, which loomcycle POSTs PreHookCall/PostHookCall payloads to \u2014 or code: JavaScript defining hook(ev) that returns the decision, run in-process in the code-js sandbox, whose only tool is Interruption (ask, notify) so it can hold a call for a person and decide on the answer. Set exactly one. Returns {id}. Re-registering the same (owner, name) replaces the prior entry with a fresh id (idempotent app-restart contract). Use the id with delete_hook. Use it to observe or gate tool calls from outside \u2014 an audit trail, a policy check, a dashboard. Do NOT use it to add capability to an agent: a hook watches tool calls, it does not provide a tool. Registering an MCP server is mcpserverdef. Hooks are IN-MEMORY and gone after a restart, so a consumer is expected to re-register on startup \u2014 which is why re-registering the same (owner, name) replaces rather than duplicates.",
 			InputSchema: rawJSON(`{
 				"type": "object",
-				"required": ["owner", "name", "phase", "callback_url"],
+				"required": ["owner", "name", "phase"],
 				"properties": {
 					"owner":        {"type": "string", "description": "App UID; (owner, name) is the identity tuple."},
 					"name":         {"type": "string"},
 					"phase":        {"type": "string", "enum": ["pre", "post", "post_failure"], "description": "pre: before the tool runs. post: after it runs, success or failure. post_failure: only after a failure, before post, with the failure's classification."},
 					"agents":       {"type": "array", "items": {"type": "string"}, "description": "Agent name globs (exact or 'prefix*'). Empty = match all."},
 					"tools":        {"type": "array", "items": {"type": "string"}, "description": "Tool name globs (same syntax). Empty = match all."},
-					"callback_url": {"type": "string", "description": "http:// or https:// URL loomcycle POSTs to."},
+					"callback_url": {"type": "string", "description": "http:// or https:// URL loomcycle POSTs to. Set this or code."},
+					"code":         {"type": "string", "description": "JavaScript defining a top-level function hook(ev). ev is the payload a webhook would receive plus event (pre_tool_use, post_tool_use, post_tool_use_failure). Return nothing to let the call through; a pre hook may return {decision: 'deny', reason}, {updated_input} or {allow_hosts}; a post hook {updated_output: {text, is_error}} or {additional_context}. Interruption.ask({question, options}) returns the answer (null if declined, throws on timeout); Interruption.notify({message}). No other tool, no network, no filesystem. Needs code hooks enabled on the server. Set this or callback_url."},
 					"fail_mode":    {"type": "string", "enum": ["open", "closed"], "description": "open (default) = errors pass through; closed = errors fail the tool call."},
-					"timeout_ms":   {"type": "integer", "minimum": 0, "description": "Per-call timeout. 0 = registry default (5 s)."}
+					"timeout_ms":   {"type": "integer", "minimum": 0, "description": "Per-call timeout. 0 = registry default (5 s for a webhook; 50 ms for code, where it bounds each run of the code \u2014 the wait for a person's answer is not counted \u2014 capped at 1 s)."}
 				}
 			}`),
 		},

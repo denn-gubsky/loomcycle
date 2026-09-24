@@ -50,6 +50,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
@@ -1866,6 +1867,11 @@ func main() {
 	// Spawn + Admit (op=run) into it, and keeps the HTTP /v1/_teamdef + MCP
 	// `teamdef` + Connector surfaces pointing at it.
 	srv.SetTeamDefTool(teamDefTool)
+	// RFC DK — code-js hook bodies, opt-in. A body's only tool is the same
+	// Interruption instance agents use, run under the hook's own grant.
+	if cfg.Env.CodeHooksEnabled {
+		srv.SetCodeHookRunner(codehook.New(interruptionTool))
+	}
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
 	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +

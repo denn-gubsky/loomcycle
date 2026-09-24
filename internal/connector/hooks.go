@@ -20,6 +20,9 @@ type RegisterHookRequest struct {
 	CallbackURL string         `json:"callback_url"`
 	FailMode    hooks.FailMode `json:"fail_mode,omitempty"`
 	TimeoutMs   int            `json:"timeout_ms,omitempty"`
+	// Code is a code-js body (a top-level hook(ev) function), in place of
+	// CallbackURL. Needs LOOMCYCLE_CODE_HOOKS_ENABLED on the server.
+	Code string `json:"code,omitempty"`
 }
 
 // RegisterHookResponse is what Connector.RegisterHook returns: the

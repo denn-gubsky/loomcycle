@@ -1680,8 +1680,13 @@ message RegisterHookRequest {
   // "open" (default) | "closed". Open = webhook errors pass through;
   // closed = errors fail the tool call with IsError=true.
   string fail_mode = 7;
-  // Per-call timeout. 0 = registry default (5 s).
+  // Per-call timeout. 0 = registry default (5 s; 50 ms for a code body,
+  // where it bounds each run of the code, capped at 1 s).
   int32 timeout_ms = 8;
+  // A code-js body — a top-level hook(ev) function returning the decision —
+  // in place of callback_url; set exactly one. Refused unless the server
+  // enables code hooks.
+  string code = 9;
 }
 
 message RegisterHookResponse {
@@ -1706,6 +1711,8 @@ message Hook {
   string fail_mode = 8;
   int32 timeout_ms = 9;
   google.protobuf.Timestamp registered_at = 10;
+  // The code-js body, when the hook has one instead of a callback_url.
+  string code = 11;
 }
 
 message ListHooksResponse {

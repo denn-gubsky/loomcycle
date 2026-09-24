@@ -1597,11 +1597,13 @@ export class LoomcycleClient {
 
   // ---- Hook management (hooks-connector series, PR C) ----
 
-  /** Register a pre- or post-tool webhook. The callback_url must be
-   *  an http:// or https:// endpoint the CONSUMER runs — loomcycle
-   *  POSTs PreHookCall / PostHookCall payloads to it. This method
-   *  manages registration only; the receiver is the consumer's own
-   *  HTTP framework (Express, Next.js, etc.).
+  /** Register a pre- or post-tool hook. Its body is a webhook — the
+   *  callback_url must be an http:// or https:// endpoint the CONSUMER
+   *  runs; loomcycle POSTs PreHookCall / PostHookCall payloads to it —
+   *  or a code-js body (`code`), run in-process by loomcycle. Set
+   *  exactly one. This method manages registration only; a webhook's
+   *  receiver is the consumer's own HTTP framework (Express, Next.js,
+   *  etc.).
    *
    *  Re-registering the same (owner, name) replaces the prior entry
    *  with a fresh id (idempotent app-restart contract).
@@ -1615,8 +1617,9 @@ export class LoomcycleClient {
       owner: opts.owner,
       name: opts.name,
       phase: opts.phase,
-      callback_url: opts.callbackUrl,
     };
+    if (opts.callbackUrl !== undefined) body.callback_url = opts.callbackUrl;
+    if (opts.code !== undefined) body.code = opts.code;
     if (opts.agents !== undefined) body.agents = opts.agents;
     if (opts.tools !== undefined) body.tools = opts.tools;
     if (opts.failMode !== undefined) body.fail_mode = opts.failMode;

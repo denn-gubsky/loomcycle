@@ -120,6 +120,20 @@ async def test_register_hook_sends_full_request_shape():
 
 
 @pytest.mark.asyncio
+async def test_register_hook_sends_a_code_body_in_place_of_a_callback_url():
+    stub = _FakeStub()
+    stub.register_resp = pb.RegisterHookResponse(id="hook_code")
+    c = _client_with_stub(stub)
+
+    await c.register_hook(
+        owner="ops", name="gate", phase="pre", code="function hook(ev) { return {}; }"
+    )
+    req = stub.register_req
+    assert req.code == "function hook(ev) { return {}; }"
+    assert req.callback_url == ""
+
+
+@pytest.mark.asyncio
 async def test_register_hook_defaults_fail_mode_open():
     stub = _FakeStub()
     c = _client_with_stub(stub)

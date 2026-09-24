@@ -1257,6 +1257,42 @@ func TestServer_RegisterHook_DispatchesAndReturnsID(t *testing.T) {
 	}
 }
 
+// A code body crosses register_hook in place of a callback URL, and the tool's
+// schema advertises it and no longer requires callback_url.
+func TestServer_RegisterHook_CarriesACodeBody(t *testing.T) {
+	mc := &mockConnector{}
+	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_hook","arguments":{"owner":"ops","name":"gate","phase":"pre","code":"function hook(ev) { return {}; }"}}}` + "\n"
+	if resps, _ := driveServer(t, srv, in); len(resps) != 1 {
+		t.Fatalf("got %d responses, want 1", len(resps))
+	}
+	if got := mc.lastRegisterHookReq; got.Code != "function hook(ev) { return {}; }" || got.CallbackURL != "" {
+		t.Errorf("connector saw %+v", got)
+	}
+	for _, td := range toolDescriptors() {
+		if td.Name != "register_hook" {
+			continue
+		}
+		var schema struct {
+			Required   []string                   `json:"required"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(td.InputSchema, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := schema.Properties["code"]; !ok {
+			t.Error("register_hook does not advertise code")
+		}
+		for _, r := range schema.Required {
+			if r == "callback_url" {
+				t.Error("register_hook still requires callback_url")
+			}
+		}
+		return
+	}
+	t.Fatal("register_hook not in the catalogue")
+}
+
 func TestServer_RegisterHook_InvalidArguments_ToolError(t *testing.T) {
 	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
 	// malformed JSON inside `arguments`
