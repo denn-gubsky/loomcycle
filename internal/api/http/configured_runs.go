@@ -90,13 +90,16 @@ func draftStoreErr(err error) error {
 
 // draftImmutableKeys are the fields a PATCH may not change: identity is fixed
 // when the draft is created, secrets are supplied at start, and `start` is a
-// verb, not a field of the draft.
+// verb, not a field of the draft. parent_context is identity too: the row holds
+// it and the start takes it from there, so a patched copy would be shown and
+// ignored.
 var draftImmutableKeys = map[string]string{
 	"agent":            "the agent is fixed when the draft is created",
 	"agent_id":         "the agent_id is fixed when the draft is created",
 	"user_id":          "the user is fixed when the draft is created",
 	"tenant_id":        "the tenant is fixed when the draft is created",
 	"session_id":       "a configured run starts in its own session",
+	"parent_context":   "the parent_context is fixed when the draft is created",
 	"user_bearer":      "secrets are supplied at start, never stored on a draft",
 	"user_credentials": "secrets are supplied at start, never stored on a draft",
 	"start":            "start a draft with its start operation",

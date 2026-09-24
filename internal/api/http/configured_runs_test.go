@@ -458,3 +458,20 @@ func TestConfiguredRun_CompactingADraftIsRefused(t *testing.T) {
 		t.Errorf("compact a draft = %d %s, want 409 run_not_configured", code, body)
 	}
 }
+
+// A draft's parent_context lives on the run row — its start and its events
+// take it from there — so a PATCH that changed only the draft's copy would be
+// accepted, shown, and ignored. It is fixed at create like the other identity
+// keys, and the draft keeps what it was created with.
+func TestConfiguredRun_PatchRefusesParentContext(t *testing.T) {
+	_, ts, _, _ := configuredServer(t, 4)
+	c := createDraft(t, ts, `,"parent_context":{"function_key":"old"}`)
+	u := ts.URL + "/v1/runs/" + c.RunID
+	code, body := do(t, "PATCH", u, `{"parent_context":{"function_key":"new"}}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "parent_context") {
+		t.Errorf("PATCH parent_context = %d %s, want 400 naming parent_context", code, body)
+	}
+	if code, body := do(t, "PATCH", u, `{"prompt":"still editable"}`); code != 200 || !strings.Contains(body, `"function_key":"old"`) {
+		t.Errorf("PATCH after the refusal = %d %s, want 200 with the original parent_context", code, body)
+	}
+}
