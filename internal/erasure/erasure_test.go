@@ -335,3 +335,28 @@ func TestService_ErasureDeletesTheSubjectsDrafts(t *testing.T) {
 		t.Error("the draft (and the prompt it holds) survived the subject's erasure")
 	}
 }
+
+// An archived chat is hidden from the default chat listing, not deleted: it
+// still holds the subject's conversation, so erasure must reach it.
+func TestService_ErasureDeletesTheSubjectsArchivedChats(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	sess, err := s.Store.CreateSession(ctx, "acme", "chat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived := true
+	if err := s.Store.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Archived: &archived}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", Confirm: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["chats"] != 1 {
+		t.Errorf("deleted chats = %d, want 1 (the archived chat)", res.Deleted["chats"])
+	}
+	if _, err := s.Store.GetSession(ctx, sess.ID); err == nil {
+		t.Error("the archived chat survived the subject's erasure")
+	}
+}

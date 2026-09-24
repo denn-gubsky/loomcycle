@@ -471,10 +471,11 @@ func (s *Service) subjectSessions(ctx context.Context, tenant, subject string) (
 	var out []string
 	const page = 500
 	for offset := 0; ; offset += page {
-		// A draft's session is not listed as a chat, but it holds the
-		// subject's prompt: erasure must find it.
+		// A draft's session is not listed as a chat, and an archived chat is
+		// hidden from the default listing, but both hold the subject's
+		// conversation: erasure must find them.
 		rows, _, err := s.Store.ListSessions(ctx,
-			store.SessionFilter{TenantID: tenant, UserID: subject, IncludeConfigured: true}, page, offset)
+			store.SessionFilter{TenantID: tenant, UserID: subject, IncludeConfigured: true, IncludeArchived: true}, page, offset)
 		if err != nil {
 			return out, err
 		}
