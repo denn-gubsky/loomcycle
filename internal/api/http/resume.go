@@ -42,12 +42,14 @@ import (
 //   - Per-run CALL-TIME OVERRIDES (allowed_hosts narrowing, per-run sampling,
 //     metadata, run-timeout) aren't persisted — resume re-derives everything
 //     from the agent definition (the operator's static floor applies for hosts).
-//   - A run that was IDLE awaiting operator input when paused (its conversation
-//     ends on an assistant turn, not a pending user/tool_result) is NOT
-//     auto-resumable — re-entering the loop would send the provider a trailing
-//     assistant turn. Such runs are flagged failed with a clear reason; the
-//     operator re-attaches + steers to continue. (Mid-execution runs — the F42
-//     repro — end on a clean tool_result boundary and resume cleanly.)
+//   - A run that was IDLE when paused (its conversation ends on an assistant
+//     turn, not a pending user/tool_result) cannot re-enter the loop directly —
+//     that would send the provider a trailing assistant turn. It is restored to
+//     what it was doing instead: an interactive run waiting for input parks
+//     again, and a run held for review is held again. An idle non-interactive
+//     run that was not held has nobody to wait for and is flagged failed.
+//     (Mid-execution runs — the F42 repro — end on a clean tool_result boundary
+//     and resume cleanly.)
 
 // ResumePausedRuns re-dispatches every pause_state='paused' run found in the
 // store. Returns the count successfully re-dispatched and any per-run warnings
