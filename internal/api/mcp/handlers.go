@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	nethttp "net/http"
+	"strconv"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -43,15 +45,16 @@ type toolHandler func(ctx context.Context, env *handlerEnv, args json.RawMessage
 
 var handlersByName = map[string]toolHandler{
 	// Run lifecycle
-	"spawn_run":   handleSpawnRun,
-	"spawn_runs":  handleSpawnRuns, // RFC Y external fan-out
-	"cancel_run":  handleCancelRun,
-	"get_run":     handleGetRun,
-	"compact_run": handleCompactRun,
-	"retune_run":  handleRetuneRun,
-	"directory":   handleDirectory,
-	"erasure":     handleErasure,
-	"list_runs":   handleListRuns,
+	"spawn_run":      handleSpawnRun,
+	"spawn_runs":     handleSpawnRuns, // RFC Y external fan-out
+	"cancel_run":     handleCancelRun,
+	"get_run":        handleGetRun,
+	"compact_run":    handleCompactRun,
+	"configured_run": handleConfiguredRun,
+	"retune_run":     handleRetuneRun,
+	"directory":      handleDirectory,
+	"erasure":        handleErasure,
+	"list_runs":      handleListRuns,
 
 	// Agent management
 	"register_agent":   handleRegisterAgent,
@@ -1380,4 +1383,109 @@ func handleRetuneRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		return toolErrFrom("retune_run", err), nil
 	}
 	return toolResultJSON(map[string]any{"run_id": run.RunID, "retuned": true}), nil
+}
+
+// handleConfiguredRun is the configured_run tool: a run created now and started
+// later. Every rule — validation, the draft cap, agent_id reservation, the
+// identity kept at start, secrets never stored — lives in the connector,
+// shared with the HTTP routes and the gRPC RPCs; this maps its arguments and
+// its refusals.
+func handleConfiguredRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+	if env.connector == nil {
+		return nil, fmt.Errorf("configured_run: no connector wired")
+	}
+	var p struct {
+		Op    string          `json:"op"`
+		RunID string          `json:"run_id"`
+		Patch json.RawMessage `json:"patch"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return toolErrValidation("invalid configured_run arguments: "+err.Error(), "Send op and the fields that op takes."), nil
+	}
+	needRun := func() *loommcp.CallToolResult {
+		if p.RunID == "" {
+			return toolErrValidation("configured_run: op="+p.Op+" needs run_id", "Pass the run_id that op=create returned.")
+		}
+		return nil
+	}
+	switch p.Op {
+	case "create":
+		var req connector.ConfiguredRunRequest
+		if err := json.Unmarshal(args, &req); err != nil {
+			return toolErrValidation("invalid configured_run create arguments: "+err.Error(), "Pass agent and segments as spawn_run takes them."), nil
+		}
+		res, err := env.connector.CreateConfiguredRun(ctx, req)
+		if err != nil {
+			return configuredToolErr("configured_run create", err), nil
+		}
+		return toolResultJSON(res), nil
+	case "update":
+		if r := needRun(); r != nil {
+			return r, nil
+		}
+		if len(p.Patch) == 0 {
+			return toolErrValidation("configured_run: op=update needs patch", "Pass patch: an object of the fields to replace."), nil
+		}
+		res, err := env.connector.UpdateConfiguredRun(ctx, p.RunID, p.Patch)
+		if err != nil {
+			return configuredToolErr("configured_run update", err), nil
+		}
+		return toolResultJSON(res), nil
+	case "start":
+		if r := needRun(); r != nil {
+			return r, nil
+		}
+		var secrets connector.RunSecrets
+		_ = json.Unmarshal(args, &secrets)
+		res, err := env.connector.StartConfiguredRun(ctx, p.RunID, secrets)
+		if err != nil {
+			return configuredToolErr("configured_run start", err), nil
+		}
+		// The same render point spawn_run uses, so a run that failed is an
+		// error-shaped tool result here too.
+		return toolResultForRun(res), nil
+	case "delete":
+		if r := needRun(); r != nil {
+			return r, nil
+		}
+		if err := env.connector.DeleteConfiguredRun(ctx, p.RunID); err != nil {
+			return configuredToolErr("configured_run delete", err), nil
+		}
+		return toolResultJSON(map[string]any{"run_id": p.RunID, "deleted": true}), nil
+	case "":
+		return toolErrValidation("configured_run: op is required", "Pass op: create, update, start or delete."), nil
+	default:
+		return toolErrValidation("configured_run: unknown op "+strconv.Quote(p.Op), "Use op create, update, start or delete."), nil
+	}
+}
+
+// configuredToolErr classifies a configured-run refusal by the status it
+// carries, so a caller knows whether to fix its call, wait, or stop.
+func configuredToolErr(prefix string, err error) *loommcp.CallToolResult {
+	var hse interface{ HTTPStatus() int }
+	if !errors.As(err, &hse) {
+		return toolErrFrom(prefix, err)
+	}
+	msg := prefix + ": " + err.Error()
+	switch hse.HTTPStatus() {
+	case nethttp.StatusBadRequest, nethttp.StatusUnprocessableEntity:
+		return toolErrValidation(msg, "Correct the named field and call again.")
+	case nethttp.StatusNotFound:
+		return toolErrValidation(msg, "No configured run with that run_id is visible to you. Create one with op=create.")
+	case nethttp.StatusConflict:
+		res := toolErr(msg)
+		res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
+			Category: tools.CategoryBusiness, Retryable: false,
+			Description: "The run is not in a state that allows this: it has already started, been discarded, or the id is taken. Read it with get_run rather than retrying.",
+		})
+		return res
+	case nethttp.StatusTooManyRequests, nethttp.StatusServiceUnavailable:
+		res := toolErr(msg)
+		res.StructuredContent = loommcp.StructuredErrorJSON(tools.ErrorInfo{
+			Category: tools.CategoryTransient, Retryable: true,
+			Description: "A limit is in the way right now. The draft is unchanged; try again later or discard a configured run first.",
+		})
+		return res
+	}
+	return toolErrFrom(prefix, err)
 }
