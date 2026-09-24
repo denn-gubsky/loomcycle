@@ -116,7 +116,7 @@ func heldReviewFrom(events []store.Event) *loop.HeldReview {
 		if err := json.Unmarshal(ev.Payload, &p); err != nil || p.AwaitingReview == nil {
 			return &loop.HeldReview{Round: 1, HeldAt: ev.Timestamp}
 		}
-		return &loop.HeldReview{SinceTurn: p.AwaitingReview.SinceTurn, Round: p.AwaitingReview.Round, HeldAt: ev.Timestamp}
+		return &loop.HeldReview{SinceTurn: p.AwaitingReview.SinceTurn, Round: p.AwaitingReview.Round, HeldAt: ev.Timestamp, HeldBy: p.AwaitingReview.HeldBy}
 	}
 	return nil
 }
@@ -127,8 +127,22 @@ func (s *Server) isHeld(ctx context.Context, runID string) bool {
 }
 
 func heldForReview(ctx context.Context, st store.Store, runID string) bool {
+	held, _ := heldBy(ctx, st, runID)
+	return held
+}
+
+// heldBy reports whether the run is held for review and, if an agent_stop
+// hook took the hold, which one.
+func heldBy(ctx context.Context, st store.Store, runID string) (bool, string) {
 	last, err := st.GetLastEventOfTypes(ctx, runID, holdEndingEvents)
-	return err == nil && last.Type == string(providers.EventAwaitingReview)
+	if err != nil || last.Type != string(providers.EventAwaitingReview) {
+		return false, ""
+	}
+	var p providers.Event
+	if json.Unmarshal(last.Payload, &p) == nil && p.AwaitingReview != nil {
+		return true, p.AwaitingReview.HeldBy
+	}
+	return true, ""
 }
 
 // releaseHeldRun approves a held run whose review was just disarmed, so the
@@ -136,8 +150,14 @@ func heldForReview(ctx context.Context, st store.Store, runID string) bool {
 // remains the backstop for a disarm that lands as the hold begins). Best
 // effort: a run that is not held has nothing to release, and a failed push
 // is caught by that backstop.
+//
+// A hold an agent_stop hook took is left alone: disarming review did not take
+// it, so it does not release it. It waits for a verdict like any other.
 func (s *Server) releaseHeldRun(ctx context.Context, runID string) {
-	if s.steerReg == nil || s.store == nil || !s.isHeld(ctx, runID) {
+	if s.steerReg == nil || s.store == nil {
+		return
+	}
+	if held, by := heldBy(ctx, s.store, runID); !held || by != "" {
 		return
 	}
 	if _, err := s.pushVerdict(ctx, runID, steer.Message{
