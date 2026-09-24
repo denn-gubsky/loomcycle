@@ -8,6 +8,90 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.94.0
+
+*A team walk can hold its members for review, hooks can see the run as well as its tool calls, write their bodies in JavaScript and ask an operator, and a tool's help tells the model to read it before the first call.*
+
+Six PRs. Two finish RFC DJ (operator review of a finished run) by bringing review to team walks and removing the pause it replaces. Three are the first phases of RFC DK (hooks v2): run context and a record of every decision, code-js hook bodies, and hooks on the run itself. One is RFC DL (tool help): it changes the help pointer after a measurement showed models ignoring it.
+
+### A walk holds its starter's members for review (#1367, RFC DJ-P3)
+
+DJ-P1 gave team members a live review-arming seam, and nothing set it until now. A walk can now hold each member run of a starter state when it finishes, and the operator gives the verdict through that run's own review verb (`POST /v1/runs/{member}/review`, the gRPC `ReviewRun` RPC, the MCP `review_run` tool).
+
+- **Arming:** `op=run {"review": ["<starter>"], "review_ttl_seconds": N}` at start, or the breakpoint `"<starter>:review"`, either at start or live through `PUT /v1/runs/{walk}/breakpoints`. Arming mid-wave holds the members that have not finished yet. Review is a new phase of the live set the debugger already reads, and the bare `"<state>"` form never implies it. Unlike a debug pause it needs no human-ask machinery. An unknown state, or one that dispatches no wave, is refused.
+- **A rejected member** reaches the sink as `status: "rejected"` with the answer that was rejected, and does not count toward the wave's `wait`, the same as a failed member. The results envelope marks it. An unreviewed walk's envelope is byte-identical to before.
+- **No short-circuit while review is armed.** A member still running may be held, and cancelling it would throw a person's review away. Each member's sink message is still published as it settles, so a downstream `wait: any` reader releases on the first approval.
+- The walk's deadline expires a held member as `rejected` / `review_expired`. Aborting the walk closes a held member as `cancelled`.
+- **Behaviour to know:** with the default `wait: all`, one rejected member leaves the wave short and fails the walk, as a failed member does. A walk that should tolerate rejections uses `wait: any` or `at_least`. Disarming review through the breakpoint `PUT` releases a held member at its hold's next heartbeat, which can take up to 30 s. A run retune releases it at once.
+- TS `runTeam({review, reviewTtlSeconds})`. The MCP `teamdef` tool takes its schema from the builtin, so it has both.
+
+### ⚠️ Breaking: the Starter's `after_collection` pause is removed (#1368, RFC DJ-P4)
+
+The Starter's second debug pause held a finished wave's results off the sink until an operator released or withheld them. It could only publish or withhold and never send a result back to be revised, and because it was held in memory, a restart lost what it held. A run's own review hold (above) does all three: it can send a result back with feedback, it survives a pause and a restart, and it lives on the member run's row.
+
+- **Removed:** the `after_collection` phase in `teamrun` and in the live breakpoint set, the Starter's staging loop and the code that existed only for it, and that half of the pause question and of the TeamDef tool's schema and description. The Starter now publishes every result as it settles. `before_dispatch` stays, because the composed prompts are something no run can show before it exists.
+- **⚠️ Breaking — what to change:**
+  - Arming `"<state>:after_collection"`, at `op=run` or through `PUT /v1/runs/{walk}/breakpoints`, is now refused with an error that names the replacement: arm `"<state>:review"` instead. A refused live arming leaves the walk's existing arming as it was.
+  - A bare `"<state>"` breakpoint now arms `before_dispatch` only. Before this release it armed both pauses. It still does not imply review.
+- It was a debug pause, not a stored contract, so there is nothing to migrate.
+
+### Hooks see the run, and every decision is recorded (#1369, RFC DK-P1)
+
+Tool hooks (`pre` / `post`, HTTP webhooks) covered nearly every tool call but nothing around the decision. A hook could not tell which run it was deciding for. A deny or a rewrite left no trace, and the transcript kept the model's original input for a call that ran with another.
+
+- **Run context on every payload:** `run_id`, `parent_run_id` and `iteration`, so a hook can correlate one run's calls and tell a sub-agent's from its parent's.
+- **A `hook_decision` event** is emitted and persisted beside the `tool_call` for each thing a hook did: `deny`, `rewrite_input` (with the input the tool actually ran with), `rewrite_output`, `context`, or `unavailable` (with the hook's fail mode). A pass-through emits nothing. It is on SSE, gRPC (`Event.hook_decision = 17`, `message HookDecision`), TS (`"hook_decision"` in `EventType`) and Python (`AgentEvent.hook_decision`, `HookDecision`).
+- **A `post_failure` phase** runs only when the tool failed, before `post`, and its payload carries the failure's structured classification (category / retryable / description). `post` still sees failures, so existing hooks behave as before. A post rewrite keeps the classification while the call is still a failure and drops it when the hook turns the call into a success. It is accepted by `POST /v1/hooks`, MCP `register_hook` and the TS `HookPhase`.
+- **`additional_context`:** a `post` or `post_failure` hook may return it, and it is appended to the tool_result text, so the model sees it and it survives a transcript replay.
+- **Nested tool calls go through the hooks.** A tool that runs another tool on the model's behalf now dispatches through the run's own hooked path (`tools.ExecuteHooked`). The one such caller today is the Interruption tool's delivery through a consumer's tool, which no hook could see before. The nested call's id is `"<outer tool_use id>/<tool>"`.
+
+### Code-js hook bodies that can ask an operator (#1370, RFC DK-P2)
+
+A hook was a webhook only, so every policy check cost a network round-trip to a service the operator had to run, and no hook could hold a call for a person to decide. A hook's body can now be JavaScript that loomcycle runs in-process.
+
+- **Registration:** `code` in place of `callback_url`; a hook has exactly one body (256 KiB cap). The body defines a top-level `function hook(ev)` that returns the decision; `ev` is the webhook payload plus `event`. A pre hook may return `{decision: "deny", reason}`, `{updated_input}` or `{allow_hosts}` (still limited to the operator's permit list); a post hook `{updated_output}` or `{additional_context}`. Decisions are read strictly: a misspelt field, or one that does not apply to the phase, counts as the hook failing, and its `fail_mode` decides.
+- **The sandbox is the code agent's:** no fetch, require, filesystem, eval or Function, a deterministic clock and RNG, a bounded call stack and 1 MiB caps on the event and the decision. The body's only tool is `Interruption`. `ask` holds the tool call as an ordinary pending interrupt on the run (on its stream, in `GET /v1/runs/{id}/interrupts`, answered through the usual resolve endpoint) and returns the answer, or `null` if the operator declined. `notify` informs without waiting. The hook asks under its own grant, whether or not the agent may interrupt.
+- **Replay, as code agents run:** each run of the body is a fresh runtime that replays the answers already given and stops at the first unanswered ask. The hook's timeout (50 ms default, 1 s cap) bounds each run of the code, not the wait for a person. At most 16 asks per call. There is deliberately no runtime pool, since a reused runtime would carry one call's globals into the next.
+- **Cancellation:** a run cancelled while a hook is deciding never runs its tool, even when the hook fails open. This applies to webhook hooks too.
+- **Its own gate, `LOOMCYCLE_CODE_HOOKS_ENABLED=1`**, separate from the code-agent gate, because a code hook runs on every matching call in its scope. With it unset, a code registration is refused and the error names the variable. With it set, the body is compiled and its top level evaluated at registration, so a body that cannot run is refused then, not at its first matching call.
+- **Every transport:** `POST /v1/hooks`; MCP `register_hook` (`code` advertised, `callback_url` no longer required); gRPC `RegisterHookRequest.code = 9`, `Hook.code = 11`; TS `code` (`callbackUrl` now optional); Python `code=` (`callback_url` now defaults to `""`). Listing returns the body.
+- **Migration 0081** (Postgres) adds `hooks.code`, so a code hook survives a cluster reload. The column defaults to `''`; every existing row is a webhook.
+- **Known limit:** a tool call held by a hook's ask survives a pause or a restart only as well as an agent's own `Interruption.ask` does. The ask row is durable, but a resumed run does not re-dispatch a tool call that was in flight.
+
+### `agent_start` and `agent_stop`: hooks on the run itself (#1371, RFC DK-P3a)
+
+Hooks could see every tool call but not the run. No hook could stop a run before it spent a token, add context to its prompt, or check an answer before it was accepted. Both phases are registered like tool hooks (webhook or code body) and select by `agents` only; a `tools` selector is refused.
+
+- **`agent_start`** runs once per run, after the prompt is composed and before any model call, in both loops. `{decision: "deny", reason}` ends the run failed with no model call made. `{additional_context}` is added to the prompt's last user turn as a text block of its own. A resumed run has already started and does not run it again.
+- **`agent_stop`** runs each time the model finishes an answer, before the review hold and the interactive park. The payload adds `final_text` and `stop_reason`, and on a retry `stop_hook_active` and `stop_blocks`.
+  - **`block`** (a reason is required) sends the reason back as a user turn and the model answers again. More than 3 blocks in a row fail the run, naming the hook and its last reason, so a validator that can never be satisfied cannot loop a run forever.
+  - **`hold`** takes the review hold from RFC DJ, and `awaiting_review` names the hook in **`held_by`**. Disarming review does not release a hook's hold, a restored hook hold is held again whether or not review is armed, and a run nothing can deliver a verdict to (an Agent-tool sub-agent, which has no steer queue) ends `rejected` rather than accepting the answer.
+  - Precedence is block > hold > allow, and the first block stops the chain. A hook that fails with `fail_mode: closed` holds the answer; an `open` one lets it through.
+  - A stateful run reports `agent_stop` hooks inert, as it does review: its product is its state, not an answer.
+- **Replay:** `replayTranscript` rebuilds a block's feedback turn and `agent_start`'s context from their persisted `hook_decision` events, on every run path. Without that, a resumed run's history would differ from what the model saw, and a block would leave two assistant turns in a row, which providers refuse.
+- **Wire (additive):** `awaiting_review.held_by` on SSE, gRPC (`AwaitingReview.held_by = 4`), TS and Python; `hook_decision` gains the `block` and `hold` decisions, with `tool_use_id` / `tool_name` omitted for a run decision; the new phases are listed in MCP `register_hook`, TS `HookPhase`, the gRPC and Python docs, and the `hooks` help topic (a new "Run hooks" section).
+- `subagent_start/stop`, `pre/post_compact` and `run_end` are the next phase (DK-P3b).
+
+### Tool help the model actually reads (#1372, RFC DL)
+
+v1.93.0 put a pointer to each tool's help article in its description and at the end of a failed call. Measured on the lab deployment's local models (`gpt-oss`, `qwen3.6`, `ornith-1.5`), none of the 7 failed calls whose error ended with a help pointer was followed by a help call; the models recovered from whatever the error text itself said. The one model that read an article unprompted made no malformed calls afterwards, against 7 in the baseline. The help works, but a line that only says where it is does not get it read.
+
+- **The description line is an instruction.** It now ends: "Before your first call to Memory, read the call format for the operation you need: call Context with `{"op":"help","topic":"Memory/get"}` (put your operation in place of get). It gives the exact arguments and an example." The topic is a real one, not a placeholder. The help tool gets no instruction to call itself.
+- **A failed call carries a correct call.** A failed call on a documented operation now ends with the first example from that operation's article, compacted to one line and labelled as an example ("A correct Path/mv call looks like this (an example — use your own values)"), then the help call for the full article. When the op itself is what is wrong, the error lists the tool's valid operations instead.
+- **Stateful runs keep the instruction.** The stateful loop lists each tool as one line of at most 240 bytes, which always cut off the appended instruction, so a stateful agent never saw it. `ToolSpec` now carries the instruction separately (`Help`, never sent on the wire), and the stateful list shortens only the description and keeps the instruction whole.
+- A test derived from the corpus checks that every operation article yields a one-line example for its own op.
+
+### Upgrade notes
+
+- **⚠️ Breaking (#1368):** replace any `"<state>:after_collection"` breakpoint with `"<state>:review"`; it is now refused. A bare `"<state>"` breakpoint arms `before_dispatch` only.
+- **Migration 0081** (Postgres) adds `hooks.code`. It runs at startup, like every migration.
+- **New env knob:** `LOOMCYCLE_CODE_HOOKS_ENABLED=1` enables code-js hook bodies. Off by default; unset, a code registration is refused.
+- **New hook phases:** `post_failure`, `agent_start`, `agent_stop`. A lifecycle hook selects by `agents` only.
+- **New wire fields, all additive:** the `hook_decision` event (gRPC `Event.hook_decision = 17`), `awaiting_review.held_by` (gRPC field 4), and `RegisterHookRequest.code = 9` / `Hook.code = 11`. A client that switches on event type should know `hook_decision`.
+- **Hook payloads gain `run_id`, `parent_run_id` and `iteration`.** A webhook receiver that decodes strictly should accept them.
+- **Tool descriptions and failed-call errors change wording** (#1372). Anything that matches on the old "How to call it: …" text will not find it.
+- **The adapters are bumped to 1.94.0 WITH new surface:** TS `HookPhase` gains `post_failure` / `agent_start` / `agent_stop`, `"hook_decision"` in `EventType` and its `hook_decision` event field, `code` on `RegisterHookOptions` and `Hook` (`callbackUrl` now optional), `awaiting_review.held_by`, and `runTeam` `review` / `reviewTtlSeconds`; Python `register_hook(code=)` (`callback_url` now defaults to `""`), `AgentEvent.hook_decision` (`HookDecision`), and `AwaitingReview.held_by`.
+
 ## What's in v1.93.0
 
 *A run can answer to a schema, wait as a draft until someone starts it, and be held for an operator's verdict before it counts; every tool now says where its manual is, and the manual is written from the code.*

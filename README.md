@@ -182,7 +182,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.93.0) carried on making the Run the unit a caller
+The most recent line (v1.94.0) let a team walk hold its members for review
+(`"<starter>:review"`, replacing the removed `after_collection` pause, ⚠️ breaking)
+and started hooks v2: every decision is recorded as a `hook_decision` event,
+`agent_start` / `agent_stop` hooks can deny a run or block or hold its answer, and a
+hook can be in-process JavaScript that asks an operator. A tool's help is now an
+instruction to read it first, and a failed call carries a correct example.
+
+Before it, v1.93.0 carried on making the Run the unit a caller
 configures: a run can answer to a JSON schema (`output_format`, parsed into
 `result.structured`), be saved as a draft and started later (`"start": false`,
 then `POST /v1/runs/{run_id}/start`, with a Web UI "Save as draft"), keep its
