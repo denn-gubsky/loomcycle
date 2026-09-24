@@ -846,21 +846,19 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, m
 	// Placeholders in this file are numbered BY HAND, so the counter has to
 	// advance by exactly the number of names the agent clause consumed or the
 	// LIMIT below binds the wrong argument.
-	args := []any{
-		string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled),
-		olderThan,
-	}
-	i := 5
+	nTerm := len(store.TerminalRunStatuses)
+	args := append(store.TerminalRunStatusArgs(), olderThan)
+	i := nTerm + 2
 	agentCond := agentMatchCond(match, agents, &args, &i)
 	args = append(args, limit)
 	rows, err := s.pool.Query(ctx,
 		`SELECT session_id FROM runs
 		 GROUP BY session_id
-		 HAVING SUM(CASE WHEN status NOT IN ($1, $2, $3)
+		 HAVING SUM(CASE WHEN status NOT IN (`+pgPlaceholders(1, nTerm)+`)
 		                   OR pause_state IN ('paused', 'pausing')
 		                 THEN 1 ELSE 0 END) = 0
 		    AND MAX(completed_at) IS NOT NULL
-		    AND MAX(completed_at) < $4
+		    AND MAX(completed_at) < $`+strconv.Itoa(nTerm+1)+`
 		    AND session_id NOT IN (SELECT id FROM sessions WHERE pinned = TRUE)`+agentCond+`
 		 ORDER BY MAX(completed_at) ASC
 		 LIMIT $`+strconv.Itoa(i),
@@ -966,9 +964,9 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 	if c := excludeAgentsCond("s.agent", excludeAgents, &args, &i); c != "" {
 		conds = append(conds, c)
 	}
-	terminal := fmt.Sprintf("$%d, $%d, $%d", i, i+1, i+2)
-	args = append(args, string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled))
-	i += 3
+	terminal := pgPlaceholders(i, len(store.TerminalRunStatuses))
+	args = append(args, store.TerminalRunStatusArgs()...)
+	i += len(store.TerminalRunStatuses)
 
 	// A zero watermark means "from the beginning" — drop the composite
 	// predicate entirely rather than comparing against a zero timestamp.
@@ -8668,4 +8666,13 @@ func (s *Store) ListTenants(ctx context.Context) ([]store.TenantSummary, error) 
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// pgPlaceholders is "$start, $start+1, …" for n arguments.
+func pgPlaceholders(start, n int) string {
+	parts := make([]string, n)
+	for k := range parts {
+		parts[k] = "$" + strconv.Itoa(start+k)
+	}
+	return strings.Join(parts, ", ")
 }

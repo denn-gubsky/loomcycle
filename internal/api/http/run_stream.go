@@ -154,14 +154,9 @@ func (s *Server) runEventsSince(ctx context.Context, runID string, cursor int64)
 }
 
 // isTerminalRunStatus reports whether a run has reached an end state (so a
-// store-tail can stop). "running" is the only non-terminal status.
+// store-tail can stop).
 func isTerminalRunStatus(st store.RunStatus) bool {
-	switch st {
-	case store.RunCompleted, store.RunFailed, store.RunCancelled:
-		return true
-	default:
-		return false
-	}
+	return store.IsTerminalRunStatus(st)
 }
 
 // handleRunStream is GET /v1/runs/{run_id}/stream — re-attach to a running (or

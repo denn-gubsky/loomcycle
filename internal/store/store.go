@@ -193,8 +193,8 @@ type Session struct {
 // flight, or "configured" for a created-but-not-started draft (RFC DI D5).
 // Transitions: configured → running (StartConfiguredRun) or the row is
 // deleted (DeleteConfiguredRun, the expiry sweep); running → (completed |
-// failed | cancelled). FinishRun moves only running rows, so it cannot end a
-// draft by accident.
+// failed | cancelled | rejected). FinishRun moves only running rows, so it
+// cannot end a draft by accident.
 type RunStatus string
 
 const (
@@ -203,7 +203,37 @@ const (
 	RunCompleted  RunStatus = "completed"
 	RunFailed     RunStatus = "failed"
 	RunCancelled  RunStatus = "cancelled"
+	// RunRejected: a run held for review whose reviewer rejected it without
+	// feedback (RFC DJ). Terminal, like cancelled — the work was done and
+	// refused, not failed.
+	RunRejected RunStatus = "rejected"
 )
+
+// TerminalRunStatuses are the statuses a run ends in. Every reader that asks
+// "has this run finished?" — the retention and consolidation queries, the
+// ephemeral-volume sweep, the stream tail, the webhook and A2A maps — reads
+// THIS list, so a new terminal status is one edit, not a census. (Adding
+// `rejected` found eleven hand-written copies.)
+var TerminalRunStatuses = []RunStatus{RunCompleted, RunFailed, RunCancelled, RunRejected}
+
+// IsTerminalRunStatus reports whether s is one of TerminalRunStatuses.
+func IsTerminalRunStatus(s RunStatus) bool {
+	for _, t := range TerminalRunStatuses {
+		if s == t {
+			return true
+		}
+	}
+	return false
+}
+
+// TerminalRunStatusArgs is TerminalRunStatuses as query arguments.
+func TerminalRunStatusArgs() []any {
+	out := make([]any, len(TerminalRunStatuses))
+	for i, s := range TerminalRunStatuses {
+		out[i] = string(s)
+	}
+	return out
+}
 
 // SessionFilter narrows a ListSessions query (RFC BE — the History tool's
 // browse/search surface). Zero values mean "no filter on that axis":

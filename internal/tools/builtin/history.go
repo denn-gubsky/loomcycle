@@ -306,10 +306,10 @@ func (h *History) filterForScope(ctx context.Context, scope string, in historyIn
 // empty page (a typo like "complete") into a clear error.
 func validChatStatus(s string) bool {
 	switch store.RunStatus(s) {
-	case store.RunRunning, store.RunCompleted, store.RunFailed, store.RunCancelled:
+	case store.RunRunning:
 		return true
 	}
-	return false
+	return store.IsTerminalRunStatus(store.RunStatus(s))
 }
 
 // list-page clamp — mirrors the store's ListSessions clamp so the tool passes,
