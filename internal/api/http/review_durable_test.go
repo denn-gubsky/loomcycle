@@ -283,3 +283,41 @@ func TestRetune_KeepsTheReviewDeadline(t *testing.T) {
 	}
 	h.waitStatus(runID, store.RunCompleted)
 }
+
+// A run held by review arming whose record says nothing about review — a team
+// member, whose arming lived on its walk — comes back held, not approved with
+// no verdict.
+func TestResume_AHeldRunWithNoReviewRecordStaysHeld(t *testing.T) {
+	srv, ts, _, run := heldRunFixtureWith(t, false, runConfigRecord{})
+	ctx := context.Background()
+	if n, warns := srv.ResumePausedRuns(ctx); n != 1 {
+		t.Fatalf("resumed %d (warnings: %v)", n, warns)
+	}
+	waitFor(t, "the resumed run to be held again", func() bool {
+		return strings.Count(runTranscriptText(t, srv.store, run.SessionID, run.ID), "awaiting_review") >= 2
+	})
+	time.Sleep(100 * time.Millisecond)
+	if r, _ := srv.store.GetRun(ctx, run.ID); r.Status != store.RunRunning {
+		t.Fatalf("status = %q with no verdict, want still held", r.Status)
+	}
+	if code := postReview(t, ts, run.ID, `{"decision":"reject"}`); code != http.StatusOK {
+		t.Fatalf("reject after resume = %d", code)
+	}
+	waitFor(t, "the rejected run to end", func() bool {
+		r, _ := srv.store.GetRun(ctx, run.ID)
+		return r.Status == store.RunRejected
+	})
+}
+
+// A record that says review is off does release a restored hold as approved.
+func TestResume_AHeldRunWhoseRecordDisarmedReviewIsApproved(t *testing.T) {
+	off := false
+	srv, _, _, run := heldRunFixtureWith(t, false, runConfigRecord{Review: &off})
+	if n, warns := srv.ResumePausedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed %d (warnings: %v)", n, warns)
+	}
+	waitFor(t, "the disarmed run to complete", func() bool {
+		r, _ := srv.store.GetRun(context.Background(), run.ID)
+		return r.Status == store.RunCompleted
+	})
+}

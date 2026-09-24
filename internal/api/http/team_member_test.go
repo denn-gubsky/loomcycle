@@ -199,3 +199,50 @@ func TestTeamMember_WalkAbortClosesAHeldMember(t *testing.T) {
 		t.Errorf("member after the walk aborted = %q, want cancelled", res.Status)
 	}
 }
+
+// A member the walk arms records the arming and the walk's deadline in its own
+// run record, which is all a restored member has to go on: its walk is gone.
+func TestTeamMember_RecordsItsReviewArmingForAResume(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
+	ctx = teamrun.WithReviewArming(ctx, func(context.Context) bool { return true })
+	ctx = teamrun.WithReviewTTL(ctx, time.Hour)
+	done := make(chan teamrun.SpawnResult, 1)
+	go func() {
+		res, _ := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
+		done <- res
+	}()
+	var runID string
+	waitFor(t, "the member to be held", func() bool {
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		for _, r := range runs {
+			if heldForReview(context.Background(), h.st, r.ID) {
+				runID = r.ID
+			}
+		}
+		return runID != ""
+	})
+	run, _ := h.st.GetRun(context.Background(), runID)
+	rec, _ := decodeRunConfig(run.RunConfig)
+	if rec.Review == nil || !*rec.Review || rec.ReviewTTLSeconds != 3600 {
+		t.Errorf("record review = %v ttl = %d, want armed with the walk's 3600s deadline", rec.Review, rec.ReviewTTLSeconds)
+	}
+	if code, _ := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d", code)
+	}
+	awaitMember(t, done)
+}
+
+// A member the walk never arms leaves its record as it was.
+func TestTeamMember_UnarmedMemberRecordsNoReview(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := teamrun.WithReviewArming(context.Background(), func(context.Context) bool { return false })
+	res, err := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "go"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ := h.st.GetRun(context.Background(), res.RunID)
+	if rec, _ := decodeRunConfig(run.RunConfig); rec.Review != nil {
+		t.Errorf("record review = %v, want absent for a member never armed", *rec.Review)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -6406,7 +6407,7 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	defer deregSteer()
 	prep.Opts.SteerQueue, prep.Opts.OnSteer = steerQ, onSteer
 	if armed := teamrun.ReviewArming(ctx); armed != nil {
-		prep.Opts.ReviewNow = armed
+		prep.Opts.ReviewNow = s.recordReviewArming(prep.RunID, armed, teamrun.ReviewTTL(ctx))
 	}
 	prep.Opts.ReviewTTL = teamrun.ReviewTTL(ctx)
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
@@ -6420,6 +6421,60 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	// same text it always did.
 	out.Output = formatSubAgentOutput(prep.AgentID, res.FinalText)
 	return out, nil
+}
+
+// recordReviewArming wraps a member's live review arming so the run's own
+// record follows it. The arming lives on the walk, not on the run, and a member
+// restored after a restart has no walk to ask: with nothing in its record a
+// restored hold read as never armed and was approved with no verdict. The TTL
+// is recorded beside it so the restored hold keeps its deadline.
+//
+// Written only when the answer changes, and never for a member that was never
+// armed, whose record stays as it was. A failed write is retried on the next
+// read rather than failing the run: the record matters only across a restart.
+func (s *Server) recordReviewArming(runID string, armed func(context.Context) bool, ttl time.Duration) func(context.Context) bool {
+	var (
+		mu       sync.Mutex
+		recorded *bool
+	)
+	return func(ctx context.Context) bool {
+		v := armed(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		if (recorded == nil && !v) || (recorded != nil && *recorded == v) {
+			return v
+		}
+		if s.writeReviewRecord(ctx, runID, v, ttl) {
+			recorded = &v
+		}
+		return v
+	}
+}
+
+// writeReviewRecord sets the run record's review arming and deadline, keeping
+// everything else in it.
+func (s *Server) writeReviewRecord(ctx context.Context, runID string, armed bool, ttl time.Duration) bool {
+	if s.store == nil || runID == "" {
+		return false
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		log.Printf("review: could not read run %s to record its arming: %v", runID, err)
+		return false
+	}
+	rec, ok := decodeRunConfig(run.RunConfig)
+	if !ok && len(run.RunConfig) > 0 {
+		return false // unreadable: overwriting it would lose what it holds
+	}
+	rec.Review = &armed
+	if ttl > 0 {
+		rec.ReviewTTLSeconds = int(math.Ceil(ttl.Seconds()))
+	}
+	if err := s.store.SetRunConfig(ctx, runID, rec.marshal()); err != nil {
+		log.Printf("review: could not record run %s's arming: %v", runID, err)
+		return false
+	}
+	return true
 }
 
 // subRunPrep bundles a fully-prepared sub-run ready to enter loop.Run. The
