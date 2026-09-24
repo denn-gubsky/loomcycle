@@ -311,11 +311,21 @@ type PostOutcome struct {
 //
 // When the tool FAILED, the post_failure chain runs first, innermost to the
 // post chain: a hook registered only for failures sees the failure before any
-// general post hook has rewritten it.
+// general post hook has rewritten it. That holds within each group; across
+// them the run's tenant hooks (post_failure, then post) all run before the
+// operator-global ones, so the operator's hooks have the last word on the
+// result (see Registry.Match).
 func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, original ToolResult) PostOutcome {
 	chain := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
 	if original.IsError {
-		chain = append(d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePostFailure), chain...)
+		failure := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePostFailure)
+		tenantFailure, globalFailure := splitTenant(failure)
+		tenantPost, globalPost := splitTenant(chain)
+		chain = make([]*Hook, 0, len(failure)+len(chain))
+		chain = append(chain, tenantFailure...)
+		chain = append(chain, tenantPost...)
+		chain = append(chain, globalFailure...)
+		chain = append(chain, globalPost...)
 	}
 	out := PostOutcome{Result: original}
 	for _, h := range chain {
@@ -364,6 +374,16 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 		}
 	}
 	return out
+}
+
+// splitTenant splits a Match result, tenant hooks first, into its tenant and
+// operator-global parts, keeping each part's order.
+func splitTenant(hs []*Hook) (tenant, global []*Hook) {
+	i := 0
+	for i < len(hs) && hs[i].Tenant != "" {
+		i++
+	}
+	return hs[:i], hs[i:]
 }
 
 // invoke runs one hook: a code body in the code-js runner, otherwise a
@@ -465,7 +485,8 @@ type GateOutcome struct {
 // RunGate runs a chain that may let something go ahead, deny it, or add
 // context to it: agent_start (the run), subagent_start (a child's start),
 // subagent_stop (a child's result reaching its parent) and pre_compact (a
-// compaction). Registration order; the first deny stops the chain. A hook that
+// compaction). Registration order, the run's tenant hooks before the
+// operator-global ones; the first deny stops the chain. A hook that
 // fails denies when it fails closed, and is skipped when it fails open.
 func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) GateOutcome {
 	var out GateOutcome
@@ -585,7 +606,8 @@ type StopOutcome struct {
 	Decisions []Decision
 }
 
-// RunAgentStop runs the agent_stop chain, in registration order.
+// RunAgentStop runs the agent_stop chain, in registration order, the run's
+// tenant hooks before the operator-global ones.
 //
 // Precedence is block > hold > allow. The first block stops the chain: the
 // model has to try again anyway, and holding a person on an answer an

@@ -92,7 +92,12 @@ with the failure's classification in `tool_result.error`.
 
 When several hooks match, `pre` hooks run **earliest-registration-first**
 and `post` hooks run **LIFO** (classic middleware nesting), ordered by
-registration time.
+registration time. A tenant operator's hooks always run **before** the
+operator's global ones, whenever each was registered, so the operator's hooks
+have the last word: a tenant `pre` hook cannot rewrite an input after the
+operator's hook approved it, and a tenant `post` or `post_failure` hook cannot
+rewrite a result after the operator's hook checked it. The same holds for the
+run hooks below.
 
 ## Run hooks
 

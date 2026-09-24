@@ -125,8 +125,10 @@ type Hook struct {
 	TimeoutMs   int           `json:"timeout_ms"`
 	Timeout     time.Duration `json:"-"` // resolved at registration time
 	// RegisteredAt is the wall-clock instant the registration landed.
-	// Determines chain order across owners — earlier registrations run
-	// first in the Pre chain (LIFO in the Post chain, as middleware).
+	// Registration order is chain order within a group — earlier
+	// registrations run first in the Pre chain (LIFO in the Post chain, as
+	// middleware) — and a run's tenant hooks always run before the
+	// operator-global ones (see Registry.Match).
 	RegisteredAt time.Time `json:"registered_at"`
 	// Code is a code-js hook body: JavaScript defining a top-level
 	// hook(ev) function that returns the decision. A hook has exactly one
