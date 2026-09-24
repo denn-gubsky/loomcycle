@@ -34,8 +34,11 @@ import (
 // ParseSpec below is the single parser both sides use, so the two spellings
 // cannot drift into accepting different arguments.
 const (
-	BeforeDispatch  = "before_dispatch"
-	AfterCollection = "after_collection"
+	BeforeDispatch = "before_dispatch"
+	// removedAfterCollection was a pause after the wave, holding its results
+	// off the sink. It is refused by name: holding results is each member run's
+	// review hold now (Review).
+	removedAfterCollection = "after_collection"
 	// Review holds a starter's member runs for an operator's verdict. Never
 	// implied by the bare "<state>" form, which arms the two debug pauses:
 	// review is a separate decision, not a debugging mode.
@@ -96,7 +99,6 @@ func (s *Set) Replace(specs []string) error {
 		}
 		if phase == "" {
 			next[state][BeforeDispatch] = true
-			next[state][AfterCollection] = true
 			continue
 		}
 		next[state][phase] = true
@@ -128,8 +130,9 @@ func (s *Set) List() []string {
 
 // ParseSpec splits one breakpoint spec into a state id and an optional phase.
 //
-//	"review"                   both phases
-//	"review:after_collection"  that phase only
+//	"wave"                  the before_dispatch pause
+//	"wave:before_dispatch"  the same, spelled out
+//	"wave:review"           hold the state's member runs for review
 //
 // A state id may itself contain a colon, so only the LAST segment is a phase
 // candidate; if it is not a phase, the whole spec is refused rather than
@@ -138,9 +141,16 @@ func ParseSpec(spec string) (state, phase string, err error) {
 	state = spec
 	if i := strings.LastIndex(spec, ":"); i >= 0 {
 		state, phase = spec[:i], spec[i+1:]
-		if phase != BeforeDispatch && phase != AfterCollection && phase != Review {
-			return "", "", fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\", \"<state>:%s\" or \"<state>:%s\"",
-				spec, BeforeDispatch, AfterCollection, Review)
+		if phase == removedAfterCollection {
+			// Named rather than lumped in with a typo: someone arming it is
+			// following instructions that used to be right, and the fix is a
+			// different phase, not a spelling.
+			return "", "", fmt.Errorf("breakpoint %q: the after_collection pause was removed — to hold a wave's results "+
+				"before they reach the sink, arm \"%s:%s\" instead: each member run is held for a verdict", spec, state, Review)
+		}
+		if phase != BeforeDispatch && phase != Review {
+			return "", "", fmt.Errorf("breakpoint %q: expected \"<state>\" or \"<state>:%s\" or \"<state>:%s\"",
+				spec, BeforeDispatch, Review)
 		}
 	}
 	if strings.TrimSpace(state) == "" {

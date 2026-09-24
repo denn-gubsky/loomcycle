@@ -2337,8 +2337,8 @@ export interface TeamRunTarget {
    *  returns `run_id`, so a second connection can debug a walk you await. */
   mode?: "detach";
   /** Starter state ids to pause at, armed before the walk starts. Each is
-   *  `"<state>"` (both phases) or `"<state>:before_dispatch"` /
-   *  `"<state>:after_collection"`.
+   *  `"<state>"` or `"<state>:before_dispatch"`: the walk pauses before the
+   *  state dispatches its wave, with every prompt composed and nothing run.
    *
    *  A walk can also be armed AFTER it starts — see
    *  {@link LoomcycleClient.setRunBreakpoints} — which is the case this

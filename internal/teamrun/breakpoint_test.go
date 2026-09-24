@@ -180,105 +180,9 @@ func TestBreakpoint_PromptPreviewCarriesTheComposedMessage(t *testing.T) {
 	}
 }
 
-// TestBreakpoint_AfterCollectionWithholdsEverySinkMessage: every run is DONE and
-// the sink is still empty. That is the whole claim of the phase — the next stage
-// must not see a result the operator has not released.
-func TestBreakpoint_AfterCollectionWithholdsEverySinkMessage(t *testing.T) {
-	ch := threeMessages()
-	spawn := &countingSpawn{}
-	var ranAtAsk, publishedAtAsk int
-	var results []BreakpointResult
-	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:after_collection"},
-		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
-			ranAtAsk, publishedAtAsk = spawn.count(), len(ch.sinks(t))
-			results = bp.Results
-			return BreakDecision{Action: BreakContinue}, nil
-		})
-
-	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"}); err != nil {
-		t.Fatalf("starter: %v", err)
-	}
-	if ranAtAsk != 3 {
-		t.Errorf("%d runs had finished when after_collection asked, want 3", ranAtAsk)
-	}
-	if publishedAtAsk != 0 {
-		t.Errorf("%d sink messages were already published when after_collection asked — the phase must withhold all of them", publishedAtAsk)
-	}
-	if len(results) != 3 || results[0].Output != `verdict for {"pr":1}` {
-		t.Errorf("result preview = %+v, want the three outputs", results)
-	}
-	if n := len(ch.sinks(t)); n != 3 {
-		t.Errorf("published %d sink messages after continue, want 3", n)
-	}
-}
-
-// TestBreakpoint_AfterCollectionReleasesExactlyN: a staged publish moves exactly
-// the released results onto the sink, in wave order.
-func TestBreakpoint_AfterCollectionReleasesExactlyN(t *testing.T) {
-	ch := threeMessages()
-	spawn := &countingSpawn{}
-	var publishedAtAsk []int
-	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:after_collection"},
-		func(_ context.Context, bp Breakpoint) (BreakDecision, error) {
-			publishedAtAsk = append(publishedAtAsk, len(ch.sinks(t)))
-			if len(publishedAtAsk) == 1 {
-				return BreakDecision{Action: BreakRelease, N: 2}, nil
-			}
-			return BreakDecision{Action: BreakContinue}, nil
-		})
-
-	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"}); err != nil {
-		t.Fatalf("starter: %v", err)
-	}
-	if want := []int{0, 2}; !equalInts(publishedAtAsk, want) {
-		t.Errorf("sink depth at each pause = %v, want %v", publishedAtAsk, want)
-	}
-	sinks := ch.sinks(t)
-	if len(sinks) != 3 {
-		t.Fatalf("published %d, want 3", len(sinks))
-	}
-	for i, m := range sinks {
-		if m.Index != i {
-			t.Errorf("sink[%d].Index = %d — a staged release must publish in wave order", i, m.Index)
-		}
-		if m.WaveSize != 3 {
-			t.Errorf("sink[%d].WaveSize = %d, want 3 — the width must not shrink to the released count", i, m.WaveSize)
-		}
-	}
-}
-
-// TestBreakpoint_AfterCollectionAbortWithholdsTheUnreleased: rejecting a wave
-// means the next stage never sees it. A flush-on-abort would make the one thing
-// this breakpoint exists to do untrue.
-func TestBreakpoint_AfterCollectionAbortWithholdsTheUnreleased(t *testing.T) {
-	ch := threeMessages()
-	spawn := &countingSpawn{}
-	asks := 0
-	r := breakRunner(t, ch, textSpawn(spawn.fn), []string{"wave:after_collection"},
-		func(context.Context, Breakpoint) (BreakDecision, error) {
-			asks++
-			if asks == 1 {
-				return BreakDecision{Action: BreakRelease, N: 1}, nil
-			}
-			return BreakDecision{Action: BreakAbort}, nil
-		})
-
-	_, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go", WalkID: "wlk_t"})
-	if err == nil {
-		t.Fatal("an aborted breakpoint must fail the walk")
-	}
-	// The one the operator released stays published; the two they rejected do
-	// not appear.
-	if n := len(ch.sinks(t)); n != 1 {
-		t.Errorf("published %d sink messages, want 1 — only the released result may reach the sink", n)
-	}
-	if spawn.count() != 3 {
-		t.Errorf("the runs themselves still happened: spawned %d, want 3", spawn.count())
-	}
-}
-
-// TestBreakpoint_PhaseScopedArmingPausesOnlyThatPhase: "state:after_collection"
-// must not stop the walk before dispatch, or the phase suffix means nothing.
+// TestBreakpoint_PhaseScopedArmingPausesOnlyThatPhase: "state:review" must not
+// stop the walk before dispatch — review is not a pause — and the bare form is
+// the one pause that remains.
 func TestBreakpoint_PhaseScopedArmingPausesOnlyThatPhase(t *testing.T) {
 	for _, tc := range []struct {
 		arg   string
@@ -286,8 +190,8 @@ func TestBreakpoint_PhaseScopedArmingPausesOnlyThatPhase(t *testing.T) {
 		want  []BreakpointPhase
 	}{
 		{"wave:before_dispatch", BeforeDispatch, []BreakpointPhase{BeforeDispatch}},
-		{"wave:after_collection", AfterCollection, []BreakpointPhase{AfterCollection}},
-		{"wave", "", []BreakpointPhase{BeforeDispatch, AfterCollection}},
+		{"wave:review", Review, nil},
+		{"wave", "", []BreakpointPhase{BeforeDispatch}},
 	} {
 		t.Run(tc.arg, func(t *testing.T) {
 			ch := threeMessages()
@@ -391,14 +295,16 @@ func TestParseBreakpoint(t *testing.T) {
 	}{
 		{"wave", "wave", "", true},
 		{"wave:before_dispatch", "wave", BeforeDispatch, true},
-		{"wave:after_collection", "wave", AfterCollection, true},
+		{"wave:review", "wave", Review, true},
+		// Removed: refused, not read as a state id.
+		{"wave:after_collection", "", "", false},
 		{"wave:typo", "", "", false},
 		{"", "", "", false},
 		{":before_dispatch", "", "", false},
 		// A state id may itself contain a colon, so only the LAST segment is a
 		// phase candidate — and if it is not a phase, the whole thing is refused
 		// rather than silently read as an id.
-		{"team:wave:after_collection", "team:wave", AfterCollection, true},
+		{"team:wave:before_dispatch", "team:wave", BeforeDispatch, true},
 	} {
 		id, phase, ok := ParseBreakpoint(tc.in)
 		if id != tc.id || phase != tc.phase || ok != tc.ok {
@@ -409,7 +315,7 @@ func TestParseBreakpoint(t *testing.T) {
 	if err := ValidateBreakpoints([]string{"wave", "wave:typo"}); err == nil {
 		t.Error("ValidateBreakpoints must refuse an unknown phase")
 	}
-	if err := ValidateBreakpoints([]string{"wave", "wave:after_collection"}); err != nil {
+	if err := ValidateBreakpoints([]string{"wave", "wave:review"}); err != nil {
 		t.Errorf("ValidateBreakpoints refused a valid pair: %v", err)
 	}
 }
@@ -424,4 +330,14 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// Arming the removed pause is refused with a reason that names what replaced
+// it: someone arming it is following instructions that used to be right, and
+// the fix is a different phase, not a spelling.
+func TestValidateBreakpoints_TheRemovedPauseNamesItsReplacement(t *testing.T) {
+	err := ValidateBreakpoints([]string{"wave:after_collection"})
+	if err == nil || !strings.Contains(err.Error(), "was removed") || !strings.Contains(err.Error(), `"wave:review"`) {
+		t.Errorf("err = %v, want a refusal naming \"wave:review\"", err)
+	}
 }

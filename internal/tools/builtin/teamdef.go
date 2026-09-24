@@ -191,8 +191,8 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
 	`a runnable flag. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
-	`before dispatching (showing each composed prompt) and/or after collecting (showing each result, before any of ` +
-	`it reaches the sink) and asks a human to release all, release n, or abort. run may also set review on starter states: ` +
+	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
+	`run may also set review on starter states: ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
 	`member reaches the sink as status "rejected". retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
@@ -228,7 +228,7 @@ const teamDefInputSchema = `{
     "board_scope":    {"type": "string", "enum": ["agent","user"], "description": "run (optional): the Document scope of board_chunk_id (default user)."},
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
     "mode":             {"type": "string", "enum": ["detach"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. Either way the response carries run_id."},
-    "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"review\" pauses both phases, \"review:before_dispatch\" or \"review:after_collection\" pauses one. At before_dispatch the wave is composed but nothing has run; at after_collection the runs are done but nothing has reached the sink. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS. \"<state>:review\" arms review instead (see review), and may be set here or live."},
+    "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"wave\" (or \"wave:before_dispatch\") pauses the state before it dispatches: the wave is composed and nothing has run. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS. \"<state>:review\" arms review instead (see review), and may be set here or live."},
     "review":           {"type": "array", "items": {"type": "string"}, "description": "run (optional): starter state ids whose member runs are held for an operator's verdict when they finish. A person approves each one, rejects it with feedback it revises from, or rejects it; a rejected member reaches the sink as status \"rejected\" and does not count toward the wave's wait. Can also be armed while the walk runs, as the breakpoint \"<state>:review\". A run-time argument, never part of the definition."},
     "review_ttl_seconds": {"type": "integer", "minimum": 0, "description": "run (optional): with review, end a member hold nobody rules on within this many seconds as rejected. Omit for no deadline."}
   },
@@ -1267,30 +1267,13 @@ const maxBreakPreview = 600
 // the run list afterwards.
 func formatBreakpoint(team string, bp teamrun.Breakpoint) string {
 	var b strings.Builder
-	phase := "BEFORE dispatching"
-	unit := "run"
-	if bp.Phase == teamrun.AfterCollection {
-		phase = "AFTER collecting"
-		unit = "result"
-	}
-	fmt.Fprintf(&b, "Team %q: state %q paused %s wave %s (%d %ss in the wave, %d pending).\n",
-		team, bp.State, phase, bp.Wave, bp.WaveSize, unit, bp.Pending)
+	fmt.Fprintf(&b, "Team %q: state %q paused BEFORE dispatching wave %s (%d runs in the wave, %d pending).\n",
+		team, bp.State, bp.Wave, bp.WaveSize, bp.Pending)
 	for _, p := range bp.Prompts {
 		fmt.Fprintf(&b, "[%d] %s ← %s\n", p.Index, p.Agent, truncPreview(p.Message))
 	}
-	for _, res := range bp.Results {
-		status, body := "ok", res.Output
-		if !res.Ok {
-			status, body = "error", res.Error
-		}
-		fmt.Fprintf(&b, "[%d] %s %s: %s\n", res.Index, res.Agent, status, truncPreview(body))
-	}
-	verb := "dispatch"
-	if bp.Phase == teamrun.AfterCollection {
-		verb = "publish"
-	}
-	fmt.Fprintf(&b, "Reply `continue` to %s all %d, `release:<n>` to %s the first n and pause again, or `abort` to stop the walk.",
-		verb, bp.Pending, verb)
+	fmt.Fprintf(&b, "Reply `continue` to dispatch all %d, `release:<n>` to dispatch the first n and pause again, or `abort` to stop the walk.",
+		bp.Pending)
 	return b.String()
 }
 
