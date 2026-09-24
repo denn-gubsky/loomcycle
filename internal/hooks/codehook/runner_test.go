@@ -291,3 +291,50 @@ func TestRunner_TheProgramCacheHoldsOnlyRunBodiesAndIsBounded(t *testing.T) {
 		t.Errorf("an oversized body: err = %v, want the size refusal before any parse", err)
 	}
 }
+
+// A code hook cannot allocate a huge string, array or buffer in one native
+// call, which the time budget cannot interrupt — not in hook(ev), and not at
+// the top level, which registration evaluates in the request handler. At the
+// bounds the same calls work. The probes stay just past each bound, so the
+// unfixed runtime allocates only a few MiB when it lets them through.
+func TestRunner_OneCallAllocatorsAreBounded(t *testing.T) {
+	r := New(nil)
+	over := map[string]string{
+		"repeat":           `"x".repeat(1048577)`,
+		"repeat, longer":   `"ab".repeat(524289)`,
+		"padStart":         `"x".padStart(1048577)`,
+		"padEnd":           `"x".padEnd(1048577, "y")`,
+		"new Array":        `new Array(65537)`,
+		"Array()":          `Array(65537)`,
+		"[].constructor":   `[].constructor(65537)`,
+		"Array.from":       `Array.from({length: 65537})`,
+		"a grown join":     `(function () { var a = []; a.length = 65537; return a.join("x"); })()`,
+		"a grown fill":     `(function () { var a = []; a.length = 65537; return a.fill(0); })()`,
+		"ArrayBuffer":      `new ArrayBuffer(1048577)`,
+		"Uint8Array":       `new Uint8Array(1048577)`,
+		"Float64Array":     `new Float64Array(131073)`,
+		"Uint8Array.from":  `Uint8Array.from({length: 1048577})`,
+		"a typed ctor ref": `new (new Uint8Array(1).constructor)(1048577)`,
+	}
+	for name, expr := range over {
+		_, err := r.Run(context.Background(), codeHook("function hook(ev) { var v = "+expr+"; return {}; }"), "pre_tool_use", preCall("Read", `{}`))
+		if err == nil || !strings.Contains(err.Error(), "exceeds a code hook's limit") {
+			t.Errorf("%s in hook(ev): err = %v, want the limit", name, err)
+		}
+	}
+	if err := r.Compile(`var s = "x".repeat(1048577); function hook(ev) {}`); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("at the top level: err = %v, want the limit", err)
+	}
+
+	at := `function hook(ev) {
+		var ok = "x".repeat(1048576).length === 1048576 && "x".padEnd(1048576).length === 1048576 &&
+			new Array(65536).length === 65536 && Array.from({length: 3}).length === 3 &&
+			[1, 2, 3].join("-") === "1-2-3" && String([1, 2]) === "1,2" && [1, 2] instanceof Array &&
+			Array.isArray([]) && new Uint8Array(1048576).length === 1048576 && new Uint8Array([1, 2])[1] === 2 &&
+			new Uint8Array(new ArrayBuffer(8)).length === 8 && Uint8Array.BYTES_PER_ELEMENT === 1;
+		return ok ? {} : {decision: "deny", reason: "an in-bounds call misbehaved"};
+	}`
+	if d, err := r.Run(context.Background(), codeHook(at), "pre_tool_use", preCall("Read", `{}`)); err != nil || d.Decision != "" {
+		t.Errorf("at the bounds: %+v, %v", d, err)
+	}
+}

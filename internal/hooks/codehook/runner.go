@@ -282,11 +282,12 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 }
 
 // newRuntime builds a sandboxed runtime: the code-js hardening, JSON field
-// names, and a bounded call stack.
+// names, capped one-call allocators, and a bounded call stack.
 func newRuntime(seed uint32, anchor int64) *goja.Runtime {
 	rt := goja.New()
 	rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	codejs.HardenSandbox(rt, seed, anchor)
+	installLimits(rt)
 	rt.SetMaxCallStackSize(maxCallStack)
 	return rt
 }

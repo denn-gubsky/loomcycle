@@ -224,6 +224,15 @@ global it sets does not survive to the next call. `timeout_ms` bounds each
 run of the code: 50 ms by default, at most 1 s. The time an operator takes
 to answer is not counted. A body may ask at most 16 times per call.
 
+The sandbox bounds a body's **time, not its memory**. The time budget is
+checked between instructions, never inside one built-in call, so the one-call
+allocators are capped: a string from `repeat` / `padStart` / `padEnd` at 1 Mi
+characters, an array from `Array(n)` / `Array.from` — and `join` / `fill` on
+one — at 65,536 elements, an `ArrayBuffer` or typed array at 1 MiB. Past a cap
+the call throws a `RangeError`. These caps are a backstop, not a memory limit:
+a body that grows a string in a loop is bounded only by its time budget. That
+is why a tenant's code hooks need their own opt-in.
+
 ## Fail-open vs fail-closed
 
 `fail_mode` decides what a webhook timeout / 5xx / network error means:
