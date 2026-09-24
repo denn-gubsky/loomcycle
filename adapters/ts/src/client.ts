@@ -141,6 +141,8 @@ import type {
   RunBatchOptions,
   RunBatchResult,
   RunOptions,
+  ConfiguredRun,
+  ConfiguredRunPatch,
   RunStateStreamItem,
   SamplingOptions,
   RuntimeStateResponse,
@@ -479,6 +481,62 @@ export class LoomcycleClient {
    *  Raises {@link NotFoundError} (404) for an unknown run and for another
    *  tenant's run alike, and also — with code `no_prompt_snapshot` — for a run
    *  that never reached a model call or predates prompt snapshots. */
+  /** Create a run WITHOUT starting it (RFC DI): a configured run holds its
+   *  request, runs nothing and takes no slot until
+   *  {@link LoomcycleClient.startConfiguredRun}. It is validated now exactly as
+   *  a run would be; admission and the budget check happen at start. It never
+   *  stores a secret — pass `userBearer` / `userCredentials` to the start. */
+  async createConfiguredRun(
+    opts: Omit<RunOptions, "userBearer" | "userCredentials" | "sessionId" | "debug">,
+  ): Promise<ConfiguredRun> {
+    const body = runBody(opts as RunOptions);
+    body.start = false;
+    return postJSON<ConfiguredRun>(this.ctx, "/v1/runs", body, { signal: opts.signal });
+  }
+
+  /** Replace fields of a configured run's request. Set fields replace the
+   *  draft's; `remove` names wire fields (snake_case, e.g. `"sampling"`) to
+   *  drop. The agent, the identity and secrets cannot be changed. Refused
+   *  (409) once the run has started. */
+  async updateConfiguredRun(
+    runId: string,
+    patch: ConfiguredRunPatch,
+    opts?: { remove?: string[]; signal?: AbortSignal },
+  ): Promise<ConfiguredRun> {
+    // runBody serializes only the fields that are set, so a partial patch
+    // stays partial on the wire.
+    const body = runBody(patch as RunOptions);
+    delete body.agent;
+    for (const k of opts?.remove ?? []) body[k] = null;
+    return patchJSON<ConfiguredRun>(
+      this.ctx,
+      `/v1/runs/${encodeURIComponent(runId)}`,
+      body,
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Start a configured run and stream it, exactly as
+   *  {@link LoomcycleClient.runStreaming} streams a new one. Admission happens
+   *  here: a refusal (429 / 503) throws before any event and leaves the run
+   *  configured, to be started again later. Secrets the draft never stored
+   *  are passed here. */
+  async *startConfiguredRun(
+    runId: string,
+    opts?: { userBearer?: string; userCredentials?: Record<string, string>; signal?: AbortSignal; debug?: boolean },
+  ): AsyncIterable<AgentEvent> {
+    const body: Record<string, unknown> = {};
+    if (opts?.userBearer !== undefined) body.user_bearer = opts.userBearer;
+    if (opts?.userCredentials !== undefined) body.user_credentials = opts.userCredentials;
+    yield* this.streamSSE(`/v1/runs/${encodeURIComponent(runId)}/start`, body, opts?.signal, opts?.debug);
+  }
+
+  /** Discard a configured run and its session. A live run is not discarded —
+   *  cancel it instead. */
+  async deleteConfiguredRun(runId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    await deleteRequest(this.ctx, `/v1/runs/${encodeURIComponent(runId)}`, opts);
+  }
+
   async getRunPrompt(
     runId: string,
     opts?: { signal?: AbortSignal },

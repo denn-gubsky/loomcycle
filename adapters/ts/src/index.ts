@@ -160,6 +160,8 @@ export type {
   AgentUsage,
   RunResult,
   RunSpec,
+  ConfiguredRun,
+  ConfiguredRunPatch,
   ToolChoiceOptions,
   OutputFormatOptions,
   CancelAgentResult,

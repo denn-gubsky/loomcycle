@@ -3366,6 +3366,15 @@ type Env struct {
 	// aren't sweeped. Env: LOOMCYCLE_HEARTBEAT_STALE_MS.
 	HeartbeatStaleAfter time.Duration
 
+	// ConfiguredRunTTL bounds how long a configured (created, not started) run
+	// is kept before the expiry sweep discards it with its session (RFC DI D5).
+	// Default 24h; 0 disables the sweep. Env: LOOMCYCLE_CONFIGURED_RUN_TTL_MS.
+	ConfiguredRunTTL time.Duration
+	// MaxConfiguredRunsPerUser caps how many drafts one (tenant, user) may hold
+	// at once. Default 100; 0 = no cap. Env:
+	// LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER.
+	MaxConfiguredRunsPerUser int
+
 	// UsageSweeperEnabled controls the RFC AV Phase 2b usage
 	// rollup-and-prune sweeper. When true (default), a goroutine
 	// periodically folds token_usage rows older than
@@ -4313,8 +4322,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		// Sweeper / GC defaults — populated above zero only if the
 		// env var below was set. The fallbacks are applied in
 		// cmd/loomcycle/main.go where the goroutines are started.
-		HeartbeatSweeperEnabled: true,
-		UsageSweeperEnabled:     true,
+		HeartbeatSweeperEnabled:  true,
+		ConfiguredRunTTL:         24 * time.Hour,
+		MaxConfiguredRunsPerUser: 100,
+		UsageSweeperEnabled:      true,
 		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
 		// mode defaults off and keep-last-N to 5. The env parse below overrides
 		// these only when the corresponding var is set.
@@ -4487,6 +4498,18 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
+		}
+	}
+	// RFC DI D5 configured runs: draft TTL and per-user cap. A value that does
+	// not parse keeps the default; an explicit 0 turns the bound off.
+	if v := os.Getenv("LOOMCYCLE_CONFIGURED_RUN_TTL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Env.ConfiguredRunTTL = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Env.MaxConfiguredRunsPerUser = n
 		}
 	}
 	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). Optional; the
