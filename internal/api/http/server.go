@@ -5271,8 +5271,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Derive a runCtx with cancel-cause and register in the cancel
-	// registry. Same shape as handleRuns.
-	runCtx, cancelFn := context.WithCancelCause(r.Context())
+	// registry. Same shape as handleRuns, including its detach for review: a
+	// continuation held for a verdict must not be cancelled by the caller
+	// leaving, since a review can take far longer than a client keeps its
+	// stream. It keeps the request's ctx values; the cancel registry still
+	// stops it. The loop still runs in this handler, so nothing else changes
+	// hands; the stream just has no reader once the client is gone.
+	runParent := r.Context()
+	if body.Review {
+		runParent = context.WithoutCancel(r.Context())
+	}
+	runCtx, cancelFn := context.WithCancelCause(runParent)
 	defer cancelFn(nil)
 	// v0.10.0 OTEL: top-level loomcycle.run span for session
 	// continuations. Each /v1/messages turn = one span.
@@ -5363,7 +5372,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	}
-	emit := s.makeRecordingEmit(r.Context(), run.ID, rid, id, stream.send)
+	// Persist under runCtx so a detached continuation's events survive the
+	// client leaving (runCtx tracks the request otherwise).
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, stream.send)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
 	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
 	for _, info := range limitDec.Soft {
@@ -5375,7 +5386,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	emitInertCapabilityWarnings(agentDef, emit)
 
 	// PR 2: operator steering queue for this continuation run.
-	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), run.ID, agentID, id, sess.UserID, emit)
+	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, agentID, id, sess.UserID, emit)
 	defer deregSteer()
 	heartbeat := s.makeHeartbeat(run.ID)
 
@@ -5498,7 +5509,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		stream.send(runErrorEvent(runErr))
 	}
 
-	s.finishRunWithCancel(r.Context(), runCtx, run.ID, loopRes, runErr, meta)
+	s.finishRunWithCancel(runParent, runCtx, run.ID, loopRes, runErr, meta)
 }
 
 // replayTranscript walks the persisted events of a session and reconstructs
