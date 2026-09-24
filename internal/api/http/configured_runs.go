@@ -166,8 +166,7 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	} else if taken, err := s.agentIDTaken(ctx, agentID); err != nil {
 		return connector.ConfiguredRun{}, draftStoreErr(err)
 	} else if taken {
-		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "agent_id_in_use",
-			"agent_id %q is already in use by a live run or another configured run", agentID)
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusConflict, "agent_id_in_use", agentIDInUseMsg, agentID)
 	}
 	// The row carries identity; the draft never carries it, nor a secret.
 	stored := req
@@ -193,6 +192,31 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID,
 		Status: string(store.RunConfigured), Draft: body,
 	}, nil
+}
+
+// agentIDInUseMsg is the refusal for an explicit agent_id another run or a
+// draft already holds — one wording for the draft create and every run start.
+const agentIDInUseMsg = "agent_id %q is already in use by a live run or another configured run"
+
+// agentIDHeldByDraft reports whether a configured run holds agentID. A draft
+// reserves its id at create (agentIDTaken) only against what exists then; a
+// run started later with the same explicit id would share it, and
+// GetRunByAgentID — which answers with the newest row — would show that run in
+// place of the draft. Every run start that takes an explicit agent_id refuses a
+// draft's with agentIDInUseMsg. Without a store there are no drafts.
+func (s *Server) agentIDHeldByDraft(ctx context.Context, agentID string) (bool, error) {
+	if s.store == nil || agentID == "" {
+		return false, nil
+	}
+	run, err := s.store.GetRunByAgentID(ctx, agentID)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return run.Status == store.RunConfigured, nil
 }
 
 // agentIDTaken reports whether agentID belongs to a live run or to another

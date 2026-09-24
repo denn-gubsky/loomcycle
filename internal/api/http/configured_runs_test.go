@@ -475,3 +475,44 @@ func TestConfiguredRun_PatchRefusesParentContext(t *testing.T) {
 		t.Errorf("PATCH after the refusal = %d %s, want 200 with the original parent_context", code, body)
 	}
 }
+
+// A draft reserves its agent_id at create; a run started afterwards with the
+// same explicit id would share it, and the agent read — which answers with the
+// newest row — would show that run in place of the draft. Every run start
+// refuses the id with the draft create's wording, and the draft stays readable.
+func TestConfiguredRun_RunStartsRefuseADraftsAgentID(t *testing.T) {
+	srv, ts, prov, _ := configuredServer(t, 4)
+	c := createDraft(t, ts, `,"agent_id":"a_reserved"`)
+	const want = `agent_id \"a_reserved\" is already in use by a live run or another configured run`
+
+	code, body := do(t, "POST", ts.URL+"/v1/runs", `{"agent":"agent","user_id":"u1","prompt":"x","agent_id":"a_reserved"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "agent_id_in_use") || !strings.Contains(body, want) {
+		t.Errorf("POST /v1/runs with a draft's agent_id = %d %s, want 409 agent_id_in_use", code, body)
+	}
+
+	err := srv.RunOnce(context.Background(), runner.RunInput{
+		Agent: "agent", AgentID: "a_reserved",
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+	}, runner.RunCallbacks{})
+	if !errors.Is(err, runner.ErrAgentIDInUse) {
+		t.Errorf("RunOnce (gRPC Run, MCP spawn_run) with a draft's agent_id = %v, want ErrAgentIDInUse", err)
+	}
+
+	// A continuation of an existing chat is a run start too.
+	sess, serr := srv.store.CreateSession(context.Background(), "", "agent", "u1")
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	code, body = do(t, "POST", ts.URL+"/v1/sessions/"+sess.ID+"/messages", `{"prompt":"x","agent_id":"a_reserved"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "agent_id_in_use") {
+		t.Errorf("POST /v1/sessions/{id}/messages with a draft's agent_id = %d %s, want 409 agent_id_in_use", code, body)
+	}
+
+	if prov.last != nil {
+		t.Error("a refused start reached the provider")
+	}
+	code, body = do(t, "GET", ts.URL+"/v1/agents/a_reserved", "")
+	if code != 200 || !strings.Contains(body, c.RunID) || !strings.Contains(body, `"status":"configured"`) {
+		t.Errorf("GET /v1/agents/a_reserved = %d %s, want the draft", code, body)
+	}
+}

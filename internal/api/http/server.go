@@ -2425,6 +2425,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
 	}
+	if !startingDraft {
+		// A draft's reserved id is not this run's to take (agentIDHeldByDraft).
+		if held, err := s.agentIDHeldByDraft(ctx, in.AgentID); err != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		} else if held {
+			return fmt.Errorf("%w: "+agentIDInUseMsg, runner.ErrAgentIDInUse, in.AgentID)
+		}
+	}
 	if startingDraft && in.SessionID != "" {
 		return fmt.Errorf("%w: a configured run starts in its own session; session_id must be empty", runner.ErrInvalidArgument)
 	}
@@ -4277,6 +4285,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		s.createConfiguredRun(w, r, req)
 		return
 	}
+	if held, err := s.agentIDHeldByDraft(r.Context(), req.AgentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if held {
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, req.AgentID))
+		return
+	}
 	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
@@ -5215,6 +5230,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// run since "the run" is what agent_id addresses).
 	if body.AgentID != "" && !validIdent(body.AgentID) {
 		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	if held, err := s.agentIDHeldByDraft(r.Context(), body.AgentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if held {
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, body.AgentID))
 		return
 	}
 	agentID := body.AgentID
