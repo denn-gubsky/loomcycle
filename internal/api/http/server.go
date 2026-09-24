@@ -949,9 +949,7 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				// The child run id makes the member addressable (RFC DI); it is
 				// returned on failure too, since a failed member is the one worth
 				// opening.
-				out, _, childRunID, err := s.runSubAgentWithValues(ctx, name, p.System, p.Input, defID,
-					p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
-				return teamrun.SpawnResult{Output: out, RunID: childRunID}, err
+				return s.runTeamMember(ctx, name, p, defID)
 			}
 		}
 		if td.Admit == nil {
@@ -6351,6 +6349,44 @@ func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, p
 	return formatSubAgentOutput(prep.AgentID, res.FinalText), res.State, prep.RunID, nil
 }
 
+// runTeamMember runs one team member: runSubAgentWithValues, plus what a
+// member needs that an ordinary sub-agent does not (RFC DJ).
+//
+//   - A steer queue, so the run is REACHABLE while it runs: an operator can
+//     steer it, and a verdict can reach it when it is held for review. A
+//     sub-agent spawned by the Agent tool has neither, deliberately — its
+//     parent agent is the one driving it.
+//   - The walk's review arming for this member (teamrun.ReviewArming), read
+//     live when the member finishes an answer, so a walk armed mid-wave holds
+//     the members that have not finished yet.
+//   - Its terminal status, by the same rule its row is written with, so the
+//     walk can tell a rejected member from a failed one.
+func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
+	prep, err := s.prepareSubRunValues(ctx, name, p.System, p.Input, defID, false, func(providers.Event) {}, p.Values, p.DataSlots, p.SystemAuthored, p.InputAuthored)
+	if err != nil {
+		return teamrun.SpawnResult{}, err
+	}
+	defer prep.Slot.releaseCurrent()
+	defer prep.cleanup()
+	steerQ, onSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
+	defer deregSteer()
+	prep.Opts.SteerQueue, prep.Opts.OnSteer = steerQ, onSteer
+	if armed := teamrun.ReviewArming(ctx); armed != nil {
+		prep.Opts.ReviewNow = armed
+	}
+	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
+	s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
+	out := teamrun.SpawnResult{RunID: prep.RunID, Status: string(terminalStatusOf(prep.SteerCtx, res, runErr))}
+	if runErr != nil {
+		return out, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
+			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
+	}
+	// Formatted as the Agent tool's sub-agent output is, so a walk threads the
+	// same text it always did.
+	out.Output = formatSubAgentOutput(prep.AgentID, res.FinalText)
+	return out, nil
+}
+
 // subRunPrep bundles a fully-prepared sub-run ready to enter loop.Run. The
 // synchronous path (runSubAgent) and the resident interactive path (RFC BK)
 // share this setup so tenant/tool-ceiling/credential/policy wiring has ONE
@@ -8362,6 +8398,35 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	s.finishRun(ctx, runID, res, runErr, meta)
 }
 
+// terminalStatusOf is the status a run ends with. ONE rule, read by the terminal
+// write (finishRunWithCancel / finishRun) and by anything that reports a run's
+// outcome without reading its row back — a team member's SpawnResult — so the
+// two cannot disagree.
+//
+// runCtx is the run's own context: its cancellation (an API cancel, or the
+// caller going away) makes the run cancelled rather than failed. finishRun
+// passes nil, because finishRunWithCancel has already taken those branches.
+func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) store.RunStatus {
+	if runCtx != nil {
+		if errors.Is(context.Cause(runCtx), cancel.ErrCancelledByAPI) {
+			return store.RunCancelled
+		}
+		if runCtx.Err() != nil && errors.Is(runErr, context.Canceled) {
+			return store.RunCancelled
+		}
+	}
+	switch {
+	case runErr != nil:
+		return store.RunFailed
+	case res.StopReason == loop.StopReasonRejected, res.StopReason == loop.StopReasonReviewExpired:
+		// A reviewer turned the answer down with nothing to revise from, or
+		// nobody ruled on it in time. Not a failure — the run did its work —
+		// and not a completion either: the answer is one nobody accepted.
+		return store.RunRejected
+	}
+	return store.RunCompleted
+}
+
 // finishRunFailedReason marks a run terminal with status=failed and
 // the supplied error string, no usage. Used by the BLOCKING-fix paths
 // where we created a run row but bailed before the loop ran (e.g.
@@ -8579,17 +8644,10 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	// persisted one row per streamed delta. No-op when the flag is off, which is the
 	// default, so an ordinary completion does no extra work.
 	s.indexAssistantTurns(bg, runID, meta)
-	status := store.RunCompleted
+	status := terminalStatusOf(nil, res, runErr)
 	errMsg := ""
-	switch {
-	case runErr != nil:
-		status = store.RunFailed
+	if runErr != nil {
 		errMsg = runErr.Error()
-	case res.StopReason == loop.StopReasonRejected, res.StopReason == loop.StopReasonReviewExpired:
-		// A reviewer turned the answer down with nothing to revise from. Not a
-		// failure — the run did its work — and not a completion either: the
-		// answer on the row is one nobody accepted.
-		status = store.RunRejected
 	}
 	usage := store.Usage{
 		InputTokens:         res.Usage.InputTokens,
