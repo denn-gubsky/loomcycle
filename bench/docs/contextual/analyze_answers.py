@@ -24,16 +24,19 @@ def main():
     ap.add_argument("--probe", required=True)
     ap.add_argument("--baseline", default="plain")
     ap.add_argument("--json-out")
+    ap.add_argument("--file", default="answers.jsonl",
+                    help="answers2.jsonl for the pipeline arms, which also carry ev_rank on what the reader saw")
     a = ap.parse_args()
     A = collections.defaultdict(dict)
-    for r in map(json.loads, open(os.path.join(a.probe, "answers.jsonl"))):
+    for r in map(json.loads, open(os.path.join(a.probe, a.file))):
         A[r["arm"]][r["qid"]] = r
     Q = {q["qid"]: q for q in map(json.loads, open(os.path.join(a.probe, "questions.jsonl")))}
     qids = sorted(Q)
     types = collections.Counter(atype(Q[q]) for q in qids)
     rng = random.Random(7)
     base = A[a.baseline]
-    order = ["oracle", "plain", "header", "context", "context/hidden-ctx", "both", "both/hidden-ctx"]
+    order = ["oracle", "plain", "header", "context", "context/hidden-ctx", "both", "both/hidden-ctx",
+             "map", "map+hop", "desc", "mapctx"]
     order += sorted(k for k in A if k not in order)
     print("n=%d  types=%s" % (len(qids), dict(types)))
     print("%-20s %6s  %-18s %8s  %s  unans" % ("arm", "F1", "Δ vs base 95%CI", "+/-",
@@ -54,7 +57,14 @@ def main():
         wins, losses = sum(x > 0 for x in diff), sum(x < 0 for x in diff)
         ci = "" if arm == a.baseline else "[%+.3f, %+.3f]" % (lo, hi)
         wl = "" if arm == a.baseline else "+%d/-%d" % (wins, losses)
-        print("%-20s %6.3f  %-18s %8s  %s  %.3f" % (arm, m, ci, wl, "  ".join("%11.3f" % by_t[t] for t in types), un))
+        rk = ""
+        if all("ev_rank" in d[q] for q in qids):
+            rk = "   R@1/3/5/10 " + "/".join("%.3f" % (sum(1 for q in qids if (d[q]["ev_rank"] or 99) <= k) / len(qids))
+                                         for k in (1, 3, 5, 10))
+            kinds = collections.Counter(x for q in qids for x in d[q].get("kinds", [])[:5])
+            tot = sum(kinds.values()) or 1
+            rk += "  top5 slots: " + " ".join("%s=%.0f%%" % (k, 100 * v / tot) for k, v in sorted(kinds.items()))
+        print("%-20s %6.3f  %-18s %8s  %s  %.3f%s" % (arm, m, ci, wl, "  ".join("%11.3f" % by_t[t] for t in types), un, rk))
         out[arm] = {"f1": m, "ci_vs_base": [lo, hi], "wins": wins, "losses": losses, "by_type": by_t, "unanswerable": un}
     if a.json_out:
         json.dump(out, open(a.json_out, "w"), indent=1)

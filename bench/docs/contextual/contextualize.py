@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Generate a situating context for every section chunk — Anthropic's Contextual Retrieval.
+"""Generate one short text per section chunk with a local model. Three modes:
+
+  context     Anthropic's Contextual Retrieval: whole document + chunk → a situating context
+  describe    the chunk ALONE (plus its title and heading path, for grounding) → a one-to-two
+              sentence description of what it states. The light analogue of fact extraction:
+              it reads one unit and says what is in it, with no document around it to lean on.
+  mapcontext  Anthropic's prompt, but with the DOCUMENT MAP (title + every section's
+              description, in order) standing in for the whole document. Needs describe first.
 
 One LOCAL model call per chunk, whole document in the prompt, straight to Ollama: nothing
 here can reach a paid provider, which is the point of calling Ollama directly rather than
@@ -9,8 +16,8 @@ The document goes FIRST and the chunk LAST so consecutive calls for one paper sh
 prompt prefix; Ollama reuses the KV cache for it, which is what makes one call per chunk
 affordable on a local model. Papers are therefore processed one at a time, in order.
 
-Resumable: results append to contexts.jsonl keyed by (paper_id, path); a rerun skips
-what is already there.
+Resumable: results append to <mode>.jsonl (contexts.jsonl for `context`) keyed by
+(paper_id, path); a rerun skips what is already there.
 """
 import argparse
 import json
@@ -30,6 +37,24 @@ Here is the chunk we want to situate within the whole document
 </chunk>
 Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else."""
 
+DESCRIBE = """Paper: {title}
+Section: {path}
+<section>
+{chunk}
+</section>
+Describe in one or two sentences what this section states. Name the specific methods, models, datasets, metrics, numbers and findings it contains, in the paper's own terms. Answer only with the description."""
+
+
+def document_map(paper, descriptions):
+    """The map a reader or a model sees: the title, then every section in document order with
+    its heading path and description. Paths rather than bare headings, because a paper has
+    several "Results" and a bare name would not say which."""
+    lines = ["# " + paper["title"], ""]
+    for s in paper["sections"]:
+        d = descriptions.get((paper["id"], tuple(s["path"])), "")
+        lines.append("- %s: %s" % (" > ".join(s["path"]), d))
+    return "\n".join(lines)
+
 
 def call(host, model, prompt, num_ctx):
     body = {"model": model, "stream": False, "think": False,
@@ -47,10 +72,18 @@ def main():
     ap.add_argument("--probe", required=True, help="dir with papers.jsonl")
     ap.add_argument("--host", default="http://100.112.7.68:11434")
     ap.add_argument("--model", default="ornith-1.5:35b")
-    ap.add_argument("--num-ctx", type=int, default=32768)
+    # 16384 fits every prompt on this corpus. One value for every phase, because a change
+    # makes Ollama reload the model, and reloads coincided with the CUDA faults.
+    ap.add_argument("--num-ctx", type=int, default=16384)
+    ap.add_argument("--mode", choices=["context", "describe", "mapcontext"], default="context")
     a = ap.parse_args()
 
-    out = os.path.join(a.probe, "contexts.jsonl")
+    out = os.path.join(a.probe, "contexts.jsonl" if a.mode == "context" else a.mode + ".jsonl")
+    descriptions = {}
+    if a.mode == "mapcontext":
+        for line in open(os.path.join(a.probe, "describe.jsonl")):
+            r = json.loads(line)
+            descriptions[(r["paper_id"], tuple(r["path"]))] = r["context"]
     done = set()
     if os.path.exists(out):
         for line in open(out):
@@ -65,7 +98,12 @@ def main():
                 key = (p["id"], tuple(s["path"]))
                 if key in done:
                     continue
-                prompt = PROMPT.format(doc=p["markdown"], chunk=s["text"])
+                if a.mode == "context":
+                    prompt = PROMPT.format(doc=p["markdown"], chunk=s["text"])
+                elif a.mode == "describe":
+                    prompt = DESCRIBE.format(title=p["title"], path=" > ".join(s["path"]), chunk=s["text"])
+                else:
+                    prompt = PROMPT.format(doc=document_map(p, descriptions), chunk=s["text"])
                 for attempt in range(3):
                     try:
                         t = time.time()
