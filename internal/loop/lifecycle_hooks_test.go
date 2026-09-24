@@ -197,3 +197,20 @@ func TestLifecycle_AFailedClosedStopHookHolds(t *testing.T) {
 	r.q <- steer.Message{Kind: steer.KindApprove, EnqueuedAt: time.Now()}
 	r.result(t)
 }
+
+// A block on the run's last allowed iteration fails the run, as the block cap
+// does: it must not end end_turn on the answer the hook refused.
+func TestLifecycle_ABlockWithNoIterationLeftFailsTheRun(t *testing.T) {
+	h := newScriptedHook(t, `{"decision":"block","reason":"cite a source"}`)
+	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
+		&hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}),
+		func(o *RunOptions) { o.MaxIterations = 1 }))
+	o := r.finish(t)
+	if o.err == nil || o.res.StopReason != StopReasonStopBlocked || !strings.Contains(o.err.Error(), "ops/check") ||
+		!strings.Contains(o.err.Error(), "no iteration left") {
+		t.Fatalf("outcome = %+v, %v", o.res, o.err)
+	}
+	if r.prov.calls() != 1 {
+		t.Errorf("the model answered %d times, want 1", r.prov.calls())
+	}
+}

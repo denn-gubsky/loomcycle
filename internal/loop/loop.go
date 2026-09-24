@@ -3211,6 +3211,15 @@ outerLoop:
 						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
 							fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, stopBlocks+1, out.Reason)
 					}
+					if iter+1 >= iterCap {
+						// No iteration is left to answer the block. Leaving the
+						// loop would end the run end_turn on the very answer
+						// the hook refused, so it fails the way the cap does.
+						iterSpan.End()
+						turnCancelFn(nil)
+						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
+							fmt.Errorf("hook %s blocked the answer, and the run has no iteration left to answer it; the reason: %s", out.By, out.Reason)
+					}
 					stopBlocks++
 					// The reason goes back as a user turn and the model answers
 					// again. The persisted hook_decision is what a transcript
@@ -3248,6 +3257,14 @@ outerLoop:
 					break outerLoop
 				case reviewRevise:
 					iterSpan.End()
+					if iter+1 >= iterCap {
+						// No iteration is left to answer the feedback. Leaving
+						// the loop would end the run end_turn on the answer the
+						// reviewer sent back; it was never approved.
+						emit(providers.Event{Type: providers.EventError, Error: "the reviewer sent the answer back, but the run has no iteration left to revise it; it ends rejected"})
+						stopReason = StopReasonRejected
+						break outerLoop
+					}
 					continue outerLoop
 				case reviewRejected:
 					stopReason = StopReasonRejected

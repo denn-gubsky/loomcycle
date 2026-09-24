@@ -529,3 +529,16 @@ func TestRun_Review_ExpiryWaitsForAPauseToLift(t *testing.T) {
 		t.Errorf("stop reason after the lift = %q, want %q", res.StopReason, StopReasonReviewExpired)
 	}
 }
+
+// Feedback on the run's last allowed iteration has no turn left to be answered
+// in. The run ends rejected: leaving the loop would end it end_turn on the
+// answer the reviewer sent back.
+func TestRun_Review_FeedbackWithNoIterationLeftEndsRejected(t *testing.T) {
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.MaxIterations = 1 })
+	r.waitFor(t, providers.EventAwaitingReview)
+	r.q <- verdict(steer.KindReject, "wrong, redo")
+	res := r.result(t)
+	if res.StopReason != StopReasonRejected || r.prov.calls() != 1 {
+		t.Errorf("result = %q %q after %d calls, want %q after 1", res.StopReason, res.FinalText, r.prov.calls(), StopReasonRejected)
+	}
+}
