@@ -89,8 +89,8 @@ const documentInputSchema = `{
 		"document_id": {"type": "string"},
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here."},
 		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
-		"parent_id":   {"type": "string", "description": "create_chunk: parent chunk. Pass the document's root_chunk_id to put the chunk under the document's title — omitting it makes a top-level chunk BESIDE the root."},
-		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent."},
+		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
+		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
 		"direction":   {"type": "string", "enum": ["up","down","pull","push"], "description": "reorder_chunk: move the chunk up or down within its current level. sync: pull (default) copies the peer document's keyed chunks into this one; push writes this document's keyed chunks up to the peer (reconciled by natural_key, carrying body/tags/hierarchy/manual-links; the losing side keeps the overwritten body in its history)."},
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts and query_chunks the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
@@ -2218,8 +2218,21 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// outcome than an error, and it is invisible to the dead-link sweeper, which
 	// looks for a missing DOCUMENT rather than a missing PARENT.
 	//
-	// An empty parent_id still means "child of the root", so nothing legitimate is
-	// narrowed.
+	// An empty parent_id means "child of the root", and now it is: the chunk is
+	// parented to the document's root chunk. It used to be stored with NO
+	// parent, which put it BESIDE the root — export_md rendered it as a second
+	// top-level heading next to the document's title — while every caller,
+	// model or human, meant "a section of this document". The root lookup also
+	// makes a mistyped document_id an error instead of an orphan chunk that no
+	// document shows.
+	if in.ParentID == "" && in.AfterID == "" {
+		root, rerr := d.documentRootChunk(ctx, key, in.DocumentID)
+		if rerr != nil {
+			return errResult("create_chunk: " + rerr.Error() +
+				" (pass the document_id create_document returned, in the same scope)"), nil
+		}
+		parentID = root
+	}
 	if in.ParentID != "" {
 		par, ok, perr := d.getChunkRow(ctx, key, in.ParentID)
 		if perr != nil {
@@ -2830,6 +2843,19 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if !ok {
 		return errResult("move_chunk: no such chunk: " + in.ID), nil
 	}
+	// An empty new_parent_id moves the chunk under the document's root, for the
+	// same reason create_chunk parents to it: a parentless chunk sits BESIDE the
+	// root, not in the document. The root itself stays parentless — it is the
+	// top of the tree.
+	if in.NewParentID == "" {
+		root, rerr := d.documentRootChunk(ctx, key, row.DocumentID)
+		if rerr != nil {
+			return errResult("move_chunk: " + rerr.Error()), nil
+		}
+		if root != in.ID {
+			in.NewParentID = root
+		}
+	}
 	// Reject moving a chunk under itself or one of its own descendants — that
 	// would create a parent_id cycle (and a cycle makes delete_chunk's
 	// descendant walk non-terminating). Walk UP from the new parent to the
@@ -2851,8 +2877,8 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		// chunk keeps its own document_id while its parent_id points into another
 		// tree, so the two documents disagree about who owns it.
 		//
-		// Moving to the ROOT level is still expressed by an empty new_parent_id, so
-		// this narrows nothing a caller could legitimately want.
+		// An empty new_parent_id (moving under the document's root) is resolved to
+		// the root above, so it is checked here like any other parent.
 		newParent, found, perr := d.getChunkRow(ctx, key, in.NewParentID)
 		if perr != nil {
 			return errResult("move_chunk: new parent lookup: " + perr.Error()), nil
