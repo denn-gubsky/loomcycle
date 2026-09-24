@@ -362,8 +362,10 @@ type Decision struct {
 	// Kind: "deny" | "rewrite_input" | "rewrite_output" | "context" |
 	// "block" | "hold" | "unavailable" (the hook failed; FailMode says what
 	// that meant).
-	Kind              string
-	FailMode          FailMode
+	Kind     string
+	FailMode FailMode
+	// Reason is shown to the run's viewer and persisted: for "unavailable" it
+	// is decisionReason's short category, never a webhook's URL or response.
 	Reason            string
 	UpdatedInput      json.RawMessage
 	AdditionalContext string

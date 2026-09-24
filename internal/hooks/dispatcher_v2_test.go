@@ -3,6 +3,8 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -129,5 +131,43 @@ func TestRegistry_AcceptsThePostFailurePhase(t *testing.T) {
 	}
 	if _, err := r.Register(&Hook{Owner: "x", Name: "g", Phase: "after", CallbackURL: "http://h/x"}); err == nil {
 		t.Error("an unknown phase was accepted")
+	}
+}
+
+// An unavailable webhook's reason — streamed to the run's viewer and persisted
+// — is a short category. It used to be the raw error: the full callback URL
+// (a token in its query string) and up to 1 KiB of the callback's error body.
+func TestDispatcher_AnUnavailableWebhooksReasonNeverCarriesItsURLOrBody(t *testing.T) {
+	const secret = "tok_s3cr3t"
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/500":
+			http.Error(w, "internal detail "+secret, http.StatusInternalServerError)
+		case "/json":
+			_, _ = w.Write([]byte("not json " + secret))
+		case "/slow":
+			<-release
+		}
+	}))
+	defer srv.Close()
+	defer close(release) // before Close, which waits for the slow handler
+	for path, want := range map[string]string{
+		"/500":  "the hook returned status 500",
+		"/json": "the hook's response was not valid JSON",
+		"/slow": "the hook timed out",
+	} {
+		r := NewRegistry()
+		mustRegister(t, r, &Hook{Owner: "x", Name: "h", Phase: PhasePre, CallbackURL: srv.URL + path + "?token=" + secret, TimeoutMs: 50})
+		out := NewDispatcher(r, nil).RunPre(context.Background(), Identity{Agent: "a"}, ToolCall{ID: "t1", Name: "Read", Input: json.RawMessage(`{}`)})
+		if len(out.Decisions) != 1 || out.Decisions[0].Reason != want {
+			t.Errorf("%s: decisions = %+v, want the reason %q", path, out.Decisions, want)
+		}
+	}
+	r := NewRegistry()
+	mustRegister(t, r, &Hook{Owner: "x", Name: "h", Phase: PhasePre, CallbackURL: "http://127.0.0.1:1/?token=" + secret})
+	out := NewDispatcher(r, nil).RunPre(context.Background(), Identity{Agent: "a"}, ToolCall{ID: "t1", Name: "Read", Input: json.RawMessage(`{}`)})
+	if len(out.Decisions) != 1 || out.Decisions[0].Reason != "the hook could not be reached" {
+		t.Errorf("unreachable: decisions = %+v", out.Decisions)
 	}
 }
