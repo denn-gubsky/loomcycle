@@ -176,7 +176,7 @@ func (f *failingStub) Execute(context.Context, json.RawMessage) (Result, error) 
 // it tried, taken from that operation's article, and the help call for the
 // rest. Models recover from what an error says; they did not follow a pointer.
 func TestExecute_FailedCallCarriesACorrectCallForTheOperation(t *testing.T) {
-	path := &failingStub{pointerStub{name: "Path", schema: `{"type":"object","properties":{"op":{"type":"string","enum":["ls","mv"]}}}`},
+	path := &failingStub{pointerStub{name: "Path", schema: `{"type":"object","properties":{"op":{"type":"string","enum":["ls","mv"]},"path":{"type":"string"},"to":{"type":"string"}}}`},
 		Result{Text: "move_chunk: missing required field: to", IsError: true}}
 	help := newHelp("Path", "Path/mv")
 	help.examples["Path/mv"] = `{"op":"mv","path":"/docs/draft","to":"/docs/final"}`
