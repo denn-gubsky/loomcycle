@@ -101,17 +101,22 @@ func TestRun_Auto_LocalResolvesToRecap(t *testing.T) {
 }
 
 // Control: the SAME plain-text provider marked frontier (Local=false) DOES take
-// the stateful path under auto, and there errors because it never calls
-// emit_state — confirming the routing hinges on Local, not the provider itself.
+// the stateful path under auto — confirming the routing hinges on Local, not
+// the provider itself. The stateful loop re-prompts for emit_state and then
+// takes the prose as the final answer, and only the stateful path returns a
+// State.
 func TestRun_Auto_FrontierTextProviderTakesStateful(t *testing.T) {
-	_, err := Run(context.Background(), RunOptions{
+	res, err := Run(context.Background(), RunOptions{
 		Provider:   &textProvider{local: false},
 		Model:      "x",
 		Dispatcher: tools.NewDispatcher(nil),
 		Segments:   statefulTaskSegs(),
 		Context:    autoCtx(),
 	})
-	if err == nil {
-		t.Fatal("auto+frontier with a non-emit_state provider must error (it entered the stateful loop)")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.State == nil {
+		t.Fatal("auto+frontier did not enter the stateful loop (no State returned)")
 	}
 }

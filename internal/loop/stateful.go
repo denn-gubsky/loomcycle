@@ -902,13 +902,32 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				// output was not usable, and the model is the one who can fix
 				// it. So it is re-prompted with what it actually said.
 				if onInvalid == "fail" || attempt >= maxRetries {
-					msg := fmt.Sprintf("stateful step failed: model did not call emit_state after %d attempt(s) — %s. "+
-						"context.mode: stateful requires a model that reliably emits tool calls; "+
-						"raise context.max_patch_retries, or move this agent to a model that does%s",
-						attempt+1, producedInstead(call), unforcedNote(opts))
-					emit(providers.Event{Type: providers.EventError, Error: msg})
-					return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, errors.New(msg)
+					// ⚠️ PROSE IS AN ANSWER, once the model has been asked
+					// for the call and still replied in words. Measured live
+					// (ornith-1.5 behind chat/local): a step found the right
+					// value, wrote "The value is Helix" as text, did so again
+					// when re-prompted, and the run FAILED with the correct
+					// answer discarded. The retries above still ask for
+					// emit_state first; only when the budget is spent is the
+					// last reply taken as `{done: true, final: <text>}`, which
+					// then ends the turn exactly as a real final does — the
+					// interactive park included. Not under on_invalid_patch:
+					// fail, which asks for the strict behaviour. A reply with
+					// no text still fails: there is nothing to show.
+					if onInvalid != "fail" && call.text != "" {
+						input, _ = json.Marshal(map[string]any{"done": true, "final": call.text})
+						err = nil
+					} else {
+						msg := fmt.Sprintf("stateful step failed: model did not call emit_state after %d attempt(s) — %s. "+
+							"context.mode: stateful requires a model that reliably emits tool calls; "+
+							"raise context.max_patch_retries, or move this agent to a model that does%s",
+							attempt+1, producedInstead(call), unforcedNote(opts))
+						emit(providers.Event{Type: providers.EventError, Error: msg})
+						return RunResult{StopReason: "error", Iterations: iter, Usage: total, State: sigma}, errors.New(msg)
+					}
 				}
+			}
+			if err != nil {
 				// Show it its own reply, then say what was required. An EMPTY
 				// assistant turn is never appended — the providers reject one,
 				// so a model that returned nothing gets the instruction alone.
