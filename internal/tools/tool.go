@@ -1914,6 +1914,10 @@ func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMes
 	ctx, span := lcotel.RecordToolCall(ctx, name)
 	defer span.End()
 	if t, ok := d.tools[name]; ok {
+		if res, refused := d.refuseUnknownFields(t, input); refused {
+			lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
+			return d.withHelpPointer(name, input, res)
+		}
 		res, err := t.Execute(ctx, input)
 		if err != nil {
 			lcotel.SetSpanError(span, err)
