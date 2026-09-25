@@ -130,6 +130,9 @@ type Dispatcher struct {
 	// and the pointer is only worth writing when this dispatcher can serve it.
 	help     HelpIndex
 	helpName string
+	// repeats counts failed calls per exact call, so a run re-sending one that
+	// cannot succeed is refused and then stopped (see repeat.go).
+	repeats repeatTracker
 }
 
 // FallbackFunc is consulted by Dispatcher.Execute when a tool name isn't
@@ -1913,31 +1916,39 @@ func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {
 	ctx, span := lcotel.RecordToolCall(ctx, name)
 	defer span.End()
-	if t, ok := d.tools[name]; ok {
-		if res, refused := d.refuseUnknownFields(t, input); refused {
-			lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
-			return d.withHelpPointer(name, input, res)
-		}
-		res, err := t.Execute(ctx, input)
-		if err != nil {
-			lcotel.SetSpanError(span, err)
-			return Result{Text: err.Error(), IsError: true}
-		}
-		if res.IsError {
-			lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
-		}
+	res := d.execute(ctx, name, input)
+	if res.IsError {
+		lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
+	}
+	return res
+}
+
+// execute is Execute without the span: the call, the refusals ahead of it,
+// the failure count behind it, and the help appended to a failure.
+func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMessage) Result {
+	if res, refused := d.refuseRepeat(name, input); refused {
 		return d.withHelpPointer(name, input, res)
 	}
-	if d.fallback != nil {
-		if res, handled := d.fallback(ctx, name, input); handled {
-			if res.IsError {
-				lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
-			}
-			return d.withHelpPointer(name, input, res)
+	var res Result
+	if t, ok := d.tools[name]; ok {
+		if r, refused := d.refuseUnknownFields(t, input); refused {
+			res = r
+		} else if r, err := t.Execute(ctx, input); err != nil {
+			res = Result{Text: err.Error(), IsError: true}
+		} else {
+			res = r
 		}
+	} else if d.fallback != nil {
+		r, handled := d.fallback(ctx, name, input)
+		if !handled {
+			return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
+		}
+		res = r
+	} else {
+		return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
 	}
-	lcotel.SetSpanErrorMessage(span, "tool not found")
-	return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
+	d.noteResult(name, input, res)
+	return d.withHelpPointer(name, input, res)
 }
 
 // firstLineForSpan extracts the first line of a tool's error text for

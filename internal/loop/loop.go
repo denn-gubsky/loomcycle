@@ -3356,6 +3356,14 @@ outerLoop:
 		hookIdent := HookIdentity(ctx, opts.AgentName, iter)
 		toolResults := executePendingTools(turnCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
+		if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
+			msg := "run stopped: " + why + " after being told it cannot succeed as sent"
+			emit(providers.Event{Type: providers.EventError, Error: msg})
+			disarmTurn()
+			turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
+			iterSpan.End()
+			return RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: totalUsage}, errors.New(msg)
+		}
 
 		// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
 		// while its tools ran. executePendingTools returns one result per pending

@@ -92,6 +92,11 @@ func (a *AnswerText) String() string { return a.b.String() }
 // denied before any model call.
 const StopReasonDeniedByHook = "denied_by_hook"
 
+// StopReasonRepeatedFailedCall ends a run that kept re-sending a failed tool
+// call after the dispatcher refused it as unable to succeed (see
+// tools/repeat.go). Its own reason so a client can tell it from a crash.
+const StopReasonRepeatedFailedCall = "repeated_failed_call"
+
 // StopReasonStopBlocked is the stop reason of a run whose answer agent_stop
 // hooks blocked more than MaxStopBlocks times in a row.
 const StopReasonStopBlocked = "stop_blocked"
