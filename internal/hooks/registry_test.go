@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +21,7 @@ func mustRegister(t *testing.T, r *Registry, h *Hook) string {
 // operator's hooks can never intercept another tenant's tool calls.
 func TestRegistry_Match_TenantConfinement(t *testing.T) {
 	r := NewRegistry()
-	// Registration order = Pre chain order.
+	// Registered first, the global hook still runs after the run's tenant hook.
 	mustRegister(t, r, &Hook{Owner: "op", Name: "global", Phase: PhasePre, CallbackURL: "https://x/g", Tools: []string{"T"}})
 	mustRegister(t, r, &Hook{Tenant: "tenant-a", Owner: "a", Name: "a-only", Phase: PhasePre, CallbackURL: "https://x/a", Tools: []string{"T"}})
 	mustRegister(t, r, &Hook{Tenant: "tenant-b", Owner: "b", Name: "b-only", Phase: PhasePre, CallbackURL: "https://x/b", Tools: []string{"T"}})
@@ -29,8 +30,8 @@ func TestRegistry_Match_TenantConfinement(t *testing.T) {
 		tenant string
 		want   []string
 	}{
-		{"tenant-a", []string{"global", "a-only"}}, // global + own; NOT b-only
-		{"tenant-b", []string{"global", "b-only"}}, // global + own; NOT a-only
+		{"tenant-a", []string{"a-only", "global"}}, // own + global; NOT b-only
+		{"tenant-b", []string{"b-only", "global"}}, // own + global; NOT a-only
 		{"tenant-c", []string{"global"}},           // an unrelated tenant sees only the global hook
 		{"", []string{"global"}},                   // a legacy/untenated run sees only the global hook
 	}
@@ -403,5 +404,32 @@ func TestRegistry_HostWidenPermit_NilReceiver(t *testing.T) {
 	var r *Registry
 	if r.IsHostWidenPermitted("any-tenant", "anyone") {
 		t.Error("nil receiver should return false")
+	}
+}
+
+// Every chain runs the run's tenant hooks before the operator-global ones,
+// whatever the registration order, so the operator's hooks have the last word
+// on the input and on the result. Within each group, pre and the run phases
+// keep registration order and post keeps reverse registration order. Tenant
+// and global hooks used to interleave by registration order alone.
+func TestRegistry_Match_TenantHooksRunBeforeGlobalOnes(t *testing.T) {
+	r := NewRegistry()
+	for _, p := range []Phase{PhasePre, PhasePost, PhaseAgentStop} {
+		for _, h := range []*Hook{
+			{Owner: "op", Name: "g1"}, {Tenant: "acme", Owner: "t", Name: "t1"},
+			{Owner: "op", Name: "g2"}, {Tenant: "acme", Owner: "t", Name: "t2"},
+		} {
+			h.Phase, h.Name, h.CallbackURL = p, string(p)+"-"+h.Name, "https://x/"
+			mustRegister(t, r, h)
+		}
+	}
+	for p, want := range map[Phase][]string{
+		PhasePre:       {"pre-t1", "pre-t2", "pre-g1", "pre-g2"},
+		PhasePost:      {"post-t2", "post-t1", "post-g2", "post-g1"},
+		PhaseAgentStop: {"agent_stop-t1", "agent_stop-t2", "agent_stop-g1", "agent_stop-g2"},
+	} {
+		if got := hookNames(r.Match("acme", "agent", "", p)); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s chain = %v, want %v", p, got, want)
+		}
 	}
 }

@@ -170,3 +170,25 @@ func TestLoop_ANestedToolCallGoesThroughTheHooks(t *testing.T) {
 		t.Errorf("decisions = %+v, want the nested call's deny, named after the outer call", ds)
 	}
 }
+
+// A post hook sees the input the tool ran with — a pre hook's rewrite — not
+// the model's original. It used to get the original, so it judged the result
+// of one call against the input of another.
+func TestLoop_APostHookSeesTheInputTheToolRanWith(t *testing.T) {
+	rewrite := newHookServer(t, `{"input":{"url":"https://safe.example/"}}`)
+	post := newHookServer(t, `{}`)
+	reg := hooks.NewRegistry()
+	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL})
+	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "audit", Phase: hooks.PhasePost, CallbackURL: post.srv.URL})
+	tool := &fakeWebFetch{result: tools.Result{Text: "page"}}
+	runWithHooks(t, context.Background(), reg,
+		providers.ToolUse{ID: "c1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://evil.example/"}`)},
+		tool, tools.NewDispatcher([]tools.Tool{tool}))
+	var call hooks.PostHookCall
+	if p := post.payloads(); len(p) != 1 || json.Unmarshal([]byte(p[0]), &call) != nil {
+		t.Fatalf("post payloads = %v", p)
+	}
+	if got := string(call.ToolCall.Input); got != `{"url":"https://safe.example/"}` {
+		t.Errorf("the post hook saw the input %s, want the one the tool ran with", got)
+	}
+}

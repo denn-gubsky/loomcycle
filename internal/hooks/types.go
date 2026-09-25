@@ -50,7 +50,27 @@ const (
 	// sent back as a user turn and the model tries again), or hold it for a
 	// person's verdict.
 	PhaseAgentStop Phase = "agent_stop"
+	// PhaseSubagentStart runs in the parent when it is about to start a
+	// sub-agent (the Agent tool). The hook may deny the child — the parent's
+	// call gets the reason — or add context to the child's prompt.
+	PhaseSubagentStart Phase = "subagent_start"
+	// PhaseSubagentStop runs in the parent after a sub-agent finished, before
+	// its result reaches the parent. The hook may deny the result (the parent
+	// gets the reason as an error, and may retry) or add context to it. Sending
+	// the child back to revise is agent_stop's, on the child.
+	PhaseSubagentStop Phase = "subagent_stop"
+	// PhasePreCompact runs before a compaction summarizes the conversation. The
+	// hook may deny it.
+	PhasePreCompact Phase = "pre_compact"
+	// PhasePostCompact reports a compaction that happened. Observe only.
+	PhasePostCompact Phase = "post_compact"
+	// PhaseRunEnd reports how a run ended, whatever the outcome. Observe only.
+	PhaseRunEnd Phase = "run_end"
 )
+
+// IsObservePhase reports whether hooks of this phase only report: their
+// result is ignored.
+func IsObservePhase(p Phase) bool { return p == PhasePostCompact || p == PhaseRunEnd }
 
 // IsToolPhase reports whether hooks of this phase wrap a tool call. The
 // others are about the run itself, and are selected by agent only.
@@ -105,8 +125,10 @@ type Hook struct {
 	TimeoutMs   int           `json:"timeout_ms"`
 	Timeout     time.Duration `json:"-"` // resolved at registration time
 	// RegisteredAt is the wall-clock instant the registration landed.
-	// Determines chain order across owners — earlier registrations run
-	// first in the Pre chain (LIFO in the Post chain, as middleware).
+	// Registration order is chain order within a group — earlier
+	// registrations run first in the Pre chain (LIFO in the Post chain, as
+	// middleware) — and a run's tenant hooks always run before the
+	// operator-global ones (see Registry.Match).
 	RegisteredAt time.Time `json:"registered_at"`
 	// Code is a code-js hook body: JavaScript defining a top-level
 	// hook(ev) function that returns the decision. A hook has exactly one
@@ -239,6 +261,22 @@ type LifecycleHookCall struct {
 	// row. A validator that would block forever can see it has already asked.
 	StopHookActive bool `json:"stop_hook_active,omitempty"`
 	StopBlocks     int  `json:"stop_blocks,omitempty"`
+	// Subagent is the child's agent name (subagent_start / subagent_stop);
+	// SubagentRunID its run, once it has one.
+	Subagent      string `json:"subagent,omitempty"`
+	SubagentRunID string `json:"subagent_run_id,omitempty"`
+	// Status and Error say how a child (subagent_stop) or the run (run_end)
+	// ended: completed, failed, cancelled or rejected.
+	Status string `json:"status,omitempty"`
+	Error  string `json:"error,omitempty"`
+	// Trigger is what asked for a compaction (manual, auto, self);
+	// ContextTokens and Window its footprint (pre_compact); BeforeTokens and
+	// AfterTokens what it did (post_compact).
+	Trigger       string `json:"trigger,omitempty"`
+	ContextTokens int    `json:"context_tokens,omitempty"`
+	Window        int    `json:"window,omitempty"`
+	BeforeTokens  int    `json:"before_tokens,omitempty"`
+	AfterTokens   int    `json:"after_tokens,omitempty"`
 }
 
 // LifecycleHookResult is what an agent_start or agent_stop hook returns.
@@ -258,15 +296,18 @@ type LifecycleHookResult struct {
 // hook is reported rather than read as "allow".
 func (r LifecycleHookResult) check(p Phase) error {
 	switch p {
-	case PhaseAgentStart:
+	case PhaseAgentStart, PhaseSubagentStart, PhaseSubagentStop, PhasePreCompact:
+		if p == PhasePreCompact && r.AdditionalContext != "" {
+			return fmt.Errorf("additional_context does not apply to pre_compact; a compaction has no turn to add it to")
+		}
 		switch r.Decision {
 		case "", "allow":
 		case "deny":
 			if r.AdditionalContext != "" {
-				return fmt.Errorf("additional_context has no prompt to go into when the run is denied")
+				return fmt.Errorf("additional_context has nothing to go into when %s is denied", p)
 			}
 		default:
-			return fmt.Errorf("decision %q does not apply to agent_start; it is \"allow\" or \"deny\"", r.Decision)
+			return fmt.Errorf("decision %q does not apply to %s; it is \"allow\" or \"deny\"", r.Decision, p)
 		}
 	case PhaseAgentStop:
 		if r.AdditionalContext != "" {
@@ -323,8 +364,10 @@ type Decision struct {
 	// Kind: "deny" | "rewrite_input" | "rewrite_output" | "context" |
 	// "block" | "hold" | "unavailable" (the hook failed; FailMode says what
 	// that meant).
-	Kind              string
-	FailMode          FailMode
+	Kind     string
+	FailMode FailMode
+	// Reason is shown to the run's viewer and persisted: for "unavailable" it
+	// is decisionReason's short category, never a webhook's URL or response.
 	Reason            string
 	UpdatedInput      json.RawMessage
 	AdditionalContext string
@@ -406,7 +449,8 @@ func eventFor(p Phase) string {
 		return "pre_tool_use"
 	case PhasePostFailure:
 		return "post_tool_use_failure"
-	case PhaseAgentStart, PhaseAgentStop:
+	case PhaseAgentStart, PhaseAgentStop, PhaseSubagentStart, PhaseSubagentStop,
+		PhasePreCompact, PhasePostCompact, PhaseRunEnd:
 		return string(p)
 	default:
 		return "post_tool_use"

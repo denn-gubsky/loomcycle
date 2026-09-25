@@ -1812,6 +1812,20 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 			model = *c.Model
 		}
 	}
+	// pre_compact hooks may refuse this compaction. Refused like any other
+	// decline, so it is never silent.
+	hookIdent := HookIdentity(ctx, opts.AgentName, IterationOf(ctx))
+	if opts.Hooks != nil {
+		gate := opts.Hooks.RunGate(ctx, hookIdent, hooks.PhasePreCompact,
+			hooks.LifecycleInfo{Trigger: trigger, ContextTokens: used, Window: window})
+		EmitHookDecisions(emit, providers.ToolUse{}, gate.Decisions)
+		if gate.Denied {
+			return declineDistill(emit, messages, &providers.ContextDistillDeclinedInfo{
+				Mode: "compaction", Trigger: trigger, Reason: providers.DistillDeclineDeniedByHook,
+				UsedTokens: used, WindowTokens: window, Messages: len(messages), KeepLastN: keepLastN,
+				Message: "context compaction declined: " + gate.Reason})
+		}
+	}
 	// The window overrides a pinning keep_last_n — see splitOrCutToWindow.
 	firstIdx, cut, ok := splitOrCutToWindow(messages, keepLastN, keepFirst,
 		window*compactionKeptTailBudgetPct/100)
@@ -1871,6 +1885,10 @@ func maybeAutoCompact(ctx context.Context, opts RunOptions, messages []providers
 	opts.RecallIndex.Harvest(ctx, messages[firstIdx:cut])
 	emit(providers.Event{Type: providers.EventContextCompaction, ContextCompaction: info})
 	lcotel.RecordCompactionCtx(ctx, trigger, before, after) // per-run-shape metric via OTEL span event
+	if opts.Hooks != nil {
+		opts.Hooks.Observe(ctx, hookIdent, hooks.PhasePostCompact,
+			hooks.LifecycleInfo{Trigger: trigger, BeforeTokens: before, AfterTokens: after})
+	}
 	return out, true
 }
 
@@ -2246,8 +2264,8 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// agent_start hooks: once per run, now that the prompt is composed and
 	// before any model call, for both loops. A resumed run already started.
 	if opts.Hooks != nil && !opts.Resumed {
-		out := opts.Hooks.RunAgentStart(ctx, hookIdentity(ctx, opts.AgentName, 0))
-		emitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
+		out := opts.Hooks.RunGate(ctx, HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStart, hooks.LifecycleInfo{})
+		EmitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
 		if out.Denied {
 			// Returned, not emitted: the server reports a failed run's error.
 			return RunResult{StopReason: StopReasonDeniedByHook}, fmt.Errorf("the run was stopped before it began: %s", out.Reason)
@@ -2340,7 +2358,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
 				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
 		}
-		if opts.Hooks != nil && opts.Hooks.Matches(hookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
+		if opts.Hooks != nil && opts.Hooks.Matches(HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
 			// Same reason as review below: the step loop's product is its
 			// state, not an answer an agent_stop hook could block or hold.
 			msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"
@@ -2625,6 +2643,7 @@ outerLoop:
 		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
 		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
 		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
+		iterCtx = withIteration(iterCtx, iter)
 		iterCtx = tools.WithMaxContextTokens(iterCtx, opts.MaxContextTokens) // RFC CJ — configured cap for op=self
 		// NB: the context-footprint stamp (tools.WithContextUsage) is applied
 		// LOWER — after drainSteer + auto/self compaction — so a same-turn
@@ -3205,9 +3224,9 @@ outerLoop:
 			// answer spares a person reviewing one that will change anyway.
 			heldBy := ""
 			if opts.Hooks != nil {
-				out := opts.Hooks.RunAgentStop(ctx, hookIdentity(ctx, opts.AgentName, iter),
-					hooks.StopInfo{FinalText: finalText, StopReason: iterStop, StopBlocks: stopBlocks})
-				emitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
+				out := opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, opts.AgentName, iter),
+					hooks.LifecycleInfo{FinalText: finalText, StopReason: iterStop, StopBlocks: stopBlocks})
+				EmitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
 				switch out.Kind {
 				case hooks.StopBlock:
 					if stopBlocks >= MaxStopBlocks {
@@ -3234,6 +3253,17 @@ outerLoop:
 					continue outerLoop
 				case hooks.StopHold:
 					heldBy = out.By
+				case hooks.StopCancelled:
+					// Returned as an error, like an abandoned review hold, so the
+					// run is recorded cancelled: leaving the loop cleanly would
+					// record an answer no hook approved as a completion.
+					iterSpan.End()
+					turnCancelFn(nil)
+					err := ctx.Err()
+					if err == nil {
+						err = context.Canceled
+					}
+					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
 				}
 			}
 			stopBlocks = 0
@@ -3323,7 +3353,7 @@ outerLoop:
 		// tools' results stream out first, slow ones last — because
 		// callers rendering live progress want "company 1 done" the
 		// moment company 1 is done, not after company 3 finishes too.
-		hookIdent := hookIdentity(ctx, opts.AgentName, iter)
+		hookIdent := HookIdentity(ctx, opts.AgentName, iter)
 		toolResults := executePendingTools(turnCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
 
@@ -3445,7 +3475,7 @@ func dispatchOneTool(
 	hookTC := hooks.ToolCall{ID: tu.ID, Name: tu.Name, Input: tu.Input}
 
 	pre := hookDispatcher.RunPre(ctx, ident, hookTC)
-	emitHookDecisions(emit, tu, pre.Decisions)
+	EmitHookDecisions(emit, tu, pre.Decisions)
 	// A tool that runs another tool on the model's behalf goes through these
 	// same hooks; its call is named after this one.
 	ctx = tools.WithHookedExecute(ctx, func(c context.Context, name string, input json.RawMessage) tools.Result {
@@ -3492,8 +3522,14 @@ func dispatchOneTool(
 		r = executeTool(execCtx, dispatcher, running)
 	}
 
+	// Post hooks judge the result against the input the tool ran with: a pre
+	// hook's rewrite, not the model's original. (A denied call ran nothing;
+	// its post hooks see what the model asked for.)
+	if pre.Deny == nil && pre.Input != nil {
+		hookTC.Input = pre.Input
+	}
 	post := hookDispatcher.RunPost(ctx, ident, hookTC, hooks.ToolResult{Text: r.Text, IsError: r.IsError, Error: hookToolError(r.Error)})
-	emitHookDecisions(emit, tu, post.Decisions)
+	EmitHookDecisions(emit, tu, post.Decisions)
 	// The hook wire carries only text and is_error, so a Post chain can
 	// replace those two and nothing else. Rebuilding the result from them
 	// alone dropped Error and Count on EVERY call — the server always wires
@@ -3521,10 +3557,10 @@ func hookToolError(e *tools.ErrorInfo) *hooks.ToolError {
 	return &hooks.ToolError{Category: string(e.Category), Retryable: e.Retryable, Description: e.Description}
 }
 
-// hookIdentity is the run, as a tool-use hook sees it. ONE builder for every
+// HookIdentity is the run, as a tool-use hook sees it. ONE builder for every
 // dispatch site, so the append loop and the stateful loop cannot report a call
 // differently.
-func hookIdentity(ctx context.Context, agent string, iteration int) hooks.Identity {
+func HookIdentity(ctx context.Context, agent string, iteration int) hooks.Identity {
 	ident := tools.RunIdentity(ctx)
 	return hooks.Identity{
 		Agent:   agent,
@@ -3540,10 +3576,10 @@ func hookIdentity(ctx context.Context, agent string, iteration int) hooks.Identi
 	}
 }
 
-// emitHookDecisions records what the hooks did to one call. A hook that
+// EmitHookDecisions records what the hooks did to one call. A hook that
 // passed the call through reported nothing, so a call no hook touched emits
 // nothing.
-func emitHookDecisions(emit func(providers.Event), tu providers.ToolUse, ds []hooks.Decision) {
+func EmitHookDecisions(emit func(providers.Event), tu providers.ToolUse, ds []hooks.Decision) {
 	if emit == nil {
 		return
 	}

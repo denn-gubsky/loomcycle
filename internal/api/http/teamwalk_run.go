@@ -102,6 +102,9 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, usage, msg); ferr != nil {
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}
+		// A walk is a run, and ends like one.
+		s.observeRunEnd(runStateMeta{RunID: runID, AgentID: agent, Agent: agent, UserID: ident.UserID, TenantID: ident.TenantID},
+			status, stopReason, msg, finalText)
 		cancelWalk(nil) // release the ctx; a no-op after a cancel
 	}
 	return walkCtx, runID, finish, nil

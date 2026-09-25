@@ -3,8 +3,12 @@ package hooks
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func lifecycleDispatcher(t *testing.T, hs ...*Hook) *Dispatcher {
@@ -26,7 +30,7 @@ func TestDispatcher_AgentStartAddsContextOrDenies(t *testing.T) {
 		&Hook{Owner: "x", Name: "ctx", Phase: PhaseAgentStart, CallbackURL: ctxHook.srv.URL},
 		&Hook{Owner: "x", Name: "no", Phase: PhaseAgentStart, CallbackURL: deny.srv.URL},
 		&Hook{Owner: "x", Name: "after", Phase: PhaseAgentStart, CallbackURL: after.srv.URL})
-	out := d.RunAgentStart(context.Background(), Identity{Agent: "a", RunID: "r1"})
+	out := d.RunGate(context.Background(), Identity{Agent: "a", RunID: "r1"}, PhaseAgentStart, LifecycleInfo{})
 	if !out.Denied || out.Reason != "agent disabled for this tenant" || out.AdditionalContext != nil {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -41,7 +45,7 @@ func TestDispatcher_AgentStartAddsContextOrDenies(t *testing.T) {
 	}
 
 	d = lifecycleDispatcher(t, &Hook{Owner: "x", Name: "ctx", Phase: PhaseAgentStart, CallbackURL: ctxHook.srv.URL})
-	out = d.RunAgentStart(context.Background(), Identity{Agent: "a"})
+	out = d.RunGate(context.Background(), Identity{Agent: "a"}, PhaseAgentStart, LifecycleInfo{})
 	if out.Denied || len(out.AdditionalContext) != 1 || out.AdditionalContext[0] != "the user is on the free plan" {
 		t.Errorf("context outcome = %+v", out)
 	}
@@ -53,7 +57,7 @@ func TestDispatcher_AgentStartFailModes(t *testing.T) {
 	block := newFakeHook(t, `{"decision":"block","reason":"x"}`)
 	for mode, wantDenied := range map[FailMode]bool{FailClosed: true, FailOpen: false} {
 		d := lifecycleDispatcher(t, &Hook{Owner: "x", Name: "bad", Phase: PhaseAgentStart, CallbackURL: block.srv.URL, FailMode: mode})
-		out := d.RunAgentStart(context.Background(), Identity{Agent: "a"})
+		out := d.RunGate(context.Background(), Identity{Agent: "a"}, PhaseAgentStart, LifecycleInfo{})
 		if out.Denied != wantDenied || len(out.Decisions) != 1 || out.Decisions[0].Kind != "unavailable" ||
 			!strings.Contains(out.Decisions[0].Reason, "does not apply to agent_start") {
 			t.Errorf("%s: outcome = %+v", mode, out)
@@ -71,7 +75,7 @@ func TestDispatcher_AgentStopBlockBeatsHold(t *testing.T) {
 		&Hook{Owner: "x", Name: "hold", Phase: PhaseAgentStop, CallbackURL: hold.srv.URL},
 		&Hook{Owner: "x", Name: "check", Phase: PhaseAgentStop, CallbackURL: block.srv.URL},
 		&Hook{Owner: "x", Name: "later", Phase: PhaseAgentStop, CallbackURL: later.srv.URL})
-	out := d.RunAgentStop(context.Background(), Identity{Agent: "a"}, StopInfo{FinalText: "the answer", StopReason: "end_turn", StopBlocks: 2})
+	out := d.RunAgentStop(context.Background(), Identity{Agent: "a"}, LifecycleInfo{FinalText: "the answer", StopReason: "end_turn", StopBlocks: 2})
 	if out.Kind != StopBlock || out.Reason != "cite a source" || out.By != "x/check" {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -85,7 +89,7 @@ func TestDispatcher_AgentStopBlockBeatsHold(t *testing.T) {
 	}
 
 	d = lifecycleDispatcher(t, &Hook{Owner: "x", Name: "hold", Phase: PhaseAgentStop, CallbackURL: hold.srv.URL})
-	out = d.RunAgentStop(context.Background(), Identity{Agent: "a"}, StopInfo{})
+	out = d.RunAgentStop(context.Background(), Identity{Agent: "a"}, LifecycleInfo{})
 	if out.Kind != StopHold || out.Reason != "a person should see this" || out.By != "x/hold" {
 		t.Errorf("hold outcome = %+v", out)
 	}
@@ -98,7 +102,7 @@ func TestDispatcher_AgentStopFailModes(t *testing.T) {
 	noReason := newFakeHook(t, `{"decision":"block"}`)
 	for mode, want := range map[FailMode]string{FailClosed: StopHold, FailOpen: StopAllow} {
 		d := lifecycleDispatcher(t, &Hook{Owner: "x", Name: "bad", Phase: PhaseAgentStop, CallbackURL: noReason.srv.URL, FailMode: mode})
-		out := d.RunAgentStop(context.Background(), Identity{Agent: "a"}, StopInfo{})
+		out := d.RunAgentStop(context.Background(), Identity{Agent: "a"}, LifecycleInfo{})
 		if out.Kind != want || len(out.Decisions) != 1 || !strings.Contains(out.Decisions[0].Reason, "needs a reason") {
 			t.Errorf("%s: outcome = %+v", mode, out)
 		}
@@ -111,7 +115,7 @@ func TestDispatcher_ACodeHookDecidesTheRunLifecycle(t *testing.T) {
 		return CodeDecision{Decision: "block", Reason: "add a summary"}, nil
 	}}
 	d := codeDispatcher(t, run, &Hook{Owner: "x", Name: "g", Phase: PhaseAgentStop, Code: "function hook(ev) {}"})
-	if out := d.RunAgentStop(context.Background(), Identity{Agent: "a"}, StopInfo{}); out.Kind != StopBlock || out.Reason != "add a summary" {
+	if out := d.RunAgentStop(context.Background(), Identity{Agent: "a"}, LifecycleInfo{}); out.Kind != StopBlock || out.Reason != "add a summary" {
 		t.Fatalf("outcome = %+v", out)
 	}
 	if len(run.events) != 1 || run.events[0] != "agent_stop" {
@@ -121,7 +125,7 @@ func TestDispatcher_ACodeHookDecidesTheRunLifecycle(t *testing.T) {
 		return CodeDecision{UpdatedOutput: &ToolResult{Text: "x"}}, nil
 	}}
 	d = codeDispatcher(t, wrong, &Hook{Owner: "x", Name: "g", Phase: PhaseAgentStart, Code: "function hook(ev) {}", FailMode: FailClosed})
-	if out := d.RunAgentStart(context.Background(), Identity{Agent: "a"}); !out.Denied || !strings.Contains(out.Decisions[0].Reason, "tool hooks only") {
+	if out := d.RunGate(context.Background(), Identity{Agent: "a"}, PhaseAgentStart, LifecycleInfo{}); !out.Denied || !strings.Contains(out.Decisions[0].Reason, "tool hooks only") {
 		t.Errorf("start outcome = %+v", out)
 	}
 }
@@ -137,5 +141,90 @@ func TestRegistry_ALifecycleHookTakesNoToolsSelector(t *testing.T) {
 	d := NewDispatcher(r, nil)
 	if !d.Matches(Identity{Agent: "writer"}, PhaseAgentStop) || d.Matches(Identity{Agent: "other"}, PhaseAgentStop) {
 		t.Error("the agents selector did not select")
+	}
+}
+
+// The deciding phases added for sub-agents and compaction share agent_start's
+// gate: deny or add context — except that pre_compact has nowhere to put
+// context, so returning some is a mistake.
+func TestDispatcher_SubagentAndCompactionGates(t *testing.T) {
+	ctxHook := newFakeHook(t, `{"additional_context":"cite sources"}`)
+	d := lifecycleDispatcher(t, &Hook{Owner: "x", Name: "c", Phase: PhaseSubagentStop, CallbackURL: ctxHook.srv.URL})
+	out := d.RunGate(context.Background(), Identity{Agent: "lead"}, PhaseSubagentStop,
+		LifecycleInfo{Subagent: "researcher", SubagentRunID: "r_child", Status: "completed", FinalText: "found it"})
+	if out.Denied || len(out.AdditionalContext) != 1 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	for _, want := range []string{`"phase":"subagent_stop"`, `"subagent":"researcher"`, `"subagent_run_id":"r_child"`, `"status":"completed"`, `"final_text":"found it"`} {
+		if !strings.Contains(ctxHook.bodies[0], want) {
+			t.Errorf("payload lacks %s: %s", want, ctxHook.bodies[0])
+		}
+	}
+
+	d = lifecycleDispatcher(t, &Hook{Owner: "x", Name: "c", Phase: PhasePreCompact, CallbackURL: ctxHook.srv.URL, FailMode: FailClosed})
+	out = d.RunGate(context.Background(), Identity{Agent: "lead"}, PhasePreCompact, LifecycleInfo{Trigger: "auto"})
+	if !out.Denied || !strings.Contains(out.Decisions[0].Reason, "does not apply to pre_compact") {
+		t.Errorf("context on pre_compact: outcome = %+v", out)
+	}
+	deny := newFakeHook(t, `{"decision":"deny","reason":"keep the whole history for the audit"}`)
+	d = lifecycleDispatcher(t, &Hook{Owner: "x", Name: "keep", Phase: PhasePreCompact, CallbackURL: deny.srv.URL})
+	out = d.RunGate(context.Background(), Identity{Agent: "lead"}, PhasePreCompact, LifecycleInfo{Trigger: "auto", ContextTokens: 900, Window: 1000})
+	if !out.Denied || out.Reason != "keep the whole history for the audit" {
+		t.Errorf("deny: outcome = %+v", out)
+	}
+	if !strings.Contains(deny.bodies[0], `"trigger":"auto"`) || !strings.Contains(deny.bodies[0], `"context_tokens":900`) {
+		t.Errorf("payload = %s", deny.bodies[0])
+	}
+}
+
+// An observe hook runs off the caller's path and its answer changes nothing:
+// Observe returns before the hook has been called, and a failing hook is only
+// logged.
+func TestDispatcher_ObserveRunsOffThePathAndDecidesNothing(t *testing.T) {
+	release := make(chan struct{})
+	var bodies []string
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		_, _ = w.Write([]byte(`{"decision":"deny"}`))
+	}))
+	defer slow.Close()
+	d := lifecycleDispatcher(t,
+		&Hook{Owner: "x", Name: "slow", Phase: PhaseRunEnd, CallbackURL: slow.URL},
+		&Hook{Owner: "x", Name: "down", Phase: PhaseRunEnd, CallbackURL: "http://127.0.0.1:1/nope", FailMode: FailClosed})
+	done := d.Observe(context.Background(), Identity{Agent: "a", RunID: "r1"}, PhaseRunEnd,
+		LifecycleInfo{Status: "failed", StopReason: "error", Error: "boom", FinalText: "partial"})
+	select {
+	case <-done:
+		t.Fatal("Observe waited for its hooks")
+	default:
+	}
+	close(release)
+	<-done
+	if len(bodies) != 1 {
+		t.Fatalf("calls = %d", len(bodies))
+	}
+	for _, want := range []string{`"phase":"run_end"`, `"status":"failed"`, `"error":"boom"`, `"final_text":"partial"`} {
+		if !strings.Contains(bodies[0], want) {
+			t.Errorf("payload lacks %s: %s", want, bodies[0])
+		}
+	}
+	// No hooks: done at once.
+	select {
+	case <-lifecycleDispatcher(t).Observe(context.Background(), Identity{Agent: "a"}, PhaseRunEnd, LifecycleInfo{}):
+	case <-time.After(time.Second):
+		t.Fatal("an empty Observe did not close its channel")
+	}
+}
+
+// Every new phase is a run hook, selected by agent only.
+func TestRegistry_TheNewRunPhasesTakeNoToolsSelector(t *testing.T) {
+	r := NewRegistry()
+	for _, p := range []Phase{PhaseSubagentStart, PhaseSubagentStop, PhasePreCompact, PhasePostCompact, PhaseRunEnd} {
+		if _, err := r.Register(&Hook{Owner: "x", Name: string(p), Phase: p, Tools: []string{"Agent"}, CallbackURL: "http://e.test/h"}); !errors.Is(err, ErrInvalidRegistration) {
+			t.Errorf("%s with tools: err = %v", p, err)
+		}
+		mustRegister(t, r, &Hook{Owner: "x", Name: string(p), Phase: p, CallbackURL: "http://e.test/h"})
 	}
 }

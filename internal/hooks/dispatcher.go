@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Dispatcher is the front door the agent loop calls into. It looks
@@ -29,6 +30,10 @@ type Dispatcher struct {
 	// case a code hook (e.g. one reloaded from the database) is unavailable and
 	// its fail mode decides.
 	code CodeRunner
+	// tenantCode lets a tenant's code hook run (LOOMCYCLE_CODE_HOOKS_TENANTS).
+	// Registration refuses one without it; this also stops one persisted
+	// earlier, or registered before the operator turned the flag off.
+	tenantCode bool
 
 	hostWidenPermitted atomic.Int64
 	hostWidenDenied    atomic.Int64
@@ -73,6 +78,10 @@ func NewDispatcherWithPrivateHosts(reg RegistryInterface, httpClient *http.Clien
 // SetCodeRunner installs the runner for code-js hook bodies. Call it during
 // boot wiring, before the server serves requests.
 func (d *Dispatcher) SetCodeRunner(r CodeRunner) { d.code = r }
+
+// AllowTenantCodeHooks lets a tenant's code hook run, not only an
+// operator-global one. Same boot-wiring rule as SetCodeRunner.
+func (d *Dispatcher) AllowTenantCodeHooks(allow bool) { d.tenantCode = allow }
 
 // Identity carries the loop-side fields the dispatcher needs to
 // stamp onto the webhook payload. Filled by the loop from
@@ -182,8 +191,9 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 			// Fail-mode branch: open → pass through, closed → synthesize
 			// a deny error so the loop short-circuits.
 			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
 			if ctx.Err() != nil {
+				log.Printf("hooks: pre %s/%s failed (run ended): %v", h.Owner, h.Name, err)
 				// The run was cancelled while the hook ran (a code hook can be
 				// waiting on a person's answer). Fail-open must not run the tool
 				// of a run that is already over.
@@ -309,11 +319,21 @@ type PostOutcome struct {
 //
 // When the tool FAILED, the post_failure chain runs first, innermost to the
 // post chain: a hook registered only for failures sees the failure before any
-// general post hook has rewritten it.
+// general post hook has rewritten it. That holds within each group; across
+// them the run's tenant hooks (post_failure, then post) all run before the
+// operator-global ones, so the operator's hooks have the last word on the
+// result (see Registry.Match).
 func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, original ToolResult) PostOutcome {
 	chain := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
 	if original.IsError {
-		chain = append(d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePostFailure), chain...)
+		failure := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePostFailure)
+		tenantFailure, globalFailure := splitTenant(failure)
+		tenantPost, globalPost := splitTenant(chain)
+		chain = make([]*Hook, 0, len(failure)+len(chain))
+		chain = append(chain, tenantFailure...)
+		chain = append(chain, tenantPost...)
+		chain = append(chain, globalFailure...)
+		chain = append(chain, globalPost...)
 	}
 	out := PostOutcome{Result: original}
 	for _, h := range chain {
@@ -331,7 +351,7 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 		var res PostHookResult
 		if err := d.invoke(ctx, h, &call, &res); err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
 			if h.FailMode == FailClosed {
 				log.Printf("hooks: %s %s/%s failed (fail_mode=closed): %v", h.Phase, h.Owner, h.Name, err)
 				out.Result = ToolResult{
@@ -364,6 +384,16 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 	return out
 }
 
+// splitTenant splits a Match result, tenant hooks first, into its tenant and
+// operator-global parts, keeping each part's order.
+func splitTenant(hs []*Hook) (tenant, global []*Hook) {
+	i := 0
+	for i < len(hs) && hs[i].Tenant != "" {
+		i++
+	}
+	return hs[:i], hs[i:]
+}
+
 // invoke runs one hook: a code body in the code-js runner, otherwise a
 // webhook POST under the per-hook timeout. out is *PreHookResult or
 // *PostHookResult.
@@ -379,6 +409,10 @@ func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 // errCodeHooksDisabled is a code hook met with no runner installed.
 var errCodeHooksDisabled = errors.New("code hooks are not enabled on this server")
 
+// errTenantCodeHooksDisabled is a tenant's code hook on a server that allows
+// only operator-global ones.
+var errTenantCodeHooksDisabled = errors.New("code hooks registered by a tenant are not enabled on this server")
+
 // invokeCode runs a code body and translates its decision into the response
 // shape the chain applies. The runner applies the hook's timeout to each run of
 // the JavaScript itself, so no deadline is put on ctx here: that would count a
@@ -386,6 +420,9 @@ var errCodeHooksDisabled = errors.New("code hooks are not enabled on this server
 func (d *Dispatcher) invokeCode(ctx context.Context, h *Hook, body, out any) error {
 	if d.code == nil {
 		return errCodeHooksDisabled
+	}
+	if h.Tenant != "" && !d.tenantCode {
+		return errTenantCodeHooksDisabled
 	}
 	dec, err := d.code.Run(ctx, h, eventFor(h.Phase), body)
 	if err != nil {
@@ -421,21 +458,25 @@ func (d *Dispatcher) Matches(ident Identity, phase Phase) bool {
 	return len(d.registry.Match(ident.Tenant, ident.Agent, "", phase)) > 0
 }
 
-// lifecycleCall builds the payload for one agent_start / agent_stop hook.
-func lifecycleCall(h *Hook, ident Identity, stop StopInfo) LifecycleHookCall {
+// lifecycleCall builds the payload for one run-lifecycle hook.
+func lifecycleCall(h *Hook, ident Identity, info LifecycleInfo) LifecycleHookCall {
 	return LifecycleHookCall{
 		Phase: h.Phase, Owner: h.Owner, HookName: h.Name,
 		Agent: ident.Agent, UserID: ident.UserID, AgentID: ident.AgentID,
 		RunContext: ident.runContext(),
-		FinalText:  stop.FinalText, StopReason: stop.StopReason,
-		StopHookActive: stop.StopBlocks > 0, StopBlocks: stop.StopBlocks,
+		FinalText:  info.FinalText, StopReason: info.StopReason,
+		StopHookActive: info.StopBlocks > 0, StopBlocks: info.StopBlocks,
+		Subagent: info.Subagent, SubagentRunID: info.SubagentRunID,
+		Status: info.Status, Error: info.Error,
+		Trigger: info.Trigger, ContextTokens: info.ContextTokens, Window: info.Window,
+		BeforeTokens: info.BeforeTokens, AfterTokens: info.AfterTokens,
 	}
 }
 
 // invokeLifecycle runs one lifecycle hook and checks its result applies to
 // the phase.
-func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identity, stop StopInfo) (LifecycleHookResult, error) {
-	call := lifecycleCall(h, ident, stop)
+func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identity, info LifecycleInfo) (LifecycleHookResult, error) {
+	call := lifecycleCall(h, ident, info)
 	var res LifecycleHookResult
 	if err := d.invoke(ctx, h, &call, &res); err != nil {
 		return LifecycleHookResult{}, err
@@ -446,34 +487,36 @@ func (d *Dispatcher) invokeLifecycle(ctx context.Context, h *Hook, ident Identit
 	return res, nil
 }
 
-// StartOutcome is what RunAgentStart returns to the loop.
-type StartOutcome struct {
-	// Denied stops the run before any model call; Reason says why.
+// GateOutcome is what RunGate returns.
+type GateOutcome struct {
+	// Denied stops what the gate guards; Reason says why.
 	Denied bool
 	Reason string
-	// AdditionalContext is what the hooks asked to add to the prompt, in
-	// chain order.
+	// AdditionalContext is what the hooks asked to add, in chain order.
 	AdditionalContext []string
 	Decisions         []Decision
 }
 
-// RunAgentStart runs the agent_start chain, in registration order. The first
-// deny stops the chain. A hook that fails denies the run when it fails
-// closed, and is skipped when it fails open.
-func (d *Dispatcher) RunAgentStart(ctx context.Context, ident Identity) StartOutcome {
-	var out StartOutcome
-	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStart) {
-		res, err := d.invokeLifecycle(ctx, h, ident, StopInfo{})
+// RunGate runs a chain that may let something go ahead, deny it, or add
+// context to it: agent_start (the run), subagent_start (a child's start),
+// subagent_stop (a child's result reaching its parent) and pre_compact (a
+// compaction). Registration order, the run's tenant hooks before the
+// operator-global ones; the first deny stops the chain. A hook that
+// fails denies when it fails closed, and is skipped when it fails open.
+func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) GateOutcome {
+	var out GateOutcome
+	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", phase) {
+		res, err := d.invokeLifecycle(ctx, h, ident, info)
 		if err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
 			if h.FailMode == FailClosed || ctx.Err() != nil {
-				log.Printf("hooks: agent_start %s/%s failed (fail_mode=%s): %v", h.Owner, h.Name, failModeOf(h), err)
+				log.Printf("hooks: %s %s/%s failed (fail_mode=%s): %v", phase, h.Owner, h.Name, failModeOf(h), err)
 				out.Denied, out.Reason = true, "hook "+h.Owner+"/"+h.Name+" is unavailable"
 				out.AdditionalContext = nil
 				return out
 			}
-			log.Printf("hooks: agent_start %s/%s failed (fail_mode=open, passing through): %v", h.Owner, h.Name, err)
+			log.Printf("hooks: %s %s/%s failed (fail_mode=open, passing through): %v", phase, h.Owner, h.Name, err)
 			continue
 		}
 		if res.Decision == "deny" {
@@ -495,12 +538,66 @@ func (d *Dispatcher) RunAgentStart(ctx context.Context, ident Identity) StartOut
 	return out
 }
 
-// StopInfo is the answer an agent_stop chain decides on.
-type StopInfo struct {
+// ObserveBudget bounds one Observe call end to end: every matching hook, one
+// after another. The run has moved on (or ended), so nothing waits for it, but
+// it must not live on as a goroutine.
+const ObserveBudget = 30 * time.Second
+
+// Observe runs a chain that only reports — post_compact and run_end — off the
+// caller's path. Their results are ignored and their failures only logged:
+// what they would observe has already happened. A code body may notify but not
+// ask, since a question has nothing to hold. The returned channel closes when
+// the chain is done, for a caller (or a test) that wants to wait.
+func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) <-chan struct{} {
+	done := make(chan struct{})
+	matched := d.registry.Match(ident.Tenant, ident.Agent, "", phase)
+	if len(matched) == 0 {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		octx, cancel := context.WithTimeout(WithObserve(context.WithoutCancel(ctx)), ObserveBudget)
+		defer cancel()
+		for _, h := range matched {
+			if _, err := d.invokeLifecycle(octx, h, ident, info); err != nil {
+				log.Printf("hooks: %s %s/%s failed (observe only, ignored): %v", phase, h.Owner, h.Name, err)
+			}
+		}
+	}()
+	return done
+}
+
+type observeKey struct{}
+
+// WithObserve marks ctx as an observe-only hook call.
+func WithObserve(ctx context.Context) context.Context {
+	return context.WithValue(ctx, observeKey{}, true)
+}
+
+// IsObserve reports whether ctx is an observe-only hook call, where a code body
+// may not ask.
+func IsObserve(ctx context.Context) bool { v, _ := ctx.Value(observeKey{}).(bool); return v }
+
+// LifecycleInfo is what a run-lifecycle hook decides or reports on. Each
+// phase fills the fields it has: agent_stop the answer; subagent_* the child;
+// pre/post_compact the compaction; run_end how the run ended.
+type LifecycleInfo struct {
 	FinalText  string
 	StopReason string
 	// StopBlocks counts the blocks this answer has already had in a row.
 	StopBlocks int
+
+	Subagent      string
+	SubagentRunID string
+	Status        string
+	Error         string
+
+	Trigger       string
+	ContextTokens int
+	Window        int
+	BeforeTokens  int
+	AfterTokens   int
 }
 
 // Stop outcomes.
@@ -508,11 +605,14 @@ const (
 	StopAllow = "allow"
 	StopBlock = "block"
 	StopHold  = "hold"
+	// StopCancelled: the run ended while a hook was deciding. Nobody approved
+	// the answer, so the run must end cancelled, never completed.
+	StopCancelled = "cancelled"
 )
 
 // StopOutcome is what RunAgentStop returns to the loop.
 type StopOutcome struct {
-	// Kind is StopAllow, StopBlock or StopHold.
+	// Kind is StopAllow, StopBlock, StopHold or StopCancelled.
 	Kind string
 	// Reason is a block's feedback for the model, or why the answer is held.
 	Reason string
@@ -521,24 +621,30 @@ type StopOutcome struct {
 	Decisions []Decision
 }
 
-// RunAgentStop runs the agent_stop chain, in registration order.
+// RunAgentStop runs the agent_stop chain, in registration order, the run's
+// tenant hooks before the operator-global ones.
 //
 // Precedence is block > hold > allow. The first block stops the chain: the
 // model has to try again anyway, and holding a person on an answer an
 // automated check has already rejected would waste their time. A hold does
 // not stop the chain, so a later hook may still block. A hook that fails holds
 // the answer when it fails closed — the gate a closed agent_stop hook stands
-// for is a person's — and is skipped when it fails open.
-func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop StopInfo) StopOutcome {
+// for is a person's — and is skipped when it fails open. If the run ends while
+// a hook is deciding, the outcome is StopCancelled, whatever the fail mode.
+func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop LifecycleInfo) StopOutcome {
 	out := StopOutcome{Kind: StopAllow}
 	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStop) {
 		name := h.Owner + "/" + h.Name
 		res, err := d.invokeLifecycle(ctx, h, ident, stop)
 		if err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: err.Error()})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
 			if ctx.Err() != nil {
-				// The run is over; the loop ends it on its own.
+				// The run ended while the hook was deciding. Reported as allow,
+				// the loop left normally and recorded an answer nobody approved
+				// as a completion.
+				log.Printf("hooks: agent_stop %s failed (run ended): %v", name, err)
+				out.Kind, out.Reason, out.By = StopCancelled, "the run ended while hook "+name+" was deciding", name
 				return out
 			}
 			if h.FailMode == FailClosed {

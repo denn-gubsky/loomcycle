@@ -154,3 +154,28 @@ func TestRegistry_ACodeHookHasOneBodyAndATightTimeout(t *testing.T) {
 		}
 	}
 }
+
+// A tenant's code hook — one persisted before the operator required the
+// tenant opt-in, say — does not run unless tenant code hooks are allowed; an
+// operator-global code hook runs either way.
+func TestDispatcher_ATenantCodeHookRunsOnlyWhenTenantCodeHooksAreAllowed(t *testing.T) {
+	run := &fakeCodeRunner{decide: func(context.Context) (CodeDecision, error) {
+		return CodeDecision{Decision: "deny", Reason: "ran"}, nil
+	}}
+	d := codeDispatcher(t, run, &Hook{Tenant: "acme", Owner: "t", Name: "gate", Phase: PhasePre, Code: "function hook(ev) {}"})
+	ident := Identity{Agent: "a", Tenant: "acme"}
+	out := d.RunPre(context.Background(), ident, ToolCall{ID: "t1", Name: "Read"})
+	if len(run.events) != 0 || len(out.Decisions) != 1 || out.Decisions[0].Kind != "unavailable" ||
+		!strings.Contains(out.Decisions[0].Reason, "registered by a tenant") {
+		t.Fatalf("without the opt-in: ran %d times, decisions %+v", len(run.events), out.Decisions)
+	}
+	d.AllowTenantCodeHooks(true)
+	if out := d.RunPre(context.Background(), ident, ToolCall{ID: "t1", Name: "Read"}); out.Deny == nil || out.Deny.Text != "ran" {
+		t.Errorf("with the opt-in: %+v", out)
+	}
+
+	global := codeDispatcher(t, run, &Hook{Owner: "op", Name: "gate", Phase: PhasePre, Code: "function hook(ev) {}"})
+	if out := global.RunPre(context.Background(), ident, ToolCall{ID: "t1", Name: "Read"}); out.Deny == nil {
+		t.Errorf("an operator-global code hook did not run: %+v", out)
+	}
+}
