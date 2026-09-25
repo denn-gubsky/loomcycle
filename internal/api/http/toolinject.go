@@ -19,6 +19,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -140,7 +141,57 @@ func (s *Server) renderContextTools(ctx context.Context, mi memInject) string {
 	// re-derived at run-start/resume and must stay byte-stable for provider
 	// prompt-caching, and registry iteration order is not stable.
 	sort.Strings(lines)
-	return toolInventoryPreamble + "\n\n" + strings.Join(lines, "\n")
+	out := toolInventoryPreamble
+	if h := helpFirstLine(mi.Tools); h != "" {
+		out += " " + h
+	}
+	return out + "\n\n" + strings.Join(lines, "\n")
+}
+
+// helpFirstLine names the listed tools that have a call-format article and says
+// to read it before the first call. Measured on local models, the same
+// instruction at the end of each tool's schema description was never acted on
+// (0 of 20 runs): what those models read is this list, which carries only first
+// sentences. One line here costs a few dozen tokens per prompt, not one per
+// tool. Derived from the run's own Context tool, so it names only tools the run
+// can read about, and nothing when the run cannot call Context.
+func helpFirstLine(ts []tools.Tool) string {
+	var idx tools.HelpIndex
+	helpName := ""
+	for _, t := range ts {
+		if h, ok := t.(tools.HelpIndex); ok {
+			idx, helpName = h, t.Name()
+			break
+		}
+	}
+	if idx == nil {
+		return ""
+	}
+	var documented []string
+	byName := map[string]tools.Tool{}
+	for _, t := range ts {
+		name := t.Name()
+		if name == helpName || !idx.HasHelpTopic(name) {
+			continue
+		}
+		documented = append(documented, name)
+		byName[name] = t
+	}
+	if len(documented) == 0 {
+		return ""
+	}
+	// Sorted, and the example taken from the first name, so the line depends on
+	// the tool SET only: it lands in the cached system prompt.
+	sort.Strings(documented)
+	example := documented[0]
+	for _, op := range tools.SchemaEnum(byName[example].InputSchema(), "op") {
+		if idx.HasHelpTopic(example + "/" + op) {
+			example += "/" + op
+			break
+		}
+	}
+	return fmt.Sprintf("Before your first call to %s, read its call format with %s op=help — for example {\"op\":\"help\",\"topic\":%q}; it gives the exact arguments and an example.",
+		strings.Join(documented, ", "), helpName, example)
 }
 
 // renderContextGuide dispatches Context op=guide against the run's resolved tool
