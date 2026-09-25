@@ -302,6 +302,16 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		}
 	}
 
+	// A run held by review arming stays held unless its record says review is
+	// off. A record that says nothing is not a disarm: a team member's arming
+	// lived on its walk, and a member held before its arming was recorded
+	// would otherwise be approved here with no verdict. A hook's hold does not
+	// depend on arming, so it is left as it was.
+	reviewArmed := runCfg.Review != nil && *runCfg.Review
+	if resumeHeld != nil && resumeHeld.HeldBy == "" && runCfg.Review == nil {
+		reviewArmed = true
+	}
+
 	// System prompt segment (the conversation itself is in priorMessages).
 	var segments []loop.PromptSegment
 	if agentDef.SystemPrompt != "" {
@@ -328,6 +338,16 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// covers the pre-resume window.)
 	if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
 		log.Printf("resume: heartbeat stamp for %s failed: %v", run.ID, err)
+	}
+	// This replica now owns the run's live state (its steer queue, its cancel).
+	// The row still names the replica it was created on, and a cross-replica
+	// steer, verdict or cancel routes by the row: to a replica that is gone,
+	// it answers "not in flight". Logged, not fatal — the run itself is fine,
+	// and a verdict posted to this replica still reaches it.
+	if s.replicaID != "" && run.ReplicaID != s.replicaID {
+		if err := s.store.SetRunReplica(ctx, run.ID, s.replicaID); err != nil {
+			log.Printf("resume: replica stamp for %s failed: %v", run.ID, err)
+		}
 	}
 
 	// Detached background context: keep ctx VALUES but do NOT die when the
@@ -525,8 +545,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         run.Interactive,
 		InteractiveNow:      s.interactiveNowFn(run.ID, run.Interactive),
-		Review:              runCfg.Review != nil && *runCfg.Review,
-		ReviewNow:           s.reviewNowFn(run.ID, runCfg.Review != nil && *runCfg.Review),
+		Review:              reviewArmed,
+		ReviewNow:           s.reviewNowFn(run.ID, reviewArmed),
 		ReviewTTL:           runCfg.reviewTTL(), // the deadline runs from when the hold began, restart or not
 		StartParked:         startParked,        // RFC DD Gap 3: it was waiting; put it back to waiting
 		ResumeHeld:          resumeHeld,         // it was held for a verdict; hold it again

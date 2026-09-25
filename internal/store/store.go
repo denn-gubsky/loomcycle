@@ -1708,6 +1708,15 @@ type Store interface {
 
 	SetRunPauseState(ctx context.Context, runID, state string) error
 
+	// SetRunReplica records the replica that now owns a run's live state. A
+	// run is stamped at CreateRun; one RESUMED on another replica (a restart
+	// under a new replica id, a snapshot restored elsewhere) is re-stamped, or
+	// a cross-replica steer, verdict or cancel keeps routing to the replica
+	// that no longer runs it. SQLite has no replica_id column (a single-file
+	// store is a single-replica deployment) and treats this as a no-op;
+	// Postgres returns *ErrNotFound when no row matches runID.
+	SetRunReplica(ctx context.Context, runID, replicaID string) error
+
 	// ListPausedRuns returns runs whose pause_state is "paused" (the
 	// at-rest paused state, not the in-flight "pausing" transition).
 	// Used by the PauseManager on resume to find which runs need to

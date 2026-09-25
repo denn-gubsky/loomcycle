@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -225,5 +226,33 @@ func TestHandleCancelTurn_StopsATeamWalk(t *testing.T) {
 	}
 	if walkCtx.Err() == nil {
 		t.Error("the route answered 200 but the walk is still running")
+	}
+}
+
+// A live walk's run is heartbeated for as long as the walk is registered, so
+// the stale-run sweeper does not fail a walk that is waiting on held members;
+// the heartbeat stops when the walk finishes.
+func TestOpenTeamWalkRun_HeartbeatsTheWalkRunUntilItFinishes(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	srv.walkHeartbeatEvery = 10 * time.Millisecond
+
+	_, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(context.Background()), "triage", false)
+	if err != nil {
+		t.Fatalf("openTeamWalkRun: %v", err)
+	}
+	heartbeat := func() time.Time {
+		run, _ := srv.store.GetRun(context.Background(), runID)
+		return run.LastHeartbeatAt
+	}
+	first := time.Time{}
+	waitFor(t, "the walk run to be heartbeated", func() bool { first = heartbeat(); return !first.IsZero() })
+	waitFor(t, "the heartbeat to advance", func() bool { return heartbeat().After(first) })
+
+	finish("", nil)
+	stopped := heartbeat()
+	time.Sleep(60 * time.Millisecond)
+	if got := heartbeat(); !got.Equal(stopped) {
+		t.Errorf("heartbeat moved from %v to %v after the walk finished", stopped, got)
 	}
 }

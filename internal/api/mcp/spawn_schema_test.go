@@ -268,6 +268,7 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	          "max_tokens":100,"max_iterations":9,"max_concurrent_children":2,
 	          "retry_attempts":0,"memory_inject_max_tokens":0,"memory_index_max_bytes":0,
 	          "inject_tool_guide":false,"unbounded_iterations":false,
+	          "review":true,"review_ttl_seconds":60,
 	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"},
 	          "output_format":{"type":"json_schema","name":"verdict","schema":{"type":"object"}}}`
 	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
@@ -293,6 +294,8 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 		{"MaxTokens", in.MaxTokens, 100},
 		{"MaxIterations", in.MaxIterations, 9},
 		{"MaxConcurrentChildren", in.MaxConcurrentChildren, 2},
+		{"Review", in.Review, true},
+		{"ReviewTTLSeconds", in.ReviewTTLSeconds, 60},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %v, want %v — dropped by the streaming path's hand-copy", tc.field, tc.got, tc.want)

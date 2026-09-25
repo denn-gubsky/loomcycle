@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -431,11 +432,15 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		MemoryInjectMaxTokens: req.MemoryInjectMaxTokens,
 		MemoryIndexMaxBytes:   req.MemoryIndexMaxBytes,
 		InjectToolGuide:       req.InjectToolGuide,
+		// A blocking spawn honours review, as the connector's does: the call
+		// returns once an operator approves the held answer or rejects it.
+		Review:           req.Review != nil && *req.Review,
+		ReviewTTLSeconds: req.ReviewTTLSeconds,
 	}
 
 	var (
 		regAgentID, regRunID, regSessionID string
-		finalText                          string
+		finalText                          loop.AnswerText
 		finalUsage                         *providers.Usage
 		finalStopReason                    string
 		limitCrossings                     []providers.LimitInfo
@@ -452,9 +457,8 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 				AgentID: regAgentID,
 				Event:   ev,
 			})
+			finalText.Observe(ev)
 			switch ev.Type {
-			case providers.EventText:
-				finalText += ev.Text
 			case providers.EventUsage:
 				if ev.Usage != nil {
 					u := *ev.Usage
@@ -483,12 +487,15 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		AgentID:       regAgentID,
 		RunID:         regRunID,
 		SessionID:     regSessionID,
-		Status:        "completed",
+		Status:        string(store.RunCompleted),
 		StopReason:    finalStopReason,
-		FinalText:     finalText,
+		FinalText:     finalText.String(),
 		Usage:         finalUsage,
 		Limits:        limitCrossings,    // RFC AW: budget crossings observed during the run
 		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
+	}
+	if loop.EndsRejected(finalStopReason) {
+		result.Status = string(store.RunRejected)
 	}
 	switch {
 	case runErr != nil && errors.Is(runErr, context.Canceled):

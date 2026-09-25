@@ -26,6 +26,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -105,7 +106,7 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 	// OnEvent accumulates text deltas + the final usage/stop_reason.
 	var (
 		regAgentID, regRunID, regSessionID string
-		finalText                          string
+		finalText                          loop.AnswerText
 		finalUsage                         *providers.Usage
 		finalStopReason                    string
 		lastErrorMsg                       string
@@ -116,9 +117,8 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 			regAgentID, regRunID, regSessionID = agentID, runID, sessionID
 		},
 		OnEvent: func(ev providers.Event) {
+			finalText.Observe(ev)
 			switch ev.Type {
-			case providers.EventText:
-				finalText += ev.Text
 			case providers.EventUsage:
 				if ev.Usage != nil {
 					u := *ev.Usage
@@ -152,9 +152,9 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 		AgentID:       regAgentID,
 		RunID:         regRunID,
 		SessionID:     regSessionID,
-		Status:        string(store.RunCompleted),
+		Status:        string(terminalStatusOf(nil, loop.RunResult{StopReason: finalStopReason}, nil)),
 		StopReason:    finalStopReason,
-		FinalText:     finalText,
+		FinalText:     finalText.String(),
 		Usage:         finalUsage,
 		Limits:        limitCrossings, // RFC AW: budget crossings, omitempty
 		ParentContext: parentContext,  // v0.12.x: echo the lineage back to the caller
@@ -172,6 +172,10 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 		}
 		result.Status = string(store.RunFailed)
 		result.Error = runErr.Error()
+	case lastErrorMsg != "" && loop.EndsRejected(finalStopReason):
+		// A rejected run can say why (a hold nothing could rule on, feedback
+		// with no iteration left to answer it) without having failed.
+		result.Error = lastErrorMsg
 	case lastErrorMsg != "":
 		// Loop emitted an error event but didn't return a Go error
 		// (rare — current loop returns errors via the err path; this

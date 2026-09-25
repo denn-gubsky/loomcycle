@@ -151,3 +151,65 @@ func TestReviewRunTool_IsTenantConfinable(t *testing.T) {
 		t.Error("review_run is not tenant-confinable: a tenant operator could not review its own runs")
 	}
 }
+
+// A blocking spawn of a reviewed run that ends rejected reports rejected — the
+// status its row carries — and the answer that stands is the last round's,
+// not every round's answer run together.
+func TestSpawnRun_ReviewRejectedReportsRejectedWithTheLastAnswer(t *testing.T) {
+	srv, _, st := configuredMCP(t)
+	httpSrv := srv.cfg.Connector.(interface {
+		SetSteerRegistry(*steer.Registry)
+		ReviewRun(ctx context.Context, runID, decision, feedback, source string) (bool, error)
+	})
+	httpSrv.SetSteerRegistry(steer.NewRegistry(0))
+
+	done := make(chan connector.SpawnRunResult, 1)
+	go func() {
+		res := callTool(t, srv, "spawn_run", map[string]any{"agent": "agent", "user_id": "u1", "review": true, "segments": segment("go")})
+		var r connector.SpawnRunResult
+		_ = json.Unmarshal([]byte(res.Content[0].Text), &r)
+		done <- r
+	}()
+	run := heldRun(t, st, 1)
+	if _, err := httpSrv.ReviewRun(context.Background(), run.ID, "reject", "redo it", "api"); err != nil {
+		t.Fatal(err)
+	}
+	heldRun(t, st, 2)
+	if _, err := httpSrv.ReviewRun(context.Background(), run.ID, "reject", "", "api"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.Status != string(store.RunRejected) || r.FinalText != "finished" {
+			t.Errorf("spawn_run = status %q final %q, want rejected on the last answer", r.Status, r.FinalText)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("spawn_run did not return after the rejection")
+	}
+	if got, _ := st.GetRun(context.Background(), run.ID); got.Status != store.RunRejected {
+		t.Errorf("row status = %q", got.Status)
+	}
+}
+
+// The streaming spawn path reports a rejected run the same way.
+func TestSpawnRunStreaming_ReviewRejectedReportsRejectedWithTheLastAnswer(t *testing.T) {
+	fr := &fakeRunner{agentID: "a_1", runID: "r_1", sessionID: "s_1", events: []providers.Event{
+		{Type: providers.EventText, Text: "answer 1"},
+		{Type: providers.EventAwaitingReview, AwaitingReview: &providers.AwaitingReviewEventInfo{Round: 1}},
+		{Type: providers.EventText, Text: "answer "},
+		{Type: providers.EventText, Text: "2"},
+		{Type: providers.EventAwaitingReview, AwaitingReview: &providers.AwaitingReviewEventInfo{Round: 2}},
+		{Type: providers.EventDone, StopReason: "rejected"},
+	}}
+	sess := NewSession()
+	sess.MarkInitialized()
+	sess.SetRunEventsEnabled(true)
+	env := &handlerEnv{connector: &mockConnector{}, runner: fr, session: sess, notify: func(string, any) {}}
+	res, err := spawnRunStreaming(context.Background(), env, connector.SpawnRunRequest{Agent: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != string(store.RunRejected) || res.FinalText != "answer 2" {
+		t.Errorf("result = status %q final %q, want rejected on %q", res.Status, res.FinalText, "answer 2")
+	}
+}

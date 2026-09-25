@@ -50,6 +50,44 @@ const StopReasonRejected = "rejected"
 // to the rejected run status: an answer nobody looked at is never approved.
 const StopReasonReviewExpired = "review_expired"
 
+// EndsRejected reports whether a run that stopped for stopReason ended
+// rejected: its answer was turned down, or nobody ruled on it in time. Every
+// surface that reports a run's status derives it from this, so a blocking
+// spawn cannot call completed a run whose row says rejected.
+func EndsRejected(stopReason string) bool {
+	return stopReason == StopReasonRejected || stopReason == StopReasonReviewExpired
+}
+
+// AnswerText collects a run's answer from its streamed events. A run held for
+// review and sent back answers again; the revision replaces the answer it
+// revises, so only the text streamed since the last hold is the answer. An
+// answer an agent_stop hook blocked is replaced the same way.
+type AnswerText struct {
+	b    strings.Builder
+	held bool
+}
+
+// Observe folds one event into the answer.
+func (a *AnswerText) Observe(ev providers.Event) {
+	switch ev.Type {
+	case providers.EventAwaitingReview:
+		a.held = true
+	case providers.EventHookDecision:
+		if d := ev.HookDecision; d != nil && d.Phase == "agent_stop" && d.Decision == "block" {
+			a.held = true
+		}
+	case providers.EventText:
+		if a.held {
+			a.b.Reset()
+			a.held = false
+		}
+		a.b.WriteString(ev.Text)
+	}
+}
+
+// String is the answer so far.
+func (a *AnswerText) String() string { return a.b.String() }
+
 // StopReasonDeniedByHook is the stop reason of a run an agent_start hook
 // denied before any model call.
 const StopReasonDeniedByHook = "denied_by_hook"
@@ -134,7 +172,9 @@ const (
 //
 // heldSince is when the hold began, which the review deadline runs from
 // (opts.ReviewTTL; none when zero). A deadline that passes while the runtime is
-// paused waits for the pause to lift: a paused runtime does not end runs.
+// paused waits for the pause to lift: a paused runtime does not end runs. For
+// the same reason a verdict that arrives while paused waits for the lift too,
+// and one that waited out the pause wins over a deadline that passed in it.
 //
 // heldBy names the agent_stop hook that took the hold, or is empty when review
 // arming took it. A hook's hold is not released by disarming review: arming
@@ -160,7 +200,46 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	pp := newParkPause(opts.PauseGate)
 	defer pp.done()
 	expiredWhilePaused := false
+	// handle acts on one message from the steer queue; the bool reports that
+	// it ended the hold, with the outcome.
+	handle := func(m steer.Message) (reviewOutcome, bool) {
+		if m.IsVerdict() && m.EnqueuedAt.Before(heldAt) {
+			return 0, false
+		}
+		switch {
+		case m.Kind == steer.KindCompact:
+			messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+			lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+			announce()
+			return 0, false
+		case m.Kind == steer.KindApprove:
+			return reviewApproved, true
+		case strings.TrimSpace(m.Text) == "":
+			if m.Kind == steer.KindReject {
+				return reviewRejected, true
+			}
+			return 0, false // an empty operator message says nothing
+		}
+		// Feedback: a reject with text, or a plain operator message.
+		messages = append(messages, providers.Message{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
+		})
+		if opts.OnSteer != nil {
+			opts.OnSteer(m)
+		}
+		reResolveForOperatorTurn(ctx, opts, emit)
+		return reviewRevise, true
+	}
 	for {
+		// While the park records a pause, the queue is not read: a verdict
+		// that arrives then waits in it, in order, and is acted on when the
+		// pause lifts. A paused runtime does not end runs, and a verdict
+		// would end this one (or start its next turn) under the pause.
+		queue := opts.SteerQueue
+		if pp.recording() {
+			queue = nil
+		}
 		select {
 		case <-pp.declared():
 			pp.onDeclared()
@@ -168,7 +247,21 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 		case <-pp.lifted():
 			pp.onLifted()
 			if expiredWhilePaused {
-				return messages, lastCtxTokens, reviewExpired
+				// A verdict that waited out the pause was given before anyone
+				// could act on the deadline; it stands over the expiry.
+				for {
+					select {
+					case m, ok := <-opts.SteerQueue:
+						if !ok {
+							return messages, lastCtxTokens, reviewAborted
+						}
+						if outcome, done := handle(m); done {
+							return messages, lastCtxTokens, outcome
+						}
+					default:
+						return messages, lastCtxTokens, reviewExpired
+					}
+				}
 			}
 			continue
 		case <-deadline:
@@ -177,42 +270,20 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 				continue
 			}
 			return messages, lastCtxTokens, reviewExpired
-		case m, ok := <-opts.SteerQueue:
+		case m, ok := <-queue:
 			if !ok {
 				return messages, lastCtxTokens, reviewAborted
 			}
-			if m.IsVerdict() && m.EnqueuedAt.Before(heldAt) {
-				continue
+			if outcome, done := handle(m); done {
+				return messages, lastCtxTokens, outcome
 			}
-			switch {
-			case m.Kind == steer.KindCompact:
-				messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
-				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-				announce()
-				continue
-			case m.Kind == steer.KindApprove:
-				return messages, lastCtxTokens, reviewApproved
-			case strings.TrimSpace(m.Text) == "":
-				if m.Kind == steer.KindReject {
-					return messages, lastCtxTokens, reviewRejected
-				}
-				continue // an empty operator message says nothing
-			}
-			// Feedback: a reject with text, or a plain operator message.
-			messages = append(messages, providers.Message{
-				Role:    "user",
-				Content: []providers.ContentBlock{{Type: "text", Text: m.Text}},
-			})
-			if opts.OnSteer != nil {
-				opts.OnSteer(m)
-			}
-			reResolveForOperatorTurn(ctx, opts, emit)
-			return messages, lastCtxTokens, reviewRevise
+			continue
 		case <-t.C:
 			if opts.OnHeartbeat != nil {
 				opts.OnHeartbeat()
 			}
-			if heldBy == "" && !opts.reviewAtBoundary(ctx) {
+			// A disarm is an approval, held back while paused like any other.
+			if heldBy == "" && !pp.recording() && !opts.reviewAtBoundary(ctx) {
 				return messages, lastCtxTokens, reviewApproved
 			}
 		case <-ctx.Done():

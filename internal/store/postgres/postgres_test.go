@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -422,4 +423,32 @@ func uniqueBenchSchemaName(b *testing.B) string {
 		clean = clean[:30]
 	}
 	return fmt.Sprintf("lcb_%s_%d", clean, n)
+}
+
+// A resumed run is re-stamped with the replica that now runs it, so a
+// cross-replica steer or verdict routes there rather than to its creator.
+func TestSetRunReplica_RestampsTheOwningReplica(t *testing.T) {
+	dsn := pgDSNFromEnv(t)
+	fix := freshSchema(t, dsn)
+	defer fix.cleanup()
+	s := fix.store
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "t", "agent", "u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_rep", ReplicaID: "replica-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRunReplica(ctx, run.ID, "replica-b"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetRun(ctx, run.ID); got.ReplicaID != "replica-b" {
+		t.Errorf("replica_id = %q, want replica-b", got.ReplicaID)
+	}
+	var nf *store.ErrNotFound
+	if err := s.SetRunReplica(ctx, "run-missing", "replica-b"); !errors.As(err, &nf) {
+		t.Errorf("missing run: err = %v, want ErrNotFound", err)
+	}
 }

@@ -99,8 +99,14 @@ func newReviewHarness(t *testing.T) *reviewHarness {
 // cancelStream drops the client connection.
 func (h *reviewHarness) start(body string) (runID, agentID string, frames <-chan string, cancelStream func()) {
 	h.t.Helper()
+	return h.startAt("/v1/runs", body)
+}
+
+// startAt is start against another run-starting route (a continuation).
+func (h *reviewHarness) startAt(path, body string) (runID, agentID string, frames <-chan string, cancelStream func()) {
+	h.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.ts.URL+"/v1/runs", strings.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.ts.URL+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -290,6 +296,29 @@ func TestReview_HeldRunSurvivesTheClientLeaving(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if run, _ := h.st.GetRun(context.Background(), runID); run.Status != store.RunRunning {
 		t.Fatalf("after the client left the run is %q, want still running and held", run.Status)
+	}
+	if code, body := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d %s", code, body)
+	}
+	h.waitStatus(runID, store.RunCompleted)
+}
+
+// A continuation armed for review outlives the caller's connection too.
+func TestReview_HeldContinuationSurvivesTheClientLeaving(t *testing.T) {
+	h := newReviewHarness(t)
+	firstID, _, frames, stop := h.start(`{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}]}`)
+	h.waitFrame(frames, "done")
+	stop()
+	first := h.waitStatus(firstID, store.RunCompleted)
+
+	runID, _, frames, stop := h.startAt("/v1/sessions/"+first.SessionID+"/messages",
+		`{"review":true,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"write the plan"}]}]}`)
+	h.waitFrame(frames, "awaiting_review")
+	h.waitHeld(runID, 1)
+	stop()
+	time.Sleep(100 * time.Millisecond)
+	if run, _ := h.st.GetRun(context.Background(), runID); run.Status != store.RunRunning {
+		t.Fatalf("after the client left the continuation is %q, want still running and held", run.Status)
 	}
 	if code, body := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
 		t.Fatalf("approve = %d %s", code, body)

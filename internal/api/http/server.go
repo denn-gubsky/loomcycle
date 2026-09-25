@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -158,6 +159,9 @@ type Server struct {
 	// walks under, so POST /v1/runs/{run_id}/cancel can stop it. Zero value
 	// works (test fixtures build a Server without a constructor).
 	walks walkCancels
+	// walkHeartbeatEvery overrides how often a live walk's run is heartbeated;
+	// zero means the loop's own interval. Tests set it.
+	walkHeartbeatEvery time.Duration
 
 	// breakpointReg maps a live run_id → the armed breakpoint set of the team
 	// walk running under it, so an operator can arm a Starter state while the
@@ -5276,8 +5280,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Derive a runCtx with cancel-cause and register in the cancel
-	// registry. Same shape as handleRuns.
-	runCtx, cancelFn := context.WithCancelCause(r.Context())
+	// registry. Same shape as handleRuns, including its detach for review: a
+	// continuation held for a verdict must not be cancelled by the caller
+	// leaving, since a review can take far longer than a client keeps its
+	// stream. It keeps the request's ctx values; the cancel registry still
+	// stops it. The loop still runs in this handler, so nothing else changes
+	// hands; the stream just has no reader once the client is gone.
+	runParent := r.Context()
+	if body.Review {
+		runParent = context.WithoutCancel(r.Context())
+	}
+	runCtx, cancelFn := context.WithCancelCause(runParent)
 	defer cancelFn(nil)
 	// v0.10.0 OTEL: top-level loomcycle.run span for session
 	// continuations. Each /v1/messages turn = one span.
@@ -5368,7 +5381,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	}
-	emit := s.makeRecordingEmit(r.Context(), run.ID, rid, id, stream.send)
+	// Persist under runCtx so a detached continuation's events survive the
+	// client leaving (runCtx tracks the request otherwise).
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, stream.send)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
 	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
 	for _, info := range limitDec.Soft {
@@ -5380,7 +5395,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	emitInertCapabilityWarnings(agentDef, emit)
 
 	// PR 2: operator steering queue for this continuation run.
-	steerQ, onSteer, deregSteer := s.makeSteer(r.Context(), run.ID, agentID, id, sess.UserID, emit)
+	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, agentID, id, sess.UserID, emit)
 	defer deregSteer()
 	heartbeat := s.makeHeartbeat(run.ID)
 
@@ -5503,7 +5518,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		stream.send(runErrorEvent(runErr))
 	}
 
-	s.finishRunWithCancel(r.Context(), runCtx, run.ID, loopRes, runErr, meta)
+	s.finishRunWithCancel(runParent, runCtx, run.ID, loopRes, runErr, meta)
 }
 
 // replayTranscript walks the persisted events of a session and reconstructs
@@ -6423,6 +6438,13 @@ func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, p
 		return "", nil, prep.RunID, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
 			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
 	}
+	if loop.EndsRejected(res.StopReason) {
+		// Ended without an error, but its answer was never accepted (a hook
+		// held it and nothing could rule on it here, or nobody ruled in time).
+		// Handing it back as output would pass on exactly what was refused.
+		return "", nil, prep.RunID, fmt.Errorf("the answer of sub-agent %q was rejected (%s; agent=%s session=%s run=%s)",
+			name, res.StopReason, prep.AgentID, prep.SessionID, prep.RunID)
+	}
 	// Surface the sub agent_id to the parent agent's transcript by
 	// prefixing the tool_result text. Parent caller's model sees this
 	// and can echo it to the UI. Cheap; unblocks future "cancel only
@@ -6455,7 +6477,7 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	defer deregSteer()
 	prep.Opts.SteerQueue, prep.Opts.OnSteer = steerQ, onSteer
 	if armed := teamrun.ReviewArming(ctx); armed != nil {
-		prep.Opts.ReviewNow = armed
+		prep.Opts.ReviewNow = s.recordReviewArming(prep.RunID, armed, teamrun.ReviewTTL(ctx))
 	}
 	prep.Opts.ReviewTTL = teamrun.ReviewTTL(ctx)
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
@@ -6469,6 +6491,60 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	// same text it always did.
 	out.Output = formatSubAgentOutput(prep.AgentID, res.FinalText)
 	return out, nil
+}
+
+// recordReviewArming wraps a member's live review arming so the run's own
+// record follows it. The arming lives on the walk, not on the run, and a member
+// restored after a restart has no walk to ask: with nothing in its record a
+// restored hold read as never armed and was approved with no verdict. The TTL
+// is recorded beside it so the restored hold keeps its deadline.
+//
+// Written only when the answer changes, and never for a member that was never
+// armed, whose record stays as it was. A failed write is retried on the next
+// read rather than failing the run: the record matters only across a restart.
+func (s *Server) recordReviewArming(runID string, armed func(context.Context) bool, ttl time.Duration) func(context.Context) bool {
+	var (
+		mu       sync.Mutex
+		recorded *bool
+	)
+	return func(ctx context.Context) bool {
+		v := armed(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		if (recorded == nil && !v) || (recorded != nil && *recorded == v) {
+			return v
+		}
+		if s.writeReviewRecord(ctx, runID, v, ttl) {
+			recorded = &v
+		}
+		return v
+	}
+}
+
+// writeReviewRecord sets the run record's review arming and deadline, keeping
+// everything else in it.
+func (s *Server) writeReviewRecord(ctx context.Context, runID string, armed bool, ttl time.Duration) bool {
+	if s.store == nil || runID == "" {
+		return false
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		log.Printf("review: could not read run %s to record its arming: %v", runID, err)
+		return false
+	}
+	rec, ok := decodeRunConfig(run.RunConfig)
+	if !ok && len(run.RunConfig) > 0 {
+		return false // unreadable: overwriting it would lose what it holds
+	}
+	rec.Review = &armed
+	if ttl > 0 {
+		rec.ReviewTTLSeconds = int(math.Ceil(ttl.Seconds()))
+	}
+	if err := s.store.SetRunConfig(ctx, runID, rec.marshal()); err != nil {
+		log.Printf("review: could not record run %s's arming: %v", runID, err)
+		return false
+	}
+	return true
 }
 
 // subRunPrep bundles a fully-prepared sub-run ready to enter loop.Run. The
@@ -8525,7 +8601,7 @@ func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) 
 	switch {
 	case runErr != nil:
 		return store.RunFailed
-	case res.StopReason == loop.StopReasonRejected, res.StopReason == loop.StopReasonReviewExpired:
+	case loop.EndsRejected(res.StopReason):
 		// A reviewer turned the answer down with nothing to revise from, or
 		// nobody ruled on it in time. Not a failure — the run did its work —
 		// and not a completion either: the answer is one nobody accepted.

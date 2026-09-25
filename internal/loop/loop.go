@@ -1002,6 +1002,11 @@ const DefaultMaxIterations = 16
 // that actually leaked. Await your runs.
 var parkHeartbeatInterval = 30 * time.Second
 
+// HeartbeatInterval is how often a live run pulses its heartbeat. Work that
+// holds a run row open outside the loop (a team walk waiting on its members)
+// pulses at the same rate, so the stale-run sweeper judges both alike.
+func HeartbeatInterval() time.Duration { return parkHeartbeatInterval }
+
 // parkForInput blocks a persistent interactive run until an operator steering
 // message arrives or ctx is cancelled, ticking OnHeartbeat meanwhile so the
 // idle run isn't reaped, and recording itself paused while a runtime pause is
@@ -3230,6 +3235,15 @@ outerLoop:
 						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
 							fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, stopBlocks+1, out.Reason)
 					}
+					if iter+1 >= iterCap {
+						// No iteration is left to answer the block. Leaving the
+						// loop would end the run end_turn on the very answer
+						// the hook refused, so it fails the way the cap does.
+						iterSpan.End()
+						turnCancelFn(nil)
+						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
+							fmt.Errorf("hook %s blocked the answer, and the run has no iteration left to answer it; the reason: %s", out.By, out.Reason)
+					}
 					stopBlocks++
 					// The reason goes back as a user turn and the model answers
 					// again. The persisted hook_decision is what a transcript
@@ -3278,6 +3292,14 @@ outerLoop:
 					break outerLoop
 				case reviewRevise:
 					iterSpan.End()
+					if iter+1 >= iterCap {
+						// No iteration is left to answer the feedback. Leaving
+						// the loop would end the run end_turn on the answer the
+						// reviewer sent back; it was never approved.
+						emit(providers.Event{Type: providers.EventError, Error: "the reviewer sent the answer back, but the run has no iteration left to revise it; it ends rejected"})
+						stopReason = StopReasonRejected
+						break outerLoop
+					}
 					continue outerLoop
 				case reviewRejected:
 					stopReason = StopReasonRejected
@@ -3370,6 +3392,14 @@ outerLoop:
 	// tools ran on this final iteration. Surface that distinctly to the
 	// caller — they can decide whether to bump MaxIterations and retry, or
 	// surface a different error to the user.
+	// The same exhaustion after a turn the model never answered: an operator
+	// turn, a review's feedback or a hook's block appended on the last
+	// iteration, then `continue` found no iteration left. The stop reason is
+	// still the previous answer's end_turn, which would record the run as
+	// finished on an answer that was sent back, with the turn unanswered.
+	if stopReason == "end_turn" && len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+		stopReason = "max_iterations"
+	}
 	if stopReason == "tool_use" {
 		stopReason = "max_iterations"
 		// An unbounded-iterations provider (code-js) is exempt from the

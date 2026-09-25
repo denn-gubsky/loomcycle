@@ -121,6 +121,18 @@ type SpawnResult struct {
 // import the store — and a test in the server pins the two equal.
 const MemberRejected = "rejected"
 
+// spawnWork spawns a member whose output the walk goes on to use — every
+// state but the Starter, which tells a rejected member apart itself. A
+// rejected member ends without an error, but its answer was never accepted,
+// so it counts as failed here rather than as work to thread onward.
+func (r *agentRunner) spawnWork(ctx context.Context, agent string, p Prompt) (SpawnResult, error) {
+	sp, err := r.spawn(ctx, agent, p, "")
+	if err == nil && sp.Status == MemberRejected {
+		err = fmt.Errorf("the answer of %q was rejected (run %s)", agent, sp.RunID)
+	}
+	return sp, err
+}
+
 type reviewArmingKey struct{}
 
 // WithReviewArming attaches a member's review arming to ctx for the SpawnFunc:
@@ -348,7 +360,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		return r.captured(st, task, Outcome{Output: input})
 
 	case teamgraph.HandlerAgent:
-		sp, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
+		sp, err := r.spawnWork(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env))
 		out := sp.Output
 		if err != nil {
 			return Outcome{}, err
@@ -394,7 +406,7 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 		// it reads the raw work product (not a results envelope) — it judges the
 		// previous state's output directly. This state IS the consolidator, so
 		// the node's own system prompt applies to it.
-		sp, err := r.spawn(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env), "")
+		sp, err := r.spawnWork(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env))
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -577,7 +589,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: runCtx.Err().Error()}
 				return
 			}
-			sp, spawnErr := r.spawn(runCtx, name, prompt, "")
+			sp, spawnErr := r.spawnWork(runCtx, name, prompt)
 			if spawnErr != nil {
 				results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: false, Error: spawnErr.Error()}
 				return
@@ -619,11 +631,11 @@ func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelop
 	// The envelope is built from the agents' OWN OUTPUTS — the most obviously
 	// model-written text in a walk, and the one a consolidator is definitionally
 	// handed. It rides a data slot for the same reason threaded output does.
-	sp, err := r.spawn(ctx, consolidator, Prompt{
+	sp, err := r.spawnWork(ctx, consolidator, Prompt{
 		Input:          ThreadedOutputSlot,
 		DataSlots:      map[string]string{ThreadedOutputSlot: envelope},
 		SystemAuthored: r.operatorAuthored,
-	}, "")
+	})
 	if err != nil {
 		return Outcome{}, err
 	}
