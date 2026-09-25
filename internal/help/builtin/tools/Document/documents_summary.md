@@ -13,7 +13,7 @@ a shorter answer than you asked for is not an error.
 - `document_ids` — the document ids to summarise.
 - `under_path` — every document named at or under this Path-tree path, e.g.
   `/docs`.
-- Give at least one of the two; with neither you get an empty list.
+- Give at least one of the two; with neither the call is refused and says so. To list the documents in a scope, use `query_documents`.
 - `scope` — `user` (default), `agent` or `tenant`.
 - `limit` — at most this many documents (default 500, at most 5000).
 

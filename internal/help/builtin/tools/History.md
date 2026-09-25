@@ -1,6 +1,6 @@
 ---
 name: History
-description: "History tool — browse, search, read and annotate PAST chats (a chat = one conversation session). Always pass scope: self is this agent's chats with every user, user is your own."
+description: "History tool — browse, search, read and annotate PAST chats (a chat = one conversation session). Scope defaults to user (your own chats) when granted; self is this agent's chats with every user."
 ---
 The `History` tool reaches **previous chats**. A chat is one conversation
 session: it can span several runs, and it keeps its full transcript plus token,
@@ -43,7 +43,7 @@ Every operation takes `op`. Fetch one operation's article, with examples, as
 | `resume` | the coordinates for continuing the chat in a new run | `session_id` |
 | `related` | chats similar in meaning to a given chat or to free text | `session_id` or `query` |
 
-## Scopes — always pass `scope`
+## Scopes
 
 `scope` chooses WHOSE chats you see. The owner comes from your run's identity,
 never from the call, so you cannot reach someone else's chats by naming them.
@@ -53,10 +53,10 @@ never from the call, so you cannot reach someone else's chats by naming them.
 - `tenant` — every chat in this tenant.
 - `global` — every tenant. Admin only.
 
-**Omitting `scope` means `self`, but the grant an agent gets by default is
-`user`.** So a call with no `scope` is usually refused with `history: scope
-"self" not permitted (allowed: user)`. Pass `scope: "user"` unless you were
-granted another and really want it. Every operation checks the scope,
+**Omitting `scope` means `user` when you are granted it** (the default grant),
+and `self` otherwise. `self` is this agent's chats with every user, which is
+wider and rarely what you want. Pass `scope` explicitly when you mean `self` or
+`tenant`. Every operation checks the scope,
 including `get`, `rename` and `resume`. `user` also needs a user id on the run.
 
 A chat outside the scope you name is reported as `history: chat "<id>" not

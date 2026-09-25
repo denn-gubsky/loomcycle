@@ -2018,6 +2018,13 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 		uniq = append(uniq, id)
 	}
 	if len(uniq) == 0 {
+		// Asked about nothing, the answer used to be an empty list, which reads
+		// as "no documents exist": measured live, a model that had just created
+		// a document then doubted it and made two more. Say what to pass.
+		if len(in.DocumentIDs) == 0 && in.UnderPath == "" {
+			return errResult("documents_summary: pass document_ids (the documents to summarize) or under_path " +
+				"(a Path-tree subtree, e.g. /documents). To list the documents in a scope, use query_documents."), nil
+		}
 		return jsonResult(map[string]any{"documents": []any{}})
 	}
 	// BOUND THE RESPONSE (RFC CV OQ2). under_path resolves to EVERY document under

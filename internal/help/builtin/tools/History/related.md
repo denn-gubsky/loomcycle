@@ -13,8 +13,8 @@ that never were cannot match until one of those is done to them.
 
 - `session_id` or `query` (one is required) — the source. If you pass both,
   `session_id` wins.
-- `scope` (pass it) — `user`, `self`, `tenant` or `global`. Omitted means
-  `self`, which is usually not granted.
+- `scope` (pass it) — `user`, `self`, `tenant` or `global`. Omitted: `user`
+  when granted, else `self`.
 - `limit` — how many similar chats to return (default 10, at most 500).
 - `include_archived` — `true` includes archived chats.
 - `include_internal` — `true` includes chats served by the runtime's own
