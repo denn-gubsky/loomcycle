@@ -386,7 +386,7 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 	admitted := []struct{ method, path string }{
 		{"POST", "/v1/_agentdef"}, // def authoring — confined
 		{"GET", "/v1/_agentdef/names"},
-		{"POST", "/v1/_hookdef"}, // hook definitions — confined like agentdef
+		{"POST", "/v1/_hookdef"},      // hook definitions — confined like agentdef
 		{"POST", "/v1/_mcpserverdef"}, // dynamic MCP ingestion — confined
 		{"POST", "/v1/hooks"},         // tenant-isolated hooks
 		{"POST", "/v1/_mcp"},          // RFC AG Phase 2: may OPEN an MCP session
