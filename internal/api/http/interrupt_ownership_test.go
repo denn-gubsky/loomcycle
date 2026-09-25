@@ -81,4 +81,3 @@ func TestInterrupts_AnIsolatedMemberAnswersOnlyItsOwnRunsQuestions(t *testing.T)
 		t.Errorf("a non-isolated colleague: %v", err)
 	}
 }
-
