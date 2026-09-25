@@ -41,3 +41,16 @@ ceiling.
 - **Only H1 holds:** the RFC proposes the header; the rerank goes back for a probe.
 - **Neither holds:** no RFC. The findings are written up and the epic's next probe is
   reconsidered.
+
+## Amendment 1 — reader and reranker model (2026-09-25 13:20, BEFORE any result)
+
+The reader and the reranker change from ornith-1.5:35b to **qwen3.6:latest** (36B MoE,
+Q4_K_M, thinking off), at the operator's request. ornith had started faulting far more
+often (`CUDA error: an illegal memory access`, one smoke question six times in a row), and
+each fault costs minutes of backoff. When the change was made, the run had only imported
+699 of 911 documents into `plain-pool`. No reader or rerank call had been made, so no
+result exists to be influenced. Everything else is unchanged: arms, hypotheses, α,
+passes, prompts, k. ornith is unloaded first so the two large models are never co-resident.
+
+This makes the NQ numbers a qwen3.6 result. They are not comparable to the QASPER numbers
+(ornith reader), and are not meant to be; each corpus is its own study.
