@@ -129,6 +129,12 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureTeamDefActive(ctx, s, &envelope.Sections.TeamDefActive); err != nil {
 		return nil, nil, err
 	}
+	if err := captureHookDefs(ctx, s, &envelope.Sections.HookDefs); err != nil {
+		return nil, nil, err
+	}
+	if err := captureHookDefActive(ctx, s, &envelope.Sections.HookDefActive); err != nil {
+		return nil, nil, err
+	}
 	if err := captureMCPServerDefs(ctx, s, &envelope.Sections.MCPServerDefs); err != nil {
 		return nil, nil, err
 	}
@@ -335,6 +341,52 @@ func captureTeamDefActive(ctx context.Context, s store.Store, out *TeamDefActive
 	out.Entries = make([]TeamDefActiveEntry, 0, len(rows))
 	for _, r := range rows {
 		out.Entries = append(out.Entries, TeamDefActiveEntry{
+			Name:              r.Name,
+			TenantID:          r.TenantID,
+			DefID:             r.DefID,
+			PromotedAt:        r.PromotedAt,
+			PromotedByAgentID: r.PromotedByAgentID,
+		})
+	}
+	return nil
+}
+
+// captureHookDefs mirrors captureTeamDefs against hook_defs.
+func captureHookDefs(ctx context.Context, s store.Store, out *HookDefsSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadHookDefs(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot hook_defs: %w", err)
+	}
+	out.Entries = make([]HookDefEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, HookDefEntry{
+			DefID:            r.DefID,
+			TenantID:         r.TenantID,
+			Name:             r.Name,
+			Version:          r.Version,
+			ParentDefID:      r.ParentDefID,
+			Definition:       r.Definition,
+			Description:      r.Description,
+			CreatedAt:        r.CreatedAt,
+			CreatedByAgentID: r.CreatedByAgentID,
+			CreatedByRunID:   r.CreatedByRunID,
+			Retired:          r.Retired,
+			ContentSHA256:    r.ContentSHA256,
+		})
+	}
+	return nil
+}
+
+func captureHookDefActive(ctx context.Context, s store.Store, out *HookDefActiveSection) error {
+	out.Version = SectionVersion
+	rows, err := s.SnapshotReadHookDefActive(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot hook_def_active: %w", err)
+	}
+	out.Entries = make([]HookDefActiveEntry, 0, len(rows))
+	for _, r := range rows {
+		out.Entries = append(out.Entries, HookDefActiveEntry{
 			Name:              r.Name,
 			TenantID:          r.TenantID,
 			DefID:             r.DefID,

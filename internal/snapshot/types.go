@@ -65,12 +65,16 @@ type Envelope struct {
 // declared shape; the per-section version field is the migration
 // anchor (PR 3 reads it to dispatch into the registry).
 type Sections struct {
-	AgentDefs          AgentDefsSection           `json:"agent_defs"`
-	AgentDefActive     AgentDefActiveSection      `json:"agent_def_active"`
-	SkillDefs          SkillDefsSection           `json:"skill_defs"`
-	SkillDefActive     SkillDefActiveSection      `json:"skill_def_active"`
-	TeamDefs           TeamDefsSection            `json:"team_defs"`
-	TeamDefActive      TeamDefActiveSection       `json:"team_def_active"`
+	AgentDefs      AgentDefsSection      `json:"agent_defs"`
+	AgentDefActive AgentDefActiveSection `json:"agent_def_active"`
+	SkillDefs      SkillDefsSection      `json:"skill_defs"`
+	SkillDefActive SkillDefActiveSection `json:"skill_def_active"`
+	TeamDefs       TeamDefsSection       `json:"team_defs"`
+	TeamDefActive  TeamDefActiveSection  `json:"team_def_active"`
+	// HookDefs travel with the definitions that name them, so a restored
+	// agent or team is gated the way it was.
+	HookDefs           HookDefsSection            `json:"hook_defs"`
+	HookDefActive      HookDefActiveSection       `json:"hook_def_active"`
 	MCPServerDefs      MCPServerDefsSection       `json:"mcp_server_defs"`
 	MCPServerDefActive MCPServerDefActiveSection  `json:"mcp_server_def_active"`
 	Memory             MemorySection              `json:"memory"`
@@ -227,6 +231,44 @@ type TeamDefActiveSection struct {
 type TeamDefActiveEntry struct {
 	Name              string    `json:"name"`
 	TenantID          string    `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// HookDefsSection mirrors TeamDefsSection. Additive: an older snapshot has no
+// such section and restores with no HookDefs.
+type HookDefsSection struct {
+	Version string         `json:"version"`
+	Entries []HookDefEntry `json:"entries"`
+}
+
+// HookDefEntry mirrors store.HookDefRow; the definition payload (a hooks.Def)
+// is owned by the HookDef tool.
+type HookDefEntry struct {
+	DefID            string          `json:"def_id"`
+	TenantID         string          `json:"tenant_id,omitempty"`
+	Name             string          `json:"name"`
+	Version          int             `json:"version"`
+	ParentDefID      string          `json:"parent_def_id,omitempty"`
+	Definition       json.RawMessage `json:"definition"`
+	Description      string          `json:"description,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	CreatedByAgentID string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID   string          `json:"created_by_run_id,omitempty"`
+	Retired          bool            `json:"retired"`
+	ContentSHA256    string          `json:"content_sha256,omitempty"`
+}
+
+// HookDefActiveSection mirrors TeamDefActiveSection.
+type HookDefActiveSection struct {
+	Version string               `json:"version"`
+	Entries []HookDefActiveEntry `json:"entries"`
+}
+
+type HookDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
