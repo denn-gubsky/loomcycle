@@ -66,9 +66,6 @@ const (
 	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
 	Loomcycle_Config_FullMethodName              = "/loomcycle.v1.Loomcycle/Config"
-	Loomcycle_RegisterHook_FullMethodName        = "/loomcycle.v1.Loomcycle/RegisterHook"
-	Loomcycle_ListHooks_FullMethodName           = "/loomcycle.v1.Loomcycle/ListHooks"
-	Loomcycle_DeleteHook_FullMethodName          = "/loomcycle.v1.Loomcycle/DeleteHook"
 	Loomcycle_PauseRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/PauseRuntime"
 	Loomcycle_ResumeRuntime_FullMethodName       = "/loomcycle.v1.Loomcycle/ResumeRuntime"
 	Loomcycle_GetRuntimeState_FullMethodName     = "/loomcycle.v1.Loomcycle/GetRuntimeState"
@@ -296,25 +293,6 @@ type LoomcycleClient interface {
 	// authenticates before dispatch — so a caller gets `authenticated` or `admin`
 	// from its own scopes. `view` in the payload names which.
 	Config(ctx context.Context, in *ConfigRequest, opts ...grpc.CallOption) (*ConfigResponse, error)
-	// RegisterHook registers a pre- or post-tool webhook. The
-	// callback_url must be an http:// or https:// endpoint the consumer
-	// runs. Returns the loomcycle-assigned id. Re-registering the same
-	// (owner, name) replaces the prior entry in-place (idempotent on
-	// app restart).
-	//
-	// Mirrors POST /v1/hooks.
-	RegisterHook(ctx context.Context, in *RegisterHookRequest, opts ...grpc.CallOption) (*RegisterHookResponse, error)
-	// ListHooks returns every currently-registered hook. Useful for
-	// debug; no pagination — the registry is intentionally small
-	// (operator-curated set).
-	//
-	// Mirrors GET /v1/hooks.
-	ListHooks(ctx context.Context, in *ListHooksRequest, opts ...grpc.CallOption) (*ListHooksResponse, error)
-	// DeleteHook removes a registered hook by id. Returns
-	// codes.NotFound when no hook has that id.
-	//
-	// Mirrors DELETE /v1/hooks/{id}.
-	DeleteHook(ctx context.Context, in *DeleteHookRequest, opts ...grpc.CallOption) (*DeleteHookResponse, error)
 	// PauseRuntime quiesces the runtime. Idempotent tools cancel
 	// immediately; non-idempotent + external tools get a grace window
 	// (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
@@ -851,36 +829,6 @@ func (c *loomcycleClient) Config(ctx context.Context, in *ConfigRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ConfigResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_Config_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *loomcycleClient) RegisterHook(ctx context.Context, in *RegisterHookRequest, opts ...grpc.CallOption) (*RegisterHookResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RegisterHookResponse)
-	err := c.cc.Invoke(ctx, Loomcycle_RegisterHook_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *loomcycleClient) ListHooks(ctx context.Context, in *ListHooksRequest, opts ...grpc.CallOption) (*ListHooksResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListHooksResponse)
-	err := c.cc.Invoke(ctx, Loomcycle_ListHooks_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *loomcycleClient) DeleteHook(ctx context.Context, in *DeleteHookRequest, opts ...grpc.CallOption) (*DeleteHookResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DeleteHookResponse)
-	err := c.cc.Invoke(ctx, Loomcycle_DeleteHook_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1445,25 +1393,6 @@ type LoomcycleServer interface {
 	// authenticates before dispatch — so a caller gets `authenticated` or `admin`
 	// from its own scopes. `view` in the payload names which.
 	Config(context.Context, *ConfigRequest) (*ConfigResponse, error)
-	// RegisterHook registers a pre- or post-tool webhook. The
-	// callback_url must be an http:// or https:// endpoint the consumer
-	// runs. Returns the loomcycle-assigned id. Re-registering the same
-	// (owner, name) replaces the prior entry in-place (idempotent on
-	// app restart).
-	//
-	// Mirrors POST /v1/hooks.
-	RegisterHook(context.Context, *RegisterHookRequest) (*RegisterHookResponse, error)
-	// ListHooks returns every currently-registered hook. Useful for
-	// debug; no pagination — the registry is intentionally small
-	// (operator-curated set).
-	//
-	// Mirrors GET /v1/hooks.
-	ListHooks(context.Context, *ListHooksRequest) (*ListHooksResponse, error)
-	// DeleteHook removes a registered hook by id. Returns
-	// codes.NotFound when no hook has that id.
-	//
-	// Mirrors DELETE /v1/hooks/{id}.
-	DeleteHook(context.Context, *DeleteHookRequest) (*DeleteHookResponse, error)
 	// PauseRuntime quiesces the runtime. Idempotent tools cancel
 	// immediately; non-idempotent + external tools get a grace window
 	// (default 30 s; max 5 min) then force-cancel. Returns 409-equivalent
@@ -1773,15 +1702,6 @@ func (UnimplementedLoomcycleServer) Health(context.Context, *HealthRequest) (*He
 }
 func (UnimplementedLoomcycleServer) Config(context.Context, *ConfigRequest) (*ConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Config not implemented")
-}
-func (UnimplementedLoomcycleServer) RegisterHook(context.Context, *RegisterHookRequest) (*RegisterHookResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RegisterHook not implemented")
-}
-func (UnimplementedLoomcycleServer) ListHooks(context.Context, *ListHooksRequest) (*ListHooksResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListHooks not implemented")
-}
-func (UnimplementedLoomcycleServer) DeleteHook(context.Context, *DeleteHookRequest) (*DeleteHookResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method DeleteHook not implemented")
 }
 func (UnimplementedLoomcycleServer) PauseRuntime(context.Context, *PauseRuntimeRequest) (*PauseRuntimeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PauseRuntime not implemented")
@@ -2384,60 +2304,6 @@ func _Loomcycle_Config_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).Config(ctx, req.(*ConfigRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Loomcycle_RegisterHook_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RegisterHookRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LoomcycleServer).RegisterHook(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Loomcycle_RegisterHook_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LoomcycleServer).RegisterHook(ctx, req.(*RegisterHookRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Loomcycle_ListHooks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListHooksRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LoomcycleServer).ListHooks(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Loomcycle_ListHooks_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LoomcycleServer).ListHooks(ctx, req.(*ListHooksRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Loomcycle_DeleteHook_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DeleteHookRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(LoomcycleServer).DeleteHook(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Loomcycle_DeleteHook_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(LoomcycleServer).DeleteHook(ctx, req.(*DeleteHookRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3185,18 +3051,6 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Config",
 			Handler:    _Loomcycle_Config_Handler,
-		},
-		{
-			MethodName: "RegisterHook",
-			Handler:    _Loomcycle_RegisterHook_Handler,
-		},
-		{
-			MethodName: "ListHooks",
-			Handler:    _Loomcycle_ListHooks_Handler,
-		},
-		{
-			MethodName: "DeleteHook",
-			Handler:    _Loomcycle_DeleteHook_Handler,
 		},
 		{
 			MethodName: "PauseRuntime",

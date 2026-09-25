@@ -21,12 +21,11 @@ import (
 func minimalServerWithResolver(t *testing.T, r *resolve.Resolver) *Server {
 	t.Helper()
 	cfg := &config.Config{}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	s := &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

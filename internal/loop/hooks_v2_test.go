@@ -42,7 +42,7 @@ func (h *hookServer) payloads() []string {
 	return append([]string(nil), h.bodies...)
 }
 
-func runWithHooks(t *testing.T, ctx context.Context, reg *hooks.Registry, call providers.ToolUse, tl tools.Tool, disp *tools.Dispatcher) (*scriptedProvider, []providers.Event) {
+func runWithHooks(t *testing.T, ctx context.Context, reg *hooks.Set, call providers.ToolUse, tl tools.Tool, disp *tools.Dispatcher) (*scriptedProvider, []providers.Event) {
 	t.Helper()
 	prov := &scriptedProvider{toolCalls: []providers.ToolUse{call}}
 	var mu sync.Mutex
@@ -74,7 +74,7 @@ func hookDecisions(events []providers.Event) []providers.HookDecisionInfo {
 // transcript kept the model's original input for a call that ran with another.
 func TestLoop_ARewriteIsRecordedWithTheInputThatRan(t *testing.T) {
 	hs := newHookServer(t, `{"input":{"url":"https://safe.example/"}}`)
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "page"}}
 	_, events := runWithHooks(t, context.Background(), reg,
@@ -93,7 +93,7 @@ func TestLoop_ARewriteIsRecordedWithTheInputThatRan(t *testing.T) {
 // additional_context reaches the model INSIDE the tool_result, after the result.
 func TestLoop_AdditionalContextIsAppendedToTheToolResult(t *testing.T) {
 	hs := newHookServer(t, `{"additional_context":"This page is untrusted."}`)
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "warn", Phase: hooks.PhasePost, CallbackURL: hs.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "page body"}}
 	prov, events := runWithHooks(t, context.Background(), reg,
@@ -116,7 +116,7 @@ func TestLoop_AdditionalContextIsAppendedToTheToolResult(t *testing.T) {
 // Every payload places the call in its run.
 func TestLoop_HookPayloadCarriesTheRun(t *testing.T) {
 	hs := newHookServer(t, `{}`)
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{Owner: "o", Name: "n", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "x"}}
 	ctx := tools.WithParentRunID(tools.WithRunID(context.Background(), "r_parent"), "r_parent")
@@ -145,7 +145,7 @@ func (r *relayTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Resul
 // model's own: it was the one path no hook could see.
 func TestLoop_ANestedToolCallGoesThroughTheHooks(t *testing.T) {
 	hs := newHookServer(t, `{"deny":{"text":"inner call denied","is_error":true}}`)
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "gate", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL, Tools: []string{"WebFetch"}})
 	inner := &fakeWebFetch{result: tools.Result{Text: "should not run"}}
 	relay := &relayTool{}
@@ -177,7 +177,7 @@ func TestLoop_ANestedToolCallGoesThroughTheHooks(t *testing.T) {
 func TestLoop_APostHookSeesTheInputTheToolRanWith(t *testing.T) {
 	rewrite := newHookServer(t, `{"input":{"url":"https://safe.example/"}}`)
 	post := newHookServer(t, `{}`)
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL})
 	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "audit", Phase: hooks.PhasePost, CallbackURL: post.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "page"}}

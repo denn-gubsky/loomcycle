@@ -37,7 +37,7 @@ func TestCodeHook_AnAskIsAPendingInterruptAndItsAnswerDecides(t *testing.T) {
 	bus := channels.NewBus()
 	it := &builtin.Interruption{Store: st, Bus: bus, MaxTimeout: time.Minute}
 
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	if _, err := reg.Register(&hooks.Hook{Owner: "ops", Name: "gate", Phase: hooks.PhasePre, Tools: []string{"HTTP"}, Code: `
 		function hook(ev) {
 			var a = Interruption.ask({question: "Let " + ev.agent + " call " + ev.tool_call.input.url + "?", options: ["allow", "deny"]});

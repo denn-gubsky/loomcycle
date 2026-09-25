@@ -1767,19 +1767,6 @@ type Store interface {
 	// delete is the operator-friendly default.
 	SnapshotDelete(ctx context.Context, id string) (bool, error)
 
-	// ---- v0.12.5 Phase 6: cluster-wide hook registry ----
-	//
-	// CreateHook / DeleteHook / ListHooks / GetHookByID persist hooks
-	// for cross-replica visibility. The hooks.DBBackedRegistry wraps
-	// these for the cluster-mode path; single-replica deployments use
-	// the in-process hooks.Registry and never call these. SQLite
-	// implementations are stubs (cluster mode refuses SQLite at boot).
-
-	CreateHook(ctx context.Context, h HookRow) error
-	DeleteHook(ctx context.Context, hookID string) error
-	ListHooks(ctx context.Context) ([]HookRow, error)
-	GetHookByID(ctx context.Context, hookID string) (HookRow, error)
-
 	// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
 	//
 	// The methods below return ALL rows in their tables. They power
@@ -5259,41 +5246,6 @@ type SnapshotRow struct {
 	SchemaVersion int
 	ByteSize      int64
 	JSONContent   []byte
-}
-
-// ErrHooksUnsupported is returned by the hook DB methods (CreateHook /
-// DeleteHook / GetHookByID) on a backend without a cluster hook registry —
-// today the SQLite backend, which is single-replica (hooks live in-memory; the
-// DB table is Postgres-only). Callers (e.g. the store contract suite) errors.Is
-// against it to skip the cluster-hook path on such backends, mirroring
-// ErrVectorUnsupported.
-var ErrHooksUnsupported = errors.New("hooks: DB-backed hook registry requires the Postgres backend (single-replica SQLite keeps hooks in memory)")
-
-// HookRow is the v0.12.5 Phase 6 cluster-wide hook registration
-// shape. Mirrors internal/hooks.Hook but uses plain strings for
-// Phase + FailMode so the store package stays free of an
-// internal/hooks import (avoiding a circular dependency — hooks
-// imports store via the DBBackedRegistry's hookStore interface).
-//
-// Conversion to *hooks.Hook happens in internal/hooks/db_registry.go
-// where both package types are in scope.
-type HookRow struct {
-	ID string
-	// Tenant is the RFC AF owning-tenant ('' = operator/global hook). Persisted
-	// so a cluster reload / backplane re-fetch reconstructs the tenant scope.
-	Tenant           string
-	Owner            string
-	Name             string
-	Phase            string // "pre" or "post"
-	Agents           []string
-	Tools            []string
-	CallbackURL      string
-	FailMode         string // "open" | "closed"
-	TimeoutMs        int
-	CreatedAt        time.Time
-	CreatedByReplica string // nullable; observability only
-	// Code is a code-js hook body; '' for a webhook (CallbackURL set instead).
-	Code string
 }
 
 // SnapshotListEntry is the metadata-only projection returned by

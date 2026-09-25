@@ -30,7 +30,7 @@ func tokenAuthServer(t *testing.T, legacy string) (*Server, store.Store) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	cfg := &config.Config{}
 	cfg.Env.AuthToken = legacy
 	cfg.Env.OperatorTokenPepper = testTokenPepper
@@ -38,7 +38,6 @@ func tokenAuthServer(t *testing.T, legacy string) (*Server, store.Store) {
 		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 		store:          st,
@@ -315,12 +314,6 @@ func TestRequiredScopeFor(t *testing.T) {
 		// grant ScopeTenant, so the HTTP route must not be stricter.
 		{"POST", "/v1/_documentsourcedef", auth.ScopeTenant},
 		{"GET", "/v1/_documentsourcedef/names", auth.ScopeTenant},
-		// RFC AF: hooks are tenant-confined now that the registry is
-		// tenant-isolated (stamp on register, tenant-filtered Match, scoped
-		// List/Delete). substrate:admin still satisfies.
-		{"POST", "/v1/hooks", auth.ScopeTenant},
-		{"GET", "/v1/hooks", auth.ScopeTenant},
-		{"DELETE", "/v1/hooks/h_1", auth.ScopeTenant},
 		// RFC AQ: the embedded preset/env-template read endpoints fall under the
 		// /v1/_* operator-admin default (the Settings hub is admin-only).
 		{"GET", "/v1/_presets", auth.ScopeAdmin},
@@ -388,7 +381,6 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 		{"GET", "/v1/_agentdef/names"},
 		{"POST", "/v1/_hookdef"},      // hook definitions — confined like agentdef
 		{"POST", "/v1/_mcpserverdef"}, // dynamic MCP ingestion — confined
-		{"POST", "/v1/hooks"},         // tenant-isolated hooks
 		{"POST", "/v1/_mcp"},          // RFC AG Phase 2: may OPEN an MCP session
 	}
 	for _, c := range admitted {
@@ -453,7 +445,7 @@ func TestTenantMemberAccessible(t *testing.T) {
 	closed := []struct{ method, path string }{
 		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"DELETE", "/v1/_users/alice"},
 		{"POST", "/v1/_users/alice/tokens"}, {"POST", "/v1/_erasure"}, {"GET", "/v1/_erasure"},
-		{"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"}, {"POST", "/v1/hooks"},
+		{"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"},
 		{"POST", "/v1/_operatortokendef"}, {"GET", "/v1/_tenants"}, {"POST", "/v1/_pause"},
 		{"POST", "/v1/_memory/repair-tenant"}, {"POST", "/v1/runs"}, {"GET", "/v1/_me"},
 	}
@@ -492,7 +484,7 @@ func TestAuthMiddleware_RFCCBMember(t *testing.T) {
 	refused := []struct{ method, path string }{
 		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"POST", "/v1/_users/alice/tokens"},
 		{"POST", "/v1/_erasure"}, {"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"},
-		{"POST", "/v1/hooks"}, {"POST", "/v1/_operatortokendef"}, {"POST", "/v1/_pause"},
+		{"POST", "/v1/_operatortokendef"}, {"POST", "/v1/_pause"},
 		{"GET", "/v1/_tenants"},
 	}
 	for _, c := range refused {

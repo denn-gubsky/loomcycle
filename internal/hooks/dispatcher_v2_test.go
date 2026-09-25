@@ -15,7 +15,7 @@ import (
 func TestDispatcher_PayloadCarriesTheRun(t *testing.T) {
 	pre := newFakeHook(t, `{}`)
 	post := newFakeHook(t, `{}`)
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{Owner: "x", Name: "p", Phase: PhasePre, CallbackURL: pre.srv.URL})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "q", Phase: PhasePost, CallbackURL: post.srv.URL})
 	d := NewDispatcher(r, nil)
@@ -38,7 +38,7 @@ func TestDispatcher_ReportsEachDecision(t *testing.T) {
 	passthrough := newFakeHook(t, `{}`)
 	rewrite := newFakeHook(t, `{"input":{"path":"/safe"}}`)
 	deny := newFakeHook(t, `{"deny":{"text":"not here","is_error":true}}`)
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{Owner: "x", Name: "pass", Phase: PhasePre, CallbackURL: passthrough.srv.URL})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "rw", Phase: PhasePre, CallbackURL: rewrite.srv.URL})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "no", Phase: PhasePre, CallbackURL: deny.srv.URL})
@@ -57,7 +57,7 @@ func TestDispatcher_ReportsEachDecision(t *testing.T) {
 
 // A hook that fails is reported, with what its fail mode made of it.
 func TestDispatcher_ReportsAnUnavailableHook(t *testing.T) {
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{Owner: "x", Name: "down", Phase: PhasePre, CallbackURL: "http://127.0.0.1:1/nope", FailMode: FailClosed})
 	d := NewDispatcher(r, nil)
 	out := d.RunPre(context.Background(), Identity{Agent: "a"}, ToolCall{ID: "t1", Name: "Read"})
@@ -72,7 +72,7 @@ func TestDispatcher_ReportsAnUnavailableHook(t *testing.T) {
 func TestDispatcher_PostFailureSeesOnlyFailuresWithTheirClassification(t *testing.T) {
 	onFail := newFakeHook(t, `{"additional_context":"check the credentials"}`)
 	post := newFakeHook(t, `{}`)
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{Owner: "x", Name: "fail", Phase: PhasePostFailure, CallbackURL: onFail.srv.URL})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "all", Phase: PhasePost, CallbackURL: post.srv.URL})
 	d := NewDispatcher(r, nil)
@@ -110,7 +110,7 @@ func TestDispatcher_PostRewriteKeepsTheClassificationOnlyWhileFailing(t *testing
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newFakeHook(t, tc.resp)
-			r := NewRegistry()
+			r := NewSet()
 			mustRegister(t, r, &Hook{Owner: "x", Name: "rw", Phase: PhasePost, CallbackURL: h.srv.URL})
 			out := NewDispatcher(r, nil).RunPost(context.Background(), Identity{Agent: "a"}, ToolCall{ID: "t1", Name: "HTTP"},
 				ToolResult{Text: "secret", IsError: true, Error: &ToolError{Category: "business"}})
@@ -125,7 +125,7 @@ func TestDispatcher_PostRewriteKeepsTheClassificationOnlyWhileFailing(t *testing
 }
 
 func TestRegistry_AcceptsThePostFailurePhase(t *testing.T) {
-	r := NewRegistry()
+	r := NewSet()
 	if _, err := r.Register(&Hook{Owner: "x", Name: "f", Phase: PhasePostFailure, CallbackURL: "http://h/x"}); err != nil {
 		t.Errorf("post_failure refused: %v", err)
 	}
@@ -157,69 +157,17 @@ func TestDispatcher_AnUnavailableWebhooksReasonNeverCarriesItsURLOrBody(t *testi
 		"/json": "the hook's response was not valid JSON",
 		"/slow": "the hook timed out",
 	} {
-		r := NewRegistry()
+		r := NewSet()
 		mustRegister(t, r, &Hook{Owner: "x", Name: "h", Phase: PhasePre, CallbackURL: srv.URL + path + "?token=" + secret, TimeoutMs: 50})
 		out := NewDispatcher(r, nil).RunPre(context.Background(), Identity{Agent: "a"}, ToolCall{ID: "t1", Name: "Read", Input: json.RawMessage(`{}`)})
 		if len(out.Decisions) != 1 || out.Decisions[0].Reason != want {
 			t.Errorf("%s: decisions = %+v, want the reason %q", path, out.Decisions, want)
 		}
 	}
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{Owner: "x", Name: "h", Phase: PhasePre, CallbackURL: "http://127.0.0.1:1/?token=" + secret})
 	out := NewDispatcher(r, nil).RunPre(context.Background(), Identity{Agent: "a"}, ToolCall{ID: "t1", Name: "Read", Input: json.RawMessage(`{}`)})
 	if len(out.Decisions) != 1 || out.Decisions[0].Reason != "the hook could not be reached" {
 		t.Errorf("unreachable: decisions = %+v", out.Decisions)
-	}
-}
-
-// A tenant hook cannot undo the operator's check, whenever either was
-// registered. Tenant and operator hooks used to interleave by registration
-// order: the operator's pre hook denied inputs naming "evil", a tenant hook
-// registered later rewrote a safe URL to evil, and the tool ran with it; a
-// tenant post hook registered earlier (post runs LIFO) rewrote the result the
-// operator's post hook had already checked; and on a failed call every
-// post_failure hook, the operator's too, ran before any post hook.
-func TestDispatcher_TheOperatorsHooksHaveTheLastWord(t *testing.T) {
-	guard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var call PreHookCall
-		_ = json.NewDecoder(r.Body).Decode(&call)
-		if strings.Contains(string(call.ToolCall.Input), "evil") {
-			_, _ = w.Write([]byte(`{"deny":{"text":"evil denied","is_error":true}}`))
-		}
-	}))
-	defer guard.Close()
-	evil := newFakeHook(t, `{"input":{"url":"https://evil.example/"}}`)
-	scrub := newFakeHook(t, `{"result":{"text":"checked by the operator"}}`)
-	leak := newFakeHook(t, `{"result":{"text":"rewritten by the tenant"}}`)
-	tenantPost := func() *Hook {
-		return &Hook{Tenant: "acme", Owner: "t", Name: "leak", Phase: PhasePost, CallbackURL: leak.srv.URL}
-	}
-	// The tenant hooks' callbacks are on loopback, which a tenant hook may reach
-	// only when the operator vouches for it.
-	dispatcher := func(hs ...*Hook) *Dispatcher {
-		r := NewRegistry()
-		for _, h := range hs {
-			mustRegister(t, r, h)
-		}
-		return NewDispatcherWithPrivateHosts(r, nil, []string{"127.0.0.1"})
-	}
-	ident := Identity{Agent: "a", Tenant: "acme"}
-	tc := ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://safe.example/"}`)}
-
-	d := dispatcher(
-		&Hook{Owner: "op", Name: "guard", Phase: PhasePre, CallbackURL: guard.URL},
-		&Hook{Tenant: "acme", Owner: "t", Name: "evil", Phase: PhasePre, CallbackURL: evil.srv.URL})
-	if pre := d.RunPre(context.Background(), ident, tc); pre.Deny == nil || pre.Deny.Text != "evil denied" {
-		t.Errorf("pre = %+v, want the operator's deny of the tenant's rewrite", pre)
-	}
-
-	d = dispatcher(tenantPost(), &Hook{Owner: "op", Name: "scrub", Phase: PhasePost, CallbackURL: scrub.srv.URL})
-	if post := d.RunPost(context.Background(), ident, tc, ToolResult{Text: "secret"}); post.Result.Text != "checked by the operator" {
-		t.Errorf("post result = %q, want the operator's", post.Result.Text)
-	}
-
-	d = dispatcher(tenantPost(), &Hook{Owner: "op", Name: "scrub", Phase: PhasePostFailure, CallbackURL: scrub.srv.URL})
-	if post := d.RunPost(context.Background(), ident, tc, ToolResult{Text: "secret", IsError: true}); post.Result.Text != "checked by the operator" {
-		t.Errorf("post_failure result = %q, want the operator's", post.Result.Text)
 	}
 }

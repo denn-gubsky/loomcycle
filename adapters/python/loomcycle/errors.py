@@ -73,14 +73,6 @@ class UnavailableError(LoomcycleError):
     retry with backoff."""
 
 
-class HookNotFoundError(LoomcycleError):
-    """Raised by ``delete_hook`` when no hook is registered with the
-    supplied id. Maps from gRPC ``codes.NOT_FOUND`` whose message
-    mentions ``"hook"`` — the dispatcher in ``_raise_from_grpc``
-    checks for the keyword BEFORE falling through to
-    ``AgentNotFoundError``."""
-
-
 class InvalidArgumentError(LoomcycleError):
     """Raised on caller-supplied input validation failures.
 

@@ -193,11 +193,6 @@ var handlersByName = map[string]toolHandler{
 	// Interruption (v0.8.16)
 	"interruption_resolve": handleInterruptionResolve,
 
-	// Hook management (PR B of the hooks-connector series)
-	"register_hook": handleRegisterHook,
-	"list_hooks":    handleListHooks,
-	"delete_hook":   handleDeleteHook,
-
 	// v0.9.x n8n RFC Phase 0: channel listing + run-state streaming.
 	"list_channels":          handleListChannels,
 	"stream_user_run_states": handleStreamUserRunStates,
@@ -992,40 +987,6 @@ func handleInterruptionResolve(ctx context.Context, env *handlerEnv, args json.R
 	return toolResultJSON(res), nil
 }
 
-// --- Hook management handlers (PR B of the hooks-connector series) ---
-//
-// Three-line shape mirrors handleRegisterAgent: unmarshal arguments
-// into the connector request type, dispatch through env.connector,
-// surface success as toolResultJSON or any error via toolErr. MCP
-// doesn't have typed-error subclasses — every failure is a tool_result
-// with isError=true + a descriptive text message.
-
-func handleRegisterHook(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
-	if env.connector == nil {
-		return nil, fmt.Errorf("register_hook: no connector wired")
-	}
-	var req connector.RegisterHookRequest
-	if err := json.Unmarshal(args, &req); err != nil {
-		return toolErr("invalid register_hook arguments: " + err.Error()), nil
-	}
-	res, err := env.connector.RegisterHook(ctx, req)
-	if err != nil {
-		return toolErrFrom("register_hook", err), nil
-	}
-	return toolResultJSON(res), nil
-}
-
-func handleListHooks(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
-	if env.connector == nil {
-		return nil, fmt.Errorf("list_hooks: no connector wired")
-	}
-	res, err := env.connector.ListHooks(ctx)
-	if err != nil {
-		return toolErrFrom("list_hooks", err), nil
-	}
-	return toolResultJSON(res), nil
-}
-
 // handleListChannels — v0.9.x n8n RFC Phase 0. Dispatches through
 // Connector.ListChannels and returns the result as a JSON tool result.
 func handleListChannels(ctx context.Context, env *handlerEnv, _ json.RawMessage) (*loommcp.CallToolResult, error) {
@@ -1117,25 +1078,6 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 		Events []connector.RunStateEvent `json:"events"`
 		Count  int                       `json:"count"`
 	}{Events: collected, Count: count}), nil
-}
-
-func handleDeleteHook(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
-	if env.connector == nil {
-		return nil, fmt.Errorf("delete_hook: no connector wired")
-	}
-	var p struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return toolErr("invalid delete_hook arguments: " + err.Error()), nil
-	}
-	if p.ID == "" {
-		return toolErr("delete_hook: id required"), nil
-	}
-	if err := env.connector.DeleteHook(ctx, p.ID); err != nil {
-		return toolErrFrom("delete_hook", err), nil
-	}
-	return toolResultJSON(map[string]any{"deleted": p.ID}), nil
 }
 
 // --- v0.9.x Channel CRUD handlers ---

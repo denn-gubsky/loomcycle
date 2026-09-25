@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 
 	// Blank imports populate the providers embedder registry via
@@ -753,19 +755,19 @@ hooks:
 
 	// End-to-end: the list the runtime feeds to the registry honours each
 	// (tenant, owner) pair and denies a bare / wrong-tenant lookup.
-	r := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
+	r := hooks.NewPermits(cfg.Hooks.PermitHostWiden.Owners)
 	for _, ok := range []struct {
 		tenant, owner string
 	}{{"yamltenant", "yamlowner"}, {"jobember", "jobs-search-web"}, {"acme", "scraper"}} {
-		if !r.IsHostWidenPermitted(ok.tenant, ok.owner) {
-			t.Errorf("IsHostWidenPermitted(%q,%q) = false, want true", ok.tenant, ok.owner)
+		if !r.Has(ok.tenant, ok.owner) {
+			t.Errorf("Has(%q,%q) = false, want true", ok.tenant, ok.owner)
 		}
 	}
 	// Bare (shared "") tenant must NOT inherit a tenant-scoped grant.
-	if r.IsHostWidenPermitted("", "jobs-search-web") {
+	if r.Has("", "jobs-search-web") {
 		t.Error("bare tenant must not satisfy a tenant-scoped permit entry")
 	}
-	if r.IsHostWidenPermitted("other", "jobs-search-web") {
+	if r.Has("other", "jobs-search-web") {
 		t.Error("a different tenant must not satisfy jobember's permit entry")
 	}
 }
@@ -2824,5 +2826,40 @@ hooks:
 	want := []string{"hooks.internal", "sidecar.local", "gate.svc"}
 	if got := cfg.Hooks.PrivateHostAllowlist; !equalStrings(got, want) {
 		t.Fatalf("PrivateHostAllowlist = %v, want %v (env should append to yaml)", got, want)
+	}
+}
+
+// A `tools:` entry may carry that tool's hooks; it becomes the tool's name in
+// Tools and its hooks in ToolHooks, beside the agent's own hooks.
+func TestAgentDef_YAMLToolEntryCarriesItsHooks(t *testing.T) {
+	var a AgentDef
+	src := `
+tools:
+  - Read
+  - name: WebFetch
+    hooks:
+      pre: [deny-internal, {name: url-gate, url: "https://app.example/g", fail_mode: closed}]
+hooks:
+  agent_stop: [cite-sources@3]
+`
+	if err := yaml.Unmarshal([]byte(src), &a); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(a.Tools, ",") != "Read,WebFetch" {
+		t.Fatalf("tools = %v", a.Tools)
+	}
+	pre := a.ToolHooks["WebFetch"][hooks.PhasePre]
+	if len(pre) != 2 || pre[0].Ref != "deny-internal" || pre[1].Inline == nil || pre[1].Inline.Name != "url-gate" {
+		t.Fatalf("WebFetch hooks = %+v", pre)
+	}
+	if a.Hooks[hooks.PhaseAgentStop][0].Ref != "cite-sources@3" {
+		t.Fatalf("agent hooks = %+v", a.Hooks)
+	}
+	if err := ValidateAgentHooks(a); err != nil {
+		t.Fatalf("valid hooks refused: %v", err)
+	}
+	a.Tools = []string{"Read"}
+	if err := ValidateAgentHooks(a); err == nil {
+		t.Fatalf("hooks on a tool the agent lacks were accepted")
 	}
 }

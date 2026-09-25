@@ -54,7 +54,7 @@ func systemChannelFixture(t *testing.T) (*Server, store.Store, func()) {
 			ChannelsMaxValueBytes: 64 * 1024,
 		},
 	}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	bus := channels.NewBus()
 	sched := channels.NewScheduler(bus, 100)
 	srv := &Server{
@@ -62,7 +62,6 @@ func systemChannelFixture(t *testing.T) (*Server, store.Store, func()) {
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}
@@ -233,8 +232,7 @@ func TestSystemChannelPublish_503WithoutSystemPublisher(t *testing.T) {
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hooks.NewRegistry(),
-		hookDispatcher: hooks.NewDispatcher(hooks.NewRegistry(), nil),
+		hookDispatcher: hooks.NewDispatcher(nil, nil),
 		sem:            concurrency.New(8, 16, 30000),
 		// systemPublisher intentionally left nil.
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -219,6 +220,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 
 	def, err := a.buildDefinition(ctx, in.Name, "", in.Overlay)
 	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := a.checkHooks(ctx, in.Name, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// Tools ceiling on `create`: the caller's own effective
@@ -439,6 +443,9 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 
 	def, err := a.buildDefinition(ctx, in.Name, string(parent.Definition), in.Overlay)
 	if err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := a.checkHooks(ctx, in.Name, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	// Tools ceiling enforcement — fork may narrow, never widen.
@@ -778,8 +785,12 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 	}
 
 	if len(overlay) > 0 {
+		lifted, err := hooks.LiftToolEntries(overlay)
+		if err != nil {
+			return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
+		}
 		var ov mergedDef
-		if err := json.Unmarshal(overlay, &ov); err != nil {
+		if err := json.Unmarshal(lifted, &ov); err != nil {
 			return mergedDef{}, fmt.Errorf("parse overlay: %w", err)
 		}
 		if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
@@ -1103,6 +1114,10 @@ type mergedDef struct {
 	// dynamic volumes comes back default-deny on reload. Same exclusion
 	// from content_sha256 (authority, not content).
 	VolumeDefScopes []string `json:"volume_def_scopes,omitempty"`
+	// Hooks / ToolHooks: the agent's hooks (see config.AgentDef). Content — part
+	// of content_sha256 — and carried through fork like any other field.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 }
 
 func (d *mergedDef) applyOverlay(ov mergedDef) {
@@ -1280,6 +1295,12 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.VolumeDefScopes != nil {
 		d.VolumeDefScopes = ov.VolumeDefScopes
 	}
+	if ov.Hooks != nil {
+		d.Hooks = ov.Hooks
+	}
+	if ov.ToolHooks != nil {
+		d.ToolHooks = ov.ToolHooks
+	}
 }
 
 // normalize fills derived fields that the static config-load path
@@ -1423,6 +1444,8 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
+		Hooks:                  s.Hooks,
+		ToolHooks:              s.ToolHooks,
 	}
 }
 
@@ -1499,6 +1522,8 @@ func signFromMergedDef(name string, def mergedDef) string {
 		UnboundedIterations:   def.UnboundedIterations,
 		MaxConcurrentChildren: def.MaxConcurrentChildren,
 		Tools:                 def.Tools,
+		Hooks:                 def.Hooks,
+		ToolHooks:             def.ToolHooks,
 		// RFC BL P1 core memory blocks — content-identifying.
 		CoreBlocks:            coreBlocks,
 		InheritCoreBlocks:     def.InheritCoreBlocks,
@@ -1652,4 +1677,19 @@ func mintDefID() string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return "def_" + hex.EncodeToString(b[:])
+}
+
+// checkHooks refuses, when the definition is saved, hooks a run could not fire:
+// a malformed entry, a tool's hooks on a tool the agent does not have, a HookDef
+// that does not exist, or one attached under an event it does not answer. A run
+// resolving them would refuse to start; saying so here is where it can be fixed.
+func (a *AgentDef) checkHooks(ctx context.Context, name string, def mergedDef) error {
+	if len(def.Hooks) == 0 && len(def.ToolHooks) == 0 {
+		return nil
+	}
+	if err := config.ValidateAgentHooks(config.AgentDef{Tools: def.Tools, Hooks: def.Hooks, ToolHooks: def.ToolHooks}); err != nil {
+		return err
+	}
+	src := hooks.Source{Owner: "agent:" + name, Tenant: tools.RunIdentity(ctx).TenantID}
+	return hooks.Resolve(ctx, src, def.Hooks, def.ToolHooks, HookDefLookup(a.Store), hooks.Permits{}, hooks.NewSet())
 }

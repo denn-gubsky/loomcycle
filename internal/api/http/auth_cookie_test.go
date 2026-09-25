@@ -19,14 +19,13 @@ import (
 // middleware doesn't need them.
 func authedTestServer(t *testing.T, token string) *Server {
 	t.Helper()
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	cfg := &config.Config{}
 	cfg.Env.AuthToken = token
 	return &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

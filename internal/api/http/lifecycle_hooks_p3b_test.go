@@ -65,7 +65,7 @@ func (h *recordingHook) waitBody(t *testing.T, want string) string {
 
 func register(t *testing.T, s *Server, h *hooks.Hook) {
 	t.Helper()
-	if _, err := s.hookRegistry.Register(h); err != nil {
+	if _, err := s.testHooks().Register(h); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -176,11 +176,10 @@ func TestCompactRun_HooksGateAndReportAManualCompaction(t *testing.T) {
 	srv, prov := compactFixture(t)
 	_, _, runID := seedContinuationSession(t, srv, 8, 1)
 	deny := newRecordingHook(t, `{"decision":"deny","reason":"keep the whole history for the audit"}`)
-	id, err := srv.hookRegistry.Register(&hooks.Hook{Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL})
-	if err != nil {
+	if _, err := srv.testHooks().Register(&hooks.Hook{Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = srv.CompactRun(context.Background(), runID)
+	_, err := srv.CompactRun(context.Background(), runID)
 	var ce *compactErr
 	if !errors.As(err, &ce) || ce.status != http.StatusConflict || ce.code != "denied_by_hook" || !strings.Contains(ce.msg, "keep the whole history") {
 		t.Fatalf("err = %#v", err)
@@ -192,9 +191,7 @@ func TestCompactRun_HooksGateAndReportAManualCompaction(t *testing.T) {
 		t.Error("the payload does not name the trigger")
 	}
 
-	if err := srv.hookRegistry.Delete(id); err != nil {
-		t.Fatal(err)
-	}
+	srv.resetTestHooks()
 	report := newRecordingHook(t, `{}`)
 	register(t, srv, &hooks.Hook{Owner: "ops", Name: "log", Phase: hooks.PhasePostCompact, CallbackURL: report.srv.URL})
 	res, err := srv.CompactRun(context.Background(), runID)

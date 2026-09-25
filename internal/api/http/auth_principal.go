@@ -842,17 +842,6 @@ func requiredScopeFor(method, path string) string {
 	// resolver, cross-tenant user focus.
 	case strings.HasPrefix(path, "/v1/_"):
 		return auth.ScopeAdmin
-	// Hook registration / list / delete — RFC AF: tenant-confined. The hook
-	// registry is now tenant-isolated: RegisterHook stamps the principal's
-	// authoritative tenant, Match() fires a tenant-scoped hook ONLY on its own
-	// tenant's runs (operator/global hooks, Tenant="", still fire on all), and
-	// List/Delete are tenant-scoped (opaque-404 cross-tenant). So a tenant
-	// operator registers hooks for its own runs without seeing/touching another
-	// tenant's. The privileged host-WIDEN capability stays gated by the
-	// operator-yaml hooks.permit_host_widen owner allowlist (frozen at boot), so
-	// ScopeTenant alone can't let a hook escape the host-allowlist floor.
-	case strings.HasPrefix(path, "/v1/hooks"):
-		return auth.ScopeTenant
 	// Prometheus scrape — operator surface, same posture as /v1/_metrics/*.
 	case path == "/metrics":
 		return auth.ScopeAdmin
@@ -1007,9 +996,6 @@ func userSelfServiceRoute(method, path string) bool {
 //   - user create + roster mutation + user-token minting (/v1/_users*) — escalation
 //   - per-subject erasure (/v1/_erasure) — destructive
 //   - budget WRITES (PUT/DELETE /v1/_limits) — cost-control bypass (GET stays open)
-//   - tool-use hooks (/v1/hooks) — a cross-run control over every one of the
-//     tenant's runs (kept operator-only in the safe direction; not in RFC CB's
-//     explicit opened list)
 func memberCarveOut(method, path string) bool {
 	switch {
 	case path == "/v1/_users" && method == http.MethodPost:
@@ -1019,8 +1005,6 @@ func memberCarveOut(method, path string) bool {
 	case path == "/v1/_erasure":
 		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
-		return true
-	case strings.HasPrefix(path, "/v1/hooks"):
 		return true
 	// RFC CD Part C — the memory/document CHANGE FEED is substrate:tenant-only,
 	// NOT member-accessible (locked decision): the feed exposes the tenant's

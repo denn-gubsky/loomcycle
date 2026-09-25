@@ -19,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/search"
@@ -831,6 +832,95 @@ func (c *Config) SearchHostKey(id string) string {
 	return ""
 }
 
+// UnmarshalYAML lets a `tools:` entry carry that tool's hooks — `{name:
+// WebFetch, hooks: {pre: [...], post: [...]}}` beside plain names. The entry
+// becomes its name in Tools and its hooks in ToolHooks, so every reader of
+// Tools keeps seeing names.
+func (a *AgentDef) UnmarshalYAML(n *yaml.Node) error {
+	type plain AgentDef
+	var toolHooks hooks.ToolHooks
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value != "tools" || n.Content[i+1].Kind != yaml.SequenceNode {
+				continue
+			}
+			seq := n.Content[i+1]
+			for j, item := range seq.Content {
+				if item.Kind != yaml.MappingNode {
+					continue
+				}
+				var entry struct {
+					Name  string           `yaml:"name"`
+					Hooks hooks.EventHooks `yaml:"hooks"`
+				}
+				if err := item.Decode(&entry); err != nil {
+					return fmt.Errorf("tools[%d]: %w", j, err)
+				}
+				if entry.Name == "" {
+					return fmt.Errorf("tools[%d]: a tool entry with hooks needs a name", j)
+				}
+				if toolHooks == nil {
+					toolHooks = hooks.ToolHooks{}
+				}
+				toolHooks[entry.Name] = mergeEventHooks(toolHooks[entry.Name], entry.Hooks)
+				seq.Content[j] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: entry.Name}
+			}
+		}
+	}
+	var p plain
+	if err := n.Decode(&p); err != nil {
+		return err
+	}
+	*a = AgentDef(p)
+	for name, ev := range toolHooks {
+		if a.ToolHooks == nil {
+			a.ToolHooks = hooks.ToolHooks{}
+		}
+		a.ToolHooks[name] = mergeEventHooks(a.ToolHooks[name], ev)
+	}
+	return nil
+}
+
+// ValidateAgentHooks checks an agent's hooks: known events, tool events only
+// under a tool, well-formed entries, and each tool's hooks on a tool the agent
+// has — a hook on a tool it cannot call would never fire, and a gate that
+// never fires is a gate someone believes is there.
+func ValidateAgentHooks(a AgentDef) error {
+	if err := a.Hooks.Validate(""); err != nil {
+		return err
+	}
+	if err := a.ToolHooks.Validate(); err != nil {
+		return err
+	}
+	for tool := range a.ToolHooks {
+		found := false
+		for _, t := range a.Tools {
+			if t == tool {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("tool_hooks: %s is not in the agent's tools", tool)
+		}
+	}
+	return nil
+}
+
+// mergeEventHooks appends b's entries after a's, per event.
+func mergeEventHooks(a, b hooks.EventHooks) hooks.EventHooks {
+	if len(b) == 0 {
+		return a
+	}
+	if a == nil {
+		a = hooks.EventHooks{}
+	}
+	for phase, entries := range b {
+		a[phase] = append(a[phase], entries...)
+	}
+	return a
+}
+
 // UnmarshalYAML accepts a tier candidate written EITHER as a mapping
 // ({provider: X, model: Y}) or as a bare scalar string. A bare string is
 // taken as the model with an empty provider — the natural way to name a
@@ -964,6 +1054,13 @@ type AgentDef struct {
 	// agent-authored def the moment the migration ran, and a guard that breaks
 	// working defs on upgrade is an outage, not a guard.
 	OperatorAuthored bool `json:"-" yaml:"-"`
+
+	// OwnerTenant is the tenant that owns this definition ("" for the operator's
+	// yaml or a shared definition). Resolved like OperatorAuthored, never
+	// authored. The agent's HookDef references resolve here, not in the run's
+	// tenant, so a tenant cannot replace an operator's hook by naming its own
+	// HookDef the same.
+	OwnerTenant string `json:"-" yaml:"-"`
 
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
@@ -1302,6 +1399,17 @@ type AgentDef struct {
 	// index enabled AND backfilled; an empty index yields zero turns silently, which
 	// is why the response reports how many it found.
 	RecallAttachTraces bool `yaml:"recall_attach_traces"`
+
+	// Hooks are the agent's own hooks: the run events (agent_start, agent_stop,
+	// …) and tool events that apply to every tool. Each entry is a HookDef name
+	// ("gate", or "gate@3" pinned) or an inline webhook {name, url, fail_mode,
+	// timeout_ms}. A run takes these verbatim; what a run adds never removes one.
+	Hooks hooks.EventHooks `yaml:"hooks"`
+
+	// ToolHooks are each tool's own pre / post / post_failure hooks in this
+	// agent. Written in yaml as a `tools:` entry `{name: WebFetch, hooks: {...}}`
+	// (or under tool_hooks); the tool's name also stays in Tools.
+	ToolHooks hooks.ToolHooks `yaml:"tool_hooks"`
 
 	// MemoryIndexMaxBytes is the soft size cap the memory protocol surfaces to
 	// the agent for its /memory/index document — the agent is asked to keep the
@@ -5992,6 +6100,12 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.VolumeDefScopes != nil {
 		out.VolumeDefScopes = override.VolumeDefScopes
 	}
+	if override.Hooks != nil {
+		out.Hooks = override.Hooks
+	}
+	if override.ToolHooks != nil {
+		out.ToolHooks = override.ToolHooks
+	}
 	if override.EvaluationScopes != nil {
 		out.EvaluationScopes = override.EvaluationScopes
 	}
@@ -7326,6 +7440,9 @@ func validate(c *Config) error {
 			if err := skillmatch.ValidatePattern(sc); err != nil {
 				return fmt.Errorf("agent %q: skills[%d]: %w", name, i, err)
 			}
+		}
+		if err := ValidateAgentHooks(agent); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		// VolumeDef tool (RFC AH Phase 2a): validate volume_def_scopes
 		// entries. Closed set: "named:<volume-name>" / "any".

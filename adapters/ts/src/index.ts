@@ -242,19 +242,15 @@ export type {
   InterruptRow,
   InterruptStatus,
   ResolveInterruptOptions,
-  // Hook management (PR C)
-  Hook,
+  // Hook payloads (what a webhook receives and returns)
   HookFailMode,
   HookPhase,
   HookToolCall,
   HookToolResult,
-  ListHooksResponse,
   PostHookCall,
   PostHookResult,
   PreHookCall,
   PreHookResult,
-  RegisterHookOptions,
-  RegisterHookResponse,
   // Substrate admin (v0.8.22)
   SubstrateToolInput,
   SubstrateToolResponse,
@@ -337,6 +333,11 @@ export type {
   MCPServerDefVerifyResult,
   // Inline code-js agent ingestion (v0.19.0, RFC J)
   AgentDefOverlay,
+  HookEvent,
+  InlineWebhook,
+  HookEntry,
+  EventHooks,
+  ToolEntry,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
   // Library v2 enumeration (v0.10.3)
@@ -396,7 +397,6 @@ export {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
-  HookNotFoundError,
   NotFoundError,
   InvalidArgumentError,
   ChannelCursorRegressionError,

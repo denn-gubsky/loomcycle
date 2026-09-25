@@ -294,7 +294,7 @@ func postHookServer(t *testing.T, rewrite func(hooks.ToolResult) *hooks.ToolResu
 		_ = json.NewEncoder(w).Encode(hooks.PostHookResult{Result: rewrite(call.ToolResult)})
 	}))
 	t.Cleanup(srv.Close)
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	if _, err := reg.Register(&hooks.Hook{
 		Owner: "test", Name: "post", Phase: hooks.PhasePost,
 		CallbackURL: srv.URL, Tools: []string{"failer"},
@@ -324,7 +324,7 @@ func runFailerThrough(t *testing.T, hd *hooks.Dispatcher) string {
 // never took it — which is how rebuilding the result from the hook's two wire
 // fields dropped every classification in production while they stayed green.
 func TestExecutePendingTools_ClassificationSurvivesAnIdleHookDispatcher(t *testing.T) {
-	text := runFailerThrough(t, hooks.NewDispatcher(hooks.NewRegistry(), nil))
+	text := runFailerThrough(t, hooks.NewDispatcher(hooks.NewSet(), nil))
 	if !strings.Contains(text, "[transient") {
 		t.Errorf("a dispatcher with no matching hook dropped the classification:\n%s", text)
 	}

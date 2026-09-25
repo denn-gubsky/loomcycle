@@ -12,20 +12,22 @@ import (
 	"time"
 )
 
-// Dispatcher is the front door the agent loop calls into. It looks
-// hooks up by (agent, tool, phase), invokes them in chain order via
-// the webhook client, and returns the chain's final input/result
-// after applying each hook's rewrite or short-circuit.
+// Dispatcher is the front door the agent loop calls into. It fires the hooks of
+// the run a call belongs to — the Set on the call's ctx (see WithSet) — in chain
+// order via the webhook client or the code runner, and returns the chain's
+// final input/result after applying each hook's rewrite or short-circuit.
 //
-// One Dispatcher per server, shared across all runs.
+// One Dispatcher per server, shared across all runs; the hooks are the run's.
 //
 // hostWidenPermitted / hostWidenDenied are atomic counters incremented
 // whenever a Pre-hook's allow_hosts is honoured or dropped at
 // dispatch time. Lets operators graph widening volume without
 // scraping the audit-event stream. Surfaced via Stats().
 type Dispatcher struct {
-	registry RegistryInterface
-	client   *webhookClient
+	// base is fired when ctx carries no Set. The server leaves it nil — a run
+	// fires only what it carries; tests set a fixed chain.
+	base   *Set
+	client *webhookClient
 	// code runs code-js hook bodies; nil when code hooks are disabled, in which
 	// case a code hook (e.g. one reloaded from the database) is unavailable and
 	// its fail mode decides.
@@ -39,8 +41,8 @@ type Dispatcher struct {
 // intended for operator observability endpoints. Today only the
 // host-widen counters exist; future counters land here.
 type DispatcherStats struct {
-	HostWidenPermitted int64 // Pre-hook allow_hosts honoured (owner in permit list)
-	HostWidenDenied    int64 // Pre-hook allow_hosts dropped (owner NOT in permit list)
+	HostWidenPermitted int64 // Pre-hook allow_hosts honoured (the hook may widen)
+	HostWidenDenied    int64 // Pre-hook allow_hosts dropped (it may not)
 }
 
 // Stats returns a snapshot of the dispatcher's counters. Cheap —
@@ -52,23 +54,31 @@ func (d *Dispatcher) Stats() DispatcherStats {
 	}
 }
 
-// NewDispatcher returns a Dispatcher backed by the given registry.
-// httpClient may be nil (uses a default http.Client without a
-// per-client timeout — per-hook timeouts apply via ctx). It serves
-// operator-global hooks only; tenant hooks always dial through the
-// private-address guard, here with no host vouched for.
-func NewDispatcher(reg RegistryInterface, httpClient *http.Client) *Dispatcher {
-	return NewDispatcherWithPrivateHosts(reg, httpClient, nil)
+// NewDispatcher returns a Dispatcher whose calls fire base when their ctx
+// carries no Set (nil: fire nothing). httpClient may be nil (uses a default
+// http.Client without a per-client timeout — per-hook timeouts apply via ctx).
+// A tenant's hooks always dial through the private-address guard, here with no
+// host vouched for.
+func NewDispatcher(base *Set, httpClient *http.Client) *Dispatcher {
+	return NewDispatcherWithPrivateHosts(base, httpClient, nil)
 }
 
 // NewDispatcherWithPrivateHosts is NewDispatcher plus the operator's
 // hooks.private_host_allowlist: hosts (suffix-matched) a TENANT hook's
 // callback may reach even though they resolve to a private address.
-func NewDispatcherWithPrivateHosts(reg RegistryInterface, httpClient *http.Client, privateHostAllowlist []string) *Dispatcher {
+func NewDispatcherWithPrivateHosts(base *Set, httpClient *http.Client, privateHostAllowlist []string) *Dispatcher {
 	return &Dispatcher{
-		registry: reg,
-		client:   newWebhookClient(httpClient, privateHostAllowlist),
+		base:   base,
+		client: newWebhookClient(httpClient, privateHostAllowlist),
 	}
+}
+
+// match is the chain for one call: the run's Set on ctx, else the base.
+func (d *Dispatcher) match(ctx context.Context, ident Identity, tool string, phase Phase) []*Hook {
+	if s := SetFrom(ctx); s != nil {
+		return s.Match(ident.Agent, tool, phase)
+	}
+	return d.base.Match(ident.Agent, tool, phase)
 }
 
 // SetCodeRunner installs the runner for code-js hook bodies. Call it during
@@ -82,9 +92,7 @@ type Identity struct {
 	Agent   string
 	UserID  string
 	AgentID string
-	// Tenant is the run's authoritative tenant (RunIdentity.TenantID). The
-	// registry's Match uses it (RFC AF) so a tenant-scoped hook fires only on
-	// its tenant's runs; an operator/global hook (Hook.Tenant=="") fires on all.
+	// Tenant is the run's authoritative tenant (RunIdentity.TenantID).
 	Tenant string
 	// The run the call belongs to, stamped onto every payload.
 	RunID       string
@@ -139,10 +147,11 @@ type PreOutcome struct {
 // dispatcher can pass the running input forward through each hook.
 //
 // AllowHosts accumulation rules:
-//   - A hook contributes to the outcome's AllowHosts only when its
-//     Owner is on the registry's host-widen permit list (operator
-//     yaml's hooks.permit_host_widen.owners). Otherwise the field is
-//     dropped with a WARN log + counter increment.
+//   - A hook contributes to the outcome's AllowHosts only when it may
+//     widen (Hook.WidenPermitted: resolved with the run's hooks, from
+//     the operator's hooks.permit_host_widen list and the definition
+//     it came from). Otherwise the field is dropped with a WARN log +
+//     counter increment.
 //   - Contributions are UNION'd across all permitted hooks in the
 //     chain (de-duplicated, order-preserved by first-seen).
 //   - Deny wins: if any hook in the chain returns a non-nil Deny,
@@ -155,7 +164,7 @@ type PreOutcome struct {
 //     hook that contributed at least one host. Carried for the
 //     audit event so operators see a single attribution.
 func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) PreOutcome {
-	hooks := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePre)
+	hooks := d.match(ctx, ident, tu.Name, PhasePre)
 	current := tu.Input
 	var (
 		allowHosts       []string
@@ -216,15 +225,15 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 				Kind: "rewrite_input", UpdatedInput: res.Input})
 		}
 		if len(res.AllowHosts) > 0 {
-			if !d.registry.IsHostWidenPermitted(h.Tenant, h.Owner) {
-				// Operator never opted this (tenant, owner) in. Drop with a
-				// WARN log so operators can spot un-authorised widening
-				// attempts (e.g., a hook that started returning allow_hosts
-				// after a code update without the corresponding yaml change, or
-				// a tenant claiming an owner string permitted only for another
-				// tenant). Counter exposed via Stats() for graphability.
+			if !h.WidenPermitted {
+				// Not granted when the run's hooks were resolved: the operator's
+				// permit list does not name it, or it did not come from an
+				// operator-authored definition. Drop with a WARN log so an
+				// operator can spot an un-authorised widening attempt (a hook
+				// that started returning allow_hosts without the matching yaml
+				// change). Counter exposed via Stats() for graphability.
 				d.hostWidenDenied.Add(1)
-				log.Printf("hooks: pre %s/%s (tenant=%q) returned allow_hosts=%v but (tenant,owner) is NOT on hooks.permit_host_widen.owners; dropping grant",
+				log.Printf("hooks: pre %s/%s (tenant=%q) returned allow_hosts=%v but may not widen hosts (not on hooks.permit_host_widen, or not from an operator-authored definition); dropping grant",
 					h.Owner, h.Name, h.Tenant, res.AllowHosts)
 				continue
 			}
@@ -310,22 +319,13 @@ type PostOutcome struct {
 // (outermost).
 //
 // When the tool FAILED, the post_failure chain runs first, innermost to the
-// post chain: a hook registered only for failures sees the failure before any
-// general post hook has rewritten it. That holds within each group; across
-// them the run's tenant hooks (post_failure, then post) all run before the
-// operator-global ones, so the operator's hooks have the last word on the
-// result (see Registry.Match).
+// post chain: a hook listed only for failures sees the failure before any
+// general post hook has rewritten it.
 func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, original ToolResult) PostOutcome {
-	chain := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePost) // already reversed by registry for Post
+	chain := d.match(ctx, ident, tu.Name, PhasePost) // already reversed for Post
 	if original.IsError {
-		failure := d.registry.Match(ident.Tenant, ident.Agent, tu.Name, PhasePostFailure)
-		tenantFailure, globalFailure := splitTenant(failure)
-		tenantPost, globalPost := splitTenant(chain)
-		chain = make([]*Hook, 0, len(failure)+len(chain))
-		chain = append(chain, tenantFailure...)
-		chain = append(chain, tenantPost...)
-		chain = append(chain, globalFailure...)
-		chain = append(chain, globalPost...)
+		failure := d.match(ctx, ident, tu.Name, PhasePostFailure)
+		chain = append(append(make([]*Hook, 0, len(failure)+len(chain)), failure...), chain...)
 	}
 	out := PostOutcome{Result: original}
 	for _, h := range chain {
@@ -374,16 +374,6 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 		}
 	}
 	return out
-}
-
-// splitTenant splits a Match result, tenant hooks first, into its tenant and
-// operator-global parts, keeping each part's order.
-func splitTenant(hs []*Hook) (tenant, global []*Hook) {
-	i := 0
-	for i < len(hs) && hs[i].Tenant != "" {
-		i++
-	}
-	return hs[:i], hs[i:]
 }
 
 // invoke runs one hook: a code body in the code-js runner, otherwise a
@@ -439,8 +429,8 @@ func (d *Dispatcher) invokeCode(ctx context.Context, h *Hook, body, out any) err
 }
 
 // Matches reports whether any hook of this phase would fire for the run.
-func (d *Dispatcher) Matches(ident Identity, phase Phase) bool {
-	return len(d.registry.Match(ident.Tenant, ident.Agent, "", phase)) > 0
+func (d *Dispatcher) Matches(ctx context.Context, ident Identity, phase Phase) bool {
+	return len(d.match(ctx, ident, "", phase)) > 0
 }
 
 // lifecycleCall builds the payload for one run-lifecycle hook.
@@ -485,12 +475,11 @@ type GateOutcome struct {
 // RunGate runs a chain that may let something go ahead, deny it, or add
 // context to it: agent_start (the run), subagent_start (a child's start),
 // subagent_stop (a child's result reaching its parent) and pre_compact (a
-// compaction). Registration order, the run's tenant hooks before the
-// operator-global ones; the first deny stops the chain. A hook that
+// compaction). Chain order; the first deny stops the chain. A hook that
 // fails denies when it fails closed, and is skipped when it fails open.
 func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) GateOutcome {
 	var out GateOutcome
-	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", phase) {
+	for _, h := range d.match(ctx, ident, "", phase) {
 		res, err := d.invokeLifecycle(ctx, h, ident, info)
 		if err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
@@ -535,7 +524,7 @@ const ObserveBudget = 30 * time.Second
 // the chain is done, for a caller (or a test) that wants to wait.
 func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, info LifecycleInfo) <-chan struct{} {
 	done := make(chan struct{})
-	matched := d.registry.Match(ident.Tenant, ident.Agent, "", phase)
+	matched := d.match(ctx, ident, "", phase)
 	if len(matched) == 0 {
 		close(done)
 		return done
@@ -618,7 +607,7 @@ type StopOutcome struct {
 // a hook is deciding, the outcome is StopCancelled, whatever the fail mode.
 func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop LifecycleInfo) StopOutcome {
 	out := StopOutcome{Kind: StopAllow}
-	for _, h := range d.registry.Match(ident.Tenant, ident.Agent, "", PhaseAgentStop) {
+	for _, h := range d.match(ctx, ident, "", PhaseAgentStop) {
 		name := h.Owner + "/" + h.Name
 		res, err := d.invokeLifecycle(ctx, h, ident, stop)
 		if err != nil {

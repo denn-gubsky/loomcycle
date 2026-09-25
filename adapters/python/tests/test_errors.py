@@ -16,7 +16,6 @@ from loomcycle.errors import (
     AgentNotFoundError,
     AuthError,
     BackpressureError,
-    HookNotFoundError,
     InvalidArgumentError,
     LoomcycleError,
     SessionBusyError,
@@ -80,19 +79,6 @@ def test_not_found_no_live_run_message_routes_to_agent_not_found():
     )
     with pytest.raises(AgentNotFoundError):
         _raise_from_grpc(err)
-
-
-# ---- Hook NOT_FOUND discrimination (hooks-connector PR D) ----
-#
-# Server wire-stable string from internal/api/grpc/hooks.go:
-#   "no hook with id %q"
-
-
-def test_not_found_hook_message_routes_to_hook_not_found():
-    err = _FakeAioRpcError(grpc.StatusCode.NOT_FOUND, 'no hook with id "hook_gone"')
-    with pytest.raises(HookNotFoundError) as ei:
-        _raise_from_grpc(err)
-    assert ei.value.code == grpc.StatusCode.NOT_FOUND
 
 
 def test_not_found_session_keyword_still_beats_hook():

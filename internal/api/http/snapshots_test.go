@@ -31,13 +31,12 @@ func minimalServerWithSnapshotStore(t *testing.T) (*Server, store.Store, func())
 			"_system/heartbeat": {Scope: "agent", DefaultTTL: 60, Semantic: "heartbeat"},
 		},
 	}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	srv := &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

@@ -73,7 +73,7 @@ func TestPrincipalMayCallTool_NonAdmin(t *testing.T) {
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
 
-	allowed := []string{"document", "agentdef", "skilldef", "memory", "channel", "path", "spawn_run", "context", "evaluation", "register_hook", "list_hooks", "delete_hook"}
+	allowed := []string{"document", "agentdef", "skilldef", "memory", "channel", "path", "spawn_run", "context", "evaluation"}
 	for _, name := range allowed {
 		if !principalMayCallTool(ctx, name) {
 			t.Errorf("tenant principal must be allowed tenant-confinable tool %q", name)

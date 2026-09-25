@@ -70,7 +70,6 @@ import type {
   EnsureMcpServerOptions,
   EnsureMcpServerResult,
   HealthResponse,
-  Hook,
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
@@ -99,7 +98,6 @@ import type {
   LibraryListResponse,
   LibraryMcpServerDefinition,
   LibrarySkillDefinition,
-  ListHooksResponse,
   ListUsersResponse,
   UserRecord,
   CreateUserBody,
@@ -128,8 +126,6 @@ import type {
   PauseResult,
   PersistentVolumesResponse,
   EphemeralVolumesResponse,
-  RegisterHookOptions,
-  RegisterHookResponse,
   ResolveInterruptOptions,
   ResumeResult,
   ResolverMatrix,
@@ -1593,60 +1589,6 @@ export class LoomcycleClient {
       resolvedBy: opts?.resolvedBy,
       signal: opts?.signal,
     });
-  }
-
-  // ---- Hook management (hooks-connector series, PR C) ----
-
-  /** Register a pre- or post-tool hook. Its body is a webhook — the
-   *  callback_url must be an http:// or https:// endpoint the CONSUMER
-   *  runs; loomcycle POSTs PreHookCall / PostHookCall payloads to it —
-   *  or a code-js body (`code`), run in-process by loomcycle. Set
-   *  exactly one. This method manages registration only; a webhook's
-   *  receiver is the consumer's own HTTP framework (Express, Next.js,
-   *  etc.).
-   *
-   *  Re-registering the same (owner, name) replaces the prior entry
-   *  with a fresh id (idempotent app-restart contract).
-   *
-   *  Raises InvalidArgumentError on 400 (bad URL / phase / missing
-   *  required fields). */
-  async registerHook(
-    opts: RegisterHookOptions & { signal?: AbortSignal },
-  ): Promise<RegisterHookResponse> {
-    const body: Record<string, unknown> = {
-      owner: opts.owner,
-      name: opts.name,
-      phase: opts.phase,
-    };
-    if (opts.callbackUrl !== undefined) body.callback_url = opts.callbackUrl;
-    if (opts.code !== undefined) body.code = opts.code;
-    if (opts.agents !== undefined) body.agents = opts.agents;
-    if (opts.tools !== undefined) body.tools = opts.tools;
-    if (opts.failMode !== undefined) body.fail_mode = opts.failMode;
-    if (opts.timeoutMs !== undefined && opts.timeoutMs > 0) {
-      body.timeout_ms = opts.timeoutMs;
-    }
-    return postJSON<RegisterHookResponse>(this.ctx, "/v1/hooks", body, opts);
-  }
-
-  /** List every currently-registered hook. Returns the array
-   *  unwrapped (the wire envelope is `{hooks: [...]}` — we strip
-   *  the envelope to match listUserAgents). In-memory only — empty
-   *  after a loomcycle restart. */
-  async listHooks(opts?: { signal?: AbortSignal }): Promise<Hook[]> {
-    const resp = await jsonFetch<ListHooksResponse>(this.ctx, "/v1/hooks", opts);
-    return resp.hooks ?? [];
-  }
-
-  /** Delete a registered hook by id. Raises HookNotFoundError on
-   *  404. Returns void on success (the HTTP 200 body `{deleted: id}`
-   *  is dropped — callers already know the id they passed). */
-  async deleteHook(id: string, opts?: { signal?: AbortSignal }): Promise<void> {
-    await deleteRequest(
-      this.ctx,
-      `/v1/hooks/${encodeURIComponent(id)}`,
-      opts,
-    );
   }
 
   // ---- v0.8.22 substrate admin (AgentDef + SkillDef) ----

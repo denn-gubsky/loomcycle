@@ -74,6 +74,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 )
 
 // AgentContent is the closed set of fields that participate in the
@@ -138,6 +140,10 @@ type AgentContent struct {
 	// pre-feature rows. Tag "history_scope" sorts between evaluation_scopes and
 	// inherit_core_blocks (declaration order = JSON emit order = hash input).
 	HistoryScope []string `json:"history_scope,omitempty"`
+	// Hooks / ToolHooks are the agent's hooks — content: two agents gated
+	// differently are not the same agent.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 	// InheritCoreBlocks (RFC BL P1) is content-identifying — a fork that flips
 	// it must mint a distinct hash. bool + omitempty keeps pre-feature rows
 	// byte-identical. Tag "inherit_core_blocks" sorts between evaluation_scopes

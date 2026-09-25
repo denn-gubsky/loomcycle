@@ -2261,6 +2261,13 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 
 	emit(providers.Event{Type: providers.EventStarted})
 
+	// A run whose hooks could not be resolved does not start: a gate its
+	// definition names must not silently be missing. Returned, not emitted,
+	// like the agent_start denial below.
+	if err := hooks.SetFrom(ctx).Err(); err != nil {
+		return RunResult{}, fmt.Errorf("the run was not started: its hooks could not be resolved: %w", err)
+	}
+
 	// agent_start hooks: once per run, now that the prompt is composed and
 	// before any model call, for both loops. A resumed run already started.
 	if opts.Hooks != nil && !opts.Resumed {
@@ -2358,7 +2365,7 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
 				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
 		}
-		if opts.Hooks != nil && opts.Hooks.Matches(HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
+		if opts.Hooks != nil && opts.Hooks.Matches(ctx, HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
 			// Same reason as review below: the step loop's product is its
 			// state, not an answer an agent_stop hook could block or hold.
 			msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"

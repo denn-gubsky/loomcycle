@@ -328,6 +328,8 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"a2a_agent_def_scopes":       true,
 		// RFC AH Phase 2a — the dynamic-volume slice of the F40 closure.
 		"volume_def_scopes": true,
+		"hooks":             true, // the agent's own hooks (run events, all-tool events); content-identifying
+		"tool_hooks":        true, // each tool's own pre/post hooks; content-identifying
 		// v1.34.0 — the capability gates that were missing from the overlay
 		// entirely, so any fork of an agent using them was born default-deny
 		// (same class as the F40 gap above). sql_scopes / sql_quota_bytes /

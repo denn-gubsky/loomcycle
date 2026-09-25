@@ -93,29 +93,25 @@ const (
 	FailClosed FailMode = "closed"
 )
 
-// Hook is one registered webhook. The (Owner, Name) tuple is the identity:
-// re-registering the same (Owner, Name) replaces the prior registration so
-// app restarts can't cascade duplicate hooks. ID is loomcycle-assigned and
-// used by the DELETE endpoint.
+// Hook is one hook in a run's chain: a webhook or a code-js body, the event it
+// answers, and how it fails. A run's hooks are resolved when it starts, from the
+// definitions that name them (see Set); (Owner, Name) identifies one within the
+// chain.
 //
-// Filtering: a hook fires when its Agents glob list matches the running
-// agent's name AND its Tools glob list matches the dispatched tool's name.
-// Empty/nil list means "match all" (equivalent to ["*"]). Glob syntax
-// is exact match or trailing-* prefix glob (e.g. "mcp__jobs__*"). No
-// regex, no middle wildcards — the model is intentionally simple.
+// Filtering: a hook fires when its Tools glob list matches the dispatched tool's
+// name (and its Agents glob list the running agent's). Empty/nil means "match
+// all". Glob syntax is exact match or trailing-* prefix glob (e.g.
+// "mcp__jobs__*"). No regex, no middle wildcards.
 type Hook struct {
 	ID string `json:"id"`
-	// Tenant is the RFC AF authoritative owning-tenant. Empty "" = an
-	// operator/global hook: it fires on EVERY run regardless of tenant
-	// (preserving pre-RFC-AF admin + single-tenant behaviour). A non-empty
-	// tenant scopes the hook to runs in that tenant ONLY (see Match's filter and
-	// the dispatcher's Identity.Tenant). It is set AUTHORITATIVELY from the
-	// registering principal (a non-admin tenant operator → its own tenant;
-	// admin / legacy / MCP-operator → "" global), never from a caller-supplied
-	// body field — so a tenant operator can register hooks but cannot intercept
-	// another tenant's tool calls.
-	Tenant      string        `json:"tenant"`
-	Owner       string        `json:"owner"` // app UID; (Owner, Name) is identity
+	// Tenant owns the definition the hook came from; "" = the operator's own
+	// config (or a shared definition an operator wrote). A tenant's webhook is
+	// dialed through the private-address guard; the operator's is not.
+	Tenant string `json:"tenant"`
+	// Owner says where the hook came from — "agent:<name>" for a hook an
+	// AgentDef carries — and is sent in the payload as `owner`. (Owner, Name)
+	// names the hook in hook_decision events.
+	Owner       string        `json:"owner"`
 	Name        string        `json:"name"`
 	Phase       Phase         `json:"phase"`
 	Agents      []string      `json:"agents"` // exact or "prefix*"; empty = ["*"]
@@ -123,13 +119,17 @@ type Hook struct {
 	CallbackURL string        `json:"callback_url"`
 	FailMode    FailMode      `json:"fail_mode"` // "open" (default) | "closed"
 	TimeoutMs   int           `json:"timeout_ms"`
-	Timeout     time.Duration `json:"-"` // resolved at registration time
-	// RegisteredAt is the wall-clock instant the registration landed.
-	// Registration order is chain order within a group — earlier
-	// registrations run first in the Pre chain (LIFO in the Post chain, as
-	// middleware) — and a run's tenant hooks always run before the
-	// operator-global ones (see Registry.Match).
+	Timeout     time.Duration `json:"-"` // resolved when added to a Set
+	// RegisteredAt is when the hook was added to its Set.
 	RegisteredAt time.Time `json:"registered_at"`
+	// DefID is the HookDef version the hook was resolved from; "" for an inline
+	// webhook.
+	DefID string `json:"def_id,omitempty"`
+	// WidenPermitted lets a pre hook's allow_hosts take effect. Decided when the
+	// run's hooks are resolved: the operator's hooks.permit_host_widen names it
+	// ([tenant:]name) AND it came from an operator-authored definition. A hook a
+	// run request adds, or one an agent's own definition carries, never widens.
+	WidenPermitted bool `json:"widen_permitted,omitempty"`
 	// Code is a code-js hook body: JavaScript defining a top-level
 	// hook(ev) function that returns the decision. A hook has exactly one
 	// body — CallbackURL or Code. A code body runs in-process in the code-js

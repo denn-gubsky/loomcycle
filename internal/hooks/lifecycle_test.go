@@ -13,7 +13,7 @@ import (
 
 func lifecycleDispatcher(t *testing.T, hs ...*Hook) *Dispatcher {
 	t.Helper()
-	r := NewRegistry()
+	r := NewSet()
 	for _, h := range hs {
 		mustRegister(t, r, h)
 	}
@@ -132,14 +132,14 @@ func TestDispatcher_ACodeHookDecidesTheRunLifecycle(t *testing.T) {
 
 // A lifecycle hook is selected by agent only: a tools selector is refused.
 func TestRegistry_ALifecycleHookTakesNoToolsSelector(t *testing.T) {
-	r := NewRegistry()
+	r := NewSet()
 	_, err := r.Register(&Hook{Owner: "x", Name: "s", Phase: PhaseAgentStop, Tools: []string{"Bash"}, CallbackURL: "http://e.test/h"})
 	if !errors.Is(err, ErrInvalidRegistration) || !strings.Contains(err.Error(), "agents only") {
 		t.Fatalf("err = %v", err)
 	}
 	mustRegister(t, r, &Hook{Owner: "x", Name: "s", Phase: PhaseAgentStop, Agents: []string{"writer"}, CallbackURL: "http://e.test/h"})
 	d := NewDispatcher(r, nil)
-	if !d.Matches(Identity{Agent: "writer"}, PhaseAgentStop) || d.Matches(Identity{Agent: "other"}, PhaseAgentStop) {
+	if !d.Matches(context.Background(), Identity{Agent: "writer"}, PhaseAgentStop) || d.Matches(context.Background(), Identity{Agent: "other"}, PhaseAgentStop) {
 		t.Error("the agents selector did not select")
 	}
 }
@@ -220,7 +220,7 @@ func TestDispatcher_ObserveRunsOffThePathAndDecidesNothing(t *testing.T) {
 
 // Every new phase is a run hook, selected by agent only.
 func TestRegistry_TheNewRunPhasesTakeNoToolsSelector(t *testing.T) {
-	r := NewRegistry()
+	r := NewSet()
 	for _, p := range []Phase{PhaseSubagentStart, PhaseSubagentStop, PhasePreCompact, PhasePostCompact, PhaseRunEnd} {
 		if _, err := r.Register(&Hook{Owner: "x", Name: string(p), Phase: p, Tools: []string{"Agent"}, CallbackURL: "http://e.test/h"}); !errors.Is(err, ErrInvalidRegistration) {
 			t.Errorf("%s with tools: err = %v", p, err)

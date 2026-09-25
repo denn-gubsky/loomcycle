@@ -101,17 +101,6 @@ var tenantConfinableTools = map[string]bool{
 	"peek_channel":           true,
 	"ack_channel":            true,
 	"stream_user_run_states": true,
-
-	// Hook management — RFC AG Phase 2 promotion. The connector's hook methods
-	// derive the owning tenant from the principal on ctx (tenantScopeFromCtx):
-	// register stamps the tenant, list/delete are tenant-scoped (opaque-404
-	// cross-tenant), and a tenant-scoped hook fires only on its own tenant's runs.
-	// So a tenant operator manages ONLY its own hooks — same posture as the
-	// already-ScopeTenant HTTP /v1/hooks routes. The privileged host-WIDEN
-	// capability stays gated by the operator-yaml owner allowlist, not this map.
-	"register_hook": true,
-	"list_hooks":    true,
-	"delete_hook":   true,
 }
 
 // adminOnlyTools enumerates the runtime-global / operator-plane meta-tools that

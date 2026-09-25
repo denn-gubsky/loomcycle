@@ -5,4 +5,7 @@
 -- callback_url, which stays NOT NULL so existing readers are unchanged, and
 -- existing rows backfill to '' here — every hook registered before this
 -- migration is a webhook.
-ALTER TABLE hooks ADD COLUMN IF NOT EXISTS code TEXT NOT NULL DEFAULT '';
+-- IF EXISTS on the table: 0083 drops it, and a replay of the migrations after
+-- 0061 (the memory_embeddings repair test) runs this again on a database 0083
+-- already reached.
+ALTER TABLE IF EXISTS hooks ADD COLUMN IF NOT EXISTS code TEXT NOT NULL DEFAULT '';

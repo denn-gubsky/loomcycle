@@ -692,10 +692,7 @@ var grpcConsumerScopes = map[string]string{
 	// RFC BE History — scope-aware chat browse/annotate. ScopeTenant route
 	// floor (a tenant operator may call it); the cross-tenant `global` scope is
 	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.
-	"History":      auth.ScopeTenant,
-	"RegisterHook": auth.ScopeTenant,
-	"ListHooks":    auth.ScopeTenant,
-	"DeleteHook":   auth.ScopeTenant,
+	"History": auth.ScopeTenant,
 }
 
 // requiredScopeForRPC returns the scope a caller must hold for fullMethod.

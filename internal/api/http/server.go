@@ -248,19 +248,15 @@ type Server struct {
 	// at boot via SeedLimits (main.go).
 	limits *limits.Tracker
 
-	// hookRegistry holds the runtime-registered tool-use hooks (the
-	// /v1/hooks endpoints write into this), and hookDispatcher is the
-	// loop-side adapter the agent loop calls into when dispatching
-	// tools. Both are non-nil after New() — no consumer needs to nil-
-	// check. An empty registry produces zero hook invocations on the
-	// hot path (Match returns nil, dispatchOneTool fast-paths).
-	//
-	// Type is now hooks.RegistryInterface (v0.12.5 Phase 6) so cluster
-	// mode can swap in *hooks.DBBackedRegistry. *hooks.Registry
-	// implicitly satisfies the interface; existing tests need no
-	// changes.
-	hookRegistry   hooks.RegistryInterface
+	// hookDispatcher fires a run's hooks — the Set withRunHooks resolved from
+	// the run's AgentDef and put on the run's ctx. Non-nil after New(). A run
+	// with no hooks costs nothing on the hot path (Match returns nil).
 	hookDispatcher *hooks.Dispatcher
+	// hookPermits is the operator's host-widen permit list, frozen at boot.
+	hookPermits hooks.Permits
+	// runHookSets keeps each live run's resolved Set by run id, for the hooks
+	// fired outside the loop (manual compaction, run_end).
+	runHookSets sync.Map
 	// codeHooks runs code-js hook bodies; nil unless code hooks are enabled,
 	// in which case registering one is refused.
 	codeHooks hooks.CodeRunner
@@ -543,26 +539,22 @@ func (s *Server) maxDocumentBytes() int64 {
 }
 
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
-	// Hook registry is constructed with the operator-yaml host-widen
-	// permit list (cfg.Hooks.PermitHostWiden.Owners). Without an entry
-	// there, any Pre-hook's allow_hosts response is silently dropped
-	// at dispatch time. The list is frozen at construction — the only
-	// way to mutate the trust boundary is a restart with new yaml.
-	hookReg := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
 	s := &Server{
 		// Always present: an operator hitting Debug on a run must get either an
 		// arming or a clear refusal, never a silent no-op.
-		breakpointReg:  breakpoints.NewRegistry(),
-		cfgHolder:      config.NewHolder(cfg),
-		providers:      pr,
-		tools:          builtinTools,
-		sem:            sem,
-		store:          st,
-		cancelReg:      cancel.NewRegistry(),
-		turnCancelReg:  turncancel.NewRegistry(),
-		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
-		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(hookReg, nil, cfg.Hooks.PrivateHostAllowlist),
+		breakpointReg: breakpoints.NewRegistry(),
+		cfgHolder:     config.NewHolder(cfg),
+		providers:     pr,
+		tools:         builtinTools,
+		sem:           sem,
+		store:         st,
+		cancelReg:     cancel.NewRegistry(),
+		turnCancelReg: turncancel.NewRegistry(),
+		sessionLocks:  runner.NewSessionLockMap(),
+		// The permit list is frozen at construction — the only way to change
+		// the trust boundary is a restart with new yaml.
+		hookPermits:    hooks.NewPermits(cfg.Hooks.PermitHostWiden.Owners),
+		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(nil, nil, cfg.Hooks.PrivateHostAllowlist),
 		startedAt:      time.Now(),
 	}
 	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
@@ -2927,6 +2919,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
+	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(runID)
@@ -3066,14 +3059,9 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 // safety relies on the happens-before edge from this call to the request
 // goroutines ListenAndServe later spawns. It is NOT safe to call concurrently
 // with request handling (a hot-reload path would need a guard added here).
-func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
-	s.hookRegistry = r
-	s.hookDispatcher = hooks.NewDispatcherWithPrivateHosts(r, nil, s.cfgHolder.Load().Hooks.PrivateHostAllowlist)
-	s.hookDispatcher.SetCodeRunner(s.codeHooks)
-}
 
-// SetCodeHookRunner enables code-js hook bodies. Same boot-wiring invariant as
-// SetHookRegistry, and either may be called first.
+// SetCodeHookRunner enables code-js hook bodies. Call during boot wiring,
+// before the server serves requests.
 func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
 	s.codeHooks = r
 	s.hookDispatcher.SetCodeRunner(r)
@@ -3150,10 +3138,6 @@ func (s *Server) Mux() http.Handler {
 	// Bearer-authed. Returns 503 when the runStateBus isn't wired
 	// (operator-constructed Server without SetRunStateBus).
 	mux.Handle("GET /v1/users/{user_id}/agents/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStreamUserAgents))))
-	// v0.7.x tool-use hook registration API.
-	mux.Handle("POST /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRegisterHook))))
-	mux.Handle("GET /v1/hooks", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHooks))))
-	mux.Handle("DELETE /v1/hooks/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteHook))))
 	// v0.7.x resolver introspection — operator-only debug surface.
 	mux.Handle("GET /v1/_resolver", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResolverSnapshot))))
 	// Routing view: per user_tier × tier, the resolved provider/model cascade
@@ -4750,6 +4734,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
+	loopCtx = s.withRunHooks(loopCtx, runID, req.Agent, agentDef)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
@@ -5487,6 +5472,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
+	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
 	gate, deregGate := s.newPauseGate(run.ID)
@@ -7182,6 +7168,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// parent id; it is replaced by the child's on the next line.
 	subCtx = tools.WithParentRunID(subCtx, tools.RunID(subCtx))
 	subCtx = tools.WithRunID(subCtx, subRunID)
+	subCtx = s.withRunHooks(subCtx, subRunID, name, def)
 	subCtx = tools.WithDispatcher(subCtx, subDispatcher)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
@@ -8120,7 +8107,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// pre_compact hooks may refuse the compaction — before the summary spends a
 	// model call. Refused as a 409 naming the hook, so the caller knows why.
 	hookIdent := hooks.Identity{Agent: run.Agent, UserID: run.UserID, AgentID: run.AgentID, Tenant: run.TenantID, RunID: runID}
-	hookCtx := withHookRun(ctx, hookIdent)
+	hookCtx := s.withHookRun(ctx, hookIdent)
 	if s.hookDispatcher != nil {
 		gate := s.hookDispatcher.RunGate(hookCtx, hookIdent, hooks.PhasePreCompact,
 			hooks.LifecycleInfo{Trigger: "manual", ContextTokens: before})
@@ -8932,14 +8919,17 @@ func (s *Server) observeRunEnd(meta runStateMeta, status store.RunStatus, stopRe
 		Agent: meta.Agent, UserID: meta.UserID, AgentID: meta.AgentID, Tenant: meta.TenantID,
 		RunID: meta.RunID, ParentRunID: meta.ParentRunID,
 	}
-	s.hookDispatcher.Observe(withHookRun(context.Background(), ident), ident, hooks.PhaseRunEnd,
+	// The run is over: its hooks fire this once more and are then forgotten.
+	defer s.runHookSets.Delete(meta.RunID)
+	s.hookDispatcher.Observe(s.withHookRun(context.Background(), ident), ident, hooks.PhaseRunEnd,
 		hooks.LifecycleInfo{Status: string(status), StopReason: stopReason, Error: errMsg, FinalText: finalText})
 }
 
 // withHookRun puts the run a hook fires for on its context, for a hook fired
 // outside the run's own loop (a manual compaction, the run's end). A code body's
 // Interruption call is recorded on that run, and refuses without one.
-func withHookRun(ctx context.Context, ident hooks.Identity) context.Context {
+func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.Context {
+	ctx = hooks.WithSet(ctx, s.runHookSet(ident.RunID))
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: ident.UserID, AgentID: ident.AgentID, TenantID: ident.Tenant})
 	ctx = tools.WithRunID(ctx, ident.RunID)
 	return tools.WithAgentName(ctx, ident.Agent)
