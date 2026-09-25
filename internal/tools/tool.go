@@ -1916,39 +1916,45 @@ func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {
 	ctx, span := lcotel.RecordToolCall(ctx, name)
 	defer span.End()
-	res := d.execute(ctx, name, input)
-	if res.IsError {
+	res, goErr := d.execute(ctx, name, input)
+	switch {
+	case goErr != nil:
+		// A Go error from the tool is recorded as the span's error event, not
+		// only its status message — tracing tells a tool that broke from one
+		// that answered "no".
+		lcotel.SetSpanError(span, goErr)
+	case res.IsError:
 		lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 	}
 	return res
 }
 
 // execute is Execute without the span: the call, the refusals ahead of it,
-// the failure count behind it, and the help appended to a failure.
-func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMessage) Result {
-	if res, refused := d.refuseRepeat(name, input); refused {
-		return d.withHelpPointer(name, input, res)
+// the failure count behind it, and the help appended to a failure. goErr is a
+// Go error the tool itself returned, reported separately for the span.
+func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMessage) (res Result, goErr error) {
+	if r, refused := d.refuseRepeat(name, input); refused {
+		return d.withHelpPointer(name, input, r), nil
 	}
-	var res Result
 	if t, ok := d.tools[name]; ok {
 		if r, refused := d.refuseUnknownFields(t, input); refused {
 			res = r
 		} else if r, err := t.Execute(ctx, input); err != nil {
-			res = Result{Text: err.Error(), IsError: true}
+			res, goErr = Result{Text: err.Error(), IsError: true}, err
 		} else {
 			res = r
 		}
 	} else if d.fallback != nil {
 		r, handled := d.fallback(ctx, name, input)
 		if !handled {
-			return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
+			return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}, nil
 		}
 		res = r
 	} else {
-		return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}
+		return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}, nil
 	}
 	d.noteResult(name, input, res)
-	return d.withHelpPointer(name, input, res)
+	return d.withHelpPointer(name, input, res), goErr
 }
 
 // firstLineForSpan extracts the first line of a tool's error text for
