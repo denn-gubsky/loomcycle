@@ -10,7 +10,7 @@ leaving it out means `self`, which is usually not granted.
 ## Arguments
 
 - `scope` — `user` (your own chats), `self` (this agent's chats with every
-  user), `tenant` or `global`. Omitted means `self`.
+  user), `tenant` or `global`. Omitted: `user` when granted, else `self`.
 - `status` — only chats whose derived status is `running`, `completed`,
   `failed` or `cancelled`. A chat is `running` while any of its runs is.
 - `from`, `to` — RFC3339 bounds on the chat's last activity, e.g.

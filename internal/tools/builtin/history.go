@@ -92,7 +92,7 @@ func (h *History) Description() string {
 		"global = all tenants (admin only). The owner is resolved server-side from the run identity, never the wire; " +
 		"cross-scope reads fold to an opaque not-found. Per-chat token/cost/run-count stats are included. " +
 		"list/search/related hide chats served by the runtime's own maintenance agents; pass include_internal to see them. " +
-		"Always pass scope: the default grant is user, but an omitted scope means self, which that grant refuses. " +
+		"Pass scope to be explicit; omitted, it is user when granted (the default), else self. " +
 		"See Context op=help topic=History for the scope model and examples."
 }
 
@@ -103,7 +103,7 @@ const historyInputSchema = `{
 	"type": "object",
 	"properties": {
 		"op":              {"type": "string", "enum": ["list","get","search","rename","annotate","pin","archive","recap","resume","related","window"]},
-		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Default self — but the default GRANT is user, so pass scope explicitly. The owner id is resolved server-side from the run identity, never the wire."},
+		"scope":           {"type": "string", "enum": ["self","user","tenant","global"], "description": "Whose chats: self = this agent's; user = this end-user's; tenant = this tenant's; global = all tenants (admin only). Omitted: user when granted (the default grant), else self. The owner id is resolved server-side from the run identity, never the wire."},
 		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume/window: the chat (session) id to target — for window, the session recall reported on the fact. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
 		"match":           {"type": "string", "enum": ["title","content"], "description": "search: what to match the query against. \"title\" (default) is the cheap path — a case-insensitive match on the chat's name, which is usually auto-generated. \"content\" searches what was actually SAID in the chats, over the turns you typed; it needs an embedder and a user_id on the run, and returns each chat with the turn that matched it."},
 		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled/rejected)."},
@@ -210,13 +210,21 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	}
 }
 
-// authorizedScope canonicalizes the requested scope (default self) and enforces
+// authorizedScope canonicalizes the requested scope (default: user when granted, else self) and enforces
 // the ctx HistoryPolicy gate (default-deny). Because policy resolution strips
 // `global` for non-admin principals, membership in policy.Scopes is the whole
 // authorization check — the tool needs no separate admin test.
 func (h *History) authorizedScope(ctx context.Context, requested string) (string, error) {
 	if requested == "" {
+		// The omitted scope follows the grant. It was always `self`, while the
+		// default GRANT is `user` (the caller's own chats), so the most natural
+		// call — no scope at all — was refused for every agent on the default.
+		// Measured live, models made that call again and again. `user` when it
+		// is granted, else `self` as before.
 		requested = "self"
+		if containsScope(tools.HistoryPolicy(ctx).Scopes, "user") {
+			requested = "user"
+		}
 	}
 	switch requested {
 	case "self", "user", "tenant", "global":
@@ -387,12 +395,23 @@ func (h *History) get(ctx context.Context, scope string, in historyInput) (tools
 		})
 	}
 	if in.Format == "markdown" {
-		return okJSON(map[string]any{
-			"scope":    scope,
-			"chat":     chat,
-			"format":   "markdown",
-			"markdown": renderTranscriptMarkdown(sess, chat, events),
-		})
+		md := renderTranscriptMarkdown(sess, chat, events)
+		out := map[string]any{"scope": scope, "chat": chat, "format": "markdown"}
+		// A model reading a whole transcript into its own context: measured
+		// live, one long chat as markdown filled a 32K local window, and the
+		// model then answered as if continuing THAT chat's task. Inside a run
+		// the export is capped and says how to read the rest; an off-run caller
+		// (an MCP client, the Web UI) has no window to protect and gets it all.
+		if tools.RunID(ctx) != "" && len(md) > historyMarkdownInRunCap {
+			total := len(md)
+			md = md[:historyMarkdownInRunCap]
+			out["truncated"] = true
+			out["note"] = fmt.Sprintf("Cut to the first %d of %d characters to fit your context. "+
+				"format=conversation returns only the turns and is far smaller; op=window reads the turns around one quote.",
+				historyMarkdownInRunCap, total)
+		}
+		out["markdown"] = md
+		return okJSON(out)
 	}
 	return okJSON(map[string]any{
 		"scope":      scope,
@@ -870,6 +889,10 @@ func renderTranscriptMarkdown(sess store.Session, meta chatMeta, events []store.
 // conversationFormat is the `get` format that renders ONLY what the human and
 // the assistant said — no metadata header, no per-event JSON, no tool traffic.
 const conversationFormat = "conversation"
+
+// historyMarkdownInRunCap bounds a markdown transcript returned INTO a run:
+// about 6K tokens, a fifth of a 32K local window.
+const historyMarkdownInRunCap = 24000
 
 // conversationSegment / conversationBlock mirror the loop's PromptSegment /
 // PromptContentBlock just far enough to read a persisted `user_input` payload.

@@ -13,7 +13,7 @@ format; when you only need the part a remembered fact came from, use
 
 - `session_id` (required) — the chat, as returned by `list` or `search`.
 - `scope` (pass it) — `user`, `self`, `tenant` or `global`; the chat must be
-  in this scope. Omitted means `self`, which is usually not granted.
+  in this scope. Omitted: `user` when granted, else `self`.
 - `format` — how to return the transcript:
   - omitted — a structured event array;
   - `"conversation"` — only the user and assistant turns, as Markdown;

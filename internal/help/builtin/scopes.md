@@ -35,15 +35,15 @@ call is refused whatever the grant says.
 | Memory (`sql_*` ops) | `agent`, `user`, `run`, `tenant` | none — required | the agent's `sql_scopes`; unset means `user` |
 | Document | `agent`, `user`, `tenant` | `user` | `agent` and `user` are open; `tenant` needs BOTH `memory_scopes` and `sql_scopes` to include `tenant` |
 | Path | `agent`, `user`, `tenant` | `agent` | open; the tree you name must match where the resource lives |
-| History | `self`, `user`, `tenant`, `global` | `self` | the agent's `history_scope`; unset means `user` |
+| History | `self`, `user`, `tenant`, `global` | `user` when granted, else `self` | the agent's `history_scope`; unset means `user` |
 | CredentialDef | `tenant`, `user`, `agent` | `tenant` | open |
 
 Two traps in that table:
 
 - **History's `self` is not you.** It means this AGENT's chats across every
-  user — wider than `user`, which is the caller's own chats. The default grant
-  is `user` but the default scope is `self`, so **always pass `scope` to
-  History**.
+  user — wider than `user`, which is the caller's own chats. An omitted scope
+  is `user` when that is granted (the default), else `self`; **pass `scope`
+  when you mean `self` or `tenant`**.
 - **Defaults differ per tool.** Path defaults to `agent`, Document to `user`.
   A document written with no scope and then looked up in Path with no scope
   is looked up in the wrong tree. Pass `scope` on both calls.

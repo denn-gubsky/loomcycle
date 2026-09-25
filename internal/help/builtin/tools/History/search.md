@@ -12,8 +12,8 @@ conversations by meaning and returns each chat with the turn that matched.
 
 - `query` (required) — the text to look for.
 - `scope` — `user` (your own chats), `self` (this agent's chats with every
-  user), `tenant` or `global`. Omitted means `self`, which is usually not
-  granted — pass it.
+  user), `tenant` or `global`. Omitted: `user` when
+  granted, else `self`.
 - `match` — `title` (default) or `content`.
 - `limit` — chats per page (default 50, at most 500).
 
