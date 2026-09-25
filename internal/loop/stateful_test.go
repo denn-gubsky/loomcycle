@@ -273,7 +273,7 @@ func TestParseEmitState(t *testing.T) {
 }
 
 func TestStatefulUserMessage_OnlySigmaAndObs(t *testing.T) {
-	m := statefulUserMessage(map[string]any{"count": 3}, "the latest thing")
+	m := statefulUserMessage(map[string]any{"count": 3}, "", "the latest thing")
 	if m.Role != "user" || len(m.Content) != 1 {
 		t.Fatalf("want one user content block, got %+v", m)
 	}

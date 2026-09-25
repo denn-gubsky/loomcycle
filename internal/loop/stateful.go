@@ -402,13 +402,47 @@ func oneLineDesc(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// statefulUserMessage renders the fed context for one step: only Σ + O (no
-// history). This is the whole point — the prompt stays flat over the horizon.
-func statefulUserMessage(sigma map[string]any, obs string) providers.Message {
+// statefulUserMessage renders the fed context for one step: the task, Σ and O
+// (no history). This is the whole point — the prompt stays flat over the
+// horizon.
+//
+// The task is shown on every step, not only as the first observation. It used
+// to arrive only as O_0, and the next tool result replaced it: a model that
+// had not copied the request into Σ itself — measured live, most of the time —
+// had no task from step 2 on. It re-derived one from the state, asked the user
+// what to do, or, once, invented a value and reported it saved. The runtime
+// still does not write Σ; the task sits beside it, and "" (the first step,
+// whose observation IS the task) renders nothing extra.
+func statefulUserMessage(sigma map[string]any, task, obs string) providers.Message {
 	sj, _ := json.Marshal(sigma)
 	var b strings.Builder
+	if task != "" && task != obs {
+		fmt.Fprintf(&b, "Your task (keep working on it until it is done):\n%s\n\n", task)
+	}
 	fmt.Fprintf(&b, "Current state:\n%s\n\nLatest observation:\n%s", string(sj), obs)
 	return providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: b.String()}}}
+}
+
+// statefulTask is the request the run is working on: the first user message's
+// text. On a resume the seed is the replayed transcript, and only its first
+// user turn is the request; the rest is history the state already carries.
+func statefulTask(msgs []providers.Message) string {
+	for _, m := range msgs {
+		if m.Role != "user" {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range m.Content {
+			if c.Type == "text" && c.Text != "" {
+				b.WriteString(c.Text)
+				b.WriteString("\n")
+			}
+		}
+		if s := strings.TrimSpace(b.String()); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // initialObservation renders the run's task (the seed segments) as the first
@@ -708,6 +742,12 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	if opts.InitialObservation != "" {
 		obs = opts.InitialObservation
 	}
+	// task is shown on every step (see statefulUserMessage). An operator's
+	// turn in an interactive run replaces it: that turn is the request now.
+	task := ""
+	if s := statefulTask(initial); s != "" {
+		task = "Task: " + s
+	}
 	// StartParked: a re-attached interactive run waits for the operator before
 	// spending a model call. Mirrors Run's handling — an abandoned park ends the
 	// run on the turn it had already reached rather than calling the provider.
@@ -717,7 +757,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			finish("end_turn")
 			return RunResult{StopReason: "end_turn", State: sigma}, nil
 		}
-		obs = next
+		obs, task = next, next
 	}
 	var lastProposed map[string]any // the last schema the model proposed that differs from the active one
 
@@ -745,7 +785,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
 			}
 		}
-		msgs := []providers.Message{statefulUserMessage(sigma, obs)}
+		msgs := []providers.Message{statefulUserMessage(sigma, task, obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
 			// RFC DG: say on the WIRE what the system prompt has only ever
@@ -1063,7 +1103,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil {
 				next, resumed := parkForStatefulTurn(ctx, &opts, iter, emit)
 				if resumed {
-					obs = next
+					obs, task = next, next
 					continue
 				}
 				// Cancelled while parked, or the queue closed: the run ends on
