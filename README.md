@@ -182,7 +182,13 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.95.0) closed two isolation gaps — an isolated member
+The most recent line (v1.96.0) made hooks reusable, versioned definitions
+(HookDef, on every transport and in snapshots), kept a stateful answer a local
+model wrote as prose instead of failing the run on it, and stopped a run that
+kept re-sending the same failed call instead of letting it spin to its
+deadline.
+
+Before it, v1.95.0 closed two isolation gaps — an isolated member
 could read another user's run content and answer its questions — added the
 subagent, compaction and run_end hook phases, and fixed what measuring local
 models turned up: a stateful run now keeps its task on every step, an unknown

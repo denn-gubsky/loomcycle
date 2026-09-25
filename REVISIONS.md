@@ -8,6 +8,46 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.96.0
+
+*Hooks become reusable, versioned definitions, and two stateful and looping failures from measuring local models stop costing whole runs.*
+
+Three PRs. One is RFC DK-P4a (HookDef); two come from the same local-model measurements as v1.95.0.
+
+### HookDef — reusable, versioned hook definitions (#1382, RFC DK-P4a)
+
+A hook was registered one at a time and lived only as that registration. A **HookDef** is one hook as data, versioned and tenant-scoped like the other substrate Defs.
+
+- **The definition:** `event` (the dispatcher's phase names), `match.tools`, a code-js or http body, `fail_mode`, `timeout`, and a `description` shown to whoever the hook stops. Validation refuses what the dispatcher could not run; the content hash is taken over the normalized definition, so two that behave the same hash the same. Names cannot contain `@` or `:`, the separators references and permits use.
+- **Lifecycle:** `create` / `fork` / `get` / `list` / `promote` / `retire` / `verify` / `delete`, mirroring TeamDef. A code-js body is compiled on write, and refused without code hooks enabled. A fork's parent must be in the caller's own tenant (admin included), so a body never copies across tenants. **No agent may write the hook that gates it:** the tool refuses a call that carries a run id.
+- **Every transport:** `POST /v1/_hookdef` and `GET /v1/_hookdef/names` (tenant-confined like AgentDef, so a tenant's non-isolated members may author too), the gRPC `HookDef` RPC at `ScopeTenant`, the MCP meta-tool `hookdef`, TS `hookDef()` and Python `hook_def()`.
+- **Snapshots carry HookDefs** (`hook_defs` + `hook_def_active`), so a restored agent or team is gated by the hooks it named. An older snapshot restores with none.
+- **Migration 0082** (Postgres) adds `hook_defs` and `hook_def_active`.
+
+### A stateful answer written as prose is kept (#1384)
+
+Measured on the lab deployment (`ornith-1.5:35b` behind `chat/local`): a stateful step found the right value and wrote it as plain text instead of an `emit_state` call, did so again when re-prompted, and the run failed with the correct answer discarded.
+
+- The re-prompts still come first, on the same `max_patch_retries` budget. Only when it is spent is the last reply taken as `{done: true, final: <text>}`, which ends the turn exactly as a real final does (the interactive park included).
+- Not under `on_invalid_patch: fail`, and not for a reply with no text, which fail as before.
+- Trade-off: a model whose prose is only a plan ends the turn with that plan rather than an error; the operator sees what it said either way.
+
+### A run that keeps re-sending a failed call is stopped (#1385)
+
+Measured on the same deployment: a tenant write refused as not granted was re-sent, unchanged, until the run's 10-minute deadline.
+
+- The dispatcher counts failures per exact call (tool name + canonical arguments). The first two failures run as usual. After that the call is **not run**, and the model gets a non-retryable "this exact call has already failed N times … change the arguments, take a different approach, or tell the user it cannot be done", with the operation's correct example.
+- After three such refusals the run ends with the new stop reason **`repeated_failed_call`**, in both the append and the stateful loop.
+- Changed arguments are a different call; a success clears that call's count. It covers builtin, MCP and lazily registered tools alike.
+
+### Upgrade notes
+
+- **Migration 0082** (Postgres) adds the HookDef tables. It runs at startup.
+- **New stop reason:** `repeated_failed_call`. A client that switches on stop reasons should know it.
+- **Behaviour change (#1384):** a stateful run whose model answers in prose after the retry budget now completes with that text instead of failing.
+- **Behaviour change (#1385):** the third identical failed tool call in a run is refused without running.
+- **The adapters are bumped to 1.96.0** (TS `hookDef()`, Python `hook_def()`).
+
 ## What's in v1.95.0
 
 *Two isolation gaps closed, five more hook phases, and four fixes from measuring local models — a stateful run keeps its task, and an unknown tool argument is refused instead of silently dropped.*
