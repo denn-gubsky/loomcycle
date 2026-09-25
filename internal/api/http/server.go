@@ -3041,7 +3041,6 @@ func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 	s.hookRegistry = r
 	s.hookDispatcher = hooks.NewDispatcherWithPrivateHosts(r, nil, s.cfgHolder.Load().Hooks.PrivateHostAllowlist)
 	s.hookDispatcher.SetCodeRunner(s.codeHooks)
-	s.hookDispatcher.AllowTenantCodeHooks(s.tenantCodeHooks())
 }
 
 // SetCodeHookRunner enables code-js hook bodies. Same boot-wiring invariant as
@@ -3049,14 +3048,6 @@ func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
 	s.codeHooks = r
 	s.hookDispatcher.SetCodeRunner(r)
-	s.hookDispatcher.AllowTenantCodeHooks(s.tenantCodeHooks())
-}
-
-// tenantCodeHooks reports whether a tenant operator's code hooks are enabled
-// (LOOMCYCLE_CODE_HOOKS_TENANTS), not only operator-global ones.
-func (s *Server) tenantCodeHooks() bool {
-	cfg := s.cfg()
-	return cfg != nil && cfg.Env.CodeHooksTenants
 }
 
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
