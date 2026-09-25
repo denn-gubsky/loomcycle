@@ -276,6 +276,15 @@ func TestGrpcTeamDef_HappyPath(t *testing.T) {
 	}
 }
 
+// A HookDef is authored like an AgentDef; an unmapped RPC would fall back to
+// substrate:admin and lock tenants out of the gRPC twin of POST /v1/_hookdef.
+func TestGrpcHookDef_IsGatedLikeAgentDef(t *testing.T) {
+	got, ok := grpcConsumerScopes["HookDef"]
+	if !ok || got != grpcConsumerScopes["AgentDef"] {
+		t.Fatalf("HookDef scope = %q (mapped %v), want AgentDef's %q", got, ok, grpcConsumerScopes["AgentDef"])
+	}
+}
+
 func TestGrpcHookDef_ReachesTheConnectorAndCarriesARefusal(t *testing.T) {
 	mc := &substrateMock{
 		hookDefResult: connector.ToolResult{Text: `create: event is required`, IsError: true},
