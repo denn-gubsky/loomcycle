@@ -511,8 +511,7 @@ func TestRun_Stateful_AMissingEmitStateIsRetried(t *testing.T) {
 // many attempts, not what the model produced instead, not what to change.
 func TestRun_Stateful_AMissingEmitStateExhaustsTheBudgetAndSaysWhatItGot(t *testing.T) {
 	prov := &proseThenComplyProvider{
-		proseTurns: 99, // never complies
-		prose:      "Hello! I can search the web, read files and answer questions.",
+		proseTurns: 99, // never complies, and never says anything either
 		script:     `{"done":true}`,
 	}
 	cx := statefulCtx(nil)
@@ -520,7 +519,7 @@ func TestRun_Stateful_AMissingEmitStateExhaustsTheBudgetAndSaysWhatItGot(t *test
 	cx.MaxPatchRetries = &two
 	_, err, evs := statefulRun(t, prov, cx)
 	if err == nil {
-		t.Fatal("a model that never calls emit_state must still fail the run")
+		t.Fatal("a model that never calls emit_state and says nothing must still fail the run")
 	}
 	if prov.calls() != 3 {
 		t.Errorf("provider called %d time(s), want 3 (1 + max_patch_retries 2)", prov.calls())
@@ -531,10 +530,41 @@ func TestRun_Stateful_AMissingEmitStateExhaustsTheBudgetAndSaysWhatItGot(t *test
 			errText = ev.Error
 		}
 	}
-	for _, want := range []string{"after 3 attempt(s)", "prose instead", "I can search the web", "max_patch_retries"} {
+	for _, want := range []string{"after 3 attempt(s)", "max_patch_retries"} {
 		if !strings.Contains(errText, want) {
 			t.Errorf("the terminal error does not mention %q — an operator cannot act on it:\n%s", want, errText)
 		}
+	}
+}
+
+// ⚠️ PROSE IS AN ANSWER once the budget is spent. Measured live: a stateful
+// step found the right value, answered it in words twice, and the run FAILED
+// with the correct answer discarded. The re-prompts still happen first; only
+// then is the last reply taken as the final answer, and the run ends normally.
+func TestRun_Stateful_ProseAfterTheBudgetIsTheFinalAnswer(t *testing.T) {
+	prov := &proseThenComplyProvider{
+		proseTurns: 99,
+		prose:      "The value stored under zz-eval-editor is Helix.",
+		script:     `{"done":true}`,
+	}
+	cx := statefulCtx(nil)
+	two := 2
+	cx.MaxPatchRetries = &two
+	res, err, _ := statefulRun(t, prov, cx)
+	if err != nil {
+		t.Fatalf("a prose answer after the budget failed the run: %v", err)
+	}
+	if prov.calls() != 3 {
+		t.Errorf("provider called %d time(s), want 3: the re-prompts still come first", prov.calls())
+	}
+	if res.FinalText != "The value stored under zz-eval-editor is Helix." || res.StopReason != "end_turn" {
+		t.Errorf("final = %q stop = %q, want the prose as the final answer", res.FinalText, res.StopReason)
+	}
+	// on_invalid_patch: fail asks for the strict behaviour and keeps it.
+	strict := "fail"
+	cx.OnInvalidPatch = &strict
+	if _, err, _ := statefulRun(t, &proseThenComplyProvider{proseTurns: 99, prose: "words", script: `{"done":true}`}, cx); err == nil {
+		t.Error("on_invalid_patch: fail accepted prose")
 	}
 }
 
@@ -690,7 +720,7 @@ func (p *unforceableProvider) Capabilities() providers.Capabilities {
 }
 func (p *unforceableProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
 	ch := make(chan providers.Event, 2)
-	ch <- providers.Event{Type: providers.EventText, Text: "Hello! I can help with that."}
+	ch <- providers.Event{Type: providers.EventThinking, Text: "I could help with that."} // no text: prose would be taken as the answer
 	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
 	close(ch)
 	return ch, nil
