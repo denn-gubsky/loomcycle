@@ -98,7 +98,13 @@ def main():
                 else:
                     md = ingest.arm_markdown("header", p, {})
                 doc_id = call(a.base, tok, sid, {"op": "import_md", "scope": "user", "markdown": md})["document_id"]
-                root, ids = section_ids(a.base, tok, sid, doc_id, p)
+                try:
+                    root, ids = section_ids(a.base, tok, sid, doc_id, p)
+                except SystemExit:
+                    # Nothing records a document until it is fully built, so a failure here
+                    # would leave an orphan no later cleanup can find by id. Remove it now.
+                    call(a.base, tok, sid, {"op": "delete_document", "scope": "user", "id": doc_id})
+                    raise
                 rec = {"arm": arm, "paper_id": p["id"], "document_id": doc_id, "root": root,
                        "sections": {" > ".join(k): v for k, v in ids.items()}, "desc_of": {}}
                 if arm in ("map", "mapall") + unit_arms:

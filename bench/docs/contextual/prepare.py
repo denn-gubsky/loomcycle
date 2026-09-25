@@ -15,6 +15,7 @@ unanswerable ones are kept out of retrieval scoring: there is nothing to retriev
 """
 import argparse
 import json
+import re
 import os
 import random
 
@@ -26,6 +27,16 @@ def heading_levels(section_name):
     return [p.strip() for p in section_name.split(":::") if p.strip()]
 
 
+HEADING_LINE = re.compile(r"^(\s{0,3})#", re.M)
+
+
+def escape_headings(text):
+    """A paragraph line that starts with `#` is an ATX heading to the importer — a quoted
+    tweet's hashtag once opened a new top-level section mid-paper and re-parented every
+    section after it. Escape it; retrieve.norm undoes the escape before matching evidence."""
+    return HEADING_LINE.sub(r"\1\\#", text)
+
+
 def paper_markdown(p):
     """Render one paper. Returns (markdown, sections) where each section is the text that
     will land in ONE chunk body, keyed by its heading path — the evidence matcher needs to
@@ -34,8 +45,9 @@ def paper_markdown(p):
     lines = ["# " + p["title"], ""]
     sections = []
     if p.get("abstract"):
-        lines += ["## Abstract", "", p["abstract"].strip(), ""]
-        sections.append({"path": ["Abstract"], "text": p["abstract"].strip()})
+        ab = escape_headings(p["abstract"].strip())
+        lines += ["## Abstract", "", ab, ""]
+        sections.append({"path": ["Abstract"], "text": ab})
     opened = []  # heading path already emitted
     for s in p["full_text"]:
         path = heading_levels(s.get("section_name") or "") or ["Untitled"]
@@ -46,14 +58,14 @@ def paper_markdown(p):
                 lvl = min(depth + 2, 6)
                 lines += ["#" * lvl + " " + path[depth], ""]
                 opened = path[: depth + 1]
-        paras = [x.strip() for x in s.get("paragraphs") or [] if x and x.strip()]
+        paras = [escape_headings(x.strip()) for x in s.get("paragraphs") or [] if x and x.strip()]
         lines += [x + "\n" for x in paras]
         if paras:
             sections.append({"path": path, "text": "\n\n".join(paras)})
     floats = [f for f in p.get("figures_and_tables") or [] if f.get("caption")]
     if floats:
         lines += ["## Figures and Tables", ""]
-        caps = [f["caption"].strip() for f in floats]
+        caps = [escape_headings(f["caption"].strip()) for f in floats]
         lines += [c + "\n" for c in caps]
         sections.append({"path": ["Figures and Tables"], "text": "\n\n".join(caps)})
     return "\n".join(lines).rstrip() + "\n", sections

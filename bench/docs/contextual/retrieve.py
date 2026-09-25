@@ -27,7 +27,9 @@ WS = re.compile(r"\s+")
 
 
 def norm(s):
-    return WS.sub(" ", s).strip()
+    # prepare.py escapes a paragraph line starting with `#` so the importer does not read it
+    # as a heading; the gold evidence is unescaped, so undo it before comparing.
+    return WS.sub(" ", s.replace("\\#", "#")).strip()
 
 
 def post(base, tok, path, body, scope_id=None):
