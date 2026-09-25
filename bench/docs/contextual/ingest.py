@@ -35,8 +35,11 @@ def post(base, tok, path, body, scope_id):
         return json.load(x)
 
 
+DOC_LABEL = "Paper"  # "Article" for the NQ corpus; set by --doc-label
+
+
 def prefix(arm, paper, section, ctx):
-    header = "Paper: %s. Section: %s." % (paper["title"], " > ".join(section["path"]))
+    header = "%s: %s. Section: %s." % (DOC_LABEL, paper["title"], " > ".join(section["path"]))
     if arm == "plain":
         return ""
     if arm == "header":
@@ -67,7 +70,10 @@ def main():
     ap.add_argument("--base", default="http://127.0.0.1:8801")
     ap.add_argument("--arms", default=",".join(ARMS))
     ap.add_argument("--layouts", default="pool,paper")
+    ap.add_argument("--doc-label", default="Paper")
     a = ap.parse_args()
+    global DOC_LABEL
+    DOC_LABEL = a.doc_label
     tok = open(os.path.join(a.probe, "..", ".tok")).read().strip()
     papers = [json.loads(l) for l in open(os.path.join(a.probe, "papers.jsonl"))]
     contexts = {}

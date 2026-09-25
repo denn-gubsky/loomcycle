@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.request
 
-PROMPT = """Answer the question about a scientific paper using only the excerpts below.
+PROMPT = """Answer the question about {doc_kind} using only the excerpts below.
 
 {excerpts}
 
@@ -36,6 +36,10 @@ def normalize(s):
     s = "".join(ch for ch in s if ch not in set(string.punctuation))
     s = re.sub(r"\b(a|an|the)\b", " ", s)
     return " ".join(s.split())
+
+
+def em(pred, gold):
+    return float(normalize(pred) == normalize(gold))
 
 
 def f1(pred, gold):
@@ -88,6 +92,7 @@ def main():
     ap.add_argument("--model", default="ornith-1.5:35b")
     ap.add_argument("--arms", default="oracle,plain,header,context,both")
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--doc-kind", default="a scientific paper", help='"a Wikipedia article" for NQ')
     ap.add_argument("--hide-context", action="store_true",
                     help="retrieve with the arm's index but strip the LLM context from what the "
                          "reader sees — Anthropic uses the context for indexing only")
@@ -132,7 +137,7 @@ def main():
                 excerpts = "\n\n".join("[%d] %s" % (i + 1, b) for i, b in enumerate(bodies))
                 for attempt in range(4):
                     try:
-                        pred = ollama(a.host, a.model, PROMPT.format(excerpts=excerpts, question=q["question"]))
+                        pred = ollama(a.host, a.model, PROMPT.format(doc_kind=a.doc_kind, excerpts=excerpts, question=q["question"]))
                         break
                     except Exception as e:
                         # Keep Ollama's own error body: a CUDA fault and a model reload are
@@ -144,7 +149,8 @@ def main():
                     continue
                 golds = gold_strings(q)
                 score = max((f1(pred, g) for g in golds), default=0.0)
-                f.write(json.dumps({"arm": arm + ("/hidden-ctx" if a.hide_context else ""), "qid": q["qid"], "pred": pred, "f1": score,
+                exact = max((em(pred, g) for g in golds), default=0.0)
+                f.write(json.dumps({"arm": arm + ("/hidden-ctx" if a.hide_context else ""), "qid": q["qid"], "pred": pred, "f1": score, "em": exact,
                                     "chunk_ids": ids}) + "\n")
                 f.flush()
                 n += 1

@@ -52,7 +52,7 @@ def cos(a, b):
     return sum(x * y for x, y in zip(a, b)) / (na * nb) if na and nb else 0.0
 
 
-RERANK = """Question about the paper "{title}": {question}
+RERANK = """{qline}
 
 Candidate passages:
 
@@ -61,13 +61,15 @@ Candidate passages:
 Rank the passages by how useful they are for answering the question, most useful first. Answer only with a JSON array of passage numbers, e.g. [3, 1, 7], listing at least the 8 most useful."""
 
 
-def rerank(host, model, q, items):
+def rerank(host, model, q, items, titled=True):
     """Listwise rerank. Returns (order, ok): indexes into items. A ranking the model gets
     wrong is repaired, not trusted — unknown or repeated numbers are dropped and anything
     it left out keeps its original relative order after the ranked ones."""
     cands = "\n\n".join("[%d] %s%s" % (i + 1, "(document map) " if k == "map" else "", b[:1200])
                          for i, (k, _, b) in enumerate(items))
-    prompt = RERANK.format(title=q["paper_title"], question=q["question"], cands=cands)
+    qline = (('Question about the paper "%s": %s' % (q["paper_title"], q["question"])) if titled
+             else "Question: " + q["question"])
+    prompt = RERANK.format(qline=qline, cands=cands)
     out = None
     for attempt in range(6):  # transport faults (a CUDA 500, a dropped socket) retry; only a
         try:                  # bad RANKING falls back, so a fault is never counted as one
@@ -108,6 +110,10 @@ def main():
     ap.add_argument("--shuffle-seed", type=int, default=0)
     ap.add_argument("--limit-q", type=int, default=0, help="first N questions only (smoke tests)")
     ap.add_argument("--tenant", default="qasper-probe", help="the tenant the probe's token belongs to")
+    # QASPER questions never name their paper, so the pooled query carries the title; NQ is
+    # open-domain, where finding the page IS the task, so its questions go in bare.
+    ap.add_argument("--query-form", choices=["titled", "bare"], default="titled")
+    ap.add_argument("--doc-kind", default="a scientific paper", help='"a Wikipedia article" for NQ')
     a = ap.parse_args()
     tok = open(os.path.join(a.probe, "..", ".tok")).read().strip()
     qs = [json.loads(l) for l in open(os.path.join(a.probe, "questions.jsonl"))]
@@ -117,7 +123,10 @@ def main():
         import random
         random.Random(a.shuffle_seed).shuffle(qs)
     papers = {p["id"]: p for p in map(json.loads, open(os.path.join(a.probe, "papers.jsonl")))}
-    desc = {(r["paper_id"], tuple(r["path"])): r["context"] for r in map(json.loads, open(os.path.join(a.probe, "describe.jsonl")))}
+    def jl(name):
+        path = os.path.join(a.probe, name)
+        return list(map(json.loads, open(path))) if os.path.exists(path) else []
+    desc = {(r["paper_id"], tuple(r["path"])): r["context"] for r in jl("describe.jsonl")}
     def ctx_set(name):
         path = os.path.join(a.probe, name)
         return {json.loads(l)["context"] for l in open(path)} if os.path.exists(path) else set()
@@ -126,7 +135,7 @@ def main():
     hidden = {"mapctx": mc, "mapall": mc, "claims": mc, "questions": mc, "units": mc,
               "both": ctx_set("contexts.jsonl")}
     struct = {}  # (arm, paper_id) -> record
-    for r in map(json.loads, open(os.path.join(a.probe, "structure.jsonl"))):
+    for r in jl("structure.jsonl"):
         struct[(r["arm"], r["paper_id"])] = r
     bodies = retrieve.chunk_bodies("loomcycle_gate", a.tenant)
     # Root → its sections in document order, with their descriptions: the map's links.
@@ -157,7 +166,8 @@ def main():
             for q in qs:
                 if (arm, q["qid"]) in done:
                     continue
-                text = 'In the paper "%s": %s' % (q["paper_title"], q["question"])
+                text = ('In the paper "%s": %s' % (q["paper_title"], q["question"])
+                        if a.query_form == "titled" else q["question"])
                 res = answer.post(a.base, tok, "/v1/_memory/search",
                                   {"query": text, "scope": "user", "scope_id": sid, "top_k": 50, "sources": ["documents"]})
                 visible, seen, qvec = [], set(), None  # visible: (kind, id, text)
@@ -210,7 +220,7 @@ def main():
                 visible = visible[:depth]
                 rr_ok = None
                 if use_rr and len(visible) > 1:
-                    order, rr_ok = rerank(a.host, a.model, q, visible)
+                    order, rr_ok = rerank(a.host, a.model, q, visible, a.query_form == "titled")
                     rr_fail += 0 if rr_ok else 1
                     visible = [visible[i] for i in order]
                 if "pinmap" in flags:
@@ -224,7 +234,7 @@ def main():
                 pred = None
                 for attempt in range(6):
                     try:
-                        pred = answer.ollama(a.host, a.model, answer.PROMPT.format(excerpts=excerpts, question=q["question"]))
+                        pred = answer.ollama(a.host, a.model, answer.PROMPT.format(doc_kind=a.doc_kind, excerpts=excerpts, question=q["question"]))
                         break
                     except Exception as e:
                         err = str(e) + " " + (e.read()[:300].decode("utf-8", "replace") if hasattr(e, "read") else "")
@@ -233,7 +243,8 @@ def main():
                     print("FAIL", arm, q["qid"], err[:200], file=sys.stderr, flush=True)
                     continue
                 score = max((answer.f1(pred, g) for g in answer.gold_strings(q)), default=0.0)
-                f.write(json.dumps({"arm": arm, "qid": q["qid"], "pred": pred, "f1": score, "ev_rank": ev_rank,
+                exact = max((answer.em(pred, g) for g in answer.gold_strings(q)), default=0.0)
+                f.write(json.dumps({"arm": arm, "qid": q["qid"], "pred": pred, "f1": score, "em": exact, "ev_rank": ev_rank,
                                     "kinds": [k for k, _, _ in visible], "rr_ok": rr_ok}) + "\n")
                 f.flush()
                 n += 1
