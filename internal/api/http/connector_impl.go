@@ -1189,9 +1189,12 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 	// in the caller's tenant, else resolving it steers ANOTHER tenant's paused
 	// run. Backs the MCP interruption_resolve tool (principal-bearing ctx). The
 	// row.RunID==req.RunID check above only blocks retargeting within a tenant.
-	// tenantStore folds a cross-tenant/missing run into an opaque ErrNotFound.
-	if _, err := s.tenantStore(ctx).GetRun(ctx, row.RunID); err != nil {
+	// An isolated member answers only its own runs' questions (callerOwnsRun),
+	// with the opaque not-found a missing run gets.
+	if owns, err := s.callerOwnsRun(ctx, row.RunID); err != nil {
 		return connector.InterruptionResolveResult{}, err
+	} else if !owns {
+		return connector.InterruptionResolveResult{}, &store.ErrNotFound{Kind: "run", ID: row.RunID}
 	}
 	if row.Status != store.InterruptStatusPending {
 		return connector.InterruptionResolveResult{}, fmt.Errorf("interruption_resolve: already %s", row.Status)
