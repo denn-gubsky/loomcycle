@@ -182,7 +182,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.94.0) let a team walk hold its members for review
+The most recent line (v1.95.0) closed two isolation gaps — an isolated member
+could read another user's run content and answer its questions — added the
+subagent, compaction and run_end hook phases, and fixed what measuring local
+models turned up: a stateful run now keeps its task on every step, an unknown
+tool argument is refused with the correct call instead of silently dropped, and
+the prompt's tool list says to read a tool's call format first.
+
+Before it, v1.94.0 let a team walk hold its members for review
 (`"<starter>:review"`, replacing the removed `after_collection` pause, ⚠️ breaking)
 and started hooks v2: every decision is recorded as a `hook_decision` event,
 `agent_start` / `agent_stop` hooks can deny a run or block or hold its answer, and a
