@@ -1396,7 +1396,7 @@ message Retry {
 // providers.HookDecisionInfo.
 message HookDecision {
   string hook = 1;          // "<owner>/<name>"
-  string phase = 2;         // pre | post | post_failure | agent_start | agent_stop
+  string phase = 2;         // a tool phase or a deciding run phase (see RegisterHookRequest)
   string tool_use_id = 3;   // the call a tool hook decided on; empty for agent_start / agent_stop
   string tool_name = 4;
   string decision = 5;      // deny | rewrite_input | rewrite_output | context | block | hold | unavailable
@@ -1670,8 +1670,10 @@ message RegisterHookRequest {
   // same pair replaces the prior registration with a fresh id.
   string owner = 1;
   string name = 2;
-  // "pre" | "post" | "post_failure" | "agent_start" | "agent_stop". Anything
-  // else → InvalidArgument. agent_start / agent_stop take no tools selector.
+  // Tool phases "pre" | "post" | "post_failure"; run phases "agent_start" |
+  // "agent_stop" | "subagent_start" | "subagent_stop" | "pre_compact" |
+  // "post_compact" | "run_end" (no tools selector). Anything else →
+  // InvalidArgument.
   string phase = 3;
   // Agent name globs (exact match or trailing-* prefix). Empty list
   // matches every agent (equivalent to ["*"]).

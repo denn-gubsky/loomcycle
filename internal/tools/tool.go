@@ -1164,6 +1164,15 @@ func WithHookedExecute(ctx context.Context, fn HookedExecuteFunc) context.Contex
 	return context.WithValue(ctx, ctxKeyHookedExecute{}, fn)
 }
 
+// WithoutHookedExecute clears the run's hooked executor: ExecuteHooked on the
+// returned ctx is the plain dispatch. A hook's own tool calls use it. A call a
+// hook makes never goes back through the hooks — through them it would reach
+// the same hook again, which would make the same call, without end.
+// (WithHookedExecute cannot do this: a nil fn leaves ctx unchanged.)
+func WithoutHookedExecute(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyHookedExecute{}, HookedExecuteFunc(nil))
+}
+
 // ExecuteHooked runs a tool on the model's behalf from INSIDE another tool —
 // the Interruption tool delivering a question through a consumer's tool, say.
 // It goes through the run's tool-use hooks like any call the model makes; a

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
@@ -65,5 +67,35 @@ func TestServer_SetHookRegistryKeepsTheCodeRunner(t *testing.T) {
 	out := s.hookDispatcher.RunPre(t.Context(), hooks.Identity{Agent: "a"}, hooks.ToolCall{ID: "t1", Name: "Read"})
 	if out.Deny == nil || out.Deny.Text != "ran" {
 		t.Fatalf("outcome = %+v, want the code body to have run", out)
+	}
+}
+
+// A tenant operator's code body is refused unless the operator also set
+// LOOMCYCLE_CODE_HOOKS_TENANTS, and the refusal says so; an operator-global
+// code hook needs only LOOMCYCLE_CODE_HOOKS_ENABLED. A body's memory is not
+// bounded, and substrate:tenant may register hooks, so one tenant's body could
+// exhaust the whole shared server.
+func TestConnector_RegisterHook_ATenantCodeBodyNeedsTheTenantOptIn(t *testing.T) {
+	s := minimalServer(t)
+	s.SetCodeHookRunner(codehook.New(nil))
+	body := `function hook(ev) {}`
+	tenant := auth.WithPrincipal(t.Context(), auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}})
+
+	_, err := s.RegisterHook(tenant, connector.RegisterHookRequest{Owner: "t", Name: "g", Phase: "pre", Code: body})
+	if !errors.Is(err, connector.ErrHookInvalidRegistration) || !strings.Contains(err.Error(), "LOOMCYCLE_CODE_HOOKS_TENANTS=1") {
+		t.Fatalf("tenant without the opt-in: err = %v", err)
+	}
+	if n := len(s.hookRegistry.List()); n != 0 {
+		t.Fatalf("the refused hook was registered (%d hooks)", n)
+	}
+	if _, err := s.RegisterHook(t.Context(), connector.RegisterHookRequest{Owner: "op", Name: "g", Phase: "pre", Code: body}); err != nil {
+		t.Fatalf("an operator-global code hook: %v", err)
+	}
+
+	cfg := *s.cfg()
+	cfg.Env.CodeHooksTenants = true
+	s.cfgHolder = config.NewHolder(&cfg)
+	if _, err := s.RegisterHook(tenant, connector.RegisterHookRequest{Owner: "t", Name: "g", Phase: "pre", Code: body}); err != nil {
+		t.Fatalf("tenant with the opt-in: %v", err)
 	}
 }

@@ -56,7 +56,7 @@ A registration body:
 {
   "owner": "dlp-scanner",          // app UID; (owner, name) is the identity
   "name": "scan-web-fetches",
-  "phase": "pre",                  // "pre" | "post" | "post_failure" | "agent_start" | "agent_stop"
+  "phase": "pre",                  // a tool phase: "pre" | "post" | "post_failure"; or a run phase (below)
   "agents": ["researcher", "qa-*"], // exact or "prefix*"; omit = match all
   "tools": ["WebFetch", "mcp__jobs__*"],
   "callback_url": "https://dlp.internal/loomcycle-hook",
@@ -92,12 +92,18 @@ with the failure's classification in `tool_result.error`.
 
 When several hooks match, `pre` hooks run **earliest-registration-first**
 and `post` hooks run **LIFO** (classic middleware nesting), ordered by
-registration time.
+registration time. A tenant operator's hooks always run **before** the
+operator's global ones, whenever each was registered, so the operator's hooks
+have the last word: a tenant `pre` hook cannot rewrite an input after the
+operator's hook approved it, and a tenant `post` or `post_failure` hook cannot
+rewrite a result after the operator's hook checked it. The same holds for the
+run hooks below.
 
-## Run hooks: agent_start and agent_stop
+## Run hooks
 
-Two phases are about the run rather than a tool call. They are selected by
-`agents` only; a `tools` selector is refused.
+These phases are about the run rather than a tool call. They are selected by
+`agents` only — the agent of the run they fire in; a `tools` selector is
+refused.
 
 **`agent_start`** runs once per run, after the prompt is composed and before
 the first model call. A resumed run has already started, so it does not run
@@ -131,16 +137,50 @@ fails holds the answer if it is `fail_mode: closed`, and lets it through if
 `open`. agent_stop hooks do not apply to a stateful run, whose product is its
 state rather than an answer; the run says so.
 
-A code hook returns the same shapes (`ev.event` is `"agent_start"` or
-`"agent_stop"`), and can ask before deciding — an automated reviewer for the
-clear cases, a person for the rest.
+**`subagent_start`** runs in the parent when it is about to start a child
+through the Agent tool (one-shot or `parallel_spawn`); `agents` selects the
+parent, and the payload names the child in `subagent`. `deny` refuses the child
+— the parent's Agent call gets the reason as an error, and the child is never
+created; `additional_context` is added to the child's prompt.
+
+**`subagent_stop`** runs in the parent after the child finished, before its
+result reaches the parent. The payload adds `subagent_run_id`, `status`
+(`completed` / `failed`), `final_text` and `error`. `deny` refuses the result:
+the parent gets the reason as an error and may try again. `additional_context`
+is appended to the result. To send a child back to revise, register an
+`agent_stop` hook: it fires on the child's own run (its `parent_run_id` names
+the parent).
+
+**`pre_compact`** runs before a compaction summarizes the conversation.
+`trigger` says what asked (`manual`, `auto`, `self`); `context_tokens` and
+`window` the footprint. `deny` refuses it: a manual compaction
+(`POST /v1/runs/{id}/compact`) gets a 409 with code `denied_by_hook`, before any
+summary is made; an automatic one is recorded as a declined compaction with
+reason `denied_by_hook`.
+
+**`post_compact`** and **`run_end`** only report. `post_compact` gets
+`trigger`, `before_tokens` and `after_tokens`; `run_end` gets `status`
+(`completed` / `failed` / `cancelled` / `rejected`), `stop_reason`, `error` and
+`final_text`, after the run's row is final. They run off the run's path, so
+they never delay it, bounded at 30 s; their answer is ignored and a failure is
+only logged. A run whose process died (marked failed by the stale-run sweep)
+never reaches run_end.
+
+A code hook returns the same shapes (`ev.event` is the phase name), and can
+ask before deciding — an automated reviewer for the clear cases, a person for
+the rest. A `post_compact` or `run_end` code hook may `notify` but not `ask`:
+what it reports on has already happened.
 
 ## Code hooks
 
 Instead of `callback_url`, a registration may carry `code`: JavaScript that
 loomcycle runs in-process, with no network round-trip and no tokens. The
 operator enables it with `LOOMCYCLE_CODE_HOOKS_ENABLED=1`; otherwise a code
-registration is refused. Set exactly one of `callback_url` and `code`.
+registration is refused. A tenant operator's code hook (one registered by a
+non-admin tenant token) needs a second opt-in, `LOOMCYCLE_CODE_HOOKS_TENANTS=1`,
+because the sandbox bounds a body's time, not its memory, and every tenant shares the
+server; without it a tenant registers a `callback_url` hook instead. Set exactly
+one of `callback_url` and `code`.
 
 ```js
 function hook(ev) {
@@ -184,6 +224,15 @@ global it sets does not survive to the next call. `timeout_ms` bounds each
 run of the code: 50 ms by default, at most 1 s. The time an operator takes
 to answer is not counted. A body may ask at most 16 times per call.
 
+The sandbox bounds a body's **time, not its memory**. The time budget is
+checked between instructions, never inside one built-in call, so the one-call
+allocators are capped: a string from `repeat` / `padStart` / `padEnd` at 1 Mi
+characters, an array from `Array(n)` / `Array.from` — and `join` / `fill` on
+one — at 65,536 elements, an `ArrayBuffer` or typed array at 1 MiB. Past a cap
+the call throws a `RangeError`. These caps are a backstop, not a memory limit:
+a body that grows a string in a loop is bounded only by its time budget. That
+is why a tenant's code hooks need their own opt-in.
+
 ## Fail-open vs fail-closed
 
 `fail_mode` decides what a webhook timeout / 5xx / network error means:
@@ -195,6 +244,12 @@ to answer is not counted. A body may ask at most 16 times per call.
 - **`closed`** — the tool call fails with `is_error=true`. Right for
   security-shaped hooks (an injection or DLP scanner) where a down hook
   letting payloads through would be the bug.
+
+A security check must be `fail_mode: closed`. Under `open`, whatever makes the
+hook fail skips the check — and the model controls the input: an oversized
+input, or one slow to scan, can make the hook time out on purpose. This matters
+most for a code hook, whose default time budget is 50 ms and whose own default
+fail mode is `open` like any hook's.
 
 ## Per-call host-widening (the one audited exception)
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,18 +63,25 @@ func (c *webhookClient) clientFor(h *Hook) *http.Client {
 func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, body, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshal hook payload: %w", err)
+		return callError("the hook's payload could not be encoded", fmt.Errorf("marshal hook payload: %w", err))
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("build hook request: %w", err)
+		return callError("the hook's callback URL is invalid", fmt.Errorf("build hook request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("hook transport: %w", err)
+		category := "the hook could not be reached"
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			category = "the hook timed out"
+		case errors.Is(err, context.Canceled):
+			category = "the hook call was cancelled"
+		}
+		return callError(category, fmt.Errorf("hook transport: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -82,7 +90,8 @@ func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, b
 		// are operator-side bugs and the response usually carries a
 		// useful explanation.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("hook %s: %d %s", url, resp.StatusCode, bytes.TrimSpace(errBody))
+		return callError(fmt.Sprintf("the hook returned status %d", resp.StatusCode),
+			fmt.Errorf("hook %s: %d %s", url, resp.StatusCode, bytes.TrimSpace(errBody)))
 	}
 
 	// 204 → no rewrite. Empty body with 200 → also no rewrite.
@@ -91,13 +100,40 @@ func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, b
 	}
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB cap
 	if err != nil {
-		return fmt.Errorf("read hook response: %w", err)
+		return callError("the hook's response could not be read", fmt.Errorf("read hook response: %w", err))
 	}
 	if len(bytes.TrimSpace(respBody)) == 0 {
 		return nil
 	}
 	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("decode hook response: %w", err)
+		return callError("the hook's response was not valid JSON", fmt.Errorf("decode hook response: %w", err))
 	}
 	return nil
+}
+
+// hookCallError is a failed webhook call. Error() is the full detail, for the
+// server log: it can name the callback URL — whose query string may carry a
+// token — and quote up to 1 KiB of the callback's response body. category is
+// the short, fixed text a run's viewer is shown instead (see decisionReason).
+type hookCallError struct {
+	category string
+	err      error
+}
+
+func callError(category string, err error) error { return &hookCallError{category: category, err: err} }
+
+func (e *hookCallError) Error() string { return e.err.Error() }
+func (e *hookCallError) Unwrap() error { return e.err }
+
+// decisionReason is the reason an "unavailable" decision carries to the run —
+// streamed to its viewer and persisted. A webhook failure is reduced to its
+// category, which never contains the callback URL or its response. Any other
+// error (a code hook's, which the runner writes and which has no callback)
+// keeps its message.
+func decisionReason(err error) string {
+	var ce *hookCallError
+	if errors.As(err, &ce) {
+		return ce.category
+	}
+	return err.Error()
 }

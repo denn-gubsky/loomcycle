@@ -226,9 +226,11 @@ class LoomcycleClient:
         Raises ``LoomcycleError`` with ``code=INVALID_ARGUMENT`` on
         bad URL / phase / missing required fields.
 
-        Phase is ``"pre"``, ``"post"``, ``"post_failure"``,
-        ``"agent_start"`` or ``"agent_stop"`` (the last two take no
-        ``tools``); fail_mode is ``"open"``
+        Phase is a tool phase (``"pre"``, ``"post"``, ``"post_failure"``)
+        or a run phase (``"agent_start"``, ``"agent_stop"``,
+        ``"subagent_start"``, ``"subagent_stop"``, ``"pre_compact"``,
+        ``"post_compact"``, ``"run_end"``), which takes no ``tools``;
+        fail_mode is ``"open"``
         (default — webhook errors pass through) or ``"closed"``
         (webhook errors fail the tool call). The callback half is
         HTTP — loomcycle POSTs ``PreHookCall`` / ``PostHookCall``

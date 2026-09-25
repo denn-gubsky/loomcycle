@@ -4949,7 +4949,7 @@ func (x *Retry) GetReason() string {
 type HookDecision struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Hook              string                 `protobuf:"bytes,1,opt,name=hook,proto3" json:"hook,omitempty"`                              // "<owner>/<name>"
-	Phase             string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`                            // pre | post | post_failure | agent_start | agent_stop
+	Phase             string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`                            // a tool phase or a deciding run phase (see RegisterHookRequest)
 	ToolUseId         string                 `protobuf:"bytes,3,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"` // the call a tool hook decided on; empty for agent_start / agent_stop
 	ToolName          string                 `protobuf:"bytes,4,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
 	Decision          string                 `protobuf:"bytes,5,opt,name=decision,proto3" json:"decision,omitempty"`                 // deny | rewrite_input | rewrite_output | context | block | hold | unavailable
@@ -6680,8 +6680,10 @@ type RegisterHookRequest struct {
 	// same pair replaces the prior registration with a fresh id.
 	Owner string `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
 	Name  string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	// "pre" | "post" | "post_failure" | "agent_start" | "agent_stop". Anything
-	// else → InvalidArgument. agent_start / agent_stop take no tools selector.
+	// Tool phases "pre" | "post" | "post_failure"; run phases "agent_start" |
+	// "agent_stop" | "subagent_start" | "subagent_stop" | "pre_compact" |
+	// "post_compact" | "run_end" (no tools selector). Anything else →
+	// InvalidArgument.
 	Phase string `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
 	// Agent name globs (exact match or trailing-* prefix). Empty list
 	// matches every agent (equivalent to ["*"]).

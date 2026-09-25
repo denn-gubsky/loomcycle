@@ -25,6 +25,7 @@
 package codehook
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -56,6 +57,12 @@ const (
 	maxCallStack = 512
 	// compileTimeout bounds evaluating a body's top level at registration.
 	compileTimeout = time.Second
+	// maxCachedPrograms bounds the compiled-program cache. Only live hooks'
+	// bodies need a slot (a deployment runs a handful of code hooks, well
+	// under this), but the cache is keyed by content, so every replaced or
+	// deleted body stayed in it forever; the least recently run ages out
+	// instead. At most 256 KiB of source each, so the cache stays small.
+	maxCachedPrograms = 64
 )
 
 // Runner runs code-js hook bodies. It is safe for concurrent use: every run
@@ -65,14 +72,21 @@ type Runner struct {
 	// runs under the hook's own grant, whether or not the agent may interrupt.
 	interruption tools.Tool
 
-	mu    sync.RWMutex
-	cache map[string]*goja.Program // sha256 of the body → compiled program
+	mu    sync.Mutex
+	cache map[string]*list.Element // sha256 of the body → its entry in lru
+	lru   *list.List               // of *cached, most recently run first
+}
+
+// cached is one compiled body in the cache.
+type cached struct {
+	key  string
+	prog *goja.Program
 }
 
 // New returns a Runner whose bodies ask through interruption. A nil tool makes
 // every Interruption call fail, which the hook's fail mode then decides.
 func New(interruption tools.Tool) *Runner {
-	return &Runner{interruption: interruption, cache: make(map[string]*goja.Program)}
+	return &Runner{interruption: interruption, cache: make(map[string]*list.Element), lru: list.New()}
 }
 
 var _ hooks.CodeRunner = (*Runner)(nil)
@@ -81,7 +95,9 @@ var _ hooks.CodeRunner = (*Runner)(nil)
 // define hook(ev). The top level runs with no tool bound, so a body cannot ask
 // while it is being registered.
 func (r *Runner) Compile(src string) error {
-	prog, err := r.program(src)
+	// Checked before parsing, so an oversized body costs nothing. Not cached:
+	// a body refused at registration, or never run, must not hold a slot.
+	prog, err := compile(src)
 	if err != nil {
 		return err
 	}
@@ -100,24 +116,48 @@ func (r *Runner) Compile(src string) error {
 
 var errTopLevelTimeout = errors.New("the body's top level ran longer than 1s")
 
-// program returns the compiled body, caching by content so every call of a
-// hook reuses one parse.
-func (r *Runner) program(src string) (*goja.Program, error) {
-	sum := sha256.Sum256([]byte(src))
-	key := hex.EncodeToString(sum[:])
-	r.mu.RLock()
-	prog, ok := r.cache[key]
-	r.mu.RUnlock()
-	if ok {
-		return prog, nil
+// compile parses a body, refusing one over the size limit without parsing it.
+func compile(src string) (*goja.Program, error) {
+	if len(src) > hooks.MaxCodeBytes {
+		return nil, fmt.Errorf("the body is %d bytes; the limit is %d", len(src), hooks.MaxCodeBytes)
 	}
 	prog, err := goja.Compile("hook", src, false)
 	if err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
+	return prog, nil
+}
+
+// program returns the compiled body, caching by content so every call of a
+// hook reuses one parse.
+func (r *Runner) program(src string) (*goja.Program, error) {
+	sum := sha256.Sum256([]byte(src))
+	key := hex.EncodeToString(sum[:])
 	r.mu.Lock()
-	r.cache[key] = prog
+	if el, ok := r.cache[key]; ok {
+		r.lru.MoveToFront(el)
+		r.mu.Unlock()
+		return el.Value.(*cached).prog, nil
+	}
 	r.mu.Unlock()
+	// Parsed outside the lock; two first calls of one body may both parse it,
+	// and the second insert is a no-op.
+	prog, err := compile(src)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if el, ok := r.cache[key]; ok {
+		r.lru.MoveToFront(el)
+		return prog, nil
+	}
+	r.cache[key] = r.lru.PushFront(&cached{key: key, prog: prog})
+	for r.lru.Len() > maxCachedPrograms {
+		oldest := r.lru.Back()
+		r.lru.Remove(oldest)
+		delete(r.cache, oldest.Value.(*cached).key)
+	}
 	return prog, nil
 }
 
@@ -143,6 +183,11 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 		Kinds:      []string{"question"},
 		MaxPending: tools.InterruptionPolicy(ctx).MaxPending,
 	})
+	// ctx can carry the loop's hooked executor (a post hook runs on the tool
+	// call's ctx). An ask delivered through a consumer's tool would then go
+	// through the hooks again — reaching this hook, which asks again, without
+	// end. A hook's own calls run outside the hooks.
+	askCtx = tools.WithoutHookedExecute(askCtx)
 
 	var recorded []record
 	for {
@@ -159,6 +204,11 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 		if r.interruption == nil {
 			return hooks.CodeDecision{}, errors.New("Interruption is not configured on this server")
 		}
+		if hooks.IsObserve(ctx) && isAsk(next.input) {
+			// An observe-only hook reports on something that already happened;
+			// a question would hold nothing, and could outlive the run.
+			return hooks.CodeDecision{}, fmt.Errorf("Interruption.ask is not available to a %s hook, which only reports; use Interruption.notify", h.Phase)
+		}
 		res, err := r.interruption.Execute(askCtx, next.input)
 		if err != nil {
 			return hooks.CodeDecision{}, fmt.Errorf("Interruption: %w", err)
@@ -168,6 +218,14 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 		}
 		recorded = append(recorded, record{input: next.input, text: res.Text, isError: res.IsError})
 	}
+}
+
+// isAsk reports whether an Interruption call is an ask.
+func isAsk(input json.RawMessage) bool {
+	var in struct {
+		Op string `json:"op"`
+	}
+	return json.Unmarshal(input, &in) == nil && in.Op == "ask"
 }
 
 // record is one Interruption call already made in this invocation, replayed on
@@ -224,11 +282,12 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 }
 
 // newRuntime builds a sandboxed runtime: the code-js hardening, JSON field
-// names, and a bounded call stack.
+// names, capped one-call allocators, and a bounded call stack.
 func newRuntime(seed uint32, anchor int64) *goja.Runtime {
 	rt := goja.New()
 	rt.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	codejs.HardenSandbox(rt, seed, anchor)
+	installLimits(rt)
 	rt.SetMaxCallStackSize(maxCallStack)
 	return rt
 }

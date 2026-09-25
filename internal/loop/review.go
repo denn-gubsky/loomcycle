@@ -220,3 +220,17 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 		}
 	}
 }
+
+type iterationKey struct{}
+
+// withIteration records the loop iteration on its context, so a hook fired
+// from inside the iteration without the counter at hand (a compaction) still
+// reports which one it was.
+func withIteration(ctx context.Context, iter int) context.Context {
+	return context.WithValue(ctx, iterationKey{}, iter)
+}
+
+func IterationOf(ctx context.Context) int {
+	n, _ := ctx.Value(iterationKey{}).(int)
+	return n
+}

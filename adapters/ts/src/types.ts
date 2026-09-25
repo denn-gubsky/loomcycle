@@ -451,7 +451,8 @@ export interface ContextDistillDeclinedInfo {
   /** What opened the gate: "auto" | "self" | "manual". */
   trigger?: string;
   /** "split_declined" | "empty_summary" | "summary_error" | "not_smaller" |
-   *  "reasoning_keep" | "noop" | "noop_keep_spans_all" | "noop_not_smaller". */
+   *  "reasoning_keep" | "denied_by_hook" | "noop" | "noop_keep_spans_all" |
+   *  "noop_not_smaller". */
   reason: string;
   used_tokens?: number;
   window_tokens?: number;
@@ -2059,7 +2060,17 @@ export interface ResolveInterruptOptions {
 
 /** `post_failure` runs only when the tool failed, before the post chain, with
  *  the failure's classification in the payload. */
-export type HookPhase = "pre" | "post" | "post_failure" | "agent_start" | "agent_stop";
+export type HookPhase =
+  | "pre"
+  | "post"
+  | "post_failure"
+  | "agent_start"
+  | "agent_stop"
+  | "subagent_start"
+  | "subagent_stop"
+  | "pre_compact"
+  | "post_compact"
+  | "run_end";
 
 export type HookFailMode = "open" | "closed";
 

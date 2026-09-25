@@ -90,7 +90,7 @@ func (r *DBBackedRegistry) LoadFromDB(ctx context.Context) error {
 	}
 	for _, row := range rows {
 		h := rowToHook(row)
-		if _, err := r.inner.Register(h); err != nil {
+		if _, err := r.inner.restore(h); err != nil {
 			log.Printf("hooks: skipping invalid persisted hook %s: %v", row.ID, err)
 		}
 	}
@@ -123,7 +123,7 @@ func (r *DBBackedRegistry) RunBackplaneConsumer(ctx context.Context) {
 				log.Printf("hooks: backplane create-event fetch %s: %v", p.HookID, err)
 				continue
 			}
-			if _, err := r.inner.Register(rowToHook(row)); err != nil {
+			if _, err := r.inner.restore(rowToHook(row)); err != nil {
 				log.Printf("hooks: backplane create-event Register %s: %v", p.HookID, err)
 			}
 		case "deleted":
@@ -140,6 +140,20 @@ func (r *DBBackedRegistry) RunBackplaneConsumer(ctx context.Context) {
 // in-process cache, then publishes a backplane event so peer replicas
 // invalidate. Returns the assigned ID + any validation error.
 func (r *DBBackedRegistry) Register(h *Hook) (string, error) {
+	// A re-registration of (tenant, owner, name) replaces the hook, and its row
+	// must go with it: the inner Register evicts the old one in memory only, so
+	// a later Delete of the new id left the old row, and the next boot's
+	// LoadFromDB resurrected the deleted hook. Found before the inner Register,
+	// which is what forgets it.
+	replaced := ""
+	if h != nil {
+		for _, hook := range r.inner.List() {
+			if hook.Tenant == h.Tenant && hook.Owner == h.Owner && hook.Name == h.Name {
+				replaced = hook.ID
+				break
+			}
+		}
+	}
 	// Inner Register validates + assigns ID + bumps RegisteredAt. Call
 	// it FIRST so we have the canonical ID for the DB row.
 	id, err := r.inner.Register(h)
@@ -168,6 +182,14 @@ func (r *DBBackedRegistry) Register(h *Hook) (string, error) {
 		return "", fmt.Errorf("hooks: db insert: %w", err)
 	}
 	r.publishBackplane("created", id)
+	if replaced != "" {
+		// After the new row is in, so a failure between the two leaves two rows
+		// (the later one wins on reload) rather than none.
+		if err := r.store.DeleteHook(context.Background(), replaced); err != nil {
+			log.Printf("hooks: db delete of replaced hook %s failed: %v", replaced, err)
+		}
+		r.publishBackplane("deleted", replaced)
+	}
 	return id, nil
 }
 

@@ -167,44 +167,55 @@ func (r *Registry) IsHostWidenPermitted(tenant, owner string) bool {
 // Returns the assigned ID, or ErrInvalidRegistration if required
 // fields are missing or malformed.
 func (r *Registry) Register(h *Hook) (string, error) {
+	return r.register(h, "")
+}
+
+// restore adds a hook reloaded from the database — at boot, or from a peer's
+// backplane event — under the id its row carries. Register mints a new id, and
+// a hook known here by an id its row does not have can never be deleted: the
+// row is deleted by id (so it came back on the next boot), and a peer's
+// "deleted" event names the row's id (so the peer kept firing the hook).
+func (r *Registry) restore(h *Hook) (string, error) {
+	if h == nil || h.ID == "" {
+		return "", wrap(ErrInvalidRegistration, "a reloaded hook needs its id")
+	}
+	return r.register(h, h.ID)
+}
+
+// register is Register with the id given (restore) or, when id is "", minted.
+func (r *Registry) register(h *Hook, id string) (string, error) {
 	if err := validate(h); err != nil {
 		return "", err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if id == "" {
+		id = newHookID()
+		h.RegisteredAt = time.Now()
+	} else if h.RegisteredAt.IsZero() {
+		h.RegisteredAt = time.Now()
+	}
+	h.ID = id
+	h.Timeout = timeoutFor(h)
+	if h.FailMode == "" {
+		h.FailMode = FailOpen
+	}
 	key := hookKey{Tenant: h.Tenant, Owner: h.Owner, Name: h.Name}
-	now := time.Now()
 	if existing, ok := r.byKey[key]; ok {
 		// Replace in-place: keep the existing position in `order` so
 		// chain order is stable across re-registrations. New ID, same
 		// slot.
-		newID := newHookID()
-		h.ID = newID
-		h.RegisteredAt = now
-		h.Timeout = timeoutFor(h)
-		if h.FailMode == "" {
-			h.FailMode = FailOpen
-		}
-		// Replace position in order: find existing.ID, swap to newID.
-		for i, id := range r.order {
-			if id == existing.ID {
-				r.order[i] = newID
+		for i, oid := range r.order {
+			if oid == existing.ID {
+				r.order[i] = id
 				break
 			}
 		}
 		delete(r.byID, existing.ID)
-		r.byID[newID] = h
+		r.byID[id] = h
 		r.byKey[key] = h
-		return newID, nil
-	}
-
-	id := newHookID()
-	h.ID = id
-	h.RegisteredAt = now
-	h.Timeout = timeoutFor(h)
-	if h.FailMode == "" {
-		h.FailMode = FailOpen
+		return id, nil
 	}
 	r.byID[id] = h
 	r.byKey[key] = h
@@ -247,11 +258,15 @@ func (r *Registry) List() []*Hook {
 }
 
 // Match returns the hooks that fire for the given (tenant, agent, tool,
-// phase), in chain order:
-//   - Pre-hooks: registration order (earliest first; first non-nil
-//     deny short-circuits the chain).
-//   - Post-hooks: REVERSE registration order (LIFO middleware
+// phase), in chain order. The run's tenant hooks come first and the
+// operator-global hooks last, whatever the registration order, so the
+// operator's hooks always have the last word: a tenant pre hook cannot rewrite
+// an input after the operator's hook approved it, nor a tenant post hook
+// rewrite a result after the operator's hook checked it. Within each group:
+//   - Post and post_failure hooks: REVERSE registration order (LIFO middleware
 //     pattern; outer hooks see the inner hooks' modifications).
+//   - Every other phase (pre and the run phases): registration order
+//     (earliest first; the first deny short-circuits the chain).
 //
 // RFC AF tenant filter: a hook with a non-empty Tenant fires ONLY when it
 // equals the run's tenant; a hook with Tenant=="" is an operator/global hook
@@ -264,28 +279,36 @@ func (r *Registry) Match(tenant, agent, tool string, phase Phase) []*Hook {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var out []*Hook
+	var tenantHooks, globalHooks []*Hook
 	for _, id := range r.order {
 		h, ok := r.byID[id]
-		if !ok {
+		if !ok || !h.Matches(agent, tool, phase) {
 			continue
 		}
-		// A tenant-scoped hook is invisible to other tenants' runs; a global
-		// hook (Tenant=="") fires for everyone.
-		if h.Tenant != "" && h.Tenant != tenant {
-			continue
-		}
-		if h.Matches(agent, tool, phase) {
-			out = append(out, h)
+		switch {
+		case h.Tenant == "":
+			// A global hook fires for everyone.
+			globalHooks = append(globalHooks, h)
+		case h.Tenant == tenant:
+			tenantHooks = append(tenantHooks, h)
+			// A tenant-scoped hook is invisible to other tenants' runs.
 		}
 	}
 	if phase == PhasePost || phase == PhasePostFailure {
-		// Reverse for LIFO middleware ordering.
-		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-			out[i], out[j] = out[j], out[i]
-		}
+		// Reverse each group for LIFO middleware ordering.
+		reverse(tenantHooks)
+		reverse(globalHooks)
 	}
-	return out
+	if len(tenantHooks) == 0 {
+		return globalHooks
+	}
+	return append(tenantHooks, globalHooks...)
+}
+
+func reverse(hs []*Hook) {
+	for i, j := 0, len(hs)-1; i < j; i, j = i+1, j-1 {
+		hs[i], hs[j] = hs[j], hs[i]
+	}
 }
 
 // validate enforces the required-field contract at registration
@@ -302,12 +325,13 @@ func validate(h *Hook) error {
 	}
 	switch h.Phase {
 	case PhasePre, PhasePost, PhasePostFailure:
-	case PhaseAgentStart, PhaseAgentStop:
+	case PhaseAgentStart, PhaseAgentStop, PhaseSubagentStart, PhaseSubagentStop,
+		PhasePreCompact, PhasePostCompact, PhaseRunEnd:
 		if len(h.Tools) > 0 {
 			return wrap(ErrInvalidRegistration, "tools selects tool calls; an "+string(h.Phase)+" hook is selected by agents only")
 		}
 	default:
-		return wrap(ErrInvalidRegistration, "phase must be \"pre\", \"post\", \"post_failure\", \"agent_start\" or \"agent_stop\"")
+		return wrap(ErrInvalidRegistration, "phase must be one of pre, post, post_failure, agent_start, agent_stop, subagent_start, subagent_stop, pre_compact, post_compact, run_end")
 	}
 	hasURL, hasCode := strings.TrimSpace(h.CallbackURL) != "", strings.TrimSpace(h.Code) != ""
 	switch {

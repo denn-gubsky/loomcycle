@@ -3,6 +3,7 @@ package codehook
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -237,5 +238,103 @@ func TestRunner_CompileRefusesABrokenBody(t *testing.T) {
 	}
 	if err := r.Compile(`function hook(ev) { return {decision: "allow"}; }`); err != nil {
 		t.Errorf("a good body was refused: %v", err)
+	}
+}
+
+// An observe-only hook reports on something that already happened: it may
+// notify, but an ask is refused rather than left waiting on a finished run.
+func TestRunner_AnObserveHookMayNotifyButNotAsk(t *testing.T) {
+	f := &fakeInterruption{answer: func(int, string) tools.Result { return tools.Result{Text: `{}`} }}
+	ctx := hooks.WithObserve(context.Background())
+	notify := &hooks.Hook{ID: "h", Owner: "ops", Name: "n", Phase: hooks.PhaseRunEnd, Timeout: time.Second,
+		Code: `function hook(ev) { Interruption.notify({message: "run " + ev.run_id + " " + ev.status}); }`}
+	if _, err := New(f).Run(ctx, notify, "run_end", hooks.LifecycleHookCall{RunContext: hooks.RunContext{RunID: "r1"}, Status: "failed"}); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if len(f.inputs) != 1 || !strings.Contains(f.inputs[0], `"message":"run r1 failed"`) {
+		t.Errorf("notify calls = %v", f.inputs)
+	}
+	ask := &hooks.Hook{ID: "h", Owner: "ops", Name: "a", Phase: hooks.PhaseRunEnd, Timeout: time.Second,
+		Code: `function hook(ev) { Interruption.ask({question: "?"}); }`}
+	if _, err := New(f).Run(ctx, ask, "run_end", hooks.LifecycleHookCall{}); err == nil || !strings.Contains(err.Error(), "not available to a run_end hook") {
+		t.Fatalf("ask: err = %v", err)
+	}
+	if len(f.inputs) != 1 {
+		t.Errorf("the ask reached Interruption: %v", f.inputs)
+	}
+}
+
+// A body registration refuses is never cached, nor is any body only compiled;
+// the run-time cache is bounded; and an oversized body is refused before it is
+// parsed. The cache used to keep every body it ever saw, registration's
+// included, forever, and a 10 MB body was parsed before the size check.
+func TestRunner_TheProgramCacheHoldsOnlyRunBodiesAndIsBounded(t *testing.T) {
+	r := New(nil)
+	for i := 0; i < 10; i++ {
+		_ = r.Compile(fmt.Sprintf("function hook(ev) { return %d; }", i))
+		_ = r.Compile(fmt.Sprintf("function run() { return %d; }", i)) // refused: no hook(ev)
+	}
+	if n := r.lru.Len(); n != 0 {
+		t.Errorf("after compiling only, %d programs are cached", n)
+	}
+	for i := 0; i < maxCachedPrograms+20; i++ {
+		if _, err := r.Run(context.Background(), codeHook(fmt.Sprintf("function hook(ev) { var n = %d; }", i)), "pre_tool_use", preCall("Read", `{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, m := r.lru.Len(), len(r.cache); n != maxCachedPrograms || m != maxCachedPrograms {
+		t.Errorf("cache holds %d (index %d) programs, want the %d most recently run", n, m, maxCachedPrograms)
+	}
+
+	big := "function hook(ev) {" + strings.Repeat(" ", hooks.MaxCodeBytes) + "(" // a syntax error, too
+	if err := r.Compile(big); err == nil || !strings.Contains(err.Error(), "the limit is") {
+		t.Errorf("an oversized body: err = %v, want the size refusal before any parse", err)
+	}
+}
+
+// A code hook cannot allocate a huge string, array or buffer in one native
+// call, which the time budget cannot interrupt — not in hook(ev), and not at
+// the top level, which registration evaluates in the request handler. At the
+// bounds the same calls work. The probes stay just past each bound, so the
+// unfixed runtime allocates only a few MiB when it lets them through.
+func TestRunner_OneCallAllocatorsAreBounded(t *testing.T) {
+	r := New(nil)
+	over := map[string]string{
+		"repeat":           `"x".repeat(1048577)`,
+		"repeat, longer":   `"ab".repeat(524289)`,
+		"padStart":         `"x".padStart(1048577)`,
+		"padEnd":           `"x".padEnd(1048577, "y")`,
+		"new Array":        `new Array(65537)`,
+		"Array()":          `Array(65537)`,
+		"[].constructor":   `[].constructor(65537)`,
+		"Array.from":       `Array.from({length: 65537})`,
+		"a grown join":     `(function () { var a = []; a.length = 65537; return a.join("x"); })()`,
+		"a grown fill":     `(function () { var a = []; a.length = 65537; return a.fill(0); })()`,
+		"ArrayBuffer":      `new ArrayBuffer(1048577)`,
+		"Uint8Array":       `new Uint8Array(1048577)`,
+		"Float64Array":     `new Float64Array(131073)`,
+		"Uint8Array.from":  `Uint8Array.from({length: 1048577})`,
+		"a typed ctor ref": `new (new Uint8Array(1).constructor)(1048577)`,
+	}
+	for name, expr := range over {
+		_, err := r.Run(context.Background(), codeHook("function hook(ev) { var v = "+expr+"; return {}; }"), "pre_tool_use", preCall("Read", `{}`))
+		if err == nil || !strings.Contains(err.Error(), "exceeds a code hook's limit") {
+			t.Errorf("%s in hook(ev): err = %v, want the limit", name, err)
+		}
+	}
+	if err := r.Compile(`var s = "x".repeat(1048577); function hook(ev) {}`); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("at the top level: err = %v, want the limit", err)
+	}
+
+	at := `function hook(ev) {
+		var ok = "x".repeat(1048576).length === 1048576 && "x".padEnd(1048576).length === 1048576 &&
+			new Array(65536).length === 65536 && Array.from({length: 3}).length === 3 &&
+			[1, 2, 3].join("-") === "1-2-3" && String([1, 2]) === "1,2" && [1, 2] instanceof Array &&
+			Array.isArray([]) && new Uint8Array(1048576).length === 1048576 && new Uint8Array([1, 2])[1] === 2 &&
+			new Uint8Array(new ArrayBuffer(8)).length === 8 && Uint8Array.BYTES_PER_ELEMENT === 1;
+		return ok ? {} : {decision: "deny", reason: "an in-bounds call misbehaved"};
+	}`
+	if d, err := r.Run(context.Background(), codeHook(at), "pre_tool_use", preCall("Read", `{}`)); err != nil || d.Decision != "" {
+		t.Errorf("at the bounds: %+v, %v", d, err)
 	}
 }

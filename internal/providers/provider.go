@@ -1366,8 +1366,11 @@ type HookDecisionInfo struct {
 	// (it was refused).
 	FailMode string `json:"fail_mode,omitempty"`
 	// Reason is the deny's or block's text (a block's is the user turn the
-	// model was sent back with), a hold's reason, or the error that made the
-	// hook unavailable.
+	// model was sent back with), a hold's reason, or why the hook was
+	// unavailable. For a webhook that is a short category ("the hook returned
+	// status 500", "the hook timed out") that never carries the callback URL or
+	// its response body — those stay in the server log; for a code hook it is
+	// the runner's message.
 	Reason string `json:"reason,omitempty"`
 	// UpdatedInput is the input the tool actually ran with, for rewrite_input.
 	UpdatedInput json.RawMessage `json:"updated_input,omitempty"`
@@ -1428,6 +1431,10 @@ const (
 	// Not a fault; reported so that "nothing happened" is never silent, because
 	// an operator who did not realise keep disables this needs to see it once.
 	DistillDeclineReasoningKeep = "reasoning_keep"
+
+	// DistillDeclineDeniedByHook — a pre_compact hook refused the compaction.
+	// Message carries the hook's reason. Action: that hook's owner decides.
+	DistillDeclineDeniedByHook = "denied_by_hook"
 )
 
 // ContextDistillDeclinedInfo is the payload on EventContextDistillDeclined.
