@@ -65,6 +65,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--papers", type=int, default=40)
     ap.add_argument("--seed", type=int, default=7)
+    # A held-out set is the NEXT papers of the same shuffle: disjoint from the first set by
+    # construction, and drawn from the same distribution.
+    ap.add_argument("--skip", type=int, default=0, help="skip the first N usable papers")
     a = ap.parse_args()
 
     d = json.load(open(a.data))
@@ -74,7 +77,7 @@ def main():
     npq = 0
     with open(os.path.join(a.out, "papers.jsonl"), "w") as fp, \
          open(os.path.join(a.out, "questions.jsonl"), "w") as fq:
-        taken = 0
+        taken = skipped = 0
         for pid in ids:
             if taken >= a.papers:
                 break
@@ -99,6 +102,9 @@ def main():
                                "question": q["question"], "evidence": sorted(ev), "answers": answers})
             if not qs:
                 continue  # a paper with nothing to score adds only distractors; keep the count honest
+            if skipped < a.skip:
+                skipped += 1
+                continue
             taken += 1
             fp.write(json.dumps({"id": pid, "title": p["title"], "markdown": md, "sections": sections}) + "\n")
             for q in qs:

@@ -18,6 +18,9 @@ A hit is not always what a reader should get, which is what these arms test:
             mapall plus atomic claims / answerable questions / both as child chunks. A unit
             hit resolves to its section, shown with the matched unit above it — the memory
             pattern: find the small unit, mix the source into the reader's context
+  <arm>/nomatch  a unit hit shows the section WITHOUT the `Matched:` line
+  <arm>/pinmap   the reader always gets the map of the top result's document, then 4
+                 sections — the map kept in context however the ranking went
   <arm>+rr  that arm's first 20 resolved items, reordered by the local model (one listwise
             call per question), then the top 5 to the reader. An unparseable ranking keeps
             the original order and is counted (rr_ok=false)
@@ -104,6 +107,7 @@ def main():
     # the result depend on it, so passes that are meant to sample reader noise shuffle it.
     ap.add_argument("--shuffle-seed", type=int, default=0)
     ap.add_argument("--limit-q", type=int, default=0, help="first N questions only (smoke tests)")
+    ap.add_argument("--tenant", default="qasper-probe", help="the tenant the probe's token belongs to")
     a = ap.parse_args()
     tok = open(os.path.join(a.probe, "..", ".tok")).read().strip()
     qs = [json.loads(l) for l in open(os.path.join(a.probe, "questions.jsonl"))]
@@ -124,7 +128,7 @@ def main():
     struct = {}  # (arm, paper_id) -> record
     for r in map(json.loads, open(os.path.join(a.probe, "structure.jsonl"))):
         struct[(r["arm"], r["paper_id"])] = r
-    bodies = retrieve.chunk_bodies("loomcycle_gate", "qasper-probe")
+    bodies = retrieve.chunk_bodies("loomcycle_gate", a.tenant)
     # Root → its sections in document order, with their descriptions: the map's links.
     map_links = {}
     for (arm, pid), r in struct.items():
@@ -133,6 +137,8 @@ def main():
             map_links[r["root"]] = [(r["sections"][" > ".join(s["path"])], desc[(pid, tuple(s["path"]))]) for s in p["sections"]]
     desc_of = {cid: sec for r in struct.values() for cid, sec in r["desc_of"].items()}
     unit_text = {cid: t for r in struct.values() for cid, t in (r.get("unit_text") or {}).items()}
+    # section → its document's root, for /pinmap (only roots that hold a map)
+    sec_root = {sec: r["root"] for r in struct.values() for sec in r["sections"].values() if r["root"] in map_links}
     link_vecs = {}
 
     out_path = os.path.join(a.probe, a.out)
@@ -141,9 +147,11 @@ def main():
         done = {(r["arm"], r["qid"]) for r in map(json.loads, open(out_path))}
     with open(out_path, "a") as f:
         for arm in a.arms.split(","):
-            index = arm.split("+")[0]
+            base_arm, *flag_list = arm.split("/")
+            flags = set(flag_list)
+            index = base_arm.split("+")[0]
             sid = index + "-pool"
-            use_rr = arm.endswith("+rr")
+            use_rr = base_arm.endswith("+rr")
             depth = 20 if use_rr else 10
             t0, n, rr_fail = time.time(), 0, 0
             for q in qs:
@@ -159,7 +167,7 @@ def main():
                     if not body.strip():
                         continue
                     if cid in map_links:  # the document map
-                        if arm == "map+hop":
+                        if base_arm == "map+hop":
                             if qvec is None:
                                 qvec = embed(a.host, [text])[0]
                             links = map_links[cid]
@@ -194,7 +202,7 @@ def main():
                         kind = "chunk"
                         if sec != cid:
                             kind = "unit" if cid in unit_text else "desc"
-                            if cid in unit_text:
+                            if cid in unit_text and "nomatch" not in flags:
                                 b = "Matched: " + unit_text[cid] + "\n\n" + b
                         visible.append((kind, sec, b))
                     if len(visible) >= depth:
@@ -205,6 +213,10 @@ def main():
                     order, rr_ok = rerank(a.host, a.model, q, visible)
                     rr_fail += 0 if rr_ok else 1
                     visible = [visible[i] for i in order]
+                if "pinmap" in flags:
+                    secs = [v for v in visible if v[0] != "map"]
+                    root = sec_root.get(secs[0][1]) if secs else None
+                    visible = ([("map", root, bodies.get(root, ""))] if root else []) + secs
                 visible = visible[:10]
                 ev = [retrieve.norm(x) for x in q["evidence"]]
                 ev_rank = next((i for i, (_, _, b) in enumerate(visible, 1) if any(x in retrieve.norm(b) for x in ev)), None)
