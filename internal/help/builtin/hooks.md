@@ -1,13 +1,13 @@
 ---
 name: hooks
-description: Tool-use and run hooks — register a webhook or a JavaScript body that wraps tool dispatch or a run's start and finish. Pre-hooks rewrite/deny/widen a tool call before it runs; post-hooks rewrite the result or add context; agent_start may deny a run or add to its prompt; agent_stop may send an answer back or hold it for a person; a code hook can ask an operator and decide on the answer. Selectors by (agent, tool, phase), fail-open vs fail-closed, opt-in per-call host-widening, DB-backed in cluster mode.
+description: Tool-use and run hooks — webhooks or JavaScript bodies an agent's definition carries, per tool and per agent, that wrap its tool calls and its run's start and finish. Pre-hooks rewrite/deny/widen a tool call before it runs; post-hooks rewrite the result or add context; agent_start may deny a run or add to its prompt; agent_stop may send an answer back or hold it for a person; a code hook can ask an operator and decide on the answer. Attached in the AgentDef (inline webhooks or HookDefs), fail-open vs fail-closed, opt-in per-call host-widening.
 ---
 
 # Tool-use hooks
 
-A tool-use hook is an **operator- or app-registered HTTP webhook, or a
-JavaScript body (see *Code hooks* below), that the agent loop calls around
-every matching tool dispatch**. A `pre` hook runs
+A tool-use hook is an **HTTP webhook, or a JavaScript body (see *Code hooks*
+below), that an agent's definition attaches and the agent loop calls around
+its matching tool calls**. A `pre` hook runs
 *before* the tool, and can rewrite the input the tool sees, deny the call
 with a synthetic result the model receives instead, or (when explicitly
 permitted) widen the host allowlist for that one call. A `post` hook runs
@@ -21,7 +21,7 @@ loomcycle doesn't own**:
 
 - **Editing the agent or forking loomcycle** couples one app's policy
   (an injection scanner, a DLP filter, a per-tenant audit log) into the
-  shared runtime. Hooks keep that policy in the registering app, reachable
+  shared runtime. Hooks keep that policy in the app that serves the webhook, reachable
   over HTTP, with no loomcycle redeploy.
 - **A man-in-the-middle proxy** in front of each MCP server sees the wire
   call but not the loomcycle context (which agent, which run, which user)
@@ -40,43 +40,55 @@ This is distinct from two things it's easy to confuse it with:
 - **MCP tools / the LocalAPI gateway** *add* capabilities to an agent.
   Hooks *wrap* the capabilities it already has.
 
-## Registering a hook
+## Attaching hooks to an agent
 
-Hooks are registered dynamically over the bearer-authed admin surface:
+A run carries its hooks: it takes them **verbatim from its agent's
+definition** when it starts, and fires exactly those. There is no global
+registration — an agent with no hooks runs with none, and one agent's hooks
+never fire on another agent's run.
 
+A tool's hooks belong to that tool's entry in `tools`; the agent's own `hooks`
+hold the run events and tool events for every tool:
+
+```yaml
+agents:
+  researcher:
+    tools:
+      - Read
+      - name: WebFetch                       # this tool's own hooks
+        hooks:
+          pre:
+            - deny-internal                  # a HookDef (the active version)
+            - { name: url-gate, url: "https://app.example/hooks/url-gate", fail_mode: closed, timeout_ms: 800 }
+          post:
+            - { name: content-scrubber, url: "https://app.example/hooks/scrub", fail_mode: closed }
+    hooks:                                   # the agent's own: run events, and every tool
+      agent_stop: [cite-sources@3]           # a HookDef pinned to version 3
+      post: [redact-secrets]
 ```
-POST   /v1/hooks          # register (returns {id})
-GET    /v1/hooks          # list
-DELETE /v1/hooks/{id}     # remove
-```
 
-A registration body:
+The same shape goes in an AgentDef overlay (`tools` entries as
+`{name, hooks}`; stored as the tool name plus a `tool_hooks` entry).
 
-```json
-{
-  "owner": "dlp-scanner",          // app UID; (owner, name) is the identity
-  "name": "scan-web-fetches",
-  "phase": "pre",                  // a tool phase: "pre" | "post" | "post_failure"; or a run phase (below)
-  "agents": ["researcher", "qa-*"], // exact or "prefix*"; omit = match all
-  "tools": ["WebFetch", "mcp__jobs__*"],
-  "callback_url": "https://dlp.internal/loomcycle-hook",
-  "fail_mode": "closed",          // "open" (default) | "closed"
-  "timeout_ms": 800
-}
-```
-
-`(owner, name)` is the identity: **re-registering the same pair replaces
-the prior registration**, so an app restart re-announcing its hooks never
-cascades duplicates. Selectors use a deliberately simple glob — exact
-match or a single trailing `*` prefix (`mcp__jobs__*`); no regex, no
-middle wildcards. An empty/omitted `agents` or `tools` list means "match
-all". A hook fires only when its agent glob AND its tool glob AND its
-phase all match.
+- An entry is a **HookDef name** (`gate`, or `gate@3` pinned) or an **inline
+  webhook** `{name, url, fail_mode, timeout_ms}` — `name` required; it names
+  the hook in the payload and in `hook_decision` events.
+- A tool's hooks may use only `pre`, `post`, `post_failure`, and only for a
+  tool the agent has; a HookDef under an event it does not answer is refused.
+  These are checked when an AgentDef is saved, and again when a run starts.
+- A HookDef reference resolves in the tenant that owns the definition, then in
+  the shared tenant — never in the run's tenant, so a tenant cannot replace an
+  operator's hook by naming its own the same.
+- **A hook that cannot be resolved stops the run before any model call** (a
+  deleted or retired HookDef, say): a gate the definition names must not
+  silently be missing.
+- A sub-agent fires its own definition's hooks, not its parent's.
+- The payload's `owner` says where a hook came from (`agent:<name>`).
 
 ## Hook definitions (HookDef)
 
 A **HookDef** is one hook stored once and versioned, so it can be named
-wherever it is used instead of registered per app: the event it answers, the
+wherever it is used instead of copied into each definition: the event it answers, the
 tools it matches, its body, its fail mode and timeout.
 
 ```json
@@ -114,8 +126,7 @@ Surfaces: `POST /v1/_hookdef` (and `GET /v1/_hookdef/names`), the MCP tool
 gates it.
 
 A HookDef on its own fires on nothing: it is attached by naming it from an
-agent definition, a team definition or a run. Until that attachment ships,
-the registered hooks above are what run.
+agent's definition (above).
 
 ## What a hook can return
 
@@ -134,20 +145,15 @@ body passes it through. A `post` hook sees every result, failed or not; a
 `post_failure` hook runs only when the tool failed, before the `post` chain,
 with the failure's classification in `tool_result.error`.
 
-When several hooks match, `pre` hooks run **earliest-registration-first**
-and `post` hooks run **LIFO** (classic middleware nesting), ordered by
-registration time. A tenant operator's hooks always run **before** the
-operator's global ones, whenever each was registered, so the operator's hooks
-have the last word: a tenant `pre` hook cannot rewrite an input after the
-operator's hook approved it, and a tenant `post` or `post_failure` hook cannot
-rewrite a result after the operator's hook checked it. The same holds for the
-run hooks below.
+When several hooks match, they run in the order the definition lists them — a
+tool's own hooks before the agent-level ones — and `post` hooks run in reverse
+(classic middleware nesting: the outer hook sees what the inner ones did). The
+same order holds for the run hooks below.
 
 ## Run hooks
 
-These phases are about the run rather than a tool call. They are selected by
-`agents` only — the agent of the run they fire in; a `tools` selector is
-refused.
+These phases are about the run rather than a tool call. They go under the
+agent's own `hooks`, never under a tool.
 
 **`agent_start`** runs once per run, after the prompt is composed and before
 the first model call. A resumed run has already started, so it does not run
@@ -182,8 +188,8 @@ fails holds the answer if it is `fail_mode: closed`, and lets it through if
 state rather than an answer; the run says so.
 
 **`subagent_start`** runs in the parent when it is about to start a child
-through the Agent tool (one-shot or `parallel_spawn`); `agents` selects the
-parent, and the payload names the child in `subagent`. `deny` refuses the child
+through the Agent tool (one-shot or `parallel_spawn`); the hook is the
+parent's, and the payload names the child in `subagent`. `deny` refuses the child
 — the parent's Agent call gets the reason as an error, and the child is never
 created; `additional_context` is added to the child's prompt.
 
@@ -191,7 +197,7 @@ created; `additional_context` is added to the child's prompt.
 result reaches the parent. The payload adds `subagent_run_id`, `status`
 (`completed` / `failed`), `final_text` and `error`. `deny` refuses the result:
 the parent gets the reason as an error and may try again. `additional_context`
-is appended to the result. To send a child back to revise, register an
+is appended to the result. To send a child back to revise, give the child an
 `agent_stop` hook: it fires on the child's own run (its `parent_run_id` names
 the parent).
 
@@ -217,11 +223,12 @@ what it reports on has already happened.
 
 ## Code hooks
 
-Instead of `callback_url`, a registration may carry `code`: JavaScript that
+A HookDef's body may be `{"kind": "code-js", "code": ...}`: JavaScript that
 loomcycle runs in-process, with no network round-trip and no tokens. The
 operator enables it with `LOOMCYCLE_CODE_HOOKS_ENABLED=1`; otherwise a code
-registration is refused. Tenant operators may register code hooks too, for
-their own tenant's runs. Set exactly one of `callback_url` and `code`.
+body is refused when the HookDef is saved. Tenant operators may write code
+hooks too. (An inline hook in an agent's definition is always a webhook: code
+lives in a HookDef, which is versioned and reviewable.)
 
 ```js
 function hook(ev) {
@@ -298,25 +305,24 @@ fail mode is `open` like any hook's.
 By default a hook can only **narrow** a call — it cannot reach past the
 operator's static `allowed_hosts`/`tools` floor (CLAUDE.md trust
 rule). The single exception is a `pre` hook's `allow_hosts`, and it is
-**off unless the operator opts the hook's owner in**:
+**off unless the operator opts the hook in**:
 
 ```yaml
 hooks:
   permit_host_widen:
-    # entries are "[tenant:]owner" — exact match on both, no globs.
-    owners: [acme:url-reputation-gate]   # owner "url-reputation-gate" in tenant "acme"
-# or: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=acme:url-reputation-gate (env appends)
+    # entries are "[tenant:]name" — the tenant that owns the definition the
+    # hook came from, and the hook's name. Exact match on both, no globs.
+    owners: [acme:url-gate]
+# or: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=acme:url-gate (env appends)
 ```
 
-Each entry names a **(tenant, owner)** pair. A bare `owner` (no colon) binds
-to the shared tenant `""` — the right form for a single-tenant deployment or
-an operator/global hook; `tenant:owner` confines the grant to that tenant. The
-key is `(tenant, owner)` and **not owner alone** because a hook's `owner` is a
-caller-supplied string while only its tenant is authoritative — so without the
-tenant a second tenant could register a hook with a permitted owner name and
-widen hosts for its own runs, escaping the operator floor.
+A bare `name` binds to the shared tenant `""` — the operator's own yaml. And
+the grant counts only when the hook came from an **operator-authored**
+definition (the operator's yaml, or an AgentDef written under an operator
+token): a hook an agent's own definition carries never widens hosts, whatever
+the list says.
 
-Only for a listed `(tenant, owner)` does the dispatcher union that hook's
+Only for such a hook does the dispatcher union that hook's
 `allow_hosts` into a **ctx-scoped, this-call-only** extra list the
 HTTP/WebFetch tools consult — no server-side cache, **not inherited by
 sub-agents**. An un-permitted grant is dropped with a WARN
@@ -340,10 +346,9 @@ tool input — the URL the model wants is untrusted. Validate independently
 - A hook is on the **hot path** of every matching tool call — keep
   `timeout_ms` tight, and prefer `fail_mode: open` unless the hook is a
   security gate.
-- In **multi-replica** mode the registry is DB-backed (the `hooks` table,
-  Postgres) with backplane cache-invalidation, so a hook registered on one
-  replica fires for runs on any replica; the hot-path match stays in-memory
-  cached and never hits the DB. (SQLite is single-replica only.)
+- A run's hooks are resolved once, when it starts, from its definition, so
+  every replica fires the same set for a run; a HookDef promoted later does
+  not change a run already going.
 
 **Bottom line:** tool-use hooks are the seam for wrapping tool dispatch
 with an external app's policy or observability — narrowing by default,

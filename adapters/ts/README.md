@@ -197,30 +197,23 @@ console.log(`restored memory rows: ${result.memory_restored}`);
 
 | Method | Returns | Notes |
 |---|---|---|
-| `registerHook(opts: RegisterHookOptions)` | `Promise<RegisterHookResponse>` | Register a pre- or post-tool webhook. Re-registering the same `(owner, name)` replaces in-place with a fresh id. Raises `InvalidArgumentError` on 400 (bad URL / phase / missing field). |
-| `listHooks()` | `Promise<Hook[]>` | Every registered hook. **In-memory only — empty after a loomcycle restart.** |
-| `deleteHook(id)` | `Promise<void>` | Raises `HookNotFoundError` on 404. |
+| `hookDef(input)` | `Promise<SubstrateToolResponse>` | Reusable hook definitions (create / fork / get / list / promote / retire / verify / delete). An agent attaches hooks in its own definition (`tools` entries `{name, hooks}` and `hooks`). |
 
-Hook registration is one side; the other side is the **callback receiver** — a small HTTP endpoint your app runs at the URL you registered. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
+A hook is attached in the agent's definition — a tool entry `{name, hooks}` or the agent's own `hooks` — and loomcycle posts to its URL during the agent's runs. The other side is the **callback receiver**, a small HTTP endpoint your app runs at that URL. The adapter exports the wire shapes (`PreHookCall` / `PostHookCall` / `PreHookResult` / `PostHookResult`) so you can type the handler against the same JSON loomcycle posts.
 
-**Register from your app's startup:**
+**Attach it in the agent's definition:**
 
 ```ts
-import { LoomcycleClient } from "@loomcycle/client";
-
-const client = new LoomcycleClient({
-  baseUrl: process.env.LOOMCYCLE_BASE_URL!,
-  authToken: process.env.LOOMCYCLE_AUTH_TOKEN,
-});
-
-await client.registerHook({
-  owner: "jobember-web",                     // (owner, name) is the identity tuple
-  name: "scan-webfetch",                     // re-registering same pair replaces in place
-  phase: "post",                             // "pre" or "post"
-  tools: ["WebFetch"],                       // empty/omitted = all tools
-  callbackUrl: "https://jobember.example/hooks/scan",
-  failMode: "open",                          // "open" = errors pass through; "closed" = errors fail the tool call
-  timeoutMs: 3000,                           // 0 = registry default (5s)
+await client.agentDef({
+  op: "fork",
+  name: "researcher",
+  overlay: {
+    tools: [
+      "Read",
+      { name: "WebFetch", hooks: { post: [{ name: "scan-webfetch", url: "https://jobember.example/hooks/scan", fail_mode: "open", timeout_ms: 3000 }] } },
+    ],
+  },
+  promote: true,
 });
 ```
 

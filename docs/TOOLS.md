@@ -1021,39 +1021,13 @@ Gemini caveat: enabled by `GEMINI_API_KEY` env (Google AI Studio key). Optional 
 
 ## Tool-use hooks (v0.7.x+)
 
-Operator-supplied middleware around tool dispatch. External apps register HTTP-webhook callbacks against `(agent, tool, phase)` selectors; loomcycle invokes them around the dispatcher so the hook can rewrite the input, short-circuit with a synthetic result, or rewrite the post-tool result.
+Middleware around an agent's tool dispatch and its run. An agent's definition attaches hooks — per tool (a `tools:` entry `{name, hooks: {pre, post, post_failure}}`) and per agent (`hooks:` for run events and all-tool events) — as inline webhooks `{name, url, fail_mode, timeout_ms}` or HookDef names (`gate`, `gate@3`). A run takes its agent's hooks verbatim when it starts and fires exactly those; there is no global registration. See the `hooks` help topic (`Context op=help topic=hooks`) for the full shape.
 
 The canonical use case is **wrapping untrusted content** from `WebFetch` / `HTTP` / MCP results in trust-boundary markers so a downstream LLM treats payloads as data rather than instructions. Other shapes the seam supports: per-tool quotas, audit logs, content sanitisation, soft-deny patterns ("you tried to fetch X; here's a redacted version instead"), OTEL spans tied to tool invocations.
 
-### Registration
+### Ordering
 
-```
-POST /v1/hooks
-{
-  "owner": "jobs-search-web",       // app UID; (owner, name) is the identity
-  "name":  "scan-webfetch",
-  "phase": "post",                  // "pre" | "post"
-  "agents": ["*"],                  // glob list; empty = ["*"]
-  "tools":  ["WebFetch", "HTTP"],   // glob list; empty = ["*"]
-  "callback_url": "https://jobs-search-web.local/api/hooks/scan",
-  "fail_mode": "open",              // "open" (default) | "closed"
-  "timeout_ms": 5000                // default 5000, ceiling 60000
-}
-→ 200 { "id": "hook_xxx" }
-
-GET    /v1/hooks               // debug listing
-DELETE /v1/hooks/{id}          // remove a registration
-```
-
-**Idempotency**: re-registering the same `(owner, name)` **replaces** the prior entry in-place (preserves chain ordering, mints a fresh ID). Solves the cascading-on-restart problem cleanly: an app that re-registers on its own startup never accumulates duplicates.
-
-**No persistence** across loomcycle restart. Apps re-register on their own startup. If your app is down, your hooks aren't active — which matches reality (the app can't process callbacks anyway).
-
-### Filtering
-
-- `agents`: array of exact matches or `["*"]`. Empty / missing = `["*"]`.
-- `tools`: array of exact matches; supports `prefix*` glob (`mcp__jobs__*`). Empty / missing = `["*"]`.
-- A hook fires when **both** match. Multiple hooks can match the same call — they chain in registration order (Pre) or reverse order (Post, LIFO middleware).
+A tool's own hooks run before the agent-level ones, each in listed order; `post` chains run in reverse (middleware nesting). A HookDef reference resolves in the definition's tenant, then the shared tenant; one that cannot be resolved stops the run before any model call.
 
 ### Webhook payload
 

@@ -50,7 +50,7 @@ sub-agent spawning, Evaluation aggregates).
    `channel`, `agentdef`, `skilldef`, `evaluation`, `context`,
    `interruption_resolve`, `spawn_run`, `cancel_run`, `get_run`,
    `list_runs`, `register_agent`, `unregister_agent`,
-   `list_agents`, `register_hook`, `list_hooks`, `delete_hook`,
+   `list_agents`, `hookdef`,
    `pause_runtime`, `resume_runtime`, `get_runtime_state`,
    `create_snapshot` / `list_snapshots` / `get_snapshot` /
    `export_snapshot` / `restore_snapshot` / `delete_snapshot`,
