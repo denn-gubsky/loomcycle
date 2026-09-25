@@ -247,7 +247,8 @@ func (h *HookDef) write(ctx context.Context, op string, in hookDefInput, parentD
 }
 
 // buildDefinition merges an overlay onto a parent definition: each top-level
-// field the overlay carries replaces the parent's, and null clears it.
+// field the overlay carries replaces the parent's. A null decodes to the
+// field's zero value, so it clears the field.
 func (h *HookDef) buildDefinition(parent json.RawMessage, overlay json.RawMessage) (hooks.Def, error) {
 	merged := map[string]json.RawMessage{}
 	if len(parent) > 0 {
@@ -255,16 +256,12 @@ func (h *HookDef) buildDefinition(parent json.RawMessage, overlay json.RawMessag
 			return hooks.Def{}, fmt.Errorf("parse parent definition: %w", err)
 		}
 	}
-	if len(overlay) > 0 && !bytes.Equal(bytes.TrimSpace(overlay), []byte("null")) {
+	if len(overlay) > 0 {
 		var ov map[string]json.RawMessage
 		if err := json.Unmarshal(overlay, &ov); err != nil {
 			return hooks.Def{}, fmt.Errorf("parse overlay: %w", err)
 		}
 		for k, v := range ov {
-			if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
-				delete(merged, k)
-				continue
-			}
 			merged[k] = v
 		}
 	}
