@@ -11,7 +11,7 @@ import { AGENTDEF_EXCLUDED, agentDefRegistry } from "./agentdef";
 const AGENTDEF_OVERLAY_KEYS = [
   "a2a_agent_def_scopes", "a2a_server_card_def_scopes", "agent_def_scopes",
   "channels", "code_body", "compaction", "context", "core_blocks",
-  "description", "effort", "evaluation_scopes", "history_scope",
+  "description", "effort", "evaluation_scopes", "history_scope", "hooks",
   "inherit_core_blocks", "inject_tool_guide", "internal", "interruption",
   "max_concurrent_children", "max_context_tokens", "max_iterations",
   "max_tokens", "memory_backend", "memory_consolidation",
@@ -21,7 +21,7 @@ const AGENTDEF_OVERLAY_KEYS = [
   "retry_attempts",
   "run_timeout_seconds", "sampling",
   "schedule_def_scopes", "search_providers", "skills", "sql_quota_bytes",
-  "sql_scopes", "system_prompt", "system_prompt_base", "tier", "tool_choice", "tools",
+  "sql_scopes", "system_prompt", "system_prompt_base", "tier", "tool_choice", "tool_hooks", "tools",
   "unbounded_iterations", "volume_def_scopes", "volumes",
 ] as const;
 
@@ -55,7 +55,7 @@ describe("agentDefRegistry — coverage of the persisted overlay", () => {
   it("exposes every overlay key, or names it in AGENTDEF_EXCLUDED with a reason", () => {
     const covered = new Set(topLevelKeys(agentDefRegistry));
     const missing = AGENTDEF_OVERLAY_KEYS.filter((k) => !covered.has(k));
-    expect(missing).toEqual(["system_prompt_base"]);
+    expect(missing).toEqual(["hooks", "system_prompt_base", "tool_hooks"]);
     for (const k of missing) {
       expect(AGENTDEF_EXCLUDED[k], `${k} must carry an exclusion reason`).toBeTruthy();
     }
