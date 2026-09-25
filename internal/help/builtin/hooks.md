@@ -211,8 +211,10 @@ or Function; a deterministic clock and RNG), and its **only tool is
   tool call until an operator answers. It returns the answer, or `null` if
   the operator declined; a timeout or cancellation throws, so an uncaught one
   fails the hook. The question is a pending interrupt on the run, answered
-  where any other is. The hook asks under its own grant, so it works whether
-  or not the agent itself may interrupt.
+  where any other is — by the run's own user, who is the main actor: a hook
+  gates the agent, not the person who started it. (An isolated member sees and
+  answers only its own runs' questions.) The hook asks under its own grant, so
+  it works whether or not the agent itself may interrupt.
 - `Interruption.notify({message})` informs without waiting.
 
 Each ask runs the body again from the start, replaying the answers it
