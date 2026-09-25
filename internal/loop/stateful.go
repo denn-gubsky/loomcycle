@@ -1196,6 +1196,11 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			if blocks[0].IsError {
 				obs = "ERROR: " + obs
 			}
+			if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
+				msg := "run stopped: " + why + " after being told it cannot succeed as sent"
+				emit(providers.Event{Type: providers.EventError, Error: msg})
+				return RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: total, State: sigma}, errors.New(msg)
+			}
 		}
 	}
 
