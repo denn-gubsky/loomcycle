@@ -152,8 +152,10 @@ func (s *Service) Inspect(ctx context.Context, tenant, subject string) (Inspecti
 
 	// ListSessions returns the total as its second value, so one page of size 1 is
 	// enough for a count — no need to walk pages.
+	// Drafts and archived chats count: the chats number is what an erasure
+	// would delete.
 	if _, total, err := s.Store.ListSessions(ctx,
-		store.SessionFilter{TenantID: tenant, UserID: subject}, 1, 0); err != nil {
+		store.SessionFilter{TenantID: tenant, UserID: subject, IncludeConfigured: true, IncludeArchived: true}, 1, 0); err != nil {
 		fail("chats", err)
 	} else {
 		ins.Chats = int(total)

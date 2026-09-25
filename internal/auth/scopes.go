@@ -163,6 +163,23 @@ func IsIsolated(p Principal, ok bool) bool {
 		!HasScope(p.Scopes, ScopeAdmin)
 }
 
+// OwnedRowVisible is the read rule for a row that belongs to one user in one
+// tenant — a run's content (its prompt, result, spec or draft) as well as a
+// session. No principal (open mode), the legacy operator and substrate:admin
+// see every row; an isolated member sees only its OWN rows in its tenant; every
+// other principal sees its whole tenant. A tenant check alone is not enough for
+// run content: an isolated member would read another user's prompt and answer.
+// Callers fold false into the opaque not-found a missing row gets.
+func OwnedRowVisible(p Principal, ok bool, rowTenant, rowUser string) bool {
+	if !ok || p.Legacy || HasScope(p.Scopes, ScopeAdmin) {
+		return true
+	}
+	if rowTenant != p.TenantID {
+		return false
+	}
+	return !IsIsolated(p, ok) || rowUser == p.Subject
+}
+
 // OperatorKeyRestricted reports whether a run under principal p must be denied
 // the operator's host provider key (RFC AX §2). It is a NEGATIVE bit stored as
 // false = allowed, so every unstamped / default path fails OPEN — the deliberate

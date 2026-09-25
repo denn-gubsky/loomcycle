@@ -173,6 +173,13 @@ func CategoryOf(err error) (tools.ErrorInfo, bool) {
 			Description: "The configured run has already started or been discarded, so it cannot be started again. Read it with get_run.",
 		}, true
 
+	case errors.Is(err, runner.ErrDraftChanged):
+		return tools.ErrorInfo{
+			Category:    tools.CategoryBusiness,
+			Retryable:   true,
+			Description: "The configured run was edited while this start waited, so nothing was started. Start it again to run the edited version.",
+		}, true
+
 	case errors.Is(err, runner.ErrSessionRequired):
 		return validation(
 			"That action is session-bound and this deployment has no store wired for it. Call it without a session, or use a deployment with persistence.",

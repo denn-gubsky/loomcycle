@@ -12,6 +12,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -1154,7 +1155,9 @@ func (s *Store) ListSessions(ctx context.Context, f store.SessionFilter, limit, 
 	}
 	// RFC DI D5: a draft lives in its own session, which is not a chat until
 	// the draft starts — leave it out rather than list a "configured" chat.
-	conds = append(conds, "NOT EXISTS (SELECT 1 FROM runs rd WHERE rd.session_id = s.id AND rd.status = 'configured')")
+	if !f.IncludeConfigured {
+		conds = append(conds, "NOT EXISTS (SELECT 1 FROM runs rd WHERE rd.session_id = s.id AND rd.status = 'configured')")
+	}
 	innerWhere := ""
 	if len(conds) > 0 {
 		innerWhere = "WHERE " + strings.Join(conds, " AND ")
@@ -3349,7 +3352,40 @@ func nullableJSONArg(b json.RawMessage) any {
 	if len(b) == 0 {
 		return nil
 	}
-	return string(b)
+	return string(jsonbSafe(b))
+}
+
+// jsonbSafe replaces every \u0000 escape in a JSON document with \ufffd.
+//
+// JSONB cannot store U+0000 (SQLSTATE 22P05), while a run's answer, its state
+// and a draft's prompt are model- or caller-produced text that can carry one.
+// Refusing the write is the wrong trade: FinishRun failing leaves a finished
+// run `running` with its answer lost, for one invisible character. U+FFFD,
+// the Unicode replacement character, rather than stripping: the text keeps
+// its shape and a reader can see that a character was replaced.
+//
+// Scanning escapes is enough without tracking string state: in valid JSON a
+// backslash only occurs inside a string, and copying each escape pair whole
+// keeps an escaped backslash followed by the text "u0000" untouched.
+func jsonbSafe(b []byte) []byte {
+	if !bytes.Contains(b, []byte(`\u0000`)) {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		if b[i] != '\\' || i+1 == len(b) {
+			out = append(out, b[i])
+			continue
+		}
+		if b[i+1] == 'u' && i+6 <= len(b) && string(b[i+2:i+6]) == "0000" {
+			out = append(out, `\ufffd`...)
+			i += 5
+			continue
+		}
+		out = append(out, b[i], b[i+1])
+		i++
+	}
+	return out
 }
 
 func (s *Store) InterruptCreate(ctx context.Context, r store.InterruptRow) (string, error) {

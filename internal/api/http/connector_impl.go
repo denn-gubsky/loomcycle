@@ -86,6 +86,7 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		// approves the held answer or rejects it.
 		Review:           req.Review != nil && *req.Review,
 		ReviewTTLSeconds: req.ReviewTTLSeconds,
+		Interruption:     req.Interruption, // per-run "may this agent ask a human"
 	}
 }
 
@@ -336,9 +337,17 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	if err != nil {
 		return connector.Run{}, err
 	}
+	if !runOwnershipOK(ctx, r) {
+		return connector.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
+	}
 	out := storeRunToConnector(r)
 	out.Result = r.Result
 	out.Spec = r.RunConfig
+	if r.Status == store.RunConfigured {
+		if d, err := s.store.GetRunDraft(ctx, r.ID); err == nil {
+			out.Draft = d
+		}
+	}
 	return out, nil
 }
 

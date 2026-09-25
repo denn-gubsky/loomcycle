@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -97,3 +98,45 @@ func TestRunReads_SingleCarriesResultListDoesNot(t *testing.T) {
 }
 
 func listFilter(user string) connector.ListRunsFilter { return connector.ListRunsFilter{UserID: user} }
+
+// The result repeats what the run's persisted events carry — its final text
+// and Σ — and those are masked before they are stored. Every finish path
+// masks the result the same way, or the secret is back at rest on the row.
+func TestFinishPaths_RedactTheRunResult(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	const secret = "ghs_resultsecret_0123456789abcdef"
+	srv.redactor = redact.New(map[string]string{"LOOMCYCLE_GITEA_TOKEN": secret}, true)
+	res := loop.RunResult{
+		FinalText:  "token is " + secret,
+		State:      map[string]any{"creds": map[string]any{"token": secret}},
+		Structured: map[string]any{"token": secret},
+	}
+	stored := func(runID string) string {
+		run, err := srv.store.GetRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		return string(run.Result)
+	}
+
+	done := seedTenantRun(t, srv.store, "acme", "u1", "a_redact_done")
+	srv.finishRun(context.Background(), done.ID, res, nil, runStateMeta{})
+	cancelled := seedTenantRun(t, srv.store, "acme", "u1", "a_redact_cancelled")
+	srv.finishRunCancelled(context.Background(), cancelled.ID, res, "stop", runStateMeta{})
+	_, walkID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), "triage", false)
+	if err != nil {
+		t.Fatalf("openTeamWalkRun: %v", err)
+	}
+	finish("walk says "+secret, nil)
+
+	for name, id := range map[string]string{"finishRun": done.ID, "finishRunCancelled": cancelled.ID, "team walk": walkID} {
+		got := stored(id)
+		if strings.Contains(got, secret) {
+			t.Errorf("%s stored the secret in runs.result: %s", name, got)
+		}
+		if !json.Valid([]byte(got)) || got == "" {
+			t.Errorf("%s result = %q, want the masked answer kept", name, got)
+		}
+	}
+}

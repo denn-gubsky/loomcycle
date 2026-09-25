@@ -183,8 +183,10 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	// is folded into *store.ErrNotFound, so an unknown run and a cross-tenant
 	// run both return the same opaque 404 (run_ids are not secret, so the gate
 	// must not become an existence oracle). Super-admin / legacy / open see all.
+	// The replay carries the run's prompt and answer, so an isolated member is
+	// confined to its own runs here as on every run-content read.
 	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
-	if err != nil {
+	if err != nil || !runOwnershipOK(r.Context(), run) {
 		http.Error(w, "no such run", http.StatusNotFound)
 		return
 	}

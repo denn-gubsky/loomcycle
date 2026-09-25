@@ -98,7 +98,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		// runs list as running forever.
 		// The walk's answer is its last state's output (RFC DI) — what a caller
 		// holding only the walk's run id wants to read once it is over.
-		usage := store.Usage{Result: runResultJSON(loop.RunResult{FinalText: finalText})}
+		usage := store.Usage{Result: runResultJSON(s.redactor, loop.RunResult{FinalText: finalText})}
 		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, usage, msg); ferr != nil {
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}

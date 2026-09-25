@@ -178,3 +178,32 @@ func TestOperatorKeyRestricted_Matrix(t *testing.T) {
 		}
 	}
 }
+
+// An isolated member sees only its own rows in its own tenant; a tenant
+// principal sees its whole tenant; admin, legacy and open mode see every row.
+func TestOwnedRowVisible_ConfinesAnIsolatedMemberToItsOwnRows(t *testing.T) {
+	member := Principal{TenantID: "acme", Subject: "bob", Scopes: []string{ScopeUser}}
+	tenantOp := Principal{TenantID: "acme", Subject: "op", Scopes: []string{ScopeTenant}}
+	admin := Principal{TenantID: "", Subject: "root", Scopes: []string{ScopeAdmin}}
+	legacy := Principal{Legacy: true}
+	for _, c := range []struct {
+		name         string
+		p            Principal
+		ok           bool
+		tenant, user string
+		want         bool
+	}{
+		{"member own row", member, true, "acme", "bob", true},
+		{"member other user", member, true, "acme", "alice", false},
+		{"member other tenant", member, true, "evil", "bob", false},
+		{"tenant op other user", tenantOp, true, "acme", "alice", true},
+		{"tenant op other tenant", tenantOp, true, "evil", "alice", false},
+		{"admin other tenant", admin, true, "evil", "mallory", true},
+		{"legacy", legacy, true, "evil", "mallory", true},
+		{"open mode", Principal{}, false, "evil", "mallory", true},
+	} {
+		if got := OwnedRowVisible(c.p, c.ok, c.tenant, c.user); got != c.want {
+			t.Errorf("%s: OwnedRowVisible = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -2429,6 +2429,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if startingDraft && s.store == nil {
 		return runner.ErrSessionRequired
 	}
+	if !startingDraft {
+		// A draft's reserved id is not this run's to take (agentIDHeldByDraft).
+		if held, err := s.agentIDHeldByDraft(ctx, in.AgentID); err != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		} else if held {
+			return fmt.Errorf("%w: "+agentIDInUseMsg, runner.ErrAgentIDInUse, in.AgentID)
+		}
+	}
 	if startingDraft && in.SessionID != "" {
 		return fmt.Errorf("%w: a configured run starts in its own session; session_id must be empty", runner.ErrInvalidArgument)
 	}
@@ -2685,11 +2693,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// RFC DI D5: after admission, so a refusal above leaves the draft as it
 		// was; before registration, so every failure path below finds a
 		// running row that FinishRun can end.
-		started, err := s.store.StartConfiguredRun(ctx, in.ConfiguredRunID, identity)
+		started, err := s.store.StartConfiguredRun(ctx, in.ConfiguredRunID, identity, in.ConfiguredDraft)
 		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.Is(err, store.ErrRunNotConfigured) || errors.As(err, &nf) {
 				return fmt.Errorf("%w: %s", runner.ErrRunNotConfigured, in.ConfiguredRunID)
+			}
+			if errors.Is(err, store.ErrDraftChanged) {
+				return fmt.Errorf("%w: run %s was not started; start it again to run the edited draft", runner.ErrDraftChanged, in.ConfiguredRunID)
 			}
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}
@@ -4290,6 +4301,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		s.createConfiguredRun(w, r, req)
 		return
 	}
+	if held, err := s.agentIDHeldByDraft(r.Context(), req.AgentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if held {
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, req.AgentID))
+		return
+	}
 	providerID, model, effort, err := s.resolveAgentDef(r.Context(), agentDef, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted)
 	if err != nil {
 		writeResolveError(w, err)
@@ -5228,6 +5246,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// run since "the run" is what agent_id addresses).
 	if body.AgentID != "" && !validIdent(body.AgentID) {
 		http.Error(w, `agent_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	if held, err := s.agentIDHeldByDraft(r.Context(), body.AgentID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if held {
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use", fmt.Sprintf(agentIDInUseMsg, body.AgentID))
 		return
 	}
 	agentID := body.AgentID
@@ -7433,6 +7458,11 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	// covers both — a cross-tenant probe gets the identical opaque 404 (no
 	// existence oracle). Super-admin / legacy / open mode see all.
 	run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
+	if err == nil && !runOwnershipOK(r.Context(), run) {
+		// The row carries another user's prompt, result and draft: an
+		// isolated member gets the same opaque 404 a missing run does.
+		err = &store.ErrNotFound{Kind: "run", ID: agentID}
+	}
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -8687,7 +8717,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		CredentialScopeID: res.Usage.CredentialScopeID,
 		// RFC DI: a cancelled run keeps the text it had produced before the
 		// cancel — often exactly what an operator stopped it to read.
-		Result: runResultJSON(res),
+		Result: runResultJSON(s.redactor, res),
 	}
 	// runs.cost = Σ(the run's per-call ledger) — the calls that completed before the
 	// cancel. Authoritative over pricing cumulative tokens at the final model (which
@@ -8848,7 +8878,7 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CredentialScopeID: res.Usage.CredentialScopeID,
 		// RFC DI: the answer, written with the terminal status. A failed run
 		// keeps whatever text it had produced before the failure.
-		Result: runResultJSON(res),
+		Result: runResultJSON(s.redactor, res),
 	}
 	// runs.cost is the SUM of the run's per-call ledger costs (authoritative) — NOT
 	// the final model × cumulative tokens, which disagrees with the ledger on a

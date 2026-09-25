@@ -301,3 +301,62 @@ func TestService_ErasureReachesIndexedTurns(t *testing.T) {
 			"searchable after the transcript and the facts are gone")
 	}
 }
+
+// A draft run lives in its own session, which chat listings leave out — but it
+// holds the subject's prompt, so erasure must find and delete it.
+func TestService_ErasureDeletesTheSubjectsDrafts(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	sess, err := s.Store.CreateSession(ctx, "acme", "chat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := s.Store.CreateConfiguredRun(ctx, sess.ID,
+		store.RunIdentity{AgentID: "a_draft", UserID: "alice", TenantID: "acme"},
+		json.RawMessage(`{"agent":"chat","segments":[{"role":"user","content":[{"type":"trusted-text","text":"alice's plan"}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := s.Report(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Tier1.Counts["chats"] != 1 {
+		t.Errorf("report chats = %d, want 1 (the draft's session)", rep.Tier1.Counts["chats"])
+	}
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", Confirm: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["chats"] != 1 {
+		t.Errorf("deleted chats = %d, want 1", res.Deleted["chats"])
+	}
+	if _, err := s.Store.GetRunDraft(ctx, draft.ID); err == nil {
+		t.Error("the draft (and the prompt it holds) survived the subject's erasure")
+	}
+}
+
+// An archived chat is hidden from the default chat listing, not deleted: it
+// still holds the subject's conversation, so erasure must reach it.
+func TestService_ErasureDeletesTheSubjectsArchivedChats(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	sess, err := s.Store.CreateSession(ctx, "acme", "chat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived := true
+	if err := s.Store.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Archived: &archived}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", Confirm: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["chats"] != 1 {
+		t.Errorf("deleted chats = %d, want 1 (the archived chat)", res.Deleted["chats"])
+	}
+	if _, err := s.Store.GetSession(ctx, sess.ID); err == nil {
+		t.Error("the archived chat survived the subject's erasure")
+	}
+}

@@ -234,10 +234,11 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	// Tenant isolation (RFC L/N): fold a cross-tenant run into the same opaque
-	// NotFound the HTTP handleGetAgent returns via tenantStore.GetRunByAgentID —
-	// agent ids are not secret, so the gate must not be an existence oracle.
-	if !grpcTenantVisible(ctx, run.TenantID) {
+	// Tenant isolation (RFC L/N): fold a cross-tenant run — or, for an isolated
+	// member, another user's — into the same opaque NotFound the HTTP
+	// handleGetAgent returns. Agent ids are not secret, so the gate must not be
+	// an existence oracle, and the reply carries the run's prompt and result.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) {
 		return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
 	}
 	_, live := s.cancelReg.Get(agentID)
@@ -424,8 +425,10 @@ func (s *Server) GetTranscript(ctx context.Context, req *loomcyclepb.GetTranscri
 	// Tenant isolation (RFC L/N): a transcript exposes the session's full
 	// history, so gate it on the session's tenant exactly as the HTTP
 	// handleTranscript does via tenantStore.GetSession — a cross-tenant session
-	// folds into the same opaque NotFound (session ids are not secret).
-	if !grpcTenantVisible(ctx, sess.TenantID) {
+	// folds into the same opaque NotFound (session ids are not secret). An
+	// isolated member reads only its own sessions, as tenantStore.GetSession
+	// confines it on HTTP.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, sess.TenantID, sess.UserID) {
 		return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
 	}
 	events, err := s.store.GetTranscript(ctx, sessionID)
@@ -1028,6 +1031,13 @@ func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunReques
 		OutputFormat:     outputFormatFromProto(req.GetOutputFormat()),
 		Compaction:       compactionFromProto(req.GetCompaction()),
 		MaxContextTokens: int(req.GetMaxContextTokens()), // RFC CJ per-run context-window override
+		// The same four Run maps: a configured run or a batch child built from
+		// this request must not silently lose them
+		// (TestSpawnRequestFromProto_MapsEveryFieldRunMaps guards the set).
+		Metadata:      metadataFromProto(req.GetMetadata()),
+		Context:       contextFromProto(req.GetContext()),
+		ParentContext: parentContextFromProto(req.GetParentContext()),
+		Interruption:  interruptionFromProto(req.GetInterruption()),
 		// RFC DC per-run overrides. One helper for all three call sites, so a
 		// typed gRPC caller and an HTTP one get the same answer from the same
 		// validation — and so adding a field means editing one place.
@@ -1599,6 +1609,10 @@ func runnerErrStatus(err error) error {
 		// RFC DI: a start of a draft that has already started or been
 		// discarded — the state changed under the caller.
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, runner.ErrDraftChanged):
+		// A read-modify-write conflict: the draft was edited while this start
+		// waited. Starting again runs the edited draft.
+		return status.Error(codes.Aborted, err.Error())
 	case errors.Is(err, runner.ErrBackpressure),
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted):

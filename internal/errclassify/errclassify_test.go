@@ -206,6 +206,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrInternal":                     runner.ErrInternal,
 			"ErrStreamingUnsupported":         runner.ErrStreamingUnsupported,
 			"ErrRunNotConfigured":             runner.ErrRunNotConfigured,
+			"ErrDraftChanged":                 runner.ErrDraftChanged,
 		},
 		"resolve": {
 			"ErrTierUnavailable":       resolve.ErrTierUnavailable,

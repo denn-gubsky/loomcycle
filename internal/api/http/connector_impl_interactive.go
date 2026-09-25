@@ -79,7 +79,9 @@ func (s *Server) StreamRunEvents(ctx context.Context, runID string, fromSeq int6
 	// Tenant-ownership gate via the tenant-scoped accessor: a cross-tenant or
 	// missing run both fold into the opaque ErrRunNotInFlight (no existence
 	// oracle). Super-admin / legacy / open see all.
-	if _, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil {
+	// An isolated member is confined to its own runs (runOwnershipOK): the
+	// replay carries the run's prompt and answer.
+	if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil || !runOwnershipOK(ctx, run) {
 		return connector.ErrRunNotInFlight
 	}
 	return s.streamRunEvents(ctx, runID, fromSeq, func(ev providers.Event) error {

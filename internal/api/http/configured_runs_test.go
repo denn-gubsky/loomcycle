@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -456,5 +457,122 @@ func TestConfiguredRun_CompactingADraftIsRefused(t *testing.T) {
 	code, body := do(t, "POST", ts.URL+"/v1/runs/"+c.RunID+"/compact", `{}`)
 	if code != http.StatusConflict || !strings.Contains(body, "run_not_configured") {
 		t.Errorf("compact a draft = %d %s, want 409 run_not_configured", code, body)
+	}
+}
+
+// A draft's parent_context lives on the run row — its start and its events
+// take it from there — so a PATCH that changed only the draft's copy would be
+// accepted, shown, and ignored. It is fixed at create like the other identity
+// keys, and the draft keeps what it was created with.
+func TestConfiguredRun_PatchRefusesParentContext(t *testing.T) {
+	_, ts, _, _ := configuredServer(t, 4)
+	c := createDraft(t, ts, `,"parent_context":{"function_key":"old"}`)
+	u := ts.URL + "/v1/runs/" + c.RunID
+	code, body := do(t, "PATCH", u, `{"parent_context":{"function_key":"new"}}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "parent_context") {
+		t.Errorf("PATCH parent_context = %d %s, want 400 naming parent_context", code, body)
+	}
+	if code, body := do(t, "PATCH", u, `{"prompt":"still editable"}`); code != 200 || !strings.Contains(body, `"function_key":"old"`) {
+		t.Errorf("PATCH after the refusal = %d %s, want 200 with the original parent_context", code, body)
+	}
+}
+
+// A draft reserves its agent_id at create; a run started afterwards with the
+// same explicit id would share it, and the agent read — which answers with the
+// newest row — would show that run in place of the draft. Every run start
+// refuses the id with the draft create's wording, and the draft stays readable.
+func TestConfiguredRun_RunStartsRefuseADraftsAgentID(t *testing.T) {
+	srv, ts, prov, _ := configuredServer(t, 4)
+	c := createDraft(t, ts, `,"agent_id":"a_reserved"`)
+	const want = `agent_id \"a_reserved\" is already in use by a live run or another configured run`
+
+	code, body := do(t, "POST", ts.URL+"/v1/runs", `{"agent":"agent","user_id":"u1","prompt":"x","agent_id":"a_reserved"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "agent_id_in_use") || !strings.Contains(body, want) {
+		t.Errorf("POST /v1/runs with a draft's agent_id = %d %s, want 409 agent_id_in_use", code, body)
+	}
+
+	err := srv.RunOnce(context.Background(), runner.RunInput{
+		Agent: "agent", AgentID: "a_reserved",
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+	}, runner.RunCallbacks{})
+	if !errors.Is(err, runner.ErrAgentIDInUse) {
+		t.Errorf("RunOnce (gRPC Run, MCP spawn_run) with a draft's agent_id = %v, want ErrAgentIDInUse", err)
+	}
+
+	// A continuation of an existing chat is a run start too.
+	sess, serr := srv.store.CreateSession(context.Background(), "", "agent", "u1")
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	code, body = do(t, "POST", ts.URL+"/v1/sessions/"+sess.ID+"/messages", `{"prompt":"x","agent_id":"a_reserved"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "agent_id_in_use") {
+		t.Errorf("POST /v1/sessions/{id}/messages with a draft's agent_id = %d %s, want 409 agent_id_in_use", code, body)
+	}
+
+	if prov.last != nil {
+		t.Error("a refused start reached the provider")
+	}
+	code, body = do(t, "GET", ts.URL+"/v1/agents/a_reserved", "")
+	if code != 200 || !strings.Contains(body, c.RunID) || !strings.Contains(body, `"status":"configured"`) {
+		t.Errorf("GET /v1/agents/a_reserved = %d %s, want the draft", code, body)
+	}
+}
+
+// A start reads the draft, then waits for admission. A PATCH that lands in
+// that window answered 200 while the run started with the pre-PATCH draft.
+// The start is now conditional on the draft it read: it is refused with a
+// 409 draft_changed, nothing runs, and the edited draft is what the next
+// start runs.
+func TestConfiguredRun_AStartRacedByAPatchIsRefusedAndKeepsTheEdit(t *testing.T) {
+	srv, ts, prov, st := configuredServer(t, 4)
+	c := createDraft(t, ts, "")
+	in, err := srv.ConfiguredRunInput(context.Background(), c.RunID, connector.RunSecrets{})
+	if err != nil {
+		t.Fatalf("ConfiguredRunInput: %v", err)
+	}
+	// The PATCH lands while the start above is (notionally) queued.
+	if code, b := do(t, "PATCH", ts.URL+"/v1/runs/"+c.RunID, `{"prompt":"edited while queued"}`); code != 200 {
+		t.Fatalf("PATCH = %d %s", code, b)
+	}
+	err = srv.RunOnce(context.Background(), in, runner.RunCallbacks{})
+	if !errors.Is(err, runner.ErrDraftChanged) {
+		t.Fatalf("start built from the pre-PATCH draft = %v, want ErrDraftChanged", err)
+	}
+	rec := httptest.NewRecorder()
+	writeRunOnceError(rec, err)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "draft_changed") {
+		t.Errorf("HTTP mapping = %d %s, want 409 draft_changed", rec.Code, rec.Body)
+	}
+	if prov.last != nil {
+		t.Error("the refused start reached the provider")
+	}
+	if run, _ := st.GetRun(context.Background(), c.RunID); run.Status != store.RunConfigured {
+		t.Errorf("row after the refused start = %q, want configured", run.Status)
+	}
+	code, body := do(t, "POST", ts.URL+"/v1/runs/"+c.RunID+"/start", "")
+	if code != 200 || !strings.Contains(body, `"type":"done"`) {
+		t.Fatalf("start again = %d %s", code, body)
+	}
+	if !strings.Contains(firstUserTextOf(prov.last.Messages), "edited while queued") {
+		t.Errorf("the run saw %+v, want the edited prompt", prov.last.Messages)
+	}
+}
+
+// MCP get_run (connector.GetRun) shows a configured run's draft, as HTTP
+// GET /v1/agents/{id} and gRPC GetAgent do — and behind the same rule, so an
+// isolated member does not read another user's draft through it.
+func TestConnectorGetRun_ReturnsAConfiguredRunsDraft(t *testing.T) {
+	srv, ts, _, _ := configuredServer(t, 4)
+	c := createDraft(t, ts, `,"sampling":{"temperature":0.3}`)
+	got, err := srv.GetRun(context.Background(), c.AgentID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != "configured" || !strings.Contains(string(got.Draft), "draft me") || !strings.Contains(string(got.Draft), "temperature") {
+		t.Errorf("get_run on a draft = status %q draft %s, want the draft", got.Status, got.Draft)
+	}
+	other := auth.WithPrincipal(context.Background(), auth.Principal{Subject: "u2", Scopes: []string{auth.ScopeUser}})
+	if _, err := srv.GetRun(other, c.AgentID); err == nil {
+		t.Error("an isolated member read another user's draft through get_run")
 	}
 }
