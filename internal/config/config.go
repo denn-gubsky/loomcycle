@@ -3629,13 +3629,6 @@ type Env struct {
 	// different decision from letting one agent be JavaScript. Env:
 	// LOOMCYCLE_CODE_HOOKS_ENABLED=1.
 	CodeHooksEnabled bool
-	// CodeHooksTenants lets a non-admin tenant operator register a code hook
-	// too. Default OFF, on top of CodeHooksEnabled: the sandbox bounds a body's
-	// time, not its memory, so one body can allocate enough to take down the
-	// whole shared server — a decision for the operator, not each tenant.
-	// Operator-global code hooks need only CodeHooksEnabled. Env:
-	// LOOMCYCLE_CODE_HOOKS_TENANTS=1.
-	CodeHooksTenants bool
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
@@ -4948,7 +4941,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// the skills bundling convention). Timeout floored at 1s.
 	cfg.Env.CodeAgentsEnabled = os.Getenv("LOOMCYCLE_CODE_AGENTS_ENABLED") == "1"
 	cfg.Env.CodeHooksEnabled = os.Getenv("LOOMCYCLE_CODE_HOOKS_ENABLED") == "1"
-	cfg.Env.CodeHooksTenants = os.Getenv("LOOMCYCLE_CODE_HOOKS_TENANTS") == "1"
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
 		cfg.Env.CodeAgentsRoot = v

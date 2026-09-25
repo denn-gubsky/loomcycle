@@ -38,12 +38,6 @@ func (s *Server) RegisterHook(ctx context.Context, req connector.RegisterHookReq
 		if s.codeHooks == nil {
 			return connector.RegisterHookResponse{}, fmt.Errorf("%w: code hooks are not enabled on this server (set LOOMCYCLE_CODE_HOOKS_ENABLED=1)", connector.ErrHookInvalidRegistration)
 		}
-		// A code body's memory is not bounded, so on a shared server one body
-		// could take the whole process down; a tenant operator gets code hooks
-		// only when the operator opted in to that.
-		if hookTenant != "" && !s.tenantCodeHooks() {
-			return connector.RegisterHookResponse{}, fmt.Errorf("%w: code hooks registered by a tenant operator are not enabled on this server (the operator sets LOOMCYCLE_CODE_HOOKS_TENANTS=1 to allow them); register a callback_url hook instead", connector.ErrHookInvalidRegistration)
-		}
 		if err := s.codeHooks.Compile(req.Code); err != nil {
 			return connector.RegisterHookResponse{}, fmt.Errorf("%w: code: %s", connector.ErrHookInvalidRegistration, err.Error())
 		}

@@ -224,14 +224,14 @@ func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind,
 		// retargeting a resolve at another run's interrupt WITHIN a tenant.
 		return "", connector.WithMessage(connector.ErrInterruptNotFound, "interrupt does not belong to that run")
 	}
-	// Tenant-ownership gate (RFC L/N): the run this interrupt belongs to must be
-	// in the caller's tenant — else a resolve steers ANOTHER tenant's paused run.
-	// tenantStore folds a cross-tenant/missing run into an opaque ErrNotFound.
-	if _, err := s.tenantStore(ctx).GetRun(ctx, row.RunID); err != nil {
-		if errors.As(err, &nf) {
-			return "", connector.WithMessage(connector.ErrInterruptNotFound, "interrupt not found")
-		}
+	// Ownership gate (RFC L/N): the run this interrupt belongs to must be the
+	// caller's to answer — in its tenant (else a resolve steers ANOTHER tenant's
+	// paused run), and for an isolated member one of its own. A run it may not
+	// answer is the same opaque not-found as one that does not exist.
+	if owns, err := s.callerOwnsRun(ctx, row.RunID); err != nil {
 		return "", err
+	} else if !owns {
+		return "", connector.WithMessage(connector.ErrInterruptNotFound, "interrupt not found")
 	}
 	if row.Status != store.InterruptStatusPending {
 		if row.Status == store.InterruptStatusTimedOut && !row.ExpiresAt.IsZero() && row.ExpiresAt.Before(time.Now()) {

@@ -3056,7 +3056,6 @@ func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 	s.hookRegistry = r
 	s.hookDispatcher = hooks.NewDispatcherWithPrivateHosts(r, nil, s.cfgHolder.Load().Hooks.PrivateHostAllowlist)
 	s.hookDispatcher.SetCodeRunner(s.codeHooks)
-	s.hookDispatcher.AllowTenantCodeHooks(s.tenantCodeHooks())
 }
 
 // SetCodeHookRunner enables code-js hook bodies. Same boot-wiring invariant as
@@ -3064,14 +3063,6 @@ func (s *Server) SetHookRegistry(r hooks.RegistryInterface) {
 func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
 	s.codeHooks = r
 	s.hookDispatcher.SetCodeRunner(r)
-	s.hookDispatcher.AllowTenantCodeHooks(s.tenantCodeHooks())
-}
-
-// tenantCodeHooks reports whether a tenant operator's code hooks are enabled
-// (LOOMCYCLE_CODE_HOOKS_TENANTS), not only operator-global ones.
-func (s *Server) tenantCodeHooks() bool {
-	cfg := s.cfg()
-	return cfg != nil && cfg.Env.CodeHooksTenants
 }
 
 // SetPgSessionLocker installs the v0.12.5 Phase 6 cluster-wide
@@ -8363,6 +8354,15 @@ func (s *Server) handleListRunInterrupts(w http.ResponseWriter, r *http.Request)
 	// cross-tenant or unknown run folds into *store.ErrNotFound, which we map
 	// to an empty list — indistinguishable from a real run with zero
 	// interrupts, so the listing can't be a cross-tenant existence oracle.
+	// An isolated member lists only its own runs' questions, and another
+	// user's run reads as one with none.
+	if owns, err := s.callerOwnsRun(r.Context(), runID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if !owns {
+		writeJSON(w, http.StatusOK, map[string]any{"interrupts": []store.InterruptRow{}, "total": 0})
+		return
+	}
 	rows, err := s.tenantStore(r.Context()).InterruptListByRun(r.Context(), runID, statusFilter)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -8402,6 +8402,11 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 	// store JOIN); super-admin / legacy / open mode see all. Without this a
 	// token could read another tenant's pending questions by guessing a
 	// user_id (user_ids are not secret). Mirrors handleListUsers' scoping.
+	// An isolated member's inbox is its own; another user's reads as empty.
+	if p, ok := auth.PrincipalFromContext(r.Context()); auth.IsIsolated(p, ok) && userID != p.Subject {
+		writeJSON(w, http.StatusOK, map[string]any{"interrupts": []store.InterruptRow{}, "total": 0})
+		return
+	}
 	rows, err := s.tenantStore(r.Context()).InterruptListByUser(r.Context(), userID, statusFilter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

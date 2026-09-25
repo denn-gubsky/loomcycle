@@ -176,11 +176,8 @@ what it reports on has already happened.
 Instead of `callback_url`, a registration may carry `code`: JavaScript that
 loomcycle runs in-process, with no network round-trip and no tokens. The
 operator enables it with `LOOMCYCLE_CODE_HOOKS_ENABLED=1`; otherwise a code
-registration is refused. A tenant operator's code hook (one registered by a
-non-admin tenant token) needs a second opt-in, `LOOMCYCLE_CODE_HOOKS_TENANTS=1`,
-because the sandbox bounds a body's time, not its memory, and every tenant shares the
-server; without it a tenant registers a `callback_url` hook instead. Set exactly
-one of `callback_url` and `code`.
+registration is refused. Tenant operators may register code hooks too, for
+their own tenant's runs. Set exactly one of `callback_url` and `code`.
 
 ```js
 function hook(ev) {
@@ -214,8 +211,10 @@ or Function; a deterministic clock and RNG), and its **only tool is
   tool call until an operator answers. It returns the answer, or `null` if
   the operator declined; a timeout or cancellation throws, so an uncaught one
   fails the hook. The question is a pending interrupt on the run, answered
-  where any other is. The hook asks under its own grant, so it works whether
-  or not the agent itself may interrupt.
+  where any other is — by the run's own user, who is the main actor: a hook
+  gates the agent, not the person who started it. (An isolated member sees and
+  answers only its own runs' questions.) The hook asks under its own grant, so
+  it works whether or not the agent itself may interrupt.
 - `Interruption.notify({message})` informs without waiting.
 
 Each ask runs the body again from the start, replaying the answers it
@@ -230,8 +229,7 @@ allocators are capped: a string from `repeat` / `padStart` / `padEnd` at 1 Mi
 characters, an array from `Array(n)` / `Array.from` — and `join` / `fill` on
 one — at 65,536 elements, an `ArrayBuffer` or typed array at 1 MiB. Past a cap
 the call throws a `RangeError`. These caps are a backstop, not a memory limit:
-a body that grows a string in a loop is bounded only by its time budget. That
-is why a tenant's code hooks need their own opt-in.
+a body that grows a string in a loop is bounded only by its time budget.
 
 ## Fail-open vs fail-closed
 
