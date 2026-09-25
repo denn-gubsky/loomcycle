@@ -4,23 +4,30 @@ First probe of the document-processing epic. Structural (heading) chunking is ke
 the question is whether prepending a situating context to each chunk, as in Anthropic's
 Contextual Retrieval, improves retrieval — and whether an LLM is needed to write it.
 
-**Result.** The best pipeline is `mapall+rr`, with Answer-F1 **0.438**, against 0.287 for
-plain chunks and 0.347 for the free header (95% CI of the paired difference against the
-header +0.035…+0.150). It closes 68% of the gap to the gold-evidence ceiling of 0.510.
-It combines three things:
+**Result, after the held-out confirmation (2026-09-25).** On 40 fresh papers, the
+pre-registered primary hypothesis — `mapall+rr` beats `header` on Answer-F1 — **failed**:
++0.023 (95% CI −0.025…+0.073). What held and what did not:
 
-1. **Descriptions → a document map.** The model writes a short description of each
-   section. The descriptions, assembled into a map, are the source for each chunk's
-   index-only context, and the map is stored as the document root, where the reader sees
-   it when it is retrieved.
-2. **A deterministic header** on every chunk (`Paper: <title>. Section: <path>.`).
-3. **A local listwise rerank** of the top 20: one call per question.
+- **The rerank's RETRIEVAL gain replicates.** A local listwise rerank of the top 20 lifts
+  held-out R@1 from 0.225 to 0.550 (+42/−3, p=9e-10) and R@5 from 0.692 to 0.867 (p=2e-4).
+  The development set showed the same (R@1 0.205 → 0.616).
+- **The document map does NOT transfer.** Held out, `mapall` is BELOW `header` (0.344 against
+  0.358). Where the reader saw the map it scored worse than the header arm (0.365 against
+  0.390), the reverse of the development set. The development-set map effect was chance on
+  146 questions across many arms.
+- **Answers barely move because the reader is the limit, not retrieval.** The held-out
+  gold-evidence ceiling is 0.459, and `header` already scores 0.358. When the evidence IS
+  in the reader's top 5, it scores 0.454 against the oracle's 0.481 on the same questions.
+  The rerank's extra hits (104 of 120 questions against 83) are questions the reader
+  answers poorly even with the evidence.
+- **The header's gain over plain chunks was measured on the development set only**
+  (F1 0.287 → 0.347, R@1 0.103 → 0.205). The held-out run used `header` as its baseline,
+  so it did not re-test that.
 
-The rerank is the largest single lever for RETRIEVAL. It lifts `header` from R@1 0.205 to
-0.616 and R@5 from 0.671 to 0.870. The map is worth about as much for ANSWERS as that
-retrieval gain: `mapall` (0.412) roughly equals `header+rr` (0.416).
+The sections below are the development-set record. Every map-based finding in them is
+superseded by the held-out result.
 
-What each piece does:
+What each piece did ON THE DEVELOPMENT SET (see the held-out section for what survived):
 
 - **A deterministic header** (`Paper: <title>. Section: <path>.`) is free and does the
   "which document" job. The LLM contexts almost never name the document (14 of 647).
@@ -224,6 +231,52 @@ Cost of the rerank: one call per question with the 20 candidates, each truncated
 characters (about 6K prompt tokens), about 4 s each locally. It is a query-time cost, unlike
 everything else here, which is paid once at import.
 
+## Held-out confirmation (pre-registered in `PREREG-heldout.md`)
+
+40 papers (41–80 of the same shuffle), 120 questions, three passes, tenant `qasper-heldout`.
+Nothing was tuned on it. Five reader calls hit a CUDA fault in pass a; each pass re-runs
+once to fill gaps, and every arm is complete in every pass.
+
+| arm | F1 | pass means | vs header, 95% CI | R@1 | R@3 | R@5 | R@10 |
+|---|---|---|---|---|---|---|---|
+| header | 0.358 | .346/.362/.365 | | 0.225 | 0.483 | 0.692 | 0.942 |
+| mapall | 0.344 | .333/.343/.356 | −0.058…+0.031 | 0.192 | 0.442 | 0.617 | 0.917 |
+| header+rr | 0.381 | .385/.375/.383 | −0.034…+0.078 | 0.550 | 0.742 | 0.867 | 0.942 |
+| mapall+rr | 0.381 | .382/.381/.381 | −0.025…+0.073 | 0.550 | 0.758 | 0.842 | 0.908 |
+| oracle (1 pass) | 0.459 | | | | | | |
+
+| hypothesis | development set | held out | verdict |
+|---|---|---|---|
+| **H1** `mapall+rr` > `header`, F1, CI lower bound > 0 | +0.091 (+0.035…+0.150) | +0.023 (−0.025…+0.073) | **fails** |
+| H2 `header+rr` > `header`, R@5, McNemar p < 0.05 | 0.671 → 0.870, p=8e-5 | 0.692 → 0.867, +26/−5, p=2e-4 | **holds** (R@1 +42/−3, p=9e-10) |
+| H3 `mapall` > `header`, F1, CI lower bound > 0 | +0.065 (+0.018…+0.112) | −0.014 (−0.058…+0.031) | **fails** |
+| H4 `mapall+rr` > `mapall`, F1 | +0.026, CI includes 0 | +0.037 (−0.009…+0.087) | unresolved, as expected |
+
+Per the pre-registered rule, the map/rerank design is **not** proposed as validated. The
+rerank is validated as a RETRIEVAL step; that it improves answers is not shown on either set.
+
+## Units follow-up (development set only — exploratory, NOT held out)
+
+Two flags separate the two costs the units might carry: `/nomatch` drops the `Matched:`
+line, and `/pinmap` always gives the reader the map of the top result's document plus four
+sections.
+
+| arm | F1 | vs `units`, 95% CI | R@3 | R@5 | R@10 |
+|---|---|---|---|---|---|
+| units | 0.376 | | 0.555 | 0.733 | 0.945 |
+| units/nomatch | 0.356 | −0.052…+0.012 | 0.548 | 0.733 | 0.945 |
+| units/nomatch/pinmap | 0.408 | −0.008…+0.071 | 0.459 | 0.705 | 0.925 |
+| units+rr/nomatch/pinmap | 0.434 | +0.006…+0.110 | 0.753 | 0.822 | 0.945 |
+| mapall+rr | 0.438 | +0.010…+0.114 | 0.774 | 0.842 | 0.925 |
+| mapall+rr/pinmap | 0.391 | −0.036…+0.065 | 0.712 | 0.836 | 0.932 |
+
+(R@1 is near zero for every `/pinmap` arm by construction: slot 1 is always the map.)
+
+On the development set, the `Matched:` line was not the units' cost; dropping it lowers F1
+by 0.020. Pinning the map recovers units by +0.052. But forcing the map onto `mapall+rr`
+costs 0.047. Since the map did not transfer to the held-out set, these map effects are not
+a basis for design either.
+
 ## Reader noise
 
 With retrieval held fixed, two `header` passes back-to-back on an idle GPU are identical
@@ -254,9 +307,13 @@ unprompted, and a header does it for free, every time.
 - **One reader, one prompt, top 5.** A reader that is better at ignoring a context prefix,
   or one given more chunks, may weigh the arms differently. In particular, the map costs a
   slot, and a larger k would change that trade.
-- **Nothing here is held out.** The arms, the map format and the reader prompt were chosen
-  and evaluated on these same 146 questions. `mapall` should be confirmed on fresh papers
-  before it drives a design.
+- **The development-set sections are not held out.** The arms, the map format and the
+  reader prompt were chosen and evaluated on the same 146 questions, and the map's apparent
+  gain there did not survive the held-out set. Read every development-set arm comparison
+  as exploratory; the held-out section is the record.
+- **Answer-F1 saturates near the reader's ceiling.** Held out, the reader with gold
+  evidence scores 0.459, so an arm cannot gain more than about 0.10 over `header`. Answer
+  comparisons are weak instruments here; retrieval comparisons are the strong ones.
 - **The GPU faulted with ornith alone.** One reader call hit `CUDA error: an illegal memory
   access` with only ornith and bge-m3 loaded (the same prompt twice, about 1 in 750 calls).
   It passed on retry. gpt-oss co-residency is not the only trigger.
