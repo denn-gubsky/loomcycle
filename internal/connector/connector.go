@@ -203,6 +203,14 @@ type Connector interface {
 	// deferred to a follow-up). All dispatch through this single method.
 	TeamDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// HookDef — reusable hook definitions. Op-discriminated (create / fork /
+	// get / list / promote / retire / verify / delete). Tenant-confined like
+	// AgentDef: the tool stamps the caller's authoritative tenant and hides
+	// another tenant's defs as not found. Reachable via POST /v1/_hookdef, the
+	// MCP meta-tool `hookdef`, the gRPC HookDef RPC and the adapters — all
+	// through this one method. Never an agent tool.
+	HookDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	Evaluation(ctx context.Context, input json.RawMessage) (ToolResult, error)
 	Context(ctx context.Context, input json.RawMessage) (ToolResult, error)
 

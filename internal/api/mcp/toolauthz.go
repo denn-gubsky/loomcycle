@@ -69,6 +69,7 @@ var tenantConfinableTools = map[string]bool{
 	"agentdef":          true,
 	"skilldef":          true,
 	"teamdef":           true, // RFC AP — tenant-confined team-workflow substrate
+	"hookdef":           true, // tenant-confined reusable hook definitions
 	"mcpserverdef":      true,
 	"scheduledef":       true,
 	"a2aservercarddef":  true,

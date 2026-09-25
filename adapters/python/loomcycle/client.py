@@ -733,6 +733,15 @@ class LoomcycleClient:
         Document tool's set_remote/sync consume. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("DocumentSourceDef", input)
 
+    async def hook_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the HookDef substrate tool — reusable hook definitions: the
+        event a hook answers, the tools it matches, its body (code-js or a
+        webhook URL), fail mode and timeout. Op-discriminated: create / fork /
+        get / list / promote / retire / verify / delete. Tenant-confined; a
+        HookDef fires on nothing by itself — an agent definition, a team
+        definition or a run names it. Mirror of :meth:`agent_def`."""
+        return await self._dispatch_substrate("HookDef", input)
+
     async def operator_token_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the OperatorTokenDef substrate tool — mint/list/revoke
         per-principal bearer tokens (RFC L multi-tenant auth). Mirror of

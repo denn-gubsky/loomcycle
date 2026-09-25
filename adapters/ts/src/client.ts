@@ -1951,6 +1951,19 @@ export class LoomcycleClient {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_documentsourcedef", input, opts);
   }
 
+  /** HookDef substrate ops (create/fork/get/list/promote/retire/verify/delete)
+   *  — reusable hook definitions: the event a hook answers, the tools it
+   *  matches, its body (code-js or a webhook URL), fail mode and timeout.
+   *  Tenant-confined like agentDef. A HookDef fires on nothing by itself; an
+   *  agent definition, a team definition or a run names it. Mirrors
+   *  POST /v1/_hookdef. */
+  async hookDef(
+    input: SubstrateToolInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_hookdef", input, opts);
+  }
+
   /** OperatorTokenDef substrate ops (create/rotate/retire/get/list) —
    *  RFC L OSS multi-tenant authorization. Operator-admin only. The
    *  token plaintext is returned ONCE in the create/rotate response.

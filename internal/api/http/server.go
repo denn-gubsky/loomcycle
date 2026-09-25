@@ -406,6 +406,13 @@ type Server struct {
 	// Nil = the surface returns "not configured" errors. Set via SetTeamDefTool.
 	teamDefTool tools.Tool
 
+	// hookDefTool is the HookDef substrate tool (reusable hook definitions).
+	// Dedicated slot, NOT in s.tools — no agent may author a hook. Reached via
+	// Connector.HookDef + POST /v1/_hookdef + the MCP meta-tool `hookdef` + the
+	// gRPC HookDef RPC. Nil = those surfaces return "not configured". Set via
+	// SetHookDefTool.
+	hookDefTool tools.Tool
+
 	// a2aServerCardDefTool + a2aAgentDefTool are the v1.x RFC G A2A
 	// substrate tools. Same operator-admin-only posture as
 	// scheduleDefTool — NOT in s.tools, reached via Connector +
@@ -924,6 +931,13 @@ func (s *Server) SetMCPServerDefTool(t tools.Tool) {
 // than the MCP-dependent MCPServerDef tool.
 func (s *Server) SetScheduleDefTool(t tools.Tool) {
 	s.scheduleDefTool = t
+}
+
+// SetHookDefTool wires the HookDef substrate tool. Without this call,
+// Connector.HookDef + POST /v1/_hookdef + the gRPC RPC + the MCP meta-tool all
+// refuse with "not configured".
+func (s *Server) SetHookDefTool(t tools.Tool) {
+	s.hookDefTool = t
 }
 
 // SetTeamDefTool wires the RFC AP TeamDef substrate tool. Without this call,
@@ -3320,6 +3334,9 @@ func (s *Server) Mux() http.Handler {
 	// authoritative tenant + opaque-404s cross-tenant reads. Same dispatch shape
 	// as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_teamdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateTeamDef))))
+	// HookDef substrate — reusable hook definitions. Tenant-confined like
+	// AgentDef (see isTenantConfinedDefPath).
+	mux.Handle("POST /v1/_hookdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHookDef))))
 	// v0.9.x dynamic MCP server registration. Bearer-authed; operator-
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
@@ -3409,6 +3426,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_agentdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAgentDefNames))))
 	mux.Handle("GET /v1/_skilldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListSkillDefNames))))
 	mux.Handle("GET /v1/_teamdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTeamDefNames))))
+	mux.Handle("GET /v1/_hookdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListHookDefNames))))
 	mux.Handle("GET /v1/_mcpserverdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMCPServerDefNames))))
 	mux.Handle("GET /v1/_scheduledef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListScheduleDefNames))))
 	mux.Handle("GET /v1/_a2aservercarddef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListA2AServerCardDefNames))))

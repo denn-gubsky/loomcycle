@@ -679,6 +679,8 @@ var grpcConsumerScopes = map[string]string{
 	// RFC AP TeamDef — team-workflow substrate. Same ScopeTenant posture as the
 	// other def families; the HTTP /v1/_teamdef route is tenant-confined too.
 	"TeamDef": auth.ScopeTenant,
+	// HookDef — reusable hook definitions, authored like an AgentDef.
+	"HookDef": auth.ScopeTenant,
 	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools
 	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
 	"Path":     auth.ScopeTenant,

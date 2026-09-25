@@ -600,6 +600,20 @@ func (s *Server) TeamDef(ctx context.Context, input json.RawMessage) (connector.
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
 }
 
+// HookDef dispatches to the reusable-hook-definition substrate tool. NOT in
+// the per-agent dispatcher (s.tools): no agent may author a hook, so it has a
+// dedicated slot like TeamDef. See SetHookDefTool for wiring.
+func (s *Server) HookDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.hookDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("HookDef: not configured (no tool wired via SetHookDefTool)")
+	}
+	res, err := s.hookDefTool.Execute(ctx, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+}
+
 // VolumeDef dispatches to the RFC AH Phase 2a dynamic-volume substrate
 // tool. Unlike MCPServerDef (operator-admin-only) the VolumeDef tool IS in
 // the per-agent dispatcher (s.tools) with a default-deny volume_def_scopes

@@ -91,6 +91,7 @@ const (
 	Loomcycle_OperatorTokenDef_FullMethodName    = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
 	Loomcycle_VolumeDef_FullMethodName           = "/loomcycle.v1.Loomcycle/VolumeDef"
 	Loomcycle_TeamDef_FullMethodName             = "/loomcycle.v1.Loomcycle/TeamDef"
+	Loomcycle_HookDef_FullMethodName             = "/loomcycle.v1.Loomcycle/HookDef"
 	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
 	Loomcycle_CredentialDef_FullMethodName       = "/loomcycle.v1.Loomcycle/CredentialDef"
@@ -449,6 +450,13 @@ type LoomcycleClient interface {
 	// state's agent under the same admission a run would get). Same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	TeamDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// HookDef dispatches to the reusable-hook-definition substrate. Mirrors
+	// POST /v1/_hookdef. TENANT-CONFINED (ScopeTenant, like AgentDef): the tool
+	// stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+	// Op-discriminated input_json (create / fork / get / list / promote /
+	// retire / verify / delete). Same SubstrateRequest/Response body shape
+	// (is_error carries tool refusals).
+	HookDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
 	// TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
 	// the operator-trust ctx + the caller's authoritative tenant, never the
@@ -1099,6 +1107,16 @@ func (c *loomcycleClient) TeamDef(ctx context.Context, in *SubstrateRequest, opt
 	return out, nil
 }
 
+func (c *loomcycleClient) HookDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_HookDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) Path(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1581,6 +1599,13 @@ type LoomcycleServer interface {
 	// state's agent under the same admission a run would get). Same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	TeamDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// HookDef dispatches to the reusable-hook-definition substrate. Mirrors
+	// POST /v1/_hookdef. TENANT-CONFINED (ScopeTenant, like AgentDef): the tool
+	// stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+	// Op-discriminated input_json (create / fork / get / list / promote /
+	// retire / verify / delete). Same SubstrateRequest/Response body shape
+	// (is_error carries tool refusals).
+	HookDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
 	// TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
 	// the operator-trust ctx + the caller's authoritative tenant, never the
@@ -1823,6 +1848,9 @@ func (UnimplementedLoomcycleServer) VolumeDef(context.Context, *SubstrateRequest
 }
 func (UnimplementedLoomcycleServer) TeamDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TeamDef not implemented")
+}
+func (UnimplementedLoomcycleServer) HookDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HookDef not implemented")
 }
 func (UnimplementedLoomcycleServer) Path(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Path not implemented")
@@ -2810,6 +2838,24 @@ func _Loomcycle_TeamDef_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_HookDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).HookDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_HookDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).HookDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_Path_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -3239,6 +3285,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TeamDef",
 			Handler:    _Loomcycle_TeamDef_Handler,
+		},
+		{
+			MethodName: "HookDef",
+			Handler:    _Loomcycle_HookDef_Handler,
 		},
 		{
 			MethodName: "Path",

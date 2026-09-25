@@ -1869,9 +1869,18 @@ func main() {
 	srv.SetTeamDefTool(teamDefTool)
 	// RFC DK — code-js hook bodies, opt-in. A body's only tool is the same
 	// Interruption instance agents use, run under the hook's own grant.
-	if cfg.Env.CodeHooksEnabled {
-		srv.SetCodeHookRunner(codehook.New(interruptionTool))
+	// The HookDef substrate compiles a code-js body when it is saved, with the
+	// same runner that will run it; without code hooks a code body is refused.
+	hookDefTool := &builtin.HookDef{
+		Store:               storeIface,
+		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	}
+	if cfg.Env.CodeHooksEnabled {
+		runner := codehook.New(interruptionTool)
+		srv.SetCodeHookRunner(runner)
+		hookDefTool.CompileCode = runner.Compile
+	}
+	srv.SetHookDefTool(hookDefTool)
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
 	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +

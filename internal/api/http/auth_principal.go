@@ -1089,6 +1089,10 @@ func isTenantConfinedDefPath(path string) bool {
 	}
 	for _, fam := range []string{
 		"/v1/_agentdef", "/v1/_skilldef", "/v1/_teamdef", "/v1/_mcpserverdef", "/v1/_scheduledef",
+		// HookDef — reusable hook definitions, authored like an AgentDef (a
+		// tenant's operators and its non-isolated members); the tool stamps the
+		// caller's tenant + opaque-404s cross-tenant.
+		"/v1/_hookdef",
 		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",
 		// RFC CE — the DocumentSourceDef substrate write-stamps the caller's
 		// tenant + opaque-404s cross-tenant, exactly like _memorybackenddef, so

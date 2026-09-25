@@ -329,6 +329,18 @@ func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateReques
 	})
 }
 
+// HookDef serves the HookDef gRPC RPC — reusable hook definitions. Same shape
+// as the other substrate RPCs; tenant-confined like AgentDef.
+func (s *Server) HookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "HookDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+		res, err := s.connector.HookDef(ctx, in)
+		if err != nil {
+			return nil, false, err
+		}
+		return json.RawMessage(res.Text), res.IsError, nil
+	})
+}
+
 // TeamDef serves the RFC AP TeamDef gRPC RPC — team-workflow substrate. Same
 // shape as the other substrate RPCs; op-discriminated input_json (create / fork
 // / get / list / retire / delete / promote / verify / render_diagram / run)
