@@ -8,6 +8,56 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.95.0
+
+*Two isolation gaps closed, five more hook phases, and four fixes from measuring local models — a stateful run keeps its task, and an unknown tool argument is refused instead of silently dropped.*
+
+Eight PRs. One finishes the first half of RFC DK (hooks v2), two are review fixes for RFC DI and RFC DJ that close two isolation gaps, one opens code hooks to tenant operators, and four come from measuring the lab deployment's local models against the new tool help.
+
+### ⚠️ Security: an isolated member saw and answered other users' runs (#1376, #1377)
+
+An isolated member (`substrate:user` alone) is confined to its own sessions, but two sets of reads checked only the tenant.
+
+- **Run content (#1376).** `GET /v1/runs/{id}/prompt`, `GET /v1/agents/{id}` (result, spec, draft), gRPC `GetAgent`, MCP `get_run`, the event replays (`GET /v1/runs/{id}/stream`, gRPC `StreamRun`) and gRPC `GetTranscript` returned another user's run in the same tenant, prompt and answer included. One rule (`auth.OwnedRowVisible`) now decides all of them: for an isolated member the row's user must be the caller; any other principal keeps the whole-tenant view. A refusal is the opaque not-found a missing run gets.
+- **Run questions (#1377).** The interruption resolve paths (HTTP/gRPC `ResolveInterrupt`, MCP `interruption_resolve`) and the two listings (a run's questions, a user's inbox) let an isolated member read and answer a question on a colleague's run. They now apply the review verb's rule: in the caller's tenant and, for an isolated member, its own session.
+- **Also in #1376:** subject erasure now finds a subject's draft (configured) runs and archived chats, which it missed, so an erased subject's drafts no longer survive holding their prompt; and a run's content survives NUL bytes.
+
+### Subagent, compaction and run_end hooks (#1374, RFC DK-P3b)
+
+Five more run phases, selected by agent like `agent_start` / `agent_stop`:
+
+- **`subagent_start` / `subagent_stop`** — the parent's view of a child the Agent tool spawns (one-shot and `parallel_spawn`). Either may deny (the child is not started / its result does not reach the parent) or add context (to the child's prompt / to its result). Each decision is recorded on the parent's stream.
+- **`pre_compact`** — may deny a compaction. In the loop a denial is a declined compaction with the new reason `denied_by_hook`, so it is never silent.
+- **`post_compact`** and **`run_end`** — observe only: run off the caller's path, bounded at 30 s, answers ignored, failures logged. A code body there may notify but not ask.
+
+### Tenant operators may author code hooks (#1377)
+
+A tenant operator registers code hooks for its own tenant's runs under `LOOMCYCLE_CODE_HOOKS_ENABLED` alone. The separate `LOOMCYCLE_CODE_HOOKS_TENANTS` opt-in that #1374 added is removed. A hook's question is its run's user's to answer (the user is the main actor; a hook gates the agent, not its user).
+
+### Review hold fixes (#1375, RFC DJ)
+
+- **A reviewer's reject on the last allowed iteration no longer completes the run on the refused answer.** A revise with no iteration left ends the run `rejected`, and an `agent_stop` block with no iteration left fails it `stop_blocked`.
+- **A verdict given while the runtime is paused waits for the pause to lift** instead of ending the run under the pause. A verdict that waited out the pause wins over a deadline that passed in it.
+- A reviewed spawn reports its status and answer as its row does.
+
+### From measuring local models (#1378, #1379, #1380, #1381)
+
+The lab deployment's local models (`gpt-oss`, `qwen3.6`, `ornith-1.5`) were measured on a fixed task set against 1.92.0, 1.93.0 and 1.94.0. The failed-call example worked — 8 of 11 retries after it were correct — but four failures remained that the help could not reach.
+
+- **An unknown argument to a documented tool is refused (#1378).** Tools decode into a struct and dropped an undeclared argument silently, so `text` for `body` saved a chunk with an EMPTY body and reported success, and no error ever showed the correct call. The dispatcher now refuses such a call before the tool runs ("unknown argument "text" — nothing was done"), with the operation's correct example, a hint when the arguments were wrapped in `"input"`, and "Did you mean "chunk_id"?" for a respelling. Scope: tools with a help article and a closed schema; an operator's MCP tools and the MCP server's direct builtin calls are unaffected.
+- **A stateful run keeps its task (#1379).** The request arrived only as the first observation and the next tool result replaced it, so from step 2 a model that had not copied it into the state had no task — it re-derived one, asked the user, adopted another chat's task, and once invented a value and reported it saved. Every step now shows "Your task (keep working on it until it is done): …" beside the state. An operator's turn replaces it; a resume uses the first user message. The runtime still does not write the state.
+- **The prompt's tool inventory says to read a tool's call format first (#1380).** Non-stateful local models read help before the first call in 0 of 20 runs: what they read is the injected `## Tools` list, which carries only first sentences. It now gains one line naming the documented tools, with a real example topic. It depends on the tool set only, so the cached system prompt stays byte-stable.
+- **Defaults that tripped models (#1381).** History's omitted scope is now `user` when granted, else `self` (it was always `self`, which the default grant refuses). A `format=markdown` transcript read inside a run is capped at 24K characters with a note pointing to `format=conversation`; off-run callers still get it whole. `documents_summary` with no arguments is refused with what to pass, instead of an empty list that read as "no documents exist".
+
+### Upgrade notes
+
+- **⚠️ Security:** upgrade if you use isolated members (`substrate:user`); see #1376 and #1377.
+- **Behaviour change (#1378):** a loop tool call with an argument the tool's schema does not declare is now refused instead of silently ignored — only for documented builtin tools with a closed schema.
+- **Behaviour change (#1381):** History with no `scope` now reads the caller's own chats (`user`) when that is granted.
+- **Env:** `LOOMCYCLE_CODE_HOOKS_TENANTS` (added and removed within this release) does not exist; `LOOMCYCLE_CODE_HOOKS_ENABLED` alone enables code hooks, for tenant operators too.
+- **New hook phases:** `subagent_start`, `subagent_stop`, `pre_compact`, `post_compact`, `run_end`.
+- **The adapters are bumped to 1.95.0.**
+
 ## What's in v1.94.0
 
 *A team walk can hold its members for review, hooks can see the run as well as its tool calls, write their bodies in JavaScript and ask an operator, and a tool's help tells the model to read it before the first call.*
