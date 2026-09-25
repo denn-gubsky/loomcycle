@@ -61,6 +61,12 @@ func (s *Server) handleSubstrateTeamDef(w http.ResponseWriter, r *http.Request) 
 	s.dispatchSubstrate(w, r, "TeamDef", s.TeamDef)
 }
 
+// handleSubstrateHookDef serves POST /v1/_hookdef — reusable hook definitions.
+// Bearer-authed; tenant-confined at the route like AgentDef.
+func (s *Server) handleSubstrateHookDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "HookDef", s.HookDef)
+}
+
 // handleSubstrateMCPServerDef serves POST /v1/_mcpserverdef.
 // v0.9.x dynamic MCP server registration. Bearer-authed; same
 // dispatch shape as the AgentDef + SkillDef admin endpoints.

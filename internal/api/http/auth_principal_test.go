@@ -238,6 +238,8 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_skilldef", auth.ScopeTenant},
 		{"POST", "/v1/_teamdef", auth.ScopeTenant},
 		{"GET", "/v1/_teamdef/names", auth.ScopeTenant},
+		{"POST", "/v1/_hookdef", auth.ScopeTenant},
+		{"GET", "/v1/_hookdef/names", auth.ScopeTenant},
 		{"POST", "/v1/_mcpserverdef", auth.ScopeTenant},
 		{"GET", "/v1/_mcpserverdef/names", auth.ScopeTenant},
 		{"POST", "/v1/_scheduledef", auth.ScopeTenant},
@@ -384,6 +386,7 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 	admitted := []struct{ method, path string }{
 		{"POST", "/v1/_agentdef"}, // def authoring — confined
 		{"GET", "/v1/_agentdef/names"},
+		{"POST", "/v1/_hookdef"},      // hook definitions — confined like agentdef
 		{"POST", "/v1/_mcpserverdef"}, // dynamic MCP ingestion — confined
 		{"POST", "/v1/hooks"},         // tenant-isolated hooks
 		{"POST", "/v1/_mcp"},          // RFC AG Phase 2: may OPEN an MCP session
@@ -435,6 +438,7 @@ func runMW(t *testing.T, s *Server, method, path, token string) (reached bool, c
 func TestTenantMemberAccessible(t *testing.T) {
 	open := []struct{ method, path string }{
 		{"GET", "/v1/_library/agents"}, {"POST", "/v1/_agentdef"}, {"GET", "/v1/_agentdef/names"},
+		{"POST", "/v1/_hookdef"}, {"GET", "/v1/_hookdef/names"},
 		{"POST", "/v1/_document"}, {"POST", "/v1/_path"}, {"POST", "/v1/_credentialdef"},
 		{"GET", "/v1/_memory/scopes"}, {"POST", "/v1/_memory/search"}, {"GET", "/v1/_schedules/list-all"},
 		{"GET", "/v1/_channels"}, {"POST", "/v1/_channels"}, {"GET", "/v1/_ontology"},
@@ -472,7 +476,7 @@ func TestAuthMiddleware_RFCCBMember(t *testing.T) {
 	seedToken(t, st, "lct_isolated", "acme", "bob", []string{auth.ScopeUser}, time.Time{})
 
 	admitted := []struct{ method, path string }{
-		{"GET", "/v1/_library/agents"}, {"POST", "/v1/_agentdef"}, {"POST", "/v1/_document"},
+		{"GET", "/v1/_library/agents"}, {"POST", "/v1/_agentdef"}, {"POST", "/v1/_hookdef"}, {"POST", "/v1/_document"},
 		{"POST", "/v1/_path"}, {"GET", "/v1/_memory/scopes"}, {"POST", "/v1/_memory/search"},
 		{"GET", "/v1/_schedules/list-all"}, {"POST", "/v1/_channels"}, {"GET", "/v1/_ontology"},
 		{"POST", "/v1/_credentialdef"}, {"GET", "/v1/_usage"}, {"GET", "/v1/_routing"},

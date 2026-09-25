@@ -545,6 +545,38 @@ func (s *Store) migrate(ctx context.Context) error {
 			tenant_id             TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY(tenant_id, name)
 		)`,
+		// HookDef substrate — mirror of teamdefs minus the two authority
+		// columns (bootstrapped_from_static, operator_authored) a HookDef
+		// has no use for. A fresh table born tenant-aware, so the
+		// composite UNIQUE / PK live in the CREATE and no ALTER or
+		// upgrade-path index is needed.
+		`CREATE TABLE IF NOT EXISTS hook_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES hook_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS hook_defs_by_name           ON hook_defs(name, version DESC)`,
+		`CREATE INDEX IF NOT EXISTS hook_defs_by_parent         ON hook_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS hook_defs_by_run            ON hook_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS hook_defs_by_content_sha256 ON hook_defs(content_sha256) WHERE content_sha256 IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS hook_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES hook_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)`,
 		// v0.9.x MCPServerDef substrate — third member of the
 		// AgentDef / SkillDef / MCPServerDef family. Mirror of the
 		// agent_defs / skill_defs schema; the definition JSONB carries
@@ -3578,6 +3610,81 @@ func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefA
 	return out, rows.Err()
 }
 
+// SnapshotReadHookDefs implements store.Store. Mirror of
+// SnapshotReadTeamDefs against hook_defs.
+func (s *Store) SnapshotReadHookDefs(ctx context.Context) ([]store.HookDefRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT def_id, name, version, parent_def_id, definition, description,
+		        created_at, created_by_agent_id, created_by_run_id,
+		        retired, tenant_id, content_sha256
+		 FROM hook_defs
+		 ORDER BY tenant_id ASC, name ASC, version ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read hook_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.HookDefRow
+	for rows.Next() {
+		var (
+			r           store.HookDefRow
+			createdNs   int64
+			parentDefID sql.NullString
+			description sql.NullString
+			createdBy   sql.NullString
+			createdRun  sql.NullString
+			definition  string
+			retiredInt  int
+			contentSHA  sql.NullString
+		)
+		if err := rows.Scan(
+			&r.DefID, &r.Name, &r.Version, &parentDefID,
+			&definition, &description,
+			&createdNs, &createdBy, &createdRun,
+			&retiredInt, &r.TenantID, &contentSHA,
+		); err != nil {
+			return nil, fmt.Errorf("scan hook_def: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdNs)
+		r.ParentDefID = parentDefID.String
+		r.Description = description.String
+		r.CreatedByAgentID = createdBy.String
+		r.CreatedByRunID = createdRun.String
+		r.ContentSHA256 = contentSHA.String
+		r.Retired = retiredInt != 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadHookDefActive implements store.Store.
+func (s *Store) SnapshotReadHookDefActive(ctx context.Context) ([]store.HookDefActiveEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
+		 FROM hook_def_active
+		 ORDER BY tenant_id ASC, name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read hook_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.HookDefActiveEntry
+	for rows.Next() {
+		var (
+			e          store.HookDefActiveEntry
+			promotedNs int64
+			promoter   sql.NullString
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID); err != nil {
+			return nil, fmt.Errorf("scan hook_def_active: %w", err)
+		}
+		e.PromotedAt = time.Unix(0, promotedNs)
+		e.PromotedByAgentID = promoter.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // SnapshotReadMCPServerDefs — v0.9.x mirror.
 func (s *Store) SnapshotReadMCPServerDefs(ctx context.Context) ([]store.MCPServerDefRow, error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -4132,6 +4239,55 @@ func (s *Store) SnapshotRestoreTeamDefActive(ctx context.Context, e store.TeamDe
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreHookDef implements store.Store. Mirror of
+// SnapshotRestoreTeamDef against hook_defs; idempotent on def_id.
+func (s *Store) SnapshotRestoreHookDef(ctx context.Context, r store.HookDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore hook_def: def_id and name required")
+	}
+	createdNs := r.CreatedAt.UnixNano()
+	if r.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO hook_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
+		string(r.Definition), nilIfEmpty(r.Description),
+		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
+		boolToInt(r.Retired), nilIfEmpty(r.ContentSHA256), r.TenantID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore hook_def: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreHookDefActive implements store.Store. Mirror of
+// SnapshotRestoreTeamDefActive against hook_def_active.
+func (s *Store) SnapshotRestoreHookDefActive(ctx context.Context, e store.HookDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore hook_def_active: name and def_id required")
+	}
+	promotedNs := e.PromotedAt.UnixNano()
+	if e.PromotedAt.IsZero() {
+		promotedNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO hook_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore hook_def_active: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
@@ -7112,6 +7268,272 @@ func (s *Store) scanTeamDefRows(rows *sql.Rows) ([]store.TeamDefRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ---- HookDef substrate ----
+//
+// Mirror of the TeamDef methods above minus ListChildren and the two
+// authority columns. One deliberate divergence: GetByNameVersion is
+// tenant-scoped (TeamDef's is not), so a (name, version) pair can only
+// ever resolve inside the caller's tenant. If you fix a bug here, check
+// the TeamDef twin too.
+
+func (s *Store) HookDefCreate(ctx context.Context, row store.HookDefRow) (store.HookDefRow, error) {
+	if row.DefID == "" || row.Name == "" {
+		return store.HookDefRow{}, fmt.Errorf("hook_def: def_id + name required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return store.HookDefRow{}, err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return store.HookDefRow{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	if row.ParentDefID != "" {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM hook_defs WHERE def_id = ?`, row.ParentDefID).Scan(&n); err != nil {
+			return store.HookDefRow{}, err
+		}
+		if n == 0 {
+			return store.HookDefRow{}, store.ErrHookDefParentNotFound
+		}
+	}
+
+	var maxVer sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM hook_defs WHERE tenant_id = ? AND name = ?`, row.TenantID, row.Name,
+	).Scan(&maxVer); err != nil {
+		return store.HookDefRow{}, err
+	}
+	row.Version = 1
+	if maxVer.Valid {
+		row.Version = int(maxVer.Int64) + 1
+	}
+	row.CreatedAt = time.Now()
+
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO hook_defs (
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, content_sha256, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.DefID, row.Name, row.Version, nilIfEmpty(row.ParentDefID),
+		string(row.Definition), nilIfEmpty(row.Description),
+		row.CreatedAt.UnixNano(),
+		nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
+		boolToInt(row.Retired), nilIfEmpty(row.ContentSHA256), row.TenantID,
+	); err != nil {
+		return store.HookDefRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.HookDefRow{}, err
+	}
+	committed = true
+	return row, nil
+}
+
+func (s *Store) HookDefGet(ctx context.Context, defID string) (store.HookDefRow, error) {
+	row, err := scanHookDef(s.db.QueryRowContext(ctx, hookDefSelect+` WHERE def_id = ?`, defID))
+	if err == sql.ErrNoRows {
+		return store.HookDefRow{}, &store.ErrNotFound{Kind: "hook_def", ID: defID}
+	}
+	return row, err
+}
+
+func (s *Store) HookDefGetByNameVersion(ctx context.Context, tenantID, name string, version int) (store.HookDefRow, error) {
+	row, err := scanHookDef(s.db.QueryRowContext(ctx,
+		hookDefSelect+` WHERE tenant_id = ? AND name = ? AND version = ?`, tenantID, name, version))
+	if err == sql.ErrNoRows {
+		return store.HookDefRow{}, &store.ErrNotFound{Kind: "hook_def", ID: fmt.Sprintf("%s@v%d", name, version)}
+	}
+	return row, err
+}
+
+func (s *Store) HookDefListByName(ctx context.Context, name string) ([]store.HookDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, hookDefSelect+` WHERE name = ? ORDER BY version DESC`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.HookDefRow
+	for rows.Next() {
+		r, err := scanHookDef(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) HookDefListNames(ctx context.Context) ([]store.HookDefNameSummary, error) {
+	// Grouped by tenant_id so a name owned by N tenants yields N rows.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			d.tenant_id,
+			d.name,
+			COUNT(*)                              AS version_count,
+			COUNT(*) FILTER (WHERE d.retired = 0) AS live_version_count,
+			MAX(d.version)                        AS latest_version,
+			MAX(d.created_at)                     AS last_updated,
+			COALESCE(a.def_id, '')                AS active_def_id,
+			COALESCE(ad.retired, 0)               AS active_retired
+		FROM hook_defs d
+		LEFT JOIN hook_def_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
+		LEFT JOIN hook_defs ad      ON ad.def_id = a.def_id
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
+		ORDER BY d.tenant_id, d.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []store.HookDefNameSummary
+	for rows.Next() {
+		var ns store.HookDefNameSummary
+		var updatedAt int64
+		var activeRetired int
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID, &activeRetired); err != nil {
+			return nil, err
+		}
+		ns.LastUpdated = time.Unix(0, updatedAt)
+		ns.ActiveRetired = activeRetired != 0
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// HookDefSetActive UPSERTs the hook_def_active pointer for (tenantID, name),
+// refusing a def whose name or tenant differs — a def can only be promoted
+// within its own tenant.
+func (s *Store) HookDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+	var (
+		rowName   string
+		rowTenant string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT name, tenant_id FROM hook_defs WHERE def_id = ?`, defID).Scan(&rowName, &rowTenant)
+	if err == sql.ErrNoRows {
+		return &store.ErrNotFound{Kind: "hook_def", ID: defID}
+	}
+	if err != nil {
+		return err
+	}
+	if rowName != name {
+		return fmt.Errorf("hook_def_active: def_id %q has name %q, refusing to promote under name %q", defID, rowName, name)
+	}
+	if rowTenant != tenantID {
+		return fmt.Errorf("hook_def_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO hook_def_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, name) DO UPDATE SET
+		    def_id               = excluded.def_id,
+		    promoted_at          = excluded.promoted_at,
+		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+	)
+	return err
+}
+
+func (s *Store) HookDefGetActive(ctx context.Context, tenantID, name string) (store.HookDefRow, error) {
+	var defID string
+	err := s.db.QueryRowContext(ctx, `SELECT def_id FROM hook_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&defID)
+	if err == sql.ErrNoRows {
+		return store.HookDefRow{}, &store.ErrNotFound{Kind: "hook_def_active", ID: name}
+	}
+	if err != nil {
+		return store.HookDefRow{}, err
+	}
+	return s.HookDefGet(ctx, defID)
+}
+
+func (s *Store) HookDefSetRetired(ctx context.Context, defID string, retired bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE hook_defs SET retired = ? WHERE def_id = ?`,
+		boolToInt(retired), defID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return &store.ErrNotFound{Kind: "hook_def", ID: defID}
+	}
+	return nil
+}
+
+// HookDefDelete hard-deletes every version of (tenantID, name) and its active
+// pointer in one transaction. The pointer goes first: it references a
+// hook_defs row. Returns whether any version row was removed.
+func (s *Store) HookDefDelete(ctx context.Context, tenantID, name string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("hook_def delete: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM hook_def_active WHERE tenant_id = ? AND name = ?`, tenantID, name); err != nil {
+		return false, fmt.Errorf("hook_def delete active: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM hook_defs WHERE tenant_id = ? AND name = ?`, tenantID, name)
+	if err != nil {
+		return false, fmt.Errorf("hook_def delete rows: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("hook_def delete: commit: %w", err)
+	}
+	return n > 0, nil
+}
+
+const hookDefSelect = `SELECT
+	def_id, name, version,
+	COALESCE(parent_def_id, ''),
+	definition,
+	COALESCE(description, ''),
+	created_at,
+	COALESCE(created_by_agent_id, ''),
+	COALESCE(created_by_run_id, ''),
+	retired,
+	COALESCE(content_sha256, ''),
+	tenant_id
+FROM hook_defs`
+
+// scanHookDef reads one hookDefSelect row from either *sql.Row or *sql.Rows,
+// so the single-row and list paths cannot drift apart.
+func scanHookDef(sc interface{ Scan(...any) error }) (store.HookDefRow, error) {
+	var (
+		out        store.HookDefRow
+		definition string
+		createdAt  int64
+		retired    int
+	)
+	if err := sc.Scan(
+		&out.DefID, &out.Name, &out.Version,
+		&out.ParentDefID,
+		&definition,
+		&out.Description,
+		&createdAt,
+		&out.CreatedByAgentID, &out.CreatedByRunID,
+		&retired,
+		&out.ContentSHA256,
+		&out.TenantID,
+	); err != nil {
+		return store.HookDefRow{}, err
+	}
+	out.Definition = json.RawMessage(definition)
+	out.CreatedAt = time.Unix(0, createdAt)
+	out.Retired = retired != 0
+	return out, nil
 }
 
 // ---- v0.9.x MCPServerDef substrate ----

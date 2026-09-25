@@ -58,6 +58,7 @@ func substrateAdminFixture(t *testing.T) *httptest.Server {
 	// RFC AP TeamDef — same dedicated-slot wiring; without it POST /v1/_teamdef
 	// returns "TeamDef: not configured".
 	srv.SetTeamDefTool(&builtin.TeamDef{Store: st})
+	srv.SetHookDefTool(&builtin.HookDef{Store: st})
 	return httptest.NewServer(srv.Mux())
 }
 
@@ -115,6 +116,46 @@ func TestSubstrateAdmin_TeamDef_HappyPath(t *testing.T) {
 	}
 	if sha, _ := out["content_sha256"].(string); !strings.HasPrefix(sha, "sha256:") {
 		t.Errorf("content_sha256 = %q, want sha256:-prefixed", sha)
+	}
+}
+
+// A HookDef written over HTTP is stored, listed by name, and a definition the
+// dispatcher could not run is refused as a 422 before anything is written.
+func TestSubstrateAdmin_HookDef_CreateListAndRefuse(t *testing.T) {
+	ts := substrateAdminFixture(t)
+	defer ts.Close()
+
+	resp := postAdmin(t, ts, "/v1/_hookdef", `{"op":"create","name":"net/gate","overlay":{"event":"pre","match":{"tools":["WebFetch"]},"body":{"kind":"http","url":"https://hooks.example/gate"},"fail_mode":"closed"}}`)
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status = %d; body=%s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if out["version"].(float64) != 1 || out["promoted"] != true {
+		t.Fatalf("create = %v", out)
+	}
+
+	bad := postAdmin(t, ts, "/v1/_hookdef", `{"op":"create","name":"net/bad","overlay":{"event":"agent_stop","match":{"tools":["Read"]},"body":{"kind":"http","url":"https://hooks.example/x"}}}`)
+	bad.Body.Close()
+	if bad.StatusCode != 422 {
+		t.Fatalf("invalid def status = %d; want 422", bad.StatusCode)
+	}
+
+	req, _ := http.NewRequest("GET", ts.URL+"/v1/_hookdef/names", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	lr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lr.Body.Close()
+	var env struct {
+		Names []map[string]any `json:"names"`
+	}
+	_ = json.NewDecoder(lr.Body).Decode(&env)
+	if lr.StatusCode != 200 || len(env.Names) != 1 || env.Names[0]["name"] != "net/gate" {
+		t.Fatalf("names = %d %v; want only net/gate", lr.StatusCode, env.Names)
 	}
 }
 

@@ -307,6 +307,18 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefTenantIsolation", testTeamDefTenantIsolation},
 		{"TeamDefContentSHA256RoundTrip", testTeamDefContentSHA256RoundTrip},
 		{"TeamDefOperatorAuthoredRoundTrip", testTeamDefOperatorAuthoredRoundTrip},
+		// HookDef substrate — mirror of the TeamDef tests, plus the two
+		// tenant-scoped lookups TeamDef lacks (GetByNameVersion, Delete).
+		{"HookDefCreateAssignsPerTenantVersions", testHookDefCreateAssignsPerTenantVersions},
+		{"HookDefVersionMonotonicUnderContention", testHookDefVersionMonotonicUnderContention},
+		{"HookDefGetByNameVersionIsTenantScoped", testHookDefGetByNameVersionIsTenantScoped},
+		{"HookDefListByNameNewestFirst", testHookDefListByNameNewestFirst},
+		{"HookDefListNamesGroupedPerTenant", testHookDefListNamesGroupedPerTenant},
+		{"HookDefActivePointerPerTenant", testHookDefActivePointerPerTenant},
+		{"HookDefRetireReversible", testHookDefRetireReversible},
+		{"HookDefDeleteRemovesOnlyCallerTenant", testHookDefDeleteRemovesOnlyCallerTenant},
+		{"HookDefCreateUnknownParentRefused", testHookDefCreateUnknownParentRefused},
+		{"HookDefSnapshotRoundTrip", testHookDefSnapshotRoundTrip},
 		{"AgentDefOperatorAuthoredRoundTrip", testAgentDefOperatorAuthoredRoundTrip},
 		// v0.9.x MCPServerDef substrate — mirror of the AgentDef + SkillDef tests.
 		{"MCPServerDefCreateAndGet", testMCPServerDefCreateAndGet},
@@ -12824,5 +12836,525 @@ func testFinishRunPersistsResult(t *testing.T, s store.Store) {
 	}
 	if got, _ := s.GetRun(ctx, run.ID); !strings.Contains(string(got.Result), "the answer") {
 		t.Errorf("a second FinishRun overwrote a terminal run's result: %q", got.Result)
+	}
+}
+
+// ---- HookDef contract tests ----
+//
+// Mirror of the TeamDef tests. HookDef adds two tenant-scoped surfaces TeamDef
+// does not have — GetByNameVersion and a Delete whose scope is asserted with a
+// same-named bystander in ANOTHER tenant — so those tests always seed both
+// tenants: a single-tenant fixture passes with the tenant filter deleted.
+
+func mkHookDef(id, tenant, name, parent string) store.HookDefRow {
+	return store.HookDefRow{
+		DefID:       id,
+		TenantID:    tenant,
+		Name:        name,
+		ParentDefID: parent,
+		Definition:  json.RawMessage(`{"event":"PreToolUse","match":{"tool":"Bash"},"body":{"code":"return {decision:'allow'}"}}`),
+		Description: "test hook",
+	}
+}
+
+func testHookDefCreateAssignsPerTenantVersions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1row := mkHookDef("hd-1", "tenant-a", "guard", "")
+	v1row.CreatedByAgentID = "agent-x"
+	v1row.CreatedByRunID = "run-x"
+	v1row.ContentSHA256 = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	v1, err := s.HookDefCreate(ctx, v1row)
+	if err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if v1.Version != 1 {
+		t.Errorf("first version = %d, want 1", v1.Version)
+	}
+	v2, err := s.HookDefCreate(ctx, mkHookDef("hd-2", "tenant-a", "guard", v1.DefID))
+	if err != nil {
+		t.Fatalf("create v2: %v", err)
+	}
+	if v2.Version != 2 {
+		t.Errorf("second version = %d, want 2", v2.Version)
+	}
+	// Versions are allocated per tenant: another tenant's first "guard" is v1.
+	other, err := s.HookDefCreate(ctx, mkHookDef("hd-b1", "tenant-b", "guard", ""))
+	if err != nil {
+		t.Fatalf("create tenant-b v1: %v", err)
+	}
+	if other.Version != 1 {
+		t.Errorf("tenant-b first version = %d, want 1 (versions are per tenant)", other.Version)
+	}
+
+	got, err := s.HookDefGet(ctx, "hd-1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Name != "guard" || got.Version != 1 || got.TenantID != "tenant-a" ||
+		got.Description != "test hook" || got.CreatedByAgentID != "agent-x" ||
+		got.CreatedByRunID != "run-x" || got.ContentSHA256 != v1row.ContentSHA256 ||
+		got.ParentDefID != "" || got.Retired {
+		t.Errorf("get round-trip: %+v", got)
+	}
+	if !jsonEqual(got.Definition, string(v1row.Definition)) {
+		t.Errorf("definition round-trip: got %s", got.Definition)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at not populated")
+	}
+	if g2, err := s.HookDefGet(ctx, "hd-2"); err != nil || g2.ParentDefID != v1.DefID {
+		t.Errorf("v2 parent: got %q err %v, want %q", g2.ParentDefID, err, v1.DefID)
+	}
+
+	var nf *store.ErrNotFound
+	if _, err := s.HookDefGet(ctx, "no-such-hook"); !errors.As(err, &nf) {
+		t.Errorf("get unknown: got %v, want *ErrNotFound", err)
+	}
+}
+
+func testHookDefVersionMonotonicUnderContention(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const G = 20
+	const Per = 5
+	var wg sync.WaitGroup
+	errs := make(chan error, G*Per)
+	for g := 0; g < G; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < Per; i++ {
+				if _, err := s.HookDefCreate(ctx, mkHookDef(fmt.Sprintf("hd-race-%d-%d", g, i), "", "hook-race", "")); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("create error: %v", err)
+	}
+	rows, err := s.HookDefListByName(ctx, "hook-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != G*Per {
+		t.Fatalf("got %d versions, want %d", len(rows), G*Per)
+	}
+	seen := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if seen[r.Version] {
+			t.Errorf("duplicate version %d", r.Version)
+		}
+		seen[r.Version] = true
+	}
+	for v := 1; v <= G*Per; v++ {
+		if !seen[v] {
+			t.Errorf("missing version %d", v)
+		}
+	}
+}
+
+// testHookDefGetByNameVersionIsTenantScoped: tenant-b must not read tenant-a's
+// v1 by (name, version). FAIL-BEFORE: with the tenant_id predicate removed the
+// lookup under tenant-b returns tenant-a's row.
+func testHookDefGetByNameVersionIsTenantScoped(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, err := s.HookDefCreate(ctx, mkHookDef("hd-nv-a", "tenant-a", "audit", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.HookDefGetByNameVersion(ctx, "tenant-a", "audit", 1)
+	if err != nil {
+		t.Fatalf("own-tenant lookup: %v", err)
+	}
+	if got.DefID != a.DefID {
+		t.Errorf("own-tenant lookup = %q, want %q", got.DefID, a.DefID)
+	}
+
+	var nf *store.ErrNotFound
+	leaked, err := s.HookDefGetByNameVersion(ctx, "tenant-b", "audit", 1)
+	if !errors.As(err, &nf) {
+		t.Errorf("tenant-b read tenant-a's audit@v1: got def_id=%q err=%v, want *ErrNotFound", leaked.DefID, err)
+	}
+	if _, err := s.HookDefGetByNameVersion(ctx, "", "audit", 1); !errors.As(err, &nf) {
+		t.Errorf("shared tenant read tenant-a's audit@v1: err=%v, want *ErrNotFound", err)
+	}
+
+	// Once tenant-b owns its own v1, each tenant resolves to its own row.
+	b, err := s.HookDefCreate(ctx, mkHookDef("hd-nv-b", "tenant-b", "audit", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.HookDefGetByNameVersion(ctx, "tenant-b", "audit", 1); err != nil || got.DefID != b.DefID {
+		t.Errorf("tenant-b lookup = %q err %v, want %q", got.DefID, err, b.DefID)
+	}
+	if got, err := s.HookDefGetByNameVersion(ctx, "tenant-a", "audit", 1); err != nil || got.DefID != a.DefID {
+		t.Errorf("tenant-a lookup after tenant-b create = %q err %v, want %q", got.DefID, err, a.DefID)
+	}
+	if _, err := s.HookDefGetByNameVersion(ctx, "tenant-a", "audit", 2); !errors.As(err, &nf) {
+		t.Errorf("missing version: err=%v, want *ErrNotFound", err)
+	}
+}
+
+func testHookDefListByNameNewestFirst(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	v1, err := s.HookDefCreate(ctx, mkHookDef("hd-l1", "", "lister", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-l2", "", "lister", v1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-other", "", "other", "")); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.HookDefListByName(ctx, "lister")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Version != 2 || rows[1].Version != 1 {
+		t.Fatalf("list = %+v, want [v2, v1]", rows)
+	}
+	if rows[0].DefID != "hd-l2" || !jsonEqual(rows[0].Definition, string(mkHookDef("", "", "", "").Definition)) {
+		t.Errorf("list row round-trip: %+v", rows[0])
+	}
+	if rows, err := s.HookDefListByName(ctx, "absent"); err != nil || len(rows) != 0 {
+		t.Errorf("list absent: %d rows err %v, want 0", len(rows), err)
+	}
+}
+
+func testHookDefListNamesGroupedPerTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a1, err := s.HookDefCreate(ctx, mkHookDef("hd-ln-a1", "tenant-a", "shared-name", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-ln-a2", "tenant-a", "shared-name", a1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-ln-b1", "tenant-b", "shared-name", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HookDefSetRetired(ctx, a1.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-a", "shared-name", a1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.HookDefListNames(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTenant := map[string]store.HookDefNameSummary{}
+	for _, r := range rows {
+		if r.Name == "shared-name" {
+			byTenant[r.TenantID] = r
+		}
+	}
+	if len(byTenant) != 2 {
+		t.Fatalf("summaries for shared-name = %d, want one per tenant (2): %+v", len(byTenant), rows)
+	}
+	a := byTenant["tenant-a"]
+	if a.VersionCount != 2 || a.LiveVersionCount != 1 || a.LatestVersion != 2 ||
+		a.ActiveDefID != a1.DefID || !a.ActiveRetired || a.LastUpdated.IsZero() {
+		t.Errorf("tenant-a summary = %+v, want 2 versions / 1 live / latest 2 / active retired %s", a, a1.DefID)
+	}
+	b := byTenant["tenant-b"]
+	if b.VersionCount != 1 || b.LiveVersionCount != 1 || b.LatestVersion != 1 ||
+		b.ActiveDefID != "" || b.ActiveRetired {
+		t.Errorf("tenant-b summary = %+v, want 1 version / 1 live / no active", b)
+	}
+}
+
+func testHookDefActivePointerPerTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const name = "promoted"
+	a1, err := s.HookDefCreate(ctx, mkHookDef("hd-ap-a1", "tenant-a", name, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, err := s.HookDefCreate(ctx, mkHookDef("hd-ap-a2", "tenant-a", name, a1.DefID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b1, err := s.HookDefCreate(ctx, mkHookDef("hd-ap-b1", "tenant-b", name, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var nf *store.ErrNotFound
+	if _, err := s.HookDefGetActive(ctx, "tenant-a", name); !errors.As(err, &nf) {
+		t.Errorf("no pointer yet: err=%v, want *ErrNotFound", err)
+	}
+	// Re-pointing is an idempotent UPSERT.
+	for _, id := range []string{a1.DefID, a2.DefID, a1.DefID} {
+		if err := s.HookDefSetActive(ctx, "tenant-a", name, id, "agent-p"); err != nil {
+			t.Fatalf("set active %s: %v", id, err)
+		}
+	}
+	got, err := s.HookDefGetActive(ctx, "tenant-a", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefID != a1.DefID {
+		t.Errorf("active = %s, want %s", got.DefID, a1.DefID)
+	}
+	// tenant-a's pointer is invisible to tenant-b until tenant-b sets its own.
+	if _, err := s.HookDefGetActive(ctx, "tenant-b", name); !errors.As(err, &nf) {
+		t.Errorf("tenant-b sees tenant-a's pointer: err=%v, want *ErrNotFound", err)
+	}
+	// A def is only promotable within its own tenant, and under its own name.
+	if err := s.HookDefSetActive(ctx, "tenant-b", name, a2.DefID, ""); err == nil {
+		t.Error("cross-tenant promote (tenant-a's def under tenant-b) unexpectedly succeeded")
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-a", "some-other-name", a2.DefID, ""); err == nil {
+		t.Error("promote under a different name unexpectedly succeeded")
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-a", name, "no-such-def", ""); !errors.As(err, &nf) {
+		t.Errorf("promote unknown def: err=%v, want *ErrNotFound", err)
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-b", name, b1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.HookDefGetActive(ctx, "tenant-b", name); err != nil || got.DefID != b1.DefID {
+		t.Errorf("tenant-b active = %q err %v, want %q", got.DefID, err, b1.DefID)
+	}
+	if got, err := s.HookDefGetActive(ctx, "tenant-a", name); err != nil || got.DefID != a1.DefID {
+		t.Errorf("tenant-a active after tenant-b promote = %q err %v, want %q", got.DefID, err, a1.DefID)
+	}
+}
+
+func testHookDefRetireReversible(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row, err := s.HookDefCreate(ctx, mkHookDef("hd-r1", "", "retiree", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HookDefSetRetired(ctx, row.DefID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.HookDefGet(ctx, row.DefID); !got.Retired {
+		t.Error("retire(true) didn't stick")
+	}
+	if err := s.HookDefSetRetired(ctx, row.DefID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.HookDefGet(ctx, row.DefID); got.Retired {
+		t.Error("retire(false) didn't reverse")
+	}
+	var nf *store.ErrNotFound
+	if err := s.HookDefSetRetired(ctx, "no-such-def", true); !errors.As(err, &nf) {
+		t.Errorf("retire unknown: err=%v, want *ErrNotFound", err)
+	}
+}
+
+// testHookDefDeleteRemovesOnlyCallerTenant: deleting a name removes every
+// version plus the active pointer in the caller's tenant and nothing else.
+// FAIL-BEFORE: with the tenant_id predicate removed from either DELETE,
+// tenant-a's same-named rows or pointer go too.
+func testHookDefDeleteRemovesOnlyCallerTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Unpinned first: tenant-a's row has NO active pointer here, so nothing
+	// but the row DELETE's own tenant predicate protects it. (In the pinned
+	// case below, the pointer's foreign key would also refuse an unscoped
+	// delete, and that is not what this test is about.)
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-u-a1", "tenant-a", "unpinned", "")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-u-b1", "tenant-b", "unpinned", "")); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.HookDefDelete(ctx, "tenant-b", "unpinned"); err != nil || !d {
+		t.Fatalf("delete unpinned: got (%v,%v), want (true,nil)", d, err)
+	}
+	if _, err := s.HookDefGet(ctx, "hd-u-a1"); err != nil {
+		t.Errorf("tenant-a's unpinned def removed by tenant-b's delete: %v", err)
+	}
+
+	const name = "doomed"
+	a1, err := s.HookDefCreate(ctx, mkHookDef("hd-d-a1", "tenant-a", name, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-a", name, a1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	b1, err := s.HookDefCreate(ctx, mkHookDef("hd-d-b1", "tenant-b", name, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-d-b2", "tenant-b", name, b1.DefID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-b", name, b1.DefID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HookDefCreate(ctx, mkHookDef("hd-d-keep", "tenant-b", "keeper", "")); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := s.HookDefDelete(ctx, "tenant-b", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !deleted {
+		t.Fatal("delete reported nothing removed")
+	}
+
+	var nf *store.ErrNotFound
+	for _, id := range []string{"hd-d-b1", "hd-d-b2"} {
+		if _, err := s.HookDefGet(ctx, id); !errors.As(err, &nf) {
+			t.Errorf("tenant-b %s survived delete: err=%v", id, err)
+		}
+	}
+	if _, err := s.HookDefGetActive(ctx, "tenant-b", name); !errors.As(err, &nf) {
+		t.Errorf("tenant-b active pointer survived delete: err=%v", err)
+	}
+	// tenant-a's same-named def and pointer are untouched.
+	if _, err := s.HookDefGet(ctx, a1.DefID); err != nil {
+		t.Errorf("tenant-a's def removed by tenant-b's delete: %v", err)
+	}
+	if got, err := s.HookDefGetActive(ctx, "tenant-a", name); err != nil || got.DefID != a1.DefID {
+		t.Errorf("tenant-a's pointer after tenant-b's delete = %q err %v, want %q", got.DefID, err, a1.DefID)
+	}
+	if _, err := s.HookDefGet(ctx, "hd-d-keep"); err != nil {
+		t.Errorf("bystander name removed: %v", err)
+	}
+
+	if d, err := s.HookDefDelete(ctx, "tenant-b", name); err != nil || d {
+		t.Errorf("re-delete: got (%v,%v), want (false,nil)", d, err)
+	}
+	// A tenant with no such name deletes nothing, even though tenant-a has it.
+	if d, err := s.HookDefDelete(ctx, "tenant-c", name); err != nil || d {
+		t.Errorf("delete in empty tenant: got (%v,%v), want (false,nil)", d, err)
+	}
+	if _, err := s.HookDefGet(ctx, a1.DefID); err != nil {
+		t.Errorf("tenant-a's def removed by tenant-c's delete: %v", err)
+	}
+}
+
+func testHookDefCreateUnknownParentRefused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	_, err := s.HookDefCreate(ctx, mkHookDef("hd-orphan", "", "orphan", "no-such-parent"))
+	if !errors.Is(err, store.ErrHookDefParentNotFound) {
+		t.Fatalf("got %v, want ErrHookDefParentNotFound", err)
+	}
+	if rows, _ := s.HookDefListByName(ctx, "orphan"); len(rows) != 0 {
+		t.Errorf("refused create left %d rows", len(rows))
+	}
+}
+
+func testHookDefSnapshotRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if rows, err := s.SnapshotReadHookDefs(ctx); err != nil || len(rows) != 0 {
+		t.Fatalf("empty read: %d rows err %v", len(rows), err)
+	}
+	if ptrs, err := s.SnapshotReadHookDefActive(ctx); err != nil || len(ptrs) != 0 {
+		t.Fatalf("empty active read: %d rows err %v", len(ptrs), err)
+	}
+
+	// Insertion order deliberately differs from the (tenant, name, version)
+	// order the read must return.
+	for _, r := range []store.HookDefRow{
+		mkHookDef("hd-s-tb-a", "tb", "a", ""),
+		mkHookDef("hd-s-ta-z", "ta", "z", ""),
+		mkHookDef("hd-s-ta-b1", "ta", "b", ""),
+		mkHookDef("hd-s-ta-b2", "ta", "b", "hd-s-ta-b1"),
+	} {
+		if _, err := s.HookDefCreate(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.HookDefSetActive(ctx, "tb", "a", "hd-s-tb-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HookDefSetActive(ctx, "ta", "z", "hd-s-ta-z", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.SnapshotReadHookDefs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.DefID)
+	}
+	if want := []string{"hd-s-ta-b1", "hd-s-ta-b2", "hd-s-ta-z", "hd-s-tb-a"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("snapshot order = %v, want %v", order, want)
+	}
+	ptrs, err := s.SnapshotReadHookDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ptrs) != 2 || ptrs[0].TenantID != "ta" || ptrs[1].TenantID != "tb" {
+		t.Errorf("active snapshot order = %+v, want [ta/z, tb/a]", ptrs)
+	}
+
+	// Re-restoring what was read is a no-op (idempotent on def_id / pointer PK).
+	for _, r := range rows {
+		if ins, err := s.SnapshotRestoreHookDef(ctx, r); err != nil || ins {
+			t.Errorf("re-restore %s: inserted=%v err=%v, want (false,nil)", r.DefID, ins, err)
+		}
+	}
+	for _, p := range ptrs {
+		if ins, err := s.SnapshotRestoreHookDefActive(ctx, p); err != nil || ins {
+			t.Errorf("re-restore pointer %s/%s: inserted=%v err=%v, want (false,nil)", p.TenantID, p.Name, ins, err)
+		}
+	}
+
+	// A restored row keeps every field, including its captured version.
+	restored := mkHookDef("hd-s-new", "tc", "restored", "hd-s-ta-b1")
+	restored.Version = 7
+	restored.Retired = true
+	restored.CreatedByAgentID = "agent-r"
+	restored.CreatedByRunID = "run-r"
+	restored.ContentSHA256 = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	restored.CreatedAt = time.Now().UTC().Truncate(time.Second)
+	if ins, err := s.SnapshotRestoreHookDef(ctx, restored); err != nil || !ins {
+		t.Fatalf("restore new: inserted=%v err=%v", ins, err)
+	}
+	if ins, err := s.SnapshotRestoreHookDef(ctx, restored); err != nil || ins {
+		t.Errorf("second restore: inserted=%v err=%v, want (false,nil)", ins, err)
+	}
+	ptr := store.HookDefActiveEntry{
+		TenantID: "tc", Name: "restored", DefID: "hd-s-new",
+		PromotedAt: time.Now().UTC().Truncate(time.Second), PromotedByAgentID: "agent-r",
+	}
+	if ins, err := s.SnapshotRestoreHookDefActive(ctx, ptr); err != nil || !ins {
+		t.Fatalf("restore pointer: inserted=%v err=%v", ins, err)
+	}
+	if ins, err := s.SnapshotRestoreHookDefActive(ctx, ptr); err != nil || ins {
+		t.Errorf("second pointer restore: inserted=%v err=%v, want (false,nil)", ins, err)
+	}
+
+	got, err := s.HookDefGetByNameVersion(ctx, "tc", "restored", 7)
+	if err != nil {
+		t.Fatalf("read restored: %v", err)
+	}
+	if got.DefID != restored.DefID || got.ParentDefID != restored.ParentDefID || !got.Retired ||
+		got.CreatedByAgentID != "agent-r" || got.CreatedByRunID != "run-r" ||
+		got.ContentSHA256 != restored.ContentSHA256 || got.Description != restored.Description ||
+		!got.CreatedAt.Equal(restored.CreatedAt) || !jsonEqual(got.Definition, string(restored.Definition)) {
+		t.Errorf("restored row = %+v, want %+v", got, restored)
+	}
+	all, err := s.SnapshotReadHookDefActive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, p := range all {
+		if p.TenantID == "tc" && p.Name == "restored" {
+			found = true
+			if p.DefID != "hd-s-new" || p.PromotedByAgentID != "agent-r" || !p.PromotedAt.Equal(ptr.PromotedAt) {
+				t.Errorf("restored pointer = %+v, want %+v", p, ptr)
+			}
+		}
+	}
+	if !found {
+		t.Error("restored pointer missing from snapshot read")
 	}
 }

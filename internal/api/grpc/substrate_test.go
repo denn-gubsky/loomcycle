@@ -31,6 +31,7 @@ type substrateMock struct {
 	gotScheduleDefInput   json.RawMessage
 	gotVolumeDefInput     json.RawMessage
 	gotTeamDefInput       json.RawMessage
+	gotHookDefInput       json.RawMessage
 	gotPathInput          json.RawMessage
 	gotDocumentInput      json.RawMessage
 	gotHistoryInput       json.RawMessage
@@ -42,6 +43,7 @@ type substrateMock struct {
 	scheduleDefResult   connector.ToolResult
 	volumeDefResult     connector.ToolResult
 	teamDefResult       connector.ToolResult
+	hookDefResult       connector.ToolResult
 	pathResult          connector.ToolResult
 	documentResult      connector.ToolResult
 	historyResult       connector.ToolResult
@@ -108,6 +110,11 @@ func (m *substrateMock) VolumeDef(_ context.Context, in json.RawMessage) (connec
 func (m *substrateMock) TeamDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotTeamDefInput = in
 	return m.teamDefResult, m.teamDefErr
+}
+
+func (m *substrateMock) HookDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotHookDefInput = in
+	return m.hookDefResult, nil
 }
 
 func TestGrpcAgentDef_HappyPath(t *testing.T) {
@@ -266,6 +273,35 @@ func TestGrpcTeamDef_HappyPath(t *testing.T) {
 	}
 	if string(resp.GetOutputJson()) != `{"def_id":"team_abc","name":"triage","version":1}` {
 		t.Errorf("output_json = %s", resp.GetOutputJson())
+	}
+}
+
+// A HookDef is authored like an AgentDef; an unmapped RPC would fall back to
+// substrate:admin and lock tenants out of the gRPC twin of POST /v1/_hookdef.
+func TestGrpcHookDef_IsGatedLikeAgentDef(t *testing.T) {
+	got, ok := grpcConsumerScopes["HookDef"]
+	if !ok || got != grpcConsumerScopes["AgentDef"] {
+		t.Fatalf("HookDef scope = %q (mapped %v), want AgentDef's %q", got, ok, grpcConsumerScopes["AgentDef"])
+	}
+}
+
+func TestGrpcHookDef_ReachesTheConnectorAndCarriesARefusal(t *testing.T) {
+	mc := &substrateMock{
+		hookDefResult: connector.ToolResult{Text: `create: event is required`, IsError: true},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	in := `{"op":"create","name":"gate","overlay":{"body":{"kind":"http","url":"https://h.example"}}}`
+	resp, err := client.HookDef(context.Background(), &loomcyclepb.SubstrateRequest{InputJson: []byte(in)})
+	if err != nil {
+		t.Fatalf("HookDef: %v", err)
+	}
+	if string(mc.gotHookDefInput) != in {
+		t.Errorf("connector got %s; want the request's input", mc.gotHookDefInput)
+	}
+	if !resp.GetIsError() {
+		t.Errorf("is_error = false; a tool refusal must reach the caller as is_error")
 	}
 }
 

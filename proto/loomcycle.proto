@@ -443,6 +443,14 @@ service Loomcycle {
   // SubstrateRequest/Response body shape (is_error carries tool refusals).
   rpc TeamDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // HookDef dispatches to the reusable-hook-definition substrate. Mirrors
+  // POST /v1/_hookdef. TENANT-CONFINED (ScopeTenant, like AgentDef): the tool
+  // stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+  // Op-discriminated input_json (create / fork / get / list / promote /
+  // retire / verify / delete). Same SubstrateRequest/Response body shape
+  // (is_error carries tool refusals).
+  rpc HookDef(SubstrateRequest) returns (SubstrateResponse);
+
   // Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
   // TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
   // the operator-trust ctx + the caller's authoritative tenant, never the

@@ -45,6 +45,8 @@ type RestoreResult struct {
 	SkillDefActiveRestored     int      `json:"skill_def_active_restored"`
 	TeamDefsRestored           int      `json:"team_defs_restored"`
 	TeamDefActiveRestored      int      `json:"team_def_active_restored"`
+	HookDefsRestored           int      `json:"hook_defs_restored"`
+	HookDefActiveRestored      int      `json:"hook_def_active_restored"`
 	MCPServerDefsRestored      int      `json:"mcp_server_defs_restored"`
 	MCPServerDefActiveRestored int      `json:"mcp_server_def_active_restored"`
 	MemoryRestored             int      `json:"memory_restored"`
@@ -304,6 +306,61 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.TeamDefActiveRestored++
+			}
+		}
+	}
+
+	// hook_defs — mirror of team_defs restore
+	if rawSection, ok := sections[migrations.SectionHookDefs]; ok {
+		var sec HookDefsSection
+		if err := decodeWithMigration(migrations.SectionHookDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreHookDef(ctx, store.HookDefRow{
+				DefID:            e.DefID,
+				TenantID:         e.TenantID,
+				Name:             e.Name,
+				Version:          e.Version,
+				ParentDefID:      e.ParentDefID,
+				Definition:       e.Definition,
+				Description:      e.Description,
+				CreatedAt:        e.CreatedAt,
+				CreatedByAgentID: e.CreatedByAgentID,
+				CreatedByRunID:   e.CreatedByRunID,
+				Retired:          e.Retired,
+				ContentSHA256:    e.ContentSHA256,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("hook_def %s: %v", e.DefID, err))
+				continue
+			}
+			if inserted {
+				result.HookDefsRestored++
+			}
+		}
+	}
+
+	// hook_def_active (after hook_defs for FK)
+	if rawSection, ok := sections[migrations.SectionHookDefActive]; ok {
+		var sec HookDefActiveSection
+		if err := decodeWithMigration(migrations.SectionHookDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			inserted, err := s.SnapshotRestoreHookDefActive(ctx, store.HookDefActiveEntry{
+				Name:              e.Name,
+				TenantID:          e.TenantID,
+				DefID:             e.DefID,
+				PromotedAt:        e.PromotedAt,
+				PromotedByAgentID: e.PromotedByAgentID,
+			})
+			if err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("hook_def_active %s: %v", e.Name, err))
+				continue
+			}
+			if inserted {
+				result.HookDefActiveRestored++
 			}
 		}
 	}

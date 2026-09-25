@@ -445,6 +445,36 @@ describe("memoryBackendDef", () => {
   });
 });
 
+describe("hookDef", () => {
+  it("posts JSON to /v1/_hookdef and returns the row envelope", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ def_id: "hdf_abc", name: "gate", version: 1, promoted: true }),
+    ]);
+
+    const result = (await client.hookDef({
+      op: "create",
+      name: "gate",
+      overlay: { event: "pre", body: { kind: "http", url: "https://hooks.example/gate" } },
+    })) as Record<string, unknown>;
+
+    expect(result.def_id).toBe("hdf_abc");
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_hookdef");
+    expect((call[1] as RequestInit).method).toBe("POST");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.op).toBe("create");
+    expect(body.overlay.event).toBe("pre");
+  });
+
+  it("raises AuthError on 401", async () => {
+    const { client } = makeClient([errorResponse(401, "invalid token")]);
+    await expect(
+      client.hookDef({ op: "create", name: "x", overlay: {} }),
+    ).rejects.toBeInstanceOf(AuthError);
+  });
+});
+
 describe("operatorTokenDef", () => {
   it("posts JSON to /v1/_operatortokendef and returns the row envelope", async () => {
     const { client, fetchMock } = makeClient([

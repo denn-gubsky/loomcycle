@@ -303,6 +303,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.HookDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/HookDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.Path = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Path',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -1008,6 +1013,18 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def HookDef(self, request, context):
+        """HookDef dispatches to the reusable-hook-definition substrate. Mirrors
+        POST /v1/_hookdef. TENANT-CONFINED (ScopeTenant, like AgentDef): the tool
+        stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+        Op-discriminated input_json (create / fork / get / list / promote /
+        retire / verify / delete). Same SubstrateRequest/Response body shape
+        (is_error carries tool refusals).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Path(self, request, context):
         """Path dispatches to the RFC AL Unix-like VFS tool. Mirrors POST /v1/_path.
         TENANT-CONFINED (ScopeTenant): scope (agent/user/tenant) is resolved from
@@ -1411,6 +1428,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'TeamDef': grpc.unary_unary_rpc_method_handler(
                     servicer.TeamDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'HookDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.HookDef,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -2913,6 +2935,33 @@ class Loomcycle:
             request,
             target,
             '/loomcycle.v1.Loomcycle/TeamDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HookDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/HookDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

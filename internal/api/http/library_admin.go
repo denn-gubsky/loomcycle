@@ -89,6 +89,19 @@ func (s *Server) handleListTeamDefNames(w http.ResponseWriter, r *http.Request) 
 	writeJSONOK(w, map[string]any{"names": rows})
 }
 
+// handleListHookDefNames serves GET /v1/_hookdef/names; tenant-scoped like
+// the other name lists.
+func (s *Server) handleListHookDefNames(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.HookDefListNames(r.Context())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	rows = scopeNames(rows, all, tenantID, func(x store.HookDefNameSummary) string { return x.TenantID })
+	writeJSONOK(w, map[string]any{"names": rows})
+}
+
 // handleListMCPServerDefNames serves GET /v1/_mcpserverdef/names.
 func (s *Server) handleListMCPServerDefNames(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.store.MCPServerDefListNames(r.Context())

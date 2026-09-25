@@ -73,6 +73,50 @@ middle wildcards. An empty/omitted `agents` or `tools` list means "match
 all". A hook fires only when its agent glob AND its tool glob AND its
 phase all match.
 
+## Hook definitions (HookDef)
+
+A **HookDef** is one hook stored once and versioned, so it can be named
+wherever it is used instead of registered per app: the event it answers, the
+tools it matches, its body, its fail mode and timeout.
+
+```json
+{ "op": "create", "name": "net/deny-internal",
+  "overlay": {
+    "description": "Blocks fetches of internal hosts.",
+    "event": "pre",
+    "match": { "tools": ["WebFetch", "HTTP"] },
+    "body": { "kind": "http", "url": "https://hooks.example/gate" },
+    "fail_mode": "closed",
+    "timeout_ms": 800 } }
+```
+
+- `event` uses the phase names above (`pre`, `post`, `post_failure`,
+  `agent_start`, `agent_stop`, `subagent_start`, `subagent_stop`,
+  `pre_compact`, `post_compact`, `run_end`); `match.tools` is for the tool
+  events only.
+- `body.kind` is `http` (a `url`) or `code-js` (a `code` body defining
+  `hook(ev)`, see *Code hooks*). A code body is compiled when it is saved, and
+  is refused unless the server enables code hooks.
+- `description` is what someone the hook stops is told about it; the body and
+  URL are never shown to them.
+- Ops: `create` (promotes), `fork` (each top-level overlay field replaces the
+  parent's; `null` clears it; does not promote), `get` (by `def_id`, or `name`
+  for the active version), `list`, `promote`, `retire`, `verify`, `delete`
+  (every version of the name).
+- Names are segments of `A-Z a-z 0-9 _ -` joined by `/`; they cannot contain
+  `@` or `:`.
+- A HookDef belongs to its tenant: another tenant's reads back as not found,
+  and a fork's parent must be your own tenant's.
+
+Surfaces: `POST /v1/_hookdef` (and `GET /v1/_hookdef/names`), the MCP tool
+`hookdef`, the gRPC `HookDef` RPC, and the TS / Python adapters (`hookDef` /
+`hook_def`). It is never an agent tool — no agent can write the hook that
+gates it.
+
+A HookDef on its own fires on nothing: it is attached by naming it from an
+agent definition, a team definition or a run. Until that attachment ships,
+the registered hooks above are what run.
+
 ## What a hook can return
 
 A `pre` webhook response (`PreHookResult`) — any field may be set, and an

@@ -1817,6 +1817,14 @@ type Store interface {
 	// teamdef_active. Ordered by name ASC for determinism.
 	SnapshotReadTeamDefActive(ctx context.Context) ([]TeamDefActiveEntry, error)
 
+	// SnapshotReadHookDefs returns every row in hook_defs, ordered by
+	// (tenant_id ASC, name ASC, version ASC) for snapshot determinism.
+	SnapshotReadHookDefs(ctx context.Context) ([]HookDefRow, error)
+
+	// SnapshotReadHookDefActive returns every row in hook_def_active,
+	// ordered by (tenant_id ASC, name ASC).
+	SnapshotReadHookDefActive(ctx context.Context) ([]HookDefActiveEntry, error)
+
 	// SnapshotReadMCPServerDefs — v0.9.x mirror of SnapshotReadSkillDefs.
 	SnapshotReadMCPServerDefs(ctx context.Context) ([]MCPServerDefRow, error)
 
@@ -1912,6 +1920,14 @@ type Store interface {
 	// SnapshotRestoreTeamDefActive mirrors SnapshotRestoreSkillDefActive
 	// for teamdef_active. ON CONFLICT (tenant_id, name) DO NOTHING.
 	SnapshotRestoreTeamDefActive(ctx context.Context, entry TeamDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreHookDef mirrors SnapshotRestoreTeamDef for hook_defs.
+	// Idempotent on def_id.
+	SnapshotRestoreHookDef(ctx context.Context, r HookDefRow) (bool, error)
+
+	// SnapshotRestoreHookDefActive mirrors SnapshotRestoreTeamDefActive for
+	// hook_def_active. ON CONFLICT (tenant_id, name) DO NOTHING.
+	SnapshotRestoreHookDefActive(ctx context.Context, entry HookDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMCPServerDef — v0.9.x mirror.
 	SnapshotRestoreMCPServerDef(ctx context.Context, r MCPServerDefRow) (bool, error)
@@ -2687,6 +2703,30 @@ type Store interface {
 	// scoped to (tenant_id, name) so a principal can't delete another tenant's
 	// same-named team. Returns whether anything was deleted.
 	TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+
+	// ---- HookDef substrate ----
+	//
+	// Mirror of TeamDef* with the same invariants: a per-name lock keeps the
+	// version monotonic across concurrent forks, the active pointer is
+	// per-tenant, and Delete removes every version of a name in one tenant.
+	// The Definition payload is a hooks.Def (event, match, body, fail_mode,
+	// timeout) — the store stays content-agnostic.
+
+	HookDefCreate(ctx context.Context, row HookDefRow) (HookDefRow, error)
+	HookDefGet(ctx context.Context, defID string) (HookDefRow, error)
+	HookDefGetByNameVersion(ctx context.Context, tenantID, name string, version int) (HookDefRow, error)
+	HookDefListByName(ctx context.Context, name string) ([]HookDefRow, error)
+	HookDefListNames(ctx context.Context) ([]HookDefNameSummary, error)
+	// HookDefSetActive UPSERTs the hook_def_active pointer for (tenantID,
+	// name). Refused when the def's tenant_id ≠ tenantID.
+	HookDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// HookDefGetActive returns the active row for (tenantID, name), or
+	// *ErrNotFound when no pointer exists.
+	HookDefGetActive(ctx context.Context, tenantID, name string) (HookDefRow, error)
+	HookDefSetRetired(ctx context.Context, defID string, retired bool) error
+	// HookDefDelete hard-deletes every version of name in tenantID plus its
+	// active pointer. Returns whether anything was deleted.
+	HookDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 
 	// ---- v0.9.x MCPServerDef substrate ----
 	//
@@ -4380,6 +4420,58 @@ type TeamDefActiveEntry struct {
 	TenantID string `json:"tenant_id,omitempty"`
 }
 
+// ---- HookDef substrate types ----
+//
+// A HookDef is one reusable hook: the event it answers, what it matches, its
+// body (code-js or a webhook URL), and how it fails. Same identity / lineage /
+// provenance semantics as TeamDefRow; the Definition payload is a hooks.Def the
+// store does not interpret.
+//
+// There is no OperatorAuthored column: a HookDef is only ever written from an
+// operator surface (the tool is in no agent's tool list), and whether a hook
+// may widen hosts is decided by the definition that names it, not by the
+// HookDef.
+type HookDefRow struct {
+	DefID            string          `json:"def_id"`
+	Name             string          `json:"name"`
+	Version          int             `json:"version"`
+	ParentDefID      string          `json:"parent_def_id,omitempty"`
+	Definition       json.RawMessage `json:"definition"`
+	Description      string          `json:"description,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	CreatedByAgentID string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID   string          `json:"created_by_run_id,omitempty"`
+	Retired          bool            `json:"retired"`
+	// ContentSHA256 — see AgentDefRow.ContentSHA256. Same semantics.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// TenantID is the owning tenant; "" = the shared/operator tenant. The
+	// UNIQUE constraint is (tenant_id, name, version). Not part of the content
+	// hash. Set from the authoritative principal at the write site, never from
+	// the wire.
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// HookDefNameSummary mirrors TeamDefNameSummary.
+type HookDefNameSummary struct {
+	Name             string    `json:"name"`
+	TenantID         string    `json:"tenant_id,omitempty"`
+	VersionCount     int       `json:"version_count"`
+	ActiveDefID      string    `json:"active_def_id,omitempty"`
+	LatestVersion    int       `json:"latest_version"`
+	LastUpdated      time.Time `json:"last_updated"`
+	LiveVersionCount int       `json:"live_version_count"`
+	ActiveRetired    bool      `json:"active_retired,omitempty"`
+}
+
+// HookDefActiveEntry mirrors TeamDefActiveEntry.
+type HookDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+}
+
 // ---- v0.9.x MCPServerDef substrate types ----
 //
 // Mirror of AgentDef* / SkillDef* with the same identity / lineage /
@@ -4984,6 +5076,10 @@ var ErrSkillDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "
 // ErrTeamDefParentNotFound mirrors ErrSkillDefParentNotFound for
 // the TeamDef substrate.
 var ErrTeamDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "team_def: parent_def_id does not exist"}
+
+// ErrHookDefParentNotFound mirrors ErrTeamDefParentNotFound for the HookDef
+// substrate.
+var ErrHookDefParentNotFound = &SubstrateError{Code: "parent_not_found", Msg: "hook_def: parent_def_id does not exist"}
 
 // ErrMCPServerDefParentNotFound mirrors the AgentDef + SkillDef
 // pattern for the v0.9.x MCPServerDef substrate.

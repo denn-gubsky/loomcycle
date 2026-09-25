@@ -87,6 +87,12 @@ var handlersByName = map[string]toolHandler{
 	"teamdef": wrapBuiltin("teamdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.TeamDef(ctx, in)
 	}),
+	// Reusable hook definitions. Tenant-confined like agentdef; never an agent
+	// tool, so this meta-tool and the other operator surfaces are the only
+	// writers.
+	"hookdef": wrapBuiltin("hookdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.HookDef(ctx, in)
+	}),
 	// v0.9.x dynamic MCP server registration. Operator-admin-only;
 	// the LoomCycle MCP server is bearer-authed so external
 	// orchestrators (Claude Code, n8n via the MCP Client Tool) can
