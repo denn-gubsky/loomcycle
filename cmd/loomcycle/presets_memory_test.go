@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,17 +264,33 @@ func TestConsolidatorBundle_SoftensTheOrphanAddWarning(t *testing.T) {
 		return out
 	}
 
+	// The advisory is aggregated per SCOPE, so the default stack earns one line
+	// for each scope an enqueuing agent holds: user (every memory agent) and
+	// tenant (the chat agents). Lines come sorted by scope.
+	wantScopes := []string{"tenant", "user"}
+	checkScopes := func(stage string, got []string) {
+		t.Helper()
+		if len(got) != len(wantScopes) {
+			t.Fatalf("%s: orphan-add warnings = %d, want one per scope %v: %v", stage, len(got), wantScopes, got)
+		}
+		for i, scope := range wantScopes {
+			if prefix := fmt.Sprintf("memory scope %q:", scope); !strings.HasPrefix(got[i], prefix) {
+				t.Errorf("%s: line %d should be about scope %q; got %q", stage, i, scope, got[i])
+			}
+		}
+	}
+
 	defaultStack := []string{"base", "document-agent", "chat", "agent-teams", "team-examples"}
 	without, err := config.LoadLayers(layersFor(t, defaultStack...)...)
 	if err != nil {
 		t.Fatalf("default stack: %v", err)
 	}
 	got := orphanWarnings(without)
-	if len(got) != 1 {
-		t.Fatalf("default stack orphan-add warnings = %d, want 1 aggregated line: %v", len(got), got)
-	}
-	if !strings.Contains(got[0], "no enabled scheduled run drains it") {
-		t.Errorf("without the bundle the advisory should be the full one; got %q", got[0])
+	checkScopes("default stack", got)
+	for _, line := range got {
+		if !strings.Contains(line, "no enabled scheduled run drains it") {
+			t.Errorf("without the bundle the advisory should be the full one; got %q", line)
+		}
 	}
 
 	with, err := config.LoadLayers(layersFor(t, append(defaultStack, "memory")...)...)
@@ -281,15 +298,15 @@ func TestConsolidatorBundle_SoftensTheOrphanAddWarning(t *testing.T) {
 		t.Fatalf("default stack + memory: %v", err)
 	}
 	got = orphanWarnings(with)
-	if len(got) != 1 {
-		t.Fatalf("with the memory bundle staged off, orphan-add warnings = %d, want 1 softer line: %v", len(got), got)
-	}
-	if strings.Contains(got[0], "no enabled scheduled run drains it") {
-		t.Errorf("the advisory still says nothing drains the scope, but the bundle's consolidator IS installed (just disabled); got %q", got[0])
-	}
-	for _, want := range []string{"is disabled", "memory-consolidation"} {
-		if !strings.Contains(got[0], want) {
-			t.Errorf("the softer advisory must name the disabled schedule; %q is missing %q", got[0], want)
+	checkScopes("memory bundle staged off", got)
+	for _, line := range got {
+		if strings.Contains(line, "no enabled scheduled run drains it") {
+			t.Errorf("the advisory still says nothing drains the scope, but the bundle's consolidator IS installed (just disabled); got %q", line)
+		}
+		for _, want := range []string{"is disabled", "memory-consolidation"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("the softer advisory must name the disabled schedule; %q is missing %q", line, want)
+			}
 		}
 	}
 
