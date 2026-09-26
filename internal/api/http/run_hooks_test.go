@@ -3,6 +3,8 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // setAgentHooks gives a harness agent its hooks, as its yaml would.
@@ -159,5 +162,41 @@ func waitRunStatus(t *testing.T, st store.Store, runID string, want store.RunSta
 			t.Fatalf("run %s status = %q (err %v), want %q", runID, run.Status, err, want)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The crossing for a hook's headers: the credential resolver the server is
+// given reaches a real run's hook call, with the run's identity on its ctx.
+func TestRunHooks_AHeaderCredentialIsResolvedForTheRun(t *testing.T) {
+	h := newReviewHarness(t)
+	got := make(chan string, 1)
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case got <- r.Header.Get("Authorization"):
+		default:
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer hook.Close()
+	var seenAgent string
+	h.srv.SetHookHeaderSubstitute(func(ctx context.Context, s string) (string, []string, error) {
+		seenAgent = tools.AgentName(ctx)
+		return strings.ReplaceAll(s, "$cred:hook_secret", "s3cr3t"), nil, nil
+	})
+	setAgentHooks(h.srv, "writer", hooks.EventHooks{hooks.PhaseAgentStart: {{Inline: &hooks.Inline{
+		Name: "gate", URL: hook.URL, Headers: map[string]string{"Authorization": "Bearer $cred:hook_secret"}}}}}, nil)
+	_, _, frames, stop := h.start(writeBody)
+	defer stop()
+	h.waitFrame(frames, "done")
+	select {
+	case a := <-got:
+		if a != "Bearer s3cr3t" {
+			t.Fatalf("Authorization = %q", a)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the hook was not called")
+	}
+	if seenAgent != "writer" {
+		t.Fatalf("the resolver saw agent %q; want the run's", seenAgent)
 	}
 }

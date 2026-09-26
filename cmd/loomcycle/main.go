@@ -1880,6 +1880,13 @@ func main() {
 		hookDefTool.CompileCode = runner.Compile
 	}
 	srv.SetHookDefTool(hookDefTool)
+	// A hook's webhook headers bind credentials the same way an MCP server's do:
+	// resolved per call from the run's identity, the value never stored in the
+	// definition that attaches the hook. Here, not beside credSubstitute: srv
+	// does not exist until lchttp.New below that.
+	srv.SetHookHeaderSubstitute(func(ctx context.Context, s string) (string, []string, error) {
+		return credSubstitute(ctx, s)
+	})
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
 	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +

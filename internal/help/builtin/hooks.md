@@ -71,8 +71,16 @@ The same shape goes in an AgentDef overlay (`tools` entries as
 `{name, hooks}`; stored as the tool name plus a `tool_hooks` entry).
 
 - An entry is a **HookDef name** (`gate`, or `gate@3` pinned) or an **inline
-  webhook** `{name, url, fail_mode, timeout_ms}` — `name` required; it names
-  the hook in the payload and in `hook_decision` events.
+  webhook** `{name, url, fail_mode, timeout_ms, headers}` — `name` required; it
+  names the hook in the payload and in `hook_decision` events.
+- **Secrets go in `headers`, as credentials** — never in the URL or a literal
+  value, which would sit in the agent's definition for anyone who can read it.
+  A header value may name a credential, `$cred:<name>` (see `credentials`),
+  resolved for the run each time the hook is called:
+  `headers: {Authorization: "Bearer $cred:hook_secret"}`. A credential that
+  does not resolve for the run fails the call (never sent as the literal
+  reference), and the hook's `fail_mode` decides. A HookDef's `http` body takes
+  the same `headers`.
 - A tool's hooks may use only `pre`, `post`, `post_failure`, and only for a
   tool the agent has; a HookDef under an event it does not answer is refused.
   These are checked when an AgentDef is saved, and again when a run starts.

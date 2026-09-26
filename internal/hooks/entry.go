@@ -29,6 +29,9 @@ type Inline struct {
 	URL       string   `json:"url" yaml:"url"`
 	FailMode  FailMode `json:"fail_mode,omitempty" yaml:"fail_mode,omitempty"`
 	TimeoutMs int      `json:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"`
+	// Headers are sent with each call; a value may name a credential
+	// ($cred:<name>), resolved for the run at call time.
+	Headers map[string]string `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
 // MarshalJSON writes a reference as a string and an inline webhook as an object.
@@ -154,6 +157,32 @@ func (e Entry) validate() error {
 	if in.TimeoutMs < 0 {
 		return fmt.Errorf("inline webhook %s: timeout_ms must be ≥ 0", in.Name)
 	}
+	if err := validateHeaders(in.Headers); err != nil {
+		return fmt.Errorf("inline webhook %s: %w", in.Name, err)
+	}
+	return nil
+}
+
+// validateHeaders refuses a header name that is not an HTTP token, and the
+// headers the webhook call sets itself.
+func validateHeaders(h map[string]string) error {
+	for k, v := range h {
+		if k == "" {
+			return fmt.Errorf("a header name is required")
+		}
+		for _, r := range k {
+			if !(r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+				return fmt.Errorf("header %q: a name is letters, digits, - and _", k)
+			}
+		}
+		switch strings.ToLower(k) {
+		case "host", "content-type", "content-length", "accept", "transfer-encoding", "connection":
+			return fmt.Errorf("header %q is set by the call itself", k)
+		}
+		if strings.ContainsAny(v, "\r\n") {
+			return fmt.Errorf("header %q: a value cannot contain a line break", k)
+		}
+	}
 	return nil
 }
 
@@ -246,7 +275,7 @@ func resolveEntry(ctx context.Context, src Source, tool string, phase Phase, ent
 		h.Tools = []string{tool}
 	}
 	if in := entry.Inline; in != nil {
-		h.Name, h.CallbackURL, h.FailMode, h.TimeoutMs = in.Name, in.URL, in.FailMode, in.TimeoutMs
+		h.Name, h.CallbackURL, h.FailMode, h.TimeoutMs, h.Headers = in.Name, in.URL, in.FailMode, in.TimeoutMs, in.Headers
 	} else {
 		name, version, err := ParseRef(entry.Ref)
 		if err != nil {
@@ -268,7 +297,7 @@ func resolveEntry(ctx context.Context, src Source, tool string, phase Phase, ent
 		case BodyKindCode:
 			h.Code = def.Body.Code
 		default:
-			h.CallbackURL = def.Body.URL
+			h.CallbackURL, h.Headers = def.Body.URL, def.Body.Headers
 		}
 		if def.Match != nil && len(def.Match.Tools) > 0 {
 			if tool != "" && !globsMatch(def.Match.Tools, tool) {

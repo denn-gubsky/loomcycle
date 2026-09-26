@@ -111,15 +111,19 @@ type Hook struct {
 	// Owner says where the hook came from — "agent:<name>" for a hook an
 	// AgentDef carries — and is sent in the payload as `owner`. (Owner, Name)
 	// names the hook in hook_decision events.
-	Owner       string        `json:"owner"`
-	Name        string        `json:"name"`
-	Phase       Phase         `json:"phase"`
-	Agents      []string      `json:"agents"` // exact or "prefix*"; empty = ["*"]
-	Tools       []string      `json:"tools"`  // exact or "prefix*"; empty = ["*"]
-	CallbackURL string        `json:"callback_url"`
-	FailMode    FailMode      `json:"fail_mode"` // "open" (default) | "closed"
-	TimeoutMs   int           `json:"timeout_ms"`
-	Timeout     time.Duration `json:"-"` // resolved when added to a Set
+	Owner       string   `json:"owner"`
+	Name        string   `json:"name"`
+	Phase       Phase    `json:"phase"`
+	Agents      []string `json:"agents"` // exact or "prefix*"; empty = ["*"]
+	Tools       []string `json:"tools"`  // exact or "prefix*"; empty = ["*"]
+	CallbackURL string   `json:"callback_url"`
+	// Headers are sent with every call to CallbackURL. A value may name a
+	// credential ($cred:<name>), resolved for the run at call time, so a secret
+	// the callback needs lives in the credential store, not the definition.
+	Headers   map[string]string `json:"headers,omitempty"`
+	FailMode  FailMode          `json:"fail_mode"` // "open" (default) | "closed"
+	TimeoutMs int               `json:"timeout_ms"`
+	Timeout   time.Duration     `json:"-"` // resolved when added to a Set
 	// RegisteredAt is when the hook was added to its Set.
 	RegisteredAt time.Time `json:"registered_at"`
 	// DefID is the HookDef version the hook was resolved from; "" for an inline

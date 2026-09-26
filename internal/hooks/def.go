@@ -34,6 +34,9 @@ type DefBody struct {
 	Kind string `json:"kind"`
 	Code string `json:"code,omitempty"`
 	URL  string `json:"url,omitempty"`
+	// Headers go with each webhook call; a value may name a credential
+	// ($cred:<name>), resolved for the run at call time. http bodies only.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Body kinds.
@@ -78,8 +81,8 @@ func (d Def) Validate() error {
 		if strings.TrimSpace(d.Body.Code) == "" {
 			return fmt.Errorf("body.code is required for a %s body", BodyKindCode)
 		}
-		if d.Body.URL != "" {
-			return fmt.Errorf("a %s body takes code, not url", BodyKindCode)
+		if d.Body.URL != "" || len(d.Body.Headers) > 0 {
+			return fmt.Errorf("a %s body takes code, not url or headers", BodyKindCode)
 		}
 		if len(d.Body.Code) > MaxCodeBytes {
 			return fmt.Errorf("body.code is %d bytes; the limit is %d", len(d.Body.Code), MaxCodeBytes)
@@ -90,6 +93,9 @@ func (d Def) Validate() error {
 		}
 		if !strings.HasPrefix(d.Body.URL, "http://") && !strings.HasPrefix(d.Body.URL, "https://") {
 			return fmt.Errorf("body.url must be http:// or https://")
+		}
+		if err := validateHeaders(d.Body.Headers); err != nil {
+			return fmt.Errorf("body.headers: %w", err)
 		}
 	case "":
 		return fmt.Errorf("body.kind is required (%s or %s)", BodyKindCode, BodyKindHTTP)

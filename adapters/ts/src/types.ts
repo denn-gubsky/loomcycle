@@ -3297,6 +3297,10 @@ export interface InlineWebhook {
   url: string;
   fail_mode?: HookFailMode;
   timeout_ms?: number;
+  /** Sent with each call. A value may name a credential as `$cred:<name>`,
+   *  resolved for the run when the hook is called — keep secrets there, not in
+   *  the URL or a literal value. */
+  headers?: Record<string, string>;
 }
 
 /** One hook an agent carries: a HookDef name (`"gate"`, or `"gate@3"` pinned)

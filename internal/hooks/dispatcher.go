@@ -32,6 +32,10 @@ type Dispatcher struct {
 	// case a code hook (e.g. one reloaded from the database) is unavailable and
 	// its fail mode decides.
 	code CodeRunner
+	// headerSub resolves the $cred: references in a webhook's header values for
+	// the run on ctx. nil = no credentials here: a header naming one fails the
+	// call, which is never sent with the literal reference.
+	headerSub HeaderSubstitute
 
 	hostWidenPermitted atomic.Int64
 	hostWidenDenied    atomic.Int64
@@ -84,6 +88,42 @@ func (d *Dispatcher) match(ctx context.Context, ident Identity, tool string, pha
 // SetCodeRunner installs the runner for code-js hook bodies. Call it during
 // boot wiring, before the server serves requests.
 func (d *Dispatcher) SetCodeRunner(r CodeRunner) { d.code = r }
+
+// HeaderSubstitute replaces the credential references ($cred:<name>) in s with
+// their values for the run on ctx, returning the names it could not resolve.
+type HeaderSubstitute func(ctx context.Context, s string) (string, []string, error)
+
+// SetHeaderSubstitute installs the credential resolver for webhook headers. Same
+// boot-wiring rule as SetCodeRunner.
+func (d *Dispatcher) SetHeaderSubstitute(f HeaderSubstitute) { d.headerSub = f }
+
+// headers resolves a webhook's header values. A value naming a credential that
+// does not resolve fails the call: sending the literal reference would hand the
+// callback a string it cannot use, and a closed hook must then deny.
+func (d *Dispatcher) headers(ctx context.Context, h *Hook) (map[string]string, error) {
+	if len(h.Headers) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(h.Headers))
+	for k, v := range h.Headers {
+		if !strings.Contains(v, "$") {
+			out[k] = v
+			continue
+		}
+		if d.headerSub == nil {
+			return nil, callError("a header credential could not be resolved", fmt.Errorf("header %s names a credential, and no credential store is configured", k))
+		}
+		resolved, unresolved, err := d.headerSub(ctx, v)
+		if err != nil {
+			return nil, callError("a header credential could not be resolved", fmt.Errorf("header %s: %w", k, err))
+		}
+		if len(unresolved) > 0 {
+			return nil, callError("a header credential could not be resolved", fmt.Errorf("header %s: no credential %v for this run", k, unresolved))
+		}
+		out[k] = resolved
+	}
+	return out, nil
+}
 
 // Identity carries the loop-side fields the dispatcher needs to
 // stamp onto the webhook payload. Filled by the loop from
@@ -385,7 +425,11 @@ func (d *Dispatcher) invoke(ctx context.Context, h *Hook, body, out any) error {
 	}
 	hookCtx, cancel := context.WithTimeout(ctx, h.Timeout)
 	defer cancel()
-	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, body, out)
+	headers, err := d.headers(hookCtx, h)
+	if err != nil {
+		return err
+	}
+	return d.client.post(hookCtx, d.client.clientFor(h), h.CallbackURL, headers, body, out)
 }
 
 // errCodeHooksDisabled is a code hook met with no runner installed.

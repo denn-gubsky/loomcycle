@@ -3060,6 +3060,12 @@ func (s *Server) trySessionLock(id string) (release func(), ok bool) {
 // goroutines ListenAndServe later spawns. It is NOT safe to call concurrently
 // with request handling (a hot-reload path would need a guard added here).
 
+// SetHookHeaderSubstitute lets a webhook hook's headers name credentials
+// ($cred:<name>), resolved for the run at call time. Call during boot wiring.
+func (s *Server) SetHookHeaderSubstitute(f hooks.HeaderSubstitute) {
+	s.hookDispatcher.SetHeaderSubstitute(f)
+}
+
 // SetCodeHookRunner enables code-js hook bodies. Call during boot wiring,
 // before the server serves requests.
 func (s *Server) SetCodeHookRunner(r hooks.CodeRunner) {
