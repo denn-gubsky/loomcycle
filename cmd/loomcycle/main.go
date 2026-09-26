@@ -1526,12 +1526,6 @@ func main() {
 		}
 		return out, append(un1, un2...), nil
 	}
-	// A hook's webhook headers bind credentials the same way an MCP server's do:
-	// resolved per call from the run's identity, the value never stored in the
-	// definition that attaches the hook.
-	srv.SetHookHeaderSubstitute(func(ctx context.Context, s string) (string, []string, error) {
-		return credSubstitute(ctx, s)
-	})
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
 	// the operator host key (scope agent>user>tenant). Wired onto the Server
@@ -1886,6 +1880,13 @@ func main() {
 		hookDefTool.CompileCode = runner.Compile
 	}
 	srv.SetHookDefTool(hookDefTool)
+	// A hook's webhook headers bind credentials the same way an MCP server's do:
+	// resolved per call from the run's identity, the value never stored in the
+	// definition that attaches the hook. Here, not beside credSubstitute: srv
+	// does not exist until lchttp.New below that.
+	srv.SetHookHeaderSubstitute(func(ctx context.Context, s string) (string, []string, error) {
+		return credSubstitute(ctx, s)
+	})
 	// v1.x RFC G — wire the two A2A substrate tools. Same operator-admin-
 	// only posture as ScheduleDef; reached via Connector + the admin
 	// endpoints + the LoomCycle MCP meta-tools. Identical Store + Cfg +
