@@ -163,6 +163,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
 		{"MemoryDelete", testMemoryDelete},
 		{"MemoryDeleteScope", testMemoryDeleteScope},
+		{"MemoryCountScopeMatchesTheDelete", testMemoryCountScopeMatchesTheDelete},
 		{"MemoryListPrefix", testMemoryListPrefix},
 		{"MemoryListTruncation", testMemoryListTruncation},
 		{"MemoryTTLExpiry", testMemoryTTLExpiry},
@@ -4015,6 +4016,50 @@ func testMemoryDeleteScope(t *testing.T, s store.Store) {
 	}
 	if n != 0 {
 		t.Errorf("second MemoryDeleteScope deleted %d, want 0", n)
+	}
+}
+
+// testMemoryCountScopeMatchesTheDelete: MemoryCountScope previews MemoryDeleteScope, so
+// on every backend it must count exactly what the delete then removes — past any listing
+// cap, including a superseded row and an expired one, and not a sibling scope's rows.
+func testMemoryCountScopeMatchesTheDelete(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const scopeID = "counted"
+	for i := 0; i < 120; i++ {
+		if err := s.MemorySet(ctx, "t-count", store.MemoryScopeUser, scopeID, fmt.Sprintf("k%03d", i), json.RawMessage(`1`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MemorySet(ctx, "t-count", store.MemoryScopeUser, scopeID, "old", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MemorySupersede(ctx, "t-count", store.MemoryScopeUser, scopeID, "old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MemorySet(ctx, "t-count", store.MemoryScopeUser, scopeID, "expired", json.RawMessage(`1`), time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	// Siblings the count must not include: another scope_id, another tenant.
+	_ = s.MemorySet(ctx, "t-count", store.MemoryScopeUser, "other", "k", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, "t-other", store.MemoryScopeUser, scopeID, "k", json.RawMessage(`1`), 0)
+
+	n, err := s.MemoryCountScope(ctx, "t-count", store.MemoryScopeUser, scopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 122 {
+		t.Errorf("MemoryCountScope = %d, want 122 (120 live + superseded + expired)", n)
+	}
+	deleted, err := s.MemoryDeleteScope(ctx, "t-count", store.MemoryScopeUser, scopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != n {
+		t.Errorf("the count previewed %d rows but the delete removed %d", n, deleted)
+	}
+	if n, _ := s.MemoryCountScope(ctx, "t-count", store.MemoryScopeUser, scopeID); n != 0 {
+		t.Errorf("count after delete = %d, want 0", n)
 	}
 }
 

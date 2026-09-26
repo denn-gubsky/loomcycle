@@ -3,7 +3,9 @@ package erasure_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -358,5 +360,59 @@ func TestService_ErasureDeletesTheSubjectsArchivedChats(t *testing.T) {
 	}
 	if _, err := s.Store.GetSession(ctx, sess.ID); err == nil {
 		t.Error("the archived chat survived the subject's erasure")
+	}
+}
+
+// TestService_DryRunCountsWhatTheErasureDeletes is the regression for a preview that
+// could not be trusted. The report and the dry run counted memory by LISTING it, with a
+// limit of 0 that the store reads as 100, and the listing skips expired and superseded
+// rows. The erasure itself deletes the whole scope. So a subject with document bodies
+// or indexed turns (thousands of rows) was previewed as "100", and even a small scope
+// under-counted by its superseded history. The three numbers must now agree.
+func TestService_DryRunCountsWhatTheErasureDeletes(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	st := s.Store
+	v := json.RawMessage(`{"text":"x"}`)
+	const live = 150
+	for i := 0; i < live; i++ {
+		if err := st.MemorySet(ctx, "acme", store.MemoryScopeUser, "alice", fmt.Sprintf("memory/fact/%03d", i), v, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A superseded row is retained history: the erasure deletes it, so it counts.
+	if err := st.MemorySet(ctx, "acme", store.MemoryScopeUser, "alice", "memory/fact/old", v, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MemorySupersede(ctx, "acme", store.MemoryScopeUser, "alice", "memory/fact/old"); err != nil {
+		t.Fatal(err)
+	}
+	// An expired row stays in the table until something deletes it — this erasure does.
+	if err := st.MemorySet(ctx, "acme", store.MemoryScopeUser, "alice", "memory/fact/expired", v, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	const want = live + 2
+
+	rep, err := s.Report(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.Tier1.Counts["memory_rows"]; got != want {
+		t.Errorf("report memory_rows = %d, want %d", got, want)
+	}
+	dry, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dry.Deleted["memory_rows"]; got != want {
+		t.Errorf("dry run memory_rows = %d, want %d", got, want)
+	}
+	real, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", DryRun: false, Confirm: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := real.Deleted["memory_rows"]; got != dry.Deleted["memory_rows"] {
+		t.Errorf("the erasure deleted %d rows but its dry run promised %d", got, dry.Deleted["memory_rows"])
 	}
 }
