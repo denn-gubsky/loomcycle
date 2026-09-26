@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 )
 
 // teamContent is the closed set of content-identifying fields hashed into a
@@ -39,6 +41,10 @@ type teamContent struct {
 	// definition that omits it marshals byte-identically to one written before
 	// the field existed, so every recorded content_sha256 stays valid.
 	Channels *TeamChannels `json:"channels,omitempty"`
+	// Hooks are the walk's own — content, like a state's hooks (which ride in
+	// States). omitempty for the same reason as Channels: a team without them
+	// keeps its recorded hash.
+	Hooks hooks.EventHooks `json:"hooks,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of a TeamDef's canonical
@@ -52,6 +58,7 @@ func Sign(name string, d Definition) string {
 		States:        d.States,
 		Transitions:   d.Transitions,
 		Channels:      d.Channels,
+		Hooks:         d.Hooks,
 	})
 	if err != nil {
 		buf = []byte("{}")

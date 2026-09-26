@@ -59,10 +59,14 @@ by moving `status` from one state to the next per the transitions. (See the
   `stateDiagram-v2` with the colour scheme applied).
 - **Handlers** are ordinary agents; a team just names them per state. Missing a
   role? Build it with the `agent/assistant` agent first.
+- **Hooks.** A state may carry `hooks` / `tool_hooks`, added to every run it
+  starts; the TeamDef's own `hooks` take `run_end` for the walk. See
+  `help(topic="hooks")`.
 
 ## Cross-references
 
 - `help(topic="document")` — the chunked-graph Document used as the task board.
+- `help(topic="hooks")` — webhooks and code hooks a state or a walk can add.
 - `help(topic="subagents")` — how handler agents are spawned (spawn vs parallel).
 - `help(topic="volumes")` / `help(topic="volumedef")` — the workspace a software team clones a repo into.
 - `Context op=permissions` — your effective tools + scopes.

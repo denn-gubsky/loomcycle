@@ -213,7 +213,8 @@ const teamDefInputSchema = `{
         "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default)."},
         "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. Replaces the parent's states wholesale."},
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
-        "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."}
+        "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
+        "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."}
       },
       "additionalProperties": true
     },
@@ -898,6 +899,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	finishRun := func(string, error) {}
 	if t.WalkRun != nil {
 		var werr error
+		// The walk's own hooks go to whatever opens its run; an operator's
+		// definition is what may let them count as the operator's.
+		walkCtx = teamrun.WithWalkHooks(walkCtx, teamrun.WalkHooks{Hooks: def.Hooks, OperatorAuthored: row.OperatorAuthored})
 		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, row.Name, detach)
 		if werr != nil {
 			return errResult(fmt.Sprintf("run: %s", werr)), nil
@@ -1432,6 +1436,9 @@ func applyTeamOverlay(base *teamgraph.Definition, ov teamgraph.Definition) {
 	// forked workflow no channel authority and fail at run time instead.
 	if ov.Channels != nil {
 		base.Channels = ov.Channels
+	}
+	if ov.Hooks != nil {
+		base.Hooks = ov.Hooks
 	}
 }
 

@@ -3,6 +3,8 @@ package teamgraph
 import (
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 )
 
 // A valid full workflow: parallel review + consolidator + pushback loops (the
@@ -107,5 +109,41 @@ func TestValidate_Rejections(t *testing.T) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestValidate_TeamHooks(t *testing.T) {
+	base := func() Definition {
+		return Definition{Entry: "a", States: []State{
+			{ID: "a", Handler: Handler{Kind: HandlerAgent, Agent: "writer"}},
+			{ID: "done", Handler: Handler{Kind: HandlerTerminal}},
+		}, Transitions: []Transition{{From: "a", To: "done", On: "success"}}}
+	}
+	ok := base()
+	ok.Hooks = hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "log"}}}
+	ok.States[0].Handler.Hooks = hooks.EventHooks{hooks.PhaseAgentStop: {{Ref: "cite"}}}
+	ok.States[0].Handler.ToolHooks = hooks.ToolHooks{"WebFetch": {hooks.PhasePre: {{Ref: "gate"}}}}
+	if err := Validate(ok); err != nil {
+		t.Fatalf("valid team hooks refused: %v", err)
+	}
+	walkTool := base()
+	walkTool.Hooks = hooks.EventHooks{hooks.PhasePre: {{Ref: "gate"}}}
+	if err := Validate(walkTool); err == nil {
+		t.Errorf("a walk hook that can never fire was accepted")
+	}
+	terminal := base()
+	terminal.States[1].Handler.Hooks = hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "log"}}}
+	if err := Validate(terminal); err == nil {
+		t.Errorf("hooks on a state that starts no run were accepted")
+	}
+	// Hooks are content: they change the hash, and a team without them keeps
+	// the hash it had.
+	if Sign("t", ok) == Sign("t", base()) {
+		t.Errorf("the hooks are not part of the content hash")
+	}
+	walkOnly := base()
+	walkOnly.Hooks = ok.Hooks
+	if Sign("t", walkOnly) == Sign("t", base()) {
+		t.Errorf("the walk's hooks are not part of the content hash")
 	}
 }

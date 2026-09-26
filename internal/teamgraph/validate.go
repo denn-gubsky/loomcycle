@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 )
 
@@ -45,6 +46,9 @@ func Validate(d Definition) error {
 	}
 	if d.MaxIterations > MaxAllowedIterations {
 		return fmt.Errorf("team definition: max_iterations %d exceeds the maximum %d", d.MaxIterations, MaxAllowedIterations)
+	}
+	if err := validateHooks(d); err != nil {
+		return err
 	}
 
 	// State ids: unique + non-empty; validate each handler.
@@ -390,4 +394,37 @@ func validateOn(i int, on string) error {
 		return nil
 	}
 	return fmt.Errorf("team definition: transition[%d] has invalid `on` %q (want success | pushback:<reason> | conditional:<expr>)", i, on)
+}
+
+// validateHooks checks a team's hooks. The walk's own run makes no model or
+// tool calls and runs no agent, so only run_end ever fires for it; a state's
+// hooks are added to the runs it starts, so a state that starts none (vars,
+// input, channel, terminal) carrying them would name gates that never fire.
+func validateHooks(d Definition) error {
+	for event := range d.Hooks {
+		if event != hooks.PhaseRunEnd {
+			return fmt.Errorf("team definition: hooks: the walk only ends, so only run_end fires for it (got %s)", event)
+		}
+	}
+	if err := d.Hooks.Validate(""); err != nil {
+		return fmt.Errorf("team definition: hooks: %w", err)
+	}
+	for _, st := range d.States {
+		h := st.Handler
+		if len(h.Hooks) == 0 && len(h.ToolHooks) == 0 {
+			continue
+		}
+		switch h.Kind {
+		case HandlerAgent, HandlerParallel, HandlerConsolidator, HandlerStarter:
+		default:
+			return fmt.Errorf("team definition: state %q (%s) starts no run, so it cannot carry hooks", st.ID, h.Kind)
+		}
+		if err := h.Hooks.Validate(""); err != nil {
+			return fmt.Errorf("team definition: state %q: %w", st.ID, err)
+		}
+		if err := h.ToolHooks.Validate(); err != nil {
+			return fmt.Errorf("team definition: state %q: %w", st.ID, err)
+		}
+	}
+	return nil
 }

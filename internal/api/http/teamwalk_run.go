@@ -11,9 +11,12 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // A team walk is a RUN.
@@ -49,6 +52,17 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	}
 	ident := tools.RunIdentity(ctx)
 	agent := teamWalkAgentPrefix + teamName
+	// The walk is a run and carries the definition's own hooks. Resolved before
+	// the run exists, so a walk whose hooks cannot be resolved never starts: a
+	// gate its definition names must not quietly be missing.
+	var walkSet *hooks.Set
+	if wh := teamrun.WalkHooksFrom(ctx); len(wh.Hooks) > 0 {
+		walkSet = hooks.NewSet()
+		src := hooks.Source{Owner: agent, Tenant: ident.TenantID, OperatorAuthored: wh.OperatorAuthored}
+		if err := hooks.Resolve(ctx, src, wh.Hooks, nil, builtin.HookDefLookup(s.store), s.hookPermits, walkSet); err != nil {
+			return ctx, "", func(string, error) {}, fmt.Errorf("the team's hooks: %w", err)
+		}
+	}
 	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
 		AgentID: agent,
 		UserID:  ident.UserID,
@@ -69,6 +83,9 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	s.walks.add(runID, sessionID, cancelWalk)
 	stopHeartbeat := s.heartbeatWalk(walkCtx, runID)
 	walkCtx = tools.WithRunID(walkCtx, runID)
+	if walkSet != nil {
+		s.runHookSets.Store(runID, walkSet) // fired by the walk's run_end
+	}
 	// The pause machinery is the Interruption tool's `ask`, which is gated on
 	// the CALLING AGENT's policy. A walk has no AgentDef to carry one, so the
 	// grant is made here, narrowed to the one kind a breakpoint uses: a

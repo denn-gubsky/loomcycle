@@ -323,3 +323,48 @@ func TestTeamDefTool_Run_FinishReceivesTheWalksOutput(t *testing.T) {
 		t.Error("the walk's finish received no output — its run would have no result")
 	}
 }
+
+// The walk's own hooks reach the run opener with who wrote the team, since the
+// opener resolves them into the walk run's set before the walk starts.
+func TestTeamDefTool_Run_HandsTheWalkItsHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		as   func(context.Context) context.Context
+		want bool
+	}{
+		{"an operator's team", asOperator, true},
+		{"an agent's team", func(c context.Context) context.Context { return c }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, base, done := teamDefFixture(t)
+			defer done()
+			ctx := tc.as(base)
+			createTeam(t, tool, ctx, "hooked", `{
+			  "entry":"review",
+			  "hooks":{"run_end":[{"name":"log","url":"https://hooks.example/log"}]},
+			  "states":[
+			    {"state":"review","handler":{"kind":"agent","agent":"reviewer"}},
+			    {"state":"done","handler":{"kind":"terminal"}}
+			  ],
+			  "transitions":[{"from":"review","to":"done","on":"success"}]
+			}`)
+			tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
+			var got teamrun.WalkHooks
+			rec := &walkRunRecorder{}
+			tool.WalkRun = func(c context.Context, name string, detach bool) (context.Context, string, func(string, error), error) {
+				got = teamrun.WalkHooksFrom(c)
+				return rec.open(c, name, detach)
+			}
+			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"hooked","input":"x"}`))
+			if res.IsError {
+				t.Fatalf("run: %s", res.Text)
+			}
+			if es := got.Hooks["run_end"]; len(es) != 1 || es[0].Inline == nil || es[0].Inline.Name != "log" {
+				t.Fatalf("walk hooks = %+v, want the team's run_end hook", got.Hooks)
+			}
+			if got.OperatorAuthored != tc.want {
+				t.Errorf("operator_authored = %v, want %v", got.OperatorAuthored, tc.want)
+			}
+		})
+	}
+}

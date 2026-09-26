@@ -98,6 +98,12 @@ The same shape goes in an AgentDef overlay (`tools` entries as
   A resumed run keeps what it added.
 - A sub-agent fires its own definition's hooks, not its parent's — plus
   everything its parent run added.
+- **A team adds hooks too.** A TeamDef state's `hooks` / `tool_hooks` are added
+  to every run it starts (its agent, each fan-out member, its consolidator),
+  after the agent's own; like a run request's, they never widen hosts. A
+  TeamDef's top-level `hooks` belong to the walk itself and take only
+  `run_end`, fired when the walk ends (`owner: team:<name>`); one that cannot be
+  resolved stops the walk before it starts.
 - The payload's `owner` says where a hook came from (`agent:<name>`).
 
 ## Hook definitions (HookDef)

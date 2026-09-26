@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -270,5 +271,36 @@ func TestRunHooks_AResumedRunKeepsItsAdditions(t *testing.T) {
 	ctx := h.srv.withRunHooks(hooks.WithAdditions(context.Background(), *back.Hooks), "", "writer", config.AgentDef{}, hooks.Additions{})
 	if got := hooks.SetFrom(ctx).Match("writer", "", hooks.PhaseRunEnd); len(got) != 1 {
 		t.Fatalf("resumed chain = %v", got)
+	}
+}
+
+// A walk is a run and carries its definition's own hooks: its run_end hook
+// fires when the walk ends, named for the team.
+func TestTeamHooks_TheWalksRunEndHookFires(t *testing.T) {
+	h := newReviewHarness(t)
+	end := newRecordingHook(t, `{}`)
+	ctx := teamrun.WithWalkHooks(context.Background(), teamrun.WalkHooks{
+		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "log", URL: end.srv.URL}}}},
+	})
+	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish("the report", nil)
+	got := end.waitBody(t, `"run_id":"`+runID+`"`)
+	if !strings.Contains(got, `"owner":"team:triage"`) || !strings.Contains(got, `"status":"completed"`) {
+		t.Fatalf("payload = %s", got)
+	}
+}
+
+// A walk whose hooks cannot be resolved never starts, and leaves no run behind.
+func TestTeamHooks_AWalkWhoseHooksCannotResolveDoesNotStart(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := teamrun.WithWalkHooks(context.Background(), teamrun.WalkHooks{
+		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "no-such-hook"}}},
+	})
+	_, runID, _, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	if err == nil || !strings.Contains(err.Error(), "no-such-hook") || runID != "" {
+		t.Fatalf("err = %v, run = %q; want refused before a run exists", err, runID)
 	}
 }
