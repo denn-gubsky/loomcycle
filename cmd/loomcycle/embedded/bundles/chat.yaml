@@ -24,14 +24,17 @@
 #     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml. chat/local
 #     no longer uses it: it is on a cloud tier.
 #
-# ORGANISATION KNOWLEDGE (tenant scope) is deliberately NOT granted here.
-# These agents hold `memory_scopes: [user]`, so they read and write one user's
-# facts and never the tenant's shared plane. To let them consult what is true of
-# the whole organisation, add `tenant`:
+# ORGANISATION KNOWLEDGE (tenant scope) IS granted to every chat agent.
+# They hold `memory_scopes: [user, tenant]` and `sql_scopes: [user, tenant]`, so
+# they can keep notes and Documents the whole tenant reads ("save a note my team
+# can see") as well as one user's own. A tenant-scope Document needs BOTH grants,
+# which is why sql_scopes carries tenant too. To confine an agent to one user's
+# plane, narrow both back in an operator overlay:
 #
-#     memory_scopes: [user, tenant]
+#     memory_scopes: [user]
+#     sql_scopes: [user]
 #
-# and know what you are accepting. `memory_scopes` is ONE allowlist covering
+# Know what the grant accepts. `memory_scopes` is ONE allowlist covering
 # reads AND writes — there is no read-only grant — so this also lets the agent
 # WRITE to the plane every user in the tenant reads. These agents have WebFetch,
 # WebSearch and Read, which means a hostile page or file they are pointed at can
@@ -55,13 +58,13 @@ agents:
     # Pinning a value would only IMPOSE a per-reply cap, not add headroom.
     unbounded_iterations: true              # interactive chat parks at end_turn
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
-    memory_scopes: [user]
+    memory_scopes: [user, tenant]
     # sql_scopes grants `Memory sql_query`/`sql_exec` — NOT Document, whose
     # structure writes are its own trusted SQL and which checks sql_scopes only at
     # TENANT scope. The comment here used to claim otherwise. Kept because an
     # interactive operator agent having a queryable per-user database is plausibly
     # wanted; drop it if you would rather chat could not run raw SQL.
-    sql_scopes: [user]
+    sql_scopes: [user, tenant]
     sampling:
       temperature: 0.7
     context:
@@ -146,8 +149,8 @@ agents:
     # max_tokens OMITTED — each provider applies its own default.
     unbounded_iterations: true
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
-    memory_scopes: [user]
-    sql_scopes: [user]
+    memory_scopes: [user, tenant]
+    sql_scopes: [user, tenant]
     sampling:
       temperature: 0.7
     context:
@@ -244,8 +247,8 @@ agents:
     # (set the window via LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, e.g. 131072 for 128K).
     unbounded_iterations: true
     tools: [Read, Write, Edit, Grep, Glob, WebSearch, WebFetch, HTTP, Bashbox, Bash, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
-    memory_scopes: [user]
-    sql_scopes: [user]
+    memory_scopes: [user, tenant]
+    sql_scopes: [user, tenant]
     sampling:
       temperature: 0.7
     context:
