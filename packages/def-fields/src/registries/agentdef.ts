@@ -1,3 +1,4 @@
+import { AGENT_HOOK_EVENTS } from "../lib/hooks";
 import type { DefRegistry, FieldSpec } from "../types";
 
 // The AgentDef parameter registry — the full operator-settable surface of an
@@ -12,10 +13,6 @@ import type { DefRegistry, FieldSpec } from "../types";
 // registry ∪ EXCLUDED == the substrate's overlay shape, so an omission has to be
 // justified here rather than silently forgotten.
 export const AGENTDEF_EXCLUDED: Record<string, string> = {
-  hooks:
-    "per-event lists of hook entries (a HookDef name or an inline webhook) — they need their own editor, not a flat field; until then they are set in yaml or the overlay",
-  tool_hooks:
-    "each tool's own hooks, keyed by tool name — edited beside the tool they gate, in the same hooks editor as hooks",
   system_prompt_base:
     "derived — the pre-skill-bake snapshot of system_prompt, written by the server, never operator input",
   system_prompt_file:
@@ -44,6 +41,7 @@ export const agentDefRegistry: DefRegistry = {
     { name: "Sampling", hint: "Decoding parameters. Each driver applies what it supports." },
     { name: "Context & compaction", hint: "How the run's history is retained, distilled and recalled." },
     { name: "Memory" },
+    { name: "Hooks", hint: "Checks that run around this agent's tool calls and its run: a HookDef by name, or an inline webhook. A run fires these and may add more, never fewer." },
     { name: "Capabilities", hint: "Capability gates. An empty grant denies the capability entirely." },
     { name: "Behaviour" },
   ],
@@ -227,6 +225,14 @@ export const agentDefRegistry: DefRegistry = {
     { key: "memory_roots", label: "Memory roots", group: "Memory", type: "text",
       hint: "Controls provisioning of the operator-authored user-root document composed into the prompt.",
       unsetMeans: "the global default", advanced: true },
+
+    // ---- Hooks ----
+    { key: "hooks", label: "Agent hooks", group: "Hooks", type: "hook-events", options: AGENT_HOOK_EVENTS,
+      hint: "Hooks on the run's lifecycle (start, each answer, sub-agents, compaction, the end) and tool events that apply to every tool. Each event's hooks run in the order listed.",
+      unsetMeans: "inherits the parent def" },
+    { key: "tool_hooks", label: "Tool hooks", group: "Hooks", type: "tool-hooks",
+      hint: "A tool's own hooks: pre runs before the call and may deny or rewrite it, post after it. They run before the agent-level ones, and the tool must be one this agent has.",
+      unsetMeans: "inherits the parent def" },
 
     // ---- Capabilities ----
     scopeList("Agent defs", "agent_def_scopes", "Lets the agent author or fork other agent definitions."),

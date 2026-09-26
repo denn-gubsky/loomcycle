@@ -180,10 +180,13 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	}
 	rep.Tier1.set("chats", int64(len(sessions)))
 
-	if entries, _, err := s.Store.MemoryList(ctx, tenant, store.MemoryScopeUser, subject, "", 0); err != nil {
+	// COUNTED, not listed: a listing is capped (limit 0 reads as 100) and skips the
+	// expired and superseded rows the erasure still deletes, so it under-reported
+	// every subject with document bodies or indexed turns in their scope.
+	if n, err := s.Store.MemoryCountScope(ctx, tenant, store.MemoryScopeUser, subject); err != nil {
 		fail("memory", err)
 	} else {
-		rep.Tier1.set("memory_rows", int64(len(entries)))
+		rep.Tier1.set("memory_rows", int64(n))
 	}
 
 	var sqlMemUnexamined bool
@@ -382,10 +385,12 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 
 	// ---- tier 1, chats excepted ----
 	if req.DryRun {
-		if entries, _, err := s.Store.MemoryList(ctx, tenant, store.MemoryScopeUser, subject, "", 0); err != nil {
+		// The same predicate MemoryDeleteScope uses below, so the preview is exactly
+		// what the erasure removes.
+		if n, err := s.Store.MemoryCountScope(ctx, tenant, store.MemoryScopeUser, subject); err != nil {
 			fail("memory", err)
 		} else {
-			res.Deleted["memory_rows"] = len(entries)
+			res.Deleted["memory_rows"] = n
 		}
 	} else if n, err := s.Store.MemoryDeleteScope(ctx, tenant, store.MemoryScopeUser, subject); err != nil {
 		fail("memory", err)

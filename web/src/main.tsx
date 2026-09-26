@@ -61,6 +61,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="library/agents" element={<LibraryView />} />
           <Route path="library/skills" element={<LibraryView />} />
           <Route path="library/mcp-servers" element={<LibraryView />} />
+          <Route path="library/hooks" element={<LibraryView />} />
           <Route path="integrations" element={<IntegrationsView />}>
             <Route
               index

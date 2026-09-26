@@ -217,7 +217,7 @@ export default function LineagePanel({
       <div className="empty-state">
         <p>
           No {kindLabel} declared yet. Use the substrate admin API
-          (POST /v1/_{kind}) or add one to loomcycle.yaml.
+          (POST /v1/_{kind}){kind === "hookdef" ? "" : " or add one to loomcycle.yaml"}.
         </p>
         {onCreateNew && (
           <button
@@ -410,6 +410,7 @@ function newCtaLabel(kind: SubstrateKind): string {
     case "a2aservercarddef": return "A2A Server Card";
     case "a2aagentdef": return "A2A Agent";
     case "memorybackenddef": return "Memory Backend";
+    case "hookdef": return "Hook";
     // VolumeDef is FLAT (no lineage); the Volumes tab uses its own flat table,
     // not LineagePanel, so this label is never rendered for it. The arm keeps
     // the switch exhaustive over SubstrateKind.

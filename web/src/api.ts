@@ -1784,6 +1784,12 @@ export function listTeams(): Promise<ListTeamsResponse> {
   return jsonFetch<ListTeamsResponse>("/v1/_teamdef/names");
 }
 
+// listHookDefNames lists the HookDefs the caller may see (tenant-scoped
+// server-side), one row per name and tenant. `names` is null when empty.
+export function listHookDefNames(): Promise<{ names: DefNameSummary[] | null }> {
+  return jsonFetch<{ names: DefNameSummary[] | null }>("/v1/_hookdef/names");
+}
+
 export interface TeamDiagram {
   name: string;
   def_id: string;

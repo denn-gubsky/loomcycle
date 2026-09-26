@@ -31,7 +31,15 @@ export type FieldType =
   // Schema, a tier→candidates map). Deliberately per-field and typed — not the
   // removed whole-overlay JSON box, which hid every uncovered key behind one
   // unvalidated textarea.
-  | "json";
+  | "json"
+  // Hooks: event -> ordered entries (`hook-events`), and tool -> its own
+  // pre / post / post_failure entries (`tool-hooks`), where an entry is a
+  // HookDef name OR an inline webhook object. A map of lists of a two-shape
+  // union cannot be composed from object / object-array, so it gets a control
+  // of its own — one, shared by every place hooks attach. For `hook-events`,
+  // `options` lists the events that may be added.
+  | "hook-events"
+  | "tool-hooks";
 
 export interface FieldSpec {
   /** The overlay key this field reads and writes. Must match the substrate's
@@ -45,7 +53,7 @@ export interface FieldSpec {
    *  folded list, so it is written once here and never duplicated per surface. */
   hint: string;
   placeholder?: string;
-  /** enum only: the allowed values. */
+  /** enum: the allowed values. hook-events: the events that may be added. */
   options?: readonly string[];
   /** int / float only: inclusive bounds, surfaced to the control and to validation. */
   min?: number;

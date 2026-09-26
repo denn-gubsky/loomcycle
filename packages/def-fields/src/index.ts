@@ -44,3 +44,21 @@ export {
 
 // Registries, one per substrate kind.
 export { agentDefRegistry, AGENTDEF_EXCLUDED } from "./registries/agentdef";
+export { hookDefRegistry } from "./registries/hookdef";
+
+// The hooks editor, for a host that places it outside a registry (a team
+// state, a walk) — the same controls the agent registry renders.
+export { HookEntryList, HookEventsControl, ToolHooksControl } from "./components/HookControls";
+export {
+  AGENT_HOOK_EVENTS,
+  HOOK_EVENT_HINTS,
+  TOOL_HOOK_EVENTS,
+  asEventHooks,
+  asToolHooks,
+  entryProblem,
+  headersProblem,
+  nameProblem,
+  pruneEventHooks,
+  pruneToolHooks,
+} from "./lib/hooks";
+export type { EventHooks, HookEntry, InlineWebhook, ToolHooks } from "./lib/hooks";

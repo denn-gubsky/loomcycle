@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/def-fields",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Shareable React field-registry + folded (accordion) editor for loomcycle substrate primitives — one declarative registry drives both a grouped form and a flat folded list, with per-parameter hints.",
   "license": "Apache-2.0",
