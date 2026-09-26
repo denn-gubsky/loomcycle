@@ -217,7 +217,7 @@ export default function LineagePanel({
       <div className="empty-state">
         <p>
           No {kindLabel} declared yet. Use the substrate admin API
-          (POST /v1/_{kind}) or add one to loomcycle.yaml.
+          (POST /v1/_{kind}){kind === "hookdef" ? "" : " or add one to loomcycle.yaml"}.
         </p>
         {onCreateNew && (
           <button
