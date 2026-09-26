@@ -156,6 +156,124 @@ func TestToolHelpExamples_ValidateAgainstTheToolSchema(t *testing.T) {
 	}
 }
 
+// Every call example in the bundled corpus passes the dispatcher's argument
+// check — no unknown argument, and none belonging to a sibling operation. The
+// check reads which arguments an op takes from its article's Arguments section,
+// so an example using an argument its own article forgot to list would be an
+// example the runtime refuses. Run through the real dispatcher, not a copy of
+// its rule.
+func TestToolHelpExamples_PassTheArgumentCheck(t *testing.T) {
+	set := bundledHelp(t)
+	ts := builtinToolCensus()
+	for i, tl := range ts {
+		if _, ok := tl.(*Context); ok {
+			ts[i] = &Context{Help: set}
+		}
+	}
+	d := tools.NewDispatcher(ts)
+	n := 0
+	for _, topic := range set.All() {
+		exs, err := topic.Examples()
+		if err != nil {
+			continue // reported by TestToolHelpExamples_ValidateAgainstTheToolSchema
+		}
+		for _, ex := range exs {
+			n++
+			if msg, refused := d.ArgumentRefusal(ex.Tool, ex.Input); refused {
+				t.Errorf("%s line %d: the dispatcher refuses this example: %s", topic.Name, ex.Line, msg)
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no examples found in the bundled corpus; the check is asserting nothing")
+	}
+}
+
+// The cross-operation calls measured on local models are refused by the real
+// dispatcher over the real corpus, each naming the op the argument belongs to.
+// All three used to run with the argument dropped: create_chunk put the chunk
+// under the wrong parent, query_documents returned every document.
+func TestArgumentCheck_RefusesTheMeasuredCrossOperationCalls(t *testing.T) {
+	set := bundledHelp(t)
+	d := tools.NewDispatcher([]tools.Tool{&Document{}, &Memory{}, &Context{Help: set}})
+	for _, c := range []struct {
+		tool, input string
+		want        []string
+	}{
+		{"Document", `{"op":"create_chunk","document_id":"d1","title":"Flights","parent":"c1"}`,
+			[]string{`argument "parent" is not one create_chunk takes (it belongs to`, `Did you mean "parent_id"?`}},
+		{"Document", `{"op":"query_documents","scope":"user","query":"trip"}`,
+			[]string{`argument "query" is not one query_documents takes`}},
+		{"Memory", `{"op":"get","scope":"user","key":"k","query":"editor"}`,
+			[]string{`argument "query" is not one get takes`}},
+	} {
+		msg, refused := d.ArgumentRefusal(c.tool, json.RawMessage(c.input))
+		if !refused {
+			t.Errorf("%s %s was not refused", c.tool, c.input)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(msg, w) {
+				t.Errorf("%s %s: refusal lacks %q:\n%s", c.tool, c.input, w, msg)
+			}
+		}
+	}
+	// The same calls, with only the op's own arguments, pass.
+	for _, ok := range []string{
+		`{"op":"create_chunk","document_id":"d1","title":"Flights","parent_id":"c1"}`,
+		`{"op":"query_documents","scope":"user","type":"trip"}`,
+	} {
+		if msg, refused := d.ArgumentRefusal("Document", json.RawMessage(ok)); refused {
+			t.Errorf("a correct call was refused: %s\n%s", ok, msg)
+		}
+	}
+}
+
+// Every argument an operation article lists is one the tool's schema declares.
+// The dispatcher refuses a call using another op's argument based on these
+// lists, so a misspelt or stale name here would make the documentation lie
+// about what the op takes.
+func TestToolHelpArticles_ListOnlySchemaArguments(t *testing.T) {
+	set := bundledHelp(t)
+	byName := censusByName(t)
+	checked := 0
+	for _, topic := range set.All() {
+		if topic.Tool == "" || topic.Op == "" {
+			continue
+		}
+		args, ok := topic.Arguments()
+		if !ok {
+			t.Errorf("%s has no ## Arguments section (write \"None besides `op`.\" for an op that takes none)", topic.Name)
+			continue
+		}
+		props := schemaPropertyNames(t, byName[topic.Tool])
+		for _, a := range args {
+			checked++
+			if !props[a] {
+				t.Errorf("%s lists argument %q, which %s's schema does not declare", topic.Name, a, topic.Tool)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no documented arguments found; the check is asserting nothing")
+	}
+}
+
+func schemaPropertyNames(t *testing.T, tl tools.Tool) map[string]bool {
+	t.Helper()
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(tl.InputSchema(), &s); err != nil {
+		t.Fatalf("%s schema: %v", tl.Name(), err)
+	}
+	out := map[string]bool{}
+	for k := range s.Properties {
+		out[k] = true
+	}
+	return out
+}
+
 // Every tool whose input has a fixed set of scope values reports its grants, so
 // its description and Context op=self can tell the model which it may use.
 // Derived from the schema: a new scoped tool cannot ship without the report.
