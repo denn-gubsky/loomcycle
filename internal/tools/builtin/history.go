@@ -79,7 +79,8 @@ func (h *History) Name() string { return "History" }
 func (h *History) Description() string {
 	return "Browse, search, and annotate PAST chats (a chat = a conversation session; session -> runs -> events). " +
 		"Ops: list (chats in a scope, filtered + paginated, pinned-first), search (title match within a scope), " +
-		"get (one chat's metadata + full transcript; format:markdown renders the whole event log for a human, " +
+		"get (one chat's metadata + transcript, paged by turn with offset/limit and from/to — inside a run a page " +
+		"fits your context and returns next_offset while has_more; format:markdown renders the event log for a human, " +
 		"format:conversation renders only the user/assistant turns for a model), rename (set title), " +
 		"annotate (set description and/or tags), pin (float to the top), archive (reversible soft-hide), " +
 		"recap (refresh the chat's stored one-or-two-sentence summary — idempotent, safe on a live/parked chat), " +
@@ -107,16 +108,16 @@ const historyInputSchema = `{
 		"session_id":      {"type": "string", "description": "get/rename/annotate/pin/archive/recap/resume/window: the chat (session) id to target — for window, the session recall reported on the fact. related: find chats similar to THIS chat (its title+summary is the source; it is excluded from results)."},
 		"match":           {"type": "string", "enum": ["title","content"], "description": "search: what to match the query against. \"title\" (default) is the cheap path — a case-insensitive match on the chat's name, which is usually auto-generated. \"content\" searches what was actually SAID in the chats, over the turns you typed; it needs an embedder and a user_id on the run, and returns each chat with the turn that matched it."},
 		"status":          {"type": "string", "description": "list/search: filter by derived chat status (running/completed/failed/cancelled/rejected)."},
-		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity."},
-		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity."},
+		"from":            {"type": "string", "description": "list/search: RFC3339 lower bound on last activity. get: keep only the turns said at or after this time."},
+		"to":              {"type": "string", "description": "list/search: RFC3339 upper bound on last activity. get: keep only the turns said at or before this time."},
 		"tag":             {"type": "string", "description": "list/search: return only chats carrying this exact tag."},
 		"title_contains":  {"type": "string", "description": "list: case-insensitive substring match on the title."},
 		"query":           {"type": "string", "description": "search: the text to find — matched against titles, or against what was said with match=content. related: free-text query to find semantically similar chats (use this OR session_id, not both)."},
 		"pinned_only":     {"type": "boolean", "description": "list/search: restrict to pinned chats."},
 		"include_archived":{"type": "boolean", "description": "list/search/related: include archived chats (excluded by default)."},
 		"include_internal":{"type": "boolean", "description": "list/search/related: include chats served by loomcycle's own maintenance agents (excluded by default — they are runtime bookkeeping, not conversations). Set it to debug a background pass."},
-		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500). related: max similar chats to return (default 10, cap 500)."},
-		"offset":          {"type": "integer", "description": "list/search: pagination offset."},
+		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500). related: max similar chats to return (default 10, cap 500). get: max conversation turns to return (default: all that fit — inside a run, a page is capped to fit your context)."},
+		"offset":          {"type": "integer", "description": "list/search: pagination offset. get: the turn to start at (0 = the first); pass the previous page's next_offset to read on."},
 		"format":          {"type": "string", "description": "get: \"markdown\" renders the full transcript as Markdown (metadata header + every event) instead of a structured event array; \"conversation\" renders ONLY the user and assistant turns, with no header, no tool traffic and no runtime event payloads — use it when feeding a chat to a model."},
 		"title":           {"type": "string", "description": "rename: the new title."},
 		"description":     {"type": "string", "description": "annotate: the new description."},
@@ -381,43 +382,69 @@ func (h *History) get(ctx context.Context, scope string, in historyInput) (tools
 	}
 	chat := sessionMeta(sess, runs)
 
-	if in.Format == conversationFormat {
+	page, err := selectHistoryPage(ctx, events, in)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	out := map[string]any{"scope": scope, "chat": chat}
+	for k, v := range page.fields() {
+		out[k] = v
+	}
+	if page.offsetTooLarge {
+		out["note"] = fmt.Sprintf("offset %d is past the last turn: this chat has %d turns in the selected range.", in.Offset, page.hi-page.lo)
+	}
+
+	switch in.Format {
+	case conversationFormat, "markdown":
 		// The `format` is echoed so a caller can tell a conversation rendering
 		// from the human export. An older runtime that does not know this value
 		// falls through to the structured event array below, where `markdown` is
 		// absent — the echo is how a consumer detects that instead of reading an
 		// empty chat.
-		return okJSON(map[string]any{
-			"scope":    scope,
-			"chat":     chat,
-			"format":   conversationFormat,
-			"markdown": renderConversationMarkdown(events),
-		})
-	}
-	if in.Format == "markdown" {
-		md := renderTranscriptMarkdown(sess, chat, events)
-		out := map[string]any{"scope": scope, "chat": chat, "format": "markdown"}
-		// A model reading a whole transcript into its own context: measured
-		// live, one long chat as markdown filled a 32K local window, and the
-		// model then answered as if continuing THAT chat's task. Inside a run
-		// the export is capped and says how to read the rest; an off-run caller
-		// (an MCP client, the Web UI) has no window to protect and gets it all.
-		if tools.RunID(ctx) != "" && len(md) > historyMarkdownInRunCap {
-			total := len(md)
-			md = md[:historyMarkdownInRunCap]
+		var md string
+		if in.Format == conversationFormat {
+			md = renderConversationTurns(page.turns[page.start:page.end])
+			if len(page.turns) == 0 {
+				md = ""
+			}
+		} else {
+			md = renderTranscriptMarkdown(sess, chat, page.events)
+		}
+		out["format"] = in.Format
+		// A single turn larger than the whole budget is the one case a turn
+		// boundary cannot fit: cut it, and say so.
+		if page.budget > 0 && len(md) > page.budget {
+			md = md[:page.budget]
 			out["truncated"] = true
-			out["note"] = fmt.Sprintf("Cut to the first %d of %d characters to fit your context. "+
-				"format=conversation returns only the turns and is far smaller; op=window reads the turns around one quote.",
-				historyMarkdownInRunCap, total)
+			out["note"] = historyCutNote(page)
 		}
 		out["markdown"] = md
 		return okJSON(out)
 	}
-	return okJSON(map[string]any{
-		"scope":      scope,
-		"chat":       chat,
-		"transcript": transcriptEvents(events),
-	})
+	evs := page.events
+	if page.budget > 0 {
+		used, n := 0, 0
+		for n < len(evs) && used+len(evs[n].Payload)+96 <= page.budget {
+			used += len(evs[n].Payload) + 96
+			n++
+		}
+		if n < len(evs) {
+			evs = evs[:n]
+			out["truncated"] = true
+			out["note"] = historyCutNote(page)
+		}
+	}
+	out["transcript"] = transcriptEvents(evs)
+	return okJSON(out)
+}
+
+// historyCutNote explains a page cut inside a single turn, and how to read on.
+func historyCutNote(p historyPage) string {
+	msg := fmt.Sprintf("One turn is larger than the %d characters that fit your context, so it was cut.", p.budget)
+	if p.end < p.hi {
+		msg += fmt.Sprintf(" Continue with offset=%d.", p.end-p.lo)
+	}
+	return msg + " format=conversation returns only what was said and is far smaller; op=window reads the turns around one quote."
 }
 
 func (h *History) rename(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
@@ -909,7 +936,7 @@ type conversationBlock struct {
 	Text string `json:"text"`
 }
 
-// renderConversationMarkdown renders a chat as the conversation ALONE: the user
+// renderConversationTurns renders a chat as the conversation ALONE: the user
 // turns and the assistant's replies, in order, and nothing else.
 //
 // WHY THIS EXISTS SEPARATELY FROM renderTranscriptMarkdown. The memory
@@ -938,9 +965,11 @@ type conversationBlock struct {
 // has a context window to fit, but the transcript keeps every turn and a reader
 // looking for durable facts wants all of them — the summary would be a lossy
 // paraphrase of content still sitting right there.
-func renderConversationMarkdown(events []store.Event) string {
+//
+// It takes TURNS rather than events so `get` can render one page of them.
+func renderConversationTurns(turns []conversationTurn) string {
 	var b strings.Builder
-	for _, t := range conversationTurns(events) {
+	for _, t := range turns {
 		fmt.Fprintf(&b, "### %s\n\n%s\n\n", t.Speaker, t.Text)
 	}
 	return b.String()
