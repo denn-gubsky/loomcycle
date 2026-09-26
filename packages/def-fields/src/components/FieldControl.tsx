@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { FieldSpec } from "../types";
 import { HookEventsControl, ToolHooksControl } from "./HookControls";
+import { kvObject, kvRows } from "../lib/kv";
 
 // One control per FieldType. Both surfaces (grouped form, folded list) render
 // through this switch, so a field looks and behaves identically wherever it is
@@ -192,36 +193,43 @@ function StringListControl({
 
 // KeyValueControl edits a string map (env, headers). Rows are keyed by index so
 // renaming a key doesn't remount and steal focus mid-edit.
+//
+// The rows live in local state, because a row just added has no key yet and a
+// map cannot hold it: emitting only the map would drop the new row on the next
+// render, and "+ add entry" would do nothing. The map that goes out skips
+// unnamed rows; kvRows re-seeds the rows when the value changes from outside.
 function KeyValueControl({
   value, onChange, disabled,
 }: { value: Record<string, string>; onChange: (v: unknown) => void; disabled?: boolean }) {
-  const entries = Object.entries(value);
+  const [rows, setRows] = useState<[string, string][]>(() => Object.entries(value));
+  const synced = kvRows(rows, value);
+  if (synced !== rows) setRows(synced);
   const emit = (next: [string, string][]) => {
-    const obj: Record<string, string> = {};
-    for (const [k, v] of next) if (k.trim() !== "") obj[k] = v;
+    setRows(next);
+    const obj = kvObject(next);
     onChange(Object.keys(obj).length === 0 ? undefined : obj);
   };
   return (
     <div className="lc-df-kv">
-      {entries.map(([k, v], i) => (
+      {synced.map(([k, v], i) => (
         <div className="lc-df-kv-row" key={i}>
           <input
             className="lc-df-input lc-df-kv-key" type="text" value={k} placeholder="key" disabled={disabled}
-            onChange={(e) => { const next = [...entries] as [string, string][]; next[i] = [e.target.value, v]; emit(next); }}
+            onChange={(e) => { const next = [...synced]; next[i] = [e.target.value, v]; emit(next); }}
           />
           <input
             className="lc-df-input lc-df-kv-val" type="text" value={v} placeholder="value" disabled={disabled}
-            onChange={(e) => { const next = [...entries] as [string, string][]; next[i] = [k, e.target.value]; emit(next); }}
+            onChange={(e) => { const next = [...synced]; next[i] = [k, e.target.value]; emit(next); }}
           />
           <button
             type="button" className="lc-df-row-btn" disabled={disabled} aria-label={`Remove ${k}`}
-            onClick={() => emit(entries.filter((_, j) => j !== i) as [string, string][])}
+            onClick={() => emit(synced.filter((_, j) => j !== i))}
           >×</button>
         </div>
       ))}
       <button
         type="button" className="lc-df-row-btn lc-df-add" disabled={disabled}
-        onClick={() => emit([...(entries as [string, string][]), ["", ""]])}
+        onClick={() => emit([...synced, ["", ""]])}
       >+ add entry</button>
     </div>
   );
