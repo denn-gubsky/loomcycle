@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AGENT_HOOK_EVENTS,
   FoldedFieldList,
+  HookEventsControl,
+  ToolHooksControl,
   agentDefRegistry,
+  asEventHooks,
+  asToolHooks,
+  entryProblem,
   type DefValue,
 } from "@loomcycle/def-fields";
 import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
@@ -229,6 +235,18 @@ export default function LibraryEditModal({
   // two surfaces edit one overlay; which one is authoritative is whichever is
   // on screen.
   const [surface, setSurface] = useState<"form" | "list">("form");
+  // HookDef names, offered where a hook is named. Best effort: without them the
+  // name is typed, and the save still checks it exists.
+  const [hookNames, setHookNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (kind !== "agent" || !data.listHooks) return;
+    let cancelled = false;
+    data.listHooks().then(
+      (r) => { if (!cancelled) setHookNames((r.entries ?? []).map((e) => e.name)); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, [kind, data]);
   const [listOverlay, setListOverlay] = useState<DefValue>(() =>
     sourceOverlay(forkSource?.definition),
   );
@@ -326,6 +344,11 @@ export default function LibraryEditModal({
     // the list is up. The form branch below is unchanged: it validates the raw
     // INPUT text, which catches things the overlay cannot represent (a typed
     // negative that buildOverlay would silently drop).
+    // Hooks live in the overlay on both surfaces (the form edits them there too).
+    if (kind === "agent") {
+      const hookErr = hooksProblem(listOverlay);
+      if (hookErr) return hookErr;
+    }
     if (kind === "agent" && surface === "list") {
       return validateAgentOverlay(listOverlay);
     }
@@ -783,6 +806,16 @@ export default function LibraryEditModal({
             setSampSeed={setSampSeed}
             sampStop={sampStop}
             setSampStop={setSampStop}
+            submitting={submitting}
+          />
+        )}
+
+        {kind === "agent" && surface === "form" && (
+          <AgentHooksFields
+            value={listOverlay}
+            setValue={setListOverlay}
+            tools={parseCommaList(tools)}
+            hookNames={hookNames}
             submitting={submitting}
           />
         )}
@@ -1852,6 +1885,64 @@ function pickSamplingStop(def: unknown): string[] {
 // surface. It reuses the same rules as the form's checks so the two surfaces
 // refuse the same values; the list's controls carry min/max, but a browser's
 // number input is an affordance, not a guard — a pasted value reaches state.
+// hooksProblem names the first hook entry the runtime would refuse, with where
+// it is, so the save stops beside the fix instead of on a server error.
+export function hooksProblem(ov: DefValue): string | null {
+  for (const [event, list] of Object.entries(asEventHooks(ov.hooks))) {
+    for (const e of list) {
+      const p = entryProblem(e);
+      if (p) return `hooks · ${event}: ${p}`;
+    }
+  }
+  for (const [tool, ev] of Object.entries(asToolHooks(ov.tool_hooks))) {
+    for (const [event, list] of Object.entries(ev)) {
+      for (const e of list) {
+        const p = entryProblem(e);
+        if (p) return `tool hooks · ${tool} ${event}: ${p}`;
+      }
+    }
+  }
+  return null;
+}
+
+// AgentHooksFields is the form surface's hooks section. Hooks are not form-owned
+// keys: they are edited in the shared overlay directly, so the two surfaces can
+// never disagree about them.
+function AgentHooksFields({
+  value, setValue, tools, hookNames, submitting,
+}: {
+  value: DefValue;
+  setValue: (v: DefValue) => void;
+  tools: string[];
+  hookNames: string[];
+  submitting: boolean;
+}) {
+  const setKey = (key: string, v: unknown) => {
+    const next = { ...value };
+    if (v === undefined) delete next[key];
+    else next[key] = v;
+    setValue(next);
+  };
+  return (
+    <>
+      <div className="library-form-row">
+        <label>hooks</label>
+        <div className="loomcycle-def-fields library-hooks-control">
+          <HookEventsControl value={value.hooks} events={AGENT_HOOK_EVENTS} hookNames={hookNames}
+            disabled={submitting} onChange={(v) => setKey("hooks", v)} />
+        </div>
+      </div>
+      <div className="library-form-row">
+        <label>tool hooks</label>
+        <div className="loomcycle-def-fields library-hooks-control">
+          <ToolHooksControl value={value.tool_hooks} tools={tools} hookNames={hookNames}
+            disabled={submitting} onChange={(v) => setKey("tool_hooks", v)} />
+        </div>
+      </div>
+    </>
+  );
+}
+
 function validateAgentOverlay(ov: DefValue): string | null {
   const ints: string[] = [
     "max_tokens",
