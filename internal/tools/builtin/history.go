@@ -116,7 +116,7 @@ const historyInputSchema = `{
 		"pinned_only":     {"type": "boolean", "description": "list/search: restrict to pinned chats."},
 		"include_archived":{"type": "boolean", "description": "list/search/related: include archived chats (excluded by default)."},
 		"include_internal":{"type": "boolean", "description": "list/search/related: include chats served by loomcycle's own maintenance agents (excluded by default — they are runtime bookkeeping, not conversations). Set it to debug a background pass."},
-		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 50, cap 500). related: max similar chats to return (default 10, cap 500). get: max conversation turns to return (default: all that fit — inside a run, a page is capped to fit your context)."},
+		"limit":           {"type": "integer", "description": "list/search: max chats per page (default 10 inside a run, 50 otherwise; cap 500); the result says has_more and next_offset. related: max similar chats to return (default 10, cap 500). get: max conversation turns to return (default: all that fit — inside a run, a page is capped to fit your context)."},
 		"offset":          {"type": "integer", "description": "list/search: pagination offset. get: the turn to start at (0 = the first); pass the previous page's next_offset to read on."},
 		"format":          {"type": "string", "description": "get: \"markdown\" renders the full transcript as Markdown (metadata header + every event) instead of a structured event array; \"conversation\" renders ONLY the user and assistant turns, with no header, no tool traffic and no runtime event payloads — use it when feeding a chat to a model."},
 		"title":           {"type": "string", "description": "rename: the new title."},
@@ -328,10 +328,18 @@ func validChatStatus(s string) bool {
 const (
 	listLimitDefault = 50
 	listLimitMax     = 500
+	// listLimitInRunDefault is the default page inside a run. Measured on local
+	// models, the 50-chat default was 16-17K characters of chat metadata and added
+	// 7.6K tokens to a 5K stateful context — for a question the first few rows
+	// answer. The page says has_more/next_offset, so reading on stays one call.
+	listLimitInRunDefault = 10
 )
 
-func effectiveListLimit(limit int) int {
+func effectiveListLimit(ctx context.Context, limit int) int {
 	if limit <= 0 {
+		if tools.RunID(ctx) != "" {
+			return listLimitInRunDefault
+		}
 		return listLimitDefault
 	}
 	if limit > listLimitMax {
@@ -353,18 +361,24 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 		// full-text search is deferred (an FTS index, additive later).
 		f.TitleContains = in.Query
 	}
-	limit := effectiveListLimit(in.Limit)
+	limit := effectiveListLimit(ctx, in.Limit)
 	rows, total, err := h.Store.ListSessions(ctx, f, limit, in.Offset)
 	if err != nil {
 		return errResult("history: list: " + err.Error()), nil
 	}
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"scope":  scope,
 		"chats":  rows,
 		"total":  total,
 		"limit":  limit, // the effective limit the store applied, not the raw request
 		"offset": in.Offset,
-	})
+	}
+	next := in.Offset + len(rows)
+	out["has_more"] = int64(next) < total
+	if int64(next) < total {
+		out["next_offset"] = next
+	}
+	return okJSON(out)
 }
 
 func (h *History) get(ctx context.Context, scope string, in historyInput) (tools.Result, error) {

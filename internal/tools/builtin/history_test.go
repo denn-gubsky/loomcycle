@@ -222,6 +222,43 @@ func TestHistory_ListEchoesEffectiveLimit(t *testing.T) {
 	}
 }
 
+// TestHistory_ListPagesSmallInsideARun: inside a run an omitted limit is 10, not
+// 50 — measured on local models, the 50-chat page was 16-17K characters of
+// metadata for a question the first rows answer — and the page says how to read on.
+func TestHistory_ListPagesSmallInsideARun(t *testing.T) {
+	h, s := historyFixture(t)
+	for i := 0; i < 12; i++ {
+		seedChat(t, s, "t1", "agentA", "alice")
+	}
+	list := func(ctx context.Context, req string) map[string]any {
+		t.Helper()
+		res, _ := h.Execute(ctx, json.RawMessage(req))
+		if res.IsError {
+			t.Fatalf("list: %s", res.Text)
+		}
+		var out map[string]any
+		_ = json.Unmarshal([]byte(res.Text), &out)
+		return out
+	}
+	inRun := tools.WithRunID(histCtx([]string{"self"}, "agentA", "alice", "t1"), "r_reader")
+
+	first := list(inRun, `{"op":"list","scope":"self"}`)
+	if first["limit"] != float64(10) || len(first["chats"].([]any)) != 10 ||
+		first["has_more"] != true || first["next_offset"] != float64(10) {
+		t.Errorf("in-run first page: limit=%v chats=%d has_more=%v next_offset=%v",
+			first["limit"], len(first["chats"].([]any)), first["has_more"], first["next_offset"])
+	}
+	rest := list(inRun, `{"op":"list","scope":"self","offset":10}`)
+	if len(rest["chats"].([]any)) != 2 || rest["has_more"] != false || rest["next_offset"] != nil {
+		t.Errorf("in-run second page: chats=%d has_more=%v next_offset=%v",
+			len(rest["chats"].([]any)), rest["has_more"], rest["next_offset"])
+	}
+	// An explicit limit is honoured inside a run too.
+	if got := list(inRun, `{"op":"list","scope":"self","limit":12}`); len(got["chats"].([]any)) != 12 {
+		t.Errorf("explicit limit 12 returned %d chats", len(got["chats"].([]any)))
+	}
+}
+
 // TestHistory_ListRejectsInvalidStatus: an unknown status value is rejected up
 // front rather than silently returning an empty page (a typo like "complete").
 func TestHistory_ListRejectsInvalidStatus(t *testing.T) {
