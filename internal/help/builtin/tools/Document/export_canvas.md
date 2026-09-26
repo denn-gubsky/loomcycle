@@ -14,8 +14,10 @@ not drawn — nodes are laid out on a board, not as a tree.
 
 ## Arguments
 
-- `document_id` — the document. Instead you may pass `id` (the document id)
-  or `path` (its Path-tree path).
+- `document_id` — the document. Or:
+- `id` — the same document id, as an alias of `document_id`. Or:
+- `path` — the document's Path-tree path. Used only when `document_id` and
+  `id` are empty.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 

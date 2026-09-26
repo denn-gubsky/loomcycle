@@ -16,6 +16,8 @@ lifecycle: `close` it when you are done.**
 - `def_id` — run a specific version of that agent; its name must match `name`.
 - `idle_ttl_seconds` — close the child after this long with no `send`
   (0 = the operator's default).
+- `compaction` — override the child's context compaction (it inherits yours),
+  with the same fields as on `spawn`. Rarely needed.
 
 ## Returns
 

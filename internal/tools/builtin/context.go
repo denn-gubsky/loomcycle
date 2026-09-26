@@ -1087,6 +1087,16 @@ var _ tools.Tool = (*Context)(nil)
 // pointer a tool's description carries must resolve exactly as written.
 func (c *Context) HasHelpTopic(name string) bool { return c.Help.Has(name) }
 
+// HelpArguments implements tools.OpArgumentIndex: the arguments an operation
+// article documents, and whether it has an Arguments section at all.
+func (c *Context) HelpArguments(topic string) ([]string, bool) {
+	if !c.Help.Has(topic) {
+		return nil, false
+	}
+	t, _ := c.Help.Get(topic)
+	return t.Arguments()
+}
+
 // HelpExample implements tools.HelpIndex: the first call example in topic,
 // compacted to one line. Only examples for the topic's own tool count — an
 // article may show a neighbouring tool's call in passing.
