@@ -104,16 +104,21 @@ type BuildInfo struct {
 	Time    string
 }
 
-const contextDescription = `Runtime introspection. ` +
-	`Answers "what tools do I have? who am I? what permissions apply to me? ` +
-	`what other agents exist? what's my def's lineage and evaluation history? ` +
+// The first sentence is all the injected tool inventory shows, and the "Do NOT
+// use" sentence is its only continuation line. Measured on local models, an
+// opening of "Runtime introspection." told an agent nothing it could act on, so
+// it never called the tool that holds its tools' call formats and its scopes.
+// Keep the first sentence under the inventory's 120-byte cap.
+const contextDescription = `Runtime and self introspection, with call instructions for all your tools (op=help) and your scopes (op=permissions). ` +
+	`Before a tool's first call, op=help with topic=<Tool> (or <Tool>/<op>) returns its exact arguments and an example; op=self says who you are. ` +
+	`Do NOT use it to browse or read past chats — that is History. ` +
+	`Also answers "what tools do I have? what other agents exist? what's my def's lineage and evaluation history? ` +
 	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
 	`Operations: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities. ` +
 	`op=guide is a compact "how to call your tools" digest — per tool the op enum + required args + a usage hint — the fast way to avoid tool-call mistakes. ` +
 	`Use op=capabilities to find out what this deployment actually supports (vector/full-text memory, SQL memory, ` +
 	`documents, bash, sandbox, scheduler, webhooks, search providers, consolidation) BEFORE calling something that ` +
 	`would only refuse. ` +
-	`(To browse/search/read past chats, use the History tool, not this one.) ` +
 	`Every op except compact (which distils this run's own context) is read-only: no storage writes, no network calls. ` +
 	`Useful for self-evolving agents that build their own task plans and want to inspect ` +
 	`their environment before deciding what to do. ` +
