@@ -28,7 +28,6 @@
 //	loomcycle.runstate — Phase 4 (RunState bus fanout)
 //	loomcycle.channel  — Phase 4 (Channel bus fanout)
 //	loomcycle.quota    — Phase 2 (observability only)
-//	loomcycle.hook     — Phase 6 (hook registry invalidation)
 //
 // Phase 1 ships the substrate with no live publishers / subscribers
 // in the wider runtime — only the package's own tests exercise the

@@ -54,7 +54,7 @@ func TestLoop_HooksWrapTool_PostRewrite(t *testing.T) {
 	}))
 	defer hookSrv.Close()
 
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	if _, err := reg.Register(&hooks.Hook{
 		Owner: "test", Name: "wrap-untrusted", Phase: hooks.PhasePost,
 		CallbackURL: hookSrv.URL,
@@ -124,7 +124,7 @@ func TestLoop_HooksAgentFilter_Mismatch(t *testing.T) {
 	}))
 	defer hookSrv.Close()
 
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{
 		Owner: "test", Name: "qa-only", Phase: hooks.PhasePost,
 		CallbackURL: hookSrv.URL,
@@ -165,7 +165,7 @@ func TestLoop_HooksPreDeny(t *testing.T) {
 	}))
 	defer hookSrv.Close()
 
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{
 		Owner: "test", Name: "host-allow", Phase: hooks.PhasePre,
 		CallbackURL: hookSrv.URL, Tools: []string{"WebFetch"},
@@ -273,9 +273,9 @@ func TestLoop_HostWiden_PermittedHookApprovesUnknownHost(t *testing.T) {
 	defer hookSrv.Close()
 
 	// Registry built with the hook's owner in the permit list.
-	reg := hooks.NewRegistryWithPermissions([]string{"jobs-search-web"})
+	reg := hooks.NewSet()
 	if _, err := reg.Register(&hooks.Hook{
-		Owner: "jobs-search-web", Name: "url-gate", Phase: hooks.PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "url-gate", Phase: hooks.PhasePre,
 		CallbackURL: hookSrv.URL, Tools: []string{"WebFetch"},
 	}); err != nil {
 		t.Fatalf("register: %v", err)
@@ -363,7 +363,7 @@ func TestLoop_HostWiden_UnpermittedHookHasNoEffect(t *testing.T) {
 	defer hookSrv.Close()
 
 	// Registry permits a DIFFERENT owner; our hook's owner is NOT.
-	reg := hooks.NewRegistryWithPermissions([]string{"some-other-owner"})
+	reg := hooks.NewSet()
 	_, _ = reg.Register(&hooks.Hook{
 		Owner: "jobs-search-web", Name: "url-gate", Phase: hooks.PhasePre,
 		CallbackURL: hookSrv.URL, Tools: []string{"WebFetch"},

@@ -33,14 +33,13 @@ func userChannelFixture(t *testing.T) *Server {
 		},
 	}
 	cfg.Env.ChannelsMaxValueBytes = 64 * 1024
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	bus := channels.NewBus()
 	srv := &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

@@ -39,7 +39,7 @@ func channelFanFixture(t *testing.T) (*Server, func()) {
 			ChannelsLongPollCapMS: 2000,
 		},
 	}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	bus := channels.NewBus()
 	sched := channels.NewScheduler(bus, 100)
 	srv := &Server{
@@ -47,7 +47,6 @@ func channelFanFixture(t *testing.T) (*Server, func()) {
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 		breakpointReg:  breakpoints.NewRegistry(),

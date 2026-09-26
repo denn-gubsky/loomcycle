@@ -44,8 +44,7 @@ volume_def / team_def), the channel ops (list_channels / publish_channel /
 subscribe_channel / peek_channel / ack_channel / await_channels /
 broadcast_channels), the RFC AI interactive session (run_input + stream_run +
 an ``interactive=True`` flag on run_streaming / continue_session),
-pause/resume/state, the snapshot lifecycle, and hook
-management. run_streaming / continue_session /
+pause/resume/state, and the snapshot lifecycle. run_streaming / continue_session /
 spawn_run_batch accept per-run ``sampling`` + ``compaction`` overrides. The
 HTTP-only surface (memory-entry admin, interruptions, library enumeration, the
 LLM gateway, whoami/list-users) has no gRPC RPC and is not exposed here.
@@ -84,7 +83,6 @@ from .errors import (
     BackpressureError,
     AuthError,
     UnavailableError,
-    HookNotFoundError,
     # v0.8.18 — pause/snapshot typed errors.
     PauseNotConfiguredError,
     AlreadyPausingError,
@@ -117,7 +115,6 @@ __all__ = [
     "BackpressureError",
     "AuthError",
     "UnavailableError",
-    "HookNotFoundError",
     # v0.8.18 additions.
     "PauseNotConfiguredError",
     "AlreadyPausingError",

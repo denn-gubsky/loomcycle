@@ -40,13 +40,12 @@ func libraryUnifiedFixture(
 		Agents:     staticAgents,
 		MCPServers: staticMCP,
 	}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	srv := &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		store:          s,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

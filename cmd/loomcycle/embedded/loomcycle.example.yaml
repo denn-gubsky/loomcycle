@@ -411,28 +411,24 @@ interruption:
   heartbeat_interval_ms: 30000    # during-block heartbeat cadence (sweeper-safe)
 
 # ─── Tool-use hooks (v0.7.x+; widening capability v0.8.17) ────────────
-# Hook registrations themselves are RUNTIME — apps register via
-# POST /v1/hooks. This block carries the few operator-side knobs that
-# CANNOT be set via the runtime API (so the registering app can't
-# escalate its own trust boundary).
+# Hooks themselves live in the agents that carry them (a `tools:` entry
+# `{name, hooks: {pre, post}}`, or the agent's own `hooks:`), as inline
+# webhooks or HookDef names. This block carries the operator-side knobs no
+# definition can set (so a hook cannot escalate its own trust boundary).
 #
-# permit_host_widen.owners: the exact-match list of `[tenant:]owner`
-# entries — (tenant, registered-hook Owner UID) pairs — whose Pre-hook
-# `allow_hosts` response is HONOURED at dispatch time. A bare `owner`
-# (no colon) binds to the shared tenant "" (single-tenant deployments +
-# operator/global hooks); `tenant:owner` confines the grant to that one
-# tenant. Keying on (tenant, owner) — not owner alone — stops a SECOND
-# tenant from registering a hook with a permitted owner string and
-# escaping the operator host floor for its own runs (a hook's `owner` is
-# caller-supplied; only the tenant is authoritative). Without a matching
-# entry, a hook's allow_hosts is silently dropped (WARN log +
+# permit_host_widen.owners: the exact-match list of `[tenant:]name` entries —
+# the tenant that owns the definition a hook came from ("" for this yaml) and
+# the hook's name — whose Pre-hook `allow_hosts` response is HONOURED. The
+# grant also needs an operator-authored definition: a hook an agent's own
+# definition carries never widens. Without a matching entry, a hook's
+# allow_hosts is silently dropped (WARN log +
 # Dispatcher.HostWidenDenied counter). The model and the runtime caller
 # cannot enable widening — only this yaml can. See docs/TOOLS.md
 # "Per-call host widening" for the wire shape, audit event, limitations.
 #
 # Env equivalent (APPENDS to whatever yaml has, not replaces; same
-# `[tenant:]owner` syntax):
-#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobember:jobs-search-web
+# `[tenant:]name` syntax):
+#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobember:url-gate
 #
 # SECURITY: the named app is trusted to make ad-hoc per-call URL
 # decisions. The hook receives the URL the model wants to fetch +
@@ -443,8 +439,8 @@ interruption:
 # any trust delegation.
 hooks:
   permit_host_widen:
-    # bare owner = shared tenant ""; "tenant:owner" = that tenant only.
-    owners: []                    # e.g. ["jobember:jobs-search-web"] — empty default-denies for all
+    # bare name = this yaml's own agents; "tenant:name" = that tenant's definitions.
+    owners: []                    # e.g. ["jobember:url-gate"] — empty default-denies for all
 
 # ─── Memory backends (RFC CD Part B) ──────────────────────────────────
 # Named memory backends an agent selects with `memory_backend: <name>`. With no

@@ -124,6 +124,8 @@ var agentDefOverridability = map[string]overridability{
 	"A2AAgentDefScopes":      notOverridable,
 	"SkillDefScopes":         notOverridable,
 	"VolumeDefScopes":        notOverridable,
+	"Hooks":                  notOverridable,
+	"ToolHooks":              notOverridable,
 
 	// --- identity and instructions: letting a caller replace these lets them
 	// replace the agent, which is the whole point of a definition being a
@@ -142,6 +144,7 @@ var agentDefOverridability = map[string]overridability{
 	// stamped from the runtime's own view of the caller. A per-run override of
 	// it would hand an attacker the guard's key.
 	"OperatorAuthored": notOverridable,
+	"OwnerTenant":      notOverridable,
 
 	// --- operator configuration (D6): the declarations themselves are the
 	// operator's; an override selects WITHIN them and may not change them. ---

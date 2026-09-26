@@ -12,6 +12,10 @@ import type { DefRegistry, FieldSpec } from "../types";
 // registry ∪ EXCLUDED == the substrate's overlay shape, so an omission has to be
 // justified here rather than silently forgotten.
 export const AGENTDEF_EXCLUDED: Record<string, string> = {
+  hooks:
+    "per-event lists of hook entries (a HookDef name or an inline webhook) — they need their own editor, not a flat field; until then they are set in yaml or the overlay",
+  tool_hooks:
+    "each tool's own hooks, keyed by tool name — edited beside the tool they gate, in the same hooks editor as hooks",
   system_prompt_base:
     "derived — the pre-skill-bake snapshot of system_prompt, written by the server, never operator input",
   system_prompt_file:

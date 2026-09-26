@@ -195,13 +195,12 @@ func vectorAdminFixture(t *testing.T, supportsVectors bool) (*Server, *adminFake
 	vs := newVectorAdminStore(st, supportsVectors)
 	emb := &adminFakeEmbedder{provider: "openai", model: "text-embedding-3-large", dim: 4}
 	cfg := &config.Config{}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	srv := &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		store:          vs,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

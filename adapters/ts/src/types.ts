@@ -2074,64 +2074,6 @@ export type HookPhase =
 
 export type HookFailMode = "open" | "closed";
 
-/** Hook is the full descriptor returned by listHooks. The id +
- *  registered_at are loomcycle-assigned; the rest mirrors what was
- *  POSTed to registerHook. Field names use snake_case to match the
- *  Go server's JSON output. */
-export interface Hook {
-  id: string;
-  owner: string;
-  name: string;
-  phase: HookPhase;
-  agents: string[];
-  tools: string[];
-  callback_url: string;
-  fail_mode: HookFailMode;
-  timeout_ms: number;
-  registered_at: string; // ISO 8601
-  /** The code-js body, when the hook has one instead of a callback_url. */
-  code?: string;
-}
-
-/** RegisterHookOptions uses camelCase (JS norm for method parameters)
- *  and is translated to snake_case in the request body — same split as
- *  RunOptions / CreateSnapshotOptions. */
-export interface RegisterHookOptions {
-  /** App UID; (owner, name) is the identity tuple. Re-registering the
-   *  same pair replaces the prior entry with a fresh id. */
-  owner: string;
-  name: string;
-  phase: HookPhase;
-  /** Agent name globs (exact match or trailing-* prefix). Empty list
-   *  matches every agent (equivalent to ["*"]). */
-  agents?: string[];
-  /** Tool name globs (same syntax). Empty matches every tool. */
-  tools?: string[];
-  /** http:// or https:// URL loomcycle POSTs PreHookCall /
-   *  PostHookCall payloads to. Set this or `code`. */
-  callbackUrl?: string;
-  /** A code-js body in place of a webhook: JavaScript defining a
-   *  top-level `hook(ev)` that returns the decision. Its only tool is
-   *  `Interruption` (ask, notify). Needs code hooks enabled on the
-   *  server. Set this or `callbackUrl`. */
-  code?: string;
-  /** "open" (default) — webhook errors pass through. "closed" — webhook
-   *  errors fail the tool call with IsError=true. */
-  failMode?: HookFailMode;
-  /** Per-call timeout. 0 / omitted = registry default (5 s; 50 ms for a
-   *  code body, where it bounds each run of the code, capped at 1 s). */
-  timeoutMs?: number;
-}
-
-export interface RegisterHookResponse {
-  /** Loomcycle-assigned id. Use it on deleteHook. */
-  id: string;
-}
-
-export interface ListHooksResponse {
-  hooks: Hook[];
-}
-
 // ---- Hook callback payloads ----
 //
 // These describe what the consumer's callback_url endpoint RECEIVES
@@ -3342,6 +3284,34 @@ export interface AgentInterruptionACL {
   max_pending?: number;
 }
 
+/** A hook event: a tool call's `pre` / `post` / `post_failure`, or a point in
+ *  the run. */
+export type HookEvent =
+  | "pre" | "post" | "post_failure"
+  | "agent_start" | "agent_stop" | "subagent_start" | "subagent_stop"
+  | "pre_compact" | "post_compact" | "run_end";
+
+/** A webhook written into the definition that attaches it. */
+export interface InlineWebhook {
+  name: string;
+  url: string;
+  fail_mode?: HookFailMode;
+  timeout_ms?: number;
+}
+
+/** One hook an agent carries: a HookDef name (`"gate"`, or `"gate@3"` pinned)
+ *  or an inline webhook. */
+export type HookEntry = string | InlineWebhook;
+
+/** Hooks per event, in chain order. */
+export type EventHooks = Partial<Record<HookEvent, HookEntry[]>>;
+
+/** A `tools` entry that carries that tool's own hooks. */
+export interface ToolEntry {
+  name: string;
+  hooks: Partial<Record<"pre" | "post" | "post_failure", HookEntry[]>>;
+}
+
 export interface AgentDefOverlay {
   provider?: string;
   model?: string;
@@ -3359,7 +3329,14 @@ export interface AgentDefOverlay {
   max_iterations?: number;
   max_concurrent_children?: number;
   system_prompt?: string;
-  tools?: string[];
+  /** Tool names; an entry may be `{name, hooks}` to give that tool its own
+   *  pre / post hooks (stored as the name plus a `tool_hooks` entry). */
+  tools?: (string | ToolEntry)[];
+  /** The agent's own hooks: run events, and tool events for every tool. A run
+   *  takes these verbatim. */
+  hooks?: EventHooks;
+  /** Each tool's own hooks, by tool name. */
+  tool_hooks?: Record<string, Partial<Record<"pre" | "post" | "post_failure", HookEntry[]>>>;
   skills?: string[];
   memory_scopes?: string[];
   /** RFC DF: recall attaches the conversation TURN each fact was distilled from,

@@ -47,7 +47,6 @@ from .errors import (
     AlreadyPausingError,
     AuthError,
     BackpressureError,
-    HookNotFoundError,
     InvalidArgumentError,
     LoomcycleError,
     NotPausedError,
@@ -202,92 +201,6 @@ class LoomcycleClient:
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
         return resp.cancelled_count
-
-    # ---- Hook management (hooks-connector series, PR D) ----
-
-    async def register_hook(
-        self,
-        *,
-        owner: str,
-        name: str,
-        phase: str,
-        callback_url: str = "",
-        agents: Optional[Sequence[str]] = None,
-        tools: Optional[Sequence[str]] = None,
-        fail_mode: str = "open",
-        timeout_ms: int = 0,
-        code: str = "",
-    ) -> Mapping[str, Any]:
-        """Register a pre- or post-tool webhook. Returns
-        ``{"id": "hook_..."}``.
-
-        Re-registering the same ``(owner, name)`` replaces the prior
-        entry with a fresh id (idempotent app-restart contract).
-        Raises ``LoomcycleError`` with ``code=INVALID_ARGUMENT`` on
-        bad URL / phase / missing required fields.
-
-        Phase is a tool phase (``"pre"``, ``"post"``, ``"post_failure"``)
-        or a run phase (``"agent_start"``, ``"agent_stop"``,
-        ``"subagent_start"``, ``"subagent_stop"``, ``"pre_compact"``,
-        ``"post_compact"``, ``"run_end"``), which takes no ``tools``;
-        fail_mode is ``"open"``
-        (default — webhook errors pass through) or ``"closed"``
-        (webhook errors fail the tool call). The callback half is
-        HTTP — loomcycle POSTs ``PreHookCall`` / ``PostHookCall``
-        payloads to ``callback_url``; the consumer runs the
-        receiver in whatever framework they use.
-
-        Instead of ``callback_url``, ``code`` gives a code-js body: a
-        top-level ``hook(ev)`` function run in-process by loomcycle,
-        whose only tool is ``Interruption``. Set exactly one; code
-        needs code hooks enabled on the server."""
-        try:
-            resp = await self._stub.RegisterHook(
-                pb.RegisterHookRequest(
-                    owner=owner,
-                    name=name,
-                    phase=phase,
-                    agents=list(agents or []),
-                    tools=list(tools or []),
-                    callback_url=callback_url,
-                    fail_mode=fail_mode,
-                    timeout_ms=timeout_ms,
-                    code=code,
-                ),
-                metadata=self._auth_metadata(),
-            )
-        except grpc.aio.AioRpcError as e:
-            _raise_from_grpc(e)
-        return {"id": resp.id}
-
-    async def list_hooks(self) -> Sequence[Mapping[str, Any]]:
-        """Return every currently-registered hook in registration
-        order. In-memory only — empty after a loomcycle restart."""
-        try:
-            resp = await self._stub.ListHooks(
-                pb.ListHooksRequest(),
-                metadata=self._auth_metadata(),
-            )
-        except grpc.aio.AioRpcError as e:
-            _raise_from_grpc(e)
-        return [_hook_to_dict(h) for h in resp.hooks]
-
-    async def delete_hook(self, hook_id: str) -> bool:
-        """Delete a hook by id. Returns ``True`` on success. Raises
-        ``HookNotFoundError`` when no hook has that id.
-
-        Success is determined by the RPC returning at all (no
-        ``AioRpcError`` raised); the proto's ``deleted`` echo field
-        is not inspected — the server's wire contract is "raise
-        NotFound for unknown, return DeleteHookResponse for known"."""
-        try:
-            await self._stub.DeleteHook(
-                pb.DeleteHookRequest(id=hook_id),
-                metadata=self._auth_metadata(),
-            )
-        except grpc.aio.AioRpcError as e:
-            _raise_from_grpc(e)
-        return True
 
     async def list_user_agents(
         self,
@@ -2015,25 +1928,6 @@ def _segments_to_proto(segments: Iterable[PromptSegment]) -> List[pb.PromptSegme
     return out
 
 
-def _hook_to_dict(h: pb.Hook) -> Mapping[str, Any]:
-    """Convert proto Hook → public dict. Mirrors hooks.Hook JSON
-    field names exactly so consumers porting from HTTP /v1/hooks
-    don't have to relearn keys."""
-    return {
-        "id": h.id,
-        "owner": h.owner,
-        "name": h.name,
-        "phase": h.phase,
-        "agents": list(h.agents),
-        "tools": list(h.tools),
-        "callback_url": h.callback_url,
-        "fail_mode": h.fail_mode,
-        "timeout_ms": h.timeout_ms,
-        "registered_at": _ts_to_iso(h.registered_at) if h.HasField("registered_at") else "",
-        "code": h.code,
-    }
-
-
 def _token_limit_entry(e: "pb.TokenLimitEntry") -> Mapping[str, Any]:
     """Convert a proto TokenLimitEntry → public dict (RFC AW). soft_limit /
     hard_limit are ``None`` when that tier is unset (no ceiling on the axis) so
@@ -2487,15 +2381,12 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
     ``mapRunnerErr`` plus the direct ``codes.NotFound`` emissions
     in ``GetAgent`` / ``CancelAgent`` / ``GetTranscript``.
 
-    Discriminates ``NotFound`` between session/hook/agent by
+    Discriminates ``NotFound`` between session/agent by
     inspecting the status message — the server's wire-stable
     strings are the source of truth:
 
       - ``"session not found"`` (Continue, GetTranscript) →
         ``SessionNotFoundError``
-      - ``"no hook with id"`` (DeleteHook) → ``HookNotFoundError``
-        — must precede the agent fallback since the hooks message
-        doesn't say "agent".
       - ``"no live run for"`` / ``"no run found for agent_id"``
         (GetAgent, CancelAgent) → ``AgentNotFoundError``
 
@@ -2529,8 +2420,6 @@ def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":
             raise SnapshotNotFoundError(msg, code=code) from err
         if "session" in msg_lower:
             raise SessionNotFoundError(msg, code=code) from err
-        if "hook" in msg_lower:
-            raise HookNotFoundError(msg, code=code) from err
         raise AgentNotFoundError(msg, code=code) from err
     if code == grpc.StatusCode.FAILED_PRECONDITION:
         # Server uses FailedPrecondition for ErrSessionRequired /

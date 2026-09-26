@@ -56,6 +56,7 @@ import (
 	"encoding/json"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -137,6 +138,7 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 		var def config.AgentDef
 		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
 			NormalizeAgentDef(&def)
+			def.OwnerTenant = tenantID
 			return def, true
 		}
 	}
@@ -165,6 +167,7 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	// deliberately not part of the persisted def (nor of its content hash), so
 	// a def cannot claim it by containing it.
 	def.OperatorAuthored = activeRow.OperatorAuthored
+	def.OwnerTenant = tenantID
 	return def, true
 }
 
@@ -286,6 +289,9 @@ type SubstrateAgentDef struct {
 	// F40 closure, so a runtime-authored ensemble launcher's volume
 	// authority survives the round-trip instead of defaulting to deny.
 	VolumeDefScopes []string `json:"volume_def_scopes,omitempty"`
+	// Hooks / ToolHooks mirror config.AgentDef / builtin.mergedDef.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 }
 
 // ToConfigDef projects the substrate JSON shape onto config.AgentDef
@@ -359,6 +365,8 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		A2AServerCardDefScopes: def.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      def.A2AAgentDefScopes,
 		VolumeDefScopes:        def.VolumeDefScopes,
+		Hooks:                  def.Hooks,
+		ToolHooks:              def.ToolHooks,
 	}
 }
 
@@ -419,6 +427,8 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		A2AServerCardDefScopes: s.A2AServerCardDefScopes,
 		A2AAgentDefScopes:      s.A2AAgentDefScopes,
 		VolumeDefScopes:        s.VolumeDefScopes,
+		Hooks:                  s.Hooks,
+		ToolHooks:              s.ToolHooks,
 	}
 }
 

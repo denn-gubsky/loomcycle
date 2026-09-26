@@ -49,7 +49,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/help"
-	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	mcpsign "github.com/denn-gubsky/loomcycle/internal/mcp"
@@ -2450,23 +2449,7 @@ func main() {
 		pgSessionLock := runner.NewPgSessionLocker(pgStore.Pool())
 		srv.SetPgSessionLocker(pgSessionLock)
 
-		// v0.12.5 Phase 6b: cluster-wide hook registry. Persists
-		// registrations to the hooks table; backplane events keep
-		// each replica's in-process cache current. The inner Registry
-		// preserves the operator-yaml host-widen permit list (CLAUDE.md
-		// rule #8 — frozen at boot, never DB-derived).
-		innerReg := hooks.NewRegistryWithPermissions(cfg.Hooks.PermitHostWiden.Owners)
-		dbReg, err := hooks.NewDBBackedRegistry(innerReg, pgStore, bp, cfg.Env.ReplicaID)
-		if err != nil {
-			log.Fatalf("coord: hook db registry init: %v", err)
-		}
-		if err := dbReg.LoadFromDB(bgCtx); err != nil {
-			log.Printf("coord: hook db registry initial load: %v (continuing with empty cache)", err)
-		}
-		go dbReg.RunBackplaneConsumer(bgCtx)
-		srv.SetHookRegistry(dbReg)
-
-		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on singleton_sweepers=on session_lock=pg-advisory hooks=db-backed", cfg.Env.ReplicaID, ackTimeout)
+		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on singleton_sweepers=on session_lock=pg-advisory", cfg.Env.ReplicaID, ackTimeout)
 	}
 
 	// Heartbeat sweeper — must run AFTER the cluster block so it can

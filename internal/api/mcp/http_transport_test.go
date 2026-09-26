@@ -144,15 +144,6 @@ func (m *httpMockConnector) ReviewRun(context.Context, string, string, string, s
 func (m *httpMockConnector) ResolveInterrupt(context.Context, string, string, string, string, string, string) (string, error) {
 	return "", errors.New("not implemented")
 }
-func (m *httpMockConnector) RegisterHook(context.Context, connector.RegisterHookRequest) (connector.RegisterHookResponse, error) {
-	return connector.RegisterHookResponse{}, errors.New("not implemented")
-}
-func (m *httpMockConnector) ListHooks(context.Context) (connector.ListHooksResponse, error) {
-	return connector.ListHooksResponse{}, errors.New("not implemented")
-}
-func (m *httpMockConnector) DeleteHook(context.Context, string) error {
-	return errors.New("not implemented")
-}
 
 // v0.9.x n8n RFC Phase 0 stubs.
 func (m *httpMockConnector) ListChannels(context.Context) (connector.ListChannelsResponse, error) {

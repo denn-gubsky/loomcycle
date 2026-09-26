@@ -21,12 +21,11 @@ func newMetricsPromServer(t *testing.T, withPerUserCap bool) *Server {
 	if withPerUserCap {
 		sem = sem.WithPerUserCap(4)
 	}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	return &Server{
 		cfgHolder:      config.NewHolder(&config.Config{}),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            sem,
 	}

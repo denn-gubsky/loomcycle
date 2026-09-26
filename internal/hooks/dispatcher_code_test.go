@@ -23,7 +23,7 @@ func (f *fakeCodeRunner) Run(ctx context.Context, _ *Hook, event string, _ any) 
 
 func codeDispatcher(t *testing.T, run CodeRunner, hs ...*Hook) *Dispatcher {
 	t.Helper()
-	r := NewRegistry()
+	r := NewSet()
 	for _, h := range hs {
 		mustRegister(t, r, h)
 	}
@@ -136,7 +136,7 @@ func TestDispatcher_ACodeHookGetsNoDeadline(t *testing.T) {
 // A hook has exactly one body, a code body is bounded in size, and its
 // timeout defaults tight and is capped at a second.
 func TestRegistry_ACodeHookHasOneBodyAndATightTimeout(t *testing.T) {
-	r := NewRegistry()
+	r := NewSet()
 	for name, h := range map[string]*Hook{
 		"both":     {Owner: "x", Name: "b", Phase: PhasePre, CallbackURL: "http://e.test/h", Code: "function hook(ev) {}"},
 		"neither":  {Owner: "x", Name: "n", Phase: PhasePre},

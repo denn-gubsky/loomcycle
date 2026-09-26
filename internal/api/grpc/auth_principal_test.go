@@ -71,7 +71,6 @@ func TestGrpcRequiredScopeForRPC_RFCAFTenantPlane(t *testing.T) {
 	tenantRPCs := []string{
 		"AgentDef", "SkillDef", "MCPServerDef", "ScheduleDef",
 		"A2AServerCardDef", "A2AAgentDef", "WebhookDef", "MemoryBackendDef",
-		"RegisterHook", "ListHooks", "DeleteHook",
 	}
 	for _, name := range tenantRPCs {
 		if got := requiredScopeForRPC(grpcMethodPrefix + name); got != auth.ScopeTenant {

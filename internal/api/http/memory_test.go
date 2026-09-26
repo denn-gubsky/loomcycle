@@ -42,13 +42,12 @@ func memoryAdminFixture(t *testing.T) *Server {
 	}
 
 	cfg := &config.Config{}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	return &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}
@@ -575,13 +574,12 @@ func memoryAdminAuthedFixture(t *testing.T) *Server {
 	}
 
 	cfg := &config.Config{Env: config.Env{AuthToken: "test-token"}}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	return &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		store:          st,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}
@@ -618,12 +616,11 @@ func TestHandleDeleteMemoryEntry_RequiresBearer(t *testing.T) {
 
 func TestHandleListMemoryEntries_StoreUnavailable(t *testing.T) {
 	cfg := &config.Config{}
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	s := &Server{
 		cfgHolder:      config.NewHolder(cfg),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 16, 30000),
 	}

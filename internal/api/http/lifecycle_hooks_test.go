@@ -69,7 +69,7 @@ func TestLifecycleHooks_AHooksHoldWaitsForAVerdictNotADisarm(t *testing.T) {
 	}))
 	defer hook.Close()
 	h := newReviewHarness(t)
-	if _, err := h.srv.hookRegistry.Register(&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
+	if _, err := h.srv.testHooks().Register(&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
 		t.Fatal(err)
 	}
 	runID, _, frames, stop := h.start(`{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write the plan"}]}]}`)
@@ -115,7 +115,7 @@ func TestResume_DoesNotRunAgentStartAgain(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
-	if _, err := srv.hookRegistry.Register(&hooks.Hook{Owner: "ops", Name: "once", Phase: hooks.PhaseAgentStart, CallbackURL: hook.URL}); err != nil {
+	if _, err := srv.testHooks().Register(&hooks.Hook{Owner: "ops", Name: "once", Phase: hooks.PhaseAgentStart, CallbackURL: hook.URL}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -157,7 +157,7 @@ func TestSubAgent_ARejectedChildIsAnErrorToItsParent(t *testing.T) {
 	}))
 	defer hook.Close()
 	h := newReviewHarness(t)
-	if _, err := h.srv.hookRegistry.Register(&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
+	if _, err := h.srv.testHooks().Register(&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
 		t.Fatal(err)
 	}
 	out, _, runID, err := h.srv.runSubAgent(context.Background(), "writer", "", "write the plan", "")

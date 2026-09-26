@@ -598,40 +598,6 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				}
 			}`),
 		},
-		// --- Hook management (hooks-connector series, PR B) ---
-		{
-			Name:        "register_hook",
-			Description: "Register a pre- or post-tool hook. Its body is either a webhook \u2014 callback_url, an http:// or https:// endpoint the consumer runs, which loomcycle POSTs PreHookCall/PostHookCall payloads to \u2014 or code: JavaScript defining hook(ev) that returns the decision, run in-process in the code-js sandbox, whose only tool is Interruption (ask, notify) so it can hold a call for a person and decide on the answer. Set exactly one. Returns {id}. Re-registering the same (owner, name) replaces the prior entry with a fresh id (idempotent app-restart contract). Use the id with delete_hook. Use it to observe or gate tool calls from outside \u2014 an audit trail, a policy check, a dashboard. Do NOT use it to add capability to an agent: a hook watches tool calls, it does not provide a tool. Registering an MCP server is mcpserverdef. Hooks are IN-MEMORY and gone after a restart, so a consumer is expected to re-register on startup \u2014 which is why re-registering the same (owner, name) replaces rather than duplicates.",
-			InputSchema: rawJSON(`{
-				"type": "object",
-				"required": ["owner", "name", "phase"],
-				"properties": {
-					"owner":        {"type": "string", "description": "App UID; (owner, name) is the identity tuple."},
-					"name":         {"type": "string"},
-					"phase":        {"type": "string", "enum": ["pre", "post", "post_failure", "agent_start", "agent_stop", "subagent_start", "subagent_stop", "pre_compact", "post_compact", "run_end"], "description": "Tool phases — pre: before the tool runs. post: after it runs, success or failure. post_failure: only after a failure, before post, with the failure's classification. Run phases (selected by agents only; no tools selector) — agent_start: once per run, before the first model call; may deny the run or add context to its prompt. agent_stop: each time the model finishes an answer; may block it (the reason goes back to the model, which answers again; more than 3 blocks in a row fail the run) or hold it for a person's verdict on review_run. subagent_start / subagent_stop: in the parent, around a child the Agent tool starts; may deny the child or its result, or add context. pre_compact: may deny a compaction. post_compact / run_end: report only, off the run's path."},
-					"agents":       {"type": "array", "items": {"type": "string"}, "description": "Agent name globs (exact or 'prefix*'). Empty = match all."},
-					"tools":        {"type": "array", "items": {"type": "string"}, "description": "Tool name globs (same syntax). Empty = match all."},
-					"callback_url": {"type": "string", "description": "http:// or https:// URL loomcycle POSTs to. Set this or code."},
-					"code":         {"type": "string", "description": "JavaScript defining a top-level function hook(ev). ev is the payload a webhook would receive plus event (pre_tool_use, post_tool_use, post_tool_use_failure). Return nothing to let the call through; a pre hook may return {decision: 'deny', reason}, {updated_input} or {allow_hosts}; a post hook {updated_output: {text, is_error}} or {additional_context}. Interruption.ask({question, options}) returns the answer (null if declined, throws on timeout); Interruption.notify({message}). No other tool, no network, no filesystem. Needs code hooks enabled on the server. Set this or callback_url."},
-					"fail_mode":    {"type": "string", "enum": ["open", "closed"], "description": "open (default) = errors pass through; closed = errors fail the tool call."},
-					"timeout_ms":   {"type": "integer", "minimum": 0, "description": "Per-call timeout. 0 = registry default (5 s for a webhook; 50 ms for code, where it bounds each run of the code \u2014 the wait for a person's answer is not counted \u2014 capped at 1 s)."}
-				}
-			}`),
-		},
-		{
-			Name:        "list_hooks",
-			Description: "List every hook registered right now, in registration order. Returns {hooks: [...]}. No arguments. Hooks are held IN MEMORY, so this is empty after a loomcycle restart even though the consumers that registered them may still be running \u2014 an empty list means 'nobody has registered since boot', not 'nobody wants hooks'. Use it to find the id you need for delete_hook. Do NOT use it to see hook DELIVERIES or failures: it lists registrations, never the calls made to them.",
-			InputSchema: rawJSON(`{"type": "object"}`),
-		},
-		{
-			Name:        "delete_hook",
-			Description: "Remove one hook by id. Returns {deleted: id}. Takes the `id` register_hook returned \u2014 list_hooks has it if you did not keep it. An id that no longer exists is an error rather than a silent success, so a stale id tells you. Use it to stop a callback you registered. Do NOT use it to pause hooks temporarily \u2014 there is no disable, so removing and re-registering is the only route, and re-registering mints a NEW id.",
-			InputSchema: rawJSON(`{
-				"type": "object",
-				"required": ["id"],
-				"properties": {"id": {"type": "string"}}
-			}`),
-		},
 		// v0.9.x n8n RFC Phase 0 — channel listing + run-state streaming.
 		{
 			Name:        "list_channels",

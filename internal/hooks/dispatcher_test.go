@@ -43,7 +43,7 @@ func newFakeHook(t *testing.T, respBody string) *fakeHook {
 
 func TestDispatcher_PreRewriteInput(t *testing.T) {
 	hook := newFakeHook(t, `{"input":{"url":"https://safe.example/redacted"}}`)
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Owner: "x", Name: "redact", Phase: PhasePre, CallbackURL: hook.srv.URL,
 		Tools: []string{"WebFetch"},
@@ -68,7 +68,7 @@ func TestDispatcher_PreDenyShortCircuits(t *testing.T) {
 	// prior hook short-circuits.
 	laterHook := newFakeHook(t, `{"input":{"never":"reached"}}`)
 
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Owner: "x", Name: "deny", Phase: PhasePre, CallbackURL: denyHook.srv.URL,
 		Tools: []string{"WebFetch"},
@@ -100,7 +100,7 @@ func TestDispatcher_PostLIFORewrite(t *testing.T) {
 	// final order.
 	hookA := newFakeHook(t, `{"result":{"text":"A(B(orig))","is_error":false}}`)
 	hookB := newFakeHook(t, `{"result":{"text":"B(orig)","is_error":false}}`)
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{Owner: "x", Name: "A", Phase: PhasePost, CallbackURL: hookA.srv.URL, Tools: []string{"WebFetch"}})
 	mustRegister(t, r, &Hook{Owner: "x", Name: "B", Phase: PhasePost, CallbackURL: hookB.srv.URL, Tools: []string{"WebFetch"}})
 	d := NewDispatcher(r, nil)
@@ -126,7 +126,7 @@ func TestDispatcher_FailOpenPassesThroughOnTimeout(t *testing.T) {
 	hook := newFakeHook(t, ``)
 	hook.delay = 200 * time.Millisecond // exceeds our 50 ms timeout
 
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Owner: "x", Name: "slow", Phase: PhasePre, CallbackURL: hook.srv.URL,
 		Tools: []string{"WebFetch"}, FailMode: FailOpen, TimeoutMs: 50,
@@ -149,7 +149,7 @@ func TestDispatcher_FailClosedDeniesOnTimeout(t *testing.T) {
 	hook := newFakeHook(t, ``)
 	hook.delay = 200 * time.Millisecond
 
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Owner: "x", Name: "slow", Phase: PhasePre, CallbackURL: hook.srv.URL,
 		Tools: []string{"WebFetch"}, FailMode: FailClosed, TimeoutMs: 50,
@@ -174,7 +174,7 @@ func TestDispatcher_EmptyResponseBodyIsNoOp(t *testing.T) {
 	hook := newFakeHook(t, ``)
 	hook.status = 204
 
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Owner: "x", Name: "telem", Phase: PhasePre, CallbackURL: hook.srv.URL,
 		Tools: []string{"WebFetch"},
@@ -203,9 +203,9 @@ func TestDispatcher_EmptyResponseBodyIsNoOp(t *testing.T) {
 // the permitted counter.
 func TestDispatcher_PreAllowHosts_PermittedOwnerFlows(t *testing.T) {
 	hook := newFakeHook(t, `{"allow_hosts":["acme.com",".trusted-cdn.com"]}`)
-	r := NewRegistryWithPermissions([]string{"jobs-search-web"})
+	r := NewSet()
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "url-gate", Phase: PhasePre,
 		CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"},
 	})
 	d := NewDispatcher(r, nil)
@@ -241,7 +241,7 @@ func TestDispatcher_PreAllowHosts_PermittedOwnerFlows(t *testing.T) {
 // fail the call (the tool runs with the operator-floor host policy).
 func TestDispatcher_PreAllowHosts_UnpermittedOwnerDropped(t *testing.T) {
 	hook := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
-	r := NewRegistryWithPermissions([]string{"some-other-app"}) // NOT our hook's owner
+	r := NewSet() // NOT our hook's owner
 	mustRegister(t, r, &Hook{
 		Owner: "jobs-search-web", Name: "rogue-gate", Phase: PhasePre,
 		CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"},
@@ -267,77 +267,18 @@ func TestDispatcher_PreAllowHosts_UnpermittedOwnerDropped(t *testing.T) {
 	}
 }
 
-// TestDispatcher_PreAllowHosts_TenantScopedPermit is the RFC AF follow-up at
-// the dispatch layer: a `tenant:owner` permit grants host-widening to a hook
-// in THAT tenant, but the SAME owner in a DIFFERENT tenant is refused — so a
-// second tenant claiming a permitted owner string can't widen hosts for its
-// own runs. Fail-before: with the old owner-only keying the cross-tenant hook
-// would have been permitted (owner matches), leaking the operator host floor.
-func TestDispatcher_PreAllowHosts_TenantScopedPermit(t *testing.T) {
-	// Operator permits owner "jobs-search-web" ONLY under tenant "jobember".
-	// One hook per registry (a same-(owner,name) pair across tenants would
-	// collide on the registry's byKey dedup — a separate isolation gap).
-	mkDispatcher := func(hookTenant string) *Dispatcher {
-		hook := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
-		r := NewRegistryWithPermissions([]string{"jobember:jobs-search-web"})
-		mustRegister(t, r, &Hook{
-			Tenant: hookTenant, Owner: "jobs-search-web", Name: "url-gate", Phase: PhasePre,
-			CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"},
-		})
-		// The fake hook listens on loopback, which a TENANT hook may reach
-		// only when the operator vouches for the host.
-		return NewDispatcherWithPrivateHosts(r, nil, []string{"127.0.0.1"})
-	}
-
-	// The jobember run: its hook IS permitted → widens.
-	d := mkDispatcher("jobember")
-	out := d.RunPre(context.Background(),
-		Identity{Agent: "a", Tenant: "jobember"},
-		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
-	)
-	if len(out.AllowHosts) != 1 || out.AllowHosts[0] != "acme.com" {
-		t.Errorf("jobember run AllowHosts = %v, want [acme.com] (permitted (tenant,owner))", out.AllowHosts)
-	}
-	if d.Stats().HostWidenPermitted != 1 || d.Stats().HostWidenDenied != 0 {
-		t.Errorf("jobember stats = permitted %d/denied %d, want 1/0", d.Stats().HostWidenPermitted, d.Stats().HostWidenDenied)
-	}
-
-	// The "other" tenant's run: same owner string, but the (other, jobs-search-web)
-	// pair is NOT permitted → grant dropped (the cross-tenant escape is closed).
-	d2 := mkDispatcher("other")
-	out2 := d2.RunPre(context.Background(),
-		Identity{Agent: "a", Tenant: "other"},
-		ToolCall{ID: "t2", Name: "WebFetch", Input: json.RawMessage(`{}`)},
-	)
-	if len(out2.AllowHosts) != 0 {
-		t.Errorf("other-tenant run AllowHosts = %v, want empty (owner permitted only under jobember)", out2.AllowHosts)
-	}
-	if d2.Stats().HostWidenDenied != 1 || d2.Stats().HostWidenPermitted != 0 {
-		t.Errorf("other-tenant stats = permitted %d/denied %d, want 0/1", d2.Stats().HostWidenPermitted, d2.Stats().HostWidenDenied)
-	}
-}
-
-// TestDispatcher_PreAllowHosts_FailClosedTimeoutDiscardsPriorGrants
-// pins the symmetric case to DenyDiscardsPriorGrants: a permitted
-// hook contributes allow_hosts, then a FailClosed hook TIMES OUT and
-// the fail-mode synthesises a deny. The outcome must be a clean deny
-// with NO leaked widening — the same security property as explicit
-// deny, but driven via the error-induced fail-closed path. Without
-// this test, a future refactor that "preserves AllowHosts across
-// FailClosed denials for observability" would silently widen policy
-// for a tool call that was supposed to be aborted.
 func TestDispatcher_PreAllowHosts_FailClosedTimeoutDiscardsPriorGrants(t *testing.T) {
 	granter := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
 	slowFailClosed := newFakeHook(t, ``)
 	slowFailClosed.delay = 200 * time.Millisecond
 
-	r := NewRegistryWithPermissions([]string{"jobs-search-web"})
+	r := NewSet()
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "grant", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "grant", Phase: PhasePre,
 		CallbackURL: granter.srv.URL, Tools: []string{"WebFetch"},
 	})
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "slow", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "slow", Phase: PhasePre,
 		CallbackURL: slowFailClosed.srv.URL, Tools: []string{"WebFetch"},
 		FailMode: FailClosed, TimeoutMs: 50,
 	})
@@ -366,13 +307,13 @@ func TestDispatcher_PreAllowHosts_FailClosedTimeoutDiscardsPriorGrants(t *testin
 func TestDispatcher_PreAllowHosts_DenyDiscardsPriorGrants(t *testing.T) {
 	granter := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
 	denier := newFakeHook(t, `{"deny":{"is_error":true,"text":"no"}}`)
-	r := NewRegistryWithPermissions([]string{"jobs-search-web"})
+	r := NewSet()
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "grant", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "grant", Phase: PhasePre,
 		CallbackURL: granter.srv.URL, Tools: []string{"WebFetch"},
 	})
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "deny", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "deny", Phase: PhasePre,
 		CallbackURL: denier.srv.URL, Tools: []string{"WebFetch"},
 	})
 	d := NewDispatcher(r, nil)
@@ -396,13 +337,13 @@ func TestDispatcher_PreAllowHosts_DenyDiscardsPriorGrants(t *testing.T) {
 func TestDispatcher_PreAllowHosts_UnionAcrossPermittedHooks(t *testing.T) {
 	hookA := newFakeHook(t, `{"allow_hosts":["acme.com","shared.example"]}`)
 	hookB := newFakeHook(t, `{"allow_hosts":["shared.example","other.example"]}`)
-	r := NewRegistryWithPermissions([]string{"jobs-search-web", "company-research"})
+	r := NewSet()
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "A", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "A", Phase: PhasePre,
 		CallbackURL: hookA.srv.URL, Tools: []string{"WebFetch"},
 	})
 	mustRegister(t, r, &Hook{
-		Owner: "company-research", Name: "B", Phase: PhasePre,
+		Owner: "company-research", WidenPermitted: true, Name: "B", Phase: PhasePre,
 		CallbackURL: hookB.srv.URL, Tools: []string{"WebFetch"},
 	})
 	d := NewDispatcher(r, nil)
@@ -443,9 +384,9 @@ func TestDispatcher_PreAllowHosts_UnionAcrossPermittedHooks(t *testing.T) {
 func TestDispatcher_PreAllowHosts_MixedPermittedUnpermitted(t *testing.T) {
 	permitted := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
 	rogue := newFakeHook(t, `{"allow_hosts":["evil.example"]}`)
-	r := NewRegistryWithPermissions([]string{"jobs-search-web"}) // only jobs-search-web permitted
+	r := NewSet() // only jobs-search-web permitted
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "good", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "good", Phase: PhasePre,
 		CallbackURL: permitted.srv.URL, Tools: []string{"WebFetch"},
 	})
 	mustRegister(t, r, &Hook{
@@ -479,13 +420,13 @@ func TestDispatcher_PreAllowHosts_MixedPermittedUnpermitted(t *testing.T) {
 func TestDispatcher_PreAllowHosts_NormalisesCase(t *testing.T) {
 	hookA := newFakeHook(t, `{"allow_hosts":["ACME.COM ","  empty  ",""]}`)
 	hookB := newFakeHook(t, `{"allow_hosts":["acme.com"]}`)
-	r := NewRegistryWithPermissions([]string{"jobs-search-web"})
+	r := NewSet()
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "A", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "A", Phase: PhasePre,
 		CallbackURL: hookA.srv.URL, Tools: []string{"WebFetch"},
 	})
 	mustRegister(t, r, &Hook{
-		Owner: "jobs-search-web", Name: "B", Phase: PhasePre,
+		Owner: "jobs-search-web", WidenPermitted: true, Name: "B", Phase: PhasePre,
 		CallbackURL: hookB.srv.URL, Tools: []string{"WebFetch"},
 	})
 	d := NewDispatcher(r, nil)
@@ -510,7 +451,7 @@ func TestDispatcher_PreAllowHosts_NormalisesCase(t *testing.T) {
 // when no hooks match the (agent, tool) the dispatcher does no
 // network calls and returns the original input unchanged.
 func TestDispatcher_NoMatchIsCheap(t *testing.T) {
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Owner: "x", Name: "scoped", Phase: PhasePre, CallbackURL: "https://nope/never",
 		Agents: []string{"specific-agent"}, Tools: []string{"WebFetch"},
@@ -533,10 +474,10 @@ func TestDispatcher_NoMatchIsCheap(t *testing.T) {
 
 // tenantHookOnLoopback registers one fail-closed Pre hook whose callback is the
 // fake server on 127.0.0.1, owned by the given tenant.
-func tenantHookOnLoopback(t *testing.T, tenant string) (*fakeHook, *Registry) {
+func tenantHookOnLoopback(t *testing.T, tenant string) (*fakeHook, *Set) {
 	t.Helper()
 	hook := newFakeHook(t, `{"input":{"rewritten":true}}`)
-	r := NewRegistry()
+	r := NewSet()
 	mustRegister(t, r, &Hook{
 		Tenant: tenant, Owner: "app", Name: "gate", Phase: PhasePre,
 		CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"}, FailMode: FailClosed,

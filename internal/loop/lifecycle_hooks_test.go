@@ -51,7 +51,7 @@ func (h *scriptedHook) count() int {
 
 func lifecycleHooks(t *testing.T, hs ...*hooks.Hook) *hooks.Dispatcher {
 	t.Helper()
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	for _, h := range hs {
 		if _, err := reg.Register(h); err != nil {
 			t.Fatal(err)

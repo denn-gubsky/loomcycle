@@ -78,13 +78,12 @@ func (r *routingResolver) Get(id string) (providers.Provider, error) {
 
 func makeServerForProvidersAdmin(t *testing.T, pr ProviderResolver) *Server {
 	t.Helper()
-	hookReg := hooks.NewRegistry()
+	hookReg := hooks.NewSet()
 	return &Server{
 		cfgHolder:      config.NewHolder(&config.Config{}),
 		providers:      pr,
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
-		hookRegistry:   hookReg,
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),
 		sem:            concurrency.New(8, 8, 1000),
 	}

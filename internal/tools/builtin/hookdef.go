@@ -444,3 +444,41 @@ func mintHookDefID() string {
 	_, _ = rand.Read(b[:])
 	return "hdf_" + hex.EncodeToString(b[:])
 }
+
+// HookDefLookup reads HookDef versions from st for hooks.Resolve: the active
+// version when version is 0, a pinned one otherwise. A retired version is not
+// served, as a retired AgentDef is not.
+func HookDefLookup(st store.Store) hooks.LookupDef {
+	return func(ctx context.Context, tenant, name string, version int) (hooks.Def, string, error) {
+		if st == nil {
+			return hooks.Def{}, "", errors.New("no store: HookDefs are not available")
+		}
+		var (
+			row store.HookDefRow
+			err error
+		)
+		if version == 0 {
+			row, err = st.HookDefGetActive(ctx, tenant, name)
+		} else {
+			row, err = st.HookDefGetByNameVersion(ctx, tenant, name, version)
+		}
+		if err != nil {
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				if version > 0 {
+					return hooks.Def{}, "", fmt.Errorf("no HookDef %s@%d", name, version)
+				}
+				return hooks.Def{}, "", fmt.Errorf("no HookDef %q", name)
+			}
+			return hooks.Def{}, "", err
+		}
+		if row.Retired {
+			return hooks.Def{}, "", fmt.Errorf("HookDef %s v%d is retired", name, row.Version)
+		}
+		var def hooks.Def
+		if err := json.Unmarshal(row.Definition, &def); err != nil {
+			return hooks.Def{}, "", fmt.Errorf("HookDef %s: %w", name, err)
+		}
+		return def, row.DefID, nil
+	}
+}

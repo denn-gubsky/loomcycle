@@ -56,7 +56,7 @@ func TestLoop_ACodeHooksAskDeliveredThroughAToolDoesNotReenterTheHooks(t *testin
 	disp := tools.NewDispatcher([]tools.Tool{fetch, ask})
 	intr := &relayInterruption{disp: disp, maxDepth: 26}
 
-	reg := hooks.NewRegistry()
+	reg := hooks.NewSet()
 	if _, err := reg.Register(&hooks.Hook{Owner: "ops", Name: "review", Phase: hooks.PhasePost, Code: `
 		function hook(ev) {
 			var a = Interruption.ask({question: "Show the model the result of " + ev.tool_call.name + "?"});
