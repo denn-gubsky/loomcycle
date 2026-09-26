@@ -36,6 +36,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -801,6 +802,10 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.GetUserCredentials()); !ok {
 		return status.Error(codes.InvalidArgument, errMsg)
 	}
+	added, err := hooksFromProto(req.GetHooksJson())
+	if err != nil {
+		return err
+	}
 	in := runInputFromProto(runInputProtoArgs{
 		Agent:            req.GetAgent(),
 		SessionID:        req.GetSessionId(),
@@ -842,6 +847,7 @@ func (s *Server) Run(req *loomcyclepb.RunRequest, stream loomcyclepb.Loomcycle_R
 		MemoryIndexMaxBytes:   int32PtrToInt(req.MemoryIndexMaxBytes),
 		InjectToolGuide:       req.InjectToolGuide,
 	})
+	in.Hooks, in.ToolHooks = added.Hooks, added.ToolHooks
 	return s.driveStream(stream.Context(), stream, in)
 }
 
@@ -858,6 +864,10 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 	}
 	if errMsg, ok := connector.ValidateUserCredentialsMap(req.GetUserCredentials()); !ok {
 		return status.Error(codes.InvalidArgument, errMsg)
+	}
+	added, err := hooksFromProto(req.GetHooksJson())
+	if err != nil {
+		return err
 	}
 	in := runInputFromProto(runInputProtoArgs{
 		// Agent + TenantID + UserID omitted — server inherits from the
@@ -899,6 +909,7 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		MemoryIndexMaxBytes:   int32PtrToInt(req.MemoryIndexMaxBytes),
 		InjectToolGuide:       req.InjectToolGuide,
 	})
+	in.Hooks, in.ToolHooks = added.Hooks, added.ToolHooks
 	return s.driveStream(stream.Context(), stream, in)
 }
 
@@ -917,7 +928,13 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req *loomcyclepb.BatchSpawnR
 		if errMsg, ok := connector.ValidateUserCredentialsMap(sp.GetUserCredentials()); !ok {
 			return nil, status.Error(codes.InvalidArgument, errMsg)
 		}
-		spawns = append(spawns, spawnRequestFromProto(sp))
+		spawn := spawnRequestFromProto(sp)
+		added, err := hooksFromProto(sp.GetHooksJson())
+		if err != nil {
+			return nil, err
+		}
+		spawn.Hooks, spawn.ToolHooks = added.Hooks, added.ToolHooks
+		spawns = append(spawns, spawn)
 	}
 	res, err := s.connector.SpawnRunBatch(ctx, connector.BatchSpawnRequest{
 		Spawns:    spawns,
@@ -1012,6 +1029,19 @@ func replayErrToStatus(err error) error {
 // for the fan-out path. session_id is carried through but batch children are
 // forced fresh by SpawnRunBatch. parent_context / metadata are not on the proto
 // RunRequest (a pre-existing gRPC gap) so they stay nil.
+// hooksFromProto reads a request's hooks_json. A malformed value is refused:
+// dropping it would start the run without gates its caller asked for.
+func hooksFromProto(b []byte) (hooks.Additions, error) {
+	var a hooks.Additions
+	if len(b) == 0 {
+		return a, nil
+	}
+	if err := json.Unmarshal(b, &a); err != nil {
+		return hooks.Additions{}, status.Errorf(codes.InvalidArgument, "hooks_json: %v", err)
+	}
+	return a, nil
+}
+
 func spawnRequestFromProto(req *loomcyclepb.RunRequest) connector.SpawnRunRequest {
 	r := connector.SpawnRunRequest{
 		Agent:            req.GetAgent(),
@@ -1967,6 +1997,11 @@ func (s *Server) CreateConfiguredRun(ctx context.Context, req *loomcyclepb.RunRe
 		return nil, status.Error(codes.Unimplemented, "CreateConfiguredRun requires a connector; this Server was constructed without one")
 	}
 	spawn := spawnRequestFromProto(req)
+	added, err := hooksFromProto(req.GetHooksJson())
+	if err != nil {
+		return nil, err
+	}
+	spawn.Hooks, spawn.ToolHooks = added.Hooks, added.ToolHooks
 	if req.GetInteractive() {
 		interactive := true
 		spawn.Interactive = &interactive

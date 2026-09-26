@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -493,7 +494,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
-	loopCtx = s.withRunHooks(loopCtx, run.ID, run.Agent, agentDef)
+	if runCfg.Hooks != nil {
+		// What the run added before it paused, restored as it was: already
+		// checked at its start, so carried like an inheritance.
+		loopCtx = hooks.WithAdditions(loopCtx, *runCfg.Hooks)
+	}
+	loopCtx = s.withRunHooks(loopCtx, run.ID, run.Agent, agentDef, hooks.Additions{})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(run.ID)

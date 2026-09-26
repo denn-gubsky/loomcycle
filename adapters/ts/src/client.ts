@@ -255,6 +255,8 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.metadata !== undefined) body.metadata = opts.metadata;
   if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
   if (opts.reviewTtlSeconds !== undefined) body.review_ttl_seconds = opts.reviewTtlSeconds;
+  if (opts.hooks !== undefined) body.hooks = opts.hooks;
+  if (opts.toolHooks !== undefined) body.tool_hooks = opts.toolHooks;
   if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
   // Same keys on the wire as in the option (mode / name / until).
   if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
@@ -371,6 +373,8 @@ export class LoomcycleClient {
     if (opts.metadata !== undefined) body.metadata = opts.metadata;
     if (opts.runTimeoutSeconds !== undefined) body.run_timeout_seconds = opts.runTimeoutSeconds;
     if (opts.reviewTtlSeconds !== undefined) body.review_ttl_seconds = opts.reviewTtlSeconds;
+    if (opts.hooks !== undefined) body.hooks = opts.hooks;
+    if (opts.toolHooks !== undefined) body.tool_hooks = opts.toolHooks;
     if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
     if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
     if (opts.outputFormat !== undefined) body.output_format = opts.outputFormat;

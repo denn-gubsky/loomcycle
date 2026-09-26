@@ -461,6 +461,40 @@ func TestRun_Streaming(t *testing.T) {
 // guard. Without this, gRPC consumers (the Python adapter) couldn't
 // pass per-tenant / per-tier / per-user-bearer signals and the HTTP
 // surface was the only path that did.
+// A run's hook additions cross gRPC as hooks_json into the RunInput; a
+// malformed value is refused rather than dropped, which would start the run
+// without gates its caller asked for.
+func TestRun_CarriesTheRunsHookAdditions(t *testing.T) {
+	fr := &fakeRunner{
+		registered: registrationFrame{AgentID: "a_top", RunID: "r_top", SessionID: "s_top"},
+		events:     []proverevent{{typ: "done", stopReason: "end_turn"}},
+	}
+	client, cleanup := startTestServerWithRunner(t, fr)
+	defer cleanup()
+
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{
+		Agent:     "default",
+		HooksJson: []byte(`{"hooks":{"run_end":["audit"]},"tool_hooks":{"WebFetch":{"pre":[{"name":"gate","url":"https://h.example"}]}}}`),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if len(fr.lastInput.Hooks["run_end"]) != 1 || len(fr.lastInput.ToolHooks["WebFetch"]["pre"]) != 1 {
+		t.Fatalf("RunInput hooks = %v / %v", fr.lastInput.Hooks, fr.lastInput.ToolHooks)
+	}
+
+	bad, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "default", HooksJson: []byte(`{"hooks":`)})
+	if err == nil {
+		_, err = bad.Recv()
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("malformed hooks_json: %v, want InvalidArgument", err)
+	}
+}
+
 func TestRun_PerRunPolicyFields(t *testing.T) {
 	fr := &fakeRunner{
 		registered: registrationFrame{AgentID: "a_top", RunID: "r_top", SessionID: "s_top"},

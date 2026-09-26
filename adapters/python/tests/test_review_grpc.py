@@ -142,3 +142,24 @@ def test_the_held_event_carries_its_deadline():
 
     ev = pb.Event(type="awaiting_review", awaiting_review=pb.AwaitingReview(round=1, expires_at="2026-09-24T12:00:00Z"))
     assert AgentEvent._from_proto(ev).awaiting_review.expires_at == "2026-09-24T12:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_run_and_continue_carry_the_runs_hook_additions():
+    import json as _json
+
+    hooks = {"agent_stop": ["cite@3"]}
+    tool_hooks = {"WebFetch": {"pre": [{"name": "gate", "url": "https://h.example"}]}}
+    for method, kwargs in (
+        ("run_streaming", {"agent": "default"}),
+        ("continue_session", {"session_id": "s_1"}),
+    ):
+        stub = _CaptureStub()
+        client = _make_client()
+        client._stub = stub  # type: ignore[assignment]
+        async for _ in getattr(client, method)(segments=[], hooks=hooks, tool_hooks=tool_hooks, **kwargs):
+            pass
+        assert _json.loads(stub.req.hooks_json) == {"hooks": hooks, "tool_hooks": tool_hooks}, f"{method} dropped the hooks"
+    child = client_mod._run_request_from_dict({"agent": "a", "segments": [], "hooks": hooks})
+    assert _json.loads(child.hooks_json) == {"hooks": hooks}
+    assert client_mod._run_request_from_dict({"agent": "a", "segments": []}).hooks_json == b""

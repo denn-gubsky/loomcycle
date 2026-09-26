@@ -338,6 +338,7 @@ export type {
   HookEntry,
   EventHooks,
   ToolEntry,
+  ToolHooksByTool,
   EnsureCodeAgentOptions,
   EnsureCodeAgentResult,
   // Library v2 enumeration (v0.10.3)

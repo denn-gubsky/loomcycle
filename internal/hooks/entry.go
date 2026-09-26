@@ -407,3 +407,80 @@ func LiftToolEntries(def json.RawMessage) (json.RawMessage, error) {
 	}
 	return json.Marshal(top)
 }
+
+// Additions are the hooks a run adds to its agent's own: what the run request
+// named, and what a parent run passed down. Only ever added — a run cannot
+// remove or replace a hook its agent's definition carries. They are entries,
+// not resolved hooks, so a sub-agent resolves what it inherits in its own run
+// and a resumed run resolves what its record kept.
+type Additions struct {
+	Hooks     EventHooks `json:"hooks,omitempty"`
+	ToolHooks ToolHooks  `json:"tool_hooks,omitempty"`
+}
+
+// Empty reports whether nothing is added.
+func (a Additions) Empty() bool { return len(a.Hooks) == 0 && len(a.ToolHooks) == 0 }
+
+// Merge returns a's entries followed by b's, per event and per tool.
+func (a Additions) Merge(b Additions) Additions {
+	if b.Empty() {
+		return a
+	}
+	if a.Empty() {
+		return b
+	}
+	out := Additions{Hooks: EventHooks{}, ToolHooks: ToolHooks{}}
+	for _, src := range []Additions{a, b} {
+		for phase, entries := range src.Hooks {
+			out.Hooks[phase] = append(out.Hooks[phase], entries...)
+		}
+		for tool, events := range src.ToolHooks {
+			if out.ToolHooks[tool] == nil {
+				out.ToolHooks[tool] = EventHooks{}
+			}
+			for phase, entries := range events {
+				out.ToolHooks[tool][phase] = append(out.ToolHooks[tool][phase], entries...)
+			}
+		}
+	}
+	return out
+}
+
+// Validate checks the additions' shape, and that each tool's hooks name a tool
+// the agent has: a hook on a tool the run cannot call would never fire, and a
+// caller who added one believes a gate is there.
+func (a Additions) Validate(agentTools []string) error {
+	if err := a.Hooks.Validate(""); err != nil {
+		return err
+	}
+	if err := a.ToolHooks.Validate(); err != nil {
+		return err
+	}
+	for tool := range a.ToolHooks {
+		found := false
+		for _, t := range agentTools {
+			if t == tool {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("tool_hooks: %s is not one of the agent's tools", tool)
+		}
+	}
+	return nil
+}
+
+type additionsKey struct{}
+
+// WithAdditions records the additions a run carries, so the sub-agents it
+// starts inherit them.
+func WithAdditions(ctx context.Context, a Additions) context.Context {
+	return context.WithValue(ctx, additionsKey{}, a)
+}
+
+// AdditionsFrom returns the additions of the run ctx belongs to.
+func AdditionsFrom(ctx context.Context) Additions {
+	a, _ := ctx.Value(additionsKey{}).(Additions)
+	return a
+}

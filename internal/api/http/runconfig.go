@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -89,6 +90,10 @@ type runConfigRecord struct {
 	// the bare operator floor, the one case where losing an override weakened
 	// a boundary rather than merely changing behaviour.
 	Hosts *runHostRecord `json:"hosts,omitempty"`
+
+	// Hooks are the hooks the run added to its agent's — its request's, and a
+	// sub-agent's inherited ones — so a resumed run fires what it fired before.
+	Hooks *hooks.Additions `json:"hooks,omitempty"`
 }
 
 // runHostRecord mirrors tools.HostPolicyValue. HasList is carried explicitly
