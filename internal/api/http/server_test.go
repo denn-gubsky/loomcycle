@@ -1825,8 +1825,10 @@ func TestLookupAgent_FallsThroughToSubstrate(t *testing.T) {
 	if def.SystemPrompt != "be brief" {
 		t.Errorf("SystemPrompt = %q, want %q", def.SystemPrompt, "be brief")
 	}
-	if len(def.Tools) != 1 || def.Tools[0] != "Read" {
-		t.Errorf("Tools = %v, want [Read]", def.Tools)
+	// The stored tools, plus the Context default every agent gets unless it
+	// sets disable_context (applied at resolve time, as config load does).
+	if strings.Join(def.Tools, ",") != "Read,Context" {
+		t.Errorf("Tools = %v, want [Read Context]", def.Tools)
 	}
 }
 
