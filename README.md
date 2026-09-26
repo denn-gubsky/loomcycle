@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.96.0) made hooks reusable, versioned definitions
+The most recent line (v1.97.0) moved hooks onto the run: an agent's
+definition carries its hooks, with credentials allowed in webhook headers, and
+the runtime hook registration API is removed (a breaking change). It also
+stopped the dead-link sweeper deleting live chunk text in scopes past 10,000
+chunks, let the chat agents write notes and documents the whole tenant reads,
+and made Context say in the tool list that it holds every tool's call
+instructions.
+
+Before it, v1.96.0 made hooks reusable, versioned definitions
 (HookDef, on every transport and in snapshots), kept a stateful answer a local
 model wrote as prose instead of failing the run on it, and stopped a run that
 kept re-sending the same failed call instead of letting it spin to its
