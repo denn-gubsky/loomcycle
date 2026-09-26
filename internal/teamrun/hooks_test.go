@@ -2,6 +2,7 @@ package teamrun
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -46,5 +47,35 @@ func TestRunHandler_AStatesHooksReachEveryRunItStarts(t *testing.T) {
 	// The state's hooks do not leak to the ctx the walk goes on with.
 	if got := hooks.AdditionsFrom(ctx).Hooks[hooks.PhaseRunEnd]; len(got) != 1 {
 		t.Fatalf("the walk's ctx changed: %v", got)
+	}
+}
+
+// A Starter's members are runs the state starts too: each wave member gets the
+// state's hooks.
+func TestRunHandler_AStartersMembersGetItsHooks(t *testing.T) {
+	ch := &fakeChannels{inbox: []ChannelMessage{
+		{ID: "m1", Payload: json.RawMessage(`{"pr":1}`)},
+		{ID: "m2", Payload: json.RawMessage(`{"pr":2}`)},
+	}}
+	var mu sync.Mutex
+	var seen []hooks.Additions
+	r := starterRunner(ch, textSpawn(func(ctx context.Context, _ string, _ Prompt, _ string) (string, error) {
+		mu.Lock()
+		seen = append(seen, hooks.AdditionsFrom(ctx))
+		mu.Unlock()
+		return "ok", nil
+	}))
+	st := starterState()
+	st.Handler.Hooks = hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "audit"}}}
+	if _, err := r.RunHandler(context.Background(), st, &Task{Input: "start", WalkID: "wlk_test"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("spawned %d members, want 2", len(seen))
+	}
+	for i, a := range seen {
+		if got := a.Hooks[hooks.PhaseRunEnd]; len(got) != 1 || got[0].Ref != "audit" {
+			t.Errorf("member %d got %v; want the state's hook", i, a)
+		}
 	}
 }
