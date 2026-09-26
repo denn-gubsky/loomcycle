@@ -16,10 +16,12 @@ conversations by meaning and returns each chat with the turn that matched.
   granted, else `self`.
 - `match` — `title` (default) or `content`.
 - `limit` — chats per page (default 50, at most 500).
-
-With the default title match, the `list` filters also apply: `status`,
-`from`, `to`, `tag`, `pinned_only`, `include_archived`, `include_internal`
-and `offset` (see `History/list`). The query replaces `title_contains`.
+- `status`, `from`, `to`, `tag` — title match only: the `list` filters, with
+  the same meaning (see `History/list`). The query replaces `title_contains`,
+  so do not pass it here.
+- `pinned_only`, `include_archived`, `include_internal` — title match only:
+  as on `list`.
+- `offset` — title match only: rows to skip, for the next page.
 
 With `match: "content"`, those filters and `offset` are ignored. Only turns
 indexed under YOUR user id are searched, whatever the scope; the scope then
