@@ -165,10 +165,39 @@ func TestChatBundle_PromptsInjectTenantContext(t *testing.T) {
 		if !strings.Contains(agent.SystemPrompt, "{{memory:tenant_info}}") {
 			t.Errorf("%s does not inject {{memory:tenant_info}} — the deployment-context document would ship with no reader", name)
 		}
-		// Consuming it must NOT have required widening the agent to tenant scope.
-		for _, scope := range agent.MemoryScopes {
-			if scope == "tenant" {
-				t.Errorf("%s was widened to tenant memory scope; tenant_info is read with server-stamped grants and needs no such widening", name)
+	}
+	if found == 0 {
+		t.Fatal("no chat/* agents found — the bundle was renamed and this test now checks nothing")
+	}
+}
+
+// TestChatBundle_AgentsWriteTheTenantPlane pins the grant that makes "save a note my
+// whole team can read" work. Every chat agent holds tenant in BOTH allowlists: a
+// Memory note at tenant scope needs memory_scopes, and a tenant-scope Document needs
+// memory_scopes AND sql_scopes, so granting only one would leave half the request
+// refused with a permission error.
+func TestChatBundle_AgentsWriteTheTenantPlane(t *testing.T) {
+	cfg := chatBundleConfig(t)
+	has := func(scopes []string, want string) bool {
+		for _, s := range scopes {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	found := 0
+	for name, agent := range cfg.Agents {
+		if !strings.HasPrefix(name, "chat/") {
+			continue
+		}
+		found++
+		for _, scope := range []string{"user", "tenant"} {
+			if !has(agent.MemoryScopes, scope) {
+				t.Errorf("%s memory_scopes %v lacks %q", name, agent.MemoryScopes, scope)
+			}
+			if !has(agent.SqlScopes, scope) {
+				t.Errorf("%s sql_scopes %v lacks %q", name, agent.SqlScopes, scope)
 			}
 		}
 	}
