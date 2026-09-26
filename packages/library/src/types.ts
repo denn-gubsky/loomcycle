@@ -16,6 +16,7 @@ export type SubstrateKind =
   | "a2aservercarddef"
   | "a2aagentdef"
   | "memorybackenddef"
+  | "hookdef"
   | "volumedef";
 
 // DefRow is one version of a substrate definition (a node in the lineage tree).

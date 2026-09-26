@@ -42,12 +42,15 @@ export default function LibraryView() {
   const loc = useLocation();
 
   // Bridge the route → the package's tab type so deep-links keep working. The
-  // route uses "mcp-servers"; the package uses "mcp".
+  // route uses "mcp-servers"; the package uses "mcp". The other tabs share
+  // their names.
   const pkgTab: LibraryTab = loc.pathname.startsWith("/library/skills")
     ? "skills"
     : loc.pathname.startsWith("/library/mcp-servers")
       ? "mcp"
-      : "agents";
+      : loc.pathname.startsWith("/library/hooks")
+        ? "hooks"
+        : "agents";
 
   return (
     <>

@@ -55,7 +55,7 @@ describe("agentDefRegistry — coverage of the persisted overlay", () => {
   it("exposes every overlay key, or names it in AGENTDEF_EXCLUDED with a reason", () => {
     const covered = new Set(topLevelKeys(agentDefRegistry));
     const missing = AGENTDEF_OVERLAY_KEYS.filter((k) => !covered.has(k));
-    expect(missing).toEqual(["hooks", "system_prompt_base", "tool_hooks"]);
+    expect(missing).toEqual(["system_prompt_base"]);
     for (const k of missing) {
       expect(AGENTDEF_EXCLUDED[k], `${k} must carry an exclusion reason`).toBeTruthy();
     }
@@ -94,9 +94,10 @@ describe("agentDefRegistry — shape invariants", () => {
     }
   });
 
-  it("enum fields offer options; non-enum fields do not", () => {
+  it("enum and hook-events fields offer options; other fields do not", () => {
     for (const f of all) {
       if (f.type === "enum") expect(f.options?.length, `${f.key}`).toBeGreaterThan(1);
+      else if (f.type === "hook-events") expect(f.options?.length, `${f.key}`).toBeGreaterThan(0);
       else expect(f.options, `${f.key}`).toBeUndefined();
     }
   });

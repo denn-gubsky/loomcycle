@@ -388,3 +388,55 @@
   box-shadow: none;
   padding-left: 0;
 }
+
+/* hooks: event -> entries, tool -> event -> entries */
+
+.loomcycle-def-fields .lc-df-hooks,
+.loomcycle-def-fields .lc-df-hook-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.loomcycle-def-fields .lc-df-hook-tool,
+.loomcycle-def-fields .lc-df-hook-entry {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  padding: 4px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.loomcycle-def-fields .lc-df-hook-event { display: flex; flex-direction: column; gap: 4px; }
+
+.loomcycle-def-fields .lc-df-hook-event-head,
+.loomcycle-def-fields .lc-df-hook-entry-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.loomcycle-def-fields .lc-df-hook-event-head code { font-family: var(--mono); font-size: var(--lc-text-xs); }
+
+.loomcycle-def-fields .lc-df-hook-event-hint,
+.loomcycle-def-fields .lc-df-hook-kind {
+  flex: 1 1 auto;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+}
+
+.loomcycle-def-fields .lc-df-hook-order { display: flex; gap: 2px; }
+
+.loomcycle-def-fields .lc-df-hook-webhook { display: flex; flex-direction: column; gap: 5px; }
+
+.loomcycle-def-fields .lc-df-hook-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.loomcycle-def-fields .lc-df-hook-add .lc-df-input { width: auto; flex: 0 1 180px; }

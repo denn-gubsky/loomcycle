@@ -5,6 +5,7 @@ import { createLoomcycleClient, type Connection } from "./lib/createClient";
 import {
   LibraryDataProvider,
   dataLayerFromClient,
+  dataLayerFromConnection,
   useLibraryData,
   type LibraryDataLayer,
 } from "./lib/dataLayer";
@@ -14,6 +15,7 @@ import LibraryEditModal, {
   type ModalMode,
 } from "./components/LibraryEditModal";
 import ImportModal, { type LocalAgentSeed } from "./components/ImportModal";
+import HookDefEditModal from "./components/HookDefEditModal";
 
 // Library is the embeddable Introspection surface — three sub-tabs over the
 // AgentDef / SkillDef / MCPServerDef substrates. Each sub-tab uses the shared
@@ -33,9 +35,9 @@ import ImportModal, { type LocalAgentSeed } from "./components/ImportModal";
 
 const REFRESH_MS = 10_000;
 
-export type LibraryTab = "agents" | "skills" | "mcp";
+export type LibraryTab = "agents" | "skills" | "mcp" | "hooks";
 
-const DEFAULT_TABS: LibraryTab[] = ["agents", "skills", "mcp"];
+const DEFAULT_TABS: LibraryTab[] = ["agents", "skills", "mcp", "hooks"];
 
 // LibraryActionCapabilities gate the mutating affordances. Each defaults to
 // true (omit the prop → current full-power behavior); set one to false to hide
@@ -107,7 +109,7 @@ export default function Library({
   const resolvedDataLayer = useMemo<LibraryDataLayer | null>(() => {
     if (dataLayer) return dataLayer;
     if (client) return dataLayerFromClient(client);
-    if (connection) return dataLayerFromClient(createLoomcycleClient(connection));
+    if (connection) return dataLayerFromConnection(connection, createLoomcycleClient(connection));
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataLayer, client, connection?.baseUrl, connection?.token, connection?.fetch]);
@@ -155,6 +157,9 @@ export function SkillsLibrary(props: Omit<LibraryProps, "tabs">) {
 export function McpLibrary(props: Omit<LibraryProps, "tabs">) {
   return <Library {...props} tabs={["mcp"]} />;
 }
+export function HooksLibrary(props: Omit<LibraryProps, "tabs">) {
+  return <Library {...props} tabs={["hooks"]} />;
+}
 
 type LibraryBodyProps = Omit<LibraryProps, "connection" | "client" | "dataLayer">;
 
@@ -175,6 +180,7 @@ function LibraryBody({
   const [agents, setAgents] = useState<LibraryEntry[]>([]);
   const [skills, setSkills] = useState<LibraryEntry[]>([]);
   const [mcps, setMcps] = useState<LibraryEntry[]>([]);
+  const [hookDefs, setHookDefs] = useState<LibraryEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
   // Force-refresh-on-mutation: bump this counter from any mutation success
   // handler to re-run the fetch immediately without waiting for the 10s poll.
@@ -185,7 +191,7 @@ function LibraryBody({
   // from the active subtab; the mode + forkSource come from which button was
   // pressed.
   const [modal, setModal] = useState<{
-    kind: ModalKind;
+    kind: ModalKind | "hook";
     mode: ModalMode;
     forkSource?: DefRow;
   } | null>(null);
@@ -193,7 +199,11 @@ function LibraryBody({
   const [importOpen, setImportOpen] = useState(false);
 
   // Tab: controlled (tab prop) or internal. `tabs` selects which appear + order.
-  const tabsList = tabs && tabs.length > 0 ? tabs : DEFAULT_TABS;
+  // Hooks need a data layer that can list them; without one the tab is left out
+  // rather than shown empty.
+  const tabsList = (tabs && tabs.length > 0 ? tabs : DEFAULT_TABS).filter(
+    (t) => t !== "hooks" || data.listHooks !== undefined,
+  );
   const [internalTab, setInternalTab] = useState<LibraryTab>(
     () => tab ?? tabsList[0]!,
   );
@@ -228,15 +238,17 @@ function LibraryBody({
     let cancelled = false;
     const fetchAll = async () => {
       try {
-        const [a, s, m] = await Promise.all([
+        const [a, s, m, h] = await Promise.all([
           data.listAgents(),
           data.listSkills(),
           data.listMcpServers(),
+          data.listHooks ? data.listHooks() : Promise.resolve({ entries: [] }),
         ]);
         if (cancelled) return;
         setAgents(a.entries ?? []);
         setSkills(s.entries ?? []);
         setMcps(m.entries ?? []);
+        setHookDefs(h.entries ?? []);
         setErr(null);
       } catch (e) {
         if (!cancelled) {
@@ -255,14 +267,22 @@ function LibraryBody({
 
   // Map the active subtab → modal kind + substrate kind so "+ New" / Edit /
   // Retire handlers always target the right substrate.
-  const tabKind: ModalKind =
-    activeTab === "skills" ? "skill" : activeTab === "mcp" ? "mcp-server" : "agent";
+  const tabKind: ModalKind | "hook" =
+    activeTab === "skills"
+      ? "skill"
+      : activeTab === "mcp"
+        ? "mcp-server"
+        : activeTab === "hooks"
+          ? "hook"
+          : "agent";
   const tabSubstrate: SubstrateKind =
     activeTab === "skills"
       ? "skilldef"
       : activeTab === "mcp"
         ? "mcpserverdef"
-        : "agentdef";
+        : activeTab === "hooks"
+          ? "hookdef"
+          : "agentdef";
 
   const handleCreate = () => setModal({ kind: tabKind, mode: "create" });
   const handleEdit = (row: DefRow) =>
@@ -336,11 +356,13 @@ function LibraryBody({
     agents: "Agents",
     skills: "Skills",
     mcp: "MCP Servers",
+    hooks: "Hooks",
   };
   const tabCount: Record<LibraryTab, number> = {
     agents: agents.length,
     skills: skills.length,
     mcp: mcps.length,
+    hooks: hookDefs.length,
   };
 
   return (
@@ -411,8 +433,34 @@ function LibraryBody({
             onError={onError}
           />
         )}
+        {activeTab === "hooks" && (
+          <LineagePanel
+            kind="hookdef"
+            kindLabel="hooks"
+            entries={hookDefs}
+            splitterStorageKey="loomcycle.library.hooks.split"
+            renderDefinition={renderHookDefinition}
+            onCreateNew={canCreate ? handleCreate : undefined}
+            onEditRow={canFork ? handleEdit : undefined}
+            onRetireRow={canRetire ? handleRetire : undefined}
+            onPromoteRow={canPromote ? handlePromote : undefined}
+            onError={onError}
+            defaultHideRetired
+          />
+        )}
       </div>
-      {modal && (
+      {modal && modal.kind === "hook" && (
+        <HookDefEditModal
+          mode={modal.mode === "fork" ? "fork" : "create"}
+          forkSource={modal.forkSource}
+          onClose={() => setModal(null)}
+          onSaved={() => {
+            setModal(null);
+            refreshNow();
+          }}
+        />
+      )}
+      {modal && modal.kind !== "hook" && (
         <LibraryEditModal
           kind={modal.kind}
           mode={modal.mode}
@@ -798,6 +846,74 @@ function DefMetaRow({ items }: { items: [string, string | undefined][] }) {
           <span className="def-meta-value mono">{v}</span>
         </span>
       ))}
+    </div>
+  );
+}
+
+interface HookDefBody {
+  description?: string;
+  event?: string;
+  match?: { tools?: string[] };
+  body?: { kind?: string; code?: string; url?: string; headers?: Record<string, string> };
+  fail_mode?: string;
+  timeout_ms?: number;
+}
+
+function renderHookDefinition(row: DefRow) {
+  const d = (row.definition as HookDefBody) ?? {};
+  const headers = Object.entries(d.body?.headers ?? {});
+  return (
+    <div className="def-body">
+      {d.description && (
+        <div className="def-field">
+          <span className="def-field-label">description</span>
+          <span>{d.description}</span>
+        </div>
+      )}
+      <div className="def-field">
+        <span className="def-field-label">event</span>
+        <span className="def-pill mono">{d.event ?? "?"}</span>
+      </div>
+      {d.match?.tools && d.match.tools.length > 0 && (
+        <div className="def-field">
+          <span className="def-field-label">tools</span>
+          <div className="def-pill-row">
+            {d.match.tools.map((t) => (
+              <span key={t} className="def-pill mono">{t}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="def-field">
+        <span className="def-field-label">on failure</span>
+        <span>
+          fail {d.fail_mode ?? "open"}
+          {d.timeout_ms ? ` · timeout ${d.timeout_ms} ms` : ""}
+        </span>
+      </div>
+      {d.body?.kind === "http" && (
+        <div className="def-field">
+          <span className="def-field-label">webhook</span>
+          <span className="mono">{d.body.url}</span>
+        </div>
+      )}
+      {headers.length > 0 && (
+        <div className="def-field">
+          <span className="def-field-label">headers</span>
+          <pre className="def-prompt mono">
+            {headers
+              // A $cred: reference names a credential; it is not the secret.
+              .map(([k, v]) => `${k}: ${v.includes("$cred:") ? v : maskSensitiveValue(k, v)}`)
+              .join("\n")}
+          </pre>
+        </div>
+      )}
+      {d.body?.kind === "code-js" && d.body.code && (
+        <div className="def-field def-field-prompt">
+          <span className="def-field-label">code</span>
+          <pre className="def-prompt mono">{d.body.code}</pre>
+        </div>
+      )}
     </div>
   );
 }

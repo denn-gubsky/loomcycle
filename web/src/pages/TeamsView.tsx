@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AGENT_HOOK_EVENTS, HookEventsControl, ToolHooksControl } from "@loomcycle/def-fields";
+import "@loomcycle/def-fields/styles.css";
 import {
   TeamDiagram,
   TeamNameSummary,
@@ -6,12 +8,14 @@ import {
   deleteTeam,
   forkTeam,
   getTeamDef,
+  listHookDefNames,
   listTeams,
   previewTeamDiagram,
   renderTeamDiagram,
 } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import Splitter from "../components/Splitter";
+import { WALK, hookTargets, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 
 // TeamsView — the agent-team board.
 //
@@ -418,6 +422,8 @@ export default function TeamsView() {
         }}
       />
 
+      <TeamHooksPanel editorText={editorText} setEditorText={setEditorText} disabled={saving || loadingDef} />
+
       {editorErr && (
         <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap", flex: "0 0 auto", fontSize: "0.85em" }}>
           {editorErr}
@@ -617,5 +623,85 @@ export default function TeamsView() {
         </div>
       </div>
     </div>
+  );
+}
+
+// TeamHooksPanel edits the hooks in the graph JSON without hand-writing them:
+// the walk's own (run_end, fired when the walk ends) and each run-starting
+// state's, added to every run that state starts. It reads and rewrites the
+// editor text, so the JSON stays the one source of truth; while the text does
+// not parse, the panel says so rather than guessing.
+function TeamHooksPanel({
+  editorText, setEditorText, disabled,
+}: {
+  editorText: string;
+  setEditorText: (s: string) => void;
+  disabled: boolean;
+}) {
+  const [target, setTarget] = useState<string>(WALK);
+  const [hookNames, setHookNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listHookDefNames().then(
+      (r) => { if (!cancelled) setHookNames([...new Set((r.names ?? []).map((n) => n.name))]); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, []);
+
+  const parsed = useMemo<{ ok: true; def: unknown } | { ok: false }>(() => {
+    try {
+      return { ok: true, def: JSON.parse(editorText) };
+    } catch {
+      return { ok: false };
+    }
+  }, [editorText]);
+
+  if (editorText.trim() === "") return null;
+  const targets = parsed.ok ? hookTargets(parsed.def) : [];
+  const at = targets.some((t) => t.id === target) ? target : WALK;
+  const current = parsed.ok ? readTeamHooks(parsed.def, at) : {};
+  const write = (key: "hooks" | "tool_hooks", v: unknown) => {
+    if (!parsed.ok) return;
+    setEditorText(pretty(writeTeamHooks(parsed.def, at, key, v)));
+  };
+
+  return (
+    <details style={{ flex: "0 0 auto", maxHeight: "45%", overflow: "auto" }}>
+      <summary style={{ cursor: "pointer", fontSize: "0.9em" }}>Hooks</summary>
+      {!parsed.ok ? (
+        <p style={{ fontSize: "0.85em", opacity: 0.8 }}>Fix the JSON above to edit hooks here.</p>
+      ) : (
+        <div className="loomcycle-def-fields" style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.4rem" }}>
+          <label style={{ fontSize: "0.85em" }}>
+            attach to{" "}
+            <select value={at} onChange={(e) => setTarget(e.target.value)} disabled={disabled}>
+              {targets.map((t) => (
+                <option key={t.id} value={t.id}>{t.label}</option>
+              ))}
+            </select>
+          </label>
+          <p style={{ fontSize: "0.8em", opacity: 0.8, margin: 0 }}>
+            {at === WALK
+              ? "Fired when the walk ends, whatever its outcome."
+              : "Added to every run this state starts, after that agent's own hooks. They can add checks, never remove one."}
+          </p>
+          <HookEventsControl
+            value={current.hooks}
+            events={at === WALK ? ["run_end"] : AGENT_HOOK_EVENTS}
+            hookNames={hookNames}
+            disabled={disabled}
+            onChange={(v) => write("hooks", v)}
+          />
+          {at !== WALK && (
+            <>
+              <strong style={{ fontSize: "0.85em" }}>Tool hooks</strong>
+              <ToolHooksControl value={current.tool_hooks} hookNames={hookNames} disabled={disabled}
+                onChange={(v) => write("tool_hooks", v)} />
+            </>
+          )}
+        </div>
+      )}
+    </details>
   );
 }
