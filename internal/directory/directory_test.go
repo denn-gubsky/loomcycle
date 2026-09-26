@@ -3,6 +3,7 @@ package directory_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/directory"
@@ -178,5 +179,28 @@ func TestInspect_ChatsCountIncludesDrafts(t *testing.T) {
 	}
 	if ins.Chats != 2 {
 		t.Errorf("chats = %d, want 2 (a chat and a draft)", ins.Chats)
+	}
+}
+
+// TestInspect_CountsEveryUserScopeRow: the inspection counted a subject's memory by
+// listing it with limit 0, which the store reads as 100. A subject's user scope holds
+// document bodies and indexed turns as well as facts, so a real one reports "100"
+// whatever it holds. It must report the rows an erasure would actually delete.
+func TestInspect_CountsEveryUserScopeRow(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	v := json.RawMessage(`{"text":"x"}`)
+	const want = 130
+	for i := 0; i < want; i++ {
+		if err := s.Store.MemorySet(ctx, "acme", store.MemoryScopeUser, "alice", fmt.Sprintf("doc.chunk:%03d", i), v, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ins, err := s.Inspect(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ins.Memory["user_scope_rows"]; got != want {
+		t.Errorf("user_scope_rows = %d, want %d", got, want)
 	}
 }

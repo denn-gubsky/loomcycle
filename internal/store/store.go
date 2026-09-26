@@ -2009,6 +2009,13 @@ type Store interface {
 	// a single call touches only the given tenant's rows.
 	MemoryDeleteScope(ctx context.Context, tenantID string, scope MemoryScope, scopeID string) (int, error)
 
+	// MemoryCountScope counts EXACTLY the memory-table rows MemoryDeleteScope would
+	// delete for (tenantID, scope, scopeID): the same predicate, with no expiry or
+	// superseded filter, because the delete removes those rows too. It is how an
+	// erasure's report and dry run preview a scope delete. Counting by listing was
+	// wrong twice over: a list is capped, and it hides the rows a delete still takes.
+	MemoryCountScope(ctx context.Context, tenantID string, scope MemoryScope, scopeID string) (int, error)
+
 	// MemoryList returns entries for the (scope, scopeID) tuple whose
 	// key starts with prefix. An empty prefix returns every key in the
 	// scope. Capped at limit rows; if more rows would match, callers

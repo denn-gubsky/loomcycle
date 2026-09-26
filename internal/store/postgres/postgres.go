@@ -3924,6 +3924,19 @@ func (s *Store) MemoryDelete(ctx context.Context, tenantID string, scope store.M
 	return tag.RowsAffected() > 0, nil
 }
 
+// MemoryCountScope counts the rows MemoryDeleteScope would delete — see the interface.
+func (s *Store) MemoryCountScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM memory WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("memory count scope: %w", err)
+	}
+	return n, nil
+}
+
 // MemoryDeleteScope removes every entry under (tenantID, scope, scopeID) (RFC
 // BM retention) and returns the memory-table row count. It also clears the
 // scope's consolidation state — memory_pending (the queue) and memory_cursors

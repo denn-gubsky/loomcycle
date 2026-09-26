@@ -165,10 +165,12 @@ func (s *Service) Inspect(ctx context.Context, tenant, subject string) (Inspecti
 	// user-scope rows and the facts a shared agent holds about them are different
 	// things, and collapsing them hides exactly the distinction the erasure
 	// surface exists to make.
-	if entries, _, err := s.Store.MemoryList(ctx, tenant, store.MemoryScopeUser, subject, "", 0); err != nil {
+	// Counted with the erasure's own predicate, not listed: a listing is capped at 100
+	// and skips expired and superseded rows, so it could not say what an erasure takes.
+	if n, err := s.Store.MemoryCountScope(ctx, tenant, store.MemoryScopeUser, subject); err != nil {
 		fail("memory", err)
 	} else {
-		ins.Memory["user_scope_rows"] = int64(len(entries))
+		ins.Memory["user_scope_rows"] = int64(n)
 	}
 
 	if s.SqlMem != nil {
