@@ -19,15 +19,7 @@
     "noUncheckedSideEffectImports": true,
     "skipLibCheck": true,
 
-    "types": ["vite/client", "node"],
-
-    // In this repo, typecheck against the def-fields SOURCE, as the Web UI build
-    // does: the Library may use def-fields exports newer than the last published
-    // version. tsconfig.lib.json drops this for the published build, which
-    // resolves the peer dependency like any consumer.
-    "paths": {
-      "@loomcycle/def-fields": ["../def-fields/src/index.ts"]
-    }
+    "types": ["vite/client", "node"]
   },
-  "include": ["src", "vite.config.lib.ts", "vitest.config.ts"]
+  "include": ["src", "vite.config.lib.ts"]
 }
