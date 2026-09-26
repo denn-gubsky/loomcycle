@@ -74,7 +74,8 @@ describe("a run's hook additions", () => {
     }
     const body = sentBody(fetchMock.mock.calls[0]!);
     expect(body.hooks).toEqual({ agent_stop: ["cite@3"] });
-    expect(body.tool_hooks.WebFetch.pre[0].name).toBe("gate");
+    const toolHooks = body.tool_hooks as Record<string, { pre: Array<{ name: string }> }>;
+    expect(toolHooks.WebFetch!.pre[0]!.name).toBe("gate");
   });
 });
 
