@@ -107,7 +107,7 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 	}
 	sort.SliceStable(order, func(i, j int) bool { return best[order[i]].Score > best[order[j]].Score })
 
-	limit := effectiveListLimit(in.Limit)
+	limit := effectiveListLimit(ctx, in.Limit)
 	chats := make([]any, 0, limit)
 	matches := make([]chatContentMatch, 0, limit)
 	for _, sid := range order {

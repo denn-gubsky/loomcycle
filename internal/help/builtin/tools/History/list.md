@@ -21,12 +21,13 @@ leaving it out means `self`, which is usually not granted.
 - `include_archived` — `true` includes archived chats (hidden by default).
 - `include_internal` — `true` includes chats served by the runtime's own
   maintenance agents (hidden by default).
-- `limit` — chats per page (default 50, at most 500).
+- `limit` — chats per page (default 10 inside a run, 50 otherwise; at most 500).
 - `offset` — rows to skip, for the next page.
 
 ## Returns
 
-`{scope, chats: [...], total, limit, offset}`. Each chat has `session_id`,
+`{scope, chats: [...], total, limit, offset, has_more}`, plus `next_offset`
+when there are more chats: pass it as `offset` to read the next page. Each chat has `session_id`,
 `tenant_id`, `agent`, `user_id`, `created_at`, `last_activity`, `run_count`,
 `input_tokens`, `output_tokens`, `cost`, `status`, and when set `title`,
 `description`, `tags`, `pinned`, `archived`, `summary`. `total` counts every
