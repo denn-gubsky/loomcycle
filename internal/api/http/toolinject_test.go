@@ -212,6 +212,43 @@ func TestToolInject_MatchesContextToolsOp(t *testing.T) {
 	}
 }
 
+// TestToolInject_ContextLineSaysWhatItIsFor: the inventory shows each tool's
+// first sentence only, so Context's has to say what an agent gets from it — its
+// tools' call formats and its scopes — or the agent never calls it. It used to
+// render as "Runtime introspection.", which named nothing the agent could act on.
+func TestToolInject_ContextLineSaysWhatItIsFor(t *testing.T) {
+	s := &Server{}
+	ts := append(toolFixtures(), tools.Tool(&builtin.Context{}))
+	got, _ := s.applyMemoryInjection(context.Background(),
+		config.AgentDef{SystemPrompt: "{{tool:Context.tools}}"},
+		memInject{Tenant: "t1", UserID: "u1", AgentName: "a", Tools: ts})
+
+	var line, next string
+	lines := strings.Split(got.SystemPrompt, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "- Context") {
+			line = l
+			if i+1 < len(lines) {
+				next = lines[i+1]
+			}
+		}
+	}
+	if line == "" {
+		t.Fatalf("Context missing from the inventory of a run that holds it:\n%s", got.SystemPrompt)
+	}
+	for _, want := range []string{"op=help", "op=permissions", "scopes"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("Context's inventory line does not mention %q: %q", want, line)
+		}
+	}
+	if strings.HasSuffix(line, "…") {
+		t.Errorf("Context's first sentence is over the inventory cap and renders truncated: %q", line)
+	}
+	if !strings.Contains(next, "History") {
+		t.Errorf("Context's inventory entry should carry its boundary (past chats are History) on the next line; got %q", next)
+	}
+}
+
 // TestToolGuide_ReachesTheAssembledPrompt is the WIRING test for the guide ref:
 // the op enum, the required list and the hand-written hint must all land in the
 // prompt the run actually gets, framed as reference data.
