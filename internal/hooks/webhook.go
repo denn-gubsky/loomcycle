@@ -60,7 +60,7 @@ func (c *webhookClient) clientFor(h *Hook) *http.Client {
 // Returns an error on transport failures, non-2xx status codes,
 // non-JSON response bodies, and ctx-deadline expiry. All of these
 // flow into the Dispatcher's fail-mode branch.
-func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, body, out any) error {
+func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, headers map[string]string, body, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return callError("the hook's payload could not be encoded", fmt.Errorf("marshal hook payload: %w", err))
@@ -68,6 +68,9 @@ func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, b
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return callError("the hook's callback URL is invalid", fmt.Errorf("build hook request: %w", err))
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
