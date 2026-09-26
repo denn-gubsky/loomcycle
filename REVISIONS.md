@@ -8,6 +8,81 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.97.0
+
+*⚠️ BREAKING: hooks move onto the run, and the hook registration API is removed. Also a data-loss fix in the dead-link sweeper, credentials in hook headers, and chat agents that can write for the whole tenant.*
+
+Five PRs. #1387 is RFC DK-P4b, the switch-over; #1388 is its precondition for migrating existing hooks; #1389 fixes live document chunks losing their text; #1390 and #1391 come from measuring local models.
+
+### ⚠️ A run carries its AgentDef's hooks; the registration API is removed (#1387, RFC DK-P4b)
+
+A hook used to be registered at runtime into one process-wide registry, and it fired on every run in the tenant. Now an agent's **definition** carries its hooks. A run takes them when it starts and fires exactly those.
+
+- **Attaching hooks:**
+  - An agent's `tools` entry may be `{name, hooks: {pre, post}}` for that tool's own hooks.
+  - The agent's top-level `hooks:` holds run events, and hooks for every tool.
+  - Each entry is a HookDef name (`gate`, or `gate@3` to pin a version) or an inline webhook `{name, url, fail_mode, timeout_ms}`.
+  - It works the same in yaml and in the AgentDef overlay.
+  - Hooks are content: they are part of the definition's hash.
+- **Checked when an AgentDef is saved:**
+  - every event is a known one, and a tool's hooks use only tool events;
+  - a tool's hooks are for a tool the agent has;
+  - each HookDef exists and answers its event;
+  - `match.tools` covers the tool it is attached to.
+- **Order:** a tool's own hooks run first, then the agent's, each in listed order. `post` chains run reversed. The old tenant-first ordering is gone, since a run's chain is exactly what its definition named.
+- **Where HookDef references resolve:**
+  - They resolve in the tenant that owns the definition, then the shared tenant; never in the run's tenant. A tenant cannot shadow an operator's hook by reusing its name.
+  - A run whose hooks cannot be resolved (a HookDef deleted or retired) **stops before any model call**.
+  - A sub-agent fires its own definition's hooks, not its parent's.
+- **Host widening** is decided per hook. It needs both the operator permit and a hook from an **operator-authored** definition.
+- **Removed:**
+  - `POST/GET/DELETE /v1/hooks`;
+  - MCP `register_hook` / `list_hooks` / `delete_hook` (the catalogue drops to 53 tools);
+  - the gRPC `RegisterHook` / `ListHooks` / `DeleteHook` RPCs;
+  - TS `registerHook` / `listHooks` / `deleteHook` and `HookNotFoundError`;
+  - Python `register_hook` / `list_hooks` / `delete_hook` and `HookNotFoundError`;
+  - the cluster hook registry.
+
+### Credentials in hook headers (#1388)
+
+A secret a webhook hook needs had nowhere to go but its URL. The URL is stored in the definition body, where anyone who can read the tenant's AgentDefs can see it.
+
+- **`headers`** are now accepted on inline webhooks and on HookDef `http` bodies.
+- **A header value may name a credential**, `$cred:<name>` (or `$ghapp:`). It is resolved for the run on each call, by the resolver MCP server headers use, and the value is registered with the redactor. The definition stores only the reference.
+- **A credential that does not resolve fails the call.** The literal reference is never sent, and the hook's `fail_mode` decides the outcome.
+- **Validation:**
+  - header names must be HTTP tokens;
+  - the call's own headers (`Content-Type`, `Accept`, `Host`, …) and line breaks in a value are refused;
+  - a code-js body takes no headers.
+
+### ⚠️ The dead-link sweeper deleted live chunk text past 10,000 chunks (#1389)
+
+The hourly dead-link sweeper runs by default and not as a dry run. In any scope holding more than 10,000 chunks, it **deleted the bodies of live chunks**. The chunks stayed in the tree with no text, so search and readers silently stopped seeing them.
+
+- **Cause:** the set of live chunk ids was read in one SQL Memory query, which stops at `SqlMemMaxRows` (default 10,000). The truncation flag was ignored, so every chunk past the cap looked unreachable. Separately, the body listing asked for "no limit", which both stores read as **100**.
+- **Fix:**
+  - the live set is read by keyset paging until it is complete;
+  - the body listing has an explicit ceiling;
+  - the sweep **refuses to reconcile** when a listing is still truncated.
+
+### Chat agents may write for the whole tenant (#1390)
+
+Every `chat/*` agent (`chat/medium`, `chat/local`, `chat/local-small`) now holds `memory_scopes: [user, tenant]` and `sql_scopes: [user, tenant]`. "Save a note my whole team can read" works, for Memory notes and for Documents; a tenant-scope Document needs both grants.
+
+⚠️ This reverses a deliberate default: one allowlist covers reads and writes, and these agents have WebFetch, WebSearch and Read. A page or file they read can ask them to store something that every user in the tenant then sees. To narrow an agent back, re-declare both keys as `[user]` in an operator overlay.
+
+### Context says what it is for in the tool list (#1391)
+
+The tool list in an agent's prompt shows each tool's first sentence, and Context's was "Runtime introspection.". On local models, 0 of 20 runs read a tool's help before calling it. Its entry now reads "Runtime and self introspection, with call instructions for all your tools (op=help) and your scopes (op=permissions)." A second line points past chats to History.
+
+### Upgrade notes
+
+- **⚠️ BREAKING — hooks.** Registered hooks stop firing: **migration 0083** (Postgres) drops the `hooks` table and the registration API is gone. Before upgrading, move each registered hook into the definition of each agent it gated: a HookDef reference, or an inline webhook on the tool entry. Put secrets in `headers` as `$cred:` credentials, not in the URL.
+- **Host-widen permit:** the key is still `hooks.permit_host_widen.owners` (`LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS`). Entries now name `[tenant:]hook-name`, and the hook must come from an operator-authored definition.
+- **Dead-link sweeper:** a scope past 10,000 chunks on an older version may already have lost chunk bodies; this release stops further loss. Until you upgrade, set `LOOMCYCLE_DEADLINK_GC_MS=0` or `LOOMCYCLE_DEADLINK_GC_DRY_RUN=1`.
+- **Chat agents write the tenant plane by default.** Narrow them with an operator overlay if they are driven by untrusted input.
+- **The adapters are bumped to 1.97.0.** The hook registration methods are removed from TS and Python, and TS gains `InlineWebhook.headers`.
+
 ## What's in v1.96.0
 
 *Hooks become reusable, versioned definitions, and two stateful and looping failures from measuring local models stop costing whole runs.*
