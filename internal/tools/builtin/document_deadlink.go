@@ -28,6 +28,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -171,19 +172,42 @@ func (d *Document) ReconcileDeadLinks(ctx context.Context, key sqlmem.ScopeKey, 
 	return rep, nil
 }
 
-// liveChunkIDs reads the scope's chunk ids as a set.
+// liveChunkPage is how many chunk ids one keyset page asks for. The SQL Memory row cap
+// may clip a page below this; the walk only needs each page to be a contiguous prefix of
+// the ordered ids, which a clipped page still is.
+const liveChunkPage = 1000
+
+// liveChunkIDs reads EVERY chunk id in the scope as a set.
+//
+// ⚠️ It pages by key rather than issuing one SELECT. A single query goes through the SQL
+// Memory row cap (SqlMemMaxRows, 10,000 by default) and comes back truncated, and
+// truncated here means data loss: every chunk past the cap looks unreachable and the
+// caller deletes its body. That happened on a live scope that crossed 10,000 chunks.
+// Keyset paging reads the whole set whatever the cap is, and ends on an empty page.
 func (d *Document) liveChunkIDs(ctx context.Context, key sqlmem.ScopeKey) (map[string]bool, error) {
-	res, err := d.query(ctx, key, `SELECT id FROM chunks`)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]bool, len(res.Rows))
-	for _, r := range res.Rows {
-		if id := asStr(r[0]); id != "" {
-			out[id] = true
+	out := make(map[string]bool)
+	after := ""
+	for {
+		res, err := d.query(ctx, key, `SELECT id FROM chunks WHERE id > ? ORDER BY id LIMIT `+strconv.Itoa(liveChunkPage), after)
+		if err != nil {
+			return nil, err
 		}
+		if len(res.Rows) == 0 {
+			return out, nil
+		}
+		next := after
+		for _, r := range res.Rows {
+			if id := asStr(r[0]); id != "" {
+				out[id] = true
+				next = id
+			}
+		}
+		if next == after {
+			// No progress (every id on the page was empty): stop rather than loop.
+			return nil, fmt.Errorf("deadlink: chunk id walk made no progress after %q", after)
+		}
+		after = next
 	}
-	return out, nil
 }
 
 type chunkBodyRow struct {
@@ -191,14 +215,24 @@ type chunkBodyRow struct {
 	chunkID string
 }
 
-// chunkBodyKeys lists the scope's chunk-body keys from the Memory plane.
+// chunkBodyListLimit bounds the body listing. It is a ceiling, not a page: MemoryList
+// has no cursor, and a limit of 0 means 100 to the store, which made every sweep examine
+// only a scope's first 100 bodies by key and never reach an orphan past them.
+const chunkBodyListLimit = 1_000_000
+
+// chunkBodyKeys lists ALL of the scope's chunk-body keys from the Memory plane, or
+// fails: a truncated listing is refused rather than reconciled against.
 func (d *Document) chunkBodyKeys(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope) ([]chunkBodyRow, error) {
 	const prefix = "doc.chunk:"
 	var out []chunkBodyRow
 	for _, tenant := range bodyTenantsFor(key.Tenant) {
-		entries, _, err := d.Store.MemoryList(ctx, tenant, mscope, key.ScopeID, prefix, 0)
+		entries, truncated, err := d.Store.MemoryList(ctx, tenant, mscope, key.ScopeID, prefix, chunkBodyListLimit)
 		if err != nil {
 			return nil, err
+		}
+		if truncated {
+			return nil, fmt.Errorf("deadlink: more than %d chunk bodies in scope %s/%s — refusing to reconcile a partial listing",
+				chunkBodyListLimit, mscope, key.ScopeID)
 		}
 		for _, e := range entries {
 			if id := strings.TrimPrefix(e.Key, prefix); id != e.Key && id != "" {
