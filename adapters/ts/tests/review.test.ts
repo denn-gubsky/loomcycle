@@ -61,6 +61,23 @@ describe("the review option", () => {
   });
 });
 
+describe("a run's hook additions", () => {
+  it("ride on a run start as hooks and tool_hooks", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([`event: done\ndata: {"type":"done"}\n\n`])]);
+    for await (const _ of client.runStreaming({
+      agent: "qa",
+      segments: [{ role: "user", content: [{ type: "trusted-text", text: "hi" }] }],
+      hooks: { agent_stop: ["cite@3"] },
+      toolHooks: { WebFetch: { pre: [{ name: "gate", url: "https://h.example", headers: { Authorization: "Bearer $cred:k" } }] } },
+    })) {
+      // drain
+    }
+    const body = sentBody(fetchMock.mock.calls[0]!);
+    expect(body.hooks).toEqual({ agent_stop: ["cite@3"] });
+    expect(body.tool_hooks.WebFetch.pre[0].name).toBe("gate");
+  });
+});
+
 describe("runTeam review", () => {
   it("sends the review arming and its deadline", async () => {
     const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_walk", status: "running" })]);

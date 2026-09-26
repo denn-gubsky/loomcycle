@@ -1555,6 +1555,10 @@ class LoomcycleClient:
         interactive: bool = False,
         review: bool = False,
         review_ttl_seconds: int = 0,
+        # Hooks this run adds to its agent's own ({event: [entry, ...]}) and
+        # its tools' own ({tool: {"pre": [...], "post": [...]}}). Added only.
+        hooks: Optional[Mapping[str, Any]] = None,
+        tool_hooks: Optional[Mapping[str, Any]] = None,
         # RFC DC per-run overrides. Routing selects WITHIN what the agent's
         # definition declares; the budget knobs are raisable except
         # max_concurrent_children, which may only be LOWERED. The tuning
@@ -1637,6 +1641,8 @@ class LoomcycleClient:
             interactive=interactive,
             review=review,
             review_ttl_seconds=review_ttl_seconds,
+            hooks=hooks,
+            tool_hooks=tool_hooks,
             model=model,
             provider=provider,
             tier=tier,
@@ -1680,6 +1686,10 @@ class LoomcycleClient:
         interactive: bool = False,
         review: bool = False,
         review_ttl_seconds: int = 0,
+        # Hooks this run adds to its agent's own ({event: [entry, ...]}) and
+        # its tools' own ({tool: {"pre": [...], "post": [...]}}). Added only.
+        hooks: Optional[Mapping[str, Any]] = None,
+        tool_hooks: Optional[Mapping[str, Any]] = None,
         # RFC DC per-run overrides. Routing selects WITHIN what the agent's
         # definition declares; the budget knobs are raisable except
         # max_concurrent_children, which may only be LOWERED. The tuning
@@ -1729,6 +1739,7 @@ class LoomcycleClient:
             interactive=interactive,
             review=review,
             review_ttl_seconds=review_ttl_seconds,
+            hooks_json=_hooks_json(hooks, tool_hooks),
             model=model,
             provider=provider,
             tier=tier,
@@ -2105,6 +2116,8 @@ def _build_run_request(
     # a hold nobody rules on within review_ttl_seconds as rejected (0 = never).
     review: bool = False,
     review_ttl_seconds: int = 0,
+    hooks: Optional[Mapping[str, Any]] = None,
+    tool_hooks: Optional[Mapping[str, Any]] = None,
     # Per-run overrides. Routing selects WITHIN what the agent's definition
     # declares; the budget knobs are raisable except max_concurrent_children,
     # which may only be LOWERED. These are plain proto3 fields, so "" / 0 IS
@@ -2156,6 +2169,7 @@ def _build_run_request(
         interactive=interactive,
         review=review,
         review_ttl_seconds=review_ttl_seconds,
+        hooks_json=_hooks_json(hooks, tool_hooks),
         # Canonical JSON bytes: the value is map[string]any by definition, so
         # there is no typed message to map it onto.
         metadata=json.dumps(metadata).encode() if metadata is not None else b"",
@@ -2233,7 +2247,20 @@ def _run_request_from_dict(spawn: Mapping[str, Any]) -> "pb.RunRequest":
         interruption=spawn.get("interruption"),
         review=bool(spawn.get("review", False)),
         review_ttl_seconds=int(spawn.get("review_ttl_seconds", 0)),
+        hooks=spawn.get("hooks"),
+        tool_hooks=spawn.get("tool_hooks"),
     )
+
+
+def _hooks_json(hooks: Optional[Mapping[str, Any]], tool_hooks: Optional[Mapping[str, Any]]) -> bytes:
+    """Encode a run's hook additions for RunRequest/ContinueRequest.hooks_json:
+    {"hooks": {...}, "tool_hooks": {...}}; b"" when there are none."""
+    out: dict = {}
+    if hooks:
+        out["hooks"] = dict(hooks)
+    if tool_hooks:
+        out["tool_hooks"] = dict(tool_hooks)
+    return json.dumps(out).encode() if out else b""
 
 
 def _usage_to_dict(u: "pb.Usage") -> Mapping[str, Any]:

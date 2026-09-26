@@ -437,6 +437,8 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		// returns once an operator approves the held answer or rejects it.
 		Review:           req.Review != nil && *req.Review,
 		ReviewTTLSeconds: req.ReviewTTLSeconds,
+		Hooks:            req.Hooks,
+		ToolHooks:        req.ToolHooks,
 	}
 
 	var (

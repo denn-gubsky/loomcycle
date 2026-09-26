@@ -118,7 +118,7 @@ func TestRunHooks_AChildDoesNotFireItsParentsHooks(t *testing.T) {
 	if _, err := parent.Register(&hooks.Hook{Owner: "agent:parent", Name: "p", Phase: hooks.PhasePre, CallbackURL: "https://h.example"}); err != nil {
 		t.Fatal(err)
 	}
-	ctx := h.srv.withRunHooks(hooks.WithSet(context.Background(), parent), "run_child", "child", config.AgentDef{})
+	ctx := h.srv.withRunHooks(hooks.WithSet(context.Background(), parent), "run_child", "child", config.AgentDef{}, hooks.Additions{})
 	if got := hooks.SetFrom(ctx); got == nil || got.Len() != 0 {
 		t.Fatalf("child set = %v; want an empty set in place of the parent's", got)
 	}
@@ -142,7 +142,7 @@ func TestRunHooks_WideningNeedsThePermitAndAnOperatorAuthoredDefinition(t *testi
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			set := hooks.SetFrom(h.srv.withRunHooks(context.Background(), "", "w", c.def))
+			set := hooks.SetFrom(h.srv.withRunHooks(context.Background(), "", "w", c.def, hooks.Additions{}))
 			if got := set.List()[0].WidenPermitted; got != c.want {
 				t.Fatalf("WidenPermitted = %v, want %v", got, c.want)
 			}
@@ -198,5 +198,77 @@ func TestRunHooks_AHeaderCredentialIsResolvedForTheRun(t *testing.T) {
 	}
 	if seenAgent != "writer" {
 		t.Fatalf("the resolver saw agent %q; want the run's", seenAgent)
+	}
+}
+
+// The run request's hooks fire on the run, after the agent's own, named as the
+// run's.
+func TestRunHooks_ARunRequestAddsHooks(t *testing.T) {
+	h := newReviewHarness(t)
+	end := newRecordingHook(t, `{}`)
+	body := `{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write"}]}],
+	  "hooks":{"run_end":[{"name":"audit","url":"` + end.srv.URL + `"}]}}`
+	runID, _, frames, stop := h.start(body)
+	defer stop()
+	h.waitFrame(frames, "done")
+	got := end.waitBody(t, `"run_id":"`+runID+`"`)
+	if !strings.Contains(got, `"owner":"run"`) || !strings.Contains(got, `"hook_name":"audit"`) {
+		t.Fatalf("payload = %s", got)
+	}
+	run, _ := h.st.GetRun(t.Context(), runID)
+	if !strings.Contains(string(run.RunConfig), `"audit"`) {
+		t.Fatalf("the run's record does not keep its additions: %s", run.RunConfig)
+	}
+}
+
+// A caller's hook on a tool the agent does not have stops the run: the caller
+// believes a gate is there.
+func TestRunHooks_ARequestHookOnAToolTheAgentLacksStopsTheRun(t *testing.T) {
+	h := newReviewHarness(t)
+	body := `{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write"}]}],
+	  "tool_hooks":{"WebFetch":{"pre":[{"name":"gate","url":"https://h.example"}]}}}`
+	runID, _, _, stop := h.start(body)
+	defer stop()
+	run := waitRunStatus(t, h.st, runID, store.RunFailed)
+	if !strings.Contains(run.ErrorMsg, "WebFetch") {
+		t.Fatalf("error = %q", run.ErrorMsg)
+	}
+}
+
+// Additions follow the agent's own hooks, reach the sub-agents a run starts,
+// and never widen hosts, whatever the permit list says.
+func TestRunHooks_AdditionsFollowTheAgentsHooksAndReachSubAgents(t *testing.T) {
+	h := newReviewHarness(t)
+	h.srv.hookPermits = hooks.NewPermits([]string{"gate", "own"})
+	def := config.AgentDef{Tools: []string{"WebFetch"}, OperatorAuthored: true,
+		Hooks: hooks.EventHooks{hooks.PhasePre: {{Inline: &hooks.Inline{Name: "own", URL: "https://h.example"}}}}}
+	added := hooks.Additions{ToolHooks: hooks.ToolHooks{"WebFetch": {hooks.PhasePre: {{Inline: &hooks.Inline{Name: "gate", URL: "https://h.example"}}}}}}
+	ctx := h.srv.withRunHooks(context.Background(), "", "parent", def, added)
+	pre := hooks.SetFrom(ctx).Match("parent", "WebFetch", hooks.PhasePre)
+	if len(pre) != 2 || pre[0].Name != "own" || pre[1].Name != "gate" {
+		t.Fatalf("chain = %v; want the agent's hook, then the run's", pre)
+	}
+	if !pre[0].WidenPermitted || pre[1].WidenPermitted {
+		t.Fatalf("widen = %v / %v; a run's addition must never widen", pre[0].WidenPermitted, pre[1].WidenPermitted)
+	}
+	// A child with no hooks of its own still fires what its parent run added.
+	child := h.srv.withRunHooks(ctx, "", "child", config.AgentDef{Tools: []string{"WebFetch"}}, hooks.Additions{})
+	if got := hooks.SetFrom(child).Match("child", "WebFetch", hooks.PhasePre); len(got) != 1 || got[0].Name != "gate" {
+		t.Fatalf("child chain = %v; want the inherited addition only", got)
+	}
+}
+
+// A resumed run fires what it added before it paused: its record's additions
+// come back as an inheritance, not re-checked against its tools.
+func TestRunHooks_AResumedRunKeepsItsAdditions(t *testing.T) {
+	rec := runConfigRecord{Hooks: additionsRecord(hooks.Additions{Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "audit", URL: "https://h.example"}}}}})}
+	back, ok := decodeRunConfig(rec.marshal())
+	if !ok || back.Hooks == nil {
+		t.Fatalf("the record lost its additions: %s", rec.marshal())
+	}
+	h := newReviewHarness(t)
+	ctx := h.srv.withRunHooks(hooks.WithAdditions(context.Background(), *back.Hooks), "", "writer", config.AgentDef{}, hooks.Additions{})
+	if got := hooks.SetFrom(ctx).Match("writer", "", hooks.PhaseRunEnd); len(got) != 1 {
+		t.Fatalf("resumed chain = %v", got)
 	}
 }

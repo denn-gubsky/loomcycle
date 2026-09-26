@@ -661,6 +661,12 @@ message RunRequest {
   // rejected (stop reason "review_expired"). Each hold gets the full window.
   // 0 = no deadline. Mirrors POST /v1/runs `review_ttl_seconds`.
   int32 review_ttl_seconds = 36;
+  // Hooks this run adds to its agent's own, as JSON:
+  // {"hooks": {"<event>": [entry, ...]}, "tool_hooks": {"<tool>": {"pre": [...], "post": [...]}}}
+  // where an entry is a HookDef name ("gate", "gate@3") or an inline webhook
+  // {name, url, fail_mode, timeout_ms, headers}. Added only — nothing here
+  // removes a hook the agent carries. Mirrors POST /v1/runs `hooks` + `tool_hooks`.
+  bytes hooks_json = 37;
 }
 
 message ContinueRequest {
@@ -748,6 +754,8 @@ message ContinueRequest {
   bool review = 32;
   // review_ttl_seconds — the continuation's review deadline, as on RunRequest.
   int32 review_ttl_seconds = 33;
+  // hooks_json — hooks this continuation's run adds, as on RunRequest.
+  bytes hooks_json = 34;
 }
 
 // Sampling mirrors config.Sampling — the per-run LLM sampling override.

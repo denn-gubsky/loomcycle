@@ -90,7 +90,14 @@ The same shape goes in an AgentDef overlay (`tools` entries as
 - **A hook that cannot be resolved stops the run before any model call** (a
   deleted or retired HookDef, say): a gate the definition names must not
   silently be missing.
-- A sub-agent fires its own definition's hooks, not its parent's.
+- **A run may add hooks**, never remove one: `hooks` and `tool_hooks` on the
+  run request (`POST /v1/runs`, a continuation, `spawn_run` / `spawn_runs`, the
+  gRPC `hooks_json`, the adapters), in the same shapes. They run after the
+  agent's own, resolve in the run's tenant, and never widen hosts; a
+  `tool_hooks` entry must name a tool the agent has, or the run does not start.
+  A resumed run keeps what it added.
+- A sub-agent fires its own definition's hooks, not its parent's — plus
+  everything its parent run added.
 - The payload's `owner` says where a hook came from (`agent:<name>`).
 
 ## Hook definitions (HookDef)

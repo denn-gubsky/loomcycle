@@ -269,6 +269,7 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	          "retry_attempts":0,"memory_inject_max_tokens":0,"memory_index_max_bytes":0,
 	          "inject_tool_guide":false,"unbounded_iterations":false,
 	          "review":true,"review_ttl_seconds":60,
+	          "hooks":{"run_end":["audit"]},"tool_hooks":{"Read":{"pre":[{"name":"gate","url":"https://h.example"}]}},
 	          "tool_choice":{"mode":"tool","name":"WebSearch","until":"until_called"},
 	          "output_format":{"type":"json_schema","name":"verdict","schema":{"type":"object"}}}`
 	if _, err := handleSpawnRun(context.Background(), env, json.RawMessage(args)); err != nil {
@@ -303,6 +304,9 @@ func TestSpawnRunStreaming_CarriesTheRequestIntoTheRunInput(t *testing.T) {
 	}
 	if len(in.Segments) == 0 {
 		t.Error("Segments were dropped — the run would reach the model with an empty prompt")
+	}
+	if len(in.Hooks["run_end"]) != 1 || len(in.ToolHooks["Read"]["pre"]) != 1 {
+		t.Errorf("Hooks = %v / ToolHooks = %v — the run's hook additions were dropped by the streaming path's hand-copy", in.Hooks, in.ToolHooks)
 	}
 	if in.ToolChoice == nil || in.ToolChoice.Name != "WebSearch" || in.ToolChoice.Until != "until_called" {
 		t.Errorf("ToolChoice = %+v, want tool/WebSearch/until_called — dropped by the streaming path's hand-copy", in.ToolChoice)

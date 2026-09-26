@@ -178,6 +178,9 @@ export interface RunConfigRecord {
   max_context_tokens?: number;
   run_timeout_seconds?: number;
   review_ttl_seconds?: number;
+  /** Hooks the run added to its agent's own: its request's, and a sub-agent's
+   *  inherited ones. */
+  hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
   routing?: {
     provider?: string;
     model?: string;
@@ -857,6 +860,12 @@ export interface RunOptions extends RunOverrideOptions {
    *  seconds as rejected (stop reason `review_expired`). Each hold gets the
    *  full window; omit for no deadline. Set at start only. */
   reviewTtlSeconds?: number;
+  /** Hooks this run adds to its agent's own, by event. Only ever added —
+   *  nothing here removes a hook the agent carries — and sub-agents the run
+   *  starts inherit them. They never widen hosts. Set at start only. */
+  hooks?: EventHooks;
+  /** Hooks for one of the agent's tools, by tool name. Set at start only. */
+  toolHooks?: ToolHooksByTool;
   /** Per-run LLM sampling override (v0.28.0), merged PER FIELD over the
    *  agent's own sampling (this wins; unset fields inherit). Omitted =
    *  inherit entirely. */
@@ -1138,6 +1147,12 @@ export interface ContinueOptions extends RunOverrideOptions {
    *  seconds as rejected (stop reason `review_expired`). Each hold gets the
    *  full window; omit for no deadline. Set at start only. */
   reviewTtlSeconds?: number;
+  /** Hooks this run adds to its agent's own, by event. Only ever added —
+   *  nothing here removes a hook the agent carries — and sub-agents the run
+   *  starts inherit them. They never widen hosts. Set at start only. */
+  hooks?: EventHooks;
+  /** Hooks for one of the agent's tools, by tool name. Set at start only. */
+  toolHooks?: ToolHooksByTool;
   /** Per-continuation LLM sampling override — see {@link RunOptions.sampling}. */
   sampling?: SamplingOptions;
   /** Per-run tool choice (RFC DI): whether and which tool the model must
@@ -1280,6 +1295,9 @@ export interface RunSpec {
   interruption?: Record<string, unknown>;
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
+  /** Hooks the run added to its agent's own (its request's, and a
+   *  sub-agent's inherited ones). */
+  hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
 }
 
 /** A finished run's answer (RFC DI). */
@@ -3310,6 +3328,9 @@ export type HookEntry = string | InlineWebhook;
 /** Hooks per event, in chain order. */
 export type EventHooks = Partial<Record<HookEvent, HookEntry[]>>;
 
+/** Each tool's own hooks, by tool name. */
+export type ToolHooksByTool = Record<string, Partial<Record<"pre" | "post" | "post_failure", HookEntry[]>>>;
+
 /** A `tools` entry that carries that tool's own hooks. */
 export interface ToolEntry {
   name: string;
@@ -3340,7 +3361,7 @@ export interface AgentDefOverlay {
    *  takes these verbatim. */
   hooks?: EventHooks;
   /** Each tool's own hooks, by tool name. */
-  tool_hooks?: Record<string, Partial<Record<"pre" | "post" | "post_failure", HookEntry[]>>>;
+  tool_hooks?: ToolHooksByTool;
   skills?: string[];
   memory_scopes?: string[];
   /** RFC DF: recall attaches the conversation TURN each fact was distilled from,

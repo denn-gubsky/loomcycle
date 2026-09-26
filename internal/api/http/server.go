@@ -2689,6 +2689,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Hosts:             hostRecordOf(hostPolicy),
 		Review:            reviewRecord(in.Review),
 		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
+		Hooks:             additionsRecord(hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks}),
 	}
 
 	// ---- Session+run creation ----
@@ -2919,7 +2920,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
-	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef)
+	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef, hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(runID)
@@ -4006,6 +4007,11 @@ type runRequest struct {
 	// seconds as rejected ("review_expired"). Each hold gets the full window.
 	// 0 = no deadline: a hold waits for a person.
 	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
+	// Hooks / ToolHooks are hooks this run adds to its agent's own: run events
+	// and all-tool events, and each tool's pre / post hooks. Entries are HookDef
+	// names or inline webhooks. Added only — never removing one the agent carries.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 
 	// Sampling is an optional per-RUN LLM sampling override (temperature,
 	// top_p, …) — merged PER FIELD over the agent's own sampling (this wins;
@@ -4473,6 +4479,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Hosts:             hostRecordOf(hostPolicy),
 		Review:            reviewRecord(req.Review),
 		ReviewTTLSeconds:  positiveOrZero(req.ReviewTTLSeconds),
+		Hooks:             additionsRecord(hooks.Additions{Hooks: req.Hooks, ToolHooks: req.ToolHooks}),
 	}
 
 	// Persistence: resolve or create a session, create a run, route every
@@ -4740,7 +4747,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, runID)
-	loopCtx = s.withRunHooks(loopCtx, runID, req.Agent, agentDef)
+	loopCtx = s.withRunHooks(loopCtx, runID, req.Agent, agentDef, hooks.Additions{Hooks: req.Hooks, ToolHooks: req.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	// Heartbeat hook: each loop iteration updates last_heartbeat_at so a
@@ -4940,6 +4947,11 @@ type messagesRequest struct {
 	// seconds as rejected ("review_expired"). Each hold gets the full window.
 	// 0 = no deadline: a hold waits for a person.
 	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
+	// Hooks / ToolHooks are hooks this run adds to its agent's own: run events
+	// and all-tool events, and each tool's pre / post hooks. Entries are HookDef
+	// names or inline webhooks. Added only — never removing one the agent carries.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 
 	// Sampling: per-RUN LLM sampling override for this continuation turn,
 	// merged per field over the agent's. Same semantics as runRequest.Sampling.
@@ -5276,6 +5288,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Hosts:             hostRecordOf(hostPolicy),
 		Review:            reviewRecord(body.Review),
 		ReviewTTLSeconds:  positiveOrZero(body.ReviewTTLSeconds),
+		Hooks:             additionsRecord(hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks}),
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -5478,7 +5491,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
-	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef)
+	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef, hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 	// Cooperative pause quiesce (RFC X / F41) — synchronous handler, defer-deregister.
 	gate, deregGate := s.newPauseGate(run.ID)
@@ -6807,6 +6820,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	subRunCfg := runConfigRecord{
+		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
 		Sampling:          def.Sampling,
 		ToolChoice:        def.ToolChoice, // the child's own, like sampling
 		OutputFormat:      def.OutputFormat,
@@ -7174,7 +7188,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// parent id; it is replaced by the child's on the next line.
 	subCtx = tools.WithParentRunID(subCtx, tools.RunID(subCtx))
 	subCtx = tools.WithRunID(subCtx, subRunID)
-	subCtx = s.withRunHooks(subCtx, subRunID, name, def)
+	subCtx = s.withRunHooks(subCtx, subRunID, name, def, hooks.Additions{})
 	subCtx = tools.WithDispatcher(subCtx, subDispatcher)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)

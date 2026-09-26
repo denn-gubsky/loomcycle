@@ -31,6 +31,7 @@ import (
 	"errors"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -279,6 +280,12 @@ type RunInput struct {
 	// ReviewTTLSeconds ends a held answer that gets no verdict within it as
 	// rejected. 0 = no deadline.
 	ReviewTTLSeconds int
+
+	// Hooks / ToolHooks are hooks the run adds to its agent's own (run events and
+	// all-tool events; each tool's pre / post hooks). Added only: nothing here
+	// removes a hook the agent's definition carries.
+	Hooks     hooks.EventHooks
+	ToolHooks hooks.ToolHooks
 
 	// Interruption is the run's own answer to whether the agent may ASK a human
 	// a question, overriding the definition's block. nil = inherit it.

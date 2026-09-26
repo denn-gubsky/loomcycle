@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -173,6 +174,11 @@ type SpawnRunRequest struct {
 	// ReviewTTLSeconds ends a held answer that gets no verdict within it as
 	// rejected. 0 = no deadline.
 	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
+
+	// Hooks / ToolHooks are hooks the run adds to its agent's own (run and
+	// all-tool events; each tool's pre / post hooks). Added only.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 
 	// Interruption lets this run's agent ask a human a question even when its
 	// definition does not enable it. nil = inherit the definition's.

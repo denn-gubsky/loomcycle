@@ -152,3 +152,24 @@ func TestEventHooks_ValidateRefusesRunEventsUnderATool(t *testing.T) {
 		t.Fatalf("valid hooks refused: %v", err)
 	}
 }
+
+func TestAdditions_MergeAppendsAndValidateChecksTheAgentsTools(t *testing.T) {
+	a := Additions{Hooks: EventHooks{PhaseRunEnd: {{Ref: "a"}}}}
+	b := Additions{Hooks: EventHooks{PhaseRunEnd: {{Ref: "b"}}}, ToolHooks: ToolHooks{"Read": {PhasePre: {{Ref: "c"}}}}}
+	m := a.Merge(b)
+	if got := m.Hooks[PhaseRunEnd]; len(got) != 2 || got[0].Ref != "a" || got[1].Ref != "b" {
+		t.Fatalf("merged run_end = %v; want a then b", got)
+	}
+	if len(a.Hooks[PhaseRunEnd]) != 1 {
+		t.Fatalf("Merge changed its receiver")
+	}
+	if !(Additions{}).Empty() || m.Empty() {
+		t.Fatalf("Empty is wrong")
+	}
+	if err := b.Validate([]string{"Read"}); err != nil {
+		t.Fatalf("valid additions refused: %v", err)
+	}
+	if err := b.Validate([]string{"Write"}); err == nil {
+		t.Fatalf("a hook on a tool the agent lacks was accepted")
+	}
+}

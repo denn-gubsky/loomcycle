@@ -87,6 +87,8 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 		Review:           req.Review != nil && *req.Review,
 		ReviewTTLSeconds: req.ReviewTTLSeconds,
 		Interruption:     req.Interruption, // per-run "may this agent ask a human"
+		Hooks:            req.Hooks,
+		ToolHooks:        req.ToolHooks,
 	}
 }
 
