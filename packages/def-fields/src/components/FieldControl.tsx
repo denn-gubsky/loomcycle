@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FieldSpec } from "../types";
+import { HookEventsControl, ToolHooksControl } from "./HookControls";
 
 // One control per FieldType. Both surfaces (grouped form, folded list) render
 // through this switch, so a field looks and behaves identically wherever it is
@@ -121,6 +122,12 @@ export function FieldControl({ spec, value, onChange, disabled, renderChild }: F
 
     case "json":
       return <JsonControl value={value} disabled={disabled} placeholder={spec.placeholder} onChange={onChange} />;
+
+    case "hook-events":
+      return <HookEventsControl value={value} events={spec.options} disabled={disabled} onChange={onChange} />;
+
+    case "tool-hooks":
+      return <ToolHooksControl value={value} disabled={disabled} onChange={onChange} />;
 
     case "text":
     default:
