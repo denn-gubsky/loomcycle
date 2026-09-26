@@ -13,6 +13,8 @@ package teamgraph
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 )
 
 // DefaultMaxIterations is the per-state cycle cap applied when a Definition
@@ -89,6 +91,10 @@ type Definition struct {
 	// is not auditable. It is validated at create/fork to only NARROW what the
 	// authoring principal already holds (trust rule 4 — inherit, never widen).
 	Channels *TeamChannels `json:"channels,omitempty"`
+
+	// Hooks are the walk's own: the walk is a run, and ends like one, so its
+	// run_end hooks report how it ended. Content, and hashed.
+	Hooks hooks.EventHooks `json:"hooks,omitempty"`
 }
 
 // TeamChannels is the workflow's own channel allowlist, same shape as an
@@ -107,6 +113,14 @@ type State struct {
 // Handler is the "who acts" for a state.
 type Handler struct {
 	Kind string `json:"kind"` // agent | parallel | consolidator | terminal | vars | input
+
+	// Hooks / ToolHooks are added to every run this state starts — its agent,
+	// each parallel member and the consolidator, each Starter wave member — on
+	// top of the hooks that agent's own definition carries, and passed on to
+	// the sub-agents those runs start. Added only: a team cannot remove a hook
+	// an agent carries. Only states that run agents may carry them.
+	Hooks     hooks.EventHooks `json:"hooks,omitempty"`
+	ToolHooks hooks.ToolHooks  `json:"tool_hooks,omitempty"`
 	// Agent — for kind=agent and kind=consolidator: the AgentDef name to run.
 	Agent string `json:"agent,omitempty"`
 	// Agents — for kind=parallel: the AgentDef names fanned out concurrently.

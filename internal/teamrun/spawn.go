@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
@@ -320,6 +321,12 @@ func WithRunnerLogf(f func(format string, args ...any)) RunnerOption {
 }
 
 func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
+	// The state's hooks are added to every run it starts, on top of that
+	// agent's own, and ride down to their sub-agents: they go on the ctx every
+	// spawn below is made from.
+	if add := (hooks.Additions{Hooks: st.Handler.Hooks, ToolHooks: st.Handler.ToolHooks}); !add.Empty() {
+		ctx = hooks.WithAdditions(ctx, hooks.AdditionsFrom(ctx).Merge(add))
+	}
 	input := task.Input
 	env := r.envFor(st, task)
 
@@ -742,4 +749,25 @@ func resultsEnvelope(results []agentResult) (string, error) {
 		return "", fmt.Errorf("teamrun: marshal consolidator envelope: %w", err)
 	}
 	return string(body), nil
+}
+
+type walkHooksKey struct{}
+
+// WalkHooks is what a walk's own run carries: the definition's hooks, and
+// whether an operator wrote that definition.
+type WalkHooks struct {
+	Hooks            hooks.EventHooks
+	OperatorAuthored bool
+}
+
+// WithWalkHooks hands the definition's walk hooks to whatever opens the walk's
+// run (the WalkRun seam), which fires them for that run.
+func WithWalkHooks(ctx context.Context, w WalkHooks) context.Context {
+	return context.WithValue(ctx, walkHooksKey{}, w)
+}
+
+// WalkHooksFrom returns the walk hooks on ctx.
+func WalkHooksFrom(ctx context.Context) WalkHooks {
+	w, _ := ctx.Value(walkHooksKey{}).(WalkHooks)
+	return w
 }
