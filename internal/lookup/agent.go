@@ -458,4 +458,12 @@ func NormalizeAgentDef(def *config.AgentDef) {
 	if def.SystemPromptBase == "" {
 		def.SystemPromptBase = def.SystemPrompt
 	}
+	// 2. Context default-add — config load gives every yaml agent the
+	//    Context tool (unless disable_context). A runtime-created agent
+	//    never passes through load, so it ran without Context: no
+	//    introspection, no tool call formats, no scope report, and none of
+	//    the help the dispatcher derives from holding it. Applied here, at
+	//    resolve time, rather than written into the stored definition: the
+	//    stored tools list is the fork ceiling and is content-identifying.
+	config.AddContextToolDefault(def)
 }

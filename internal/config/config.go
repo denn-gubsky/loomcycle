@@ -5394,28 +5394,34 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 // opt out per-agent via `disable_context: true`.
 func addContextToolDefaults(cfg *Config) {
 	for name, def := range cfg.Agents {
-		if def.DisableContext {
-			continue
-		}
-		alreadyHas := false
-		for _, t := range def.Tools {
-			// Case-insensitive match. An operator's lowercase
-			// `tools: [context]` is a typo, not an explicit
-			// listing — but case-sensitive eq would let the typo
-			// double-add (yielding [context, Context]) and confuse
-			// the per-run dispatcher's case-sensitive registry
-			// lookup. PR 3 review fix.
-			if strings.EqualFold(t, "Context") {
-				alreadyHas = true
-				break
-			}
-		}
-		if alreadyHas {
-			continue
-		}
-		def.Tools = append(def.Tools, "Context")
+		AddContextToolDefault(&def)
 		cfg.Agents[name] = def
 	}
+}
+
+// AddContextToolDefault applies the Context default-add to ONE agent. It is
+// exported because an agent defined at runtime never passes through config
+// load: the runtime resolver (lookup.NormalizeAgentDef) calls this too, so a
+// runtime-created agent gets the tool a yaml agent gets, by the same rule.
+// Idempotent.
+func AddContextToolDefault(def *AgentDef) {
+	if def.DisableContext {
+		return
+	}
+	for _, t := range def.Tools {
+		// Case-insensitive match. An operator's lowercase
+		// `tools: [context]` is a typo, not an explicit
+		// listing — but case-sensitive eq would let the typo
+		// double-add (yielding [context, Context]) and confuse
+		// the per-run dispatcher's case-sensitive registry
+		// lookup. PR 3 review fix.
+		if strings.EqualFold(t, "Context") {
+			return
+		}
+	}
+	// A fresh slice: def.Tools may share its backing array with a stored or
+	// cached definition, which an in-place append would write through.
+	def.Tools = append(append([]string(nil), def.Tools...), "Context")
 }
 
 // checkRetiredJailEnv fails config load when a deploy still sets one of the

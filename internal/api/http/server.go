@@ -2039,6 +2039,18 @@ func (s *Server) childVolumePolicy(ctx context.Context, parentVol tools.VolumePo
 //
 // Malformed JSON returns the base unchanged — the AgentDef tool's
 // schema ensures rows are well-formed, so this is defensive only.
+// pinnedSubAgentDef is the effective definition of a sub-run pinned to one
+// stored version. The overlay REPLACES tools with the stored list, and a stored
+// list never carries the Context default (that is applied when a definition is
+// resolved, not written), so a pinned sub-run used to lose Context even when
+// its base had it. The base's disable_context survives the overlay, so an
+// opt-out still holds.
+func pinnedSubAgentDef(base config.AgentDef, definition json.RawMessage) config.AgentDef {
+	def := applyAgentDefOverlay(base, definition)
+	config.AddContextToolDefault(&def)
+	return def
+}
+
 func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) config.AgentDef {
 	if len(definition) == 0 {
 		return base
@@ -6743,7 +6755,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		if row.Retired {
 			return nil, fmt.Errorf("Agent tool: def_id %q is retired", defID)
 		}
-		def = applyAgentDefOverlay(def, row.Definition)
+		def = pinnedSubAgentDef(def, row.Definition)
 	}
 
 	// Read parent's identity from ctx to inherit user_id, tenant, user_tier, and

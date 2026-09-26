@@ -299,3 +299,20 @@ func TestApplyAgentDefOverlay_RetryAttemptsNilStaticStaysNil(t *testing.T) {
 		t.Errorf("RetryAttempts should stay nil; got %v", got.RetryAttempts)
 	}
 }
+
+// TestPinnedSubAgentDef_KeepsTheContextDefault: a sub-run pinned to a stored
+// version takes that version's tools, and a stored list never carries the
+// Context default. The yaml base had Context; the pinned child lost it.
+func TestPinnedSubAgentDef_KeepsTheContextDefault(t *testing.T) {
+	stored := json.RawMessage(`{"tools": ["Read", "Memory"]}`)
+
+	got := pinnedSubAgentDef(config.AgentDef{Tools: []string{"Read", "Memory", "Write", "Context"}}, stored)
+	if want := []string{"Read", "Memory", "Context"}; !reflect.DeepEqual(got.Tools, want) {
+		t.Errorf("tools = %v, want %v", got.Tools, want)
+	}
+
+	optedOut := pinnedSubAgentDef(config.AgentDef{Tools: []string{"Read"}, DisableContext: true}, stored)
+	if want := []string{"Read", "Memory"}; !reflect.DeepEqual(optedOut.Tools, want) {
+		t.Errorf("disable_context on the base must survive the pin: tools = %v, want %v", optedOut.Tools, want)
+	}
+}

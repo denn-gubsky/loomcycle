@@ -92,6 +92,9 @@ func TestAgent_EquivalenceYamlVsSubstrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+	// Config load adds Context to every yaml agent, so a yaml agent's
+	// RUNTIME tool list carries it; the substrate path must arrive at the same.
+	config.AddContextToolDefault(&yamlAgent)
 
 	// Resolve via the dynamic-substrate path.
 	ss := &stubStore{
@@ -448,5 +451,51 @@ func TestAgent_RetiredActivePointerFallsThroughToStatic(t *testing.T) {
 	}
 	if got.SystemPrompt != "STATIC-BASE" {
 		t.Errorf("resolved %q, want the STATIC base (a retired def must never be served)", got.SystemPrompt)
+	}
+}
+
+// TestAgent_RuntimeDefGetsContextByDefault: config load gives every yaml agent
+// the Context tool unless disable_context, and a runtime-created agent never
+// passes through load. Without this default it ran with no Context at all — no
+// introspection, no tool call formats, no scope report — although nothing in its
+// definition asked for that.
+func TestAgent_RuntimeDefGetsContextByDefault(t *testing.T) {
+	substrate, err := json.Marshal(lookup.SubstrateAgentDef{SystemPrompt: "p", Tools: []string{"Memory"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := json.Marshal(lookup.SubstrateAgentDef{SystemPrompt: "p", Tools: []string{"Memory", "context"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// dynamic_agents rows persist config.AgentDef itself, so they can carry the opt-out.
+	optOut, err := json.Marshal(config.AgentDef{SystemPrompt: "p", Tools: []string{"Memory"}, DisableContext: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := &stubStore{
+		dyn: map[string]store.DynamicAgent{
+			stubKey("", "scratch-airgapped"): {Name: "scratch-airgapped", Definition: optOut},
+		},
+		defs: map[string]store.AgentDefRow{
+			stubKey("", "authored"): {DefID: "def_a", Name: "authored", Version: 1, Definition: substrate},
+			stubKey("", "listed"):   {DefID: "def_l", Name: "listed", Version: 1, Definition: explicit},
+		},
+	}
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{"authored", []string{"Memory", "Context"}},
+		{"listed", []string{"Memory", "context"}}, // already listed, in any case: not added twice
+		{"scratch-airgapped", []string{"Memory"}}, // disable_context is honoured
+	} {
+		got, ok := lookup.Agent(context.Background(), ss, &config.Config{}, "", tc.name)
+		if !ok {
+			t.Fatalf("%s: did not resolve", tc.name)
+		}
+		if !reflect.DeepEqual(got.Tools, tc.want) {
+			t.Errorf("%s: tools = %v, want %v", tc.name, got.Tools, tc.want)
+		}
 	}
 }
