@@ -28,6 +28,52 @@ type repeatTracker struct {
 	failures map[string]int
 	refused  int
 	stopped  string
+
+	// last and streak are the most recent call and how many times in a row it
+	// has been made, for refuseConsecutive.
+	last   string
+	streak int
+}
+
+// consecutiveCallsAllowed is how many times in a row a run may make the exact
+// same call. The next one is refused unrun.
+//
+// A model looping on one call: measured live (ornith-1.5 behind chat/local),
+// the same successful tenant save was re-sent 36, 17 and 12 times in a row,
+// and one help article re-read 7 times. The failed-call guard never saw it,
+// because every call succeeded. This is deliberately narrow: only the SAME
+// tool with the SAME arguments, back to back. Any other call in between, or
+// any change to the arguments, starts the count over, so re-reading a file
+// after editing it, or polling between other steps, is untouched.
+const consecutiveCallsAllowed = 2
+
+// recordCall makes this call the run's latest and returns how many times in a
+// row it has now been made. Every attempted call is recorded, refused ones
+// included, so a model that keeps sending the same call keeps being refused.
+func (d *Dispatcher) recordCall(name string, input json.RawMessage) int {
+	d.repeats.mu.Lock()
+	defer d.repeats.mu.Unlock()
+	k := repeatKey(name, input)
+	if k == d.repeats.last {
+		d.repeats.streak++
+	} else {
+		d.repeats.last, d.repeats.streak = k, 1
+	}
+	return d.repeats.streak
+}
+
+// consecutiveRefusal is the refusal for a call made more than
+// consecutiveCallsAllowed times in a row. It is a failure, so a model that will
+// not break the loop is then caught by the failed-call guard, which ends the
+// run.
+func consecutiveRefusal(name string, streak int) Result {
+	return Result{
+		Text: fmt.Sprintf("%s: you have made this exact call %d times in a row with the same arguments, so it was NOT run again. "+
+			"Repeating it will not change the result. Use the result you already have and take the next step, "+
+			"change the arguments, or answer the user.", name, streak-1),
+		IsError: true,
+		Error:   &ErrorInfo{Category: "business", Retryable: false},
+	}
 }
 
 // repeatKey is the tool name and its canonical arguments, so key order and
