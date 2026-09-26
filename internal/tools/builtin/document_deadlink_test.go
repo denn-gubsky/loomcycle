@@ -3,10 +3,16 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // TestDeadLink_CollectsEveryUnreachableClass walks the four classes together,
@@ -208,4 +214,109 @@ func setAsset(t *testing.T, d *Document, ctx context.Context, chunkID string) {
 	}
 	var out map[string]any
 	_ = json.Unmarshal([]byte(res.Text), &out)
+}
+
+// TestDeadLink_LiveChunksBeyondTheRowCapKeepTheirBodies is the data-loss regression.
+// The live chunk-id set was read through the SQL Memory row cap, so in a scope holding
+// more chunks than that cap every chunk past it looked unreachable and its body was
+// deleted. Seen live: a benchmark scope crossed 10,000 chunks and the hourly sweep
+// reaped the bodies of live chunks, scattered one per document. A cap of 3 against 8
+// chunks reproduces it in miniature.
+func TestDeadLink_LiveChunksBeyondTheRowCapKeepTheirBodies(t *testing.T) {
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir(), MaxRows: 3})
+	if err != nil {
+		t.Fatalf("sqlmem.New: %v", err)
+	}
+	assertRowCapKeepsLiveBodies(t, mgr)
+}
+
+// The Postgres tier is where the loss was seen, and it differs from the file tier in the
+// two things the fix relies on: placeholder rebinding and the ordering of text ids.
+func TestDeadLink_LiveChunksBeyondTheRowCapKeepTheirBodies_Postgres(t *testing.T) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the postgres-tier dead-link test")
+	}
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 3})
+	if err != nil {
+		t.Fatalf("sqlmem.NewPostgres: %v", err)
+	}
+	assertRowCapKeepsLiveBodies(t, mgr)
+}
+
+func assertRowCapKeepsLiveBodies(t *testing.T, mgr *sqlmem.Manager) {
+	t.Helper()
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = mgr.Close() })
+	// A subject unique to this run, so a shared Postgres never hands the test a scope
+	// left behind by an earlier one.
+	subject := fmt.Sprintf("deadlink-cap-%d", time.Now().UnixNano())
+	ctx := tools.WithAgentName(context.Background(), "doc-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: subject, TenantID: "tnt"})
+	d := &Document{Store: s, SqlMem: mgr, Bus: channels.NewBus()}
+
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	doc, root := out["document_id"].(string), out["root_chunk_id"].(string)
+	var ids []string
+	for i := 0; i < 7; i++ {
+		o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"parent_id":%q,"title":"s%d","body":"section %d"}`, doc, root, i, i))
+		if r.IsError {
+			t.Fatalf("create_chunk: %s", r.Text)
+		}
+		ids = append(ids, o["id"].(string))
+	}
+	key, mscope := deadLinkScope(t, d, ctx)
+
+	rep, err := d.ReconcileDeadLinks(ctx, key, mscope, false)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if rep.Bodies != 0 {
+		t.Errorf("a scope with no orphans had %d LIVE bodies collected — the live set was read through the row cap", rep.Bodies)
+	}
+	for _, id := range ids {
+		if !bodyExists(t, d, ctx, mscope, key, id) {
+			t.Errorf("live chunk %s lost its body", id)
+		}
+	}
+}
+
+// TestDeadLink_AnOrphanPastTheFirstHundredBodiesIsCollected covers the other listing.
+// Bodies were listed with limit 0, which the store reads as 100, so a scope examined
+// only its first 100 bodies by key: a real orphan sorting after them was never
+// collected, however many sweeps ran.
+func TestDeadLink_AnOrphanPastTheFirstHundredBodiesIsCollected(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"D"}`)
+	doc, root := out["document_id"].(string), out["root_chunk_id"].(string)
+	last := ""
+	for i := 0; i < 110; i++ {
+		o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"parent_id":%q,"title":"s%d","body":"section %d"}`, doc, root, i, i))
+		if r.IsError {
+			t.Fatalf("create_chunk: %s", r.Text)
+		}
+		if id := o["id"].(string); id > last {
+			last = id
+		}
+	}
+	key, mscope := deadLinkScope(t, d, ctx)
+	// Orphan the chunk whose body key sorts LAST, so it is past the first 100 by key.
+	if err := d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, last); err != nil {
+		t.Fatalf("out-of-band delete: %v", err)
+	}
+
+	rep, err := d.ReconcileDeadLinks(ctx, key, mscope, false)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if rep.Bodies != 1 {
+		t.Errorf("want the one orphaned body collected, got %d", rep.Bodies)
+	}
+	if bodyExists(t, d, ctx, mscope, key, last) {
+		t.Error("the orphan's body survived — the listing never reached it")
+	}
 }
