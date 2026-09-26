@@ -1295,6 +1295,9 @@ export interface RunSpec {
   interruption?: Record<string, unknown>;
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
+  /** Hooks the run added to its agent's own (its request's, and a
+   *  sub-agent's inherited ones). */
+  hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
 }
 
 /** A finished run's answer (RFC DI). */
