@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WALK, hookTargets, readTeamHooks, writeTeamHooks } from "./teamHooks";
+import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "./teamHooks";
 
 const graph = {
   entry: "review",
@@ -46,5 +46,23 @@ describe("reading and writing a team's hooks", () => {
 
   it("a walk takes no tool hooks", () => {
     expect(writeTeamHooks(graph, WALK, "tool_hooks", { X: { pre: ["g"] } })).toBe(graph);
+  });
+});
+
+// A fork keeps the parent's walk hooks unless the graph clears them with {}.
+describe("a team fork's walk hooks", () => {
+  it("are sent as a clear when the operator removed them", () => {
+    const edited = writeTeamHooks(graph, WALK, "hooks", undefined);
+    expect(keepWalkHookRemoval(graph, edited)).toMatchObject({ hooks: {} });
+    expect(keepWalkHookRemoval(graph, { ...graph, hooks: null })).toMatchObject({ hooks: {} });
+  });
+
+  it("are left alone when kept, edited, or never there", () => {
+    expect(keepWalkHookRemoval(graph, graph)).toBe(graph);
+    const edited = writeTeamHooks(graph, WALK, "hooks", { run_end: ["other"] });
+    expect(keepWalkHookRemoval(graph, edited)).toBe(edited);
+    const bare = { entry: "review", states: [] };
+    expect(keepWalkHookRemoval(bare, bare)).toBe(bare);
+    expect(keepWalkHookRemoval(undefined, bare)).toBe(bare);
   });
 });

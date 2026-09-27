@@ -12,6 +12,7 @@ import {
 } from "@loomcycle/def-fields";
 import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
+import { keepHookRemovals } from "../lib/hookDefOverlay";
 
 // LibraryEditModal — Library admin UI.
 //
@@ -664,6 +665,9 @@ export default function LibraryEditModal({
           forkSource?.def_id && !forkSource.def_id.startsWith("static:")
             ? forkSource.def_id
             : undefined;
+        // A hook removed in the editor must be sent as a clear, or the
+        // fork inherits it back from the parent.
+        if (kind === "agent") overlay = keepHookRemovals(forkSource?.definition, overlay);
         row = await data.forkDef(
           substrateKind,
           name.trim(),

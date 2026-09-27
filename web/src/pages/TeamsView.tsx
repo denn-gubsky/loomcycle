@@ -15,7 +15,7 @@ import {
 } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import Splitter from "../components/Splitter";
-import { WALK, hookTargets, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
+import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 
 // TeamsView — the agent-team board.
 //
@@ -102,6 +102,9 @@ export default function TeamsView() {
 
   // Editor.
   const [editorText, setEditorText] = useState<string>("");
+  // The stored definition the editor was loaded from: what a fork's graph is
+  // compared with, so a walk hook the operator removed is sent as a clear.
+  const [loadedDef, setLoadedDef] = useState<unknown>(undefined);
   const [createName, setCreateName] = useState<string>("");
   const [editorErr, setEditorErr] = useState<string>("");
   const [loadingDef, setLoadingDef] = useState(false);
@@ -148,8 +151,10 @@ export default function TeamsView() {
       // an object; only parse if it came back as a JSON string.
       const raw = detail.definition;
       const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+      setLoadedDef(obj);
       setEditorText(pretty(obj));
     } catch (e) {
+      setLoadedDef(undefined);
       setEditorText("");
       setEditorErr("Failed to load definition: " + msg(e));
     } finally {
@@ -292,7 +297,7 @@ export default function TeamsView() {
     if (parsed === undefined) return;
     setSaving(true);
     try {
-      const res = await forkTeam(selected, parsed);
+      const res = await forkTeam(selected, keepWalkHookRemoval(loadedDef, parsed));
       await fetchTeams();
       await loadDefIntoEditor(res.def_id);
       setDiagramSource({ kind: "stored", name: selected });

@@ -63,3 +63,15 @@ export function writeTeamHooks(def: unknown, target: string, key: "hooks" | "too
     ),
   };
 }
+
+/** keepWalkHookRemoval is a team fork's graph with the walk's hooks, if the
+ *  operator removed them, sent as a clear. A fork keeps the parent's walk
+ *  hooks when the key is absent (or null); only an empty object clears them.
+ *  A state's hooks need nothing: the states are replaced whole. */
+export function keepWalkHookRemoval(source: unknown, edited: unknown): unknown {
+  if (!isObj(source) || !isObj(edited)) return edited;
+  const had = source.hooks;
+  if (!isObj(had) || Object.keys(had).length === 0) return edited;
+  if (edited.hooks !== undefined && edited.hooks !== null) return edited;
+  return { ...edited, hooks: {} };
+}

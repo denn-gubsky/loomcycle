@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type { LoomcycleClient } from "@loomcycle/client";
 import { dataLayerFromClient, dataLayerFromConnection, hookEntriesFromNames } from "./dataLayer";
-import { forkOverlay, sourceHookOverlay } from "./hookDefOverlay";
+import { forkOverlay, keepHookRemovals, sourceHookOverlay } from "./hookDefOverlay";
 
 describe("HookDefs through the data layer", () => {
   it("routes the hookdef kind to the client's hookDef method", async () => {
@@ -71,5 +71,22 @@ describe("the agent editor's hook check", async () => {
     expect(hooksProblem({ hooks: { agent_stop: ["cite@3"] }, tool_hooks: { WebFetch: { pre: [{ name: "gate", url: "https://h" }] } } })).toBeNull();
     expect(hooksProblem({ hooks: { run_end: ["bad@0"] } })).toMatch(/^hooks · run_end: .*positive/);
     expect(hooksProblem({ tool_hooks: { WebFetch: { pre: [{ name: "gate", url: "ftp://h" }] } } })).toMatch(/^tool hooks · WebFetch pre: .*http/);
+  });
+});
+
+// On an AgentDef fork an absent hooks key keeps the parent's; only {} clears.
+describe("an agent fork's hooks", () => {
+  const source = { hooks: { agent_stop: ["cite"] }, tool_hooks: { WebFetch: { pre: ["gate"] } }, model: "m" };
+
+  it("sends a removed key as a clear", () => {
+    expect(keepHookRemovals(source, { model: "m" })).toEqual({ model: "m", hooks: {}, tool_hooks: {} });
+    expect(keepHookRemovals(source, { hooks: null })).toMatchObject({ hooks: {} });
+  });
+
+  it("leaves a kept or edited key, and adds nothing the source did not have", () => {
+    const edited = { hooks: { agent_stop: ["other"] }, tool_hooks: source.tool_hooks };
+    expect(keepHookRemovals(source, edited)).toEqual(edited);
+    expect(keepHookRemovals({ hooks: {} }, {})).toEqual({});
+    expect(keepHookRemovals(undefined, { model: "m" })).toEqual({ model: "m" });
   });
 });
