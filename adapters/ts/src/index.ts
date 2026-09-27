@@ -243,6 +243,8 @@ export type {
   InterruptStatus,
   ResolveInterruptOptions,
   // Hook payloads (what a webhook receives and returns)
+  ChannelHookCall,
+  ChannelHookResult,
   HookFailMode,
   HookPhase,
   HookToolCall,

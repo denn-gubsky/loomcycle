@@ -4971,14 +4971,16 @@ func (x *Retry) GetReason() string {
 type HookDecision struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Hook              string                 `protobuf:"bytes,1,opt,name=hook,proto3" json:"hook,omitempty"`                              // "<owner>/<name>"
-	Phase             string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`                            // a tool phase or a deciding run phase
+	Phase             string                 `protobuf:"bytes,2,opt,name=phase,proto3" json:"phase,omitempty"`                            // a tool phase, a deciding run phase, or channel_publish
 	ToolUseId         string                 `protobuf:"bytes,3,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"` // the call a tool hook decided on; empty for agent_start / agent_stop
 	ToolName          string                 `protobuf:"bytes,4,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	Decision          string                 `protobuf:"bytes,5,opt,name=decision,proto3" json:"decision,omitempty"`                 // deny | rewrite_input | rewrite_output | context | block | hold | unavailable
+	Decision          string                 `protobuf:"bytes,5,opt,name=decision,proto3" json:"decision,omitempty"`                 // deny | rewrite_input | rewrite_output | context | block | hold | unavailable; a channel hook's release | rewrite_body | drop
 	FailMode          string                 `protobuf:"bytes,6,opt,name=fail_mode,json=failMode,proto3" json:"fail_mode,omitempty"` // for unavailable: open | closed
 	Reason            string                 `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
 	UpdatedInput      []byte                 `protobuf:"bytes,8,opt,name=updated_input,json=updatedInput,proto3" json:"updated_input,omitempty"` // for rewrite_input: the JSON the tool ran with
 	AdditionalContext string                 `protobuf:"bytes,9,opt,name=additional_context,json=additionalContext,proto3" json:"additional_context,omitempty"`
+	Channel           string                 `protobuf:"bytes,10,opt,name=channel,proto3" json:"channel,omitempty"`                      // channel_publish: the channel the message was published to
+	MessageId         string                 `protobuf:"bytes,11,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"` // channel_publish: the message decided on
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -5072,6 +5074,20 @@ func (x *HookDecision) GetUpdatedInput() []byte {
 func (x *HookDecision) GetAdditionalContext() string {
 	if x != nil {
 		return x.AdditionalContext
+	}
+	return ""
+}
+
+func (x *HookDecision) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *HookDecision) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
 	}
 	return ""
 }
@@ -10383,7 +10399,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x18\n" +
 	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x17\n" +
 	"\await_ms\x18\x03 \x01(\x03R\x06waitMs\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\"\x9a\x02\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"\xd3\x02\n" +
 	"\fHookDecision\x12\x12\n" +
 	"\x04hook\x18\x01 \x01(\tR\x04hook\x12\x14\n" +
 	"\x05phase\x18\x02 \x01(\tR\x05phase\x12\x1e\n" +
@@ -10393,7 +10409,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\tfail_mode\x18\x06 \x01(\tR\bfailMode\x12\x16\n" +
 	"\x06reason\x18\a \x01(\tR\x06reason\x12#\n" +
 	"\rupdated_input\x18\b \x01(\fR\fupdatedInput\x12-\n" +
-	"\x12additional_context\x18\t \x01(\tR\x11additionalContext\"W\n" +
+	"\x12additional_context\x18\t \x01(\tR\x11additionalContext\x12\x18\n" +
+	"\achannel\x18\n" +
+	" \x01(\tR\achannel\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\v \x01(\tR\tmessageId\"W\n" +
 	"\x13CapabilityInertInfo\x12\x12\n" +
 	"\x04tool\x18\x01 \x01(\tR\x04tool\x12\x12\n" +
 	"\x04gate\x18\x02 \x01(\tR\x04gate\x12\x18\n" +

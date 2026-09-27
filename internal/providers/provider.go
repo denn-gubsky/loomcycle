@@ -1354,13 +1354,17 @@ type HookDecisionInfo struct {
 	// Hook names it as "<owner>/<name>". A tenant sees the name of an operator
 	// hook that acted on its call, never its callback.
 	Hook  string `json:"hook"`
-	Phase string `json:"phase"` // pre | post | post_failure | agent_start | agent_stop
+	Phase string `json:"phase"` // a tool phase, a run phase, or channel_publish
 	// ToolUseID and ToolName name the call a tool hook decided on; empty for
-	// agent_start / agent_stop.
+	// the run and channel phases.
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	ToolName  string `json:"tool_name,omitempty"`
+	// Channel and MessageID name the message a channel_publish hook decided on.
+	Channel   string `json:"channel,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
 	// Decision: deny | rewrite_input | rewrite_output | context | block | hold
-	// | unavailable.
+	// | unavailable, and a channel hook's release | rewrite_body | drop (and
+	// hold).
 	Decision string `json:"decision"`
 	// FailMode is set for "unavailable": open (the call went ahead) or closed
 	// (it was refused).

@@ -42,3 +42,16 @@ def test_a_hold_names_the_hook_that_took_it():
         since_turn=1, round=1, held_by="ops/hold"))
     got = AgentEvent._from_proto(ev).awaiting_review
     assert got is not None and got.held_by == "ops/hold"
+
+
+def test_every_hook_decision_field_is_decoded():
+    # Derived from the descriptor: a field added to HookDecision (channel and
+    # message_id were) is set here without anyone listing it, and must come
+    # through to the dataclass.
+    values = {}
+    for f in pb.HookDecision.DESCRIPTOR.fields:
+        values[f.name] = f.name.encode() if f.type == f.TYPE_BYTES else f.name
+    got = AgentEvent._from_proto(pb.Event(type="hook_decision", hook_decision=pb.HookDecision(**values))).hook_decision
+    assert got is not None
+    for name, want in values.items():
+        assert getattr(got, name, None) == want, f"HookDecision.{name} is not decoded"
