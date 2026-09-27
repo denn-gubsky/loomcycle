@@ -385,10 +385,21 @@ tenant-scoped peek (MCP `peek_channel`, gRPC `PeekChannel`). `/metrics` adds
 `loomcycle_channel_hooks_in_flight` and
 `loomcycle_channel_hooks_decisions_total{decision}`.
 
-**Whose hooks.** A yaml channel's hooks are the operator's: their HookDef
-names resolve in the operator's tenant, whoever publishes, and a tenant's
-HookDef of the same name is never used in their place. A channel hook's
-webhook headers resolve that tenant's credentials, never the publisher's.
+**Runtime channels carry hooks too.** A channel created at runtime (`POST
+/v1/_channels`, MCP `channeldef`, the Web UI channel editor) takes the same
+`hooks` map on create and update; an update with `hooks: {}` removes them. A
+hook is checked when it is attached: a HookDef that does not exist in the
+channel's tenant or the shared one, or answers another event, is refused
+(400 `channel_hooks_invalid`), as is any hook while the server runs none (409
+`channel_hooks_disabled`). A channel's descriptor shows its `hooks`, and
+`held_count` / `awaiting_hooks_count` beside `message_count`.
+
+**Whose hooks.** A channel's hooks belong to whoever defined the channel: an
+operator's yaml channel's HookDef names resolve in the operator's tenant, a
+runtime channel's in the tenant that created it — whoever publishes. Another
+tenant's HookDef of the same name is never used in their place. A channel
+hook's webhook headers resolve that tenant's credentials, never the
+publisher's, and a tenant's webhook cannot reach a private address.
 
 ## Fail-open vs fail-closed
 
