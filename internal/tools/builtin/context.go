@@ -167,7 +167,7 @@ func (c *Context) InputSchema() json.RawMessage { return json.RawMessage(context
 func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	var in contextInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
+		return errValidation(fmt.Sprintf("invalid input JSON: %s", err), "Send the input as a JSON object matching the tool schema."), nil
 	}
 	switch in.Op {
 	case "self":
@@ -199,9 +199,9 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "capabilities":
 		return c.execCapabilities(ctx)
 	case "":
-		return errResult("missing required field: op"), nil
+		return errValidation("missing required field: op", "Pass `op`: for example op=self, op=tools or op=help."), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities)", in.Op)), nil
+		return errValidation(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities)", in.Op), ""), nil
 	}
 }
 
@@ -216,7 +216,7 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 func (c *Context) execState(ctx context.Context) (tools.Result, error) {
 	h := tools.ExecutionState(ctx)
 	if h == nil {
-		return errResult("structured execution state is not available (this run is not in context.mode=stateful)"), nil
+		return errBusiness("structured execution state is not available (this run is not in context.mode=stateful)", "Only a stateful run has a structured state; continue from the conversation instead."), nil
 	}
 	state := h.Sigma
 	if state == nil {
@@ -236,7 +236,7 @@ func (c *Context) execState(ctx context.Context) (tools.Result, error) {
 func (c *Context) execCompact(ctx context.Context) (tools.Result, error) {
 	flag := tools.CompactRequest(ctx)
 	if flag == nil {
-		return errResult("context compaction is not available for this run"), nil
+		return errBusiness("context compaction is not available for this run", "Continue without compacting."), nil
 	}
 	flag.Store(true)
 	return okJSON(map[string]any{"compaction": "scheduled", "applies_at": "the next step"})
@@ -638,12 +638,13 @@ func sideEffectClassFor(name string) string {
 
 func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, error) {
 	if in.Name == "" {
-		return errResult("doc: missing required field: name"), nil
+		return errValidation("doc: missing required field: name", "Pass `name`: a tool from op=tools."), nil
 	}
 	allowSet, ok := agentToolSet(ctx)
 	if !ok {
-		return errResult("doc: caller's effective tools not on ctx (runtime misconfiguration); " +
-			"refuse rather than describe a tool the caller may not hold"), nil
+		return errBusiness("doc: caller's effective tools not on ctx (runtime misconfiguration); "+
+			"refuse rather than describe a tool the caller may not hold",
+			"Rely on the tool descriptions you already have; op=doc cannot answer on this run."), nil
 	}
 	for _, t := range c.Tools {
 		if t.Name() != in.Name {
@@ -654,7 +655,7 @@ func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, e
 			// run's effective list. Refuse with a clear message
 			// rather than leaking the docs of a tool the agent
 			// can't actually call.
-			return errResult(fmt.Sprintf("doc: tool %q is not in this agent's tools", in.Name)), nil
+			return errPermission(fmt.Sprintf("doc: tool %q is not in this agent's tools", in.Name), "Describe only a tool from op=tools; ask an operator to grant this one if you need it."), nil
 		}
 		schema := t.InputSchema()
 		out := map[string]any{
@@ -678,7 +679,7 @@ func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, e
 		}
 		return okJSON(out)
 	}
-	return errResult(fmt.Sprintf("doc: tool %q not found (use op=tools to list available)", in.Name)), nil
+	return errNotFound(fmt.Sprintf("doc: tool %q not found (use op=tools to list available)", in.Name), ""), nil
 }
 
 // ---- permissions ----
@@ -724,7 +725,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 
 func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result, error) {
 	if c.Cfg == nil {
-		return errResult("agents: not configured (no Cfg)"), nil
+		return errBusiness("agents: not configured (no Cfg)", "This deployment cannot list agents; do not retry."), nil
 	}
 	type agentSummary struct {
 		Name string `json:"name"`
@@ -803,10 +804,10 @@ func defVisible(ctx context.Context, row store.AgentDefRow) bool {
 
 func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Result, error) {
 	if c.Store == nil {
-		return errResult("lineage: not configured (no Store backend)"), nil
+		return errBusiness("lineage: not configured (no Store backend)", "This deployment has no definition store; do not retry."), nil
 	}
 	if in.DefID == "" {
-		return errResult("lineage: missing required field: def_id (use Context.agents to discover def_ids)"), nil
+		return errValidation("lineage: missing required field: def_id (use Context.agents to discover def_ids)", ""), nil
 	}
 	depth := in.Depth
 	if depth <= 0 {
@@ -820,12 +821,12 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			return errResult(fmt.Sprintf("lineage: def_id %q not found", in.DefID)), nil
+			return errNotFound(fmt.Sprintf("lineage: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 		}
-		return errResult(fmt.Sprintf("lineage: %s", err)), nil
+		return errFrom(fmt.Sprintf("lineage: %s", err), err), nil
 	}
 	if !defVisible(ctx, root) {
-		return errResult(fmt.Sprintf("lineage: def_id %q not found", in.DefID)), nil
+		return errNotFound(fmt.Sprintf("lineage: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 	}
 
 	type defSummary struct {
@@ -857,7 +858,7 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 			if errors.As(err, &nf) {
 				break // chain ended at a row that's been deleted
 			}
-			return errResult(fmt.Sprintf("lineage: walk ancestors: %s", err)), nil
+			return errFrom(fmt.Sprintf("lineage: walk ancestors: %s", err), err), nil
 		}
 		if !defVisible(ctx, parent) {
 			break // the chain continues outside this run's tenants
@@ -881,7 +882,7 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 		for _, r := range frontier {
 			children, err := c.Store.AgentDefListChildren(ctx, r.DefID)
 			if err != nil {
-				return errResult(fmt.Sprintf("lineage: walk descendants: %s", err)), nil
+				return errFrom(fmt.Sprintf("lineage: walk descendants: %s", err), err), nil
 			}
 			for _, ch := range children {
 				// A shared "" def is forked by every tenant; its children in
@@ -916,10 +917,10 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 
 func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.Result, error) {
 	if c.Store == nil {
-		return errResult("evaluations: not configured (no Store backend)"), nil
+		return errBusiness("evaluations: not configured (no Store backend)", "This deployment has no evaluation store; do not retry."), nil
 	}
 	if in.DefID == "" {
-		return errResult("evaluations: missing required field: def_id (use Context.agents to discover def_ids)"), nil
+		return errValidation("evaluations: missing required field: def_id (use Context.agents to discover def_ids)", ""), nil
 	}
 	// The aggregate answers for any id, known or not, so resolve the def first:
 	// an unknown id and another tenant's id must both be refused, identically.
@@ -927,17 +928,17 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 	if err != nil {
 		var nf *store.ErrNotFound
 		if !errors.As(err, &nf) {
-			return errResult(fmt.Sprintf("evaluations: %s", err)), nil
+			return errFrom(fmt.Sprintf("evaluations: %s", err), err), nil
 		}
 	}
 	if err != nil || !defVisible(ctx, def) {
-		return errResult(fmt.Sprintf("evaluations: def_id %q not found (use Context.agents to discover def_ids)", in.DefID)), nil
+		return errNotFound(fmt.Sprintf("evaluations: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 	}
 	agg, err := c.Store.EvaluationAggregate(ctx, in.DefID, store.AggregateOpts{
 		IncludeLineage: in.IncludeLineage,
 	})
 	if err != nil {
-		return errResult(fmt.Sprintf("evaluations: %s", err)), nil
+		return errFrom(fmt.Sprintf("evaluations: %s", err), err), nil
 	}
 	return okJSON(agg)
 }
@@ -1025,7 +1026,7 @@ func filterWildcards(xs []string) []string {
 
 func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, error) {
 	if c.Help == nil {
-		return errResult("help: not configured (no Help registry; operator misconfiguration)"), nil
+		return errBusiness("help: not configured (no Help registry; operator misconfiguration)", "No help is available on this deployment; use op=doc for a tool's description."), nil
 	}
 	// Query mode (RFC BL P1): hybrid section search over the help index. Takes
 	// precedence over topic — an agent that knows what it's looking for but not
@@ -1033,7 +1034,7 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 	if q := strings.TrimSpace(in.Query); q != "" {
 		res, err := help.QueryIndex(ctx, c.Help, c.Store, c.Embedder, q, 0)
 		if err != nil {
-			return errResult(fmt.Sprintf("help query: %s", err)), nil
+			return errFrom(fmt.Sprintf("help query: %s", err), err), nil
 		}
 		return okJSON(map[string]any{
 			"query":   q,
@@ -1081,10 +1082,10 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 				for _, o := range c.Help.OpsOf(art.Tool) {
 					ops = append(ops, o.Name)
 				}
-				return errResult(fmt.Sprintf("help: topic %q not found; %s documents: %s", in.Topic, art.Tool, strings.Join(ops, ", "))), nil
+				return errNotFound(fmt.Sprintf("help: topic %q not found; %s documents: %s", in.Topic, art.Tool, strings.Join(ops, ", ")), ""), nil
 			}
 		}
-		return errResult(fmt.Sprintf("help: topic %q not found (available: %s)", in.Topic, strings.Join(c.Help.IndexNames(), ", "))), nil
+		return errNotFound(fmt.Sprintf("help: topic %q not found (available: %s)", in.Topic, strings.Join(c.Help.IndexNames(), ", ")), ""), nil
 	}
 	resp := map[string]any{
 		"name":        t.Name,

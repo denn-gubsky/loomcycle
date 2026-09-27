@@ -121,7 +121,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		hops = *in.Hops
 	}
 	if hops < 0 || hops > graphMaxHops {
-		return errResult(fmt.Sprintf("graph_recall: hops must be 0..%d (got %d) — a hop is one edge, so a fact→entity→fact step costs two; bound a long walk with budget_chars rather than by stopping it short", graphMaxHops, hops)), nil
+		return errValidation(fmt.Sprintf("graph_recall: hops must be 0..%d (got %d) — a hop is one edge, so a fact→entity→fact step costs two; bound a long walk with budget_chars rather than by stopping it short", graphMaxHops, hops), ""), nil
 	}
 	// docInput.Limit is shared with the other list-shaped ops (a plain int, 0 =
 	// unset), so it is reused rather than shadowed with a second limit field.
@@ -133,20 +133,20 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		limit = graphMaxLimit
 	}
 	if len(in.SeedIDs) == 0 && strings.TrimSpace(in.Query) == "" {
-		return errResult("graph_recall: give either seed_ids (chunks to start from) or query (match starting chunks by title)"), nil
+		return errValidation("graph_recall: give either seed_ids (chunks to start from) or query (match starting chunks by title)", ""), nil
 	}
 	// REFUSED, not truncated. Seeds go into one IN(...), so an unbounded list also
 	// walks into the driver's placeholder ceiling; and silently starting from a
 	// subset of the chunks a caller named is the failure this op just fixed one
 	// layer down. Naming the number back is what lets a caller split the walk.
 	if len(in.SeedIDs) > graphFrontierCap {
-		return errResult(fmt.Sprintf("graph_recall: %d seed_ids is more than the %d a single walk starts from — "+
-			"split them across calls rather than have some silently dropped", len(in.SeedIDs), graphFrontierCap)), nil
+		return errValidation(fmt.Sprintf("graph_recall: %d seed_ids is more than the %d a single walk starts from — "+
+			"split them across calls rather than have some silently dropped", len(in.SeedIDs), graphFrontierCap), ""), nil
 	}
 
 	seeds, seedInfo, err := d.graphSeedIDs(ctx, key, in, limit)
 	if err != nil {
-		return errResult("graph_recall: seeds: " + err.Error()), nil
+		return errFrom("graph_recall: seeds: "+err.Error(), err), nil
 	}
 	if len(seeds) == 0 {
 		return okJSONCount(map[string]any{"chunks": []graphChunk{}, "seeds": 0, "hops": hops, "truncated": false}, 0)
@@ -176,7 +176,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		}
 		next, hopFull, nerr := d.graphNeighbours(ctx, key, frontier, hop, in, graphHopRowCap)
 		if nerr != nil {
-			return errResult("graph_recall: hop " + fmt.Sprint(hop) + ": " + nerr.Error()), nil
+			return errFrom("graph_recall: hop "+fmt.Sprint(hop)+": "+nerr.Error(), nerr), nil
 		}
 		if hopFull {
 			truncated = true

@@ -23,7 +23,9 @@ func TestScheduler_ChannelDeliveryPublishesWithoutARun(t *testing.T) {
 	}
 	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
 	// Declare the channel at global scope, the way the server's resolver does.
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global"}, true
+	})
 
 	fireT(t, sched)
 
@@ -84,7 +86,7 @@ func TestScheduler_ChannelDeliveryUndeclaredChannelIsARecordedFailure(t *testing
 		Enabled:  &enabled,
 	}
 	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{}, false })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) { return DeclaredChannel{}, false })
 
 	fireT(t, sched)
 
@@ -118,7 +120,9 @@ func TestScheduler_ChannelDeliveryRetiresAtMaxFires(t *testing.T) {
 		MaxFires: 1,
 	}
 	sched, _, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global"}, true
+	})
 
 	fireT(t, sched)
 
@@ -142,7 +146,9 @@ func TestScheduler_ChannelDeliveryRespectsDisabled(t *testing.T) {
 		Enabled:  &disabled,
 	}
 	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global"}, true
+	})
 
 	fireT(t, sched)
 
@@ -168,7 +174,7 @@ func TestScheduler_ChannelDeliveryHonoursDeclaredRetention(t *testing.T) {
 		Enabled:  &enabled,
 	}
 	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) {
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
 		return DeclaredChannel{Scope: "global", DefaultTTL: 3600, MaxMessages: 5}, true
 	})
 
@@ -225,7 +231,7 @@ func TestScheduler_ChannelDeliveryHonoursAHold(t *testing.T) {
 		Enabled:  &enabled,
 	}
 	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) {
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
 		return DeclaredChannel{Scope: "global", Hold: true}, true
 	})
 

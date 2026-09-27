@@ -78,15 +78,15 @@ type pathInput struct {
 
 func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if p.Store == nil {
-		return errResult("Path tool: not configured (no Store backend)"), nil
+		return errBusiness("Path tool: not configured (no Store backend)", "This deployment has no Path store; do not retry."), nil
 	}
 	var in pathInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult("invalid input JSON: " + err.Error()), nil
+		return errValidation("invalid input JSON: "+err.Error(), "Send the input as a JSON object matching the tool schema."), nil
 	}
 	tenantID, scope, scopeID, err := p.resolveScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return pathScopeFailure(ctx, in.Scope, err), nil
 	}
 
 	switch in.Op {
@@ -103,9 +103,9 @@ func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, 
 	case "rm":
 		return p.rm(ctx, tenantID, scope, scopeID, in)
 	case "":
-		return errResult("missing required field: op"), nil
+		return errValidation("missing required field: op", "Pass `op`: one of resolve, ls, stat, mkdir, mv, rm."), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: resolve, ls, stat, mkdir, mv, rm)", in.Op)), nil
+		return errValidation(fmt.Sprintf("unknown op %q (must be one of: resolve, ls, stat, mkdir, mv, rm)", in.Op), ""), nil
 	}
 }
 
@@ -143,6 +143,28 @@ func (p *Path) resolveScope(ctx context.Context, requested string) (tenantID, sc
 	}
 }
 
+// pathScopeFailure classifies a resolveScope refusal. Its reasons differ in
+// kind: an isolated user's own grant (permission), a scope this run cannot key
+// (no agent name / no user_id — state of the run, not the call), or a scope
+// name that does not exist (validation). The re-check mirrors resolveScope's
+// own order and reads only the run's identity, so it cannot disagree with the
+// refusal it classifies, and no answer depends on whether any entry exists.
+func pathScopeFailure(ctx context.Context, requested string, err error) tools.Result {
+	if requested == "" {
+		requested = "agent"
+	}
+	switch {
+	case tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)) != nil:
+		return errPermission(err.Error(), "Use scope=user or scope=agent; this run may not address the shared tenant scope.")
+	case requested == "agent":
+		return errBusiness(err.Error(), "Use scope=user or scope=tenant instead.")
+	case requested == "user":
+		return errBusiness(err.Error(), "Use scope=agent or scope=tenant instead.")
+	default:
+		return errValidation(err.Error(), "")
+	}
+}
+
 type pathEntry struct {
 	Name        string          `json:"name"`
 	Kind        string          `json:"kind"`
@@ -153,7 +175,7 @@ type pathEntry struct {
 func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
 	canonical, err := normalizePath(in.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), "Pass an absolute path such as /notes/today, with segments of letters, digits, . _ -."), nil
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
@@ -163,9 +185,9 @@ func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in 
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
-			return errResult("no such path: " + canonical), nil
+			return errNotFound("no such path: "+canonical, "List the parent directory with op=ls to find the right path."), nil
 		}
-		return errResult("resolve: " + err.Error()), nil
+		return errFrom("resolve: "+err.Error(), err), nil
 	}
 	return jsonResult(pathEntry{Name: name, Kind: row.Kind, FullPath: canonical, ResourceRef: row.ResourceRef})
 }
@@ -173,7 +195,7 @@ func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in 
 func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
 	canonical, err := normalizePath(in.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), "Pass an absolute path such as /notes/today, with segments of letters, digits, . _ -."), nil
 	}
 	prefix := dirPrefix(canonical)
 
@@ -181,7 +203,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if in.Recursive {
 		rows, err := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
 		if err != nil {
-			return errResult("ls: " + err.Error()), nil
+			return errFrom("ls: "+err.Error(), err), nil
 		}
 		entries := make([]pathEntry, 0, len(rows))
 		for _, r := range rows {
@@ -207,7 +229,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	// operator/agent op over a per-scope tree, not a run hot-path.)
 	rows, err := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
 	if err != nil {
-		return errResult("ls: " + err.Error()), nil
+		return errFrom("ls: "+err.Error(), err), nil
 	}
 	entries := make([]pathEntry, 0, len(rows))
 	seen := make(map[string]bool)     // explicit direct-child names (leaf or dir)
@@ -272,7 +294,7 @@ func lsPage(canonical string, entries []pathEntry, in pathInput, keyOf func(path
 	if in.Cursor != "" {
 		after, err := decodeLsCursor(in.Cursor)
 		if err != nil {
-			return errResult("ls: " + err.Error()), nil
+			return errValidation("ls: "+err.Error(), ""), nil
 		}
 		i := sort.Search(len(entries), func(i int) bool { return keyOf(entries[i]) > after })
 		entries = entries[i:]
@@ -314,7 +336,7 @@ func decodeLsCursor(cursor string) (string, error) {
 func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
 	canonical, err := normalizePath(in.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), "Pass an absolute path such as /notes/today, with segments of letters, digits, . _ -."), nil
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
@@ -324,9 +346,9 @@ func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pat
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
-			return errResult("no such path: " + canonical), nil
+			return errNotFound("no such path: "+canonical, "List the parent directory with op=ls to find the right path."), nil
 		}
-		return errResult("stat: " + err.Error()), nil
+		return errFrom("stat: "+err.Error(), err), nil
 	}
 	return jsonResult(map[string]any{
 		"full_path": canonical, "name": row.Name, "kind": row.Kind,
@@ -345,11 +367,11 @@ func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pat
 func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
 	canonical, err := normalizePath(in.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), "Pass an absolute path such as /notes/today, with segments of letters, digits, . _ -."), nil
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
-		return errResult("cannot mkdir the root path (it always exists)"), nil
+		return errValidation("cannot mkdir the root path (it always exists)", ""), nil
 	}
 	// Something already named here? ok if it's a directory; never overwrite a
 	// document / volume_mount / memory_entry with a directory.
@@ -358,17 +380,17 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 		if row.Kind == "directory" {
 			return jsonResult(map[string]any{"ok": true, "path": canonical, "created": false, "note": "already a directory"})
 		}
-		return errResult(fmt.Sprintf("path exists and is not a directory: %s (kind=%s)", canonical, row.Kind)), nil
+		return errBusiness(fmt.Sprintf("path exists and is not a directory: %s (kind=%s)", canonical, row.Kind), "Choose another path, or move or remove the existing entry first."), nil
 	}
 	var nf *store.ErrNotFound
 	if !asNotFound(gerr, &nf) {
-		return errResult("mkdir: " + gerr.Error()), nil
+		return errFrom("mkdir: "+gerr.Error(), gerr), nil
 	}
 	// No explicit row. If the path is already implied (has descendants) it
 	// effectively exists — no-op success, don't rewrite history (RFC AM §13).
 	kids, lerr := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, dirPrefix(canonical))
 	if lerr != nil {
-		return errResult("mkdir: " + lerr.Error()), nil
+		return errFrom("mkdir: "+lerr.Error(), lerr), nil
 	}
 	if len(kids) > 0 {
 		return jsonResult(map[string]any{"ok": true, "path": canonical, "created": false, "note": "directory already implied by descendants"})
@@ -380,7 +402,7 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 		TenantID: tenantID, Scope: scope, ScopeID: scopeID,
 		ParentPath: parent, Name: name, Kind: "directory",
 	}); err != nil {
-		return errResult("mkdir: " + err.Error()), nil
+		return errFrom("mkdir: "+err.Error(), err), nil
 	}
 	return jsonResult(map[string]any{"ok": true, "path": canonical, "created": true})
 }
@@ -388,37 +410,37 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
 	fromC, err := normalizePath(in.Path)
 	if err != nil {
-		return errResult("from: " + err.Error()), nil
+		return errValidation("from: "+err.Error(), "Pass `path` as an absolute path such as /notes/today."), nil
 	}
 	toC, err := normalizePath(in.To)
 	if err != nil {
-		return errResult("to: " + err.Error()), nil
+		return errValidation("to: "+err.Error(), "Pass `to` as an absolute path such as /notes/today."), nil
 	}
 	fromParent, fromName, fromRoot := splitPath(fromC)
 	toParent, toName, toRoot := splitPath(toC)
 	if fromRoot || toRoot {
-		return errResult("cannot move the root path"), nil
+		return errValidation("cannot move the root path", ""), nil
 	}
 	if fromC == toC {
-		return errResult("source and destination are the same path"), nil
+		return errValidation("source and destination are the same path", "Pass a `to` that differs from `path`."), nil
 	}
 	// A directory can't be moved into itself or its own subtree — the
 	// descendant-rewrite would reparent the moved node beneath itself and
 	// orphan the whole subtree (real filesystems reject this, EINVAL). The
 	// trailing-slash form avoids a /docs vs /docs2 false positive.
 	if strings.HasPrefix(toC+"/", fromC+"/") {
-		return errResult("cannot move a path into itself or its own subtree: " + fromC + " -> " + toC), nil
+		return errValidation("cannot move a path into itself or its own subtree: "+fromC+" -> "+toC, "Pass a `to` outside the source path's subtree."), nil
 	}
 	// No-clobber: the destination must not already exist.
 	if _, err := p.Store.DirentGet(ctx, tenantID, scope, scopeID, toParent, toName); err == nil {
-		return errResult("destination already exists: " + toC), nil
+		return errBusiness("destination already exists: "+toC, "Choose another destination, or remove it with op=rm first."), nil
 	}
 	moved, err := p.Store.DirentMove(ctx, tenantID, scope, scopeID, fromParent, fromName, toParent, toName)
 	if err != nil {
-		return errResult("mv: " + err.Error()), nil
+		return errFrom("mv: "+err.Error(), err), nil
 	}
 	if !moved {
-		return errResult("no such path: " + fromC), nil
+		return errNotFound("no such path: "+fromC, "List the parent directory with op=ls to find the source path."), nil
 	}
 	return jsonResult(map[string]any{"ok": true, "from": fromC, "to": toC})
 }
@@ -426,41 +448,41 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
 	canonical, err := normalizePath(in.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), "Pass an absolute path such as /notes/today, with segments of letters, digits, . _ -."), nil
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
-		return errResult("cannot remove the root path"), nil
+		return errValidation("cannot remove the root path", ""), nil
 	}
 	if in.ResourceToo {
-		return errResult("resource_too is not supported in v1 — rm removes only the path entry; delete the backing resource via its own tool (Memory/Volume/Document)"), nil
+		return errValidation("resource_too is not supported in v1 — rm removes only the path entry; delete the backing resource via its own tool (Memory/Volume/Document)", ""), nil
 	}
 	// Refuse to remove a path with descendants unless recursive (Linux semantics).
 	prefix := dirPrefix(canonical)
 	descendants, err := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
 	if err != nil {
-		return errResult("rm: " + err.Error()), nil
+		return errFrom("rm: "+err.Error(), err), nil
 	}
 	if len(descendants) > 0 && !in.Recursive {
-		return errResult(fmt.Sprintf("path %q has %d descendant(s); pass recursive:true to remove them", canonical, len(descendants))), nil
+		return errBusiness(fmt.Sprintf("path %q has %d descendant(s); pass recursive:true to remove them", canonical, len(descendants)), ""), nil
 	}
 	removed := 0
 	if in.Recursive && len(descendants) > 0 {
 		n, derr := p.Store.DirentDeleteUnder(ctx, tenantID, scope, scopeID, prefix)
 		if derr != nil {
-			return errResult("rm: " + derr.Error()), nil
+			return errFrom("rm: "+derr.Error(), derr), nil
 		}
 		removed += n
 	}
 	found, err := p.Store.DirentDelete(ctx, tenantID, scope, scopeID, parent, name)
 	if err != nil {
-		return errResult("rm: " + err.Error()), nil
+		return errFrom("rm: "+err.Error(), err), nil
 	}
 	if found {
 		removed++
 	}
 	if !found && removed == 0 {
-		return errResult("no such path: " + canonical), nil
+		return errNotFound("no such path: "+canonical, "List the parent directory with op=ls to find the right path."), nil
 	}
 	return jsonResult(map[string]any{"ok": true, "removed": canonical, "n_removed": removed})
 }
@@ -474,7 +496,7 @@ func asNotFound(err error, target **store.ErrNotFound) bool {
 func jsonResult(v any) (tools.Result, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return errResult("internal: marshal result: " + err.Error()), nil
+		return errFrom("internal: marshal result: "+err.Error(), err), nil
 	}
 	return tools.Result{Text: string(b)}, nil
 }

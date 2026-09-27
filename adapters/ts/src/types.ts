@@ -352,16 +352,39 @@ export interface OverrideInfo {
   fields?: string[];
 }
 
-/** The machine-readable half of a terminal run failure, carried on
- *  `event: error` frames.
+/** One tool call: the tool's name and its argument object. */
+export interface CallRef {
+  tool: string;
+  input: unknown;
+}
+
+/** What a correct call to a documented tool looks like, taken from the
+ *  operation's help article. */
+export interface CallFormat {
+  tool: string;
+  /** The operation the example is for; absent when the call named no valid
+   *  op, in which case `operations` lists the ones that exist. */
+  op?: string;
+  /** The argument object of one correct call. */
+  example?: unknown;
+  /** The tool's valid operations — only when the op was missing or unknown. */
+  operations?: string[];
+  /** The call that returns the full article. */
+  reference?: CallRef;
+}
+
+/** The machine-readable half of a failure. Carried on `event: error` frames (a
+ *  terminal run failure) and on a failed `event: tool_result` frame.
  *
  *  Once the SSE stream is open the HTTP status is already 200, so without this
  *  a consumer's only signal is the event type plus an English string —
  *  "retry shortly" and "your budget is exhausted" look identical and want
  *  opposite responses. */
 export interface ErrorInfo {
-  /** "transient" | "validation" | "business" | "permission". */
-  category: string;
+  /** "transient" | "validation" | "business" | "permission". Absent only on a
+   *  failed tool call not yet classified that still carries
+   *  `correct_call_format`. */
+  category?: string;
   /** Answers only "will resending this exact call fail?" — not "should I give
    *  up". A false here still leaves the alternatives in `description` open. */
   is_retryable: boolean;
@@ -371,6 +394,9 @@ export interface ErrorInfo {
    *  when there is no hint: an absent hint and a zero one are opposite
    *  instructions. */
   retry_after_ms?: number;
+  /** The correct shape of the call that failed, on a failed tool call whose
+   *  shape may be the cause. */
+  correct_call_format?: CallFormat;
 }
 
 /** What one hook did to one call, or to the run (the `hook_decision`
@@ -621,11 +647,12 @@ export interface AgentEvent {
   /** Set on `event: override` frames — what the operator changed, and from
    *  what to what. */
   override?: OverrideInfo;
-  /** Payload on `event: error` — the classification of a TERMINAL run failure.
-   *  Absent on every other event type, and absent for a failure the runtime
-   *  cannot categorise: there is deliberately no "unknown" category, so a
-   *  missing `error_info` means "not classified", never "classified as
-   *  nothing in particular". */
+  /** Payload on `event: error` — the classification of a TERMINAL run failure
+   *  — and on a failed `event: tool_result`: its classification and the
+   *  correct call format. Absent on every other event type, and absent for a
+   *  failure the runtime cannot categorise: there is deliberately no "unknown"
+   *  category, so a missing `error_info` means "not classified", never
+   *  "classified as nothing in particular". */
   error_info?: ErrorInfo;
   // v0.4 `event: agent` side-channel announces the run's tracking IDs
   // immediately after the `event: session` frame. parent_agent_id is null

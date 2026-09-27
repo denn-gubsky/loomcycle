@@ -640,6 +640,14 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		if ct, ok := t.(*builtin.Context); ok {
 			ct.Tools = s.tools
 		}
+		// The planes that call the Channel tool with no per-run catalog on the
+		// policy (the MCP `channel` tool) resolve channels through the same
+		// merged set a run's policy is built from, in the caller's tenant.
+		if ch, ok := t.(*builtin.Channel); ok && ch.Catalog == nil {
+			ch.Catalog = func(ctx context.Context) map[string]tools.ChannelDef {
+				return s.mergedChannelDefs(ctx, true)
+			}
+		}
 	}
 	return s
 }
@@ -2175,7 +2183,16 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 // channelPolicyForAgent (the per-agent Channel tool policy) and
 // ResolveChannelScope (the scheduler on_complete publish path, F37) build on
 // it so static + runtime channels resolve identically everywhere.
+//
+// The runtime rows are the ctx principal's tenant's; mergedChannelDefsFor
+// names the tenant explicitly, for callers whose ctx carries no identity.
 func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map[string]tools.ChannelDef {
+	return s.mergedChannelDefsFor(ctx, tenantFromCtx(ctx), includeRuntime)
+}
+
+// mergedChannelDefsFor is mergedChannelDefs with the runtime rows taken from
+// tenantID's own channels.
+func (s *Server) mergedChannelDefsFor(ctx context.Context, tenantID string, includeRuntime bool) map[string]tools.ChannelDef {
 	channels := make(map[string]tools.ChannelDef, len(s.cfg().Channels))
 	for name, ch := range s.cfg().Channels {
 		channels[name] = tools.ChannelDef{
@@ -2193,9 +2210,8 @@ func (s *Server) mergedChannelDefs(ctx context.Context, includeRuntime bool) map
 			// runtime channels are per-tenant; yaml channels stay
 			// operator-global. Skip runtime rows owned by another tenant so an
 			// agent only resolves the channels its own tenant declared.
-			callerTenant := tenantFromCtx(ctx)
 			for _, r := range rows {
-				if r.TenantID != callerTenant {
+				if r.TenantID != tenantID {
 					continue
 				}
 				if _, exists := channels[r.Name]; exists {
@@ -2245,8 +2261,13 @@ func (s *Server) channelPolicyForAgent(ctx context.Context, agentDef config.Agen
 // cadence writer needs and previously never received. main.go adapts the def
 // to the scheduler's own DeclaredChannel — the two packages share a wiring
 // point, not a type.
-func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (tools.ChannelDef, bool) {
-	def, ok := s.mergedChannelDefs(ctx, true)[channel]
+//
+// tenantID is the tenant whose runtime channels are consulted, passed
+// explicitly: the scheduler and the team walks resolve on a ctx that carries
+// no identity, where the ctx's tenant is the shared one — and a tenant's own
+// runtime channel was then "not declared".
+func (s *Server) ResolveChannelScope(ctx context.Context, tenantID, channel string) (tools.ChannelDef, bool) {
+	def, ok := s.mergedChannelDefsFor(ctx, tenantID, true)[channel]
 	return def, ok
 }
 
@@ -2261,14 +2282,18 @@ func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (tools
 // Static yaml wins over a runtime row, matching the merge order everywhere
 // else. A store fault answers false — an unreachable definition plane must
 // not silently start holding a channel that isn't declared held.
-func (s *Server) ChannelHeld(ctx context.Context, channel string) bool {
+//
+// tenantID is the tenant the message is published in (see
+// channels.StorePublisher.HoldFn): never read from ctx, which on the webhook
+// relay and a schedule tick carries no identity.
+func (s *Server) ChannelHeld(ctx context.Context, tenantID, channel string) bool {
 	if def, ok := s.cfg().Channels[channel]; ok {
 		return def.Hold
 	}
 	if s.store == nil {
 		return false
 	}
-	row, err := s.store.ChannelGet(ctx, tenantFromCtx(ctx), channel)
+	row, err := s.store.ChannelGet(ctx, tenantID, channel)
 	if err != nil {
 		return false
 	}

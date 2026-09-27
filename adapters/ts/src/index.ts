@@ -369,6 +369,12 @@ export type {
   // RFC AW per-scope token budgets
   CapabilityInertInfo,
   LimitInfo,
+  // A failure's structure (event: error, a failed event: tool_result) and the
+  // hook decision payload — both carried on AgentEvent, now importable.
+  ErrorInfo,
+  CallFormat,
+  CallRef,
+  HookDecisionInfo,
   EffectiveConfigResponse,
   EffectiveConfigSource,
   EffectiveValue,

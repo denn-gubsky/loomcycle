@@ -64,30 +64,30 @@ func newRemoteDocumentClient(ds config.DocumentSource) (*docremote.Client, error
 
 func (d *Document) setRemote(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.Source == "" {
-		return errResult("set_remote: missing required field: source (a document_sources name)"), nil
+		return errValidation("set_remote: missing required field: source (a document_sources name)", ""), nil
 	}
 	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
 	// DocumentSourceDef substrate (dynamic, runtime-authored).
 	tenantID := tools.RunIdentity(ctx).TenantID
 	if _, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, in.Source); !ok {
-		return errResult(fmt.Sprintf("set_remote: unknown document source %q (declare it under document_sources: or author a DocumentSourceDef)", in.Source)), nil
+		return errNotFound(fmt.Sprintf("set_remote: unknown document source %q (declare it under document_sources: or author a DocumentSourceDef)", in.Source), ""), nil
 	}
 	if in.RemoteRef == "" {
-		return errResult("set_remote: missing required field: remote_ref (the remote document's path or id)"), nil
+		return errValidation("set_remote: missing required field: remote_ref (the remote document's path or id)", ""), nil
 	}
 	docID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
-		return errResult("set_remote: " + err.Error()), nil
+		return errNotFound("set_remote: "+err.Error(), "Pass the local document's id or path; find it with op=query_documents."), nil
 	}
 	root, err := d.documentRootChunk(ctx, key, docID)
 	if err != nil {
-		return errResult("set_remote: " + err.Error()), nil
+		return errNotFound("set_remote: "+err.Error(), "Pass the local document's id or path; find it with op=query_documents."), nil
 	}
 	// Merge the binding into the root chunk's fields (round-trips via readBody /
 	// get_document). Read the current fields so we don't blank a color scheme.
 	cb, err := d.readBody(ctx, mscope, key.ScopeID, root)
 	if err != nil {
-		return errResult("set_remote: read root fields: " + err.Error()), nil
+		return errFrom("set_remote: read root fields: "+err.Error(), err), nil
 	}
 	fields := map[string]any{}
 	if len(cb.Fields) > 0 {
@@ -97,13 +97,13 @@ func (d *Document) setRemote(ctx context.Context, key sqlmem.ScopeKey, mscope st
 	fj, _ := json.Marshal(fields)
 	rev, err := d.chunkRevision(ctx, key, root)
 	if err != nil {
-		return errResult("set_remote: " + err.Error()), nil
+		return errFrom("set_remote: "+err.Error(), err), nil
 	}
 	// raw carries only the keys we set, so update_chunk touches ONLY fields.
 	raw, _ := json.Marshal(map[string]any{"id": root, "revision": rev, "fields": json.RawMessage(fj)})
 	res, uerr := d.updateChunk(ctx, key, mscope, docInput{ID: root, Revision: &rev, Fields: json.RawMessage(fj)}, raw)
 	if uerr != nil {
-		return errResult("set_remote: " + uerr.Error()), nil
+		return errFrom("set_remote: "+uerr.Error(), uerr), nil
 	}
 	if res.IsError {
 		return res, nil
@@ -119,7 +119,7 @@ func (d *Document) syncDocument(ctx context.Context, key sqlmem.ScopeKey, mscope
 		direction = "pull"
 	}
 	if direction != "pull" && direction != "push" {
-		return errResult(fmt.Sprintf("sync: direction must be \"pull\" (default) or \"push\", got %q", direction)), nil
+		return errValidation(fmt.Sprintf("sync: direction must be \"pull\" (default) or \"push\", got %q", direction), ""), nil
 	}
 	b, errRes := d.resolveRemoteBinding(ctx, key, mscope, in, "sync")
 	if errRes != nil {
@@ -148,31 +148,35 @@ type remoteBinding struct {
 // the peer document id. On any user-facing error it returns a non-nil *Result to
 // return verbatim (op names the caller so the message reads right).
 func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, op string) (*remoteBinding, *tools.Result) {
-	fail := func(msg string) (*remoteBinding, *tools.Result) {
-		r := errResult(op + ": " + msg)
+	fail := func(kind func(msg, next string) tools.Result, msg, next string) (*remoteBinding, *tools.Result) {
+		r := kind(op+": "+msg, next)
+		return nil, &r
+	}
+	failFrom := func(msg string, err error) (*remoteBinding, *tools.Result) {
+		r := errFrom(op+": "+msg, err)
 		return nil, &r
 	}
 	localDocID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
-		return fail(err.Error())
+		return fail(errNotFound, err.Error(), "Pass the local document's id or path; find it with op=query_documents.")
 	}
 	source, ref, err := d.readRemoteBinding(ctx, key, mscope, localDocID)
 	if err != nil {
-		return fail(err.Error())
+		return fail(errNotFound, err.Error(), "Pass the local document's id or path; find it with op=query_documents.")
 	}
 	if source == "" {
-		return fail("this document is not bound to a remote (call set_remote first)")
+		return fail(errBusiness, "this document is not bound to a remote (call set_remote first)", "")
 	}
 	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
 	// DocumentSourceDef substrate (dynamic, runtime-authored).
 	tenantID := tools.RunIdentity(ctx).TenantID
 	ds, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, source)
 	if !ok {
-		return fail(fmt.Sprintf("unknown document source %q (was it removed from document_sources: / retired?)", source))
+		return fail(errBusiness, fmt.Sprintf("unknown document source %q (was it removed from document_sources: / retired?)", source), "Rebind the document to a declared source with op=set_remote, or ask an operator to restore the source.")
 	}
 	client, err := newRemoteDocumentClient(ds)
 	if err != nil {
-		return fail(err.Error())
+		return fail(errBusiness, err.Error(), "The document source is misconfigured; ask an operator to fix it.")
 	}
 	scope := in.Scope
 	if scope == "" {
@@ -180,14 +184,14 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	}
 	rawDoc, err := client.Do(ctx, map[string]any{"op": "get_document", "path": ref, "scope": scope})
 	if err != nil {
-		return fail("fetch remote document: " + err.Error())
+		return failFrom("fetch remote document: "+err.Error(), err)
 	}
 	var remoteDoc struct {
 		DocumentID  string `json:"document_id"`
 		RootChunkID string `json:"root_chunk_id"`
 	}
 	if uerr := json.Unmarshal(rawDoc, &remoteDoc); uerr != nil || remoteDoc.DocumentID == "" {
-		return fail("remote document not found at " + ref)
+		return fail(errNotFound, "remote document not found at "+ref, "Rebind with op=set_remote, passing the peer document's path or id as remote_ref.")
 	}
 	return &remoteBinding{
 		client: client, source: source, ref: ref, localDocID: localDocID,
@@ -607,16 +611,16 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *remoteBinding) (tools.Result, error) {
 	source, err := d.loadRemoteSnapshot(ctx, b.client, b.remoteDocID, b.remoteRoot, b.scope)
 	if err != nil {
-		return errResult("sync: " + err.Error()), nil
+		return errFrom("sync: "+err.Error(), err), nil
 	}
 	target, err := d.loadLocalSnapshot(ctx, key, mscope, b.localDocID)
 	if err != nil {
-		return errResult("sync: " + err.Error()), nil
+		return errFrom("sync: "+err.Error(), err), nil
 	}
 	w := localWriter{d: d, key: key, mscope: mscope, docID: b.localDocID}
 	c, err := applyReconcile(ctx, w, source, target)
 	if err != nil {
-		return errResult("sync: " + err.Error()), nil
+		return errFrom("sync: "+err.Error(), err), nil
 	}
 	return okJSON(reconcileReport("pull", b, source.unkeyed, c))
 }
@@ -625,16 +629,16 @@ func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *remoteBinding) (tools.Result, error) {
 	source, err := d.loadLocalSnapshot(ctx, key, mscope, b.localDocID)
 	if err != nil {
-		return errResult("sync push: " + err.Error()), nil
+		return errFrom("sync push: "+err.Error(), err), nil
 	}
 	target, err := d.loadRemoteSnapshot(ctx, b.client, b.remoteDocID, b.remoteRoot, b.scope)
 	if err != nil {
-		return errResult("sync push: " + err.Error()), nil
+		return errFrom("sync push: "+err.Error(), err), nil
 	}
 	w := remoteWriter{client: b.client, docID: b.remoteDocID, scope: b.scope}
 	c, err := applyReconcile(ctx, w, source, target)
 	if err != nil {
-		return errResult("sync push: " + err.Error()), nil
+		return errFrom("sync push: "+err.Error(), err), nil
 	}
 	return okJSON(reconcileReport("push", b, source.unkeyed, c))
 }
@@ -693,11 +697,11 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	}
 	local, err := d.loadLocalSnapshot(ctx, key, mscope, b.localDocID)
 	if err != nil {
-		return errResult("diff_remote: " + err.Error()), nil
+		return errFrom("diff_remote: "+err.Error(), err), nil
 	}
 	remote, err := d.loadRemoteSnapshot(ctx, b.client, b.remoteDocID, b.remoteRoot, b.scope)
 	if err != nil {
-		return errResult("diff_remote: " + err.Error()), nil
+		return errFrom("diff_remote: "+err.Error(), err), nil
 	}
 
 	onlyLocal, onlyRemote, diverged, retagged, reparented := []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}

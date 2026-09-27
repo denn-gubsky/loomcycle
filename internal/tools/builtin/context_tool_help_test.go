@@ -180,16 +180,23 @@ func TestContextHelpExample_EveryOperationArticleHasOne(t *testing.T) {
 }
 
 // The crossing: a real failed call through a real dispatcher, with the real
-// Context tool and corpus, carries that operation's example.
+// Context tool and corpus, carries that operation's example. The Path tool has
+// a real store and the run an identity, so the call fails on its SHAPE (mv
+// without `to`) — a failure the call format is for — rather than on a missing
+// backend, which is not the caller's to fix and correctly carries none.
 func TestDispatcher_FailedPathCallCarriesTheArticlesExample(t *testing.T) {
 	set, err := help.LoadSet("")
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, ctx, st := documentDirentFixture(t)
 	ctxTool := &Context{Help: set}
 	want, _ := ctxTool.HelpExample("Path/mv")
-	d := tools.NewDispatcher([]tools.Tool{&Path{}, ctxTool})
-	res := d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv","path":"/a"}`))
+	d := tools.NewDispatcher([]tools.Tool{&Path{Store: st}, ctxTool})
+	res := d.Execute(ctx, "Path", json.RawMessage(`{"op":"mv","scope":"user","path":"/a"}`))
+	if res.Error == nil || res.Error.Category != tools.CategoryValidation {
+		t.Fatalf("mv without `to` is not a validation failure: %q %+v", res.Text, res.Error)
+	}
 	if !res.IsError || res.Error == nil || res.Error.CallFormat == nil {
 		t.Fatalf("failed Path mv result carries no call format: %q %+v", res.Text, res.Error)
 	}

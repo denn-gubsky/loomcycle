@@ -87,10 +87,10 @@ const (
 func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	q := strings.TrimSpace(in.Query)
 	if q == "" {
-		return errResult("verbatim_answer: missing required field: query (the lookup question to answer)"), nil
+		return errValidation("verbatim_answer: missing required field: query (the lookup question to answer)", ""), nil
 	}
 	if d.Embedder == nil {
-		return errResult("verbatim_answer: requires a configured embedder / vector memory"), nil
+		return errBusiness("verbatim_answer: requires a configured embedder / vector memory", "This deployment has no embedder; look the fact up with op=list_facts or op=search instead."), nil
 	}
 	minScore := verbatimDefaultMinScore
 	if in.MinScore > 0 {
@@ -99,15 +99,15 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 
 	vec, err := d.Embedder.Embed(ctx, []string{q})
 	if err != nil {
-		return errResult("verbatim_answer: embed: " + err.Error()), nil
+		return errFrom("verbatim_answer: embed: "+err.Error(), err), nil
 	}
 	if len(vec) == 0 {
-		return errResult("verbatim_answer: embed: embedder returned no vector"), nil
+		return errTransient("verbatim_answer: embed: embedder returned no vector", "Try again; if it keeps failing, ask an operator to check the embedder."), nil
 	}
 	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
 		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], verbatimSearchTopK)
 	if err != nil {
-		return errResult("verbatim_answer: " + err.Error()), nil
+		return errFrom("verbatim_answer: "+err.Error(), err), nil
 	}
 
 	// FACTS ONLY, in score order. A document chunk is prose, not a claim: it has no
@@ -127,7 +127,7 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		meta, found, merr := d.readChunkMeta(ctx, key, cid)
 		if merr != nil {
-			return errResult("verbatim_answer: " + merr.Error()), nil
+			return errFrom("verbatim_answer: "+merr.Error(), merr), nil
 		}
 		if !found {
 			continue // not a fact
@@ -147,7 +147,7 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 	best := facts[0]
 	cb, berr := d.readBody(ctx, mscope, key.ScopeID, best.id)
 	if berr != nil {
-		return errResult("verbatim_answer: " + berr.Error()), nil
+		return errFrom("verbatim_answer: "+berr.Error(), berr), nil
 	}
 	body := cb.Body
 	out := map[string]any{
@@ -220,7 +220,7 @@ func (d *Document) verificationStats(ctx context.Context, key sqlmem.ScopeKey) (
 		  FROM chunk_memory_meta m
 		 WHERE `+identityNodeExclusion)
 	if err != nil {
-		return errResult("verification_stats: " + err.Error()), nil
+		return errFrom("verification_stats: "+err.Error(), err), nil
 	}
 	if len(res.Rows) == 0 {
 		return jsonResult(map[string]any{"facts": 0})

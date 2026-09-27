@@ -3711,12 +3711,19 @@ func executePendingTools(
 		// would make the same tool call read differently before and after a
 		// resume, silently dropping the classification on replay.
 		text := renderToolResultText(r.res)
-		emit(providers.Event{
+		ev := providers.Event{
 			Type:    providers.EventToolResult,
 			ToolUse: &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
 			Text:    text,
 			IsError: r.res.IsError,
-		})
+		}
+		// The failure's structure as a field too, so an SSE or gRPC consumer
+		// reads the category and the correct call format without parsing the
+		// text the model reads.
+		if r.res.IsError {
+			ev.ErrorInfo = r.res.Error
+		}
+		emit(ev)
 		// Place by index so the message we hand back to the model
 		// stays in tool_call order regardless of finish order.
 		// ToolName is set for the benefit of providers that

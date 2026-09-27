@@ -39,8 +39,7 @@ import (
 )
 
 // refusal wraps an error result so the guard reads as a gate rather than a failure.
-func refusal(msg string) *tools.Result {
-	r := errResult(msg)
+func refusal(r tools.Result) *tools.Result {
 	return &r
 }
 
@@ -81,10 +80,10 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	switch op {
 	case "create_chunk", "upsert_chunk":
 		if !strings.EqualFold(strings.TrimSpace(in.Status), memrank.OntologyStatusProposed) {
-			return refusal("an agent may only add a PROPOSED entity to the ontology: pass " +
-				"status=\"" + memrank.OntologyStatusProposed + "\" (or use op=propose_entity, which " +
-				"does it for you). An entity that is in force is the operator's decision, and " +
-				"accepting a proposal is a separate operator action.")
+			return refusal(errValidation("an agent may only add a PROPOSED entity to the ontology: pass "+
+				"status=\""+memrank.OntologyStatusProposed+"\" (or use op=propose_entity, which "+
+				"does it for you). An entity that is in force is the operator's decision, and "+
+				"accepting a proposal is a separate operator action.", ""))
 		}
 		return nil
 	// EVERY op that can create, alter, retire or re-home an entity — audited from the op
@@ -95,9 +94,9 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	// /memory/ontology so the reader resolves somewhere else entirely).
 	case "update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
 		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path":
-		return refusal("an agent may not modify the ontology document — it may only add a " +
-			"proposal (op=propose_entity). Resolving one, editing a live entity, importing " +
-			"over the document, re-homing it, or removing anything is the operator's decision.")
+		return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
+			"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
+			"over the document, re-homing it, or removing anything is the operator's decision.", ""))
 	default:
 		return nil
 	}
@@ -140,37 +139,37 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 		name = memrank.TrimOntologyName(in.Title)
 	}
 	if name == "" {
-		return errResult("propose_entity: name is required — it becomes the entity type's name"), nil
+		return errValidation("propose_entity: name is required — it becomes the entity type's name", ""), nil
 	}
 	if len(in.Body) > proposalBodyMax {
-		return errResult(fmt.Sprintf("propose_entity: body is %d bytes, over the %d-byte limit — "+
-			"keep the evidence to counts and a few examples", len(in.Body), proposalBodyMax)), nil
+		return errValidation(fmt.Sprintf("propose_entity: body is %d bytes, over the %d-byte limit — "+
+			"keep the evidence to counts and a few examples", len(in.Body), proposalBodyMax), ""), nil
 	}
 
 	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
-		return errResult("propose_entity: " + err.Error()), nil
+		return errBusiness("propose_entity: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
 	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
 	if err != nil {
-		return errResult("propose_entity: " + err.Error()), nil
+		return errFrom("propose_entity: "+err.Error(), err), nil
 	}
 	if read.DocumentID == "" || read.RootChunkID == "" {
-		return errResult("propose_entity: this tenant has no ontology document yet — an " +
-			"operator opens Settings → Ontology once to create it"), nil
+		return errBusiness("propose_entity: this tenant has no ontology document yet — an "+
+			"operator opens Settings → Ontology once to create it", ""), nil
 	}
 	for _, t := range read.Terms {
 		if strings.EqualFold(t.Name, name) {
-			return errResult("propose_entity: " + name + " is already in force — propose a " +
-				"SUBTYPE of it (parent=\"" + t.Name + "\") or leave it alone"), nil
+			return errBusiness("propose_entity: "+name+" is already in force — propose a "+
+				"SUBTYPE of it (parent=\""+t.Name+"\") or leave it alone", ""), nil
 		}
 	}
 	for _, p := range read.Proposals {
 		if strings.EqualFold(p.Name, name) {
 			// Naming the status matters: a `rejected` twin means the operator already
 			// said no, and re-filing it is the nagging the tombstone exists to prevent.
-			return errResult("propose_entity: " + name + " is already " + p.Status +
-				" — an operator has seen it"), nil
+			return errBusiness("propose_entity: "+name+" is already "+p.Status+
+				" — an operator has seen it", "Do not propose it again; an operator decides."), nil
 		}
 	}
 
@@ -185,9 +184,9 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 			for _, t := range read.Terms {
 				names = append(names, t.Name)
 			}
-			return errResult("propose_entity: no entity named " + want + " is in force in this " +
-				"tenant's ontology (have: " + strings.Join(names, ", ") + "). A subtype must " +
-				"hang off a type the operator has already accepted"), nil
+			return errValidation("propose_entity: no entity named "+want+" is in force in this "+
+				"tenant's ontology (have: "+strings.Join(names, ", ")+"). A subtype must "+
+				"hang off a type the operator has already accepted", "Pass one of the listed types as parent, or omit parent."), nil
 		}
 		parentChunk = id
 	}
@@ -243,7 +242,7 @@ func (d *Document) createOntologyProposal(ctx context.Context, key sqlmem.ScopeK
 		Title: name, Status: memrank.OntologyStatusProposed, Body: body,
 	})
 	if err != nil {
-		return errResult("propose_entity: " + err.Error()), nil
+		return errFrom("propose_entity: "+err.Error(), err), nil
 	}
 	if res.IsError {
 		return res, nil
@@ -310,9 +309,9 @@ func (d *Document) gateEntityType(ctx context.Context, in docInput) *tools.Resul
 		declared = append(declared, t.Name)
 	}
 	sort.Strings(declared)
-	return refusal("upsert_chunk: " + strconv.Quote(typ) + " is not an entity type this tenant " +
-		"declares, so an assertion typed with it becomes a node nobody can find. Declared: " +
-		strings.Join(declared, ", ") + ". Use one of those, drop the type/subject pair to store " +
-		"the claim without an entity node, or propose the type with op=propose_entity and let an " +
-		"operator accept it.")
+	return refusal(errValidation("upsert_chunk: "+strconv.Quote(typ)+" is not an entity type this tenant "+
+		"declares, so an assertion typed with it becomes a node nobody can find. Declared: "+
+		strings.Join(declared, ", ")+". Use one of those, drop the type/subject pair to store "+
+		"the claim without an entity node, or propose the type with op=propose_entity and let an "+
+		"operator accept it.", ""))
 }

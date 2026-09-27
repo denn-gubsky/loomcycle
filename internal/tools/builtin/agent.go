@@ -350,11 +350,11 @@ func (a *AgentTool) InputSchema() json.RawMessage { return json.RawMessage(agent
 // than the run being torn down.
 func (a *AgentTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
 	if a.Run == nil {
-		return tools.Result{IsError: true, Text: "Agent tool not wired to a sub-agent runner (operator misconfiguration)"}, nil
+		return errBusiness("Agent tool not wired to a sub-agent runner (operator misconfiguration)", "This runtime cannot start sub-agents; do the work in this run instead."), nil
 	}
 	var in agentInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return tools.Result{IsError: true, Text: fmt.Sprintf("invalid input JSON: %s", err)}, nil
+		return errValidation(fmt.Sprintf("invalid input JSON: %s", err), "Send the input as a JSON object matching the tool schema."), nil
 	}
 	op := strings.TrimSpace(in.Op)
 	if op == "" {
@@ -376,7 +376,7 @@ func (a *AgentTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	case "close":
 		return a.executeClose(ctx, in)
 	default:
-		return tools.Result{IsError: true, Text: fmt.Sprintf("unknown op %q (expected 'spawn', 'parallel_spawn', 'open', 'send', 'poll', 'cancel', or 'close')", in.Op)}, nil
+		return errValidation(fmt.Sprintf("unknown op %q (expected 'spawn', 'parallel_spawn', 'open', 'send', 'poll', 'cancel', or 'close')", in.Op), ""), nil
 	}
 }
 
@@ -385,23 +385,20 @@ func (a *AgentTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 // error surface, same "no final text" hint.
 func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Result, error) {
 	if len(in.Spawns) > 0 {
-		return tools.Result{IsError: true, Text: "op=spawn must not carry a 'spawns' array; use op=parallel_spawn for fan-out"}, nil
+		return errValidation("op=spawn must not carry a 'spawns' array; use op=parallel_spawn for fan-out", ""), nil
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
-		return tools.Result{IsError: true, Text: "missing required field: name"}, nil
+		return errValidation("missing required field: name", "Pass `name`: the agent to run."), nil
 	}
 	if in.Prompt == "" {
-		return tools.Result{IsError: true, Text: "missing required field: prompt"}, nil
+		return errValidation("missing required field: prompt", "Pass `prompt`: the task for the sub-agent."), nil
 	}
 	if AgentDepth(ctx) >= MaxAgentDepth {
-		return tools.Result{
-			IsError: true,
-			Text: fmt.Sprintf(
-				"max sub-agent recursion depth (%d) reached at agent %q; refusing to spawn deeper",
-				MaxAgentDepth, in.Name,
-			),
-		}, nil
+		return errBusiness(fmt.Sprintf(
+			"max sub-agent recursion depth (%d) reached at agent %q; refusing to spawn deeper",
+			MaxAgentDepth, in.Name,
+		), "Do this work in the current agent instead of spawning another level."), nil
 	}
 	subCtx := IncrementAgentDepth(ctx)
 	// Per-spawn compaction override (the parent steering this child's context
@@ -411,7 +408,7 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	}
 	output, state, _, err := a.runChild(subCtx, in.Name, in.Prompt, in.DefID)
 	if err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+		return errFrom(err.Error(), err), nil
 	}
 	if output == "" && len(state) == 0 {
 		return tools.Result{Text: fmt.Sprintf("(sub-agent %q completed with no final text)", in.Name)}, nil
@@ -459,19 +456,16 @@ func withSubAgentState(text string, state map[string]any) string {
 // disposition is the model's to read.
 func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (tools.Result, error) {
 	if in.Name != "" || in.Prompt != "" || in.DefID != "" {
-		return tools.Result{IsError: true, Text: "op=parallel_spawn must not carry top-level name/prompt/def_id fields; put each child in the 'spawns' array"}, nil
+		return errValidation("op=parallel_spawn must not carry top-level name/prompt/def_id fields; put each child in the 'spawns' array", ""), nil
 	}
 	if len(in.Spawns) == 0 {
-		return tools.Result{IsError: true, Text: "op=parallel_spawn requires a non-empty 'spawns' array"}, nil
+		return errValidation("op=parallel_spawn requires a non-empty 'spawns' array", "Pass `spawns`: a list of {name, prompt} entries."), nil
 	}
 	if len(in.Spawns) > MaxParallelSpawns {
-		return tools.Result{
-			IsError: true,
-			Text: fmt.Sprintf(
-				"parallel_spawn 'spawns' array has %d entries; the per-call ceiling is %d (split the work across multiple calls if you genuinely need more)",
-				len(in.Spawns), MaxParallelSpawns,
-			),
-		}, nil
+		return errValidation(fmt.Sprintf(
+			"parallel_spawn 'spawns' array has %d entries; the per-call ceiling is %d (split the work across multiple calls if you genuinely need more)",
+			len(in.Spawns), MaxParallelSpawns,
+		), ""), nil
 	}
 	// Per-entry input validation BEFORE we kick anything off — a
 	// malformed entry should fail the whole call up-front, not
@@ -480,23 +474,20 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	for i, sp := range in.Spawns {
 		name := strings.TrimSpace(sp.Name)
 		if name == "" {
-			return tools.Result{IsError: true, Text: fmt.Sprintf("spawns[%d]: missing required field: name", i)}, nil
+			return errValidation(fmt.Sprintf("spawns[%d]: missing required field: name", i), "Give every `spawns` entry a `name`."), nil
 		}
 		if sp.Prompt == "" {
-			return tools.Result{IsError: true, Text: fmt.Sprintf("spawns[%d] (%s): missing required field: prompt", i, name)}, nil
+			return errValidation(fmt.Sprintf("spawns[%d] (%s): missing required field: prompt", i, name), "Give every `spawns` entry a `prompt`."), nil
 		}
 		in.Spawns[i].Name = name
 	}
 	// Depth guard fires once for the whole call. Each child
 	// dispatches at depth+1 (same as single-spawn).
 	if AgentDepth(ctx) >= MaxAgentDepth {
-		return tools.Result{
-			IsError: true,
-			Text: fmt.Sprintf(
-				"max sub-agent recursion depth (%d) reached; refusing to parallel_spawn at depth %d",
-				MaxAgentDepth, AgentDepth(ctx),
-			),
-		}, nil
+		return errBusiness(fmt.Sprintf(
+			"max sub-agent recursion depth (%d) reached; refusing to parallel_spawn at depth %d",
+			MaxAgentDepth, AgentDepth(ctx),
+		), "Do this work in the current agent instead of spawning another level."), nil
 	}
 	subCtx := IncrementAgentDepth(ctx)
 
@@ -643,7 +634,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		// json.Marshal on a slice of plain structs effectively never
 		// fails; keep the defensive path so future field additions
 		// surface loudly rather than silently.
-		return tools.Result{IsError: true, Text: fmt.Sprintf("internal: marshal parallel_spawn envelope: %s", err)}, nil
+		return errFrom(fmt.Sprintf("internal: marshal parallel_spawn envelope: %s", err), err), nil
 	}
 	return tools.Result{Text: string(body)}, nil
 }
@@ -662,7 +653,7 @@ type residentChildResult struct {
 func residentResult(childRunID, state, output string) (tools.Result, error) {
 	body, err := json.Marshal(residentChildResult{ChildRunID: childRunID, State: state, Output: output})
 	if err != nil {
-		return tools.Result{IsError: true, Text: fmt.Sprintf("internal: marshal resident-child envelope: %s", err)}, nil
+		return errFrom(fmt.Sprintf("internal: marshal resident-child envelope: %s", err), err), nil
 	}
 	return tools.Result{Text: string(body)}, nil
 }
@@ -674,24 +665,25 @@ func residentResult(childRunID, state, output string) (tools.Result, error) {
 // exactly like a spawn — it is a sub-run one level deeper.
 func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Result, error) {
 	if a.OpenChild == nil {
-		return tools.Result{IsError: true, Text: "Agent op=open (resident sub-agent) is not available on this runtime"}, nil
+		return errBusiness("Agent op=open (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" {
-		return tools.Result{IsError: true, Text: "missing required field: name"}, nil
+		return errValidation("missing required field: name", "Pass `name`: the agent to run."), nil
 	}
 	if in.Prompt == "" {
-		return tools.Result{IsError: true, Text: "missing required field: prompt"}, nil
+		return errValidation("missing required field: prompt", "Pass `prompt`: the task for the sub-agent."), nil
 	}
 	if in.ChildRunID != "" {
-		return tools.Result{IsError: true, Text: "op=open mints a NEW child; do not pass child_run_id (use op=send with the id op=open returns)"}, nil
+		return errValidation("op=open mints a NEW child; do not pass child_run_id (use op=send with the id op=open returns)", ""), nil
 	}
 	if in.IdleTTLSeconds < 0 {
-		return tools.Result{IsError: true, Text: "idle_ttl_seconds must be >= 0 (0 = operator default)"}, nil
+		return errValidation("idle_ttl_seconds must be >= 0 (0 = operator default)", ""), nil
 	}
 	if AgentDepth(ctx) >= MaxAgentDepth {
-		return tools.Result{IsError: true, Text: fmt.Sprintf(
-			"max sub-agent recursion depth (%d) reached at agent %q; refusing to open deeper", MaxAgentDepth, in.Name)}, nil
+		return errBusiness(fmt.Sprintf(
+			"max sub-agent recursion depth (%d) reached at agent %q; refusing to open deeper", MaxAgentDepth, in.Name),
+			"Do this work in the current agent instead of opening another level."), nil
 	}
 	subCtx := IncrementAgentDepth(ctx)
 	if !in.Compaction.IsZero() {
@@ -699,7 +691,7 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	}
 	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds)
 	if err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+		return errFrom(err.Error(), err), nil
 	}
 	return residentResult(childRunID, state, output)
 }
@@ -708,21 +700,21 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 // blocks until it re-parks (or terminates), returning that turn's output.
 func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Result, error) {
 	if a.SendChild == nil {
-		return tools.Result{IsError: true, Text: "Agent op=send (resident sub-agent) is not available on this runtime"}, nil
+		return errBusiness("Agent op=send (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}
 	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
 	if in.ChildRunID == "" {
-		return tools.Result{IsError: true, Text: "missing required field: child_run_id (the id op=open returned)"}, nil
+		return errValidation("missing required field: child_run_id (the id op=open returned)", ""), nil
 	}
 	if in.Prompt == "" {
-		return tools.Result{IsError: true, Text: "missing required field: prompt"}, nil
+		return errValidation("missing required field: prompt", "Pass `prompt`: the next instruction for the child."), nil
 	}
 	if in.TimeoutMs < 0 {
-		return tools.Result{IsError: true, Text: "timeout_ms must be >= 0 (0 = block until the child parks)"}, nil
+		return errValidation("timeout_ms must be >= 0 (0 = block until the child parks)", ""), nil
 	}
 	output, state, err := a.SendChild(ctx, in.ChildRunID, in.Prompt, in.TimeoutMs)
 	if err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+		return errFrom(err.Error(), err), nil
 	}
 	return residentResult(in.ChildRunID, state, output)
 }
@@ -732,18 +724,18 @@ func (a *AgentTool) executeSend(ctx context.Context, in agentInput) (tools.Resul
 // returned state "running" (timeout_ms=0 is a non-blocking snapshot).
 func (a *AgentTool) executePoll(ctx context.Context, in agentInput) (tools.Result, error) {
 	if a.PollChild == nil {
-		return tools.Result{IsError: true, Text: "Agent op=poll (resident sub-agent) is not available on this runtime"}, nil
+		return errBusiness("Agent op=poll (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}
 	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
 	if in.ChildRunID == "" {
-		return tools.Result{IsError: true, Text: "missing required field: child_run_id"}, nil
+		return errValidation("missing required field: child_run_id", "Pass `child_run_id`: the id op=open returned."), nil
 	}
 	if in.TimeoutMs < 0 {
-		return tools.Result{IsError: true, Text: "timeout_ms must be >= 0 (0 = non-blocking snapshot)"}, nil
+		return errValidation("timeout_ms must be >= 0 (0 = non-blocking snapshot)", ""), nil
 	}
 	output, state, err := a.PollChild(ctx, in.ChildRunID, in.TimeoutMs)
 	if err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+		return errFrom(err.Error(), err), nil
 	}
 	return residentResult(in.ChildRunID, state, output)
 }
@@ -752,15 +744,15 @@ func (a *AgentTool) executePoll(ctx context.Context, in agentInput) (tools.Resul
 // it and re-parks the child — the child stays alive, unlike close).
 func (a *AgentTool) executeCancel(ctx context.Context, in agentInput) (tools.Result, error) {
 	if a.CancelChild == nil {
-		return tools.Result{IsError: true, Text: "Agent op=cancel (resident sub-agent) is not available on this runtime"}, nil
+		return errBusiness("Agent op=cancel (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}
 	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
 	if in.ChildRunID == "" {
-		return tools.Result{IsError: true, Text: "missing required field: child_run_id"}, nil
+		return errValidation("missing required field: child_run_id", "Pass `child_run_id`: the id op=open returned."), nil
 	}
 	output, state, err := a.CancelChild(ctx, in.ChildRunID)
 	if err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+		return errFrom(err.Error(), err), nil
 	}
 	return residentResult(in.ChildRunID, state, output)
 }
@@ -769,14 +761,14 @@ func (a *AgentTool) executeCancel(ctx context.Context, in agentInput) (tools.Res
 // teardown so any resources it held (e.g. a sandbox container) are released.
 func (a *AgentTool) executeClose(ctx context.Context, in agentInput) (tools.Result, error) {
 	if a.CloseChild == nil {
-		return tools.Result{IsError: true, Text: "Agent op=close (resident sub-agent) is not available on this runtime"}, nil
+		return errBusiness("Agent op=close (resident sub-agent) is not available on this runtime", "Resident sub-agents are not available here; use op=spawn instead."), nil
 	}
 	in.ChildRunID = strings.TrimSpace(in.ChildRunID)
 	if in.ChildRunID == "" {
-		return tools.Result{IsError: true, Text: "missing required field: child_run_id"}, nil
+		return errValidation("missing required field: child_run_id", "Pass `child_run_id`: the id op=open returned."), nil
 	}
 	if err := a.CloseChild(ctx, in.ChildRunID); err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+		return errFrom(err.Error(), err), nil
 	}
 	return residentResult(in.ChildRunID, "closed", "")
 }

@@ -68,7 +68,7 @@ func (io *teamChannelIO) allowed(side, channel string) error {
 // of its own, so an agent-scoped channel has no scope_id to key on and is
 // refused with that reason rather than silently keying on something arbitrary.
 func (io *teamChannelIO) resolve(ctx context.Context, channel string) (tools.ChannelDef, store.MemoryScope, string, error) {
-	def, ok := io.srv.ResolveChannelScope(ctx, channel)
+	def, ok := io.srv.ResolveChannelScope(ctx, io.tenant, channel)
 	if !ok {
 		return def, "", "", fmt.Errorf("channel %q is not declared (static yaml or runtime substrate)", channel)
 	}

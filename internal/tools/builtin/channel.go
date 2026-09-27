@@ -82,6 +82,15 @@ type Channel struct {
 	// fields and the retry behavior is unchanged.
 	PoolStatsFn func() (total, acquired, idle int32)
 
+	// Catalog returns the declared channels, for a caller whose ctx policy
+	// carries none. A run's policy always carries its catalog; the planes
+	// that call this tool on an operator's behalf (the MCP `channel` tool)
+	// stamp publish / subscribe grants with no catalog, and every channel
+	// then read as "not declared". Wired by the server; it resolves in the
+	// ctx principal's tenant, and the grants and the `publisher: system`
+	// refusal apply exactly as for a run.
+	Catalog func(ctx context.Context) map[string]tools.ChannelDef
+
 	// truncWarned dedupes the F22 wait_ms-truncation advisory to once per
 	// channel name (per process). A subscriber whose wait_ms exceeds
 	// LongPollCapMS re-subscribes every cap interval, so logging on every
@@ -166,13 +175,16 @@ func (c *Channel) InputSchema() json.RawMessage { return json.RawMessage(channel
 // resolution shared across publish/subscribe/peek/ack.
 func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if c.Store == nil {
-		return errResult("Channel tool: not configured (no Store backend)"), nil
+		return errBusiness("Channel tool: not configured (no Store backend)", "This deployment has no channel store; do not retry."), nil
 	}
 	var in channelInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
+		return errValidation(fmt.Sprintf("invalid input JSON: %s", err), "Send the input as a JSON object matching the tool schema."), nil
 	}
 	policy := tools.ChannelPolicy(ctx)
+	if policy.Channels == nil && c.Catalog != nil {
+		policy.Channels = c.Catalog(ctx)
+	}
 
 	switch in.Op {
 	case "publish":
@@ -192,10 +204,36 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "broadcast":
 		return c.execBroadcast(ctx, policy, in)
 	case "":
-		return errResult("missing required field: op"), nil
+		return errValidation("missing required field: op", "Pass `op`: one of publish, subscribe, ack, peek, release, list_channels, await, broadcast."), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, release, list_channels, await, broadcast)", in.Op)), nil
+		return errValidation(fmt.Sprintf("unknown op %q (must be one of: publish, subscribe, ack, peek, release, list_channels, await, broadcast)", in.Op), ""), nil
 	}
+}
+
+// channelRefusal is a resolveChannel / checkPublishACL refusal that carries
+// its category, decided where the reason is known — a missing argument, an
+// undeclared channel, this agent's own allowlist, the run's scope — so every
+// op reports the same kind whatever prefix it puts on the text.
+type channelRefusal struct {
+	msg  string
+	kind func(msg, next string) tools.Result
+	next string
+}
+
+func (e *channelRefusal) Error() string { return e.msg }
+
+func refuseChannel(kind func(msg, next string) tools.Result, next, format string, args ...any) error {
+	return &channelRefusal{msg: fmt.Sprintf(format, args...), kind: kind, next: next}
+}
+
+// channelFailure renders a channel refusal as a tool result, its text
+// prefixed; an error of any other type is classified by errFrom.
+func channelFailure(prefix string, err error) tools.Result {
+	var r *channelRefusal
+	if errors.As(err, &r) {
+		return r.kind(prefix+r.msg, r.next)
+	}
+	return errFrom(prefix+err.Error(), err)
 }
 
 // resolveChannel returns the operator-declared channel def + the
@@ -204,18 +242,18 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 // to phrase refusal messages.
 func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicyValue, side, name string) (tools.ChannelDef, store.MemoryScope, string, error) {
 	if name == "" {
-		return tools.ChannelDef{}, "", "", fmt.Errorf("missing required field: channel")
+		return tools.ChannelDef{}, "", "", refuseChannel(errValidation, "Pass `channel`: a name from op=list_channels.", "missing required field: channel")
 	}
 	def, ok := policy.Channels[name]
 	if !ok {
-		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q is not declared (neither in operator config nor created at runtime)", name)
+		return tools.ChannelDef{}, "", "", refuseChannel(errNotFound, "Use a channel from op=list_channels.", "Channel tool: channel %q is not declared (neither in operator config nor created at runtime)", name)
 	}
 	all, allowed := policy.GrantsFor(side)
 	if !all && !channelAllowed(name, allowed) {
 		if len(allowed) == 0 {
-			return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: this agent has no %s allowlist — add `channels.%s: [%s]` to the agent yaml", side, side, name)
+			return tools.ChannelDef{}, "", "", refuseChannel(errPermission, "Ask an operator to grant this agent the channel.", "Channel tool: this agent has no %s allowlist — add `channels.%s: [%s]` to the agent yaml", side, side, name)
 		}
-		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: %s not allowed on channel %q (agent allowlist: %v)", side, name, allowed)
+		return tools.ChannelDef{}, "", "", refuseChannel(errPermission, "Use a channel on the allowlist, or ask an operator to grant this one.", "Channel tool: %s not allowed on channel %q (agent allowlist: %v)", side, name, allowed)
 	}
 
 	// RFC BX P2b: an isolated member (substrate:user) may use only its own
@@ -223,20 +261,21 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	// channel even when the agent's channel allowlist permits it. Server-derived
 	// from the run's Isolated bit; a non-isolated run is unaffected.
 	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(def.Scope)); err != nil {
-		return tools.ChannelDef{}, "", "", err
+		return tools.ChannelDef{}, "", "", &channelRefusal{msg: err.Error(), kind: errPermission,
+			next: "Use a user- or agent-scoped channel; this run may not use shared channels."}
 	}
 
 	switch def.Scope {
 	case "agent":
 		agentName := tools.AgentName(ctx)
 		if agentName == "" {
-			return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q has scope=agent but the run has no agent name", name)
+			return tools.ChannelDef{}, "", "", refuseChannel(errBusiness, "This run cannot use agent-scoped channels; use another channel.", "Channel tool: channel %q has scope=agent but the run has no agent name", name)
 		}
 		return def, store.MemoryScopeAgent, agentName, nil
 	case "user":
 		ident := tools.RunIdentity(ctx)
 		if ident.UserID == "" {
-			return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q has scope=user but the run has no user_id", name)
+			return tools.ChannelDef{}, "", "", refuseChannel(errBusiness, "This run cannot use user-scoped channels; use another channel.", "Channel tool: channel %q has scope=user but the run has no user_id", name)
 		}
 		return def, store.MemoryScopeUser, ident.UserID, nil
 	case "global":
@@ -247,7 +286,7 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 		// isolated from other tenants by the store's tenant_id column.
 		return def, store.MemoryScopeTenant, "", nil
 	default:
-		return tools.ChannelDef{}, "", "", fmt.Errorf("Channel tool: channel %q has unknown scope %q (operator config bug)", name, def.Scope)
+		return tools.ChannelDef{}, "", "", refuseChannel(errBusiness, "Ask an operator to fix this channel's scope; use another channel meanwhile.", "Channel tool: channel %q has unknown scope %q (operator config bug)", name, def.Scope)
 	}
 }
 
@@ -290,44 +329,45 @@ func channelAllowed(name string, allowlist []string) bool {
 
 func (c *Channel) execPublish(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	def, scope, scopeID, refusal := c.checkPublishACL(ctx, policy, in.Channel)
-	if refusal != "" {
-		return errResult(refusal), nil
+	if refusal != nil {
+		return channelFailure("", refusal), nil
 	}
 	if verr := validatePublishValue(in.Value, c.MaxValueBytes); verr != "" {
-		return errResult("publish: " + verr), nil
+		return errValidation("publish: "+verr, "Pass `value` as valid JSON within the size limit."), nil
 	}
 	now := time.Now()
 	visibleAt, deferred, derr := parsePublishDeliverAt(in.DeliverAt, now)
 	if derr != "" {
-		return errResult("publish: " + derr), nil
+		return errValidation("publish: "+derr, "Pass deliver_at as an RFC3339 time, e.g. 2026-01-02T15:04:05Z, or omit it."), nil
 	}
 	result, err := c.storeAndNotify(ctx, in.Channel, def, scope, scopeID, in.Value, in.TTL, visibleAt, deferred, now)
 	if err != nil {
-		return errResult(fmt.Sprintf("publish: %s", err)), nil
+		return errFrom(fmt.Sprintf("publish: %s", err), err), nil
 	}
 	return okJSON(result)
 }
 
 // checkPublishACL resolves a channel for publishing + applies the v0.8.6
 // system-channel refusals (publisher:system + the reserved _system/
-// prefix). Returns a non-empty refusal string when publishing is denied.
+// prefix). Returns a non-nil refusal when publishing is denied (a
+// *channelRefusal; render it with channelFailure).
 // Side-effect-free — shared by publish + broadcast so both enforce the
 // identical pre-write gate.
-func (c *Channel) checkPublishACL(ctx context.Context, policy tools.ChannelPolicyValue, channel string) (tools.ChannelDef, store.MemoryScope, string, string) {
+func (c *Channel) checkPublishACL(ctx context.Context, policy tools.ChannelPolicyValue, channel string) (tools.ChannelDef, store.MemoryScope, string, error) {
 	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "publish", channel)
 	if err != nil {
-		return def, scope, scopeID, err.Error()
+		return def, scope, scopeID, err
 	}
 	// The admin endpoint and internal Go publisher bypass these by going
 	// through SystemPublisher / Store.ChannelPublish directly, not this
 	// tool layer.
 	if def.Publisher == "system" {
-		return def, scope, scopeID, fmt.Sprintf("channel %q is `publisher: system` — agents may not publish (use admin endpoint POST /v1/_channels/_system/%s/publish or wait for internal publisher)", channel, channel)
+		return def, scope, scopeID, refuseChannel(errBusiness, "Agents cannot publish here; subscribe to it or publish to another channel.", "channel %q is `publisher: system` — agents may not publish (use admin endpoint POST /v1/_channels/_system/%s/publish or wait for internal publisher)", channel, channel)
 	}
 	if strings.HasPrefix(channel, "_system/") {
-		return def, scope, scopeID, fmt.Sprintf("channel %q starts with `_system/` (reserved prefix) — agents may not publish to system channels", channel)
+		return def, scope, scopeID, refuseChannel(errBusiness, "Publish to a channel outside `_system/`.", "channel %q starts with `_system/` (reserved prefix) — agents may not publish to system channels", channel)
 	}
-	return def, scope, scopeID, ""
+	return def, scope, scopeID, nil
 }
 
 // validatePublishValue checks the payload is present, valid JSON, and
@@ -473,19 +513,19 @@ const MaxReleaseCountForDrift = maxReleaseCount
 // empty, and a workflow driver should not have to poll before stepping.
 func (c *Channel) execRelease(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	def, scope, scopeID, refusal := c.checkPublishACL(ctx, policy, in.Channel)
-	if refusal != "" {
-		return errResult(refusal), nil
+	if refusal != nil {
+		return channelFailure("", refusal), nil
 	}
 	count := in.Count
 	if count <= 0 {
 		count = 1
 	}
 	if count > maxReleaseCount {
-		return errResult(fmt.Sprintf("release: count %d exceeds max %d", count, maxReleaseCount)), nil
+		return errValidation(fmt.Sprintf("release: count %d exceeds max %d", count, maxReleaseCount), "Pass a smaller count, and release the rest in further calls."), nil
 	}
 	released, stillHeld, err := c.Store.ChannelRelease(ctx, tools.RunIdentity(ctx).TenantID, in.Channel, scope, scopeID, count)
 	if err != nil {
-		return errResult(fmt.Sprintf("release: %s", err)), nil
+		return errFrom(fmt.Sprintf("release: %s", err), err), nil
 	}
 	// Wake long-poll subscribers exactly as a publish would — from their side
 	// a release IS the publish arriving.
@@ -525,18 +565,18 @@ func (c *Channel) execRelease(ctx context.Context, policy tools.ChannelPolicyVal
 // "timeout returns partials, never an error" posture.
 func (c *Channel) execBroadcast(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	if len(in.Channels) == 0 {
-		return errResult("broadcast: missing required field: channels (non-empty list)"), nil
+		return errValidation("broadcast: missing required field: channels (non-empty list)", "Pass `channels`: the channel names to publish to."), nil
 	}
 	if len(in.Channels) > maxFanChannels {
-		return errResult(fmt.Sprintf("broadcast: too many channels (%d > max %d)", len(in.Channels), maxFanChannels)), nil
+		return errValidation(fmt.Sprintf("broadcast: too many channels (%d > max %d)", len(in.Channels), maxFanChannels), "Split the channels across several calls."), nil
 	}
 	if verr := validatePublishValue(in.Value, c.MaxValueBytes); verr != "" {
-		return errResult("broadcast: " + verr), nil
+		return errValidation("broadcast: "+verr, "Pass `value` as valid JSON within the size limit."), nil
 	}
 	now := time.Now()
 	visibleAt, deferred, derr := parsePublishDeliverAt(in.DeliverAt, now)
 	if derr != "" {
-		return errResult("broadcast: " + derr), nil
+		return errValidation("broadcast: "+derr, "Pass deliver_at as an RFC3339 time, e.g. 2026-01-02T15:04:05Z, or omit it."), nil
 	}
 
 	// Pre-flight: resolve + ACL-check every (deduped) channel BEFORE any
@@ -556,8 +596,8 @@ func (c *Channel) execBroadcast(ctx context.Context, policy tools.ChannelPolicyV
 		}
 		seen[name] = true
 		def, scope, scopeID, refusal := c.checkPublishACL(ctx, policy, name)
-		if refusal != "" {
-			return errResult("broadcast: " + refusal), nil
+		if refusal != nil {
+			return channelFailure("broadcast: ", refusal), nil
 		}
 		targets = append(targets, target{name, def, scope, scopeID})
 	}
@@ -586,7 +626,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	def, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
 	_ = def
 	if err != nil {
-		return errResult(err.Error()), nil
+		return channelFailure("", err), nil
 	}
 	// RFC N: the authoritative run tenant, captured once so the long-poll
 	// read closure below uses the same value across retries.
@@ -604,7 +644,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 	if from == "" {
 		committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, in.Channel, scope, scopeID)
 		if err != nil {
-			return errResult(fmt.Sprintf("subscribe: read committed cursor: %s", err)), nil
+			return errFrom(fmt.Sprintf("subscribe: read committed cursor: %s", err), err), nil
 		}
 		from = committed
 	}
@@ -634,7 +674,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 
 	msgs, next, err := read()
 	if err != nil {
-		return errResult(fmt.Sprintf("subscribe: %s", err)), nil
+		return errFrom(fmt.Sprintf("subscribe: %s", err), err), nil
 	}
 
 	// Long-poll if empty AND caller requested it AND operator allows.
@@ -690,7 +730,7 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			}
 			msgs, next, err = readWithRetry(read, in.Channel, diag)
 			if err != nil {
-				return errResult(fmt.Sprintf("subscribe (after wait): %s", err)), nil
+				return errFrom(fmt.Sprintf("subscribe (after wait): %s", err), err), nil
 			}
 		case <-t.C:
 			// Timeout — caller gets empty messages and decides.
@@ -902,10 +942,10 @@ const maxFanChannels = 32
 // whatever partials accumulated, mirroring subscribe's timeout-returns-empty.
 func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	if len(in.Channels) == 0 {
-		return errResult("await: missing required field: channels (non-empty list)"), nil
+		return errValidation("await: missing required field: channels (non-empty list)", "Pass `channels`: the channel names to wait on."), nil
 	}
 	if len(in.Channels) > maxFanChannels {
-		return errResult(fmt.Sprintf("await: too many channels (%d > max %d)", len(in.Channels), maxFanChannels)), nil
+		return errValidation(fmt.Sprintf("await: too many channels (%d > max %d)", len(in.Channels), maxFanChannels), "Wait on fewer channels per call."), nil
 	}
 	mode := in.Mode
 	if mode == "" {
@@ -914,10 +954,10 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	switch mode {
 	case "any", "all", "at_least":
 	default:
-		return errResult(fmt.Sprintf("await: unknown mode %q (must be one of: any, all, at_least)", mode)), nil
+		return errValidation(fmt.Sprintf("await: unknown mode %q (must be one of: any, all, at_least)", mode), ""), nil
 	}
 	if mode == "at_least" && in.N <= 0 {
-		return errResult("await: mode=at_least requires n > 0"), nil
+		return errValidation("await: mode=at_least requires n > 0", "Pass `n`: how many channels must fire."), nil
 	}
 	limit := in.MaxMessages
 	if limit <= 0 {
@@ -954,13 +994,13 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 		seen[name] = true
 		_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", name)
 		if err != nil {
-			return errResult(err.Error()), nil
+			return channelFailure("", err), nil
 		}
 		from := in.FromCursor
 		if from == "" {
 			committed, err := c.Store.ChannelCommittedCursor(ctx, tenantID, name, scope, scopeID)
 			if err != nil {
-				return errResult(fmt.Sprintf("await: read committed cursor for %q: %s", name, err)), nil
+				return errFrom(fmt.Sprintf("await: read committed cursor for %q: %s", name, err), err), nil
 			}
 			from = committed
 		}
@@ -1033,7 +1073,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 	// a legitimately-empty channel).
 	for _, st := range states {
 		if err := readChan(st); err != nil {
-			return errResult(fmt.Sprintf("await: read %q: %s", st.name, err)), nil
+			return errFrom(fmt.Sprintf("await: read %q: %s", st.name, err), err), nil
 		}
 	}
 
@@ -1084,7 +1124,7 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 				return c.Store.ChannelSubscribe(ctx, tenantID, st.name, st.scope, st.scopeID, st.from, limit)
 			}, st.name, diag)
 			if err != nil {
-				return errResult(fmt.Sprintf("await: read %q (after wake): %s", st.name, err)), nil
+				return errFrom(fmt.Sprintf("await: read %q (after wake): %s", st.name, err), err), nil
 			}
 			st.msgs = msgs
 			st.next = next
@@ -1134,17 +1174,17 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return channelFailure("", err), nil
 	}
 	if in.Cursor == "" {
-		return errResult("ack: missing required field: cursor"), nil
+		return errValidation("ack: missing required field: cursor", "Pass `cursor`: the next_cursor op=subscribe returned."), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID // RFC N: authoritative run tenant
 	if err := c.Store.ChannelAck(ctx, tenantID, in.Channel, scope, scopeID, in.Cursor); err != nil {
 		if errors.Is(err, store.ErrChannelCursorRegression) {
-			return errResult(fmt.Sprintf("ack: %s", err)), nil
+			return errBusiness(fmt.Sprintf("ack: %s", err), "Nothing to do: a later cursor is already acknowledged. Ack the newest next_cursor from op=subscribe."), nil
 		}
-		return errResult(fmt.Sprintf("ack: %s", err)), nil
+		return errFrom(fmt.Sprintf("ack: %s", err), err), nil
 	}
 	return okJSON(map[string]any{"ok": true})
 }
@@ -1152,7 +1192,7 @@ func (c *Channel) execAck(ctx context.Context, policy tools.ChannelPolicyValue, 
 func (c *Channel) execPeek(ctx context.Context, policy tools.ChannelPolicyValue, in channelInput) (tools.Result, error) {
 	_, scope, scopeID, err := c.resolveChannel(ctx, policy, "subscribe", in.Channel)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return channelFailure("", err), nil
 	}
 	limit := in.MaxMessages
 	if limit <= 0 {
@@ -1165,7 +1205,7 @@ func (c *Channel) execPeek(ctx context.Context, policy tools.ChannelPolicyValue,
 	tenantID := tools.RunIdentity(ctx).TenantID // RFC N: authoritative run tenant
 	msgs, err := c.Store.ChannelPeek(ctx, tenantID, in.Channel, scope, scopeID, from, limit)
 	if err != nil {
-		return errResult(fmt.Sprintf("peek: %s", err)), nil
+		return errFrom(fmt.Sprintf("peek: %s", err), err), nil
 	}
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {

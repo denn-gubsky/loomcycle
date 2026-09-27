@@ -1553,21 +1553,8 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 	// an exhausted budget, which want opposite responses. The status details
 	// already carry this for a call that FAILS the RPC; this is the streamed
 	// half.
-	if ev.ErrorInfo != nil {
-		ei := &loomcyclepb.ErrorInfo{
-			Category:    string(ev.ErrorInfo.Category),
-			IsRetryable: ev.ErrorInfo.Retryable,
-			Description: ev.ErrorInfo.Description,
-		}
-		// Only on a genuinely retryable failure, and only when there is a real
-		// hint: a zero would read as "retry immediately", the opposite of
-		// "wait as you judge best".
-		if ev.ErrorInfo.Retryable && ev.ErrorInfo.RetryAfter != nil && *ev.ErrorInfo.RetryAfter > 0 {
-			ms := ev.ErrorInfo.RetryAfter.Milliseconds()
-			ei.RetryAfterMs = &ms
-		}
-		out.ErrorInfo = ei
-	}
+	// A failed tool call's too: its classification and correct call format.
+	out.ErrorInfo = errorInfoToProto(ev.ErrorInfo)
 	return out
 }
 

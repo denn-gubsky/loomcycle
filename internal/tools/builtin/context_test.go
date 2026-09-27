@@ -1002,6 +1002,14 @@ func TestContextTool_AnotherTenantsDefReadsLikeAMissingOne(t *testing.T) {
 		if got, want := strings.ReplaceAll(theirs.Text, privateA, "ID"), strings.ReplaceAll(none.Text, missing, "ID"); got != want {
 			t.Errorf("%s: another tenant's def reads differently from a missing one:\n theirs: %s\n none:   %s", op, got, want)
 		}
+		// The structured error is read by the model too: a different category
+		// or next step would be the same oracle, moved out of the text.
+		if theirs.Error == nil || none.Error == nil ||
+			theirs.Error.Category != none.Error.Category ||
+			theirs.Error.Description != none.Error.Description ||
+			theirs.Error.Category == tools.CategoryPermission {
+			t.Errorf("%s: another tenant's def is classified differently from a missing one: %+v vs %+v", op, theirs.Error, none.Error)
+		}
 		if strings.Contains(theirs.Text, "0.3") || strings.Contains(theirs.Text, "pricing_") {
 			t.Errorf("%s: refusal leaks the other tenant's def: %s", op, theirs.Text)
 		}

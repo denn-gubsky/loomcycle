@@ -162,7 +162,7 @@ func (s *Server) driveTeamSubscription(ctx context.Context, sub teamSubscription
 // itself moves the cursor, and a sweep that consumed would eat the very message
 // it was starting the walk for.
 func (s *Server) sourceHasWork(ctx context.Context, sub teamSubscription) (bool, error) {
-	def, ok := s.ResolveChannelScope(ctx, sub.Source)
+	def, ok := s.ResolveChannelScope(ctx, sub.TenantID, sub.Source)
 	if !ok {
 		return false, fmt.Errorf("source channel %q is not declared", sub.Source)
 	}

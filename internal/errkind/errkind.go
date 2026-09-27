@@ -94,10 +94,76 @@ type Info struct {
 	//
 	// It can be set on an Info with no Category: that is an unclassified
 	// failure that still carries the call format, not a classification.
-	//
-	// omitempty: a run event serializes Info as its SSE error_info, and a run
-	// error never carries a call format, so that wire stays exactly as it was.
-	CallFormat *CallFormat `json:",omitempty"`
+	CallFormat *CallFormat
+}
+
+// infoWire is Info's JSON shape: the SSE `error_info` object, and a persisted
+// event's. Its keys are the ones @loomcycle/client's ErrorInfo type has always
+// declared, and the gRPC ErrorInfo message uses.
+//
+// ⚠️ Info had no JSON tags, so it serialized as its Go field names
+// ({"Category", "Retryable", "RetryAfter" in nanoseconds}), and a TS consumer
+// reading `error_info.category` got undefined. UnmarshalJSON still reads that
+// legacy shape, because events persisted before the fix carry it.
+type infoWire struct {
+	Category          Category    `json:"category,omitempty"`
+	IsRetryable       bool        `json:"is_retryable"`
+	Description       string      `json:"description,omitempty"`
+	RetryAfterMS      *int64      `json:"retry_after_ms,omitempty"`
+	CorrectCallFormat *CallFormat `json:"correct_call_format,omitempty"`
+}
+
+// MarshalJSON writes Info in its wire shape. A backoff is sent only on a
+// retryable failure with a real hint: a zero reads as "retry now", and a hint
+// on a non-retryable failure invites waiting for something that cannot clear.
+func (i Info) MarshalJSON() ([]byte, error) {
+	w := infoWire{
+		Category:          i.Category,
+		IsRetryable:       i.Retryable,
+		Description:       i.Description,
+		CorrectCallFormat: i.CallFormat,
+	}
+	if i.Retryable && i.RetryAfter != nil && *i.RetryAfter > 0 {
+		ms := i.RetryAfter.Milliseconds()
+		if ms < 1 {
+			ms = 1
+		}
+		w.RetryAfterMS = &ms
+	}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON reads the wire shape, and the legacy Go-field-name shape that
+// events persisted before MarshalJSON existed carry.
+func (i *Info) UnmarshalJSON(b []byte) error {
+	var w struct {
+		infoWire
+		// Legacy keys.
+		LegacyCategory    Category       `json:"Category"`
+		LegacyRetryable   bool           `json:"Retryable"`
+		LegacyDescription string         `json:"Description"`
+		LegacyRetryAfter  *time.Duration `json:"RetryAfter"`
+	}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	*i = Info{
+		Category:    w.Category,
+		Retryable:   w.IsRetryable,
+		Description: w.Description,
+		CallFormat:  w.CorrectCallFormat,
+	}
+	if w.RetryAfterMS != nil {
+		d := time.Duration(*w.RetryAfterMS) * time.Millisecond
+		i.RetryAfter = &d
+	}
+	if i.Category == "" && w.LegacyCategory != "" {
+		i.Category = w.LegacyCategory
+		i.Retryable = w.LegacyRetryable
+		i.Description = w.LegacyDescription
+		i.RetryAfter = w.LegacyRetryAfter
+	}
+	return nil
 }
 
 // CallFormat is what a correct call to a documented tool looks like, taken from

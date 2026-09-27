@@ -73,30 +73,30 @@ func (d *Document) proposeSubject(ctx context.Context, in docInput) (tools.Resul
 		subject = strings.TrimSpace(in.Title)
 	}
 	if subject == "" {
-		return errResult("propose_subject: subject is required — it is the name an operator adopts"), nil
+		return errValidation("propose_subject: subject is required — it is the name an operator adopts", ""), nil
 	}
 	naturalKey := strings.TrimSpace(in.NaturalKey)
 	if naturalKey == "" {
-		return errResult("propose_subject: natural_key is required — the proposer owns the " +
-			"subject's identity, and the adopt path mints the entity under exactly this key " +
-			"so the two can never disagree"), nil
+		return errValidation("propose_subject: natural_key is required — the proposer owns the "+
+			"subject's identity, and the adopt path mints the entity under exactly this key "+
+			"so the two can never disagree", "Pass `natural_key` — the key the subject's entity will carry."), nil
 	}
 	if len(in.Body) > proposalBodyMax {
-		return errResult(fmt.Sprintf("propose_subject: body is %d bytes, over the %d-byte limit",
-			len(in.Body), proposalBodyMax)), nil
+		return errValidation(fmt.Sprintf("propose_subject: body is %d bytes, over the %d-byte limit",
+			len(in.Body), proposalBodyMax), "Keep the evidence to counts and a few examples."), nil
 	}
 
 	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
-		return errResult("propose_subject: " + err.Error()), nil
+		return errBusiness("propose_subject: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
 	read, err := d.ontologyForKey(ctx, key, mscope, memory.OntologyPath)
 	if err != nil {
-		return errResult("propose_subject: " + err.Error()), nil
+		return errFrom("propose_subject: "+err.Error(), err), nil
 	}
 	if read.DocumentID == "" || read.RootChunkID == "" {
-		return errResult("propose_subject: this tenant has no ontology document yet — an " +
-			"operator opens Settings → Ontology once to create it"), nil
+		return errBusiness("propose_subject: this tenant has no ontology document yet — an "+
+			"operator opens Settings → Ontology once to create it", ""), nil
 	}
 	// Already filed, in either state. An accepted one is gone (the entity replaced it),
 	// so reaching here means pending or rejected — and a rejected twin means the
@@ -120,7 +120,7 @@ func (d *Document) proposeSubject(ctx context.Context, in docInput) (tools.Resul
 		Type: SubjectProposalChunkType, Body: in.Body, Fields: fields,
 	})
 	if err != nil {
-		return errResult("propose_subject: " + err.Error()), nil
+		return errFrom("propose_subject: "+err.Error(), err), nil
 	}
 	if res.IsError {
 		return res, nil

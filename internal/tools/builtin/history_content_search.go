@@ -55,33 +55,33 @@ type chatContentMatch struct {
 func (h *History) searchContent(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	query := strings.TrimSpace(in.Query)
 	if query == "" {
-		return errResult("history: search requires a non-empty query"), nil
+		return errValidation("history: search requires a non-empty query", "Pass a non-empty query."), nil
 	}
 	if h.Embedder == nil {
-		return errResult("history: match=content needs an embedder — none is configured, so " +
-			"only the title match is available (memory.embedder in operator config)"), nil
+		return errBusiness("history: match=content needs an embedder — none is configured, so "+
+			"only the title match is available (memory.embedder in operator config)", "Search by title instead: omit match, or pass match=title."), nil
 	}
 	ident := tools.RunIdentity(ctx)
 	if ident.UserID == "" {
 		// Not a refusal of the feature so much as of the request: turns are indexed
 		// under the person who typed them, so a run with no user has no turns of its
 		// own to search.
-		return errResult("history: match=content searches the turns YOU typed, and this run " +
-			"carries no user_id — use the default title match, or start the run with a user"), nil
+		return errValidation("history: match=content searches the turns YOU typed, and this run "+
+			"carries no user_id — use the default title match, or start the run with a user", "Omit match (title search), or pass match=title."), nil
 	}
 
 	vecs, err := h.Embedder.Embed(ctx, []string{query})
 	if err != nil {
-		return errResult("history: search: embed: " + err.Error()), nil
+		return errFrom("history: search: embed: "+err.Error(), err), nil
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		return errResult("history: search: the embedder returned an empty vector"), nil
+		return errTransient("history: search: the embedder returned an empty vector", "Try again; if it keeps failing, search by title with match=title."), nil
 	}
 
 	hits, err := h.Store.MemoryEmbedSearch(ctx, ident.TenantID, store.MemoryScopeUser, ident.UserID,
 		store.MemorySearchFilter{KeyPrefix: store.TraceTurnKeyPrefix}, vecs[0], contentMatchCandidates)
 	if err != nil {
-		return errResult("history: search: " + err.Error()), nil
+		return errFrom("history: search: "+err.Error(), err), nil
 	}
 
 	// Collapse turns to chats, keeping the BEST turn per chat as the evidence. A
