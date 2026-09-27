@@ -47,6 +47,9 @@ type RunMinter interface {
 type journal struct {
 	Pos  int               `json:"pos"`
 	Asks []hooks.AskRecord `json:"asks,omitempty"`
+	// Chain identifies the chain the progress is a place in (see
+	// chainSignature).
+	Chain string `json:"chain,omitempty"`
 	// HeldBy marks a hold made while nobody can be asked (no Interruption
 	// configured): the message waits out its deadline.
 	HeldBy string `json:"held_by,omitempty"`
@@ -61,7 +64,7 @@ func (j *job) loadJournal() {
 }
 
 func (j *job) journalJSON() json.RawMessage {
-	if j.jrnl.Pos < 0 {
+	if j.jrnl.Pos < 0 && j.jrnl.Chain == "" && j.jrnl.HeldBy == "" {
 		return nil
 	}
 	b, _ := json.Marshal(j.jrnl)
@@ -92,7 +95,7 @@ func (s *askSession) Recorded() []hooks.AskRecord {
 
 func (s *askSession) Record(r hooks.AskRecord) error {
 	if s.j.jrnl.Pos != s.pos {
-		s.j.jrnl = journal{Pos: s.pos}
+		s.j.jrnl = journal{Pos: s.pos, Chain: s.j.jrnl.Chain}
 	}
 	s.j.jrnl.Asks = append(s.j.jrnl.Asks, r)
 	return s.j.saveProgress(s.ctx, s.pos, s.body, 0, time.Time{}, "")

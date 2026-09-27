@@ -25,6 +25,8 @@ package channelhooks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,9 +81,11 @@ type Config struct {
 	// those of one channel. Defaults 16 and 4.
 	Concurrency int
 	PerChannel  int
-	// MaxWait bounds how long a message waits for a decision — through a hook
-	// that keeps failing closed, or a hold nobody answers — before it is
-	// dropped. A message's TTL, less a margin, bounds it too. Default 15m.
+	// MaxWait bounds how long a message waits through a hook that keeps
+	// failing closed (and a hold, where nobody can be asked) before it is
+	// dropped. A message's TTL, less a margin, bounds it too. Default 15m. A
+	// hold put to a person is bounded by the Interruption timeout and the
+	// TTL instead: a person's time is not a hook failing.
 	MaxWait time.Duration
 	// MaxBodyBytes caps a rewritten body, as a publish's payload is capped.
 	// 0: no cap.
@@ -139,6 +143,9 @@ func New(cfg Config) *Worker {
 	}
 }
 
+// gcEvery is how often a worker removes progress rows no message needs.
+const gcEvery = 10 * time.Minute
+
 // Stats is a snapshot of the worker's counters.
 type Stats struct {
 	InFlight  int64
@@ -165,7 +172,18 @@ func (w *Worker) count(kind string) {
 // lease runs out, and is then claimed again.
 func (w *Worker) Run(ctx context.Context) {
 	defer w.wg.Wait()
+	var lastGC time.Time
 	for ctx.Err() == nil {
+		if w.now().Sub(lastGC) >= gcEvery {
+			// Progress rows whose message is gone (expired, trimmed, swept) or
+			// already decided; nothing else removes them.
+			if n, err := w.cfg.Store.ChannelHookGC(ctx, 1000); err != nil && ctx.Err() == nil {
+				log.Printf("channelhooks: gc: %v", err)
+			} else if n > 0 {
+				log.Printf("channelhooks: gc removed %d stale progress row(s)", n)
+			}
+			lastGC = w.now()
+		}
 		// Registered before the claim, so a write between the claim and the
 		// wait still wakes it.
 		var wake chan struct{}
@@ -360,12 +378,21 @@ func (j *job) decide(ctx context.Context) {
 		j.retry(ctx, nil, "the channel's definition could not be read", err)
 		return
 	}
-	if !declared || len(def.Hooks[hooks.PhaseChannelPublish]) == 0 {
-		// Its hooks were taken off since the message was written: nothing
-		// is left to decide, so it is delivered as written.
+	if !declared {
+		// No definition at all — a restore that did not bring the channel
+		// back, a yaml entry removed: nothing says the gate was lifted, so the
+		// message is not delivered past it. It waits, and at its deadline is
+		// dropped.
+		j.retry(ctx, nil, "the channel is not declared", errors.New("no definition for "+j.msg.Channel))
+		return
+	}
+	if len(def.Hooks[hooks.PhaseChannelPublish]) == 0 {
+		// Its hooks were taken off since the message was written: nothing is
+		// left to decide, so it is delivered — with whatever the hooks that
+		// ran already made of it (a redaction must not be undone).
 		j.record(providers.HookDecisionInfo{Hook: hooks.ChannelOwner(j.msg.Channel), Decision: hooks.ChannelRelease,
 			Reason: "the channel no longer carries hooks"})
-		j.release(ctx, &def, j.body(), false)
+		j.release(ctx, &def, j.body(), j.progress.Body != nil)
 		return
 	}
 	set := hooks.NewSet()
@@ -379,6 +406,16 @@ func (j *job) decide(ctx context.Context) {
 	chain := set.List()
 	pos, body, attempts := j.progress.ChainPos, j.body(), j.progress.Attempts
 	changed := j.progress.Body != nil
+	// Progress is a place in one chain. If the channel's hooks changed since
+	// it was saved — one added, removed or re-pointed — the place means
+	// nothing in the new chain (a gate added ahead of it would never run), so
+	// the message starts over from its original body.
+	sig := chainSignature(chain)
+	if j.jrnl.Chain != sig && (pos > 0 || changed || j.jrnl.Pos >= 0) {
+		pos, body, attempts, changed = 0, j.msg.Payload, 0, false
+		j.jrnl = journal{Pos: -1}
+	}
+	j.jrnl.Chain = sig
 	hctx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: j.msg.HookTenant, AgentID: hooks.ChannelOwner(j.msg.Channel)})
 	for pos < len(chain) {
 		h := chain[pos]
@@ -423,7 +460,7 @@ func (j *job) decide(ctx context.Context) {
 		case hooks.ChannelHold:
 			j.record(providers.HookDecisionInfo{Hook: name, Decision: hooks.ChannelHold, Reason: res.Reason})
 			if j.w.cfg.Interruption == nil || j.w.cfg.Runs == nil {
-				j.jrnl = journal{Pos: pos, HeldBy: name, Reason: res.Reason}
+				j.jrnl = journal{Pos: pos, HeldBy: name, Reason: res.Reason, Chain: j.jrnl.Chain}
 				_ = j.saveProgress(ctx, pos, bodyOrNil(body, changed), attempts, j.deadline, "")
 				return
 			}
@@ -442,7 +479,7 @@ func (j *job) decide(ctx context.Context) {
 			}
 			j.record(providers.HookDecisionInfo{Hook: name, Decision: hooks.ChannelRelease, Reason: "released by a person at the hold"})
 			pos, attempts = pos+1, 0
-			j.jrnl = journal{Pos: -1}
+			j.jrnl = journal{Pos: -1, Chain: j.jrnl.Chain}
 			if pos < len(chain) {
 				_ = j.saveProgress(ctx, pos, bodyOrNil(body, changed), 0, time.Time{}, "")
 			}
@@ -452,7 +489,7 @@ func (j *job) decide(ctx context.Context) {
 				body, changed = res.UpdatedBody, true
 			}
 			pos, attempts = pos+1, 0
-			j.jrnl = journal{Pos: -1}
+			j.jrnl = journal{Pos: -1, Chain: j.jrnl.Chain}
 			if pos < len(chain) {
 				// Saved between hooks, so a restart resumes at the next one.
 				_ = j.saveProgress(ctx, pos, bodyOrNil(body, changed), 0, time.Time{}, "")
@@ -674,4 +711,14 @@ func (j *job) record(d providers.HookDecisionInfo) {
 	}); err != nil && !strings.Contains(err.Error(), "context canceled") {
 		log.Printf("channelhooks: record decision on %s: %v", j.msg.Channel, err)
 	}
+}
+
+// chainSignature identifies a resolved chain: each hook's owner, name and
+// the definition version (or, for an inline webhook, its URL) it runs.
+func chainSignature(chain []*hooks.Hook) string {
+	h := sha256.New()
+	for _, k := range chain {
+		fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\n", k.Owner, k.Name, k.DefID, k.CallbackURL, k.Phase)
+	}
+	return hex.EncodeToString(h.Sum(nil)[:12])
 }

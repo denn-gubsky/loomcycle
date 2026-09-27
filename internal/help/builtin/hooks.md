@@ -366,7 +366,9 @@ hooks' decisions, and ends when the message is decided.
 
 - `release` lets the message go on to the next hook; `drop` drops it. An ask
   declined, or not answered within the Interruption timeout (and before the
-  message's TTL runs out), drops it: a hold means a person must approve.
+  message's TTL runs out), drops it: a hold means a person must approve. With
+  no Interruption timeout configured and no TTL on the message, a hold waits
+  until someone answers.
 - An answer is kept before it is acted on. A worker that picks the message up
   again — after a restart, or a lost lease — replays it rather than asking
   again; an ask still pending when its worker died is cancelled (resolved by
@@ -374,9 +376,12 @@ hooks' decisions, and ends when the message is decided.
 - While an ask waits, it gives up its concurrency slot: a person's time never
   holds up other messages.
 
-**Order and repeats.** Hooks run in the listed order, one message at a time
-per hook. Messages are decided concurrently (4 per channel, 16 per replica
-by default), so **delivery order may differ from publish order**. A hook may
+**Order and repeats.** Each message goes through the hooks in the listed
+order, one hook at a time. Messages are decided concurrently (4 per channel,
+16 per replica by default), so a hook may be deciding several messages at
+once, and **delivery order may differ from publish order**. If the channel's
+hooks change while a message is part-way through them, it starts over in the
+new chain. A hook may
 be called more than once for the same message (after a failure, a restart or
 a lost lease); `message_id` is the same each time.
 
@@ -388,8 +393,9 @@ HookDef the channel names that no longer exists fails closed whatever its
 `fail_mode` says: a gate must not vanish.
 
 **With a hold.** A channel with hooks and `hold: true` runs its hooks first;
-what they release lands in the hold for an operator to release. A
-`deliver_at` is kept: a released message is delivered no earlier.
+what they release lands in the hold for an operator to release, and the
+operator's release decides when it is delivered. On a channel that does not
+hold, a `deliver_at` is kept: a released message is delivered no earlier.
 
 **Starter results are never lost.** A drop on a Starter's per-run result
 (`origin: starter_sink`) delivers it as a `status: "error"` result instead, and
