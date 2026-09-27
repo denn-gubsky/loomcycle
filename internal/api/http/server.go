@@ -640,6 +640,14 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		if ct, ok := t.(*builtin.Context); ok {
 			ct.Tools = s.tools
 		}
+		// The planes that call the Channel tool with no per-run catalog on the
+		// policy (the MCP `channel` tool) resolve channels through the same
+		// merged set a run's policy is built from, in the caller's tenant.
+		if ch, ok := t.(*builtin.Channel); ok && ch.Catalog == nil {
+			ch.Catalog = func(ctx context.Context) map[string]tools.ChannelDef {
+				return s.mergedChannelDefs(ctx, true)
+			}
+		}
 	}
 	return s
 }

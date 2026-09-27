@@ -82,6 +82,15 @@ type Channel struct {
 	// fields and the retry behavior is unchanged.
 	PoolStatsFn func() (total, acquired, idle int32)
 
+	// Catalog returns the declared channels, for a caller whose ctx policy
+	// carries none. A run's policy always carries its catalog; the planes
+	// that call this tool on an operator's behalf (the MCP `channel` tool)
+	// stamp publish / subscribe grants with no catalog, and every channel
+	// then read as "not declared". Wired by the server; it resolves in the
+	// ctx principal's tenant, and the grants and the `publisher: system`
+	// refusal apply exactly as for a run.
+	Catalog func(ctx context.Context) map[string]tools.ChannelDef
+
 	// truncWarned dedupes the F22 wait_ms-truncation advisory to once per
 	// channel name (per process). A subscriber whose wait_ms exceeds
 	// LongPollCapMS re-subscribes every cap interval, so logging on every
@@ -173,6 +182,9 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
 	policy := tools.ChannelPolicy(ctx)
+	if policy.Channels == nil && c.Catalog != nil {
+		policy.Channels = c.Catalog(ctx)
+	}
 
 	switch in.Op {
 	case "publish":
