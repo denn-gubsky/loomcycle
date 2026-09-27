@@ -93,3 +93,30 @@ func TestTeamChannelIO_ReadWaitIsBoundedByTheLongPollCap(t *testing.T) {
 		}
 	}
 }
+
+// An acked source is idle: the subscription sweep peeks after the committed
+// cursor, so work already done does not start another walk every tick.
+func TestSourceHasWork_AnAckedSourceIsIdle(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	seedTeam(t, srv, "triage", subStarterGraph, true, false)
+	ctx := context.Background()
+	subs, _ := srv.listTeamSubscriptions(ctx)
+	if len(subs) != 1 {
+		t.Fatalf("want one subscription, got %v", subNames(subs))
+	}
+	publishC1(t, srv, 1)
+	if busy, err := srv.sourceHasWork(ctx, subs[0]); err != nil || !busy {
+		t.Fatalf("a new message: busy=%v err=%v, want true", busy, err)
+	}
+	_, cursor, err := starterIO(srv).Read(ctx, "c1", 1, 10, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := starterIO(srv).Ack(ctx, "c1", cursor); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if busy, err := srv.sourceHasWork(ctx, subs[0]); err != nil || busy {
+		t.Fatalf("after the ack: busy=%v err=%v, want false", busy, err)
+	}
+}
