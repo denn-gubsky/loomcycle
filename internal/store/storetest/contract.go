@@ -266,6 +266,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelPurgeCascadesHookState", testChannelPurgeCascadesHookState},
 		{"ChannelsDeleteCascadesHookState", testChannelsDeleteCascadesHookState},
 		{"ChannelHookGCRemovesOrphans", testChannelHookGCRemovesOrphans},
+		{"ChannelTrimTakesDeliveredBeforeAwaiting", testChannelTrimTakesDeliveredBeforeAwaiting},
 		// v0.8.6 deferred publish (PR 1)
 		{"ChannelDeferredHiddenUntilVisible", testChannelDeferredHiddenUntilVisible},
 		{"ChannelDeferredDeliversAfterProgressedCursor", testChannelDeferredDeliversAfterProgressedCursor},
