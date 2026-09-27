@@ -59,7 +59,7 @@ func newFixture(t *testing.T) *fixture {
 			defer f.mu.Unlock()
 			d, ok := f.hdefs[tenant+"|"+name]
 			if !ok {
-				return hooks.Def{}, "", errors.New("not found")
+				return hooks.Def{}, "", hooks.DefNotFound(errors.New("not found"))
 			}
 			return d, "hdf_" + name, nil
 		},

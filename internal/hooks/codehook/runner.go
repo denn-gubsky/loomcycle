@@ -173,8 +173,11 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 	}
 	// One seed and clock for every run of this invocation, so the body replays
 	// identically; different per call, so two calls do not share a sequence.
-	seed := seedFor(h.ID, ev)
+	seed := seedFor(hookIdentity(h), ev)
 	anchor := time.Now().UnixMilli()
+	if session := hooks.AskSessionFrom(ctx); session != nil {
+		anchor = session.Anchor(anchor)
+	}
 
 	// The hook's own grant: it may ask (and notify) under the run's pending cap
 	// whether or not the agent itself may interrupt.
@@ -484,6 +487,13 @@ func eventValue(event string, payload any) (map[string]any, error) {
 	}
 	ev["event"] = event
 	return ev, nil
+}
+
+// hookIdentity names a hook stably: the same in every process that resolves
+// it (a Set's ids are minted fresh each time), so a decision replayed after a
+// restart draws the same numbers.
+func hookIdentity(h *hooks.Hook) string {
+	return h.Owner + "/" + h.Name + "/" + h.DefID
 }
 
 // seedFor derives the RNG seed from the hook and the call it decides on: a
