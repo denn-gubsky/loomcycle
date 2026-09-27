@@ -315,6 +315,15 @@ func TestHistory_GetCrossTenantOpaqueNotFound(t *testing.T) {
 	if want := `history: chat "does-not-exist" not found`; missingRes.Text != want {
 		t.Errorf("missing refusal form = %q, want %q", missingRes.Text, want)
 	}
+	// The structure the model and every transport now receive must not tell
+	// the two apart either: a permission category, or any different next
+	// step, would say the row exists.
+	if crossRes.Error == nil || missingRes.Error == nil ||
+		crossRes.Error.Category != missingRes.Error.Category ||
+		crossRes.Error.Description != missingRes.Error.Description ||
+		crossRes.Error.Category == tools.CategoryPermission {
+		t.Errorf("cross-tenant and missing chats are classified differently: %+v vs %+v", crossRes.Error, missingRes.Error)
+	}
 }
 
 // TestHistory_RenameCrossTenantRefusedAndUnmutated: a cross-tenant rename is
