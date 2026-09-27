@@ -567,11 +567,13 @@ func (m *Memory) InputSchema() json.RawMessage { return json.RawMessage(memoryIn
 // errors as model-readable tool_results.
 func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if m.Store == nil {
-		return errResult("Memory tool: not configured (no Store backend — set LOOMCYCLE_STORAGE_BACKEND or remove Memory from the agent's tools)"), nil
+		return errBusiness("Memory tool: not configured (no Store backend — set LOOMCYCLE_STORAGE_BACKEND or remove Memory from the agent's tools)",
+			"Memory is unavailable on this server; continue without it."), nil
 	}
 	var in memoryInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
+		return errValidation(fmt.Sprintf("invalid input JSON: %s", err),
+			"Send the arguments as one JSON object matching the tool's input schema."), nil
 	}
 
 	// RFC AA SQL Memory ops resolve scope through resolveSqlScope (their own
@@ -593,7 +595,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 
 	scope, scopeID, err := m.resolveScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 
 	switch in.Op {
@@ -638,9 +640,9 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	case "pending_ack":
 		return m.execPendingAck(ctx, scope, scopeID, in)
 	case "":
-		return errResult("missing required field: op"), nil
+		return errValidation("missing required field: op", "Pass op, for example op=get or op=set."), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, placement, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op)), nil
+		return errValidation(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, placement, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op), ""), nil
 	}
 }
 
@@ -651,13 +653,16 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 func (m *Memory) resolveScope(ctx context.Context, requested string) (store.MemoryScope, string, error) {
 	policy := tools.MemoryPolicy(ctx)
 	if requested == "" {
-		return "", "", fmt.Errorf("missing required field: scope")
+		return "", "", memRefuse(errValidation("missing required field: scope",
+			"Pass scope: agent, user or tenant — whichever this agent's memory_scopes grants."))
 	}
 	if !contains(policy.AllowedScopes, requested) {
 		if len(policy.AllowedScopes) == 0 {
-			return "", "", fmt.Errorf("Memory tool: this agent has no memory_scopes configured — add `memory_scopes: [agent]` (and/or user, tenant) to the agent yaml")
+			return "", "", memRefuse(errPermission("Memory tool: this agent has no memory_scopes configured — add `memory_scopes: [agent]` (and/or user, tenant) to the agent yaml",
+				"This agent cannot use key/value memory until an operator grants memory_scopes."))
 		}
-		return "", "", fmt.Errorf("Memory tool: scope %q not in this agent's memory_scopes %v", requested, policy.AllowedScopes)
+		return "", "", memRefuse(errPermission(fmt.Sprintf("Memory tool: scope %q not in this agent's memory_scopes %v", requested, policy.AllowedScopes),
+			"Use one of the listed scopes, or ask an operator to add this one to memory_scopes."))
 	}
 
 	// RFC BX P2b: an isolated member (substrate:user) may address only its own
@@ -665,20 +670,22 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 	// agent's memory_scopes would otherwise permit it. Server-derived from the
 	// run's Isolated bit; a non-isolated run is unaffected.
 	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
-		return "", "", err
+		return "", "", memRefuse(errPermission(err.Error(), "Use scope=user or scope=agent."))
 	}
 
 	switch store.MemoryScope(requested) {
 	case store.MemoryScopeAgent:
 		name := tools.AgentName(ctx)
 		if name == "" {
-			return "", "", fmt.Errorf("Memory tool: scope=agent requires a yaml-declared agent (no agent name on the run context)")
+			return "", "", memRefuse(errBusiness("Memory tool: scope=agent requires a yaml-declared agent (no agent name on the run context)",
+				"Use another scope this agent's memory_scopes grants."))
 		}
 		return store.MemoryScopeAgent, name, nil
 	case store.MemoryScopeUser:
 		ident := tools.RunIdentity(ctx)
 		if ident.UserID == "" {
-			return "", "", fmt.Errorf("Memory tool: scope=user requires a user_id on the run (caller must supply user_id when starting the run)")
+			return "", "", memRefuse(errBusiness("Memory tool: scope=user requires a user_id on the run (caller must supply user_id when starting the run)",
+				"Use another scope this agent's memory_scopes grants."))
 		}
 		return store.MemoryScopeUser, ident.UserID, nil
 	case store.MemoryScopeTenant:
@@ -694,7 +701,7 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 		// where it is least dangerous.
 		return store.MemoryScopeTenant, "", nil
 	default:
-		return "", "", fmt.Errorf("Memory tool: unknown scope %q (want one of: agent, user, tenant)", requested)
+		return "", "", memRefuse(errValidation(fmt.Sprintf("Memory tool: unknown scope %q (want one of: agent, user, tenant)", requested), ""))
 	}
 }
 
@@ -720,32 +727,37 @@ func (m *Memory) resolveScope(ctx context.Context, requested string) (store.Memo
 // ephemeral volumes scope to RootRunID.
 func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, scopeID string, err error) {
 	if requested == "" {
-		return "", "", fmt.Errorf("missing required field: scope (one of: agent, user, run)")
+		return "", "", memRefuse(errValidation("missing required field: scope (one of: agent, user, run)",
+			"Pass a scope this agent's sql_scopes grants."))
 	}
 	pol := tools.SqlMemPolicy(ctx)
 	if len(pol.AllowedScopes) == 0 {
-		return "", "", fmt.Errorf("Memory tool: this agent has no sql_scopes configured — add `sql_scopes: [agent]` (and/or user, run, tenant) to the agent yaml")
+		return "", "", memRefuse(errPermission("Memory tool: this agent has no sql_scopes configured — add `sql_scopes: [agent]` (and/or user, run, tenant) to the agent yaml",
+			"This agent cannot use SQL memory until an operator grants sql_scopes."))
 	}
 	if !contains(pol.AllowedScopes, requested) {
-		return "", "", fmt.Errorf("Memory tool: sql scope %q not in this agent's sql_scopes %v", requested, pol.AllowedScopes)
+		return "", "", memRefuse(errPermission(fmt.Sprintf("Memory tool: sql scope %q not in this agent's sql_scopes %v", requested, pol.AllowedScopes),
+			"Use one of the listed scopes, or ask an operator to add this one to sql_scopes."))
 	}
 	// RFC BX P2b: an isolated member may not reach the tenant-shared SQL keyspace.
 	// The {agent, user, run} scopes are own-scoped and pass through unaffected
 	// (ConfineIsolatedScope only refuses tenant/global).
 	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
-		return "", "", err
+		return "", "", memRefuse(errPermission(err.Error(), "Use scope=user, scope=agent or scope=run."))
 	}
 	switch requested {
 	case "agent":
 		name := tools.AgentName(ctx)
 		if name == "" {
-			return "", "", fmt.Errorf("Memory tool: sql scope=agent requires a yaml-declared agent (no agent name on the run context)")
+			return "", "", memRefuse(errBusiness("Memory tool: sql scope=agent requires a yaml-declared agent (no agent name on the run context)",
+				"Use another scope this agent's sql_scopes grants."))
 		}
 		return "agent", name, nil
 	case "user":
 		uid := tools.RunIdentity(ctx).UserID
 		if uid == "" {
-			return "", "", fmt.Errorf("Memory tool: sql scope=user requires a user_id on the run (caller must supply user_id when starting the run)")
+			return "", "", memRefuse(errBusiness("Memory tool: sql scope=user requires a user_id on the run (caller must supply user_id when starting the run)",
+				"Use another scope this agent's sql_scopes grants."))
 		}
 		return "user", uid, nil
 	case "run":
@@ -757,7 +769,8 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 			rid = tools.RunID(ctx)
 		}
 		if rid == "" {
-			return "", "", fmt.Errorf("Memory tool: sql scope=run requires an active run (no run id on the context)")
+			return "", "", memRefuse(errBusiness("Memory tool: sql scope=run requires an active run (no run id on the context)",
+				"Use another scope this agent's sql_scopes grants."))
 		}
 		return "run", rid, nil
 	case "tenant":
@@ -771,7 +784,7 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 		// stays the single source of identity. Two conventions, one reason each.
 		return "tenant", sqlScopeTenant(ctx), nil
 	default:
-		return "", "", fmt.Errorf("Memory tool: unknown sql scope %q (want one of: agent, user, run, tenant)", requested)
+		return "", "", memRefuse(errValidation(fmt.Sprintf("Memory tool: unknown sql scope %q (want one of: agent, user, run, tenant)", requested), ""))
 	}
 }
 
@@ -779,18 +792,19 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result, error) {
 	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	if strings.TrimSpace(in.Statement) == "" {
-		return errResult("sql_query: missing required field: statement"), nil
+		return errValidation("sql_query: missing required field: statement", "Pass the SQL text in statement."), nil
 	}
 	args, aerr := m.resolveEmbedArgs(ctx, in.Args)
 	if aerr != nil {
 		m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, 0, 0, aerr)
-		return errResult(fmt.Sprintf("sql_query: %s", aerr)), nil
+		return memErr(fmt.Sprintf("sql_query: %s", aerr), aerr), nil
 	}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
@@ -805,7 +819,7 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 	durMs := time.Since(start).Milliseconds()
 	if qerr != nil {
 		m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, 0, durMs, qerr)
-		return errResult(fmt.Sprintf("sql_query: %s", qerr)), nil
+		return errFrom(fmt.Sprintf("sql_query: %s", qerr), qerr), nil
 	}
 	m.auditSql(ctx, "sql_query", scope, scopeID, in.Statement, int64(len(res.Rows)), durMs, nil)
 	return okJSON(map[string]any{
@@ -819,18 +833,19 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result, error) {
 	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	if strings.TrimSpace(in.Statement) == "" {
-		return errResult("sql_exec: missing required field: statement"), nil
+		return errValidation("sql_exec: missing required field: statement", "Pass the SQL text in statement."), nil
 	}
 	args, aerr := m.resolveEmbedArgs(ctx, in.Args)
 	if aerr != nil {
 		m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, 0, 0, aerr)
-		return errResult(fmt.Sprintf("sql_exec: %s", aerr)), nil
+		return memErr(fmt.Sprintf("sql_exec: %s", aerr), aerr), nil
 	}
 	// Per-agent quota override wins over the manager default when > 0.
 	quota := tools.SqlMemPolicy(ctx).QuotaBytes
@@ -847,7 +862,7 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	durMs := time.Since(start).Milliseconds()
 	if xerr != nil {
 		m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, 0, durMs, xerr)
-		return errResult(fmt.Sprintf("sql_exec: %s", xerr)), nil
+		return errFrom(fmt.Sprintf("sql_exec: %s", xerr), xerr), nil
 	}
 	m.auditSql(ctx, "sql_exec", scope, scopeID, in.Statement, res.RowsAffected, durMs, nil)
 	return okJSON(map[string]any{
@@ -899,17 +914,19 @@ func currentSqlTxnID(ctx context.Context, scope, scopeID string) string {
 func (m *Memory) execSqlBegin(ctx context.Context, in memoryInput) (tools.Result, error) {
 	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	rid := tools.RunIdentity(ctx).RootRunID
 	if rid == "" {
 		rid = tools.RunID(ctx)
 	}
 	if rid == "" {
-		return errResult("sql_begin: an explicit transaction requires an active run"), nil
+		return errBusiness("sql_begin: an explicit transaction requires an active run",
+			"Run each sql_exec on its own; outside a run every statement commits by itself."), nil
 	}
 	txnID := sqlmem.BuildTxnID(rid, scope, scopeID)
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
@@ -918,7 +935,7 @@ func (m *Memory) execSqlBegin(ctx context.Context, in memoryInput) (tools.Result
 	durMs := time.Since(start).Milliseconds()
 	if berr != nil {
 		m.auditSql(ctx, "sql_begin", scope, scopeID, "", 0, durMs, berr)
-		return errResult(fmt.Sprintf("sql_begin: %s", berr)), nil
+		return errFrom(fmt.Sprintf("sql_begin: %s", berr), berr), nil
 	}
 	m.auditSql(ctx, "sql_begin", scope, scopeID, "", 0, durMs, nil)
 	// depth is the nesting level after this begin (1 = root txn; 2+ = a nested
@@ -935,14 +952,16 @@ func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bo
 	}
 	scope, scopeID, err := m.resolveSqlScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errResult("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	if txnID == "" {
-		return errResult(fmt.Sprintf("%s: an explicit transaction requires an active run", op)), nil
+		return errBusiness(fmt.Sprintf("%s: an explicit transaction requires an active run", op),
+			"There is no transaction to finish; outside a run every statement commits by itself."), nil
 	}
 	start := time.Now()
 	var depth int
@@ -955,7 +974,7 @@ func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bo
 	durMs := time.Since(start).Milliseconds()
 	if ferr != nil {
 		m.auditSql(ctx, op, scope, scopeID, "", 0, durMs, ferr)
-		return errResult(fmt.Sprintf("%s: %s", op, ferr)), nil
+		return errFrom(fmt.Sprintf("%s: %s", op, ferr), ferr), nil
 	}
 	m.auditSql(ctx, op, scope, scopeID, "", 0, durMs, nil)
 	// depth is the nesting level AFTER this op: a nested level was closed (still
@@ -990,7 +1009,8 @@ func (m *Memory) resolveEmbedArgs(ctx context.Context, args []any) ([]any, error
 	for i, a := range args {
 		if txt, ok := embedDirective(a); ok {
 			if strings.TrimSpace(txt) == "" {
-				return nil, fmt.Errorf("$embed directive has empty text")
+				return nil, memRefuse(errValidation("$embed directive has empty text",
+					"Put the text to embed inside the directive: {\"$embed\": \"<text>\"}."))
 			}
 			texts = append(texts, txt)
 			slots = append(slots, i)
@@ -1000,10 +1020,12 @@ func (m *Memory) resolveEmbedArgs(ctx context.Context, args []any) ([]any, error
 		return args, nil
 	}
 	if m.Embedder == nil {
-		return nil, fmt.Errorf("$embed requires a configured embedder (set memory.embedder)")
+		return nil, memRefuse(errBusiness("$embed requires a configured embedder (set memory.embedder)",
+			"This server cannot embed; run the statement without $embed arguments."))
 	}
 	if m.SqlMem == nil || !m.SqlMem.VectorsEnabled() {
-		return nil, fmt.Errorf("$embed requires vector columns — the postgres tier with pgvector installed in the sqlmem_ext schema (see docs/SQL_MEMORY.md)")
+		return nil, memRefuse(errBusiness("$embed requires vector columns — the postgres tier with pgvector installed in the sqlmem_ext schema (see docs/SQL_MEMORY.md)",
+			"This server's SQL Memory has no vector support; run the statement without $embed arguments."))
 	}
 	vecs, err := m.Embedder.Embed(ctx, texts)
 	if err != nil {
@@ -1082,12 +1104,12 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if in.Path != "" && in.Key == "" {
 		key, err := m.resolveMemoryPath(ctx, scope, scopeID, in.Path)
 		if err != nil {
-			return errResult("get: " + err.Error()), nil
+			return memErr("get: "+err.Error(), err), nil
 		}
 		in.Key = key
 	}
 	if in.Key == "" {
-		return errResult("get: missing required field: key (or path)"), nil
+		return errValidation("get: missing required field: key (or path)", "Pass key, or the path it was registered at."), nil
 	}
 	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
@@ -1095,7 +1117,7 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 		if errors.As(err, &nf) {
 			return okJSON(map[string]any{"value": nil, "expires_at": nil})
 		}
-		return errResult(fmt.Sprintf("get: %s", err)), nil
+		return errFrom(fmt.Sprintf("get: %s", err), err), nil
 	}
 	out := map[string]any{
 		"value":      entry.Value,
@@ -1229,22 +1251,22 @@ func enforceCoreBlockWrite(ctx context.Context, scope store.MemoryScope, key, op
 
 func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
-		return errResult("set: missing required field: key"), nil
+		return errValidation("set: missing required field: key", "Pass the key to write."), nil
 	}
 	if len(in.Value) == 0 {
-		return errResult("set: missing required field: value"), nil
+		return errValidation("set: missing required field: value", "Pass value as a JSON value, for example \"text\" or {\"a\":1}."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errResult("set: value is not valid JSON"), nil
+		return errValidation("set: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
 	}
 	// Fail fast on a malformed path before writing the value (RFC AL).
 	if in.Path != "" {
 		if _, err := normalizePath(in.Path); err != nil {
-			return errResult("set: " + err.Error()), nil
+			return errValidation("set: "+err.Error(), "Pass an absolute path of letters, digits and . _ - segments, such as /notes/plan."), nil
 		}
 	}
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
-		return errResult(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
+		return errBusiness(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes), memoryCapNext), nil
 	}
 	// THE TRACE NAMESPACE IS SERVER-ONLY. A row's class decides whether it reaches an
 	// unfiltered search and whether erasure has to find it, so an agent must not be
@@ -1255,22 +1277,22 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// Refused rather than silently re-prefixed: a write that lands somewhere other
 	// than where the caller asked is worse than one that does not land.
 	if strings.HasPrefix(in.Key, store.TraceTurnKeyPrefix) {
-		return errResult("set: the " + store.TraceTurnKeyPrefix + " namespace is written by the " +
-			"server when it indexes a conversation turn, and cannot be written through this tool — " +
-			"use an ordinary key"), nil
+		return errValidation("set: the "+store.TraceTurnKeyPrefix+" namespace is written by the "+
+			"server when it indexes a conversation turn, and cannot be written through this tool — "+
+			"use an ordinary key", ""), nil
 	}
 	// RFC BL P1: a write to a reserved `core/<label>` key is gated by the
 	// agent's core-block config — read_only refuses the write entirely,
 	// limit_bytes caps it (mirroring the quota refusal below). Undeclared
 	// core/* keys pass through as normal memory.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "set", len(in.Value)); err != nil {
-		return errResult(err.Error()), nil
+		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	// Quota math charges only the k/v row's key + value bytes;
 	// embeddings are excluded per RFC §8. Operators don't pay for
 	// the vector's storage in their per-scope cap.
 	if err := m.checkQuota(ctx, "set", scope, scopeID, in.Key, len(in.Value)); err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 
 	// The embed orchestration (pre-flight config refusal, k/v write,
@@ -1300,13 +1322,14 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 		if t := strings.TrimSpace(f.raw); t != "" {
 			parsed, perr := time.Parse(time.RFC3339, t)
 			if perr != nil {
-				return errResult(fmt.Sprintf("set: %s %q is not an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)", f.name, t)), nil
+				return errValidation(fmt.Sprintf("set: %s %q is not an RFC3339 timestamp (e.g. 2023-10-01T00:00:00Z)", f.name, t), ""), nil
 			}
 			*f.dst = parsed
 		}
 	}
 	if !times.ValidAt.IsZero() && !times.InvalidAt.IsZero() && !times.InvalidAt.After(times.ValidAt) {
-		return errResult("set: invalid_at must be after valid_at — the interval is half-open [valid_at, invalid_at)"), nil
+		return errValidation("set: invalid_at must be after valid_at — the interval is half-open [valid_at, invalid_at)",
+			"Pass an invalid_at later than valid_at, or omit one of them."), nil
 	}
 	res, err := m.backend(ctx).Set(ctx, scope, scopeID, in.Key, in.Value, memrank.SetOptions{
 		TTL:        ttl,
@@ -1319,9 +1342,9 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrEmbedderNotConfigured) || errors.Is(err, store.ErrVectorUnsupported) {
-			return errResult(err.Error()), nil
+			return errFrom(err.Error(), err), nil
 		}
-		return errResult(fmt.Sprintf("set: %s", err)), nil
+		return errFrom(fmt.Sprintf("set: %s", err), err), nil
 	}
 
 	resp := map[string]any{"ok": true}
@@ -1355,33 +1378,36 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 // within the entry's own (scope, scope_id) tree. tenant from the run identity.
 func (m *Memory) resolveMemoryPath(ctx context.Context, scope store.MemoryScope, scopeID, rawPath string) (string, error) {
 	if m.Store == nil {
-		return "", fmt.Errorf("path addressing requires a Store backend")
+		return "", memRefuse(errBusiness("path addressing requires a Store backend", "Address the entry by key instead of path."))
 	}
 	canonical, err := normalizePath(rawPath)
 	if err != nil {
-		return "", err
+		return "", memRefuse(errValidation(err.Error(), "Pass an absolute path of letters, digits and . _ - segments, such as /notes/plan."))
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
-		return "", fmt.Errorf("path may not be the root")
+		return "", memRefuse(errValidation("path may not be the root", "Pass the path of a memory entry, not /."))
 	}
 	row, err := m.Store.DirentGet(ctx, tools.RunIdentity(ctx).TenantID, string(scope), scopeID, parent, name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			return "", fmt.Errorf("no such path: %s", canonical)
+			return "", memRefuse(errNotFound(fmt.Sprintf("no such path: %s", canonical),
+				"Check the path, or address the entry by key (op=list shows the keys)."))
 		}
 		return "", err
 	}
 	if row.Kind != "memory_entry" {
-		return "", fmt.Errorf("path %s is a %s, not a memory entry", canonical, row.Kind)
+		return "", memRefuse(errValidation(fmt.Sprintf("path %s is a %s, not a memory entry", canonical, row.Kind),
+			"Read it with the tool that owns that kind, or pass the path of a memory entry."))
 	}
 	var ref struct {
 		Key string `json:"key"`
 	}
 	_ = json.Unmarshal(row.ResourceRef, &ref)
 	if ref.Key == "" {
-		return "", fmt.Errorf("path %s has no memory key", canonical)
+		return "", memRefuse(errBusiness(fmt.Sprintf("path %s has no memory key", canonical),
+			"Address the entry by key instead (op=list shows the keys)."))
 	}
 	return ref.Key, nil
 }
@@ -1428,7 +1454,7 @@ func (m *Memory) registerMemoryDirent(ctx context.Context, scope store.MemorySco
 //	  "truncated": false }
 func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Query == "" {
-		return errResult("search: missing required field: query"), nil
+		return errValidation("search: missing required field: query", "Pass query: the text to search for."), nil
 	}
 	// NOTE: the vector-support / embedder pre-flight is NOT done here on the
 	// tool's in-process Store/Embedder — a named memory_backend
@@ -1464,11 +1490,11 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	// messages are byte-identical to pre-MR-2.
 	when, werr := memrank.ParseWhen(in.When)
 	if werr != nil {
-		return errResult(fmt.Sprintf("search: %s", werr)), nil
+		return errValidation(fmt.Sprintf("search: %s", werr), "Fix the when window: RFC3339 timestamps, with to not before from."), nil
 	}
 	sources, serr := memrank.ParseSources(in.Sources)
 	if serr != nil {
-		return errResult(fmt.Sprintf("search: %s", serr)), nil
+		return errValidation(fmt.Sprintf("search: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
@@ -1486,7 +1512,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		if errors.Is(err, store.ErrDimensionMismatch) ||
 			errors.Is(err, store.ErrVectorUnsupported) ||
 			errors.Is(err, store.ErrEmbedderNotConfigured) {
-			return errResult(err.Error()), nil
+			return errFrom(err.Error(), err), nil
 		}
 		// Both source refusals are caller-actionable and say what to ask for
 		// instead, so they are surfaced verbatim rather than wrapped. ErrTraces
@@ -1495,9 +1521,9 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		// surface that could not name the source at all.
 		if errors.Is(err, memrank.ErrSourcesNotExpressible) ||
 			errors.Is(err, memrank.ErrTracesNotCombinable) {
-			return errResult(err.Error()), nil
+			return errValidation(err.Error(), ""), nil
 		}
-		return errResult(fmt.Sprintf("search: %s", err)), nil
+		return errFrom(fmt.Sprintf("search: %s", err), err), nil
 	}
 
 	entries := make([]map[string]any, 0, len(res.Entries))
@@ -1646,15 +1672,15 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 func (m *Memory) execAdd(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	layer, ok := m.memoryLayer(ctx)
 	if !ok {
-		return errResult(store.ErrCapabilityUnsupported.Msg), nil
+		return errBusiness(store.ErrCapabilityUnsupported.Msg, "This memory backend does not extract facts; use set, get and search instead."), nil
 	}
 	if len(in.Messages) == 0 {
-		return errResult("add: missing required field: messages (a non-empty array of {role, content})"), nil
+		return errValidation("add: missing required field: messages (a non-empty array of {role, content})", ""), nil
 	}
 	totalContentBytes := 0
 	for i, msg := range in.Messages {
 		if msg.Content == "" {
-			return errResult(fmt.Sprintf("add: messages[%d] has empty content", i)), nil
+			return errValidation(fmt.Sprintf("add: messages[%d] has empty content", i), "Drop the empty message, or give it content."), nil
 		}
 		totalContentBytes += len(msg.Content)
 	}
@@ -1667,7 +1693,8 @@ func (m *Memory) execAdd(ctx context.Context, scope store.MemoryScope, scopeID s
 	// ingest bytes; the byte cap on the input is the proportionate guard since
 	// the server assigns extracted-fact storage asynchronously and out of band.
 	if m.MaxValueBytes > 0 && totalContentBytes > m.MaxValueBytes {
-		return errResult(fmt.Sprintf("add: messages content (%d bytes) exceeds max %d bytes", totalContentBytes, m.MaxValueBytes)), nil
+		return errBusiness(fmt.Sprintf("add: messages content (%d bytes) exceeds max %d bytes", totalContentBytes, m.MaxValueBytes),
+			"Split the messages across several add calls."), nil
 	}
 	// infer defaults to true — the memory-layer paradigm is LLM fact
 	// extraction; an operator opts into verbatim storage with infer:false.
@@ -1680,7 +1707,7 @@ func (m *Memory) execAdd(ctx context.Context, scope store.MemoryScope, scopeID s
 		Metadata: in.Metadata,
 	})
 	if err != nil {
-		return errResult(fmt.Sprintf("add: %s", err)), nil
+		return errFrom(fmt.Sprintf("add: %s", err), err), nil
 	}
 	out := map[string]any{
 		// status is "pending" (async ingest still extracting) or "done".
@@ -1700,10 +1727,10 @@ func (m *Memory) execAdd(ctx context.Context, scope store.MemoryScope, scopeID s
 func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	layer, ok := m.memoryLayer(ctx)
 	if !ok {
-		return errResult(store.ErrCapabilityUnsupported.Msg), nil
+		return errBusiness(store.ErrCapabilityUnsupported.Msg, "This memory backend does not extract facts; use set, get and search instead."), nil
 	}
 	if in.Query == "" {
-		return errResult("recall: missing required field: query"), nil
+		return errValidation("recall: missing required field: query", "Pass query: the question to recall facts for."), nil
 	}
 	topK := in.TopK
 	if topK <= 0 {
@@ -1714,11 +1741,11 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	when, werr := memrank.ParseWhen(in.When)
 	if werr != nil {
-		return errResult(fmt.Sprintf("recall: %s", werr)), nil
+		return errValidation(fmt.Sprintf("recall: %s", werr), "Fix the when window: RFC3339 timestamps, with to not before from."), nil
 	}
 	sources, serr := memrank.ParseSources(in.Sources)
 	if serr != nil {
-		return errResult(fmt.Sprintf("recall: %s", serr)), nil
+		return errValidation(fmt.Sprintf("recall: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
 	res, err := layer.Recall(ctx, scope, scopeID, memrank.RecallQuery{
 		Query:     in.Query,
@@ -1728,7 +1755,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		When:      when,
 	})
 	if err != nil {
-		return errResult(fmt.Sprintf("recall: %s", err)), nil
+		return errFrom(fmt.Sprintf("recall: %s", err), err), nil
 	}
 	// RFC CV P1 — REACH THROUGH TO THE SOURCE. A recalled fact now carries the
 	// verbatim span it was distilled from, when one was recorded.
@@ -2043,7 +2070,8 @@ func consolidationGate(ctx context.Context, op string) (tools.Result, bool) {
 	if tools.MemoryPolicy(ctx).Consolidation {
 		return tools.Result{}, false
 	}
-	return errResult(fmt.Sprintf("memory: %s requires the memory_consolidation grant (add memory_consolidation: true to the agent config)", op)), true
+	return errPermission(fmt.Sprintf("memory: %s requires the memory_consolidation grant (add memory_consolidation: true to the agent config)", op),
+		"Only a consolidation agent may run this op; ask an operator for the grant."), true
 }
 
 // consolidationOwner is the stable lease-owner identity for this run — the run
@@ -2079,14 +2107,14 @@ func consolidationOwner(ctx context.Context) string {
 func (m *Memory) requireConsolidationLease(ctx context.Context, op string, scope store.MemoryScope, scopeID string) (tools.Result, bool) {
 	owner := consolidationOwner(ctx)
 	if owner == "" {
-		return errResult(fmt.Sprintf("%s: no stable run/agent identity to hold the target's lease", op)), true
+		return errBusiness(fmt.Sprintf("%s: no stable run/agent identity to hold the target's lease", op), "Run this op from a named agent's run; the lease needs a stable owner."), true
 	}
 	row, err := m.Store.MemoryCursorGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID)
 	if err != nil {
-		return errResult(fmt.Sprintf("%s: cannot verify the target's lease: %s", op, err)), true
+		return errFrom(fmt.Sprintf("%s: cannot verify the target's lease: %s", op, err), err), true
 	}
 	if row.LeasedBy != owner || row.LeaseExpiresAt.IsZero() || !row.LeaseExpiresAt.After(time.Now().UTC()) {
-		return errResult(fmt.Sprintf("%s: not lease owner — take this target's lease with cursor_lease (and stop if it reports acquired=false) before %s", op, op)), true
+		return errBusiness(fmt.Sprintf("%s: not lease owner — take this target's lease with cursor_lease (and stop if it reports acquired=false) before %s", op, op), ""), true
 	}
 	return tools.Result{}, false
 }
@@ -2108,7 +2136,7 @@ func (m *Memory) execCursorGet(ctx context.Context, scope store.MemoryScope, sco
 	}
 	row, err := m.Store.MemoryCursorGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID)
 	if err != nil {
-		return errResult(fmt.Sprintf("cursor_get: %s", err)), nil
+		return errFrom(fmt.Sprintf("cursor_get: %s", err), err), nil
 	}
 	return okJSON(cursorJSON(row))
 }
@@ -2155,7 +2183,7 @@ func (m *Memory) execCursorScan(ctx context.Context, scope store.MemoryScope, sc
 	tenantID := tools.RunIdentity(ctx).TenantID
 	cursor, err := m.Store.MemoryCursorGet(ctx, tenantID, scope, scopeID)
 	if err != nil {
-		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil
+		return errFrom(fmt.Sprintf("cursor_scan: %s", err), err), nil
 	}
 	// scopeID is the target's USER id under scope=user — the only scope a
 	// consolidation fan-out dispatches, and the one whose chats these are. Under
@@ -2167,7 +2195,7 @@ func (m *Memory) execCursorScan(ctx context.Context, scope store.MemoryScope, sc
 		withInternalAgents(m.Cfg, tools.AgentName(ctx)),
 		cursor.WatermarkCompletedAt, cursor.WatermarkSessionID, limit+1)
 	if err != nil {
-		return errResult(fmt.Sprintf("cursor_scan: %s", err)), nil
+		return errFrom(fmt.Sprintf("cursor_scan: %s", err), err), nil
 	}
 	truncated := len(rows) > limit
 	if truncated {
@@ -2189,7 +2217,7 @@ func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, s
 	}
 	owner := consolidationOwner(ctx)
 	if owner == "" {
-		return errResult("cursor_lease: no stable run/agent identity to own the lease"), nil
+		return errBusiness("cursor_lease: no stable run/agent identity to own the lease", "Run this op from a named agent's run; the lease needs a stable owner."), nil
 	}
 	ttl := defaultConsolidationLeaseTTL
 	if in.LeaseTTLMs > 0 {
@@ -2205,7 +2233,7 @@ func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, s
 	}
 	row, acquired, err := m.Store.MemoryCursorLease(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner, time.Now().UTC(), ttl)
 	if err != nil {
-		return errResult(fmt.Sprintf("cursor_lease: %s", err)), nil
+		return errFrom(fmt.Sprintf("cursor_lease: %s", err), err), nil
 	}
 	out := cursorJSON(row)
 	out["acquired"] = acquired
@@ -2237,51 +2265,52 @@ func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope,
 	}
 	owner := consolidationOwner(ctx)
 	if owner == "" {
-		return errResult("cursor_advance: no stable run/agent identity to own the lease"), nil
+		return errBusiness("cursor_advance: no stable run/agent identity to own the lease", "Run this op from a named agent's run; the lease needs a stable owner."), nil
 	}
 	if in.CompletedAt == "" {
-		return errResult("cursor_advance: missing required field: completed_at"), nil
+		return errValidation("cursor_advance: missing required field: completed_at", "Copy session_id and completed_at together from a cursor_scan row."), nil
 	}
 	if in.SessionID == "" {
-		return errResult("cursor_advance: missing required field: session_id — the watermark names the chat it stops at; copy the pair from a cursor_scan row"), nil
+		return errValidation("cursor_advance: missing required field: session_id — the watermark names the chat it stops at; copy the pair from a cursor_scan row", ""), nil
 	}
 	completedAt, perr := time.Parse(time.RFC3339Nano, in.CompletedAt)
 	if perr != nil {
-		return errResult(fmt.Sprintf("cursor_advance: completed_at must be an RFC3339 timestamp: %s", perr)), nil
+		return errValidation(fmt.Sprintf("cursor_advance: completed_at must be an RFC3339 timestamp: %s", perr), "Copy session_id and completed_at together from a cursor_scan row."), nil
 	}
 	// Cheap first cut before touching the store: a watermark can only ever name a
 	// chat that has already finished, so a future instant is never valid.
 	if completedAt.After(time.Now().UTC()) {
-		return errResult("cursor_advance: completed_at is in the future — the watermark only moves to a chat that has already finished"), nil
+		return errValidation("cursor_advance: completed_at is in the future — the watermark only moves to a chat that has already finished", "Copy session_id and completed_at together from a cursor_scan row."), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
 	settledAt, sessionUser, serr := m.Store.SessionSettledAt(ctx, tenantID, in.SessionID)
 	if serr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(serr, &nf) {
-			return errResult(fmt.Sprintf("cursor_advance: no chat %q in this tenant — the watermark may only name a real chat; copy the pair from a cursor_scan row", in.SessionID)), nil
+			return errNotFound(fmt.Sprintf("cursor_advance: no chat %q in this tenant — the watermark may only name a real chat; copy the pair from a cursor_scan row", in.SessionID), ""), nil
 		}
-		return errResult(fmt.Sprintf("cursor_advance: %s", serr)), nil
+		return errFrom(fmt.Sprintf("cursor_advance: %s", serr), serr), nil
 	}
 	// Ownership before anything that would describe the session: a chat under
 	// another user must read as unusable, not as a probe result. Only the user
 	// scope has a per-target owner — an agent-scope target is confined by tenant
 	// alone (its scope_id is an agent name, not a session owner).
 	if scope == store.MemoryScopeUser && sessionUser != scopeID {
-		return errResult(fmt.Sprintf("cursor_advance: chat %q does not belong to this memory target", in.SessionID)), nil
+		return errNotFound(fmt.Sprintf("cursor_advance: chat %q does not belong to this memory target", in.SessionID), "Copy session_id and completed_at together from a cursor_scan row."), nil
 	}
 	if settledAt.IsZero() {
-		return errResult(fmt.Sprintf("cursor_advance: chat %q has not finished yet — advancing past a live chat would skip whatever it says next", in.SessionID)), nil
+		return errBusiness(fmt.Sprintf("cursor_advance: chat %q has not finished yet — advancing past a live chat would skip whatever it says next", in.SessionID),
+			"Advance only to a chat cursor_scan returned; this one will appear there once it finishes."), nil
 	}
 	if skew := settledAt.Sub(completedAt); skew > maxWatermarkSkew || skew < -maxWatermarkSkew {
-		return errResult(fmt.Sprintf("cursor_advance: completed_at does not match chat %q (it settled at %s) — copy the pair verbatim from a cursor_scan row",
-			in.SessionID, settledAt.Format(time.RFC3339Nano))), nil
+		return errValidation(fmt.Sprintf("cursor_advance: completed_at does not match chat %q (it settled at %s) — copy the pair verbatim from a cursor_scan row",
+			in.SessionID, settledAt.Format(time.RFC3339Nano)), ""), nil
 	}
 	// Record the STORE's instant rather than the supplied one, so the watermark
 	// always sits exactly on a real settled moment and the next scan's
 	// strictly-after comparison is exact even if the model re-formatted it.
 	if err := m.Store.MemoryCursorAdvance(ctx, tenantID, scope, scopeID, owner, settledAt, in.SessionID); err != nil {
-		return errResult(fmt.Sprintf("cursor_advance: %s", err)), nil
+		return errFrom(fmt.Sprintf("cursor_advance: %s", err), err), nil
 	}
 	return okJSON(map[string]any{"ok": true})
 }
@@ -2292,10 +2321,10 @@ func (m *Memory) execCursorRelease(ctx context.Context, scope store.MemoryScope,
 	}
 	owner := consolidationOwner(ctx)
 	if owner == "" {
-		return errResult("cursor_release: no stable run/agent identity to own the lease"), nil
+		return errBusiness("cursor_release: no stable run/agent identity to own the lease", "Run this op from a named agent's run; the lease needs a stable owner."), nil
 	}
 	if err := m.Store.MemoryCursorRelease(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, owner); err != nil {
-		return errResult(fmt.Sprintf("cursor_release: %s", err)), nil
+		return errFrom(fmt.Sprintf("cursor_release: %s", err), err), nil
 	}
 	return okJSON(map[string]any{"ok": true})
 }
@@ -2308,7 +2337,7 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 		return res, nil
 	}
 	if in.Key == "" {
-		return errResult("supersede: missing required field: key"), nil
+		return errValidation("supersede: missing required field: key", "Pass the key of the fact to retire."), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
 
@@ -2335,7 +2364,7 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	}
 
 	if err := m.Store.MemorySupersede(ctx, bodyTenant, bodyScope, bodyScopeID, bodyKey); err != nil {
-		return errResult(fmt.Sprintf("supersede: %s", err)), nil
+		return errFrom(fmt.Sprintf("supersede: %s", err), err), nil
 	}
 	out := map[string]any{"ok": true}
 	if !ref.resolved {
@@ -2351,8 +2380,8 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	// idempotent, so a retry converges.
 	retiredAt, prior, err := ref.doc.retireChunk(ctx, ref.scopeKey, ref.chunkID, ref.replacementID)
 	if err != nil {
-		return errResult(fmt.Sprintf(
-			"supersede: %q is hidden from recall but still current in the fact graph: %s", in.Key, err)), nil
+		return errFrom(fmt.Sprintf(
+			"supersede: %q is hidden from recall but still current in the fact graph: %s", in.Key, err), err), nil
 	}
 	out["retired_at"] = retiredAt
 	switch {
@@ -2446,7 +2475,7 @@ func (m *Memory) execPendingDrain(ctx context.Context, scope store.MemoryScope, 
 	}
 	rows, err := m.Store.MemoryPendingDrain(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, limit)
 	if err != nil {
-		return errResult(fmt.Sprintf("pending_drain: %s", err)), nil
+		return errFrom(fmt.Sprintf("pending_drain: %s", err), err), nil
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
@@ -2481,27 +2510,27 @@ func (m *Memory) execPendingAck(ctx context.Context, scope store.MemoryScope, sc
 	// so a leaked or guessed id from another tenant/scope is a no-op, never a
 	// cross-tenant ack. ids come from the caller's own drain; ack is at-least-once.
 	if len(in.IDs) == 0 {
-		return errResult("pending_ack: missing required field: ids"), nil
+		return errValidation("pending_ack: missing required field: ids", "Pass the ids pending_drain returned."), nil
 	}
 	if err := m.Store.MemoryPendingAck(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.IDs); err != nil {
-		return errResult(fmt.Sprintf("pending_ack: %s", err)), nil
+		return errFrom(fmt.Sprintf("pending_ack: %s", err), err), nil
 	}
 	return okJSON(map[string]any{"ok": true, "acked": len(in.IDs)})
 }
 
 func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
-		return errResult("delete: missing required field: key"), nil
+		return errValidation("delete: missing required field: key", "Pass the key to delete."), nil
 	}
 	// RFC BL P1: a read_only core block refuses delete too — otherwise an agent
 	// could erase an operator-seeded read-only block. limit_bytes is moot for a
 	// delete, so pass -1 to skip the size check.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "delete", -1); err != nil {
-		return errResult(err.Error()), nil
+		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	deleted, err := m.backend(ctx).Delete(ctx, scope, scopeID, in.Key)
 	if err != nil {
-		return errResult(fmt.Sprintf("delete: %s", err)), nil
+		return errFrom(fmt.Sprintf("delete: %s", err), err), nil
 	}
 	return okJSON(map[string]any{"deleted": deleted})
 }
@@ -2519,7 +2548,7 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 	}
 	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, in.Prefix, limit)
 	if err != nil {
-		return errResult(fmt.Sprintf("list: %s", err)), nil
+		return errFrom(fmt.Sprintf("list: %s", err), err), nil
 	}
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
@@ -2537,12 +2566,12 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 
 func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
-		return errResult("incr: missing required field: key"), nil
+		return errValidation("incr: missing required field: key", "Pass the key of the counter."), nil
 	}
 	// RFC BL P1: a read_only core block refuses incr too. limit_bytes is moot
 	// for a bounded-width number, so pass -1 to skip the size check.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "incr", -1); err != nil {
-		return errResult(err.Error()), nil
+		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	delta := int64(1)
 	if in.Delta != nil {
@@ -2553,7 +2582,7 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	// 32 bytes for safety; a counter row is negligible relative to
 	// any sane scope cap.
 	if err := m.checkQuota(ctx, "incr", scope, scopeID, in.Key, 32); err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 	ttl := time.Duration(in.TTL) * time.Second
 	// RFC BL: the run's authoritative tenant partitions base memory. Server-
@@ -2562,9 +2591,9 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	next, err := m.Store.MemoryIncrement(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.Key, delta, ttl)
 	if err != nil {
 		if errors.Is(err, store.ErrMemoryWrongType) {
-			return errResult("incr: existing value is not a JSON number — use set with a number, or delete first"), nil
+			return errBusiness("incr: existing value is not a JSON number — use set with a number, or delete first", ""), nil
 		}
-		return errResult(fmt.Sprintf("incr: %s", err)), nil
+		return errFrom(fmt.Sprintf("incr: %s", err), err), nil
 	}
 	return okJSON(map[string]any{"value": next})
 }
@@ -2583,32 +2612,32 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 // one update.
 func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
-		return errResult("merge: missing required field: key"), nil
+		return errValidation("merge: missing required field: key", "Pass the key to update."), nil
 	}
 	if len(in.Value) == 0 {
-		return errResult("merge: missing required field: value"), nil
+		return errValidation("merge: missing required field: value", "Pass value as a JSON value."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errResult("merge: value is not valid JSON"), nil
+		return errValidation("merge: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
 	}
 	// Validate the incoming value is an object up-front so we refuse
 	// before taking the row lock.
 	var incoming map[string]any
 	if err := json.Unmarshal(in.Value, &incoming); err != nil {
-		return errResult("merge: value must be a JSON object"), nil
+		return errValidation("merge: value must be a JSON object", "Pass value as an object, or use set to write another type."), nil
 	}
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
-		return errResult(fmt.Sprintf("merge: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes)), nil
+		return errBusiness(fmt.Sprintf("merge: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes), memoryCapNext), nil
 	}
 	// RFC BL P1: refuse a read_only core block BEFORE taking the row lock — the
 	// mutation must not commit. The size caps run inside the reducer, on the
 	// merged value, for the same reason.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
-		return errResult(err.Error()), nil
+		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	capCheck, err := m.reducerCap(ctx, "merge", scope, scopeID, in.Key)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 
 	ttl := time.Duration(in.TTL) * time.Second
@@ -2620,7 +2649,7 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 				if err := json.Unmarshal(existing, &base); err != nil {
 					// Existing row is not a JSON object — refuse;
 					// merge into a non-object would silently replace.
-					return nil, fmt.Errorf("existing value is not a JSON object (use set to overwrite)")
+					return nil, memRefuse(errBusiness("existing value is not a JSON object (use set to overwrite)", ""))
 				}
 			}
 			out := deepMerge(base, incoming)
@@ -2629,7 +2658,7 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 				return nil, fmt.Errorf("encode merged value: %w", err)
 			}
 			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
-				return nil, fmt.Errorf("merged value (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
+				return nil, memRefuse(errBusiness(fmt.Sprintf("merged value (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes), memoryCapNext))
 			}
 			// The post-merge size is what the caps charge; an error here rolls
 			// the merge back instead of reporting a write that already landed.
@@ -2653,22 +2682,22 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 // empty array). Items can be any JSON value.
 func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
-		return errResult("append_dedupe: missing required field: key"), nil
+		return errValidation("append_dedupe: missing required field: key", "Pass the key to update."), nil
 	}
 	if len(in.Value) == 0 {
-		return errResult("append_dedupe: missing required field: value"), nil
+		return errValidation("append_dedupe: missing required field: value", "Pass value as a JSON value."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errResult("append_dedupe: value is not valid JSON"), nil
+		return errValidation("append_dedupe: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
 	}
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the appended value.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
-		return errResult(err.Error()), nil
+		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	capCheck, err := m.reducerCap(ctx, "append_dedupe", scope, scopeID, in.Key)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 
 	ttl := time.Duration(in.TTL) * time.Second
@@ -2679,7 +2708,7 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 			var arr []json.RawMessage
 			if len(existing) > 0 {
 				if err := json.Unmarshal(existing, &arr); err != nil {
-					return nil, fmt.Errorf("existing value is not a JSON array (use set to overwrite)")
+					return nil, memRefuse(errBusiness("existing value is not a JSON array (use set to overwrite)", ""))
 				}
 			}
 			// JSON-equality dedupe — compare canonicalised forms so
@@ -2702,7 +2731,7 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 				return nil, fmt.Errorf("encode appended array: %w", err)
 			}
 			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
-				return nil, fmt.Errorf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
+				return nil, memRefuse(errBusiness(fmt.Sprintf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes), memoryCapNext))
 			}
 			if err := capCheck(len(b)); err != nil {
 				return nil, err
@@ -2724,29 +2753,29 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 // The order is insertion order; the trim drops from the head.
 func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if in.Key == "" {
-		return errResult("bounded_list: missing required field: key"), nil
+		return errValidation("bounded_list: missing required field: key", "Pass the key to update."), nil
 	}
 	if len(in.Value) == 0 {
-		return errResult("bounded_list: missing required field: value"), nil
+		return errValidation("bounded_list: missing required field: value", "Pass value as a JSON value."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errResult("bounded_list: value is not valid JSON"), nil
+		return errValidation("bounded_list: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
 	}
 	if in.Limit < 1 {
-		return errResult("bounded_list: limit must be >= 1"), nil
+		return errValidation("bounded_list: limit must be >= 1", "Pass limit: how many of the newest items to keep."), nil
 	}
 	// Hard cap to keep one row from blowing past the model context.
 	if in.Limit > 10000 {
-		return errResult("bounded_list: limit must be <= 10000"), nil
+		return errValidation("bounded_list: limit must be <= 10000", ""), nil
 	}
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the trimmed value.
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {
-		return errResult(err.Error()), nil
+		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	capCheck, err := m.reducerCap(ctx, "bounded_list", scope, scopeID, in.Key)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return memErr(err.Error(), err), nil
 	}
 
 	ttl := time.Duration(in.TTL) * time.Second
@@ -2757,7 +2786,7 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 			var arr []json.RawMessage
 			if len(existing) > 0 {
 				if err := json.Unmarshal(existing, &arr); err != nil {
-					return nil, fmt.Errorf("existing value is not a JSON array (use set to overwrite)")
+					return nil, memRefuse(errBusiness("existing value is not a JSON array (use set to overwrite)", ""))
 				}
 			}
 			arr = append(arr, json.RawMessage(in.Value))
@@ -2770,7 +2799,7 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 				return nil, fmt.Errorf("encode bounded list: %w", err)
 			}
 			if m.MaxValueBytes > 0 && len(b) > m.MaxValueBytes {
-				return nil, fmt.Errorf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes)
+				return nil, memRefuse(errBusiness(fmt.Sprintf("array (%d bytes) exceeds max %d bytes", len(b), m.MaxValueBytes), memoryCapNext))
 			}
 			if err := capCheck(len(b)); err != nil {
 				return nil, err
@@ -2881,9 +2910,9 @@ func (e *memoryCapError) Error() string { return e.msg }
 func reducerErrResult(op string, err error) tools.Result {
 	var capErr *memoryCapError
 	if errors.As(err, &capErr) {
-		return errResult(capErr.Error())
+		return errBusiness(capErr.Error(), memoryCapNext)
 	}
-	return errResult(fmt.Sprintf("%s: %s", op, err))
+	return memErr(fmt.Sprintf("%s: %s", op, err), err)
 }
 
 // reducerCap returns the size check a read-modify-write op runs INSIDE its
@@ -2972,8 +3001,8 @@ func (m *Memory) scopeUsageExcluding(ctx context.Context, scope store.MemoryScop
 		return 0, 0, fmt.Errorf("quota check: %w", err)
 	}
 	if truncated {
-		return 0, 0, fmt.Errorf("Memory: scope %q has more than %d keys; quota check cannot run accurately — delete unused keys first",
-			scope, listCap)
+		return 0, 0, memRefuse(errBusiness(fmt.Sprintf("Memory: scope %q has more than %d keys; quota check cannot run accurately — delete unused keys first",
+			scope, listCap), "Delete keys you no longer need (op=list, then op=delete), or ask an operator to raise the quota."))
 	}
 	for _, e := range entries {
 		if e.Key == key {
@@ -2991,7 +3020,7 @@ func (m *Memory) scopeUsageExcluding(ctx context.Context, scope store.MemoryScop
 func okJSON(v any) (tools.Result, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return errResult(fmt.Sprintf("encode result: %s", err)), nil
+		return errFrom(fmt.Sprintf("encode result: %s", err), err), nil
 	}
 	return tools.Result{Text: string(b)}, nil
 }
@@ -3014,9 +3043,41 @@ func okJSONCount(v any, n int) (tools.Result, error) {
 	return res, nil
 }
 
-func errResult(msg string) tools.Result {
-	return tools.Result{IsError: true, Text: msg}
+// memRefusal is an error this file builds that already knows its category. The
+// scope gates, path resolution and reducers return plain errors to callers that
+// prefix and render them ("get: " + err), so the category has to ride on the
+// error for the caller to keep it. Error() is the message, byte for byte.
+type memRefusal struct {
+	msg  string
+	info tools.ErrorInfo
 }
+
+func (e *memRefusal) Error() string { return e.msg }
+
+// memRefuse turns a classified result into an error that carries it.
+func memRefuse(r tools.Result) error {
+	return &memRefusal{msg: r.Text, info: *r.Error}
+}
+
+// memErr renders err as a failure with text msg, classified by what err is: a
+// refusal this file built keeps its own category, a size cap is a business
+// refusal, and anything else is classified by type (errFrom).
+func memErr(msg string, err error) tools.Result {
+	var r *memRefusal
+	if errors.As(err, &r) {
+		info := r.info
+		return tools.Result{IsError: true, Text: msg, Error: &info}
+	}
+	var capErr *memoryCapError
+	if errors.As(err, &capErr) {
+		return errBusiness(msg, memoryCapNext)
+	}
+	return errFrom(msg, err)
+}
+
+// memoryCapNext is the next step for every per-value, per-block and per-scope
+// size refusal.
+const memoryCapNext = "Store less (shorter values, or delete unused keys), or ask an operator to raise the limit."
 
 // expiresAtRFC3339 returns nil for the zero time and an RFC3339 string
 // otherwise. The wire shape is stable across set/get/list — operators

@@ -66,6 +66,14 @@ func errFrom(msg string, err error) tools.Result {
 	return res
 }
 
+// errResult is the UNCLASSIFIED failure. It remains for errFrom (an error of no
+// known type) and for the tools not classified yet; a classified tool's file
+// uses the helpers above, which TestClassifiedTools_EveryFailureCarriesACategory
+// enforces.
+func errResult(msg string) tools.Result {
+	return tools.Result{IsError: true, Text: msg}
+}
+
 func classified(msg string, cat tools.ErrorCategory, retryable bool, next string) tools.Result {
 	return tools.Result{
 		IsError: true,

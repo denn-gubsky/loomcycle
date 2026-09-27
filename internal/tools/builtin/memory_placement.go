@@ -33,12 +33,12 @@ const placementBatchMax = 200
 // sees the whole truth about what an agent can reach.
 func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScope, callerScopeID string, in memoryInput) (tools.Result, error) {
 	if len(in.Items) == 0 {
-		return errResult("placement: items is required — pass [{\"type\":\"service\",\"subject\":\"checkout-api\"}, …] " +
-			"for the facts you are about to write"), nil
+		return errValidation("placement: items is required — pass [{\"type\":\"service\",\"subject\":\"checkout-api\"}, …] "+
+			"for the facts you are about to write", ""), nil
 	}
 	if len(in.Items) > placementBatchMax {
-		return errResult(fmt.Sprintf("placement: %d items, over the %d limit — split the batch",
-			len(in.Items), placementBatchMax)), nil
+		return errValidation(fmt.Sprintf("placement: %d items, over the %d limit — split the batch",
+			len(in.Items), placementBatchMax), ""), nil
 	}
 
 	policy := tools.MemoryPolicy(ctx)
