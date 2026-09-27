@@ -341,3 +341,34 @@ func TestRunHooks_AnAddedPostHookSeesTheAgentsRedaction(t *testing.T) {
 		t.Fatalf("post chain runs %v; want the agent's redaction first", post)
 	}
 }
+
+// A walk's hooks are its TeamDef's: a reference resolves in the tenant that
+// owns the definition, even when an admin runs it from another tenant, and
+// the walk's run is stored in the caller's tenant, beside its session.
+func TestTeamHooks_TheWalksHooksResolveInTheTeamsTenant(t *testing.T) {
+	h := newReviewHarness(t)
+	cfg := *h.srv.cfg()
+	cfg.Hooks.PrivateHostAllowlist = []string{"127.0.0.1"} // the recorders are on loopback
+	h.srv.cfgHolder = config.NewHolder(&cfg)
+	h.srv.resetTestHooks()
+	owners, callers := newRecordingHook(t, `{}`), newRecordingHook(t, `{}`)
+	putHookDef(t, h.srv.store, "acme", "audit", hooks.Def{Event: hooks.PhaseRunEnd, Body: hooks.DefBody{Kind: hooks.BodyKindHTTP, URL: owners.srv.URL}})
+	putHookDef(t, h.srv.store, "globex", "audit", hooks.Def{Event: hooks.PhaseRunEnd, Body: hooks.DefBody{Kind: hooks.BodyKindHTTP, URL: callers.srv.URL}})
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "root", TenantID: "globex"})
+	ctx = teamrun.WithWalkHooks(ctx, teamrun.WalkHooks{Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "audit"}}}, Tenant: "acme"})
+	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := h.srv.store.GetRun(context.Background(), runID)
+	if err != nil || run.TenantID != "globex" {
+		t.Fatalf("the walk's run is in tenant %q (%v), want the caller's", run.TenantID, err)
+	}
+	finish("done", nil)
+	owners.waitBody(t, `"run_id":"`+runID+`"`)
+	callers.mu.Lock()
+	defer callers.mu.Unlock()
+	if len(callers.bodies) != 0 {
+		t.Fatalf("the caller's tenant's HookDef fired: %v", callers.bodies)
+	}
+}

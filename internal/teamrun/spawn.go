@@ -758,6 +758,10 @@ type walkHooksKey struct{}
 type WalkHooks struct {
 	Hooks            hooks.EventHooks
 	OperatorAuthored bool
+	// Tenant is the tenant whose TeamDef names the hooks, where its HookDef
+	// references resolve — not the caller's, which differs when an admin
+	// runs another tenant's team by def_id.
+	Tenant string
 }
 
 // WithWalkHooks hands the definition's walk hooks to whatever opens the walk's

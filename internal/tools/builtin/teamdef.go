@@ -901,7 +901,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		var werr error
 		// The walk's own hooks go to whatever opens its run; an operator's
 		// definition is what may let them count as the operator's.
-		walkCtx = teamrun.WithWalkHooks(walkCtx, teamrun.WalkHooks{Hooks: def.Hooks, OperatorAuthored: row.OperatorAuthored})
+		walkCtx = teamrun.WithWalkHooks(walkCtx, teamrun.WalkHooks{Hooks: def.Hooks, OperatorAuthored: row.OperatorAuthored, Tenant: row.TenantID})
 		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, row.Name, detach)
 		if werr != nil {
 			return errResult(fmt.Sprintf("run: %s", werr)), nil
