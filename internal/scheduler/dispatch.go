@@ -129,6 +129,10 @@ func (s *Scheduler) resolvePublishTarget(ctx context.Context, tenantID, channel,
 	switch declared.Scope {
 	case "global":
 		out.Scope = store.MemoryScopeGlobal
+	case "tenant":
+		// Shared across the tenant (scope_id ""), isolated from other tenants
+		// by the message's tenant — the same keying the Channel tool uses.
+		out.Scope = store.MemoryScopeTenant
 	case "user":
 		if userID == "" {
 			return publishTarget{}, fmt.Errorf("channel.publish: channel %q has scope=user but schedule has no user_id", channel)

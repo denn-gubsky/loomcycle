@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // tenantRecorder is a channel resolver that remembers which tenant it was
@@ -60,5 +62,25 @@ func TestScheduler_OnCompletePublishResolvesInTheSchedulesTenant(t *testing.T) {
 
 	if got := rec.tenants(); len(got) != 1 || got[0] != "t1" {
 		t.Fatalf("resolved the channel in tenants %q, want [t1]", got)
+	}
+}
+
+// A `scope: tenant` channel is a valid publish target: shared across the
+// schedule's tenant (scope_id ""), keyed by the message's tenant. It used to
+// fail every publish with "unknown scope".
+func TestScheduler_PublishesToATenantScopedChannel(t *testing.T) {
+	def := channelHookDef("team-news")
+	def.TenantID = "t1"
+	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	sched.SetChannelScope((&tenantRecorder{scope: "tenant"}).resolve)
+
+	fireT(t, sched)
+
+	msgs, err := st.ChannelPeek(context.Background(), "t1", "team-news", store.MemoryScopeTenant, "", "", 10)
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("t1's tenant-scoped channel holds %d messages, want 1", len(msgs))
 	}
 }
