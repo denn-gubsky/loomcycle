@@ -22,8 +22,9 @@ import (
 //   - a ChannelPublish call outside the store and the writer;
 //   - a SnapshotRestoreChannelMessage call outside the store and snapshot
 //     restore (a restore writes rows verbatim, held ones included);
-//   - a reference to the reserved hold instant outside the store and this
-//     package (only the writer decides that a message is held);
+//   - a reference to a reserved instant (held, or awaiting hooks) outside
+//     the store and this package (only the writer decides that a message is
+//     held);
 //   - a WriteRequest without a TenantID (the definition is resolved in it).
 
 // writerAllowed maps a guarded name to the module paths allowed to use it. A
@@ -32,6 +33,7 @@ var writerAllowed = map[string][]string{
 	"ChannelPublish":                {"internal/store/", "internal/channels/system.go"},
 	"SnapshotRestoreChannelMessage": {"internal/store/", "internal/snapshot/restore.go"},
 	"ChannelHeldVisibleAt":          {"internal/store/", "internal/channels/"},
+	"ChannelHookHeldVisibleAt":      {"internal/store/", "internal/channels/"},
 }
 
 // skipDirs are trees with no Go the runtime builds.
@@ -152,6 +154,8 @@ func TestChannelWriterCensus_CatchesAPlantedWrite(t *testing.T) {
 func f() { s.ChannelPublish(ctx, msg, 0) }`,
 		"stamping a hold": `package x
 func f() { m.VisibleAt = store.ChannelHeldVisibleAt() }`,
+		"stamping a hook hold": `package x
+func f() { m.VisibleAt = store.ChannelHookHeldVisibleAt() }`,
 		"restoring outside snapshot": `package x
 func f() { s.SnapshotRestoreChannelMessage(ctx, m) }`,
 		"a write with no tenant": `package x
