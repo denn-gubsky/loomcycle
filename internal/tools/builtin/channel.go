@@ -82,6 +82,12 @@ type Channel struct {
 	// fields and the retry behavior is unchanged.
 	PoolStatsFn func() (total, acquired, idle int32)
 
+	// Writer writes each message and decides, from the channel's definition
+	// as it stands at the write, whether it is delivered, held or deferred.
+	// Wired to the server's channel writer; without one (a tool built for a
+	// unit test), writes go to Store directly under the run's channel policy.
+	Writer channels.Writer
+
 	// Catalog returns the declared channels, for a caller whose ctx policy
 	// carries none. A run's policy always carries its catalog; the planes
 	// that call this tool on an operator's behalf (the MCP `channel` tool)
@@ -422,40 +428,30 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 		expiresAt = now.Add(time.Duration(ttlSecs) * time.Second)
 	}
 
-	// A held channel stores the message at the reserved visible_at and wakes
-	// nobody — it waits for a release, not for a clock, so an operator-set
-	// hold overrides a caller's deliver_at rather than racing it. The TTL
-	// still counts from publish time: holding is not a way to outlive the
+	// Hold, deferral and waking subscribers are the writer's: it resolves
+	// the channel's definition as it stands now. TTL counts from publish time
+	// even when the channel holds — holding is not a way to outlive the
 	// retention the publisher declared.
-	if def.Hold {
-		visibleAt = store.ChannelHeldVisibleAt()
-		deferred = false
+	var deliverAt time.Time
+	if deferred {
+		deliverAt = visibleAt
 	}
-
-	id, dropped, err := c.Store.ChannelPublish(ctx, store.ChannelMessage{
-		Channel:           channel,
-		TenantID:          tools.RunIdentity(ctx).TenantID, // RFC N: authoritative run tenant
-		Scope:             scope,
-		ScopeID:           scopeID,
-		Payload:           value,
-		ExpiresAt:         expiresAt,
-		VisibleAt:         visibleAt, // zero = treated as "now" inside the store
-		PublishedByUserID: tools.RunIdentity(ctx).UserID,
-	}, def.MaxMessages)
+	ident := tools.RunIdentity(ctx)
+	res, err := c.writer(def).Write(ctx, channels.WriteRequest{
+		Channel:     channel,
+		TenantID:    ident.TenantID, // RFC N: authoritative run tenant
+		Scope:       scope,
+		ScopeID:     scopeID,
+		Payload:     value,
+		DeliverAt:   deliverAt,
+		ExpiresAt:   expiresAt,
+		PublishedBy: ident.UserID,
+		MaxMessages: def.MaxMessages,
+	})
 	if err != nil {
 		return nil, err
 	}
-	// Deferred publishes go via the scheduler so long-poll subscribers
-	// wake at visible_at. Immediate publishes notify the bus directly. A
-	// held publish notifies nobody — that is what holding means.
-	switch {
-	case def.Hold:
-		// no notification, no timer
-	case deferred && c.Scheduler != nil:
-		c.Scheduler.Schedule(channel, id, visibleAt)
-	case c.Bus != nil:
-		c.Bus.Notify(channel)
-	}
+	id, dropped := res.Message.ID, res.Dropped
 	// Typed audit event (v0.8.4 polish): a separate event type so SSE
 	// consumers building channel dashboards can filter without parsing
 	// every tool_result. PayloadPreview truncated at 200 chars.
@@ -476,15 +472,29 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 		"channel":        channel,
 		"dropped_oldest": dropped, // > 0 indicates max_messages overflow
 	}
-	if deferred {
-		result["visible_at"] = visibleAt.UTC().Format(time.RFC3339Nano)
+	if res.Deferred {
+		result["visible_at"] = res.Message.VisibleAt.UTC().Format(time.RFC3339Nano)
 	}
-	if def.Hold {
+	if res.Held {
 		// Say so in the result: a publisher that gets back a message_id and
 		// no further word would reasonably assume the message was delivered.
 		result["held"] = true
 	}
 	return result, nil
+}
+
+// writer returns the injected channel writer, or — for a tool with none, as in
+// a unit test — a local one that holds by the run's own view of the channel.
+func (c *Channel) writer(def tools.ChannelDef) channels.Writer {
+	if c.Writer != nil {
+		return c.Writer
+	}
+	return &channels.StorePublisher{
+		Store: c.Store, Bus: c.Bus, Scheduler: c.Scheduler,
+		Defs: func(context.Context, string, string) (channels.WriteDef, error) {
+			return channels.WriteDef{Hold: def.Hold}, nil
+		},
+	}
 }
 
 // maxReleaseCount bounds one release. A release is a breakpoint step, not a

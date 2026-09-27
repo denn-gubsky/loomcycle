@@ -2088,6 +2088,10 @@ func main() {
 	// instance, so _system/interrupts/* publishes from inside the
 	// tool wake the same Channel long-poll subscribers.
 	interruptionTool.SystemPublisher = sysPublisher
+	// The Channel tool writes through the same writer, so an agent's publish
+	// honours the channel's definition as it stands at the write, not as it
+	// stood when the run started.
+	channelTool.Writer = sysPublisher
 	// v0.8.16 — wire the same Bus to the server so the resolve
 	// handler can wake the blocked tool's bus.Wait via the
 	// "intr:<id>" key. Without this the resolve writes the row but

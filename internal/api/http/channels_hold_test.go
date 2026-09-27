@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -414,5 +415,40 @@ func TestChannelHold_ListingHidesTheReservedInstant(t *testing.T) {
 	if gate.OldestVisibleAt != "" || gate.NewestVisibleAt != "" {
 		t.Errorf("the reserved held instant leaked into the listing: oldest=%q newest=%q",
 			gate.OldestVisibleAt, gate.NewestVisibleAt)
+	}
+}
+
+// An agent's publish honours the channel's definition as it stands at the
+// write. The Channel tool used to decide hold from the policy snapshot taken
+// when the run started, so a hold set on a runtime channel mid-run did not
+// stop the run's next publish.
+func TestChannelTool_AHoldSetMidRunApplies(t *testing.T) {
+	srv, st, cleanup := channelHoldFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := st.ChannelsCreate(ctx, store.ChannelRow{Name: "inbox", Scope: "global", Semantic: "queue"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// The run's policy, as built when it started: inbox is not held.
+	runCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+		Publish:  []string{"inbox"},
+		Channels: map[string]tools.ChannelDef{"inbox": {Name: "inbox", Scope: "global", MaxMessages: 100}},
+	})
+	hold := true
+	if err := st.ChannelsUpdate(ctx, "", "inbox", store.ChannelPatch{Hold: &hold}); err != nil {
+		t.Fatalf("set hold: %v", err)
+	}
+
+	tool := &builtin.Channel{Store: st, Writer: srv.systemPublisher.(channels.Writer)}
+	res, err := tool.Execute(runCtx, json.RawMessage(`{"op":"publish","channel":"inbox","value":{"n":1}}`))
+	if err != nil || res.IsError {
+		t.Fatalf("publish: err=%v result=%s", err, res.Text)
+	}
+	if !strings.Contains(res.Text, `"held":true`) {
+		t.Errorf("publish result %s does not report the hold", res.Text)
+	}
+	msgs, err := st.ChannelPeek(ctx, "", "inbox", store.MemoryScopeGlobal, "", "", 10)
+	if err != nil || len(msgs) != 0 {
+		t.Errorf("a channel held mid-run delivered %d message(s) (err %v)", len(msgs), err)
 	}
 }
