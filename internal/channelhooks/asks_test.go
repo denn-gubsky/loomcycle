@@ -397,6 +397,29 @@ func TestWorker_ALostLeaseSettlesNothing(t *testing.T) {
 	}
 }
 
+// A worker that lost its lease stops deciding: a hook whose answer could not
+// be kept fails, and even a fail-open one must not let the chain run on — the
+// hooks after it are the new owner's to call, not the old worker's too.
+func TestWorker_ALostLeaseRunsNoFurtherHook(t *testing.T) {
+	f, runs, bus := askFixture(t, 5*time.Second)
+	f.hdefs["|review"] = hooks.Def{Event: hooks.PhaseChannelPublish, FailMode: hooks.FailOpen, Body: hooks.DefBody{Kind: hooks.BodyKindCode,
+		Code: `function hook(ev){ Interruption.ask({question: "ship?", options: ["yes","no"]}); return {}; }`}}
+	after, calls := answer(t, ``)
+	f.setDef("", "inbox", Def{Hooks: chain(hooks.Entry{Ref: "review"}, webhookEntry("after", after.URL))})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, nil)
+	wait := runAsync(f)
+	row := pendingAsk(t, f.st, runs)
+	later := time.Now().Add(time.Hour)
+	if w, _ := f.st.ChannelHookClaim(context.Background(), "w2", later, later.Add(time.Hour), 1); len(w) != 1 {
+		t.Fatal("w2 did not take the lease")
+	}
+	resolveAsk(t, f.st, bus, row, "yes")
+	wait()
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("the old worker called the next hook %d time(s) after losing the lease", n)
+	}
+}
+
 // A body that puts the time or a random number in its question replays that
 // question after a restart: the seed comes from the hook, not from the ids a
 // fresh resolution mints, and the clock from the message's journal. Before,
