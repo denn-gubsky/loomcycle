@@ -115,6 +115,14 @@ func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *
 	if len(msgs) > width {
 		msgs = msgs[:width]
 	}
+	// after_read acks before the wave: at-most-once, so a crash mid-wave loses
+	// the batch rather than redelivering it — the tradeoff the definition
+	// asked for.
+	if h.Ack == teamgraph.AckAfterRead && cursor != "" {
+		if aerr := r.channels.Ack(ctx, h.Source.Channel, cursor); aerr != nil {
+			return Outcome{}, fmt.Errorf("state %q ack %q: %w", st.ID, h.Source.Channel, aerr)
+		}
+	}
 
 	results, waveErr := r.runWave(ctx, st, task, msgs)
 
