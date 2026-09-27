@@ -276,6 +276,47 @@ func TestExecutePendingTools_EventAndBlockCarryTheSameText(t *testing.T) {
 	}
 }
 
+// A failed call's tool_result EVENT carries the failure's structure as a field,
+// so an SSE or gRPC consumer reads the category and the correct call format
+// without parsing the text the model reads — and on the SSE wire it arrives
+// under the keys the client declares.
+func TestExecutePendingTools_TheFailedEventCarriesItsErrorInfo(t *testing.T) {
+	tool := &classifiedTool{res: tools.Result{
+		Text:    "Document: unknown argument",
+		IsError: true,
+		Error: &tools.ErrorInfo{
+			Category: tools.CategoryValidation,
+			CallFormat: &tools.CallFormat{Tool: "Document", Op: "create_chunk",
+				Example: json.RawMessage(`{"op":"create_chunk"}`)},
+		},
+	}}
+	var emitted []providers.Event
+	executePendingTools(
+		context.Background(),
+		tools.NewDispatcher([]tools.Tool{tool}),
+		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
+		1, nil, hooks.Identity{},
+		func(ev providers.Event) { emitted = append(emitted, ev) },
+	)
+	var ev *providers.Event
+	for i := range emitted {
+		if emitted[i].Type == providers.EventToolResult {
+			ev = &emitted[i]
+		}
+	}
+	if ev == nil || ev.ErrorInfo == nil || ev.ErrorInfo.Category != tools.CategoryValidation || ev.ErrorInfo.CallFormat == nil {
+		t.Fatalf("tool_result event = %+v; want its error_info", ev)
+	}
+	raw, _ := json.Marshal(ev)
+	var wire struct {
+		ErrorInfo map[string]any `json:"error_info"`
+	}
+	_ = json.Unmarshal(raw, &wire)
+	if wire.ErrorInfo["category"] != "validation" || wire.ErrorInfo["correct_call_format"] == nil {
+		t.Errorf("SSE error_info = %v; want category and correct_call_format", wire.ErrorInfo)
+	}
+}
+
 // An unclassified tool must leave both paths byte-identical to before, so this
 // phase touches only failing calls.
 func TestExecutePendingTools_UnclassifiedIsUnchangedOnBothPaths(t *testing.T) {
@@ -296,6 +337,9 @@ func TestExecutePendingTools_UnclassifiedIsUnchangedOnBothPaths(t *testing.T) {
 	for _, ev := range emitted {
 		if ev.Type == providers.EventToolResult && ev.Text != raw {
 			t.Errorf("event text altered: %q", ev.Text)
+		}
+		if ev.Type == providers.EventToolResult && ev.ErrorInfo != nil {
+			t.Errorf("a success carries error_info: %+v", ev.ErrorInfo)
 		}
 	}
 }

@@ -40,7 +40,7 @@ import grpc.aio
 from ._generated import loomcycle_pb2 as pb
 from ._generated import loomcycle_pb2_grpc as pb_grpc
 
-from .events import AgentEvent
+from .events import AgentEvent, error_info_from_pb
 from .errors import (
     AgentIDInUseError,
     AgentNotFoundError,
@@ -784,7 +784,15 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         output_text = (resp.output_json or b"").decode("utf-8")
         if resp.is_error:
-            raise SubstrateToolRefusedError(output_text, tool=tool)
+            raise SubstrateToolRefusedError(
+                output_text,
+                tool=tool,
+                error_info=(
+                    error_info_from_pb(resp.error_info)
+                    if resp.HasField("error_info")
+                    else None
+                ),
+            )
         if not output_text:
             return {}
         parsed = json.loads(output_text)

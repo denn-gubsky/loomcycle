@@ -1421,8 +1421,9 @@ message LimitInfo {
 // and what the gRPC status carries in google.rpc.ErrorInfo details, so one
 // condition reads the same whichever surface a consumer is on.
 message ErrorInfo {
-  // transient | validation | business | permission. Empty is never emitted:
-  // an unclassified failure omits the whole message instead.
+  // transient | validation | business | permission. Empty only on a failed
+  // tool call that is not classified yet but carries a call_format; any other
+  // unclassified failure omits the whole message.
   string category = 1;
 
   // Answers only "will resending this exact call fail?" — not "should the
@@ -1438,6 +1439,34 @@ message ErrorInfo {
   // instructions: "wait as you judge best" versus "retry immediately". A
   // non-retryable failure never carries one.
   optional int64 retry_after_ms = 4;
+
+  // The correct shape of the call that failed, on a failed TOOL call to a
+  // documented tool where the shape may be the cause (a validation failure,
+  // or one not yet classified). Absent otherwise, and never on a run failure.
+  // It is also carried on its own, with an empty category, for a failure that
+  // is not classified yet.
+  CallFormat call_format = 5;
+}
+
+// CallFormat is what a correct call to a documented tool looks like, taken
+// from the operation's help article.
+message CallFormat {
+  string tool = 1;
+  // The operation the example is for; empty when the call named no valid op,
+  // in which case operations lists the ones that exist.
+  string op = 2;
+  // The argument object of one correct call, as JSON.
+  bytes example_json = 3;
+  // The tool's valid operations — only when the op was missing or unknown.
+  repeated string operations = 4;
+  // The call that returns the full article.
+  CallRef reference = 5;
+}
+
+// CallRef is one tool call: the tool's name and its argument object as JSON.
+message CallRef {
+  string tool = 1;
+  bytes input_json = 2;
 }
 
 // ========================
@@ -1838,6 +1867,10 @@ message SubstrateRequest {
 message SubstrateResponse {
   bytes output_json = 1;
   bool is_error = 2;
+  // A failure's structure — category, retryability, next step, and the
+  // correct call format — when is_error and the runtime knows it. The same
+  // facts MCP puts in structuredContent and the HTTP refusal envelope carries.
+  ErrorInfo error_info = 3;
 }
 
 // ========================

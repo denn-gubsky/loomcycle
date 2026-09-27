@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -188,23 +189,23 @@ func substrateGRPCUserCtx(ctx context.Context) context.Context {
 
 // AgentDef serves the AgentDef gRPC RPC.
 func (s *Server) AgentDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "AgentDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "AgentDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.AgentDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
 // SkillDef serves the SkillDef gRPC RPC.
 func (s *Server) SkillDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "SkillDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "SkillDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.SkillDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -213,12 +214,12 @@ func (s *Server) SkillDef(ctx context.Context, req *loomcyclepb.SubstrateRequest
 // shape; the body is op-discriminated input_json the Connector method
 // dispatches.
 func (s *Server) MCPServerDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "MCPServerDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "MCPServerDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.MCPServerDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -227,12 +228,12 @@ func (s *Server) MCPServerDef(ctx context.Context, req *loomcyclepb.SubstrateReq
 // RPCs; op-discriminated input_json (create / fork / get / list /
 // retire) routes via the Connector to the in-process tool.
 func (s *Server) ScheduleDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "ScheduleDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "ScheduleDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.ScheduleDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -241,24 +242,24 @@ func (s *Server) ScheduleDef(ctx context.Context, req *loomcyclepb.SubstrateRequ
 // op-discriminated input_json routes via the Connector to the in-process
 // tool.
 func (s *Server) A2AServerCardDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "A2AServerCardDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "A2AServerCardDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.A2AServerCardDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
 // A2AAgentDef serves the v1.x RFC G A2AAgentDef gRPC RPC — A2A-agent
 // substrate. Same shape as the other substrate RPCs.
 func (s *Server) A2AAgentDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "A2AAgentDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "A2AAgentDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.A2AAgentDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -266,12 +267,12 @@ func (s *Server) A2AAgentDef(ctx context.Context, req *loomcyclepb.SubstrateRequ
 // substrate. Same shape as the other substrate RPCs.
 // (RFC H WH-3 / mirrors A2AAgentDef.)
 func (s *Server) WebhookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "WebhookDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "WebhookDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.WebhookDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -279,24 +280,24 @@ func (s *Server) WebhookDef(ctx context.Context, req *loomcyclepb.SubstrateReque
 // memory-backend substrate. Same shape as the other substrate RPCs.
 // (RFC I MR-3a / mirrors WebhookDef.)
 func (s *Server) MemoryBackendDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "MemoryBackendDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "MemoryBackendDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.MemoryBackendDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
 // DocumentSourceDef serves the RFC CE DocumentSourceDef gRPC RPC —
 // remote-document-source substrate. Same shape as the other substrate RPCs.
 func (s *Server) DocumentSourceDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "DocumentSourceDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "DocumentSourceDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.DocumentSourceDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -304,12 +305,12 @@ func (s *Server) DocumentSourceDef(ctx context.Context, req *loomcyclepb.Substra
 // token minting/rotation/retirement. Same shape as the other substrate
 // RPCs; operator-admin-only.
 func (s *Server) OperatorTokenDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "OperatorTokenDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "OperatorTokenDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.OperatorTokenDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -320,24 +321,24 @@ func (s *Server) OperatorTokenDef(ctx context.Context, req *loomcyclepb.Substrat
 // ScopeTenant, not ScopeAdmin); tenant authority + opaque-404 are enforced in
 // the tool.
 func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "VolumeDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "VolumeDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.VolumeDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
 // HookDef serves the HookDef gRPC RPC — reusable hook definitions. Same shape
 // as the other substrate RPCs; tenant-confined like AgentDef.
 func (s *Server) HookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "HookDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "HookDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.HookDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -351,12 +352,12 @@ func (s *Server) HookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest)
 // the team's graph, spawning each state's agent under the wired executor's
 // admission — same connector path the HTTP POST /v1/_teamdef endpoint takes.
 func (s *Server) TeamDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "TeamDef", req, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPC(ctx, "TeamDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.TeamDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -369,24 +370,24 @@ func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*
 	// User-aware ctx: an off-run scope:"user" op keys on the principal's
 	// Subject (= the run user_id), so it interoperates with the principal's
 	// agent runs. See substrateGRPCUserCtx.
-	return s.dispatchSubstrateRPCCtx(ctx, "Path", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Path", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.Path(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
 // Document serves the RFC AK Document gRPC RPC. Same shape + tenant-confined
 // posture as Path; requires SQL Memory enabled on the runtime.
 func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.Document(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -401,21 +402,30 @@ func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest
 func (s *Server) CredentialDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
 	p, ok := auth.PrincipalFromContext(ctx)
 	isolated := auth.IsIsolated(p, ok)
-	return s.dispatchSubstrateRPCCtx(ctx, "CredentialDef", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "CredentialDef", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		if isolated {
 			out, refused := credential.ConstrainToUserScope(in)
 			if refused {
 				// is_error: a tool-level refusal (the SubstrateResponse convention),
 				// mirroring the MCP tool-error + the HTTP 403 credential_scope_forbidden.
-				return json.RawMessage(`"an isolated user token may only manage scope=user credentials (its own); scope=tenant and scope=agent require substrate:tenant"`), true, nil
+				return connector.ToolResult{
+					Text:    `"an isolated user token may only manage scope=user credentials (its own); scope=tenant and scope=agent require substrate:tenant"`,
+					IsError: true,
+					// The caller's own grant is what is missing, and says nothing
+					// about whether any row exists: permission, not an oracle.
+					ErrorInfo: &tools.ErrorInfo{
+						Category:    tools.CategoryPermission,
+						Description: "Manage your own credentials with scope=user, or use a token with substrate:tenant.",
+					},
+				}, nil
 			}
 			in = out
 		}
 		res, err := s.connector.CredentialDef(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -430,12 +440,12 @@ func (s *Server) CredentialDef(ctx context.Context, req *loomcyclepb.SubstrateRe
 // via the HistoryPolicy substrateGRPCCtx grants (own scopes always, global only
 // for an admin principal) — the owner is NEVER read from the wire.
 func (s *Server) History(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPCCtx(ctx, "History", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "History", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.History(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -449,12 +459,12 @@ func (s *Server) History(ctx context.Context, req *loomcyclepb.SubstrateRequest)
 // tenant, NEVER the wire. TENANT-CONFINED; the substrateGRPCCtx MemoryPolicy
 // grant confines scopes and leaves SQL ops (no sql_scopes grant) to refuse.
 func (s *Server) Memory(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPCCtx(ctx, "Memory", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Memory", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.Memory(ctx, in)
 		if err != nil {
-			return nil, false, err
+			return connector.ToolResult{}, err
 		}
-		return json.RawMessage(res.Text), res.IsError, nil
+		return res, nil
 	})
 }
 
@@ -465,7 +475,7 @@ func (s *Server) dispatchSubstrateRPC(
 	ctx context.Context,
 	toolName string,
 	req *loomcyclepb.SubstrateRequest,
-	callerFn func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error),
+	callerFn func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error),
 ) (*loomcyclepb.SubstrateResponse, error) {
 	return s.dispatchSubstrateRPCCtx(ctx, toolName, req, substrateGRPCCtx, callerFn)
 }
@@ -478,7 +488,7 @@ func (s *Server) dispatchSubstrateRPCCtx(
 	toolName string,
 	req *loomcyclepb.SubstrateRequest,
 	ctxFn func(context.Context) context.Context,
-	callerFn func(ctx context.Context, in json.RawMessage) (json.RawMessage, bool, error),
+	callerFn func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error),
 ) (*loomcyclepb.SubstrateResponse, error) {
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
@@ -496,12 +506,17 @@ func (s *Server) dispatchSubstrateRPCCtx(
 	// with the "no scopes" refusal — invisible under mock-based
 	// tests, broken in production.
 	ctx = ctxFn(ctx)
-	out, isErr, err := callerFn(ctx, json.RawMessage(in))
+	res, err := callerFn(ctx, json.RawMessage(in))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%s: %v", toolName, err)
 	}
-	return &loomcyclepb.SubstrateResponse{
-		OutputJson: []byte(out),
-		IsError:    isErr,
-	}, nil
+	resp := &loomcyclepb.SubstrateResponse{
+		OutputJson: []byte(res.Text),
+		IsError:    res.IsError,
+	}
+	// The failure's structure, which the connector result used to drop here.
+	if res.IsError {
+		resp.ErrorInfo = errorInfoToProto(res.ErrorInfo)
+	}
+	return resp, nil
 }

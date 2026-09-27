@@ -145,3 +145,38 @@ async def test_skill_def_serialises_input_to_bytes():
     assert isinstance(captured["req"].input_json, bytes)
     parsed = json.loads(captured["req"].input_json)
     assert parsed == {"op": "list", "name": "voice-applier"}
+
+
+@pytest.mark.asyncio
+async def test_tool_refusal_carries_the_structured_error_info():
+    """A refusal's structure — category, next step and the correct call
+    format — rides on the typed error, not only its message."""
+    client = _make_client()
+    fake, _ = _async_returning(
+        pb.SubstrateResponse(
+            output_json=b'Document: unknown argument "text"',
+            is_error=True,
+            error_info=pb.ErrorInfo(
+                category="validation",
+                description="Pass only this tool's own arguments.",
+                call_format=pb.CallFormat(tool="Document", op="create_chunk", example_json=b'{"op":"create_chunk"}'),
+            ),
+        ),
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    with pytest.raises(SubstrateToolRefusedError) as exc_info:
+        await client._dispatch_substrate("Document", {"op": "create_chunk", "text": "x"})
+    info = exc_info.value.error_info
+    assert info is not None and info.category == "validation"
+    assert info.call_format is not None and info.call_format.op == "create_chunk"
+
+
+@pytest.mark.asyncio
+async def test_unclassified_refusal_has_no_error_info():
+    client = _make_client()
+    fake, _ = _async_returning(pb.SubstrateResponse(output_json=b"refused", is_error=True))
+    client._stub.SkillDef = fake  # type: ignore[attr-defined]
+    with pytest.raises(SubstrateToolRefusedError) as exc_info:
+        await client.skill_def({"op": "create"})
+    assert exc_info.value.error_info is None

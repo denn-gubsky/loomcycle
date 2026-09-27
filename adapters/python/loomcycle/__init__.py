@@ -73,6 +73,9 @@ from .events import (
     HookDecision,
     UserInput,
     LimitInfo,
+    ErrorInfo,
+    CallFormat,
+    CallRef,
 )
 from .errors import (
     LoomcycleError,
@@ -107,6 +110,9 @@ __all__ = [
     "HookDecision",
     "UserInput",
     "LimitInfo",
+    "ErrorInfo",
+    "CallFormat",
+    "CallRef",
     "LoomcycleError",
     "AgentNotFoundError",
     "SessionNotFoundError",

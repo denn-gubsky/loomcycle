@@ -81,8 +81,17 @@ func TestRunErrorEvent_SurvivesSSESerialization(t *testing.T) {
 	if !ok {
 		t.Fatalf("error_info absent from the SSE frame — a consumer still sees only a string:\n%s", raw)
 	}
-	if info["Category"] != string(errkind.CategoryBusiness) && info["category"] != string(errkind.CategoryBusiness) {
-		t.Errorf("category did not survive serialization: %v", info)
+	// The keys @loomcycle/client's ErrorInfo declares. Info used to serialize
+	// as its Go field names ("Category", "Retryable"), and this check accepted
+	// either spelling, so a TS consumer reading error_info.category got
+	// undefined while the test stayed green.
+	if info["category"] != string(errkind.CategoryBusiness) || info["is_retryable"] != false {
+		t.Errorf("error_info is not in the declared wire shape: %v", info)
+	}
+	for _, goName := range []string{"Category", "Retryable", "Description", "RetryAfter"} {
+		if _, ok := info[goName]; ok {
+			t.Errorf("error_info carries the Go field name %q: %v", goName, info)
+		}
 	}
 
 	// And it round-trips back, which is what a transcript replay depends on.
