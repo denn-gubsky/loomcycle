@@ -95,6 +95,10 @@ func TestDocumentSearch_RefusesWithoutAQueryOrAnEmbedder(t *testing.T) {
 // TestDocumentSearch_OrderIsByScore guards the enrichment loop: metadata is fetched in
 // one batch keyed by id, so rebuilding results from that map would return them in map
 // order. A caller reading the first element must get the best match.
+//
+// "Score" is rank_score, the value the order is built from. The raw cosine `score`
+// is monotonic only while the vector leg is the whole ranking; once full-text fuses
+// in, a chunk found by its words has a low cosine and a high rank.
 func TestDocumentSearch_OrderIsByScore(t *testing.T) {
 	d, _, ctx := mermaidDocFixture(t, "alpha", "beta", "gamma", "delta", "epsilon")
 
@@ -114,7 +118,7 @@ func TestDocumentSearch_OrderIsByScore(t *testing.T) {
 	}
 	var got struct {
 		Chunks []struct {
-			Score float64 `json:"score"`
+			Score float64 `json:"rank_score"`
 			Title string  `json:"title"`
 		} `json:"chunks"`
 	}

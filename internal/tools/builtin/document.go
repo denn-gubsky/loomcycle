@@ -19,6 +19,8 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -60,6 +62,15 @@ type Document struct {
 	// (ontology provisioning, the tenant-root probe) neither need nor have an
 	// embedder, and a required field would force them to fabricate one.
 	Embedder providers.Embedder
+
+	// Backend serves op=search: the SAME hybrid retrieval `Memory op=search` runs
+	// (vector and full-text legs fused, then ranked), so a document search and a
+	// memory search over the same chunks return the same order. main.go sets the
+	// operator-default in-process backend here — one instance, shared with the
+	// Memory tool, so whatever that backend is configured with applies to both.
+	// Nil builds an in-process backend over Store + Embedder per call, which is
+	// what every ad-hoc &Document{} gets.
+	Backend memrank.Backend
 
 	// Cfg is the loaded operator config, used to resolve `document_sources:`
 	// (a peer loomcycle) for the RFC CE set_remote / sync ops. Set in main.go
@@ -3340,29 +3351,36 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if topK > 50 {
 		topK = 50
 	}
-	vec, err := d.Embedder.Embed(ctx, []string{q})
-	if err != nil {
-		return errFrom("search: embed: "+err.Error(), err), nil
-	}
-	if len(vec) == 0 {
-		return errTransient("search: embed: embedder returned no vector", "Try again; if it keeps failing, filter with op=query_chunks instead."), nil
-	}
-	// No topK+1 here, unlike `related`: there is no self-hit to drop when the query is
-	// text the caller typed rather than a chunk that is already in the index.
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
-		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK)
+	// THE MEMORY SEARCH PIPELINE, NOT A SECOND ONE. This op used to run a vector
+	// query of its own, so a chunk whose words matched the question but whose
+	// embedding did not — a name, a code, an error string — was unreachable here
+	// while `Memory op=search` over the same chunks found it through the full-text
+	// leg. Running the same backend is what makes the two agree.
+	//
+	// A key prefix, not `sources=[documents]`: this op has always returned every
+	// chunk body, fact chunks included, and the documents selector excludes the
+	// chunks memory's facts are homed in.
+	res, err := d.searchBackend().Search(ctx, mscope, key.ScopeID, memrank.SearchQuery{
+		QueryText: q,
+		Prefix:    chunkBodyKeyPrefix,
+		TopK:      topK,
+	}, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
 		return errFrom("search: "+err.Error(), err), nil
 	}
-	ids := make([]string, 0, len(entries))
-	scores := make(map[string]float64, len(entries))
-	for _, e := range entries {
+	ids := make([]string, 0, len(res.Entries))
+	scores := make(map[string]float64, len(res.Entries))
+	rankScores := make(map[string]float64, len(res.Entries))
+	for i, e := range res.Entries {
 		cid := ChunkIDFromBodyKey(e.Key)
 		if cid == "" {
 			continue
 		}
 		ids = append(ids, cid)
 		scores[cid] = e.Score
+		if i < len(res.RankScores) {
+			rankScores[cid] = res.RankScores[i]
+		}
 	}
 	meta, err := d.chunkMetaByIDs(ctx, key, ids)
 	if err != nil {
@@ -3370,7 +3388,10 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	out := make([]map[string]any, 0, len(ids))
 	for _, cid := range ids {
-		m := map[string]any{"chunk_id": cid, "score": scores[cid]}
+		// score is the raw cosine and rank_score what the order used — they differ
+		// once the full-text leg contributes, and a chunk found by its words alone
+		// has a low score and a high rank_score.
+		m := map[string]any{"chunk_id": cid, "score": scores[cid], "rank_score": rankScores[cid]}
 		if md, ok := meta[cid]; ok {
 			if md.title != "" {
 				m["title"] = md.title
@@ -3384,9 +3405,19 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 		out = append(out, m)
 	}
-	// Ordered by score, and the enrichment loop preserves that order — a caller reading
-	// the first element must get the best match, not whatever the metadata query returned.
+	// In the backend's order, and the enrichment loop preserves it — a caller
+	// reading the first element must get the best match, not whatever order the
+	// metadata query returned.
 	return jsonResult(map[string]any{"chunks": out})
+}
+
+// searchBackend is the backend op=search runs on: the wired one, else an
+// in-process backend over this tool's store and embedder.
+func (d *Document) searchBackend() memrank.Backend {
+	if d.Backend != nil {
+		return d.Backend
+	}
+	return inprocess.New(d.Store, d.Embedder)
 }
 
 // related returns the chunks whose bodies embed CLOSEST to a chunk's — its

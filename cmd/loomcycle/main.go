@@ -1623,6 +1623,9 @@ func main() {
 	}
 	pathTool.Store = storeIface
 	documentTool.Store = storeIface
+	// Document op=search runs the SAME backend instance as the Memory tool, so a
+	// document search and a memory search over the same chunks rank them alike.
+	documentTool.Backend = inProcBackend
 	historyTool.Store = storeIface
 	// RFC BE op=related — the SAME embedder the Memory tool uses; nil (no
 	// embedder configured) makes op=related refuse cleanly, every other op works.
