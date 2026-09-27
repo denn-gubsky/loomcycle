@@ -451,11 +451,22 @@ func TestMemory_CursorAdvanceRefusesAnotherUsersSession(t *testing.T) {
 	leaseUserTarget(t, tool, gctx) // the fixture's target is alice
 
 	res, _ := tool.Execute(gctx, json.RawMessage(advanceTo("user", bobSess, bobAt)))
-	if !res.IsError || !strings.Contains(res.Text, "does not belong to this memory target") {
-		t.Errorf("advance to another user's chat = (IsError=%v) %q, want an out-of-target refusal", res.IsError, res.Text)
+	if !res.IsError {
+		t.Errorf("advance to another user's chat was accepted: %q", res.Text)
 	}
 	if wm := userWatermark(t, tool, "alice"); !wm.WatermarkCompletedAt.IsZero() {
 		t.Errorf("alice's watermark moved off bob's chat: %v", wm.WatermarkCompletedAt)
+	}
+
+	// And the refusal must not say WHY. Another user's real chat and an id that
+	// does not exist read the same — otherwise the difference confirms that the
+	// id is a real chat in the tenant.
+	missing, _ := tool.Execute(gctx, json.RawMessage(advanceTo("user", "s_invented", bobAt)))
+	if want := noSuchWatermarkChat(bobSess); res.Text != want {
+		t.Errorf("another user's chat refused as %q, want the not-found form %q", res.Text, want)
+	}
+	if want := noSuchWatermarkChat("s_invented"); missing.Text != want {
+		t.Errorf("an invented chat refused as %q, want %q", missing.Text, want)
 	}
 }
 

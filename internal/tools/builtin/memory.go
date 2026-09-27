@@ -2231,6 +2231,13 @@ func (m *Memory) execCursorLease(ctx context.Context, scope store.MemoryScope, s
 //
 // Backwards/equal advances stay a no-op (the store is already monotonic): this
 // is an authenticity check layered on top, not a replacement for it.
+// noSuchWatermarkChat is the one refusal for a watermark chat the caller may
+// not name: one that does not exist, and one that belongs to another memory
+// target. One builder, so the two can never drift into saying which it was.
+func noSuchWatermarkChat(sessionID string) string {
+	return fmt.Sprintf("cursor_advance: no chat %q for this memory target — the watermark may only name a real chat of this target; copy the pair from a cursor_scan row", sessionID)
+}
+
 func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope, scopeID string, in memoryInput) (tools.Result, error) {
 	if res, denied := consolidationGate(ctx, "cursor_advance"); denied {
 		return res, nil
@@ -2259,7 +2266,7 @@ func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope,
 	if serr != nil {
 		var nf *store.ErrNotFound
 		if errors.As(serr, &nf) {
-			return errResult(fmt.Sprintf("cursor_advance: no chat %q in this tenant — the watermark may only name a real chat; copy the pair from a cursor_scan row", in.SessionID)), nil
+			return errResult(noSuchWatermarkChat(in.SessionID)), nil
 		}
 		return errResult(fmt.Sprintf("cursor_advance: %s", serr)), nil
 	}
@@ -2267,8 +2274,13 @@ func (m *Memory) execCursorAdvance(ctx context.Context, scope store.MemoryScope,
 	// another user must read as unusable, not as a probe result. Only the user
 	// scope has a per-target owner — an agent-scope target is confined by tenant
 	// alone (its scope_id is an agent name, not a session owner).
+	//
+	// The SAME refusal as a chat that does not exist. It used to say "does not
+	// belong to this memory target", which told the caller that id is a real
+	// chat of another user in the tenant — an existence oracle over the whole
+	// tenant's chat ids.
 	if scope == store.MemoryScopeUser && sessionUser != scopeID {
-		return errResult(fmt.Sprintf("cursor_advance: chat %q does not belong to this memory target", in.SessionID)), nil
+		return errResult(noSuchWatermarkChat(in.SessionID)), nil
 	}
 	if settledAt.IsZero() {
 		return errResult(fmt.Sprintf("cursor_advance: chat %q has not finished yet — advancing past a live chat would skip whatever it says next", in.SessionID)), nil
