@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -450,5 +451,63 @@ func TestChannelTool_AHoldSetMidRunApplies(t *testing.T) {
 	msgs, err := st.ChannelPeek(ctx, "", "inbox", store.MemoryScopeGlobal, "", "", 10)
 	if err != nil || len(msgs) != 0 {
 		t.Errorf("a channel held mid-run delivered %d message(s) (err %v)", len(msgs), err)
+	}
+}
+
+// The hold census: every surface that writes a channel message, driven against
+// a `hold:` channel. Each must store the message and deliver nothing. The
+// writer census proves they all write through the channel writer; this proves
+// the writer, reached from each, holds. (The scheduler and webhook writers are
+// covered in their packages, on the same writer.)
+func TestChannelHoldCensus_EverySurfaceIsHeld(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, srv *Server, st store.Store)
+	}{
+		{"agent Channel tool", func(t *testing.T, srv *Server, st store.Store) {
+			tool := &builtin.Channel{Store: st, Writer: srv.systemPublisher.(channels.Writer)}
+			runCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
+				Publish:  []string{"gate"},
+				Channels: map[string]tools.ChannelDef{"gate": {Name: "gate", Scope: "global", MaxMessages: 100}},
+			})
+			if res, err := tool.Execute(runCtx, json.RawMessage(`{"op":"publish","channel":"gate","value":{}}`)); err != nil || res.IsError {
+				t.Fatalf("publish: err=%v result=%s", err, res.Text)
+			}
+		}},
+		{"admin publish", func(t *testing.T, srv *Server, _ store.Store) {
+			if rec := postJSON(t, srv, "/v1/_channels/gate/publish", `{"payload":{}}`); rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+		}},
+		{"admin broadcast", func(t *testing.T, srv *Server, _ store.Store) {
+			if rec := postJSON(t, srv, "/v1/_channels/_broadcast", `{"channels":["gate"],"scope":"global","payload":{}}`); rec.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+		}},
+		{"system publisher", func(t *testing.T, srv *Server, _ store.Store) {
+			if _, err := srv.systemPublisher.PublishNow(ctx, "gate", "t1", store.MemoryScopeGlobal, "", json.RawMessage(`{}`), channels.SystemPublisherUserID, 0, 0); err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+		}},
+		{"team sink", func(t *testing.T, srv *Server, _ store.Store) {
+			io := &teamChannelIO{srv: srv, acl: &teamgraph.TeamChannels{Publish: []string{"gate"}}}
+			if err := io.Publish(ctx, "gate", json.RawMessage(`{}`)); err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, st, cleanup := channelHoldFixture(t)
+			defer cleanup()
+			tc.write(t, srv, st)
+			if msgs, err := st.ChannelPeek(ctx, "", "gate", store.MemoryScopeGlobal, "", "", 10); err != nil || len(msgs) != 0 {
+				t.Fatalf("delivered %d message(s) past the hold (err %v)", len(msgs), err)
+			}
+			released, _, err := st.ChannelRelease(ctx, "", "gate", store.MemoryScopeGlobal, "", 10)
+			if err != nil || len(released) != 1 {
+				t.Fatalf("release returned %d (err %v), want the 1 held message — it was lost, not held", len(released), err)
+			}
+		})
 	}
 }
