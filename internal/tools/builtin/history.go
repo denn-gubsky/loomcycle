@@ -163,18 +163,22 @@ type historyInput struct {
 
 func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if h.Store == nil {
-		return errResult("History tool: not configured (no Store backend)"), nil
+		return errBusiness("History tool: not configured (no Store backend)", "Chat history is not available in this deployment; ask an operator to configure a store."), nil
 	}
 	var in historyInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult("invalid input JSON: " + err.Error()), nil
+		return errValidation("invalid input JSON: "+err.Error(), "Resend the call as a JSON object that matches the tool's input schema."), nil
 	}
 	if in.Op == "" {
-		return errResult("missing required field: op"), nil
+		return errValidation("missing required field: op", "Pass op, one of: list, get, search, rename, annotate, pin, archive, recap, resume, related, window."), nil
 	}
 	scope, err := h.authorizedScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		var denied historyScopeNotGranted
+		if errors.As(err, &denied) {
+			return errPermission(err.Error(), "Use a scope the agent is granted, or ask an operator to add this one to history_scope."), nil
+		}
+		return errValidation(err.Error(), ""), nil
 	}
 
 	switch in.Op {
@@ -182,7 +186,7 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return h.list(ctx, scope, in, false)
 	case "search":
 		if err := validMatchMode(in.Match); err != nil {
-			return errResult(err.Error()), nil
+			return errValidation(err.Error(), ""), nil
 		}
 		if strings.EqualFold(strings.TrimSpace(in.Match), contentMatchMode) {
 			return h.searchContent(ctx, scope, in)
@@ -207,7 +211,7 @@ func (h *History) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	case "window":
 		return h.window(ctx, scope, in)
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume, related, window)", in.Op)), nil
+		return errValidation(fmt.Sprintf("unknown op %q (want one of: list, get, search, rename, annotate, pin, archive, recap, resume, related, window)", in.Op), ""), nil
 	}
 }
 
@@ -235,11 +239,26 @@ func (h *History) authorizedScope(ctx context.Context, requested string) (string
 	pol := tools.HistoryPolicy(ctx)
 	if !containsScope(pol.Scopes, requested) {
 		if len(pol.Scopes) == 0 {
-			return "", fmt.Errorf("history: no history_scope policy (default-deny); grant history_scope: [%s] on the agent to allow it", requested)
+			return "", historyScopeNotGranted{fmt.Sprintf("history: no history_scope policy (default-deny); grant history_scope: [%s] on the agent to allow it", requested)}
 		}
-		return "", fmt.Errorf("history: scope %q not permitted (allowed: %s)", requested, strings.Join(pol.Scopes, ", "))
+		return "", historyScopeNotGranted{fmt.Sprintf("history: scope %q not permitted (allowed: %s)", requested, strings.Join(pol.Scopes, ", "))}
 	}
 	return requested, nil
+}
+
+// historyScopeNotGranted is authorizedScope's refusal of a scope the caller's own
+// history_scope grant lacks — a permission failure, told apart from an unknown scope
+// name (a validation failure). It depends only on the grant, never on whether any
+// chat exists, so it reveals nothing about another scope's rows.
+type historyScopeNotGranted struct{ msg string }
+
+func (e historyScopeNotGranted) Error() string { return e.msg }
+
+// sessionLookupFailed classifies every loadSessionInScope failure as not-found, with
+// ONE next step. A chat in another scope folds into the same text as a missing one,
+// and a different category or hint for it would tell the caller the chat exists.
+func sessionLookupFailed(err error) tools.Result {
+	return errNotFound(err.Error(), "Pass a session_id from op=list or op=search in this scope.")
 }
 
 // filterForScope builds the owner-constrained SessionFilter from ctx identity.
@@ -351,11 +370,11 @@ func effectiveListLimit(ctx context.Context, limit int) int {
 func (h *History) list(ctx context.Context, scope string, in historyInput, isSearch bool) (tools.Result, error) {
 	f, err := h.filterForScope(ctx, scope, in)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), ""), nil
 	}
 	if isSearch {
 		if strings.TrimSpace(in.Query) == "" {
-			return errResult("history: search requires a non-empty query"), nil
+			return errValidation("history: search requires a non-empty query", "Pass a non-empty query, or use op=list to browse."), nil
 		}
 		// MVP metadata search: case-insensitive title match. Description/tags
 		// full-text search is deferred (an FTS index, additive later).
@@ -364,7 +383,7 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 	limit := effectiveListLimit(ctx, in.Limit)
 	rows, total, err := h.Store.ListSessions(ctx, f, limit, in.Offset)
 	if err != nil {
-		return errResult("history: list: " + err.Error()), nil
+		return errFrom("history: list: "+err.Error(), err), nil
 	}
 	out := map[string]any{
 		"scope":  scope,
@@ -384,21 +403,21 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 func (h *History) get(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	sess, err := h.loadSessionInScope(ctx, scope, "get", in.SessionID)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return sessionLookupFailed(err), nil
 	}
 	runs, err := h.Store.RunsForSession(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: runs: " + err.Error()), nil
+		return errFrom("history: runs: "+err.Error(), err), nil
 	}
 	events, err := h.Store.GetTranscript(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: transcript: " + err.Error()), nil
+		return errFrom("history: transcript: "+err.Error(), err), nil
 	}
 	chat := sessionMeta(sess, runs)
 
 	page, err := selectHistoryPage(ctx, events, in)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), ""), nil
 	}
 	out := map[string]any{"scope": scope, "chat": chat}
 	for k, v := range page.fields() {
@@ -463,14 +482,14 @@ func historyCutNote(p historyPage) string {
 
 func (h *History) rename(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	if in.Title == nil {
-		return errResult("history: rename requires title"), nil
+		return errValidation("history: rename requires title", "Pass title."), nil
 	}
 	return h.applyMeta(ctx, scope, in.SessionID, "rename", store.SessionMetaPatch{Title: in.Title})
 }
 
 func (h *History) annotate(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	if in.Description == nil && in.Tags == nil {
-		return errResult("history: annotate requires description and/or tags"), nil
+		return errValidation("history: annotate requires description and/or tags", "Pass description, tags, or both."), nil
 	}
 	return h.applyMeta(ctx, scope, in.SessionID, "annotate", store.SessionMetaPatch{
 		Description: in.Description,
@@ -504,21 +523,21 @@ func (h *History) archive(ctx context.Context, scope string, in historyInput) (t
 func (h *History) recap(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	sess, err := h.loadSessionInScope(ctx, scope, "recap", in.SessionID)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return sessionLookupFailed(err), nil
 	}
 	if h.Recap == nil {
-		return errResult("history: recap not configured (no summarizer wired)"), nil
+		return errBusiness("history: recap not configured (no summarizer wired)", "This deployment has no summarizer; read the chat with op=get instead."), nil
 	}
 	summary, err := h.Recap(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: recap: " + err.Error()), nil
+		return errFrom("history: recap: "+err.Error(), err), nil
 	}
 	if err := h.Store.SetSessionMeta(ctx, sess.ID, store.SessionMetaPatch{Summary: &summary}); err != nil {
-		return errResult("history: recap: persist summary: " + err.Error()), nil
+		return errFrom("history: recap: persist summary: "+err.Error(), err), nil
 	}
 	updated, err := h.Store.GetSession(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: recap: reload: " + err.Error()), nil
+		return errFrom("history: recap: reload: "+err.Error(), err), nil
 	}
 	// The fresh summary changes the chat's embed text — refresh the op=related
 	// index (best-effort; never fails the recap).
@@ -539,11 +558,11 @@ func (h *History) recap(ctx context.Context, scope string, in historyInput) (too
 func (h *History) resume(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	sess, err := h.loadSessionInScope(ctx, scope, "resume", in.SessionID)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return sessionLookupFailed(err), nil
 	}
 	runs, err := h.Store.RunsForSession(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: resume: " + err.Error()), nil
+		return errFrom("history: resume: "+err.Error(), err), nil
 	}
 	status, lastActivity := deriveChatStatus(sess, runs)
 	return okJSON(map[string]any{
@@ -579,7 +598,7 @@ func (h *History) resume(ctx context.Context, scope string, in historyInput) (to
 // ErrEmbedderNotConfigured), while every other History op works without one.
 func (h *History) related(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	if h.Embedder == nil {
-		return errResult("history: related requires an embedder (set memory.embedder in operator yaml)"), nil
+		return errBusiness("history: related requires an embedder (set memory.embedder in operator yaml)", "Find chats by title with op=search instead."), nil
 	}
 
 	var sourceText, excludeID string
@@ -587,32 +606,32 @@ func (h *History) related(ctx context.Context, scope string, in historyInput) (t
 	case in.SessionID != "":
 		sess, err := h.loadSessionInScope(ctx, scope, "related", in.SessionID)
 		if err != nil {
-			return errResult(err.Error()), nil
+			return sessionLookupFailed(err), nil
 		}
 		sourceText = sessionEmbedText(sess.Title, sess.Summary, sess.Description)
 		excludeID = sess.ID
 		if sourceText == "" {
 			// A chat with no title/summary/description has nothing to match on —
 			// recap or annotate it first so the index has meaning.
-			return errResult("history: related: chat has no title, summary, or description to match on (recap or annotate it first)"), nil
+			return errBusiness("history: related: chat has no title, summary, or description to match on (recap or annotate it first)", ""), nil
 		}
 	case strings.TrimSpace(in.Query) != "":
 		sourceText = strings.TrimSpace(in.Query)
 	default:
-		return errResult("history: related requires session_id or query"), nil
+		return errValidation("history: related requires session_id or query", "Pass session_id (a chat to match) or query (free text)."), nil
 	}
 
 	vecs, err := h.Embedder.Embed(ctx, []string{sourceText})
 	if err != nil {
-		return errResult("history: related: embed: " + err.Error()), nil
+		return errFrom("history: related: embed: "+err.Error(), err), nil
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		return errResult("history: related: embedder returned an empty vector"), nil
+		return errTransient("history: related: embedder returned an empty vector", "Try again; if it keeps failing, ask an operator to check the embedder."), nil
 	}
 
 	f, err := h.filterForScope(ctx, scope, in)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return errValidation(err.Error(), ""), nil
 	}
 	limit := in.Limit
 	if limit <= 0 {
@@ -621,7 +640,7 @@ func (h *History) related(ctx context.Context, scope string, in historyInput) (t
 	// Fetch one extra so excluding the source chat still leaves a full page.
 	rows, err := h.Store.SessionEmbedSearch(ctx, f, vecs[0], limit+1)
 	if err != nil {
-		return errResult("history: related: " + err.Error()), nil
+		return errFrom("history: related: "+err.Error(), err), nil
 	}
 	out := make([]store.SessionSimilar, 0, len(rows))
 	for _, r := range rows {
@@ -743,14 +762,14 @@ func deriveChatStatus(sess store.Session, runs []store.Run) (store.RunStatus, ti
 func (h *History) applyMeta(ctx context.Context, scope, sessionID, op string, patch store.SessionMetaPatch) (tools.Result, error) {
 	sess, err := h.loadSessionInScope(ctx, scope, op, sessionID)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return sessionLookupFailed(err), nil
 	}
 	if err := h.Store.SetSessionMeta(ctx, sess.ID, patch); err != nil {
-		return errResult("history: " + op + ": " + err.Error()), nil
+		return errFrom("history: "+op+": "+err.Error(), err), nil
 	}
 	updated, err := h.Store.GetSession(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: reload: " + err.Error()), nil
+		return errFrom("history: reload: "+err.Error(), err), nil
 	}
 	// A title (rename) or description (annotate) change alters the chat's embed
 	// text — refresh the op=related index (best-effort; never fails the op).
