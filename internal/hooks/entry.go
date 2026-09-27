@@ -98,6 +98,27 @@ type EventHooks map[Phase][]Entry
 // in that agent.
 type ToolHooks map[string]EventHooks
 
+// WithoutEndpoints returns e with each inline webhook reduced to its name: the
+// shape of an attachment, for someone allowed to see which hooks run but not
+// where they call or with what headers.
+func WithoutEndpoints(e EventHooks) EventHooks {
+	if len(e) == 0 {
+		return e
+	}
+	out := make(EventHooks, len(e))
+	for phase, entries := range e {
+		list := make([]Entry, len(entries))
+		for i, entry := range entries {
+			if entry.Inline != nil {
+				entry = Entry{Inline: &Inline{Name: entry.Inline.Name}}
+			}
+			list[i] = entry
+		}
+		out[phase] = list
+	}
+	return out
+}
+
 // ParseRef splits a HookDef reference into its name and version (0 = the
 // version active when the run starts).
 func ParseRef(ref string) (name string, version int, err error) {

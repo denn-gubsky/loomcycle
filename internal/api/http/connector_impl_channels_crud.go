@@ -272,11 +272,8 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 	}
 	desc := rowToBareDescriptor(*match)
 	if stats, err := s.store.ChannelStats(ctx); err == nil {
-		for _, st := range stats {
-			if st.Channel == name {
-				attachStats(&desc, st)
-				break
-			}
+		if st, ok := newStatsIndex(stats).forKeyspace(name, store.ChannelScopeTenant(match.TenantID, store.MemoryScope(match.Scope))); ok {
+			attachStats(&desc, st)
 		}
 	}
 	return desc, nil
