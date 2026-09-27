@@ -52,6 +52,14 @@ Extra keys appear only when relevant: `time_filter` (when you passed `when`),
 `sources_applied: false` with a `note` when this backend ignored `sources` —
 then the results are NOT restricted to the kinds you asked for.
 
+`reranked` appears when the operator has this agent's document searches
+reranked by a model: `true` means the order is the reranker's (so `rank_score`
+no longer describes it), and `false` comes with a `rerank_reason` —
+`not_configured`, `not_a_document_search` (your `sources` excluded
+`documents`), `too_few_candidates`, `timeout`, `call_failed`, `unparseable` or
+`not_supported_by_memory_backend`. A `false` is never an error: the results are
+the search's own order. You cannot request or switch off the rerank.
+
 ## Errors
 
 - `search: missing required field: query`.

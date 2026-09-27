@@ -42,7 +42,10 @@ event happened relative to that time, not at it.
 Extra keys: `turns_attached` (and `turns_dropped_for_budget`) when turns were
 requested; `source_turns` and `source_turns_found` when the operator has you
 attach matching conversation turns; `time_filter` when you passed `when`;
-`sources_applied: false` with a `note` when the backend ignored `sources`.
+`sources_applied: false` with a `note` when the backend ignored `sources`;
+`reranked` (and `rerank_reason` when false) when the operator has your
+document searches reranked — see `search`. A recall reaches the rerank only
+when `sources` includes `documents`.
 
 An empty `memories` list is not an error. It can also mean the fact was
 `add`ed recently and is still queued for consolidation.
