@@ -165,13 +165,36 @@ class OverrideInfo:
 
 
 @dataclass(frozen=True)
-class ErrorInfo:
-    """The machine-readable half of a terminal run failure.
+class CallRef:
+    """One tool call: the tool's name and its argument object as JSON bytes."""
 
-    Carried on ``type="error"`` frames. ``None`` on every other event
-    type AND on a failure the runtime cannot categorise — there is
-    deliberately no "unknown" category, because a bucket that carries
-    no decision is worse than an absent field.
+    tool: str
+    input_json: bytes = b""
+
+
+@dataclass(frozen=True)
+class CallFormat:
+    """What a correct call to a documented tool looks like, taken from the
+    operation's help article. Carried on a failed tool call whose shape may
+    be the cause."""
+
+    tool: str
+    op: str = ""  # empty when the call named no valid op
+    example_json: bytes = b""  # the argument object of one correct call
+    operations: tuple[str, ...] = ()  # only when the op was missing or unknown
+    reference: Optional[CallRef] = None  # the call that returns the full article
+
+
+@dataclass(frozen=True)
+class ErrorInfo:
+    """The machine-readable half of a failure.
+
+    Carried on ``type="error"`` frames (a terminal run failure), on a failed
+    ``tool_result`` frame, and on :class:`SubstrateToolRefusedError`. ``None``
+    on every other event type AND on a failure the runtime cannot categorise —
+    there is deliberately no "unknown" category, because a bucket that carries
+    no decision is worse than an absent field. ``category`` is empty only on a
+    failed tool call not yet classified that still carries ``call_format``.
     """
 
     category: str  # "transient" | "validation" | "business" | "permission"
@@ -182,6 +205,33 @@ class ErrorInfo:
     # zero one are opposite instructions: "wait as you judge best"
     # versus "retry immediately".
     retry_after_ms: Optional[int] = None
+    # The correct shape of the call that failed, on a failed tool call where
+    # the shape may be the cause.
+    call_format: Optional[CallFormat] = None
+
+
+def error_info_from_pb(ei) -> ErrorInfo:
+    """Maps a ``loomcycle.v1.ErrorInfo`` message onto :class:`ErrorInfo`."""
+    cf: Optional[CallFormat] = None
+    if ei.HasField("call_format"):
+        pcf = ei.call_format
+        ref: Optional[CallRef] = None
+        if pcf.HasField("reference"):
+            ref = CallRef(tool=pcf.reference.tool, input_json=bytes(pcf.reference.input_json))
+        cf = CallFormat(
+            tool=pcf.tool,
+            op=pcf.op,
+            example_json=bytes(pcf.example_json),
+            operations=tuple(pcf.operations),
+            reference=ref,
+        )
+    return ErrorInfo(
+        category=ei.category,
+        is_retryable=ei.is_retryable,
+        description=ei.description,
+        retry_after_ms=ei.retry_after_ms if ei.HasField("retry_after_ms") else None,
+        call_format=cf,
+    )
 
 
 @dataclass(frozen=True)
@@ -336,16 +386,7 @@ class AgentEvent:
             )
         ei: Optional[ErrorInfo] = None
         if ev.HasField("error_info"):
-            ei = ErrorInfo(
-                category=ev.error_info.category,
-                is_retryable=ev.error_info.is_retryable,
-                description=ev.error_info.description,
-                retry_after_ms=(
-                    ev.error_info.retry_after_ms
-                    if ev.error_info.HasField("retry_after_ms")
-                    else None
-                ),
-            )
+            ei = error_info_from_pb(ev.error_info)
         return cls(
             type=ev.type,
             text=ev.text,

@@ -113,3 +113,40 @@ def test_agentevent_is_frozen():
     except Exception:
         return
     assert False, "AgentEvent should be frozen — caller must not mutate"
+
+
+def test_failed_tool_result_carries_its_error_info_and_call_format():
+    """A failed tool_result frame carries the failure's structure, including
+    the correct call format, so a caller can act on it without parsing the
+    text the model reads."""
+    proto = pb.Event(
+        type="tool_result",
+        text='{"isError":true,"error":"unknown argument"}',
+        is_error=True,
+        error_info=pb.ErrorInfo(
+            category="validation",
+            is_retryable=False,
+            description="Pass only this tool's own arguments.",
+            call_format=pb.CallFormat(
+                tool="Document",
+                op="create_chunk",
+                example_json=b'{"op":"create_chunk","title":"T"}',
+                reference=pb.CallRef(tool="Context", input_json=b'{"op":"help","topic":"Document/create_chunk"}'),
+            ),
+        ),
+    )
+    ev = AgentEvent._from_proto(proto)
+    assert ev.error_info is not None
+    assert ev.error_info.category == "validation"
+    assert ev.error_info.is_retryable is False
+    cf = ev.error_info.call_format
+    assert cf is not None and cf.tool == "Document" and cf.op == "create_chunk"
+    assert cf.example_json == b'{"op":"create_chunk","title":"T"}'
+    assert cf.reference is not None and cf.reference.tool == "Context"
+    assert cf.operations == ()
+
+
+def test_error_info_without_call_format_has_none():
+    proto = pb.Event(type="error", error="budget", error_info=pb.ErrorInfo(category="business"))
+    ev = AgentEvent._from_proto(proto)
+    assert ev.error_info is not None and ev.error_info.call_format is None

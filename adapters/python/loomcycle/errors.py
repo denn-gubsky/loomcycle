@@ -144,6 +144,10 @@ class SubstrateToolRefusedError(LoomcycleError):
     should surface ``message`` to the calling agent / user rather
     than retrying."""
 
-    def __init__(self, message: str, *, tool: str = "") -> None:
+    def __init__(self, message: str, *, tool: str = "", error_info=None) -> None:
         super().__init__(message)
         self.tool = tool
+        # The refusal's structure (a loomcycle.events.ErrorInfo): category,
+        # retryability, next step, and the correct call format. None when the
+        # runtime did not classify it.
+        self.error_info = error_info
