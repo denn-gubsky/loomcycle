@@ -102,6 +102,7 @@ import (
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
+	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -1447,6 +1448,19 @@ func main() {
 	accessFlusher.Start()
 	inProcBackend.SetAccessFlusher(accessFlusher)
 	memoryTool.Backend = inProcBackend
+	// The search rerank's model (memory.reranker) — nil when none is declared, and
+	// then an agent that enables memory_rerank reports not_configured. A declared
+	// one that cannot be built fails boot, as the embedder does. Only a non-nil
+	// model is handed on: a typed-nil in the interface fields would be called.
+	rerankModel, rrErr := reranker.Build(cfg)
+	if rrErr != nil {
+		log.Fatalf("reranker: %v", rrErr)
+	}
+	if rerankModel != nil {
+		log.Printf("reranker: %s/%s", rerankModel.ProviderID(), rerankModel.ModelID())
+		inProcBackend.SetReranker(rerankModel)
+		memoryTool.Reranker = rerankModel
+	}
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
 	// the Channel tool's subscribe-race diagnostic log can correlate
@@ -1734,6 +1748,12 @@ func main() {
 	// Acquired at run admission before the global slot; empty ⇒ every provider
 	// uncapped, admission unchanged.
 	srv.SetProviderGates(newProviderGates(cfg))
+	// A rerank is spent on the searching run's behalf, so its tokens go to that
+	// run's ledger and budget. Set here because srv exists only now; no run can
+	// have started yet.
+	if rerankModel != nil {
+		rerankModel.OnUsage = srv.RecordRunSideCallUsage
+	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)

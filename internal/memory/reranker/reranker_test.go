@@ -106,35 +106,6 @@ func TestModel_AProviderErrorFailsTheCall(t *testing.T) {
 	}
 }
 
-// TestModel_HoldsAProviderSlotForTheCall — the gate is acquired before the call
-// and released after it, and a refused slot fails the call without reaching the
-// provider.
-func TestModel_HoldsAProviderSlotForTheCall(t *testing.T) {
-	p := &stubProvider{events: textReply("[1]")}
-	m := New(p, config.RerankerConfig{Provider: "gpu", Model: "m"})
-	var acquired, released string
-	m.Acquire = func(_ context.Context, id string) (func(), error) {
-		acquired = id
-		return func() { released = id }, nil
-	}
-	if _, err := m.Complete(context.Background(), "prompt"); err != nil {
-		t.Fatal(err)
-	}
-	if acquired != "gpu" || released != "gpu" {
-		t.Errorf("slot acquired %q released %q, want gpu both", acquired, released)
-	}
-
-	p2 := &stubProvider{events: textReply("[1]")}
-	m2 := New(p2, config.RerankerConfig{Provider: "gpu", Model: "m"})
-	m2.Acquire = func(context.Context, string) (func(), error) { return nil, errors.New("saturated") }
-	if _, err := m2.Complete(context.Background(), "prompt"); err == nil {
-		t.Error("a refused slot must fail the call")
-	}
-	if p2.req.Model != "" {
-		t.Error("a refused slot must not reach the provider")
-	}
-}
-
 // TestBuild_NoBlockMeansNoReranker and an undeclared provider fails loudly.
 func TestBuild_NoBlockMeansNoReranker(t *testing.T) {
 	m, err := Build(&config.Config{})

@@ -30,7 +30,7 @@ const (
 )
 
 // Model is one configured reranker. Safe for concurrent use: every field is set
-// at construction and only read afterwards.
+// at boot, before the server serves, and only read afterwards.
 type Model struct {
 	provider      providers.Provider
 	providerID    string
@@ -39,10 +39,13 @@ type Model struct {
 	effort        string
 	contextTokens int
 
-	// Acquire holds one of the provider's concurrency slots for the duration of
-	// a call, so a burst of reranked searches cannot starve the runs sharing that
-	// provider. nil = no gate.
-	Acquire func(ctx context.Context, providerID string) (release func(), err error)
+	// NO PROVIDER CONCURRENCY SLOT IS TAKEN, deliberately. The per-provider gates
+	// cap in-flight RUNS, and a rerank runs inside a run that already holds a slot
+	// on its own provider: with the reranker on that same provider and a cap of 1
+	// (the usual setting for a local model host), the rerank would wait on the
+	// slot its own run holds until the gate timed out. It is part of the run's
+	// work, like a tool call, and is admitted by the run's admission.
+
 	// OnUsage records the call's tokens against the run whose context it is. The
 	// rerank is spent on that run's behalf, so it belongs in that run's cost.
 	// nil = not recorded.
@@ -118,13 +121,6 @@ func (m *Model) ModelID() string    { return m.model }
 // Complete sends one prompt and returns the reply text. A deadline hit wraps
 // context.DeadlineExceeded so the caller can report it as a timeout.
 func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
-	if m.Acquire != nil {
-		release, err := m.Acquire(ctx, m.providerID)
-		if err != nil {
-			return "", err
-		}
-		defer release()
-	}
 	callCtx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 
