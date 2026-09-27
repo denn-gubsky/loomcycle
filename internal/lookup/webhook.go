@@ -23,15 +23,12 @@ type WebhookStore interface {
 	// means no prior run — proceed with the spawn.
 	RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error)
 
-	// ChannelPublish + ChannelGet + MemorySet back the WH-5b on_complete hooks
-	// (the receiver MIRRORS the scheduler's dispatch rather than importing it).
-	// ChannelGet is what lets the channel.publish hook honour a `hold:` — a
-	// held channel one writer walks past is a breakpoint with a hole in it.
-	// Signatures match store.Store exactly so store.Store satisfies this
-	// interface unchanged; the receiver needs only these three of the
-	// channel/memory surface.
-	ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (id string, dropped int, err error)
-	ChannelGet(ctx context.Context, tenantID, name string) (store.ChannelRow, error)
+	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
+	// MIRRORS the scheduler's dispatch rather than importing it). Its
+	// signature matches store.Store exactly so store.Store satisfies this
+	// interface unchanged. A channel.publish hook writes through the channel
+	// writer instead (the receiver's Publisher), which honours the channel's
+	// definition.
 	MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -146,6 +147,7 @@ func TestReceiver_OnCompleteMCPCall_LogsAndSkips(t *testing.T) {
 		Now:          fixedClock(now),
 		Getenv:       mapGetenv(map[string]string{"WH_SECRET": secret}),
 		Logf:         func(f string, a ...any) { logged = append(logged, f) },
+		Publisher:    &channels.StorePublisher{Store: channelWriteShim{f: st}},
 	})
 
 	h := http.Header{}

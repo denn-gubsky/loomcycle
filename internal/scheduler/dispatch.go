@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -72,31 +73,26 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	msg := store.ChannelMessage{
+	req := channels.WriteRequest{
 		Channel: h.Channel,
 		// RFC N: the owning tenant comes from the schedule def (def.TenantID),
 		// threaded down from dispatchHooks — never from the hook payload.
-		TenantID:          tenantID,
-		Scope:             target.Scope,
-		ScopeID:           target.ScopeID,
-		Payload:           payload,
-		PublishedAt:       now,
-		PublishedByUserID: userID,
+		TenantID:    tenantID,
+		Scope:       target.Scope,
+		ScopeID:     target.ScopeID,
+		Payload:     payload,
+		PublishedBy: userID,
+		MaxMessages: target.MaxMessages,
 	}
 	// The channel's DECLARED retention applies. This used to pass 0/0 with a
 	// note that per-channel sizing was an operator concern the publish path
 	// could not see — it can see it now that the resolver carries it, and
 	// "the operator configured a cap that never reached the writer" is not a
-	// division of concerns, it is a leak.
+	// division of concerns, it is a leak. A hold is the writer's decision.
 	if target.DefaultTTL > 0 {
-		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
+		req.ExpiresAt = time.Now().Add(time.Duration(target.DefaultTTL) * time.Second)
 	}
-	if target.Hold {
-		msg.VisibleAt = store.ChannelHeldVisibleAt()
-	}
-	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
-	return err
+	return s.writeChannel(ctx, req)
 }
 
 // resolvePublishTarget returns where a scheduler channel write lands — the
@@ -125,7 +121,7 @@ func (s *Scheduler) resolvePublishTarget(ctx context.Context, tenantID, channel,
 	if !ok {
 		return publishTarget{}, fmt.Errorf("channel.publish: channel %q is not declared (static yaml or runtime substrate)", channel)
 	}
-	out := publishTarget{DefaultTTL: declared.DefaultTTL, MaxMessages: declared.MaxMessages, Hold: declared.Hold}
+	out := publishTarget{DefaultTTL: declared.DefaultTTL, MaxMessages: declared.MaxMessages}
 	switch declared.Scope {
 	case "global":
 		out.Scope = store.MemoryScopeGlobal
@@ -161,7 +157,6 @@ type publishTarget struct {
 	ScopeID     string
 	DefaultTTL  int
 	MaxMessages int
-	Hold        bool
 }
 
 func (s *Scheduler) dispatchMemorySet(ctx context.Context, scheduleName, userID, tenantID string, h scheduleHook) error {

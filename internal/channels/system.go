@@ -44,35 +44,78 @@ type SystemPublisher interface {
 	) (store.ChannelMessage, error)
 }
 
-// StorePublisher is the concrete SystemPublisher implementation
-// backed by a store.Store. Bus + Scheduler are wired so deferred
-// publishes wake long-poll subscribers at visible_at, same as the
-// agent-tool path.
+// WriteRequest is one channel message to write. The caller has already
+// decided WHERE it goes (tenant, scope) and HOW LONG it lives; whether it is
+// delivered, held or deferred is the writer's decision, from the channel's
+// definition — a caller never passes a reserved instant.
+type WriteRequest struct {
+	Channel string
+	// TenantID is the tenant the message is written in, caller-authoritative
+	// (from the principal or the run, never the wire or the model). The
+	// channel's definition is resolved in it.
+	TenantID    string
+	Scope       store.MemoryScope
+	ScopeID     string
+	Payload     json.RawMessage
+	DeliverAt   time.Time // zero or past: visible now
+	ExpiresAt   time.Time // zero: no expiry; the caller applies its TTL precedence
+	PublishedBy string    // audit attribution
+	MaxMessages int       // 0: the store default
+}
+
+// WriteResult is what a write did.
+type WriteResult struct {
+	Message store.ChannelMessage
+	// Dropped is how many of the oldest messages max_messages trimmed.
+	Dropped int
+	// Held: stored, not delivered until released.
+	Held bool
+	// Deferred: stored, visible at Message.VisibleAt.
+	Deferred bool
+}
+
+// WriteDef is what a write needs from the channel's definition.
+type WriteDef struct {
+	// Hold: store the message but deliver nothing until it is released.
+	Hold bool
+}
+
+// DefResolver resolves a channel's definition in tenantID for a write. A
+// channel declared nowhere resolves to the zero WriteDef (a document's change
+// feed, an undeclared `_system/*` channel): it is written as-is. An error is a
+// fault reading the definition, and the write is refused — a definition that
+// cannot be read must not be written past.
+type DefResolver func(ctx context.Context, tenantID, channel string) (WriteDef, error)
+
+// Writer writes channel messages. It is the only path into the store's
+// channel_messages table outside the store itself, snapshot restore and the
+// channel-hook worker — see writer_census_test.go, which fails the build when
+// a new caller writes past it.
+type Writer interface {
+	Write(ctx context.Context, req WriteRequest) (WriteResult, error)
+}
+
+// StorePublisher is the channel writer: the concrete Writer and
+// SystemPublisher, backed by a store.Store. Bus + Scheduler are wired so
+// deferred publishes wake long-poll subscribers at visible_at.
 type StorePublisher struct {
 	Store     store.Store
 	Bus       *Bus       // nil disables in-process notification
 	Scheduler *Scheduler // nil disables deferred-publish wake-up scheduling
 
-	// HoldFn reports whether a channel is declared `hold:` — stored but not
-	// delivered until released (RFC CY).
+	// Defs resolves the channel's definition on every write.
 	//
-	// The CHECK LIVES HERE, not at the call sites, and that is the point: a
-	// hold is a promise that nothing reaches a subscriber, and a promise
+	// The DECISION LIVES HERE, not at the call sites, and that is the point:
+	// a hold is a promise that nothing reaches a subscriber, and a promise
 	// enforced at five call sites is a promise the sixth one breaks. Every
-	// internal publisher — heartbeats, webhook relay, interrupts, the admin
-	// endpoint — goes through this one method, so wiring the resolver once
-	// holds all of them.
+	// writer — the Channel tool, the scheduler, webhooks, documents,
+	// heartbeats, interrupts, the admin endpoints — writes through Write, so
+	// the definition is honoured once for all of them.
 	//
-	// Injected rather than resolved here because the channel definition
-	// plane (static yaml merged with the runtime substrate, tenant-scoped)
-	// lives in the server. nil = nothing is held.
-	//
-	// tenantID is the tenant the message is published in, passed explicitly:
-	// a system publish often runs on a ctx that carries no identity (a webhook
-	// relay's request ctx, a schedule tick), and resolving the tenant from the
-	// ctx there looked up the shared tenant — so a tenant's own `hold:` channel
-	// was not held.
-	HoldFn func(ctx context.Context, tenantID, channel string) bool
+	// Injected because the channel definition plane (static yaml merged with
+	// the runtime substrate, tenant-scoped) lives in the server. nil = no
+	// channel is held.
+	Defs DefResolver
 }
 
 // SystemPublisherUserID is the audit-trail sentinel for internal Go
@@ -81,83 +124,91 @@ type StorePublisher struct {
 // prefix is reserved namespace).
 const SystemPublisherUserID = "_system"
 
+// Write implements Writer.
+func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResult, error) {
+	if p.Store == nil {
+		return WriteResult{}, fmt.Errorf("channel writer: no Store configured")
+	}
+	// The reserved instants mark a message held; only the writer may set them.
+	if store.IsChannelHeld(req.DeliverAt) {
+		return WriteResult{}, fmt.Errorf("channel writer: deliver_at %s is a reserved instant", req.DeliverAt.UTC().Format(time.RFC3339))
+	}
+	var def WriteDef
+	if p.Defs != nil {
+		d, err := p.Defs(ctx, req.TenantID, req.Channel)
+		if err != nil {
+			return WriteResult{}, fmt.Errorf("channel writer: resolve %q: %w", req.Channel, err)
+		}
+		def = d
+	}
+
+	now := time.Now()
+	var visibleAt time.Time
+	deferred := false
+	switch {
+	case def.Hold:
+		// A hold overrides any deliver_at: the message waits for a release,
+		// not for a clock.
+		visibleAt = store.ChannelHeldVisibleAt()
+	case !req.DeliverAt.IsZero() && req.DeliverAt.After(now):
+		visibleAt, deferred = req.DeliverAt, true
+	}
+
+	msg := store.ChannelMessage{
+		Channel:           req.Channel,
+		TenantID:          req.TenantID,
+		Scope:             req.Scope,
+		ScopeID:           req.ScopeID,
+		Payload:           req.Payload,
+		ExpiresAt:         req.ExpiresAt,
+		VisibleAt:         visibleAt, // zero = "now" inside the store
+		PublishedByUserID: req.PublishedBy,
+	}
+	id, dropped, err := p.Store.ChannelPublish(ctx, msg, req.MaxMessages)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("channel writer: %w", err)
+	}
+	msg.ID = id
+	// The store stamps the authoritative PublishedAt; this approximation is
+	// what callers report (the audit and cadence uses do not need it to the
+	// nanosecond, and a re-read would cost every write a round-trip).
+	msg.PublishedAt = now
+	if visibleAt.IsZero() {
+		msg.VisibleAt = now
+	}
+
+	// Wake subscribers: a deferred message through the scheduler at
+	// visible_at, an immediate one on the bus now. A held message wakes
+	// nobody — that is what holding means, and a timer for the reserved
+	// instant would be a timer for the year 2200.
+	switch {
+	case def.Hold:
+	case deferred && p.Scheduler != nil:
+		p.Scheduler.Schedule(req.Channel, id, visibleAt)
+	case p.Bus != nil:
+		p.Bus.Notify(req.Channel)
+	}
+	return WriteResult{Message: msg, Dropped: dropped, Held: def.Hold, Deferred: deferred}, nil
+}
+
 // Publish implements SystemPublisher.
 func (p *StorePublisher) Publish(ctx context.Context, channel, tenantID string, scope store.MemoryScope, scopeID string,
 	payload json.RawMessage, deliverAt time.Time, publishedByUserID string,
 	maxMessages int, defaultTTLSeconds int,
 ) (store.ChannelMessage, error) {
-	if p.Store == nil {
-		return store.ChannelMessage{}, fmt.Errorf("system publisher: no Store configured")
-	}
-
-	now := time.Now()
 	var expiresAt time.Time
 	if defaultTTLSeconds > 0 {
-		expiresAt = now.Add(time.Duration(defaultTTLSeconds) * time.Second)
+		expiresAt = time.Now().Add(time.Duration(defaultTTLSeconds) * time.Second)
 	}
-
-	var visibleAt time.Time
-	deferred := false
-	if !deliverAt.IsZero() && deliverAt.After(now) {
-		visibleAt = deliverAt
-		deferred = true
-	}
-
-	// A held channel overrides any deliver_at: the message waits for a
-	// release, not for a clock. Callers that already resolved the def pass
-	// the reserved instant as deliverAt (the store.IsChannelHeld arm);
-	// everyone else is caught by HoldFn.
-	held := store.IsChannelHeld(deliverAt)
-	if !held && p.HoldFn != nil {
-		held = p.HoldFn(ctx, tenantID, channel)
-	}
-	if held {
-		visibleAt = store.ChannelHeldVisibleAt()
-		deferred = false
-	}
-
-	msg := store.ChannelMessage{
-		Channel:           channel,
-		TenantID:          tenantID,
-		Scope:             scope,
-		ScopeID:           scopeID,
-		Payload:           payload,
-		ExpiresAt:         expiresAt,
-		VisibleAt:         visibleAt,
-		PublishedByUserID: publishedByUserID,
-	}
-	id, _, err := p.Store.ChannelPublish(ctx, msg, maxMessages)
+	res, err := p.Write(ctx, WriteRequest{
+		Channel: channel, TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+		Payload: payload, DeliverAt: deliverAt, ExpiresAt: expiresAt,
+		PublishedBy: publishedByUserID, MaxMessages: maxMessages,
+	})
 	if err != nil {
 		return store.ChannelMessage{}, fmt.Errorf("system publisher: %w", err)
 	}
-	msg.ID = id
-	if visibleAt.IsZero() {
-		msg.VisibleAt = msg.PublishedAt // approximation for caller
-	}
-
-	// Wake subscribers. Deferred publishes go through the scheduler
-	// (wakes at visible_at); immediate publishes notify the bus
-	// directly (same path as the agent tool's execPublish). A HELD
-	// message wakes nobody — that is what holding means, and arming a
-	// timer for the reserved instant would be a timer for the year 2200.
-	switch {
-	case held:
-		// no notification, no timer
-	case deferred && p.Scheduler != nil:
-		p.Scheduler.Schedule(channel, id, visibleAt)
-	case p.Bus != nil:
-		p.Bus.Notify(channel)
-	}
-
-	// Re-read to surface server-stamped PublishedAt to the caller.
-	// (The store has it; we approximated above. A round-trip would
-	// be authoritative but adds latency for every publish — the
-	// internal callers don't need byte-perfect PublishedAt for the
-	// cadence + audit use cases.)
-	if msg.PublishedAt.IsZero() {
-		msg.PublishedAt = now
-	}
-	return msg, nil
+	return res.Message, nil
 }
 
 // PublishNow implements SystemPublisher.

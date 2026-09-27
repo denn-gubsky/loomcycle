@@ -157,8 +157,9 @@ func TestScheduler_OnCompleteChannelPublish_LegacyNilResolver(t *testing.T) {
 func TestDispatchChannelPublish_HonoursAHold(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, channelHookDef("done"), time.Now().Add(time.Hour))
 	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
-		return DeclaredChannel{Scope: "global", Hold: true}, true
+		return DeclaredChannel{Scope: "global"}, true
 	})
+	sched.SetChannelWriter(heldWriter(st))
 
 	err := sched.dispatchOneHook(context.Background(), "sched", "", "researcher", "",
 		scheduleHook{Kind: "channel.publish", Channel: "done"}, "r_1", "a_1")

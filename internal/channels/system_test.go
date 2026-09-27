@@ -119,3 +119,67 @@ func TestStorePublisher_DefaultTTLApplied(t *testing.T) {
 		t.Errorf("ExpiresAt too soon: %v vs published %v", got.ExpiresAt, msg.PublishedAt)
 	}
 }
+
+func holdAll(context.Context, string, string) (WriteDef, error) { return WriteDef{Hold: true}, nil }
+
+// A hold overrides a deliver_at: the message waits for a release, not a clock.
+func TestWriter_HoldOverridesDeliverAt(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer s.Close()
+	w := &StorePublisher{Store: s, Scheduler: NewScheduler(NewBus(), 10), Defs: holdAll}
+	res, err := w.Write(context.Background(), WriteRequest{
+		Channel: "gate", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
+		DeliverAt: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !res.Held || res.Deferred || !store.IsChannelHeld(res.Message.VisibleAt) {
+		t.Errorf("held=%v deferred=%v visible_at=%v, want held at the reserved instant", res.Held, res.Deferred, res.Message.VisibleAt)
+	}
+	if w.Scheduler.PendingCount() != 0 {
+		t.Errorf("a held message armed a delivery timer")
+	}
+}
+
+// The writer reports what max_messages trimmed, so every caller can say so.
+func TestWriter_ReportsDroppedOldest(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer s.Close()
+	w := &StorePublisher{Store: s}
+	var last WriteResult
+	for i := 0; i < 3; i++ {
+		last, err = w.Write(context.Background(), WriteRequest{
+			Channel: "cap", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`), MaxMessages: 2,
+		})
+		if err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if last.Dropped != 1 {
+		t.Errorf("third write into a 2-message channel dropped %d, want 1", last.Dropped)
+	}
+}
+
+// Only the writer decides a message is held: a caller cannot pass the
+// reserved instant as a delivery time.
+func TestWriter_RefusesAReservedDeliverAt(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer s.Close()
+	_, err = (&StorePublisher{Store: s}).Write(context.Background(), WriteRequest{
+		Channel: "c", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
+		DeliverAt: store.ChannelHeldVisibleAt(),
+	})
+	if err == nil {
+		t.Fatal("a caller-supplied reserved instant was accepted")
+	}
+}

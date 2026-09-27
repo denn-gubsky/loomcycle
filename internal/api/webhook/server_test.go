@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
@@ -553,7 +554,7 @@ func newTestReceiverWithStore(t *testing.T, webhooks map[string]config.Webhook, 
 	for _, n := range allow {
 		al[n] = true
 	}
-	return New(Deps{
+	rec := New(Deps{
 		Cfg:          cfg,
 		Store:        st,
 		Runner:       fr,
@@ -561,6 +562,34 @@ func newTestReceiverWithStore(t *testing.T, webhooks map[string]config.Webhook, 
 		Now:          fixedClock(now),
 		Getenv:       mapGetenv(env),
 	})
+	// The channel writer main.go wires, resolving a channel's hold the way the
+	// server does: yaml first (read at write time — tests set it after New),
+	// then the tenant's runtime row.
+	rec.publisher = &channels.StorePublisher{
+		Store: channelWriteShim{f: st},
+		Defs: func(ctx context.Context, tenantID, channel string) (channels.WriteDef, error) {
+			if def, ok := rec.cfg.Channels[channel]; ok {
+				return channels.WriteDef{Hold: def.Hold}, nil
+			}
+			row, err := st.ChannelGet(ctx, tenantID, channel)
+			if err != nil {
+				return channels.WriteDef{}, nil
+			}
+			return channels.WriteDef{Hold: row.Hold}, nil
+		},
+	}
+	return rec
+}
+
+// channelWriteShim lets the channel writer record into the fake store: the
+// writer calls only ChannelPublish.
+type channelWriteShim struct {
+	store.Store
+	f *fakeWebhookStore
+}
+
+func (s channelWriteShim) ChannelPublish(ctx context.Context, msg store.ChannelMessage, max int) (string, int, error) {
+	return s.f.ChannelPublish(ctx, msg, max)
 }
 
 // TestReceiver_Layer2Dedup_ExistingRunReturnedWithoutSpawn pins the RFC H

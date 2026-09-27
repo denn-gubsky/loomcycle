@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -104,6 +105,7 @@ type Scheduler struct {
 	pause   *pause.Manager
 	mcp     MCPCaller
 	chScope ChannelScopeResolver
+	chWrite channels.Writer
 	logf    func(format string, args ...any)
 
 	// Consolidation fan-out dependencies (RFC BL P2), both optional and both
@@ -156,12 +158,6 @@ type DeclaredChannel struct {
 	Scope       string // "global" | "user" | "agent"
 	DefaultTTL  int    // seconds; 0 = no TTL
 	MaxMessages int    // 0 = unbounded
-	// Hold is the breakpoint: the message is STORED at the reserved instant and
-	// delivered to nobody until someone releases it. A scheduler write has to
-	// honour it for the same reason it honours the scope — it resolved the
-	// definition, and a definition half-honoured is a setting the operator
-	// believes they made.
-	Hold bool
 }
 
 // ChannelScopeResolver returns the DECLARED shape of a channel by name.
@@ -182,6 +178,24 @@ type ChannelScopeResolver func(ctx context.Context, tenantID, channel string) (D
 // New(...) call sites stay unchanged.
 func (s *Scheduler) SetChannelScope(r ChannelScopeResolver) {
 	s.chScope = r
+}
+
+// SetChannelWriter wires the channel writer a schedule's channel tick and its
+// on_complete channel.publish write through. The writer decides, from the
+// channel's definition, whether the message is delivered or held — the
+// scheduler only says where it goes and how long it lives. Must be called
+// before Start; with none, a channel write fails.
+func (s *Scheduler) SetChannelWriter(w channels.Writer) {
+	s.chWrite = w
+}
+
+// writeChannel writes one scheduler message through the channel writer.
+func (s *Scheduler) writeChannel(ctx context.Context, req channels.WriteRequest) error {
+	if s.chWrite == nil {
+		return fmt.Errorf("channel write: no channel writer wired")
+	}
+	_, err := s.chWrite.Write(ctx, req)
+	return err
 }
 
 // New constructs a Scheduler. All four runtime dependencies are
@@ -514,28 +528,24 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	if err != nil {
 		return err
 	}
-	msg := store.ChannelMessage{
+	req := channels.WriteRequest{
 		Channel: def.Channel,
 		// RFC N: the owning tenant comes from the def, never from anywhere a
 		// caller could influence.
-		TenantID:          def.TenantID,
-		Scope:             target.Scope,
-		ScopeID:           target.ScopeID,
-		Payload:           payload,
-		PublishedAt:       now,
-		PublishedByUserID: def.UserID,
+		TenantID:    def.TenantID,
+		Scope:       target.Scope,
+		ScopeID:     target.ScopeID,
+		Payload:     payload,
+		PublishedBy: def.UserID,
+		MaxMessages: target.MaxMessages,
 	}
 	if target.DefaultTTL > 0 {
-		msg.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
+		req.ExpiresAt = now.Add(time.Duration(target.DefaultTTL) * time.Second)
 	}
-	// A held channel stores the tick without delivering it — the cadence signal
-	// waits for a release. Without this a cron tick would walk straight past a
-	// breakpoint, which is exactly the pairing the two features exist for.
-	if target.Hold {
-		msg.VisibleAt = store.ChannelHeldVisibleAt()
-	}
-	_, _, err = s.store.ChannelPublish(ctx, msg, target.MaxMessages)
-	return err
+	// A held channel stores the tick without delivering it — the writer
+	// decides that from the channel's definition, so a cron tick cannot walk
+	// past a breakpoint.
+	return s.writeChannel(ctx, req)
 }
 
 // fireOutcome is what one fire produced, whatever kind of fire it was. It

@@ -41,6 +41,9 @@ type Document struct {
 	Store  store.Store
 	SqlMem *sqlmem.Manager
 	Bus    *channels.Bus
+	// Writer writes the change feed through the channel writer; nil writes
+	// straight to Store (a tool built for a unit test).
+	Writer channels.Writer
 	// MaxAssetBytes caps the DECODED size of an image asset (set_asset); 0 = a
 	// conservative built-in default. The wire (base64) payload is bounded
 	// separately by the /v1/_document request-body cap. RFC BO.
@@ -5092,16 +5095,22 @@ func (d *Document) publishChange(ctx context.Context, mscope store.MemoryScope, 
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{"op": op, "chunk_id": chunkID, "timestamp": time.Now().UnixNano(), "actor": tools.RunIdentity(ctx).UserID})
-	channel := "documents/" + documentID + "/chunks"
+	w := d.Writer
+	if w == nil {
+		w = &channels.StorePublisher{Store: d.Store, Bus: d.Bus}
+	}
 	// Best-effort change-event ring (cap 256). Errors are ignored — a missing
 	// subscriber/declared channel must never fail a chunk mutation. The Web UI
 	// subscriber arrives in a later phase.
-	_, _, _ = d.Store.ChannelPublish(ctx, store.ChannelMessage{
-		Channel: channel, TenantID: tools.RunIdentity(ctx).TenantID, // RFC N: authoritative run tenant
-		Scope: mscope, ScopeID: scopeID, Payload: payload,
-		PublishedByUserID: tools.RunIdentity(ctx).UserID,
-	}, 256)
-	d.Bus.Notify(channel)
+	_, _ = w.Write(ctx, channels.WriteRequest{
+		Channel:     "documents/" + documentID + "/chunks",
+		TenantID:    tools.RunIdentity(ctx).TenantID, // RFC N: authoritative run tenant
+		Scope:       mscope,
+		ScopeID:     scopeID,
+		Payload:     payload,
+		PublishedBy: tools.RunIdentity(ctx).UserID,
+		MaxMessages: 256,
+	})
 }
 
 // nullIfEmpty returns nil for an empty string so it stores SQL NULL (rather

@@ -2079,15 +2079,21 @@ func main() {
 		Store:     storeIface,
 		Bus:       channelBus,
 		Scheduler: channelScheduler,
-		// RFC CY: one wiring point makes every internal publish path
-		// honour a `hold:` channel — see StorePublisher.HoldFn.
-		HoldFn: srv.ChannelHeld,
+		// One wiring point makes every channel write honour the channel's
+		// definition — see StorePublisher.Defs.
+		Defs: srv.ChannelWriteDef,
 	}
 	srv.SetSystemPublisher(sysPublisher)
 	// Wire the SystemPublisher onto the Interruption tool too — same
 	// instance, so _system/interrupts/* publishes from inside the
 	// tool wake the same Channel long-poll subscribers.
 	interruptionTool.SystemPublisher = sysPublisher
+	// The Channel tool writes through the same writer, so an agent's publish
+	// honours the channel's definition as it stands at the write, not as it
+	// stood when the run started.
+	channelTool.Writer = sysPublisher
+	// So does Document's change feed.
+	documentTool.Writer = sysPublisher
 	// v0.8.16 — wire the same Bus to the server so the resolve
 	// handler can wake the blocked tool's bus.Wait via the
 	// "intr:<id>" key. Without this the resolve writes the row but
@@ -3000,9 +3006,11 @@ func main() {
 				Scope:       def.Scope,
 				DefaultTTL:  def.DefaultTTL,
 				MaxMessages: def.MaxMessages,
-				Hold:        def.Hold,
 			}, true
 		})
+		// A schedule's channel writes go through the channel writer, which
+		// decides from the channel's definition whether they are held.
+		sched.SetChannelWriter(sysPublisher)
 		// RFC BL P2 consolidation fan-out: the provider resolver decides
 		// parallel-vs-serial dispatch (a local model runtime is serialized), and
 		// the advisory lock makes exactly one replica per tick enumerate the
