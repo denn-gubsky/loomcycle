@@ -38,15 +38,28 @@ func TestExecute_UnknownArgumentIsRefusedWithTheExample(t *testing.T) {
 	if doc.ran != 0 {
 		t.Fatal("the tool ran with an unknown argument")
 	}
-	for _, want := range []string{`unknown argument "text"`, "nothing was done", `"body":"GA in April."`} {
-		if !res.IsError || !strings.Contains(res.Text, want) {
-			t.Errorf("result lacks %q:\n%s", want, res.Text)
-		}
+	if !res.IsError || res.Text != `Document: unknown argument "text" — nothing was done.` {
+		t.Errorf("error text = %q", res.Text)
+	}
+	info := mustValidation(t, res)
+	if info.CallFormat == nil || !strings.Contains(string(info.CallFormat.Example), `"body":"GA in April."`) {
+		t.Errorf("no correct example in the call format: %+v", info.CallFormat)
 	}
 }
 
-// The two shapes seen live get a specific hint: arguments wrapped in an
-// envelope, and a respelling of a real argument.
+// mustValidation asserts res is a non-retryable validation refusal and returns
+// its info.
+func mustValidation(t *testing.T, res Result) *ErrorInfo {
+	t.Helper()
+	if res.Error == nil || res.Error.Category != CategoryValidation || res.Error.Retryable {
+		t.Fatalf("want a non-retryable validation refusal, got %+v", res.Error)
+	}
+	return res.Error
+}
+
+// The two shapes seen live get a specific hint, in the next step the refusal
+// carries: arguments wrapped in an envelope, and a respelling of a real
+// argument.
 func TestExecute_UnknownArgumentHints(t *testing.T) {
 	d, _ := docDispatcher(t)
 	for in, want := range map[string]string{
@@ -54,8 +67,8 @@ func TestExecute_UnknownArgumentHints(t *testing.T) {
 		`{"op":"create_chunk","chunkId":"c1"}`:        `Did you mean "chunk_id" instead of "chunkId"?`,
 	} {
 		res := d.Execute(context.Background(), "Document", json.RawMessage(in))
-		if !strings.Contains(res.Text, want) {
-			t.Errorf("%s: result lacks %q:\n%s", in, want, res.Text)
+		if desc := mustValidation(t, res).Description; !strings.Contains(desc, want) {
+			t.Errorf("%s: the next step lacks %q:\n%s", in, want, desc)
 		}
 	}
 }
@@ -128,20 +141,26 @@ func TestExecute_ASiblingOperationsArgumentIsRefused(t *testing.T) {
 	}
 	for _, want := range []string{
 		`argument "parent" is not one create_chunk takes (it belongs to propose_entity)`,
-		`Did you mean "parent_id"?`,
 		"Nothing was done.",
-		"create_chunk takes: document_id, title, parent_id.",
-		`"title":"Flights"`, // the example
 	} {
 		if !res.IsError || !strings.Contains(res.Text, want) {
-			t.Errorf("result lacks %q:\n%s", want, res.Text)
+			t.Errorf("error text lacks %q:\n%s", want, res.Text)
 		}
+	}
+	info := mustValidation(t, res)
+	for _, want := range []string{`Did you mean "parent_id" instead of "parent"?`, "create_chunk takes: document_id, title, parent_id."} {
+		if !strings.Contains(info.Description, want) {
+			t.Errorf("the next step lacks %q:\n%s", want, info.Description)
+		}
+	}
+	if info.CallFormat == nil || !strings.Contains(string(info.CallFormat.Example), `"title":"Flights"`) {
+		t.Errorf("no correct example in the call format: %+v", info.CallFormat)
 	}
 
 	// An op documented as taking nothing refuses a sibling's argument too.
 	res = d.Execute(context.Background(), "Document", json.RawMessage(`{"op":"stats","title":"x"}`))
-	if !res.IsError || !strings.Contains(res.Text, "stats takes no arguments besides op") {
-		t.Errorf("stats with a sibling's argument: %q", res.Text)
+	if desc := mustValidation(t, res).Description; !strings.Contains(desc, "stats takes no arguments besides op") {
+		t.Errorf("stats with a sibling's argument: %q", desc)
 	}
 }
 

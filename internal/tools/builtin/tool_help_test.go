@@ -201,7 +201,7 @@ func TestArgumentCheck_RefusesTheMeasuredCrossOperationCalls(t *testing.T) {
 		want        []string
 	}{
 		{"Document", `{"op":"create_chunk","document_id":"d1","title":"Flights","parent":"c1"}`,
-			[]string{`argument "parent" is not one create_chunk takes (it belongs to`, `Did you mean "parent_id"?`}},
+			[]string{`argument "parent" is not one create_chunk takes (it belongs to`, `Did you mean "parent_id"`}},
 		{"Document", `{"op":"query_documents","scope":"user","query":"trip"}`,
 			[]string{`argument "query" is not one query_documents takes`}},
 		{"Memory", `{"op":"get","scope":"user","key":"k","query":"editor"}`,

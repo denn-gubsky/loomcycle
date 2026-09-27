@@ -1136,7 +1136,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		tid := fmt.Sprintf("es-%s-act-%d", actionIDTag, iter)
 		switch {
 		case opts.Dispatcher == nil:
-			obs = "ERROR: no tools are available to run action " + es.Action.Tool
+			obs = statefulRefusal(tools.CategoryBusiness, "no tools are available to run action "+es.Action.Tool,
+				"Omit `action` and put your answer in `final`.")
 		// ⚠️ THE ACTION NAME WENT STRAIGHT TO THE DISPATCHER, unchecked. A model
 		// that named something that is not a tool got back the dispatcher's
 		// "tool not found: X" as its observation — an answer that says the name
@@ -1149,17 +1150,17 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		// to "run" it is a category error the runtime was in the best position
 		// to name and instead forwarded to a lookup that could only miss.
 		case es.Action.Tool == emitStateToolName:
-			obs = "ERROR: `" + emitStateToolName + "` is not an action — it is how you reply. " +
-				"Every step you make exactly one " + emitStateToolName + " call; its `action` field names " +
-				"a DIFFERENT tool for the runtime to run for you. " + statefulActionHint(toolSpecs)
+			obs = statefulRefusal(tools.CategoryValidation, "`"+emitStateToolName+"` is not an action — it is how you reply.",
+				"Every step you make exactly one "+emitStateToolName+" call; its `action` field names "+
+					"a DIFFERENT tool for the runtime to run for you. "+statefulActionHint(toolSpecs))
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
 		case !offersTool(toolSpecs, es.Action.Tool):
 			// Refused HERE rather than dispatched, so the observation can name
 			// the alternatives. The dispatcher knows every tool in the process;
 			// only this loop knows which ones THIS agent was offered.
-			obs = "ERROR: no tool named `" + es.Action.Tool + "` is available to this agent. " +
-				statefulActionHint(toolSpecs)
+			obs = statefulRefusal(tools.CategoryValidation, "no tool named `"+es.Action.Tool+"` is available to this agent.",
+				statefulActionHint(toolSpecs))
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
 		case missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input) != "":
@@ -1168,7 +1169,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			// costs the model one step instead of a guess. Observed live as
 			// `{"tool":"Interruption","input":{}}` — a fumble of the same class
 			// as naming emit_state, with a real tool.
-			obs = "ERROR: " + missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input)
+			obs = statefulRefusal(tools.CategoryValidation, missingRequiredInput(toolSpecs, es.Action.Tool, es.Action.Input), "")
 			emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}})
 			emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: tid, Name: es.Action.Tool, Input: es.Action.Input}, Text: obs, IsError: true})
 		default:
@@ -1192,10 +1193,8 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			actCtx = tools.WithMaxContextTokens(actCtx, opts.MaxContextTokens)
 			actCtx = tools.WithContextUsage(actCtx, lastIn, lastWindow)
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
+			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text
-			if blocks[0].IsError {
-				obs = "ERROR: " + obs
-			}
 			if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
 				msg := "run stopped: " + why + " after being told it cannot succeed as sent"
 				emit(providers.Event{Type: providers.EventError, Error: msg})
@@ -1277,6 +1276,17 @@ func missingRequiredInput(specs []providers.ToolSpec, name string, input json.Ra
 		msg += " Its input fields are: " + strings.Join(props, ", ") + "."
 	}
 	return msg
+}
+
+// statefulRefusal renders a refusal the stateful loop makes itself, before any
+// dispatch, in the same structured shape as a tool's own failure, so a model
+// reads one kind of error whatever refused its action.
+func statefulRefusal(cat tools.ErrorCategory, msg, fix string) string {
+	return renderToolResultText(tools.Result{
+		Text:    msg,
+		IsError: true,
+		Error:   &tools.ErrorInfo{Category: cat, Retryable: false, Description: fix},
+	})
 }
 
 // offersTool reports whether this agent was offered a tool by that name. The

@@ -158,20 +158,28 @@ func helpPointer(ctx context.Context, t Tool, helpTool string, idx HelpIndex) st
 	return strings.Join(parts, " ")
 }
 
-// withHelpPointer adds call guidance to a FAILED call of a documented tool.
-// A failed call is the moment a model is guaranteed to be reading, and the most
-// likely cause is a call shape it got wrong, so it gets a correct example call
-// for the operation it tried, the valid operations when the op itself was
-// wrong, and the help call for the full article.
+// withHelpPointer attaches the correct call format to a FAILED call of a
+// documented tool. A failed call is the moment a model is guaranteed to be
+// reading, and a call shape it got wrong is the likeliest cause, so the result
+// carries a correct example call for the operation it tried, the valid
+// operations when the op itself was wrong, and the help call for the full
+// article.
 //
-// Left alone: successes; a tool with no article; a dispatcher that cannot
-// serve help; and a failure marked retryable, where the fix is to send the
-// same call again and a pointer to the manual would only suggest otherwise.
+// It is DATA on the result (ErrorInfo.CallFormat), not prose appended to the
+// text: each surface renders it in its own shape — the in-band JSON a model
+// reads, MCP structuredContent — and the error text stays the error.
+//
+// Only where the shape may be the cause: a validation failure, or one nobody
+// has classified yet. Left alone: successes; a tool with no article; a
+// dispatcher that cannot serve help; a retryable failure, where the fix is to
+// send the same call again; and a business, permission or transient failure,
+// where a correct example would read as if the shape were the problem.
 func (d *Dispatcher) withHelpPointer(name string, input json.RawMessage, res Result) Result {
 	if !res.IsError || d.help == nil || !d.help.HasHelpTopic(name) {
 		return res
 	}
-	if res.Error != nil && res.Error.Retryable {
+	if res.Error != nil && (res.Error.Retryable ||
+		(res.Error.Category != "" && res.Error.Category != CategoryValidation)) {
 		return res
 	}
 	var in struct {
@@ -184,26 +192,32 @@ func (d *Dispatcher) withHelpPointer(name string, input json.RawMessage, res Res
 		ops = SchemaEnum(tool.InputSchema(), "op")
 	}
 
-	var b strings.Builder
-	b.WriteString(strings.TrimRight(res.Text, " \n"))
+	cf := &CallFormat{Tool: name}
 	topic := name
 	switch {
 	case in.Op != "" && d.help.HasHelpTopic(name+"/"+in.Op):
 		topic = name + "/" + in.Op
+		cf.Op = in.Op
 	case len(ops) > 0 && (in.Op == "" || !contains(ops, in.Op)):
 		// The op itself is what is wrong, so the one thing that helps is the
 		// list of ops this tool has.
-		fmt.Fprintf(&b, "\n\nValid operations for %s: %s.", name, strings.Join(ops, ", "))
+		cf.Operations = ops
 	}
 	// Measured on local models: a pointer to the help was never followed, but
 	// a model recovers from what the error itself says. So the error carries a
 	// correct call, taken from the operation's own article, rather than only
 	// the address of one.
 	if ex, ok := d.help.HelpExample(topic); ok {
-		fmt.Fprintf(&b, "\n\nA correct %s call looks like this (an example — use your own values):\n%s", topic, ex)
+		cf.Example = json.RawMessage(ex)
 	}
-	fmt.Fprintf(&b, "\n\nFull reference: call %s with %s.", d.helpName, helpArgs(topic))
-	res.Text = b.String()
+	cf.Reference = &CallRef{Tool: d.helpName, Input: json.RawMessage(helpArgs(topic))}
+
+	info := ErrorInfo{}
+	if res.Error != nil {
+		info = *res.Error // a copy: the tool's own value is never written through
+	}
+	info.CallFormat = cf
+	res.Error = &info
 	return res
 }
 

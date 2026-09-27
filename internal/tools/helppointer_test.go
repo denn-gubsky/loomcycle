@@ -182,26 +182,65 @@ func TestExecute_FailedCallCarriesACorrectCallForTheOperation(t *testing.T) {
 	help.examples["Path/mv"] = `{"op":"mv","path":"/docs/draft","to":"/docs/final"}`
 	d := NewDispatcher([]Tool{path, help})
 
-	got := d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv","path":"/docs/a"}`)).Text
-	want := "move_chunk: missing required field: to\n\n" +
-		"A correct Path/mv call looks like this (an example — use your own values):\n" +
-		`{"op":"mv","path":"/docs/draft","to":"/docs/final"}` + "\n\n" +
-		`Full reference: call Context with {"op":"help","topic":"Path/mv"}.`
-	if got != want {
-		t.Errorf("text =\n%s\nwant\n%s", got, want)
+	res := d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv","path":"/docs/a"}`))
+	// The error text stays the error: the call format is DATA, rendered by each
+	// surface in its own shape.
+	if res.Text != "move_chunk: missing required field: to" {
+		t.Errorf("text = %q, want the tool's own error, untouched", res.Text)
+	}
+	if res.Error == nil || res.Error.CallFormat == nil {
+		t.Fatalf("no call format on the failure: %+v", res.Error)
+	}
+	cf := res.Error.CallFormat
+	if cf.Tool != "Path" || cf.Op != "mv" || string(cf.Example) != `{"op":"mv","path":"/docs/draft","to":"/docs/final"}` ||
+		cf.Reference == nil || cf.Reference.Tool != "Context" || string(cf.Reference.Input) != `{"op":"help","topic":"Path/mv"}` ||
+		cf.Operations != nil {
+		t.Errorf("call format = %+v (reference %+v)", cf, cf.Reference)
+	}
+	if res.Error.Category != "" {
+		t.Errorf("attaching a call format classified the failure as %q; it was unclassified", res.Error.Category)
 	}
 }
 
-// When the op itself is what is wrong, the error lists the ops the tool has.
+// When the op itself is what is wrong, the call format lists the ops the tool
+// has and points at the tool's own article.
 func TestExecute_UnknownOperationListsTheValidOnes(t *testing.T) {
 	path := &failingStub{pointerStub{name: "Path", schema: `{"type":"object","properties":{"op":{"type":"string","enum":["ls","mv"]}}}`},
 		Result{Text: `unknown op "list"`, IsError: true}}
 	d := NewDispatcher([]Tool{path, newHelp("Path", "Path/mv")})
 	for _, in := range []string{`{"op":"list"}`, `{"path":"/"}`} {
-		got := d.Execute(context.Background(), "Path", json.RawMessage(in)).Text
-		if !strings.Contains(got, "Valid operations for Path: ls, mv.") ||
-			!strings.HasSuffix(got, `{"op":"help","topic":"Path"}.`) {
-			t.Errorf("%s: text = %q, want the valid ops and the tool article", in, got)
+		res := d.Execute(context.Background(), "Path", json.RawMessage(in))
+		if res.Error == nil || res.Error.CallFormat == nil {
+			t.Fatalf("%s: no call format", in)
+		}
+		cf := res.Error.CallFormat
+		if strings.Join(cf.Operations, ",") != "ls,mv" || cf.Op != "" ||
+			cf.Reference == nil || string(cf.Reference.Input) != `{"op":"help","topic":"Path"}` {
+			t.Errorf("%s: call format = %+v, want the valid ops and the tool article", in, cf)
+		}
+	}
+}
+
+// A business, permission or transient failure gets no call format: the shape
+// was not the problem, and a correct example would read as if it were. A
+// validation failure does get one.
+func TestExecute_CallFormatOnlyWhereTheShapeMayBeTheCause(t *testing.T) {
+	help := newHelp("Path", "Path/mv")
+	help.examples["Path/mv"] = `{"op":"mv","path":"/a","to":"/b"}`
+	for cat, want := range map[ErrorCategory]bool{
+		CategoryValidation: true,
+		CategoryBusiness:   false,
+		CategoryPermission: false,
+		CategoryTransient:  false,
+	} {
+		tl := &failingStub{pointerStub{name: "Path", schema: `{"type":"object"}`},
+			Result{Text: "refused", IsError: true, Error: &ErrorInfo{Category: cat}}}
+		res := NewDispatcher([]Tool{tl, help}).Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv"}`))
+		if got := res.Error != nil && res.Error.CallFormat != nil; got != want {
+			t.Errorf("%s: call format present = %v, want %v", cat, got, want)
+		}
+		if res.Error == nil || res.Error.Category != cat {
+			t.Errorf("%s: the classification changed: %+v", cat, res.Error)
 		}
 	}
 }
@@ -229,6 +268,9 @@ func TestExecute_NoPointerWhereItWouldNotHelp(t *testing.T) {
 		got := NewDispatcher(ts).Execute(context.Background(), "Path", json.RawMessage(`{"op":"ls"}`))
 		if got.Text != c.res.Text {
 			t.Errorf("%s: text = %q, want it untouched (%q)", c.name, got.Text, c.res.Text)
+		}
+		if got.Error != nil && got.Error.CallFormat != nil {
+			t.Errorf("%s: carries a call format: %+v", c.name, got.Error.CallFormat)
 		}
 	}
 }

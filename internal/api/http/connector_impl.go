@@ -595,11 +595,11 @@ func (s *Server) TeamDef(ctx context.Context, input json.RawMessage) (connector.
 	if s.teamDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("TeamDef: not configured (no tool wired via SetTeamDefTool)")
 	}
-	res, err := s.teamDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.teamDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // HookDef dispatches to the reusable-hook-definition substrate tool. NOT in
@@ -609,11 +609,11 @@ func (s *Server) HookDef(ctx context.Context, input json.RawMessage) (connector.
 	if s.hookDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("HookDef: not configured (no tool wired via SetHookDefTool)")
 	}
-	res, err := s.hookDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.hookDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // VolumeDef dispatches to the RFC AH Phase 2a dynamic-volume substrate
@@ -678,11 +678,11 @@ func (s *Server) MCPServerDef(ctx context.Context, input json.RawMessage) (conne
 	if s.mcpServerDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("MCPServerDef: not configured (no tool wired via SetMCPServerDefTool)")
 	}
-	res, err := s.mcpServerDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.mcpServerDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // ScheduleDef dispatches to the v1.x dynamic scheduled-runs substrate
@@ -692,11 +692,11 @@ func (s *Server) ScheduleDef(ctx context.Context, input json.RawMessage) (connec
 	if s.scheduleDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("ScheduleDef: not configured (no tool wired via SetScheduleDefTool)")
 	}
-	res, err := s.scheduleDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.scheduleDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // A2AServerCardDef dispatches to the v1.x RFC G A2A-server-card substrate
@@ -706,11 +706,11 @@ func (s *Server) A2AServerCardDef(ctx context.Context, input json.RawMessage) (c
 	if s.a2aServerCardDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("A2AServerCardDef: not configured (no tool wired via SetA2AServerCardDefTool)")
 	}
-	res, err := s.a2aServerCardDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.a2aServerCardDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // A2AAgentDef dispatches to the v1.x RFC G A2A-agent substrate tool. Same
@@ -720,11 +720,11 @@ func (s *Server) A2AAgentDef(ctx context.Context, input json.RawMessage) (connec
 	if s.a2aAgentDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("A2AAgentDef: not configured (no tool wired via SetA2AAgentDefTool)")
 	}
-	res, err := s.a2aAgentDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.a2aAgentDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // WebhookDef dispatches to the v1.x RFC H inbound-webhook substrate tool.
@@ -734,11 +734,11 @@ func (s *Server) WebhookDef(ctx context.Context, input json.RawMessage) (connect
 	if s.webhookDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("WebhookDef: not configured (no tool wired via SetWebhookDefTool)")
 	}
-	res, err := s.webhookDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.webhookDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // MemoryBackendDef dispatches to the RFC I MR-3a memory-backend
@@ -748,11 +748,11 @@ func (s *Server) MemoryBackendDef(ctx context.Context, input json.RawMessage) (c
 	if s.memoryBackendDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("MemoryBackendDef: not configured (no tool wired via SetMemoryBackendDefTool)")
 	}
-	res, err := s.memoryBackendDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.memoryBackendDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // DocumentSourceDef dispatches to the RFC CE remote-document-source
@@ -762,11 +762,11 @@ func (s *Server) DocumentSourceDef(ctx context.Context, input json.RawMessage) (
 	if s.documentSourceDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("DocumentSourceDef: not configured (no tool wired via SetDocumentSourceDefTool)")
 	}
-	res, err := s.documentSourceDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.documentSourceDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // OperatorTokenDef dispatches to the RFC L OperatorTokenDef substrate
@@ -775,7 +775,7 @@ func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (c
 	if s.operatorTokenDefTool == nil {
 		return connector.ToolResult{}, fmt.Errorf("OperatorTokenDef: not configured (no tool wired via SetOperatorTokenDefTool)")
 	}
-	res, err := s.operatorTokenDefTool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, s.operatorTokenDefTool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
@@ -802,7 +802,7 @@ func (s *Server) OperatorTokenDef(ctx context.Context, input json.RawMessage) (c
 			s.ProvisionIdentityDocs(ctx, tenant, subject)
 		}
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // isTokenCreateOp is narrower than isMutatingTokenOp: rotate and retire act on a
@@ -860,6 +860,38 @@ func isMutatingTokenOp(input json.RawMessage) bool {
 // Go-error return path is reserved for "tool not registered" /
 // "internal failure" — distinct from IsError which is a normal tool
 // outcome the model is allowed to see and self-correct from.
+// execBuiltin runs one builtin tool for a caller outside a run — MCP, HTTP,
+// gRPC — through a dispatcher, so it gets exactly what a call inside a run
+// gets: the argument checks, the classification of a failure, and the correct
+// call format on a failure whose shape may be the cause. It used to call the
+// tool directly, so none of that reached these surfaces.
+//
+// A Go error the tool returns is still returned as the error: each transport
+// maps it onto its own status (an HTTP code, a gRPC status), as it always has.
+// The dispatcher is built per call, so the per-run repeat guards have no
+// history to act on here — a one-off call is not a loop.
+func (s *Server) execBuiltin(ctx context.Context, tool tools.Tool, input json.RawMessage) (tools.Result, error) {
+	ts := []tools.Tool{tool}
+	if h := s.helpTool(); h != nil && h.Name() != tool.Name() {
+		ts = append(ts, h)
+	}
+	d := tools.NewDispatcher(ts)
+	d.SetErrorClassifier(errclassify.CategoryOf)
+	return d.Call(ctx, tool.Name(), input)
+}
+
+// helpTool is the server's help-serving tool (Context), or nil. It is what
+// lets a dispatcher check a builtin's arguments against its articles and point
+// a failed call at its correct format.
+func (s *Server) helpTool() tools.Tool {
+	for _, t := range s.tools {
+		if _, ok := t.(tools.HelpIndex); ok {
+			return t
+		}
+	}
+	return nil
+}
+
 func (s *Server) dispatchBuiltin(ctx context.Context, name string, input json.RawMessage) (connector.ToolResult, error) {
 	var tool tools.Tool
 	for _, t := range s.tools {
@@ -871,11 +903,11 @@ func (s *Server) dispatchBuiltin(ctx context.Context, name string, input json.Ra
 	if tool == nil {
 		return connector.ToolResult{}, fmt.Errorf("builtin tool %q not registered (operator disabled it via tools or yaml)", name)
 	}
-	res, err := tool.Execute(ctx, input)
+	res, err := s.execBuiltin(ctx, tool, input)
 	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count}, nil
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
 }
 
 // --- 4. Pause/Resume/Snapshot (real in v0.8.18; wire shapes locked v0.8.15) ---

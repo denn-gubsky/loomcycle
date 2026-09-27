@@ -744,7 +744,8 @@ func wrapBuiltin(toolName string, call func(connector.Connector, context.Context
 		}
 		res, err := call(env.connector, mcpPrincipalCtx(ctx), args)
 		if err != nil {
-			return toolErr(toolName + ": " + err.Error()), nil
+			// Classified when the error is typed, like every other MCP failure.
+			return toolErrFrom(toolName, err), nil
 		}
 		return toolResultFromConnector(res), nil
 	}
@@ -1298,7 +1299,30 @@ func toolResultFromConnector(res connector.ToolResult) *loommcp.CallToolResult {
 			out.StructuredContent = raw
 		}
 	}
+	if res.IsError && res.ErrorInfo != nil {
+		info := *res.ErrorInfo
+		info.CallFormat = mcpCallFormat(info.CallFormat)
+		out.StructuredContent = loommcp.StructuredErrorJSON(info)
+	}
 	return out
+}
+
+// mcpCallFormat names the tools in a call format the way an MCP client knows
+// them. Over MCP the builtins are the lowercased meta-tools (`document`,
+// `context`), so a format naming `Document` would send the client to a tool it
+// does not have. A copy: the dispatcher's value is never written through.
+func mcpCallFormat(cf *tools.CallFormat) *tools.CallFormat {
+	if cf == nil {
+		return nil
+	}
+	out := *cf
+	out.Tool = strings.ToLower(cf.Tool)
+	if cf.Reference != nil {
+		ref := *cf.Reference
+		ref.Tool = strings.ToLower(ref.Tool)
+		out.Reference = &ref
+	}
+	return &out
 }
 
 // handleRetuneRun changes a RUNNING agent's settings without sending it a turn —

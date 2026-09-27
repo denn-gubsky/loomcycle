@@ -38,6 +38,8 @@ type Tool interface {
 type (
 	ErrorCategory = errkind.Category
 	ErrorInfo     = errkind.Info
+	CallFormat    = errkind.CallFormat
+	CallRef       = errkind.CallRef
 )
 
 const (
@@ -133,6 +135,18 @@ type Dispatcher struct {
 	// repeats counts failed calls per exact call, so a run re-sending one that
 	// cannot succeed is refused and then stopped (see repeat.go).
 	repeats repeatTracker
+	// classify maps a Go error a tool returned onto an error category. It is
+	// injected (SetErrorClassifier) because the classifier recognises the
+	// runtime's typed errors and so imports half the tree, this package
+	// included. Nil: a Go error stays unclassified, as it always was.
+	classify func(error) (ErrorInfo, bool)
+}
+
+// SetErrorClassifier sets how a Go error returned by a tool is classified, so
+// the failure the model sees carries its category, retryability and next
+// step instead of a bare message.
+func (d *Dispatcher) SetErrorClassifier(f func(error) (ErrorInfo, bool)) {
+	d.classify = f
 }
 
 // FallbackFunc is consulted by Dispatcher.Execute when a tool name isn't
@@ -1914,6 +1928,16 @@ func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
 // MCP-aware nesting happens in the mcpTool wrapper at
 // internal/tools/mcp/pool.go).
 func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMessage) Result {
+	res, _ := d.Call(ctx, name, input)
+	return res
+}
+
+// Call is Execute that also returns a Go error the tool itself returned. The
+// result is the same either way — the refusals, the classification, the call
+// format — but a caller outside a run (the connector behind MCP, HTTP and
+// gRPC) keeps the typed error, because each transport maps it onto its own
+// status (an HTTP code, a gRPC status) as it always has.
+func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessage) (Result, error) {
 	ctx, span := lcotel.RecordToolCall(ctx, name)
 	defer span.End()
 	res, goErr := d.execute(ctx, name, input)
@@ -1926,7 +1950,7 @@ func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMes
 	case res.IsError:
 		lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 	}
-	return res
+	return res, goErr
 }
 
 // execute is Execute without the span: the call, the refusals ahead of it,
@@ -1951,20 +1975,32 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 			res = r
 		} else if r, err := t.Execute(ctx, input); err != nil {
 			res, goErr = Result{Text: err.Error(), IsError: true}, err
+			if d.classify != nil {
+				if info, ok := d.classify(err); ok {
+					res.Error = &info
+				}
+			}
 		} else {
 			res = r
 		}
 	} else if d.fallback != nil {
 		r, handled := d.fallback(ctx, name, input)
 		if !handled {
-			return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}, nil
+			return toolNotFound(name), nil
 		}
 		res = r
 	} else {
-		return Result{Text: fmt.Sprintf("tool not found: %s", name), IsError: true}, nil
+		return toolNotFound(name), nil
 	}
 	d.noteResult(name, input, res)
 	return d.withHelpPointer(name, input, res), goErr
+}
+
+// toolNotFound is a call to a tool this run does not have. The name is the
+// input, so it is a validation failure: the caller fixes it and calls again.
+func toolNotFound(name string) Result {
+	return validationRefusal(fmt.Sprintf("tool not found: %s", name),
+		"Call one of the tools you were given, by its exact name.")
 }
 
 // firstLineForSpan extracts the first line of a tool's error text for

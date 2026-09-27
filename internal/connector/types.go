@@ -29,6 +29,12 @@ type ToolResult struct {
 	// ran and matched nothing" from "the query did not run" — and a plain int
 	// cannot tell either of those from a tool that never counts.
 	Count *int `json:"count,omitempty"`
+
+	// ErrorInfo is a failure's structure: its category, whether resending can
+	// succeed, the next step, and the correct call format. Nil on a success.
+	// Not serialized with this struct: each transport renders it in its own
+	// shape (MCP structuredContent, the HTTP refusal envelope).
+	ErrorInfo *tools.ErrorInfo `json:"-"`
 }
 
 // --- Run lifecycle types ---

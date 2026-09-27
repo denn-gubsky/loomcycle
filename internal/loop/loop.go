@@ -7,6 +7,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -3734,8 +3735,26 @@ func executePendingTools(
 	return results
 }
 
-// renderToolResultText puts a classified failure's category, retryability and
-// backoff in front of the tool's own output.
+// inbandError is a failed tool call as the model reads it: one JSON object,
+// in the shape MCP gives the same failure (errorCategory / isRetryable /
+// description inside structuredContent), plus the message and the correct
+// call format. Field order is the reading order. A key with nothing true to
+// say is omitted: isRetryable is only known once the failure is classified,
+// and a missing backoff and a zero one are opposite instructions.
+type inbandError struct {
+	IsError           bool              `json:"isError"`
+	Error             string            `json:"error"`
+	ErrorCategory     string            `json:"errorCategory,omitempty"`
+	IsRetryable       *bool             `json:"isRetryable,omitempty"`
+	RetryAfterSeconds *int              `json:"retryAfterSeconds,omitempty"`
+	Description       string            `json:"description,omitempty"`
+	CorrectCallFormat *tools.CallFormat `json:"correctCallFormat,omitempty"`
+}
+
+// renderToolResultText renders what the model reads for one tool call. A
+// success is the tool's own output, byte for byte. A failure is ONE JSON
+// object: the error, its category, whether resending can succeed, the next
+// step, and — where the shape may be the cause — a correct call.
 //
 // WHY IN THE TEXT AT ALL: IsError reaches the model only on Anthropic. That
 // driver serializes is_error on the tool_result block; the OpenAI dialect —
@@ -3751,40 +3770,41 @@ func executePendingTools(
 // for a reason nobody would think to look for. On Anthropic the flag and the
 // text say the same thing, which is redundant but never contradictory.
 //
-// Unclassified failures are returned untouched, so the overwhelming majority
-// of tool results are byte-identical to before.
+// WHY JSON, NOT A PREFIX: one shape for every failure, the same one MCP
+// clients receive, with each part named. The earlier "[category · retryable]"
+// prefix plus appended prose left a model to parse which part was the error,
+// which the fix, and which an example to copy.
 func renderToolResultText(res tools.Result) string {
-	if res.Error == nil || res.Error.Category == "" {
+	if !res.IsError {
 		return res.Text
 	}
-
-	var b strings.Builder
-	b.WriteByte('[')
-	b.WriteString(string(res.Error.Category))
-	if res.Error.Retryable {
-		b.WriteString(" · retryable")
-		// Only when there is a real hint. A missing backoff and a zero one
-		// are opposite instructions, so silence beats inventing "0s".
-		if d := res.Error.RetryAfter; d != nil && *d > 0 {
-			fmt.Fprintf(&b, " · retry in %s", d.Round(time.Second))
+	out := inbandError{IsError: true, Error: strings.TrimSpace(res.Text)}
+	if info := res.Error; info != nil {
+		if info.Category != "" {
+			out.ErrorCategory = string(info.Category)
+			retry := info.Retryable
+			out.IsRetryable = &retry
+			if d := info.RetryAfter; info.Retryable && d != nil && *d > 0 {
+				// Rounded UP, as MCP does: 0 would read as "retry now".
+				secs := int((*d + time.Second - 1) / time.Second)
+				out.RetryAfterSeconds = &secs
+			}
 		}
-	} else {
-		b.WriteString(" · not retryable")
-	}
-	b.WriteString("] ")
-
-	desc := strings.TrimSpace(res.Error.Description)
-	body := strings.TrimSpace(res.Text)
-	// A description that merely restates the tool's own message costs tokens
-	// and carries no extra decision.
-	if desc != "" && desc != body {
-		b.WriteString(desc)
-		if body != "" {
-			b.WriteString("\n\n")
+		// A description that merely restates the message costs tokens and
+		// carries no extra decision.
+		if desc := strings.TrimSpace(info.Description); desc != out.Error {
+			out.Description = desc
 		}
+		out.CorrectCallFormat = info.CallFormat
 	}
-	b.WriteString(res.Text)
-	return b.String()
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	// Readable as written: a model reads "<" and "&", not "<".
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
+		return res.Text // unreachable for these field types; never lose the message
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // splitSegments separates "system" segments (which become provider System

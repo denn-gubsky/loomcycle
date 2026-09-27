@@ -190,7 +190,11 @@ func TestDispatcher_FailedPathCallCarriesTheArticlesExample(t *testing.T) {
 	want, _ := ctxTool.HelpExample("Path/mv")
 	d := tools.NewDispatcher([]tools.Tool{&Path{}, ctxTool})
 	res := d.Execute(context.Background(), "Path", json.RawMessage(`{"op":"mv","path":"/a"}`))
-	if !res.IsError || !strings.Contains(res.Text, want) || !strings.Contains(res.Text, `"topic":"Path/mv"`) {
-		t.Errorf("failed Path mv result = %q, want the Path/mv example %s", res.Text, want)
+	if !res.IsError || res.Error == nil || res.Error.CallFormat == nil {
+		t.Fatalf("failed Path mv result carries no call format: %q %+v", res.Text, res.Error)
+	}
+	cf := res.Error.CallFormat
+	if string(cf.Example) != want || cf.Reference == nil || !strings.Contains(string(cf.Reference.Input), `"topic":"Path/mv"`) {
+		t.Errorf("call format = %s (reference %+v), want the Path/mv example %s", cf.Example, cf.Reference, want)
 	}
 }
