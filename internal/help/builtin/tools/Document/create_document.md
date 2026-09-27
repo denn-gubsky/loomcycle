@@ -24,9 +24,18 @@ the title.**
   a slash: `area/sub`.
 - `subject` + `natural_key` (+ `type`) — make the root chunk itself a fact
   subject, so the document IS that subject and its facts are its children.
-  `natural_key` must be unused in the scope. With this pair you may also pass
-  `class`, `confidence`, `valid_at`, `invalid_at`, `observed_at`,
-  `source_quote`. Leave all of these out for an ordinary document.
+  `natural_key` must be unused in the scope. Leave these, and the fact fields
+  below, out for an ordinary document.
+- `class`, `confidence` — only with the `subject` + `natural_key` pair: the
+  subject's class (`derived`, the default, or `evidential`) and a confidence
+  between 0 and 1. Ignored without the pair.
+- `valid_at`, `invalid_at`, `observed_at` — only with the pair: unix nanos when
+  the subject's claim became true, stopped being true, and was said. Ignored
+  without the pair.
+- `source_quote` — only with the pair: the text span the subject was taken
+  from. Ignored without the pair.
+- `source_session_id` — only with the pair, rarely used: the chat the subject
+  was distilled from, recorded as provenance. Ignored without the pair.
 
 There is no `body`: a new root body is always empty. Write text with
 `create_chunk`, or `update_chunk` the root (its revision is 1).

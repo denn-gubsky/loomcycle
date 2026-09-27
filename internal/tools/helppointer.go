@@ -21,6 +21,16 @@ type HelpIndex interface {
 	HelpExample(topic string) (string, bool)
 }
 
+// OpArgumentIndex is implemented by a HelpIndex that also knows which arguments
+// each operation article documents. Separate from HelpIndex so a help index
+// without it — a test stub, an older implementation — still satisfies
+// HelpIndex and simply gets no per-operation check.
+type OpArgumentIndex interface {
+	// HelpArguments returns the arguments topic ("<Tool>/<op>") documents, and
+	// whether the article has an Arguments section at all.
+	HelpArguments(topic string) ([]string, bool)
+}
+
 // ScopeGrant is whether THIS run may use one value of a tool's scope argument.
 type ScopeGrant struct {
 	Scope   string `json:"scope"`

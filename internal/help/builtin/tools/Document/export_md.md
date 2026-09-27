@@ -13,8 +13,10 @@ fields and links; pass `false` for clean Markdown a person will read.
 
 ## Arguments
 
-- `document_id` — the document. Instead you may pass `id` (the document id)
-  or `path` (its Path-tree path, e.g. `/docs/launch`).
+- `document_id` — the document. Or:
+- `id` — the same document id, as an alias of `document_id`. Or:
+- `path` — the document's Path-tree path, e.g. `/docs/launch`. Used only when
+  `document_id` and `id` are empty.
 - `include_metadata` — default `true`: after each heading a
   `<!-- loom: {"id":…,"type":…,"status":…,"fields":…} -->` line, and at the end
   a `<!-- loom-edges: ... -->` block listing the links that start in this

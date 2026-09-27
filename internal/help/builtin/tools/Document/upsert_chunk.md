@@ -36,6 +36,9 @@ while keeping the old version, write the correction under a NEW key and then
 - `confidence` — 0 to 1. Below 0.25 the fact is withheld from fact reads.
 - `from_pending` — the id of a pending memory item you processed; the server
   records where the fact came from.
+- `source_session_id` — rarely used: the id of the chat session the fact was
+  distilled from, when it did not come off a pending item (`from_pending`
+  supplies this itself and wins). Kept when a later upsert omits it.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Every time field you omit keeps its stored value. The server sets the fact's
