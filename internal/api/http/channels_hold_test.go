@@ -303,36 +303,53 @@ func TestChannelHold_ReleaseBadCountIs400(t *testing.T) {
 }
 
 // ChannelHeld resolves yaml first (operator-global, so every tenant sees it)
-// and then the runtime row IN THE CALLER'S TENANT. Pinned because it decides
-// what an internal publisher sees: one whose ctx carries no tenant — the
-// inbound webhook relay is the live example — honours a yaml-declared hold but
-// cannot see another tenant's runtime-declared one.
-func TestChannelHeld_YamlIsTenantWideRuntimeRowIsNot(t *testing.T) {
+// and then the runtime row IN THE NAMED TENANT — the tenant the message is
+// published in, never the ctx's. An internal publisher's ctx often carries no
+// identity (the inbound webhook relay, a schedule tick); resolving the tenant
+// from it looked in the shared tenant, so a tenant's own runtime hold was not
+// held.
+func TestChannelHeld_ResolvesTheRuntimeRowInTheNamedTenant(t *testing.T) {
 	srv, st, cleanup := channelHoldFixture(t)
 	defer cleanup()
-	ctx := context.Background()
+	ctx := context.Background() // no identity, like the webhook relay's
 
-	// yaml: visible with no tenant on the ctx.
-	if !srv.ChannelHeld(ctx, "gate") {
-		t.Errorf("a yaml-declared hold was not seen without a tenant on the ctx")
+	// yaml: seen in any tenant.
+	if !srv.ChannelHeld(ctx, "t1", "gate") || !srv.ChannelHeld(ctx, "", "gate") {
+		t.Errorf("a yaml-declared hold was not seen in every tenant")
 	}
-	// runtime row owned by another tenant: not visible.
 	if err := st.ChannelsCreate(ctx, store.ChannelRow{
 		Name: "t1-only", TenantID: "t1", Scope: "global", Semantic: "queue", Hold: true,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if srv.ChannelHeld(ctx, "t1-only") {
-		t.Errorf("another tenant's runtime hold leaked into a tenant-less ctx")
+	if !srv.ChannelHeld(ctx, "t1", "t1-only") {
+		t.Errorf("a tenant's own runtime hold was not seen when publishing in that tenant")
 	}
-	// runtime row in the shared tenant: visible.
+	if srv.ChannelHeld(ctx, "t2", "t1-only") || srv.ChannelHeld(ctx, "", "t1-only") {
+		t.Errorf("a tenant's runtime hold leaked into another tenant")
+	}
+}
+
+// A system publish in a tenant honours that tenant's runtime hold even when
+// its ctx carries no identity — the inbound webhook relay publishes on the
+// request ctx with the webhook def's tenant, and used to deliver straight past
+// the tenant's own `hold:` channel.
+func TestSystemPublisher_HoldsATenantsOwnRuntimeHoldChannel(t *testing.T) {
+	srv, st, cleanup := channelHoldFixture(t)
+	defer cleanup()
+	ctx := context.Background()
 	if err := st.ChannelsCreate(ctx, store.ChannelRow{
-		Name: "shared", TenantID: "", Scope: "global", Semantic: "queue", Hold: true,
+		Name: "inbox", TenantID: "t1", Scope: "global", Semantic: "queue", Hold: true,
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if !srv.ChannelHeld(ctx, "shared") {
-		t.Errorf("a shared-tenant runtime hold was not seen")
+	msg, err := srv.systemPublisher.PublishNow(ctx, "inbox", "t1", store.MemoryScopeGlobal, "",
+		json.RawMessage(`{"n":1}`), channels.SystemPublisherUserID, 0, 0)
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if !store.IsChannelHeld(msg.VisibleAt) {
+		t.Errorf("a publish in t1 to t1's hold channel was delivered (visible_at %v)", msg.VisibleAt)
 	}
 }
 

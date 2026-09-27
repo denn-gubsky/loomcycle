@@ -66,7 +66,13 @@ type StorePublisher struct {
 	// Injected rather than resolved here because the channel definition
 	// plane (static yaml merged with the runtime substrate, tenant-scoped)
 	// lives in the server. nil = nothing is held.
-	HoldFn func(ctx context.Context, channel string) bool
+	//
+	// tenantID is the tenant the message is published in, passed explicitly:
+	// a system publish often runs on a ctx that carries no identity (a webhook
+	// relay's request ctx, a schedule tick), and resolving the tenant from the
+	// ctx there looked up the shared tenant — so a tenant's own `hold:` channel
+	// was not held.
+	HoldFn func(ctx context.Context, tenantID, channel string) bool
 }
 
 // SystemPublisherUserID is the audit-trail sentinel for internal Go
@@ -103,7 +109,7 @@ func (p *StorePublisher) Publish(ctx context.Context, channel, tenantID string, 
 	// everyone else is caught by HoldFn.
 	held := store.IsChannelHeld(deliverAt)
 	if !held && p.HoldFn != nil {
-		held = p.HoldFn(ctx, channel)
+		held = p.HoldFn(ctx, tenantID, channel)
 	}
 	if held {
 		visibleAt = store.ChannelHeldVisibleAt()

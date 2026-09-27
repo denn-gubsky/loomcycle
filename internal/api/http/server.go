@@ -2261,14 +2261,18 @@ func (s *Server) ResolveChannelScope(ctx context.Context, channel string) (tools
 // Static yaml wins over a runtime row, matching the merge order everywhere
 // else. A store fault answers false — an unreachable definition plane must
 // not silently start holding a channel that isn't declared held.
-func (s *Server) ChannelHeld(ctx context.Context, channel string) bool {
+//
+// tenantID is the tenant the message is published in (see
+// channels.StorePublisher.HoldFn): never read from ctx, which on the webhook
+// relay and a schedule tick carries no identity.
+func (s *Server) ChannelHeld(ctx context.Context, tenantID, channel string) bool {
 	if def, ok := s.cfg().Channels[channel]; ok {
 		return def.Hold
 	}
 	if s.store == nil {
 		return false
 	}
-	row, err := s.store.ChannelGet(ctx, tenantFromCtx(ctx), channel)
+	row, err := s.store.ChannelGet(ctx, tenantID, channel)
 	if err != nil {
 		return false
 	}
