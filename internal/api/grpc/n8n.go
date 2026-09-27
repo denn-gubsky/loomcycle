@@ -5,6 +5,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"google.golang.org/grpc/codes"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -29,16 +31,22 @@ func (s *Server) ListChannels(ctx context.Context, _ *loomcyclepb.ListChannelsRe
 	}
 	for _, c := range resp.Channels {
 		out.Channels = append(out.Channels, &loomcyclepb.ChannelDescriptor{
-			Name:            c.Name,
-			Scope:           c.Scope,
-			Semantic:        c.Semantic,
-			Publisher:       c.Publisher,
-			Period:          c.Period,
-			DefaultTtl:      int32(c.DefaultTTL),
-			MaxMessages:     int32(c.MaxMessages),
-			MessageCount:    c.MessageCount,
-			OldestVisibleAt: c.OldestVisibleAt,
-			NewestVisibleAt: c.NewestVisibleAt,
+			Name:               c.Name,
+			Scope:              c.Scope,
+			Semantic:           c.Semantic,
+			Publisher:          c.Publisher,
+			Period:             c.Period,
+			DefaultTtl:         int32(c.DefaultTTL),
+			MaxMessages:        int32(c.MaxMessages),
+			MessageCount:       c.MessageCount,
+			OldestVisibleAt:    c.OldestVisibleAt,
+			NewestVisibleAt:    c.NewestVisibleAt,
+			Description:        c.Description,
+			Hold:               c.Hold,
+			Source:             c.Source,
+			HooksJson:          hooksJSON(c.Hooks),
+			HeldCount:          c.HeldCount,
+			AwaitingHooksCount: c.AwaitingHooksCount,
 		})
 	}
 	return out, nil
@@ -130,4 +138,17 @@ func parentContextToProto(pc *store.ParentContext) *loomcyclepb.ParentContext {
 		WaveId:          pc.WaveID,
 		WaveIndex:       int32(pc.WaveIndex),
 	}
+}
+
+// hooksJSON is a channel's hooks as the descriptor carries them: JSON, or
+// nothing when the channel has none.
+func hooksJSON(h hooks.EventHooks) []byte {
+	if len(h) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(h)
+	if err != nil {
+		return nil
+	}
+	return b
 }

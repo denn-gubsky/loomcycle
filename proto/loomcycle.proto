@@ -1899,6 +1899,12 @@ message ChannelDescriptor {
   // RFC3339 strings — empty when count == 0.
   string oldest_visible_at = 9;
   string newest_visible_at = 10;
+  string description = 11;
+  bool hold = 12;              // stores publishes without delivering until released
+  string source = 13;          // "yaml" | "runtime" | "orphan"
+  bytes hooks_json = 14;       // the channel's hooks, JSON ({"channel_publish": [...]}); empty when none
+  int64 held_count = 15;       // messages held for a release (in message_count)
+  int64 awaiting_hooks_count = 16; // messages waiting for the channel's hooks (in message_count)
 }
 
 message StreamUserRunStatesRequest {

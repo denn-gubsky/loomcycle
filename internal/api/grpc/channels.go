@@ -35,6 +35,8 @@ func channelErrCode(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, connector.ErrSystemPublisherUnwired):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, connector.ErrChannelHooksInvalid):
+		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, channels.ErrChannelHooksDisabled):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	default:

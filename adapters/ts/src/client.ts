@@ -2736,6 +2736,7 @@ export class LoomcycleClient {
     if (opts.publisher !== undefined) body.publisher = opts.publisher;
     if (opts.period !== undefined) body.period = opts.period;
     if (opts.hold !== undefined) body.hold = opts.hold;
+    if (opts.hooks !== undefined) body.hooks = opts.hooks;
     return postJSON<ChannelDescriptor>(this.ctx, "/v1/_channels", body, {
       signal: opts.signal,
     });
@@ -2754,6 +2755,7 @@ export class LoomcycleClient {
     if (opts.max_messages !== undefined) body.max_messages = opts.max_messages;
     if (opts.semantic !== undefined) body.semantic = opts.semantic;
     if (opts.hold !== undefined) body.hold = opts.hold;
+    if (opts.hooks !== undefined) body.hooks = opts.hooks;
     return patchJSON<ChannelDescriptor>(
       this.ctx,
       `/v1/_channels/${encodeURIComponent(name)}`,

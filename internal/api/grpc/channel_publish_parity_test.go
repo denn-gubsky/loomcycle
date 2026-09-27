@@ -93,3 +93,56 @@ func TestChannelPublishResult_ThreeWayDrift(t *testing.T) {
 		}
 	}
 }
+
+// Every field of a channel's descriptor is on every transport that lists
+// channels: the gRPC descriptor, the TS interface and the Python dict. The
+// fields are read from the connector struct. hooks travels as JSON bytes on
+// gRPC and Python (hooks_json); that is the one rename.
+func TestChannelDescriptor_ThreeWayDrift(t *testing.T) {
+	rt := reflect.TypeOf(connector.ChannelDescriptor{})
+	var fields []string
+	for i := 0; i < rt.NumField(); i++ {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		fields = append(fields, name)
+	}
+	rename := map[string]string{"hooks": "hooks_json"}
+	for _, surface := range []struct {
+		what, path, start, end string
+		spell                  func(string) []string
+		renamed                bool
+	}{
+		{"the proto", "../../../proto/loomcycle.proto", "message ChannelDescriptor {", "\n}",
+			func(f string) []string { return []string{" " + f + " = "} }, true},
+		{"the TS adapter", "../../../adapters/ts/src/types.ts", "export interface ChannelDescriptor {", "\n}",
+			func(f string) []string { return []string{" " + f + ":", " " + f + "?:"} }, false},
+		{"the Python client", "../../../adapters/python/loomcycle/client.py", "def _channel_descriptor_to_dict(", "\n\n\n",
+			func(f string) []string { return []string{`"` + f + `": c.` + f} }, true},
+	} {
+		b, err := os.ReadFile(surface.path)
+		if err != nil {
+			t.Skipf("%s not readable from here: %v", surface.path, err)
+		}
+		src := string(b)
+		i := strings.Index(src, surface.start)
+		if i < 0 {
+			t.Fatalf("%s: %q not found", surface.what, surface.start)
+		}
+		blk := src[i:]
+		if j := strings.Index(blk, surface.end); j >= 0 {
+			blk = blk[:j]
+		}
+		for _, f := range fields {
+			name := f
+			if r, ok := rename[f]; ok && surface.renamed {
+				name = r
+			}
+			found := false
+			for _, w := range surface.spell(name) {
+				found = found || strings.Contains(blk, w)
+			}
+			if !found {
+				t.Errorf("%s does not carry ChannelDescriptor.%s", surface.what, f)
+			}
+		}
+	}
+}

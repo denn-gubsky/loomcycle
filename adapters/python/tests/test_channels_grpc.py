@@ -54,6 +54,12 @@ async def test_list_channels_decodes_descriptors():
             "message_count": 3,
             "oldest_visible_at": "",
             "newest_visible_at": "",
+            "description": "",
+            "hold": False,
+            "source": "",
+            "hooks_json": b"",
+            "held_count": 0,
+            "awaiting_hooks_count": 0,
         }
     ]
 

@@ -381,12 +381,13 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"op":           {"type": "string", "enum": ["create", "update", "delete", "purge"], "description": "Which admin operation to perform. purge clears buffered messages (allowed on yaml channels); create/update/delete mutate the definition (runtime channels only)."},
 					"name":         {"type": "string", "description": "Channel name (required for all ops)."},
 					"description":  {"type": "string"},
-					"scope":        {"type": "string", "enum": ["global", "agent", "user"], "description": "create only. Default global."},
+					"scope":        {"type": "string", "enum": ["global", "tenant", "agent", "user"], "description": "create only. Default global. tenant: shared across your tenant."},
 					"semantic":     {"type": "string", "enum": ["queue", "topic"], "description": "Default queue."},
 					"default_ttl":  {"type": "integer", "description": "Per-message TTL seconds. 0 = no TTL."},
 					"max_messages": {"type": "integer", "description": "Bounded-queue cap. 0 = unbounded."},
 					"hold":         {"type": "boolean", "description": "Breakpoint: publishes are stored but never delivered until released (POST /v1/_channels/{name}/release, or Channel op=release)."},
-					"publisher":    {"type": "string", "description": "create only. Free-form attribution."}
+					"publisher":    {"type": "string", "description": "create only. Free-form attribution."},
+					"hooks":        {"type": "object", "description": "Hooks that decide each message published to the channel before any reader sees it: {\"channel_publish\": [entries]}, each a HookDef name (event channel_publish) or an inline webhook {name, url, fail_mode, timeout_ms, headers}. Runs in order; a hook may deliver, rewrite or drop a message, and delivery order may differ from publish order. On update, {} removes them. Refused unless the server runs channel hooks.", "properties": {"channel_publish": {"type": "array"}}, "additionalProperties": false}
 				}
 			}`),
 		},
@@ -633,7 +634,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"required": ["channel", "scope", "payload"],
 				"properties": {
 					"channel":    {"type": "string"},
-					"scope":      {"type": "string", "enum": ["global", "user"]},
+					"scope":      {"type": "string", "enum": ["global", "tenant", "user"]},
 					"scope_id":   {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"payload":    {},
 					"deliver_at": {"type": "string"}
@@ -648,7 +649,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"required": ["channel", "scope"],
 				"properties": {
 					"channel":      {"type": "string"},
-					"scope":        {"type": "string", "enum": ["global", "user"]},
+					"scope":        {"type": "string", "enum": ["global", "tenant", "user"]},
 					"scope_id":     {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"from_cursor":  {"type": "string"},
 					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
@@ -664,7 +665,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"required": ["channel", "scope"],
 				"properties": {
 					"channel":      {"type": "string"},
-					"scope":        {"type": "string", "enum": ["global", "user"]},
+					"scope":        {"type": "string", "enum": ["global", "tenant", "user"]},
 					"scope_id":     {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"from_cursor":  {"type": "string"},
 					"max_messages": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}
@@ -679,7 +680,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 				"required": ["channel", "scope", "cursor"],
 				"properties": {
 					"channel":  {"type": "string"},
-					"scope":    {"type": "string", "enum": ["global", "user"]},
+					"scope":    {"type": "string", "enum": ["global", "tenant", "user"]},
 					"scope_id": {"type": "string", "description": "REQUIRED when scope=user (must be the user_id); ignored when scope=global."},
 					"cursor":   {"type": "string"}
 				}

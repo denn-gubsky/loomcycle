@@ -2824,7 +2824,13 @@ export interface ChannelDescriptor {
   max_messages?: number;
   /** Breakpoint: publishes are stored but never delivered until released. */
   hold?: boolean;
+  /** Hooks that decide each message before any reader sees it. */
+  hooks?: EventHooks;
   message_count: number;
+  /** Messages held for a release, and waiting for the channel's hooks —
+   *  both counted in `message_count`. */
+  held_count?: number;
+  awaiting_hooks_count?: number;
   /** RFC3339 — empty when count == 0. */
   oldest_visible_at?: string;
   newest_visible_at?: string;
@@ -3037,7 +3043,7 @@ export interface ChannelBroadcastResult {
 export interface CreateChannelOptions {
   name: string;
   description?: string;
-  /** "global" | "agent" | "user". Defaults to "global" if omitted. */
+  /** "global" | "tenant" | "agent" | "user". Defaults to "global" if omitted. */
   scope?: string;
   /** "queue" | "topic". Defaults to "queue" if omitted. */
   semantic?: string;
@@ -3052,6 +3058,11 @@ export interface CreateChannelOptions {
   /** Breakpoint: publishes are stored but never delivered until
    *  {@link LoomcycleClient.releaseChannel} hands them over. */
   hold?: boolean;
+  /** Hooks that decide each message published to the channel before any
+   *  reader sees it: `{ channel_publish: [HookDef name | inline webhook] }`.
+   *  Refused (409 `channel_hooks_disabled`) unless the server runs channel
+   *  hooks; an unknown HookDef is refused (400 `channel_hooks_invalid`). */
+  hooks?: EventHooks;
   signal?: AbortSignal;
 }
 
@@ -3066,6 +3077,8 @@ export interface UpdateChannelOptions {
   /** Turn the breakpoint on or off. Messages already held stay held
    *  until released — turning it off does not flush the queue. */
   hold?: boolean;
+  /** Replace the channel's hooks; `{}` removes them. */
+  hooks?: EventHooks;
   signal?: AbortSignal;
 }
 
