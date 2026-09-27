@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.97.0) moved hooks onto the run: an agent's
+The most recent line (v1.98.0) made a failed tool call tell the model what
+kind of failure it was (fix the input, it will never work, or try again later)
+together with the correct call format, on every interface. It let a run request,
+a parent run and a TeamDef add hooks, and the Web UI now edits them. It also
+closed three existence oracles and a webhook relay that delivered past a
+tenant's held channel, and fixed consolidator fact writes that had been refused
+since v1.95.0.
+
+Before it, v1.97.0 moved hooks onto the run: an agent's
 definition carries its hooks, with credentials allowed in webhook headers, and
 the runtime hook registration API is removed (a breaking change). It also
 stopped the dead-link sweeper deleting live chunk text in scopes past 10,000
