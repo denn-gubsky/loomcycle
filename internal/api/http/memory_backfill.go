@@ -148,8 +148,8 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 			"embedding, so it stays a candidate permanently and candidates converges to " +
 			"skipped_empty instead. `limit` bounds how many rows are EMBEDDED, not how " +
 			"many are examined — the sweep pages past what it cannot embed.",
-		"A document chunk with an empty body falls back to its TITLE, matching the " +
-			"write path: a heading is real language and a real answer to a search.",
+		"A document chunk is indexed exactly as the write path indexes it: under a header " +
+			"naming its document and section, and a bodyless heading under that header alone.",
 	}
 
 	if dryRun {
@@ -210,21 +210,15 @@ func (s *Server) handleMemoryBackfillEmbeddings(w http.ResponseWriter, r *http.R
 			// Advance the cursor for EVERY row seen, embedded or not — that is the
 			// whole point.
 			lastKey = row.Key
-			// A document chunk body is a JSON envelope, so embedTextForRow unwraps it;
-			// embedding the raw JSON would index the field names.
-			text := embedTextForRow(row)
-			if text == "" {
-				// A document chunk with no body is usually a HEADING, and a heading is
-				// real language ("RFC BE — History Tool", "Phase 2 — name-links").
-				// The write path embeds the title in that case, so the sweep must too,
-				// or existing documents stay permanently less searchable than new ones.
-				//
-				// The resolution lives in the builtin package: it needs the chunk
-				// title (a SQL Memory read this handler has no view of) AND the
-				// ""→"default" SQL-tenant rule, and restating that rule here is how
-				// the tenant axis drifts.
-				text = builtin.TitleFallbackForBodyKey(r.Context(), s.sqlMem, tenant,
-					store.MemoryScope(scope), scopeID, row.Key)
+			// A document chunk is indexed under exactly the text the write path would
+			// give it — its header plus its content — derived by the ONE function every
+			// path uses (it needs the chunk tree, a SQL Memory read this handler has no
+			// view of, and the ""→"default" SQL-tenant rule). Any other row keeps the
+			// envelope-unwrapping rule: embedding raw JSON would index the field names.
+			text, isChunk := builtin.ChunkIndexTextForRow(r.Context(), s.sqlMem, tenant,
+				store.MemoryScope(scope), scopeID, row)
+			if !isChunk {
+				text = embedTextForRow(row)
 			}
 			if text == "" {
 				// Nothing to embed, ever — no body and no usable title. Counted rather

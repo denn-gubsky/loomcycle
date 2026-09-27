@@ -178,14 +178,15 @@ func (s *Server) handleMemoryPurgeStaleEmbeddings(w http.ResponseWriter, r *http
 // staleEmbeddingText returns the text a row WOULD be embedded with today, or "" when
 // it should carry no embedding at all.
 //
-// It composes exactly what the backfill composes — embedTextForRow, then the document
-// title fallback — because the two decisions must be one decision. A purge with its own
+// It derives exactly what the backfill derives — the chunk index text for a document
+// chunk, embedTextForRow for anything else — because the two decisions must be one
+// decision. A purge with its own
 // notion of "indexable" would either delete rows the writer re-creates on the next
 // touch, or delete rows that are legitimately searchable.
 func staleEmbeddingText(ctx context.Context, s *Server, tenant, scope, scopeID string, row store.MemoryEntry) string {
-	if text := embedTextForRow(row); text != "" {
+	if text, isChunk := builtin.ChunkIndexTextForRow(ctx, s.sqlMem, tenant,
+		store.MemoryScope(scope), scopeID, row); isChunk {
 		return text
 	}
-	return builtin.TitleFallbackForBodyKey(ctx, s.sqlMem, tenant,
-		store.MemoryScope(scope), scopeID, row.Key)
+	return embedTextForRow(row)
 }

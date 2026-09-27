@@ -402,10 +402,11 @@ func TestBackfillEmbeddings_BodylessChunkFallsBackToItsTitle(t *testing.T) {
 		t.Errorf("skipped_empty = %v, want 1 — with no SQL Memory the title cannot be "+
 			"resolved, and that must count as skipped, not crash", got["skipped_empty"])
 	}
-	// The notes must SAY that a title fallback exists, or an operator reading
-	// skipped_empty will assume those rows are unreachable by design.
+	// The notes must SAY that a bodyless heading is still indexed (under its header),
+	// or an operator reading skipped_empty will assume those rows are unreachable by
+	// design.
 	body := rec.Body.String()
-	if !strings.Contains(body, "falls back to its TITLE") {
-		t.Error("the response notes do not mention the title fallback")
+	if !strings.Contains(body, "a bodyless heading under that header alone") {
+		t.Error("the response notes do not say how a bodyless heading is indexed")
 	}
 }

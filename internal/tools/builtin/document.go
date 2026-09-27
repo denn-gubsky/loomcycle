@@ -1186,86 +1186,27 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 	return nil
 }
 
-// embedBody indexes a chunk body for semantic search, best-effort.
+// embedBody indexes a chunk for semantic search, best-effort.
 //
-// WHAT text gets embedded is per chunk type:
+// The text is chunkIndexText's — the header naming where the chunk sits, then the
+// type-specific content — and nothing here second-guesses it. The admin backfill,
+// re-embed and purge derive the same text through the same function, so what a scope
+// returns cannot depend on which path last touched a row. See document_index_text.go.
 //
-//   - prose   → the body verbatim
-//   - mermaid → extracted labels + diagram kind (see document_mermaid.go).
-//     Diagram SOURCE tokenises to `graph TD`, `-->`, `[`, which carry no meaning.
-//   - image   → SKIPPED until phase 4. The body is a caption or a rendered media
-//     form; the searchable text is a generated description that does not exist yet.
-//
-// THE TYPE IS PASSED IN, NOT SNIFFED FROM THE BODY. An earlier version classified
-// with classifyMediaBody, which recognises only the ```mermaid FENCED form — but a
-// mermaid chunk STORES its bare source (export re-adds the fence), so a natively
-// created diagram was embedded as raw source while an imported one was skipped.
-// Sniffing cannot be repaired either: `mermaidKindRe` on a first line would match a
-// prose chunk that happens to open with the word "pie". The chunk type is the only
-// authoritative answer, so callers supply it.
+// THE TYPE IS PASSED IN, NOT SNIFFED FROM THE BODY. A mermaid chunk STORES its bare
+// source (export re-adds the fence), so sniffing the body for a ```mermaid fence
+// embedded a natively created diagram as raw source while an imported one was
+// skipped; and a sniffed kind would misread a prose chunk that opens with the word
+// "pie". The chunk type is the only authoritative answer, so callers supply it.
 func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, key sqlmem.ScopeKey, bodyKey, chunkID, chunkType, body string) {
 	scopeID := key.ScopeID
 	if d.Embedder == nil {
 		return
 	}
-	// DERIVE THE TEXT FIRST, THEN CHECK IT — never guard on the raw body. An earlier
-	// version returned early on an empty body before this switch ran, which made an
-	// UNCAPTIONED image permanently unsearchable: its body is empty by definition, so
-	// the generated description was never consulted no matter how many times a
-	// describe pass wrote one. The body is only one of the sources here; for an image
-	// it may not be a source at all.
-	var text string
-	switch chunkType {
-	case "image":
-		// The body is the CAPTION (export renders it as the alt text) and the
-		// description comes from the asset row, so an image with neither is what
-		// yields "" — not an image with no caption.
-		// The TITLE is a third source for an image, not a fallback — see imageEmbedText.
-		// It costs one query on a type that is rare, and it is the only place the brand
-		// or filename a vision model cannot infer becomes searchable.
-		text = imageEmbedText(d.chunkTitle(ctx, key, chunkID), body,
-			d.assetDescription(ctx, key, chunkID))
-	case "mermaid":
-		text = mermaidEmbedText(body)
-	default:
-		// A body that is ENTIRELY a fenced diagram or a data-URL image, on a chunk
-		// whose type was not set: the same predicate export/import uses, so the two
-		// paths cannot disagree about what a media body is.
-		if typ, _, _, src := classifyMediaBody(body); typ != "" {
-			if typ != "mermaid" {
-				return
-			}
-			text = mermaidEmbedText(src)
-		} else {
-			// indexableText drops a body that is nothing but Markdown scaffolding
-			// ("```sh", "---", "#"), which a heading-split import turns into its own
-			// chunk. Such a body ranks mid-high for EVERY query, so it does not just
-			// waste a row — it outranks real answers.
-			text = indexableText(body)
-		}
-	}
-	// FALL BACK TO THE TITLE. A chunk whose body yields no text is usually a heading
-	// that organises the document — "RFC BE — History Tool (browse / search / rename
-	// / annotate past chats)", "Phase 2 — name-links + transclusion". That is real
-	// language and a real answer to a search; excluding it means the most navigable
-	// part of a document is the one part retrieval cannot see.
-	//
-	// Measured on the reference deployment before adding this: of 20 sampled bodyless
-	// chunks, 18 had meaningful titles. The two that did not were fragments used as
-	// headings (a JSON line). No content heuristic beyond requiring a letter — see
-	// indexableText — because a filter guessing at "meaningful" would drop real
-	// headings to avoid an occasional weak vector, and 18-for-2 is the wrong trade to
-	// optimise against.
-	//
-	// The title is read HERE rather than passed in: it costs a query only on this
-	// path (the body was empty), and embedBody already reads SQL for an image's
-	// description, so the seam exists.
-	if text == "" {
-		text = indexableText(d.chunkTitle(ctx, key, chunkID))
-	}
-	// Still nothing: no body text AND no usable title. Embedding punctuation — or a
-	// placeholder — is worse than embedding nothing, because a row that exists ranks
-	// against every query.
+	// "" means index nothing — no content and no usable header, or a bodyless root.
+	// Embedding punctuation or a placeholder is worse than embedding nothing, because a
+	// row that exists ranks against every query.
+	text := d.chunkIndexText(ctx, key, chunkID, chunkType, body)
 	if text == "" {
 		return
 	}
@@ -1343,30 +1284,6 @@ func (d *Document) chunkTitle(ctx context.Context, key sqlmem.ScopeKey, chunkID 
 		return ""
 	}
 	return asStr(res.Rows[0][0])
-}
-
-// TitleFallbackForBodyKey resolves the title-derived embed text for a bodyless
-// document chunk, given only its k/v key.
-//
-// Exported for the admin embedding backfill, which sees memory rows rather than
-// chunks and therefore cannot reach a title on its own. It lives here so the
-// ""→"default" SQL-tenant rule and the title-quality judgement stay in one package —
-// duplicating either at the call site is how the tenant axis drifts (chunk bodies
-// key on the RAW tenant while SQL Memory canonicalises it, a seam that has produced
-// silent cross-tenant bugs before).
-//
-// Returns "" for a non-chunk key, a missing chunk, an unusable title, or no SQL
-// Memory — every case the caller should treat as "nothing to embed".
-func TitleFallbackForBodyKey(ctx context.Context, mgr *sqlmem.Manager, tenant string,
-	mscope store.MemoryScope, scopeID, memKey string) string {
-
-	chunkID := ChunkIDFromBodyKey(memKey)
-	if chunkID == "" || mgr == nil {
-		return ""
-	}
-	d := &Document{SqlMem: mgr}
-	key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenant), Scope: string(mscope), ScopeID: scopeID}
-	return indexableText(d.chunkTitle(ctx, key, chunkID))
 }
 
 // recordRevision appends a body snapshot to the chunk_revisions log (RFC BS
