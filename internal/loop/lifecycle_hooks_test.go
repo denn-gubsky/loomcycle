@@ -137,6 +137,25 @@ func TestLifecycle_ABlockEveryTimeFailsTheRunAtTheCap(t *testing.T) {
 	if got := r.prov.calls(); got != MaxStopBlocks+1 {
 		t.Errorf("the model answered %d times, want %d", got, MaxStopBlocks+1)
 	}
+	if got := r.recordedBlocks(); got != MaxStopBlocks {
+		t.Errorf("%d blocks recorded, want the %d that sent the model back", got, MaxStopBlocks)
+	}
+}
+
+// recordedBlocks drains the run's events and counts its agent_stop blocks: a
+// transcript replay rebuilds a user turn from each.
+func (r *reviewRun) recordedBlocks() int {
+	n := 0
+	for {
+		select {
+		case ev := <-r.events:
+			if d := ev.HookDecision; d != nil && d.Phase == string(hooks.PhaseAgentStop) && d.Decision == hooks.StopBlock {
+				n++
+			}
+		default:
+			return n
+		}
+	}
 }
 
 // A hold is the review hold, naming the hook that took it; an approval lets
@@ -215,6 +234,9 @@ func TestLifecycle_ABlockWithNoIterationLeftFailsTheRun(t *testing.T) {
 	}
 	if r.prov.calls() != 1 {
 		t.Errorf("the model answered %d times, want 1", r.prov.calls())
+	}
+	if got := r.recordedBlocks(); got != 0 {
+		t.Errorf("%d blocks recorded; a block that sent nothing back must not be replayed as a turn", got)
 	}
 }
 
