@@ -3485,8 +3485,9 @@ export interface AgentDefOverlay {
    *  `history_scope`, and needs the trace index enabled AND backfilled — an empty
    *  index yields zero turns silently. */
   recall_attach_traces?: boolean;
-  /** Rerank this agent's document searches: `Memory op=search`, and `recall` when
-   *  it asks for documents, reorder their first candidates with the operator's
+  /** Rerank this agent's document searches: `Memory op=search`, `Document
+   *  op=search`, and `recall` when it asks for documents, reorder their first
+   *  candidates with the operator's
    *  `memory.reranker` model. Costs one model call per search (about 6,000 prompt
    *  tokens), which is why it is set here and has NO tool parameter. The response
    *  reports `reranked` (and `rerank_reason` when false); a failed or unavailable
