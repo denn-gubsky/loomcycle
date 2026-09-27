@@ -113,19 +113,34 @@ type StructuredError struct {
 	// "wait as you judge best" and "retry immediately" are opposite
 	// instructions, and 0 would silently mean the second.
 	RetryAfterSeconds *int `json:"retryAfterSeconds,omitempty"`
+
+	// CorrectCallFormat is what a correct call to the tool looks like, on a
+	// failure whose shape may be the cause. Omitted otherwise.
+	CorrectCallFormat *tools.CallFormat `json:"correctCallFormat,omitempty"`
 }
 
-// StructuredErrorJSON renders info as the StructuredContent payload. It
-// returns nil for a zero-category info so an unclassified failure emits no key
-// at all and keeps today's exact wire bytes.
+// StructuredErrorJSON renders info as the StructuredContent payload. A failure
+// that is not classified emits no category at all — inventing one would claim
+// something nobody decided — so it is nil, or, when it carries the correct
+// call format, only that.
 func StructuredErrorJSON(info tools.ErrorInfo) json.RawMessage {
 	if info.Category == "" {
-		return nil
+		if info.CallFormat == nil {
+			return nil
+		}
+		b, err := json.Marshal(struct {
+			CorrectCallFormat *tools.CallFormat `json:"correctCallFormat"`
+		}{info.CallFormat})
+		if err != nil {
+			return nil
+		}
+		return b
 	}
 	se := StructuredError{
-		ErrorCategory: string(info.Category),
-		IsRetryable:   info.Retryable,
-		Description:   info.Description,
+		ErrorCategory:     string(info.Category),
+		IsRetryable:       info.Retryable,
+		Description:       info.Description,
+		CorrectCallFormat: info.CallFormat,
 	}
 	// A backoff hint on a non-retryable failure would tell a caller to wait
 	// and then retry something that can never succeed. Drop it rather than

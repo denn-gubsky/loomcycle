@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -328,11 +329,30 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 		// Wrap the error text in a canonical envelope so the
 		// caller can branch on `error` without parsing the
 		// human-readable message.
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		env := map[string]any{
 			"code":  "tool_refused",
 			"error": result.Text,
 			"tool":  toolName,
-		})
+		}
+		// The failure's structure, under the same keys MCP puts in
+		// structuredContent, so every surface says one thing about it. Each
+		// key only when there is something true to say.
+		if info := result.ErrorInfo; info != nil {
+			if info.Category != "" {
+				env["errorCategory"] = string(info.Category)
+				env["isRetryable"] = info.Retryable
+				if d := info.RetryAfter; info.Retryable && d != nil && *d > 0 {
+					env["retryAfterSeconds"] = int((*d + time.Second - 1) / time.Second)
+				}
+			}
+			if info.Description != "" && info.Description != result.Text {
+				env["description"] = info.Description
+			}
+			if info.CallFormat != nil {
+				env["correctCallFormat"] = info.CallFormat
+			}
+		}
+		_ = json.NewEncoder(w).Encode(env)
 		return
 	}
 
