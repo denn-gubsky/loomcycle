@@ -125,8 +125,8 @@ tools it matches, its body, its fail mode and timeout.
 
 - `event` uses the phase names above (`pre`, `post`, `post_failure`,
   `agent_start`, `agent_stop`, `subagent_start`, `subagent_stop`,
-  `pre_compact`, `post_compact`, `run_end`); `match.tools` is for the tool
-  events only.
+  `pre_compact`, `post_compact`, `run_end`) or `channel_publish` (see *Channel
+  hooks*); `match.tools` is for the tool events only.
 - `body.kind` is `http` (a `url`) or `code-js` (a `code` body defining
   `hook(ev)`, see *Code hooks*). A code body is compiled when it is saved, and
   is refused unless the server enables code hooks.
@@ -302,6 +302,93 @@ characters, an array from `Array(n)` / `Array.from` — and `join` / `fill` on
 one — at 65,536 elements, an `ArrayBuffer` or typed array at 1 MiB. Past a cap
 the call throws a `RangeError`. These caps are a backstop, not a memory limit:
 a body that grows a string in a loop is bounded only by its time budget.
+
+## Channel hooks
+
+A channel can carry hooks of its own. They decide on **every message
+published to it, by anyone** — an agent's `Channel.publish`, the admin
+endpoints, MCP and gRPC, a webhook or schedule relaying to it, a Starter's
+sink — **before any reader sees it**. The event is `channel_publish` (not to
+be confused with the `channel_publish` SSE event a run emits when it
+publishes): only a channel attaches it, and an agent's or a run's hooks refuse
+it.
+
+```yaml
+channels:
+  inbox:
+    scope: global
+    hooks:
+      channel_publish:
+        - screen                                   # a HookDef with event: channel_publish
+        - { name: audit, url: "https://hooks.example/audit", fail_mode: closed }
+```
+
+Channel hooks run only when the operator sets `LOOMCYCLE_CHANNEL_HOOKS=1`.
+Without it, a publish to a channel that carries hooks is **refused** (HTTP
+409 `channel_hooks_disabled`, gRPC `FailedPrecondition`) rather than stored
+for a decision nothing would make, and the server logs a warning at boot.
+A `_system/*` channel, a document's `documents/*` feed and a
+`publisher: system` channel cannot carry hooks.
+
+**What a publisher sees.** The publish succeeds and reports
+`awaiting_hooks: true`: the message is stored but invisible to every
+subscriber, peek and await until its hooks decide. A publisher cannot tell
+from the result whether it will be delivered.
+
+**The payload** a hook receives (webhook body, or `ev` in a code body):
+`phase` (`channel_publish`), `owner` (`channel:<name>`), `hook_name`,
+`channel`, `scope`, `scope_id`, `message_id`, `published_at`,
+`published_by`, `origin` (`starter_sink` for a Starter's result), `attempt`
+(this hook's calls for this message, from 1), and `body` — the message as the
+previous hook in the chain left it. Nothing of the publisher's run is sent.
+
+**What it returns** (an empty response releases the message unchanged):
+
+- `{"decision": "release"}` — deliver it; with `"updated_body": {...}`,
+  deliver that instead. The next hook sees the updated body.
+- `{"decision": "drop", "reason": "..."}` — remove it. The first drop stops
+  the chain.
+- `{"decision": "hold", "reason": "..."}` — keep it from every reader for a
+  person to decide. Until asks are available to channel hooks, nobody can
+  answer a hold, and the message is dropped at its deadline.
+
+A response that does not say one thing — an unknown decision, an
+`updated_body` with a drop — is a failed hook, not a release.
+
+**Order and repeats.** Hooks run in the listed order, one message at a time
+per hook. Messages are decided concurrently (4 per channel, 16 per replica
+by default), so **delivery order may differ from publish order**. A hook may
+be called more than once for the same message (after a failure, a restart or
+a lost lease); `message_id` is the same each time.
+
+**Failure.** A hook that fails open lets the message through. One that fails
+closed keeps it waiting and retries with backoff, until its deadline —
+`LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT` (default 15m) after publishing, and before
+its TTL runs out — and then drops it with reason "hook unavailable". A
+HookDef the channel names that no longer exists fails closed whatever its
+`fail_mode` says: a gate must not vanish.
+
+**With a hold.** A channel with hooks and `hold: true` runs its hooks first;
+what they release lands in the hold for an operator to release. A
+`deliver_at` is kept: a released message is delivered no earlier.
+
+**Starter results are never lost.** A drop on a Starter's per-run result
+(`origin: starter_sink`) delivers it as a `status: "error"` result instead, and
+a rewrite keeps its `wave`, `wave_size`, `index`, `agent` and `run_id` — the
+downstream fan-in counts one message per run.
+
+**Decisions** are recorded on `_system/channel_hooks/decisions` at tenant
+scope, in the tenant whose definition carries the hook (the operator's `""`
+for a yaml channel): the hook, the decision, its reason, the channel and the
+message id. Declare the channel (`publisher: system`) and read it with a
+tenant-scoped peek (MCP `peek_channel`, gRPC `PeekChannel`). `/metrics` adds
+`loomcycle_channel_hooks_in_flight` and
+`loomcycle_channel_hooks_decisions_total{decision}`.
+
+**Whose hooks.** A yaml channel's hooks are the operator's: their HookDef
+names resolve in the operator's tenant, whoever publishes, and a tenant's
+HookDef of the same name is never used in their place. A channel hook's
+webhook headers resolve that tenant's credentials, never the publisher's.
 
 ## Fail-open vs fail-closed
 
