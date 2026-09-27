@@ -3006,9 +3006,11 @@ func main() {
 				Scope:       def.Scope,
 				DefaultTTL:  def.DefaultTTL,
 				MaxMessages: def.MaxMessages,
-				Hold:        def.Hold,
 			}, true
 		})
+		// A schedule's channel writes go through the channel writer, which
+		// decides from the channel's definition whether they are held.
+		sched.SetChannelWriter(sysPublisher)
 		// RFC BL P2 consolidation fan-out: the provider resolver decides
 		// parallel-vs-serial dispatch (a local model runtime is serialized), and
 		// the advisory lock makes exactly one replica per tick enumerate the

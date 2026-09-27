@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -118,6 +119,8 @@ func schedulerFixture(t *testing.T, def scheduleDef, nextRunAt time.Time) (*Sche
 	fm := &fakeMCP{}
 	cfg := Config{TickInterval: 10 * time.Millisecond, FireTimeout: 5 * time.Second}
 	sched := New(cfg, st, fr, nil, fm, t.Logf)
+	// The channel writer main.go wires, with no channel held.
+	sched.SetChannelWriter(&channels.StorePublisher{Store: st})
 	return sched, fr, fm, defID, st
 }
 
@@ -797,4 +800,12 @@ func TestScheduler_RecordFireFailure_LogsDroppedResultWriteError(t *testing.T) {
 	if !strings.Contains(out, "record fire-failure result failed") || !strings.Contains(out, "boom-write-failed") {
 		t.Errorf("recordFireFailure did not log the dropped result-write error; captured log:\n%s", out)
 	}
+}
+
+// heldWriter is the channel writer with every channel declared `hold:` — hold
+// is the writer's decision, from the channel's definition.
+func heldWriter(st store.Store) *channels.StorePublisher {
+	return &channels.StorePublisher{Store: st, Defs: func(context.Context, string, string) (channels.WriteDef, error) {
+		return channels.WriteDef{Hold: true}, nil
+	}}
 }

@@ -232,8 +232,9 @@ func TestScheduler_ChannelDeliveryHonoursAHold(t *testing.T) {
 	}
 	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
 	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
-		return DeclaredChannel{Scope: "global", Hold: true}, true
+		return DeclaredChannel{Scope: "global"}, true
 	})
+	sched.SetChannelWriter(heldWriter(st))
 
 	fireT(t, sched)
 
