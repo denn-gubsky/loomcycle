@@ -1365,7 +1365,9 @@ class LoomcycleClient:
         """Publish one message to a channel. ``payload`` is raw JSON
         bytes (the server validates ``json.Valid`` + the size cap).
         ``deliver_at`` (RFC3339Nano) defers visibility; empty publishes
-        immediately. Returns ``{msg_id, channel, created_at, visible_at}``."""
+        immediately. Returns ``{msg_id, channel, created_at, visible_at, held,
+        awaiting_hooks, dropped_oldest}`` — ``held``: the channel holds it;
+        ``awaiting_hooks``: its hooks decide whether it is delivered."""
         req = pb.PublishChannelRequest(
             channel=channel,
             scope=scope,
@@ -1382,6 +1384,9 @@ class LoomcycleClient:
             "channel": resp.channel,
             "created_at": resp.created_at,
             "visible_at": resp.visible_at,
+            "held": resp.held,
+            "awaiting_hooks": resp.awaiting_hooks,
+            "dropped_oldest": resp.dropped_oldest,
         }
 
     async def subscribe_channel(
@@ -1508,7 +1513,7 @@ class LoomcycleClient:
         JSON bytes) to every channel in ``channels``. Atomic at the
         declare pre-flight (one undeclared channel → nothing published).
         Returns ``{published, failed, results: [{channel, msg_id,
-        created_at, visible_at, error}, …]}``."""
+        created_at, visible_at, error, held, awaiting_hooks}, …]}``."""
         req = pb.BroadcastChannelsRequest(
             channels=list(channels),
             scope=scope,
@@ -1530,6 +1535,8 @@ class LoomcycleClient:
                     "created_at": r.created_at,
                     "visible_at": r.visible_at,
                     "error": r.error,
+                    "held": r.held,
+                    "awaiting_hooks": r.awaiting_hooks,
                 }
                 for r in resp.results
             ],

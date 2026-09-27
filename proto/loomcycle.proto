@@ -1995,6 +1995,9 @@ message PublishChannelResponse {
   string channel = 2;
   string created_at = 3;  // RFC3339Nano
   string visible_at = 4;  // RFC3339Nano; empty when not deferred
+  bool held = 5;            // stored, not delivered until released (a hold: channel)
+  bool awaiting_hooks = 6;  // stored, delivered only if the channel's hooks release it
+  int32 dropped_oldest = 7; // oldest messages trimmed to stay within max_messages
 }
 
 message SubscribeChannelRequest {
@@ -2089,6 +2092,8 @@ message BroadcastChannelEntry {
   string created_at = 3;  // RFC3339Nano
   string visible_at = 4;  // RFC3339Nano; set when deferred
   string error = 5;
+  bool held = 6;
+  bool awaiting_hooks = 7;
 }
 
 message BroadcastChannelsResponse {
