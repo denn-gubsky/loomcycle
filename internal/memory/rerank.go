@@ -133,6 +133,14 @@ func BuildRerankPrompt(query string, texts []string, maxChars int) string {
 // candidates first, in its order, then every candidate it left out in their
 // original relative order. ok is false when the reply held no usable number —
 // the permutation is then the identity, i.e. search's own order.
+//
+// THE ANSWER IS THE RICHEST ARRAY, NOT THE FIRST ONE. The prompt labels every
+// candidate "[k]", so a model that talks before it answers cites them in the same
+// shape — "passages [1] and [4] cover it. Ranking: [4, 2, 1]" — and reading the
+// first bracket would take the citation "[1]" as the whole ranking and report the
+// rerank as applied. Of every bracketed span that parses, the one naming the most
+// distinct candidates is the ranking; a tie goes to the later span, since an
+// answer follows its preamble.
 func ParseRanking(reply string, n int) (order []int, ok bool) {
 	identity := func() []int {
 		o := make([]int, n)
@@ -142,40 +150,63 @@ func ParseRanking(reply string, n int) (order []int, ok bool) {
 		return o
 	}
 	// A thinking model may reason before it answers, and its reasoning can
-	// contain brackets of its own. Only what follows the reasoning is the answer.
+	// contain brackets of its own. Only what follows the reasoning is the answer;
+	// reasoning that never closed (the output ceiling cut it off) holds no answer.
 	if i := strings.LastIndex(reply, "</think>"); i >= 0 {
 		reply = reply[i+len("</think>"):]
-	}
-	start := strings.Index(reply, "[")
-	if start < 0 {
+	} else if strings.Contains(reply, "<think>") {
 		return identity(), false
 	}
-	end := strings.Index(reply[start:], "]")
-	if end < 0 {
-		return identity(), false
+	var best []int
+	for start := strings.Index(reply, "["); start >= 0; {
+		end := strings.Index(reply[start:], "]")
+		if end < 0 {
+			break
+		}
+		if cand := rankingFrom(reply[start:start+end+1], n); len(cand) > 0 && len(cand) >= len(best) {
+			best = cand
+		}
+		next := strings.Index(reply[start+1:], "[")
+		if next < 0 {
+			break
+		}
+		start += 1 + next
 	}
-	var raw []any
-	if err := json.Unmarshal([]byte(reply[start:start+end+1]), &raw); err != nil {
+	if len(best) == 0 {
 		return identity(), false
 	}
 	seen := make([]bool, n)
-	for _, v := range raw {
-		k, isNum := candidateNumber(v)
-		if !isNum || k < 1 || k > n || seen[k-1] {
-			continue // an unknown or repeated number is dropped, not trusted
-		}
-		seen[k-1] = true
-		order = append(order, k-1)
+	for _, i := range best {
+		seen[i] = true
 	}
-	if len(order) == 0 {
-		return identity(), false
-	}
+	order = best
 	for i := 0; i < n; i++ {
 		if !seen[i] {
 			order = append(order, i)
 		}
 	}
 	return order, true
+}
+
+// rankingFrom reads one bracketed span as candidate numbers, dropping unknown and
+// repeated ones (they are repaired away, not trusted). nil when the span is not a
+// JSON array or names no candidate.
+func rankingFrom(span string, n int) []int {
+	var raw []any
+	if err := json.Unmarshal([]byte(span), &raw); err != nil {
+		return nil
+	}
+	seen := make([]bool, n)
+	var out []int
+	for _, v := range raw {
+		k, isNum := candidateNumber(v)
+		if !isNum || k < 1 || k > n || seen[k-1] {
+			continue
+		}
+		seen[k-1] = true
+		out = append(out, k-1)
+	}
+	return out
 }
 
 // candidateNumber accepts an integral JSON number, or a string holding one — the

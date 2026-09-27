@@ -145,9 +145,14 @@ type SearchQuery struct {
 	Rerank RerankOptions
 }
 
-// CanReturnDocuments reports whether this query's source selector admits
-// Document chunk bodies. An empty selector is unrestricted.
+// CanReturnDocuments reports whether this query can return Document chunk bodies:
+// its key prefix must overlap the chunk namespace, and its source selector (empty
+// = unrestricted) must admit documents.
 func (q SearchQuery) CanReturnDocuments() bool {
+	if q.Prefix != "" && !strings.HasPrefix(q.Prefix, DocumentChunkKeyPrefix) &&
+		!strings.HasPrefix(DocumentChunkKeyPrefix, q.Prefix) {
+		return false // e.g. prefix "notes/": nothing it can match is a chunk body
+	}
 	if len(q.Sources) == 0 {
 		return true
 	}
