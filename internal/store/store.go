@@ -2447,6 +2447,17 @@ type Store interface {
 	// under the query, and so the cursor is meaningful.
 	MemoryEmbedListMissing(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
 
+	// MemoryListAfter pages EVERY live row under keyPrefix in key order: only rows with
+	// key > afterKey ("" = from the start), at most limit (clamped to 1..1000). Live
+	// means what MemoryList returns — not expired, not superseded.
+	//
+	// It exists for sweeps that must visit each row exactly once whatever state its
+	// embedding is in — the document re-index compares every chunk's stored index text
+	// with what it should be. MemoryList has no cursor, and MemoryEmbedListMissing sees
+	// only rows WITHOUT an embedding. Only key, value and the create/update times are
+	// populated.
+	MemoryListAfter(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
+
 	// MemoryEmbedStats returns per-(provider, model) row counts and
 	// total embedding bytes for the given scope. Drives the v0.9.0
 	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported

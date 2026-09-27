@@ -292,6 +292,11 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_memory/reembed", auth.ScopeTenant},
 		{"POST", "/v1/_memory/backfill_embeddings", auth.ScopeTenant},
 		{"POST", "/v1/_memory/search", auth.ScopeTenant},
+		// The document re-index re-embeds a whole scope with the operator's embedder. It
+		// is not in the tenant-confined /v1/_document family (that match is exact), so it
+		// takes the /v1/_* operator-admin posture, like /v1/_document/describe_images.
+		// Opening it to tenant operators, as reembed/backfill are, is a deliberate change.
+		{"POST", "/v1/_document/reindex", auth.ScopeAdmin},
 		// repair-tenant is a cross-tenant bulk rewrite — STAYS operator-admin even
 		// though it matches the /v1/_memory/ prefix (it is excluded first).
 		{"POST", "/v1/_memory/repair-tenant", auth.ScopeAdmin},

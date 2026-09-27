@@ -3990,6 +3990,44 @@ func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope st
 	return n, nil
 }
 
+// MemoryListAfter pages live rows under a prefix by key — see the interface.
+func (s *Store) MemoryListAfter(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT key, value::text, created_at, updated_at
+		 FROM memory
+		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key LIKE $4 ESCAPE '\'
+		   AND key > $5
+		   AND (expires_at IS NULL OR expires_at > NOW())
+		   AND superseded_at IS NULL
+		 ORDER BY key ASC
+		 LIMIT $6`,
+		tenantID, string(scope), scopeID, escapeLikePrefix(keyPrefix)+"%", afterKey, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory list after: %w", err)
+	}
+	defer rows.Close()
+	out := []store.MemoryEntry{}
+	for rows.Next() {
+		var (
+			e         store.MemoryEntry
+			valueText []byte
+		)
+		if err := rows.Scan(&e.Key, &valueText, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		e.Value = json.RawMessage(valueText)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // MemoryList enumerates entries for a (scope, scopeID), filtered by
 // prefix and capped at limit. The query fetches limit+1 rows so we
 // can report truncated == true without a separate COUNT(*).
