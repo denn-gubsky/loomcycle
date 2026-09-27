@@ -36,7 +36,7 @@ func channelHooksFixture(t *testing.T, enabled bool) (*Server, store.Store) {
 			"screened": {Scope: "global", Semantic: "queue", MaxMessages: 100,
 				Hooks: hooks.EventHooks{hooks.PhaseChannelPublish: {{Ref: "screen"}}}},
 		},
-		Env: config.Env{AuthToken: "test-token", ChannelsMaxValueBytes: 64 * 1024, ChannelsLongPollCapMS: 1000},
+		Env: config.Env{AuthToken: "test-token", ChannelsMaxValueBytes: 64 * 1024, ChannelsLongPollCapMS: 1000, ChannelHooksEnabled: enabled},
 	}
 	bus := channels.NewBus()
 	srv := &Server{

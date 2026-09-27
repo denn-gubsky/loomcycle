@@ -94,6 +94,8 @@ func writeChannelError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "channel_name_in_use", err.Error())
 	case errors.Is(err, connector.ErrChannelNotFound):
 		writeJSONError(w, http.StatusNotFound, "channel_not_found", err.Error())
+	case errors.Is(err, connector.ErrChannelHooksInvalid):
+		writeJSONError(w, http.StatusBadRequest, "channel_hooks_invalid", err.Error())
 	case errors.Is(err, channels.ErrChannelHooksDisabled):
 		// The channel carries hooks and nothing on this server would decide
 		// the message: refused, not stored.
@@ -120,7 +122,9 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		// don't wrap typed sentinels).
 		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
 			errors.Is(err, connector.ErrChannelAlreadyExists) ||
-			errors.Is(err, connector.ErrChannelNotFound) {
+			errors.Is(err, connector.ErrChannelNotFound) ||
+			errors.Is(err, connector.ErrChannelHooksInvalid) ||
+			errors.Is(err, channels.ErrChannelHooksDisabled) {
 			writeChannelError(w, err)
 			return
 		}
@@ -147,7 +151,9 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
 			errors.Is(err, connector.ErrChannelAlreadyExists) ||
-			errors.Is(err, connector.ErrChannelNotFound) {
+			errors.Is(err, connector.ErrChannelNotFound) ||
+			errors.Is(err, connector.ErrChannelHooksInvalid) ||
+			errors.Is(err, channels.ErrChannelHooksDisabled) {
 			writeChannelError(w, err)
 			return
 		}

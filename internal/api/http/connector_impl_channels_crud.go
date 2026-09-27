@@ -8,14 +8,19 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // validChannelName is a strict ident shape — same allow-set as
@@ -52,20 +57,60 @@ func rowToBareDescriptor(row store.ChannelRow) connector.ChannelDescriptor {
 		DefaultTTL:  row.DefaultTTL,
 		MaxMessages: row.MaxMessages,
 		Hold:        row.Hold,
+		Hooks:       decodeChannelHooks(row.Hooks),
 		Source:      "runtime",
 	}
+}
+
+// decodeChannelHooks reads a runtime channel's stored hooks. They were
+// validated before they were written, so a row that does not decode is
+// reported as having none here; the writer and the worker, which must not
+// guess, refuse on it instead.
+func decodeChannelHooks(raw json.RawMessage) hooks.EventHooks {
+	if store.NoChannelHooks(raw) {
+		return nil
+	}
+	var h hooks.EventHooks
+	if json.Unmarshal(raw, &h) != nil {
+		return nil
+	}
+	return h
+}
+
+// checkChannelHooks validates hooks a runtime channel is being given and
+// returns them as stored (nil for none). Channel hooks must be enabled —
+// otherwise every publish to the channel would be refused — and every
+// reference must resolve, in the channel's tenant or the shared one, to a
+// HookDef that answers channel_publish: a gate named on a channel must exist
+// when it is named.
+func (s *Server) checkChannelHooks(ctx context.Context, name, publisher, tenant string, h hooks.EventHooks) (json.RawMessage, error) {
+	if len(h) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(h)
+	if err != nil || store.NoChannelHooks(raw) {
+		return nil, err
+	}
+	if !s.cfg().Env.ChannelHooksEnabled {
+		return nil, channels.ErrChannelHooksDisabled
+	}
+	if err := config.ValidateChannelHooks(name, publisher, h); err != nil {
+		return nil, fmt.Errorf("%w: %v", connector.ErrChannelHooksInvalid, err)
+	}
+	src := hooks.Source{Owner: hooks.ChannelOwner(name), Tenant: tenant}
+	if err := hooks.ResolveChannel(ctx, src, h, builtin.HookDefLookup(s.store), hooks.NewSet()); err != nil {
+		return nil, fmt.Errorf("%w: %v", connector.ErrChannelHooksInvalid, err)
+	}
+	return raw, nil
 }
 
 // attachStats folds one ChannelStat into a descriptor in place. Cheap;
 // avoids the N+1 aggregation query the v0.11.5 first cut had.
 func attachStats(desc *connector.ChannelDescriptor, st store.ChannelStats) {
 	desc.MessageCount = st.MessageCount
-	if !st.OldestVisibleAt.IsZero() {
-		desc.OldestVisibleAt = st.OldestVisibleAt.UTC().Format(time.RFC3339)
-	}
-	if !st.NewestVisibleAt.IsZero() {
-		desc.NewestVisibleAt = st.NewestVisibleAt.UTC().Format(time.RFC3339)
-	}
+	desc.HeldCount, desc.AwaitingHooksCount = st.Held, st.AwaitingHooks
+	desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
+	desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
 }
 
 // CreateChannel inserts a new runtime-substrate channel. Refuses with
@@ -120,9 +165,14 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: default_ttl and max_messages must be >= 0")
 	}
 
+	hooksRaw, err := s.checkChannelHooks(ctx, name, req.Publisher, tenantFromCtx(ctx), req.Hooks)
+	if err != nil {
+		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: %w", err)
+	}
 	row := store.ChannelRow{
 		Name:        name,
 		TenantID:    tenantFromCtx(ctx), // RFC N: authoritative principal tenant
+		Hooks:       hooksRaw,
 		Description: req.Description,
 		Scope:       scope,
 		Semantic:    semantic,
@@ -175,6 +225,19 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 		MaxMessages: req.MaxMessages,
 		Semantic:    req.Semantic,
 		Hold:        req.Hold,
+	}
+	if req.Hooks != nil {
+		// A runtime channel is written only by loomcycle when its publisher
+		// is "system"; the stored row says so.
+		publisher := ""
+		if row, err := s.store.ChannelGet(ctx, tenantFromCtx(ctx), name); err == nil {
+			publisher = row.Publisher
+		}
+		raw, err := s.checkChannelHooks(ctx, name, publisher, tenantFromCtx(ctx), *req.Hooks)
+		if err != nil {
+			return connector.ChannelDescriptor{}, fmt.Errorf("update channel: %w", err)
+		}
+		patch.Hooks = &raw
 	}
 	if err := s.store.ChannelsUpdate(ctx, tenantFromCtx(ctx), name, patch); err != nil {
 		var notFound *store.ErrNotFound

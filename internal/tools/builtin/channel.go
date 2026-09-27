@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1252,6 +1253,21 @@ func (c *Channel) execListChannels(policy tools.ChannelPolicyValue) (tools.Resul
 	}
 	if policy.AllSubscribe {
 		out["subscribe_unrestricted"] = true
+	}
+	// The channels this agent may use that carry hooks: a publish there is
+	// checked before anyone sees it, and may be rewritten or dropped.
+	var hooked []string
+	for name, def := range policy.Channels {
+		if !def.Hooked {
+			continue
+		}
+		if policy.AllPublish || policy.AllSubscribe || ChannelAllowed(name, policy.Publish) || ChannelAllowed(name, policy.Subscribe) {
+			hooked = append(hooked, name)
+		}
+	}
+	if len(hooked) > 0 {
+		sort.Strings(hooked)
+		out["hooked"] = hooked
 	}
 	return okJSON(out)
 }

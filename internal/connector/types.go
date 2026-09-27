@@ -570,18 +570,24 @@ type RestoreSnapshotResult struct {
 // still surface (MessageCount=0); rows for channels NOT declared but
 // holding orphaned messages also surface, for forensics.
 type ChannelDescriptor struct {
-	Name            string `json:"name"`
-	Description     string `json:"description,omitempty"`
-	Scope           string `json:"scope,omitempty"`
-	Semantic        string `json:"semantic,omitempty"`
-	Publisher       string `json:"publisher,omitempty"`
-	Period          string `json:"period,omitempty"`
-	DefaultTTL      int    `json:"default_ttl,omitempty"`
-	MaxMessages     int    `json:"max_messages,omitempty"`
-	Hold            bool   `json:"hold,omitempty"` // stores without delivering until released
-	MessageCount    int64  `json:"message_count"`
-	OldestVisibleAt string `json:"oldest_visible_at,omitempty"` // RFC3339; empty when count=0
-	NewestVisibleAt string `json:"newest_visible_at,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	Semantic    string `json:"semantic,omitempty"`
+	Publisher   string `json:"publisher,omitempty"`
+	Period      string `json:"period,omitempty"`
+	DefaultTTL  int    `json:"default_ttl,omitempty"`
+	MaxMessages int    `json:"max_messages,omitempty"`
+	Hold        bool   `json:"hold,omitempty"` // stores without delivering until released
+	// Hooks decide each message before any reader sees it.
+	Hooks        hooks.EventHooks `json:"hooks,omitempty"`
+	MessageCount int64            `json:"message_count"`
+	// HeldCount counts the messages held for a release, AwaitingHooksCount
+	// those waiting for the channel's hooks; both are in MessageCount.
+	HeldCount          int64  `json:"held_count,omitempty"`
+	AwaitingHooksCount int64  `json:"awaiting_hooks_count,omitempty"`
+	OldestVisibleAt    string `json:"oldest_visible_at,omitempty"` // RFC3339; empty when count=0
+	NewestVisibleAt    string `json:"newest_visible_at,omitempty"`
 	// v0.11.5: discriminator between yaml-declared (static, immutable)
 	// and runtime-declared (substrate-persisted, CRUD-mutable) rows.
 	// "yaml" | "runtime" | "orphan" (no declaration, only orphan
@@ -786,6 +792,9 @@ type ChannelCreateRequest struct {
 	Publisher   string `json:"publisher,omitempty"`    // free-form attribution; not enforced
 	Period      string `json:"period,omitempty"`       // free-form retention hint; not enforced
 	Hold        bool   `json:"hold,omitempty"`         // store publishes without delivering until released
+	// Hooks decide on each message published to the channel before any
+	// reader sees it: {"channel_publish": [HookDef name | inline webhook]}.
+	Hooks hooks.EventHooks `json:"hooks,omitempty"`
 }
 
 // ChannelUpdateRequest is the input to Connector.UpdateChannel. Nil
@@ -797,6 +806,9 @@ type ChannelUpdateRequest struct {
 	MaxMessages *int    `json:"max_messages,omitempty"`
 	Semantic    *string `json:"semantic,omitempty"`
 	Hold        *bool   `json:"hold,omitempty"`
+	// Hooks replaces the channel's hooks; {} removes them. Absent (or null)
+	// leaves them as they are.
+	Hooks *hooks.EventHooks `json:"hooks,omitempty"`
 }
 
 // ChannelReleaseRequest is the input to Connector.ReleaseChannel — hand the

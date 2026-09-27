@@ -121,6 +121,12 @@ var (
 	// runtime substrate. Transports map to NotFound / HTTP 404.
 	ErrChannelNotFound = errors.New("connector: channel not found")
 
+	// ErrChannelHooksInvalid is a channel's hooks that cannot be attached:
+	// a malformed entry, an event other than channel_publish, or a HookDef
+	// that does not exist (in the channel's tenant or the shared one) or
+	// answers another event. Transports map to InvalidArgument / HTTP 400.
+	ErrChannelHooksInvalid = errors.New("connector: invalid channel hooks")
+
 	// --- RFC AI interactive sessions ---
 
 	// ErrSteeringUnavailable is returned by SteerRun when the server has no
