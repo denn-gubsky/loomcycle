@@ -213,7 +213,7 @@ fails holds the answer if it is `fail_mode: closed`, and lets it through if
 state rather than an answer; the run says so.
 
 **`subagent_start`** runs in the parent when it is about to start a child
-through the Agent tool (one-shot or `parallel_spawn`); the hook is the
+through the Agent tool (one-shot, `parallel_spawn` or `open`); the hook is the
 parent's, and the payload names the child in `subagent`. `deny` refuses the child
 — the parent's Agent call gets the reason as an error, and the child is never
 created; `additional_context` is added to the child's prompt.
@@ -225,6 +225,12 @@ the parent gets the reason as an error and may try again. `additional_context`
 is appended to the result. To send a child back to revise, give the child an
 `agent_stop` hook: it fires on the child's own run (its `parent_run_id` names
 the parent).
+
+A resident child (`op=open`) hands its parent an output at every turn, not
+once at the end, so `subagent_stop` runs on each: on what `open`, `send`,
+`poll` and `cancel` return, with the child's state (`awaiting_input`,
+`running`, …) as `status`. A refused output leaves the child open; the parent
+may send again, or close it.
 
 **`pre_compact`** runs before a compaction summarizes the conversation.
 `trigger` says what asked (`manual`, `auto`, `self`); `context_tokens` and

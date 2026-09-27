@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -408,4 +410,54 @@ func TestResidentP3_OperatorTenantGate(t *testing.T) {
 	if _, ok := srv.residentForOperator(runID, "", true); !ok {
 		t.Error("admin (all) should resolve the child")
 	}
+}
+
+// A resident child is a child of its parent like a one-shot one: the parent's
+// subagent_start hooks decide whether it opens, and its subagent_stop hooks
+// see every output the child hands back, at each turn. A refused output leaves
+// the child open.
+func TestResidentChild_TheParentsSubagentHooksApply(t *testing.T) {
+	srv := newResidentTestServer(t)
+	ctx := tools.WithAgentName(residentParentCtx("parent-agent", ""), "lead")
+
+	deny := newRecordingHook(t, `{"decision":"deny","reason":"no residents"}`)
+	register(t, srv, &hooks.Hook{Owner: "ops", Name: "gate", Phase: hooks.PhaseSubagentStart, Agents: []string{"lead"}, CallbackURL: deny.srv.URL})
+	if _, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0); err == nil || !strings.Contains(err.Error(), "was not started: no residents") {
+		t.Fatalf("open under a start deny: %v", err)
+	}
+	if n := srv.residentReg.countByParent("parent-agent"); n != 0 {
+		t.Fatalf("a refused child was opened (%d)", n)
+	}
+	srv.resetTestHooks()
+
+	var verdict atomic.Value
+	verdict.Store(`{"decision":"deny","reason":"not yet"}`)
+	var bodies atomic.Int32
+	stop := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodies.Add(1)
+		_, _ = w.Write([]byte(verdict.Load().(string)))
+	}))
+	t.Cleanup(stop.Close)
+	register(t, srv, &hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseSubagentStop, Agents: []string{"lead"}, CallbackURL: stop.URL})
+
+	runID, out, _, err := srv.openResidentChild(ctx, "child", "start", "", 0)
+	if err == nil || !strings.Contains(err.Error(), "was refused: not yet") || out != "" {
+		t.Fatalf("open under a stop deny: out %q err %v", out, err)
+	}
+	if runID == "" || !strings.Contains(err.Error(), runID) {
+		t.Fatalf("the refusal does not name the open child %q: %v", runID, err)
+	}
+	if _, _, err := srv.sendResidentChild(ctx, runID, "again", 0); err == nil || !strings.Contains(err.Error(), "was refused: not yet") {
+		t.Fatalf("send under a stop deny: %v", err)
+	}
+	verdict.Store(`{"additional_context":"(checked)"}`)
+	out, state, err := srv.sendResidentChild(ctx, runID, "again", 0)
+	if err != nil || state != "awaiting_input" || !strings.HasSuffix(out, "(checked)") {
+		t.Fatalf("send after the hook relents: out %q state %q err %v", out, state, err)
+	}
+	if n := bodies.Load(); n != 3 {
+		t.Errorf("subagent_stop ran %d times, want once per turn handed back (3)", n)
+	}
+	_ = srv.closeResidentChild(ctx, runID)
+	waitResidentGone(t, srv, runID)
 }

@@ -239,6 +239,10 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	if cap := s.maxResidentChildren(); s.residentReg.countByParent(parent.AgentID) >= cap {
 		return "", "", "", fmt.Errorf("resident sub-agent cap reached (%d open for this run); close one before opening another", cap)
 	}
+	prompt, err := s.subagentStart(ctx, name, prompt)
+	if err != nil {
+		return "", "", "", err
+	}
 
 	rc := &residentChild{parentAgentID: parent.AgentID, idleTTL: s.residentChildIdleTTL()}
 	if idleTTLSeconds > 0 {
@@ -303,7 +307,21 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	// open always blocks for the FIRST park (no timeout) — by the time it returns
 	// the child is parked and ready for the first send.
 	out, state, aerr := rc.awaitTurn(ctx, turnDone, 0, true)
+	out, aerr = s.residentHandBack(ctx, rc, out, state, aerr)
 	return prep.RunID, out, state, aerr
+}
+
+// residentHandBack passes what a resident child hands its parent through the
+// parent's subagent_stop hooks, as a one-shot child's result is. A resident
+// child hands back an output at every turn, not once at the end, so the hooks
+// run on each, with the child's state as the status. A refusal leaves the
+// child open: the parent may send again, or close it.
+func (s *Server) residentHandBack(ctx context.Context, rc *residentChild, out, state string, err error) (string, error) {
+	out, herr := s.subagentStop(ctx, rc.agentName, rc.runID, state, out, err)
+	if herr != nil && herr != err {
+		return "", fmt.Errorf("%w (child_run_id %s is still open: send again or close it)", herr, rc.runID)
+	}
+	return out, herr
 }
 
 // sendResidentChild injects the next instruction into a resident child and waits
@@ -323,7 +341,9 @@ func (s *Server) sendResidentChild(ctx context.Context, childRunID, prompt strin
 	if _, err := s.steerReg.Push(ctx, childRunID, steer.Message{Text: prompt, Source: "agent", EnqueuedAt: time.Now()}); err != nil {
 		return "", "", fmt.Errorf("steer resident sub-agent %q: %w", childRunID, err)
 	}
-	return rc.awaitTurn(ctx, turnDone, time.Duration(timeoutMs)*time.Millisecond, true)
+	out, state, err := rc.awaitTurn(ctx, turnDone, time.Duration(timeoutMs)*time.Millisecond, true)
+	out, err = s.residentHandBack(ctx, rc, out, state, err)
+	return out, state, err
 }
 
 // pollResidentChild checks a resident child without sending new input (RFC BK P2)
@@ -338,9 +358,12 @@ func (s *Server) pollResidentChild(ctx context.Context, childRunID string, timeo
 	if td == nil {
 		// No turn has ever started (shouldn't happen post-open) — report state.
 		out, st := rc.readTurn()
-		return out, st, nil
+		out, err := s.residentHandBack(ctx, rc, out, st, nil)
+		return out, st, err
 	}
-	return rc.awaitTurn(ctx, td, time.Duration(timeoutMs)*time.Millisecond, false)
+	out, state, err := rc.awaitTurn(ctx, td, time.Duration(timeoutMs)*time.Millisecond, false)
+	out, err = s.residentHandBack(ctx, rc, out, state, err)
+	return out, state, err
 }
 
 // cancelResidentChildTurn turn-cancels a resident child's CURRENT turn (RFC BK
@@ -356,15 +379,19 @@ func (s *Server) cancelResidentChildTurn(ctx context.Context, childRunID string)
 	td, running := rc.currentTurnDone()
 	if !running {
 		out, st := rc.readTurn() // already parked/idle — nothing to cancel
-		return out, st, nil
+		out, err := s.residentHandBack(ctx, rc, out, st, nil)
+		return out, st, err
 	}
 	if s.turnCancelReg == nil || !s.turnCancelReg.CancelLocal(childRunID, "cancelled by parent (resident sub-agent)") {
 		// Not armed / token vanished (the turn just ended) — treat as parked.
 		out, st := rc.readTurn()
-		return out, st, nil
+		out, err := s.residentHandBack(ctx, rc, out, st, nil)
+		return out, st, err
 	}
 	// Wait (bounded) for the loop to re-park after the turn is stopped.
-	return rc.awaitTurn(ctx, td, residentCancelReparkTimeout, false)
+	out, state, err := rc.awaitTurn(ctx, td, residentCancelReparkTimeout, false)
+	out, err = s.residentHandBack(ctx, rc, out, state, err)
+	return out, state, err
 }
 
 // closeResidentChild finalizes a resident child (idempotent). Cancelling the

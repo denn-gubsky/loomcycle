@@ -6523,36 +6523,66 @@ func (s *Server) runSubAgent(ctx context.Context, name string, systemExtra strin
 // again) or add to it. Sending the child back to revise is agent_stop's, on
 // the child's own run.
 func (s *Server) runAgentToolChild(ctx context.Context, name, prompt, defID string) (string, map[string]any, string, error) {
+	prompt, err := s.subagentStart(ctx, name, prompt)
+	if err != nil {
+		return "", nil, "", err
+	}
+	out, state, runID, err := s.runSubAgent(ctx, name, "", prompt, defID)
+	status := string(store.RunCompleted)
+	if err != nil {
+		status = string(store.RunFailed)
+	}
+	out, err = s.subagentStop(ctx, name, runID, status, out, err)
+	if err != nil {
+		return "", nil, runID, err
+	}
+	return out, state, runID, nil
+}
+
+// subagentStart runs the parent's subagent_start hooks for a child it is about
+// to start, and returns the child's prompt with what they add, or their
+// refusal.
+func (s *Server) subagentStart(ctx context.Context, name, prompt string) (string, error) {
 	d := s.hookDispatcher
 	if d == nil {
-		return s.runSubAgent(ctx, name, "", prompt, defID)
+		return prompt, nil
 	}
 	ident := loop.HookIdentity(ctx, tools.AgentName(ctx), loop.IterationOf(ctx))
-	emit := tools.EventEmitter(ctx)
 	start := d.RunGate(ctx, ident, hooks.PhaseSubagentStart, hooks.LifecycleInfo{Subagent: name})
-	loop.EmitHookDecisions(emit, providers.ToolUse{}, start.Decisions)
+	loop.EmitHookDecisions(tools.EventEmitter(ctx), providers.ToolUse{}, start.Decisions)
 	if start.Denied {
-		return "", nil, "", fmt.Errorf("sub-agent %q was not started: %s", name, start.Reason)
+		return "", fmt.Errorf("sub-agent %q was not started: %s", name, start.Reason)
 	}
 	for _, extra := range start.AdditionalContext {
 		prompt += "\n\n" + extra
 	}
-	out, state, runID, err := s.runSubAgent(ctx, name, "", prompt, defID)
-	info := hooks.LifecycleInfo{Subagent: name, SubagentRunID: runID, Status: string(store.RunCompleted), FinalText: out}
-	if err != nil {
-		info.Status, info.Error = string(store.RunFailed), err.Error()
+	return prompt, nil
+}
+
+// subagentStop runs the parent's subagent_stop hooks on what a child hands
+// back — its output, or its error — and returns what reaches the parent. A
+// refusal replaces both with the hook's reason.
+func (s *Server) subagentStop(ctx context.Context, name, runID, status, out string, runErr error) (string, error) {
+	d := s.hookDispatcher
+	if d == nil {
+		return out, runErr
+	}
+	ident := loop.HookIdentity(ctx, tools.AgentName(ctx), loop.IterationOf(ctx))
+	info := hooks.LifecycleInfo{Subagent: name, SubagentRunID: runID, Status: status, FinalText: out}
+	if runErr != nil {
+		info.Error = runErr.Error()
 	}
 	stop := d.RunGate(ctx, ident, hooks.PhaseSubagentStop, info)
-	loop.EmitHookDecisions(emit, providers.ToolUse{}, stop.Decisions)
+	loop.EmitHookDecisions(tools.EventEmitter(ctx), providers.ToolUse{}, stop.Decisions)
 	if stop.Denied {
-		return "", nil, runID, fmt.Errorf("the result of sub-agent %q was refused: %s", name, stop.Reason)
+		return "", fmt.Errorf("the result of sub-agent %q was refused: %s", name, stop.Reason)
 	}
-	if err == nil {
+	if runErr == nil {
 		for _, extra := range stop.AdditionalContext {
 			out += "\n\n" + extra
 		}
 	}
-	return out, state, runID, err
+	return out, runErr
 }
 
 // values resolves ${var.*} / ${now.*} / ${team.*} in the caller's segments, in
