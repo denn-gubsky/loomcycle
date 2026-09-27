@@ -1437,7 +1437,12 @@ export interface ChannelDescriptor {
   max_messages?: number;
   // Breakpoint: publishes are stored but never delivered until released.
   hold?: boolean;
+  // Hooks that decide each message before any reader sees it.
+  hooks?: Record<string, unknown[]>;
   message_count: number;
+  // Held for a release, and waiting for the channel's hooks (both in message_count).
+  held_count?: number;
+  awaiting_hooks_count?: number;
   oldest_visible_at?: string;
   newest_visible_at?: string;
   // v0.11.5: "yaml" (operator yaml, immutable from UI),
@@ -2237,6 +2242,7 @@ export interface ChannelCreateRequest {
   publisher?: string;
   period?: string;
   hold?: boolean;
+  hooks?: Record<string, unknown[]>;
 }
 
 export interface ChannelUpdateRequest {
@@ -2245,6 +2251,8 @@ export interface ChannelUpdateRequest {
   max_messages?: number;
   semantic?: string;
   hold?: boolean;
+  // Replaces the channel's hooks; {} removes them.
+  hooks?: Record<string, unknown[]>;
 }
 
 export interface ChannelReleaseResult {

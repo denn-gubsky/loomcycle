@@ -357,6 +357,15 @@ function ChannelDetail({ channel }: { channel: ChannelDescriptor }) {
             <span>max={channel.max_messages}</span>
           )}
           {channel.hold && <span className="channel-hold">hold</span>}
+          {channel.hooks && Object.keys(channel.hooks).length > 0 && (
+            <span className="channel-hold" title="Each message is decided by the channel's hooks before anyone sees it.">
+              hooks
+            </span>
+          )}
+          {(channel.held_count ?? 0) > 0 && <span>{channel.held_count} held</span>}
+          {(channel.awaiting_hooks_count ?? 0) > 0 && (
+            <span>{channel.awaiting_hooks_count} awaiting hooks</span>
+          )}
         </div>
       </div>
 
