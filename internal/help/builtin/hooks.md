@@ -92,15 +92,19 @@ The same shape goes in an AgentDef overlay (`tools` entries as
   silently be missing.
 - **A run may add hooks**, never remove one: `hooks` and `tool_hooks` on the
   run request (`POST /v1/runs`, a continuation, `spawn_run` / `spawn_runs`, the
-  gRPC `hooks_json`, the adapters), in the same shapes. They run after the
-  agent's own, resolve in the run's tenant, and never widen hosts; a
+  gRPC `hooks_json`, the adapters), in the same shapes. They sit outside the
+  agent's own — a `pre` hook added to a run runs before the agent's gates,
+  which decide on what it made of the input; a `post` hook added to a run sees
+  the result after the agent's own post hooks (a redaction) — resolve in the
+  run's tenant, and never widen hosts. An added webhook's headers cannot name
+  a credential (use a HookDef an operator wrote); a
   `tool_hooks` entry must name a tool the agent has, or the run does not start.
   A resumed run keeps what it added.
 - A sub-agent fires its own definition's hooks, not its parent's — plus
   everything its parent run added.
 - **A team adds hooks too.** A TeamDef state's `hooks` / `tool_hooks` are added
   to every run it starts (its agent, each fan-out member, its consolidator),
-  after the agent's own; like a run request's, they never widen hosts. A
+  outside the agent's own as a run request's are; they never widen hosts. A
   TeamDef's top-level `hooks` belong to the walk itself and take only
   `run_end`, fired when the walk ends (`owner: team:<name>`); one that cannot be
   resolved stops the walk before it starts.

@@ -51,15 +51,22 @@ func (s *Server) resolveRunHooks(ctx context.Context, agentName string, def conf
 	}
 	set := hooks.NewSet()
 	lookup := builtin.HookDefLookup(s.store)
-	agent := hooks.Source{Owner: "agent:" + agentName, Tenant: def.OwnerTenant, OperatorAuthored: def.OperatorAuthored}
-	if err := hooks.Resolve(ctx, agent, def.Hooks, def.ToolHooks, lookup, s.hookPermits, set); err != nil {
-		return hooks.FailedSet(fmt.Errorf("agent %s: %w", agentName, err))
-	}
+	// The additions are registered FIRST, so they sit outside the agent's own
+	// hooks: a pre chain runs in listed order, so the agent's gates decide on
+	// the input an added hook may have rewritten (not on the model's, which
+	// the addition could then replace unchecked); a post chain runs reversed,
+	// so the agent's hooks — a redaction, say — act on the result before any
+	// added hook sees it.
+	//
 	// A run's additions are the caller's, not an operator's definition: they
 	// resolve in the run's tenant and never widen hosts.
 	run := hooks.Source{Owner: "run", Tenant: tools.RunIdentity(ctx).TenantID}
 	if err := hooks.Resolve(ctx, run, added.Hooks, added.ToolHooks, lookup, s.hookPermits, set); err != nil {
 		return hooks.FailedSet(fmt.Errorf("the run's hooks: %w", err))
+	}
+	agent := hooks.Source{Owner: "agent:" + agentName, Tenant: def.OwnerTenant, OperatorAuthored: def.OperatorAuthored}
+	if err := hooks.Resolve(ctx, agent, def.Hooks, def.ToolHooks, lookup, s.hookPermits, set); err != nil {
+		return hooks.FailedSet(fmt.Errorf("agent %s: %w", agentName, err))
 	}
 	return set
 }

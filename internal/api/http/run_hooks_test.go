@@ -258,9 +258,9 @@ func TestRunHooks_ARequestHookOnAToolTheAgentLacksStopsTheRun(t *testing.T) {
 	}
 }
 
-// Additions follow the agent's own hooks, reach the sub-agents a run starts,
-// and never widen hosts, whatever the permit list says.
-func TestRunHooks_AdditionsFollowTheAgentsHooksAndReachSubAgents(t *testing.T) {
+// Additions sit outside the agent's own hooks, reach the sub-agents a run
+// starts, and never widen hosts, whatever the permit list says.
+func TestRunHooks_AdditionsSitOutsideTheAgentsHooksAndReachSubAgents(t *testing.T) {
 	h := newReviewHarness(t)
 	h.srv.hookPermits = hooks.NewPermits([]string{"gate", "own"})
 	def := config.AgentDef{Tools: []string{"WebFetch"}, OperatorAuthored: true,
@@ -268,10 +268,10 @@ func TestRunHooks_AdditionsFollowTheAgentsHooksAndReachSubAgents(t *testing.T) {
 	added := hooks.Additions{ToolHooks: hooks.ToolHooks{"WebFetch": {hooks.PhasePre: {{Inline: &hooks.Inline{Name: "gate", URL: "https://h.example"}}}}}}
 	ctx := h.srv.withRunHooks(context.Background(), "", "parent", def, added)
 	pre := hooks.SetFrom(ctx).Match("parent", "WebFetch", hooks.PhasePre)
-	if len(pre) != 2 || pre[0].Name != "own" || pre[1].Name != "gate" {
-		t.Fatalf("chain = %v; want the agent's hook, then the run's", pre)
+	if len(pre) != 2 || pre[0].Name != "gate" || pre[1].Name != "own" {
+		t.Fatalf("chain = %v; want the run's hook, then the agent's gate deciding last", pre)
 	}
-	if !pre[0].WidenPermitted || pre[1].WidenPermitted {
+	if pre[0].WidenPermitted || !pre[1].WidenPermitted {
 		t.Fatalf("widen = %v / %v; a run's addition must never widen", pre[0].WidenPermitted, pre[1].WidenPermitted)
 	}
 	// A child with no hooks of its own still fires what its parent run added.
@@ -324,5 +324,20 @@ func TestTeamHooks_AWalkWhoseHooksCannotResolveDoesNotStart(t *testing.T) {
 	_, runID, _, err := h.srv.openTeamWalkRun(ctx, "triage", false)
 	if err == nil || !strings.Contains(err.Error(), "no-such-hook") || runID != "" {
 		t.Fatalf("err = %v, run = %q; want refused before a run exists", err, runID)
+	}
+}
+
+// A post hook a run adds sees a tool's result only after the agent's own post
+// hooks have acted on it: an agent's redaction is not bypassed by a caller's
+// hook that reads the raw output.
+func TestRunHooks_AnAddedPostHookSeesTheAgentsRedaction(t *testing.T) {
+	h := newReviewHarness(t)
+	def := config.AgentDef{Tools: []string{"WebFetch"},
+		ToolHooks: hooks.ToolHooks{"WebFetch": {hooks.PhasePost: {{Inline: &hooks.Inline{Name: "redact", URL: "https://h.example"}}}}}}
+	added := hooks.Additions{ToolHooks: hooks.ToolHooks{"WebFetch": {hooks.PhasePost: {{Inline: &hooks.Inline{Name: "audit", URL: "https://h.example"}}}}}}
+	ctx := h.srv.withRunHooks(context.Background(), "", "agent", def, added)
+	post := hooks.SetFrom(ctx).Match("agent", "WebFetch", hooks.PhasePost)
+	if len(post) != 2 || post[0].Name != "redact" || post[1].Name != "audit" {
+		t.Fatalf("post chain runs %v; want the agent's redaction first", post)
 	}
 }

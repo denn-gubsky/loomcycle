@@ -684,7 +684,7 @@ function TeamHooksPanel({
           <p style={{ fontSize: "0.8em", opacity: 0.8, margin: 0 }}>
             {at === WALK
               ? "Fired when the walk ends, whatever its outcome."
-              : "Added to every run this state starts, after that agent's own hooks. They can add checks, never remove one."}
+              : "Added to every run this state starts, outside that agent's own hooks: its gates still decide last on a tool call. They can add checks, never remove one."}
           </p>
           <HookEventsControl
             value={current.hooks}
