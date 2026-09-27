@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -183,9 +184,21 @@ func TestMemoryRerank_RoundTripsTheAgentDefinition(t *testing.T) {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		src := string(b)
-		sib, mine := strings.Count(src, "RecallAttachTraces"), strings.Count(src, "MemoryRerank")
+		// Counted as CARRIES — a struct-literal field ("Name: …") or an assignment
+		// ("x.Name = …") — not as mentions: a comment, a type or a helper named
+		// after the field must not stand in for a carry that is missing.
+		carries := func(name string) int {
+			n := 0
+			for _, m := range regexp.MustCompile(`(?m)(^\s+`+name+`:\s|\.`+name+` = ).*$`).FindAllString(src, -1) {
+				if !strings.HasSuffix(strings.TrimSpace(m), "= nil") { // normalising a field away is not a carry
+					n++
+				}
+			}
+			return n
+		}
+		sib, mine := carries("RecallAttachTraces"), carries("MemoryRerank")
 		if sib == 0 {
-			t.Fatalf("%s mentions RecallAttachTraces nowhere — the guard is vacuous", f)
+			t.Fatalf("%s carries RecallAttachTraces nowhere — the guard is vacuous", f)
 		}
 		if mine < sib {
 			t.Errorf("%s carries RecallAttachTraces %d times but MemoryRerank only %d", f, sib, mine)
@@ -236,5 +249,29 @@ func TestMemoryRerank_OverlayIsValidatedLikeYaml(t *testing.T) {
 		`"system_prompt":"read","memory_rerank":{"enabled":true,"candidates":500}}}`))
 	if !res.IsError || !strings.Contains(res.Text, "memory_rerank.candidates") {
 		t.Errorf("an out-of-range candidates must be refused, got: %s", res.Text)
+	}
+}
+
+// noReportBackend serves searches but never reports a rerank, as a remote memory
+// layer does.
+type noReportBackend struct{ memrank.Backend }
+
+func (n noReportBackend) Search(ctx context.Context, scope store.MemoryScope, scopeID string, q memrank.SearchQuery,
+	rank memrank.RankConfig, dedup memrank.DedupConfig) (memrank.SearchResult, error) {
+	res, err := n.Backend.Search(ctx, scope, scopeID, q, rank, dedup)
+	res.Rerank = nil
+	return res, err
+}
+
+// TestMemoryRerank_ABackendThatDoesNotRerankSaysSo — an agent configured for the
+// rerank, served by a backend that returns no report, must read reranked:false
+// with the reason, not an absent key it could take for "reranked".
+func TestMemoryRerank_ABackendThatDoesNotRerankSaysSo(t *testing.T) {
+	tool, ctx, cleanup := rerankMemoryFixture(t, &stubRerankModel{reply: "[3]"}, rerankOn(), "")
+	defer cleanup()
+	tool.Backend = noReportBackend{tool.newInprocess()}
+	_, out := searchKeys(t, tool, ctx)
+	if out["reranked"] != false || out["rerank_reason"] != memrank.RerankBackendUnsupported {
+		t.Errorf("reranked %v, reason %v; want false, %q", out["reranked"], out["rerank_reason"], memrank.RerankBackendUnsupported)
 	}
 }
