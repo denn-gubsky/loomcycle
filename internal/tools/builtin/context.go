@@ -792,6 +792,16 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 
 // ---- lineage ----
 
+// defVisible reports whether this run may see an agent def. A def_id is a
+// global handle, so a read by id must re-apply the tenant boundary: the
+// caller's own tenant and the shared "" base (the same set fork accepts as a
+// parent), or every tenant for a substrate:admin. A def the caller may not see
+// must read exactly like one that does not exist — a different answer would
+// tell a guessed id's existence across the boundary.
+func defVisible(ctx context.Context, row store.AgentDefRow) bool {
+	return row.TenantID == "" || row.TenantID == tools.RunIdentity(ctx).TenantID || defCallerIsAdmin(ctx)
+}
+
 func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Result, error) {
 	if c.Store == nil {
 		return errBusiness("lineage: not configured (no Store backend)", "This deployment has no definition store; do not retry."), nil
@@ -814,6 +824,9 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 			return errNotFound(fmt.Sprintf("lineage: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 		}
 		return errFrom(fmt.Sprintf("lineage: %s", err), err), nil
+	}
+	if !defVisible(ctx, root) {
+		return errNotFound(fmt.Sprintf("lineage: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 	}
 
 	type defSummary struct {
@@ -847,6 +860,9 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 			}
 			return errFrom(fmt.Sprintf("lineage: walk ancestors: %s", err), err), nil
 		}
+		if !defVisible(ctx, parent) {
+			break // the chain continues outside this run's tenants
+		}
 		ancestors = append(ancestors, toSummary(parent))
 		cur = parent
 	}
@@ -869,6 +885,11 @@ func (c *Context) execLineage(ctx context.Context, in contextInput) (tools.Resul
 				return errFrom(fmt.Sprintf("lineage: walk descendants: %s", err), err), nil
 			}
 			for _, ch := range children {
+				// A shared "" def is forked by every tenant; its children in
+				// other tenants are not this run's to see, nor their subtrees.
+				if !defVisible(ctx, ch) {
+					continue
+				}
 				if len(descendants) >= maxDescendants {
 					truncated = true
 					break
@@ -900,6 +921,18 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 	}
 	if in.DefID == "" {
 		return errValidation("evaluations: missing required field: def_id (use Context.agents to discover def_ids)", ""), nil
+	}
+	// The aggregate answers for any id, known or not, so resolve the def first:
+	// an unknown id and another tenant's id must both be refused, identically.
+	def, err := c.Store.AgentDefGet(ctx, in.DefID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			return errFrom(fmt.Sprintf("evaluations: %s", err), err), nil
+		}
+	}
+	if err != nil || !defVisible(ctx, def) {
+		return errNotFound(fmt.Sprintf("evaluations: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 	}
 	agg, err := c.Store.EvaluationAggregate(ctx, in.DefID, store.AggregateOpts{
 		IncludeLineage: in.IncludeLineage,
