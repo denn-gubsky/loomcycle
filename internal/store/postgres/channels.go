@@ -194,19 +194,33 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	if _, err := tx.Exec(ctx, `DELETE FROM channel_cursors WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
 		return fmt.Errorf("channels delete cursors cascade: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
+		return fmt.Errorf("channels delete hook state cascade: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("channels delete commit: %w", err)
 	}
 	return nil
 }
 
-// ChannelPurge deletes every channel_messages row for `name` and
-// returns the count. Leaves the channels row + channel_cursors intact
-// — see store.Store.ChannelPurge. One DELETE; no transaction needed.
+// ChannelPurge deletes every channel_messages row for `name`, with the hook
+// progress of those awaiting hooks, and returns the message count. Leaves the
+// channels row + channel_cursors intact — see store.Store.ChannelPurge.
 func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string) (int, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM channel_messages WHERE tenant_id = $1 AND channel = $2`, tenantID, name)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("channel purge begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE tenant_id = $1 AND channel = $2`, tenantID, name)
 	if err != nil {
 		return 0, fmt.Errorf("channel purge: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE tenant_id = $1 AND channel = $2`, tenantID, name); err != nil {
+		return 0, fmt.Errorf("channel purge hook state: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("channel purge commit: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
 }

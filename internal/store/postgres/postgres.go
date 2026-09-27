@@ -2481,7 +2481,8 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.ChannelMessage, error) {
 	now := time.Now().UTC()
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, channel, tenant_id, scope, scope_id, payload::text, published_at, expires_at, visible_at, published_by_user_id
+		`SELECT id, channel, tenant_id, scope, scope_id, payload::text, published_at, expires_at, visible_at, published_by_user_id,
+		        origin, hook_tenant, requested_visible_at
 		 FROM channel_messages
 		 WHERE expires_at IS NULL OR expires_at > $1
 		 ORDER BY tenant_id ASC, channel ASC, scope ASC, scope_id ASC, visible_at ASC, id ASC`, now)
@@ -2498,9 +2499,18 @@ func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.Channe
 			expiresAt   *time.Time
 			visibleAt   *time.Time
 			publishedBy *string
+			hookTenant  *string
+			requested   *time.Time
 		)
-		if err := rows.Scan(&m.ID, &m.Channel, &m.TenantID, &scopeStr, &m.ScopeID, &payload, &m.PublishedAt, &expiresAt, &visibleAt, &publishedBy); err != nil {
+		if err := rows.Scan(&m.ID, &m.Channel, &m.TenantID, &scopeStr, &m.ScopeID, &payload, &m.PublishedAt, &expiresAt, &visibleAt, &publishedBy,
+			&m.Origin, &hookTenant, &requested); err != nil {
 			return nil, fmt.Errorf("scan channel_message: %w", err)
+		}
+		if hookTenant != nil {
+			m.HookTenant = *hookTenant
+		}
+		if requested != nil {
+			m.RequestedVisibleAt = *requested
 		}
 		m.Scope = store.MemoryScope(scopeStr)
 		m.Payload = json.RawMessage(payload)
@@ -3022,11 +3032,13 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 		visibleAt = publishedAt
 	}
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id,
+		                              origin, hook_tenant, requested_visible_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 		 ON CONFLICT (tenant_id, channel, scope, scope_id, id) DO NOTHING`,
 		m.ID, m.Channel, string(m.Scope), m.ScopeID, string(m.Payload),
 		publishedAt, expiresAt, visibleAt, nullIfEmpty(m.PublishedByUserID), m.TenantID,
+		m.Origin, nullIfEmpty(m.HookTenant), timeOrNil(m.RequestedVisibleAt),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore channel_message: %w", err)
@@ -4882,10 +4894,12 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO channel_messages (id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, GREATEST(NOW(), COALESCE($8::timestamptz, NOW())), $9, $10)`,
+		`INSERT INTO channel_messages (id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id,
+		                               origin, hook_tenant, requested_visible_at)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, GREATEST(NOW(), COALESCE($8::timestamptz, NOW())), $9, $10, $11, $12, $13)`,
 		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload),
 		now, expiresAt, visibleAt, publishedByUserID, msg.TenantID,
+		msg.Origin, nullIfEmpty(msg.HookTenant), timeOrNil(msg.RequestedVisibleAt),
 	); err != nil {
 		return "", 0, fmt.Errorf("channel publish insert: %w", err)
 	}

@@ -362,6 +362,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			visible_at           INTEGER NOT NULL DEFAULT 0,
 			published_by_user_id TEXT,
 			tenant_id            TEXT    NOT NULL DEFAULT '',
+			origin               TEXT    NOT NULL DEFAULT '',
+			hook_tenant          TEXT,
+			requested_visible_at INTEGER,
 			PRIMARY KEY (tenant_id, channel, scope, scope_id, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS channel_messages_by_expires_at ON channel_messages(expires_at) WHERE expires_at IS NOT NULL`,
@@ -381,6 +384,29 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at INTEGER NOT NULL,
 			tenant_id  TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY (tenant_id, channel, scope, scope_id)
+		)`,
+		// Channel hooks: a hook chain's durable progress and lease on one
+		// message awaiting its channel's hooks. Mirrors postgres migration
+		// 0084. Advisory — the message's visible_at says whether it still
+		// awaits a decision.
+		`CREATE TABLE IF NOT EXISTS channel_hook_state (
+			tenant_id       TEXT    NOT NULL,
+			channel         TEXT    NOT NULL,
+			scope           TEXT    NOT NULL,
+			scope_id        TEXT    NOT NULL,
+			id              TEXT    NOT NULL,
+			run_id          TEXT    NOT NULL DEFAULT '',
+			chain_pos       INTEGER NOT NULL DEFAULT 0,
+			body            TEXT,
+			journal         TEXT,
+			attempts        INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at INTEGER NOT NULL DEFAULT 0,
+			last_error      TEXT    NOT NULL DEFAULT '',
+			lease_owner     TEXT    NOT NULL DEFAULT '',
+			lease_until     INTEGER NOT NULL DEFAULT 0,
+			created_at      INTEGER NOT NULL,
+			updated_at      INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, channel, scope, scope_id, id)
 		)`,
 		// v0.11.5 runtime-declared channels. yaml-declared channels
 		// stay in cfg.Channels (in-memory only); this table holds
@@ -1105,6 +1131,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// release. Mirrors postgres migration 0075. Idempotent ALTER for
 		// existing DBs; the CREATE TABLE above already declares it.
 		`ALTER TABLE channels ADD COLUMN hold INTEGER NOT NULL DEFAULT 0`,
+		// Channel hooks: a message's hook context. Mirrors postgres
+		// migration 0084; the CREATE TABLE above already declares them.
+		`ALTER TABLE channel_messages ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE channel_messages ADD COLUMN hook_tenant TEXT`,
+		`ALTER TABLE channel_messages ADD COLUMN requested_visible_at INTEGER`,
 		// v0.9.x content_sha256 — see internal/store/postgres/migrations/
 		// 0018_agent_defs_content_sha256.up.sql for the rationale. NULL
 		// until the boot-time backfill walks pre-migration rows.
@@ -1341,6 +1372,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// v0.8.4/v0.8.5 → v0.8.6+ (channel_messages table exists
 		// from v0.8.4 without visible_at).
 		`CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(tenant_id, channel, scope, scope_id, visible_at, id)`,
+		// The hook worker's claim scan: only messages awaiting hooks, which
+		// are few. The literal is store.ChannelHookHeldVisibleAt in unix
+		// nanoseconds (a partial index predicate cannot take a parameter).
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS channel_messages_awaiting_hook ON channel_messages(id) WHERE visible_at = %d`,
+			store.ChannelHookHeldVisibleAt().UnixNano()),
 		// The channel_cursors upsert (ChannelAck) targets this uniq index
 		// via ON CONFLICT(tenant_id, channel, scope, scope_id). It exists
 		// on BOTH a fresh DB (where it duplicates the PK) and an upgraded
@@ -3805,7 +3841,8 @@ func (s *Store) SnapshotReadMemory(ctx context.Context) ([]store.MemorySnapshotE
 func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.ChannelMessage, error) {
 	now := time.Now().UnixNano()
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel, tenant_id, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id
+		`SELECT id, channel, tenant_id, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id,
+		        origin, hook_tenant, requested_visible_at
 		 FROM channel_messages
 		 WHERE expires_at IS NULL OR expires_at > ?
 		 ORDER BY tenant_id ASC, channel ASC, scope ASC, scope_id ASC, visible_at ASC, id ASC`, now)
@@ -3823,12 +3860,19 @@ func (s *Store) SnapshotReadChannelMessages(ctx context.Context) ([]store.Channe
 			expiresNs   sql.NullInt64
 			visibleNs   sql.NullInt64
 			publishedBy sql.NullString
+			hookTenant  sql.NullString
+			requestedNs sql.NullInt64
 		)
 		if err := rows.Scan(
 			&m.ID, &m.Channel, &m.TenantID, &scopeStr, &m.ScopeID, &payload,
 			&publishedNs, &expiresNs, &visibleNs, &publishedBy,
+			&m.Origin, &hookTenant, &requestedNs,
 		); err != nil {
 			return nil, fmt.Errorf("scan channel_message: %w", err)
+		}
+		m.HookTenant = hookTenant.String
+		if requestedNs.Valid {
+			m.RequestedVisibleAt = time.Unix(0, requestedNs.Int64)
 		}
 		m.Scope = store.MemoryScope(scopeStr)
 		m.Payload = json.RawMessage(payload)
@@ -4371,10 +4415,11 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 		visibleNs = publishedNs
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT OR IGNORE INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id, origin, hook_tenant, requested_visible_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.Channel, string(m.Scope), m.ScopeID, string(m.Payload),
 		publishedNs, expiresNs, visibleNs, nilIfEmpty(m.PublishedByUserID), m.TenantID,
+		m.Origin, hookTenantArg(m), requestedVisibleArg(m),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore channel_message: %w", err)
@@ -5694,10 +5739,11 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO channel_messages(id, channel, scope, scope_id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id, origin, hook_tenant, requested_visible_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		msg.ID, msg.Channel, string(msg.Scope), msg.ScopeID, string(msg.Payload),
 		now.UnixNano(), expiresAt, msg.VisibleAt.UnixNano(), publishedByUserID, msg.TenantID,
+		msg.Origin, hookTenantArg(msg), requestedVisibleArg(msg),
 	); err != nil {
 		return "", 0, err
 	}

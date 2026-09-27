@@ -81,6 +81,31 @@ func IsChannelHeld(visibleAt time.Time) bool {
 	return visibleAt.Equal(ChannelHeldVisibleAt())
 }
 
+// ChannelHookHeldVisibleAt is the reserved `visible_at` of a message awaiting
+// its channel's hooks: stored, invisible to every read, until the hook chain
+// releases or drops it. A second instant rather than the Hold one, for two
+// reasons. The operator's release (ChannelRelease) takes messages at the Hold
+// instant, so sharing it would let an operator release a message no hook had
+// decided. And the hook worker must tell "awaiting a hook" from "held for an
+// operator" without a predicate a query could forget. A message on a channel
+// with both hooks and a hold waits here first, and goes to the Hold instant
+// when its hooks release it.
+func ChannelHookHeldVisibleAt() time.Time {
+	return time.Date(2200, 1, 2, 0, 0, 0, 0, time.UTC)
+}
+
+// IsChannelHookHeld reports whether a visible_at marks a message awaiting its
+// channel's hooks.
+func IsChannelHookHeld(visibleAt time.Time) bool {
+	return visibleAt.Equal(ChannelHookHeldVisibleAt())
+}
+
+// IsChannelReservedVisibleAt reports whether a visible_at is either reserved
+// instant: a marker, not a delivery time.
+func IsChannelReservedVisibleAt(visibleAt time.Time) bool {
+	return IsChannelHeld(visibleAt) || IsChannelHookHeld(visibleAt)
+}
+
 // EncodeChannelCursor renders a (visible_at, msg_id) tuple as the
 // opaque cursor token agents receive. Format:
 //
@@ -2505,6 +2530,38 @@ type Store interface {
 	// declared.
 	ChannelRelease(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID string, count int) (released []string, stillHeld int, err error)
 
+	// ChannelReleaseHookHeld delivers ONE message awaiting its channel's
+	// hooks: it moves from the hook instant to `to` (the zero time = now, or
+	// the Hold instant for a channel that also holds), optionally with a
+	// rewritten payload (nil keeps the stored one), and its hook progress row
+	// is deleted. A compare-and-set on the hook instant: false when the message
+	// no longer awaits a decision (already decided, expired, trimmed or
+	// purged), so a decision takes effect at most once whatever races it.
+	ChannelReleaseHookHeld(ctx context.Context, key ChannelMessageKey, payload json.RawMessage, to time.Time) (bool, error)
+
+	// ChannelDropHookHeld deletes ONE message awaiting its channel's hooks,
+	// and its hook progress row. The same compare-and-set as the release.
+	ChannelDropHookHeld(ctx context.Context, key ChannelMessageKey) (bool, error)
+
+	// ChannelHookClaim leases up to `limit` messages awaiting hooks to owner
+	// until leaseUntil, oldest first: messages not expired, with no live lease
+	// and no retry scheduled after now. A message is leased to one owner at a
+	// time, across replicas. Returns each with its progress so far.
+	ChannelHookClaim(ctx context.Context, owner string, now, leaseUntil time.Time, limit int) ([]ChannelHookWork, error)
+
+	// ChannelHookRenew extends owner's lease on one message. False when owner
+	// no longer holds it.
+	ChannelHookRenew(ctx context.Context, key ChannelMessageKey, owner string, leaseUntil time.Time) (bool, error)
+
+	// ChannelHookSaveProgress records owner's progress on one message and sets
+	// its lease to leaseUntil (a time already past gives the lease up, as a
+	// retry's backoff does). False when owner no longer holds the lease.
+	ChannelHookSaveProgress(ctx context.Context, key ChannelMessageKey, owner string, p ChannelHookProgress, leaseUntil time.Time) (bool, error)
+
+	// ChannelHookGC deletes up to `limit` hook progress rows whose message is
+	// gone or no longer awaits hooks. Returns how many it deleted.
+	ChannelHookGC(ctx context.Context, limit int) (int, error)
+
 	// ChannelStats returns one row per channel that has at least one
 	// non-expired message, with the aggregate count + oldest/newest
 	// visible_at timestamps. Channels declared in operator yaml but
@@ -4010,6 +4067,46 @@ type ChannelMessage struct {
 	ExpiresAt         time.Time       `json:"expires_at,omitempty"`
 	VisibleAt         time.Time       `json:"visible_at,omitempty"`
 	PublishedByUserID string          `json:"published_by_user_id,omitempty"`
+	// Origin names what wrote the message when that matters to a reader of the
+	// store: "starter_sink" marks a Starter's per-run result, which a channel
+	// hook must not make disappear. "" for everything else.
+	Origin string `json:"origin,omitempty"`
+	// HookTenant is the tenant whose channel definition governs a message
+	// awaiting hooks. It differs from TenantID for a global-scope message,
+	// which is stored under the shared tenant whatever its channel's owner.
+	HookTenant string `json:"hook_tenant,omitempty"`
+	// RequestedVisibleAt keeps a publisher's deliver_at while the message
+	// waits at the hook instant, so a release delivers it no earlier.
+	RequestedVisibleAt time.Time `json:"requested_visible_at,omitempty"`
+}
+
+// ChannelMessageKey addresses one stored message. TenantID is the tenant the
+// row is stored under (ChannelScopeTenant: "" for a global scope).
+type ChannelMessageKey struct {
+	TenantID string
+	Channel  string
+	Scope    MemoryScope
+	ScopeID  string
+	ID       string
+}
+
+// ChannelHookProgress is a hook chain's durable progress on one message. It is
+// advisory: the message's visible_at is what says whether it still awaits a
+// decision, and a lost progress row only means the chain runs again.
+type ChannelHookProgress struct {
+	RunID         string          // the run that owns an ask, if one was needed
+	ChainPos      int             // index of the next hook to run
+	Body          json.RawMessage // the body as earlier hooks left it; nil = the stored payload
+	Journal       json.RawMessage // recorded asks and answers, replayed after a restart
+	Attempts      int             // failed attempts of the current hook
+	NextAttemptAt time.Time       // not claimable before this (a retry's backoff)
+	LastError     string
+}
+
+// ChannelHookWork is a claimed message and its progress so far.
+type ChannelHookWork struct {
+	Message  ChannelMessage
+	Progress ChannelHookProgress
 }
 
 // ChannelStats is one row in the result of ChannelStats — the
