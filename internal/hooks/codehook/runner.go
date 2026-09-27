@@ -189,7 +189,16 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 	// end. A hook's own calls run outside the hooks.
 	askCtx = tools.WithoutHookedExecute(askCtx)
 
+	// A caller that can make asks survive (a channel hook's worker) replays
+	// what was already answered for this decision, possibly by a process
+	// that is gone, rather than asking a person the same question twice.
+	session := hooks.AskSessionFrom(ctx)
 	var recorded []record
+	if session != nil {
+		for _, rec := range session.Recorded() {
+			recorded = append(recorded, record{input: rec.Input, text: rec.Text, isError: rec.IsError})
+		}
+	}
 	for {
 		ret, next, err := r.runOnce(ctx, prog, ev, recorded, seed, anchor, h.Timeout)
 		if err != nil {
@@ -209,12 +218,33 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 			// a question would hold nothing, and could outlive the run.
 			return hooks.CodeDecision{}, fmt.Errorf("Interruption.ask is not available to a %s hook, which only reports; use Interruption.notify", h.Phase)
 		}
-		res, err := r.interruption.Execute(askCtx, next.input)
+		execCtx := askCtx
+		var resume func()
+		if session != nil {
+			// The run the ask is filed under, opened on the first one.
+			c, err := session.Begin(askCtx)
+			if err != nil {
+				return hooks.CodeDecision{}, fmt.Errorf("Interruption: opening the run to ask under: %w", err)
+			}
+			execCtx = c
+			if isAsk(next.input) {
+				resume = session.Wait()
+			}
+		}
+		res, err := r.interruption.Execute(execCtx, next.input)
+		if resume != nil {
+			resume()
+		}
 		if err != nil {
 			return hooks.CodeDecision{}, fmt.Errorf("Interruption: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
 			return hooks.CodeDecision{}, err
+		}
+		if session != nil {
+			if err := session.Record(hooks.AskRecord{Input: next.input, Text: res.Text, IsError: res.IsError}); err != nil {
+				return hooks.CodeDecision{}, fmt.Errorf("Interruption: keeping the answer: %w", err)
+			}
 		}
 		recorded = append(recorded, record{input: next.input, text: res.Text, isError: res.IsError})
 	}
