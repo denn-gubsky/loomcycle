@@ -192,6 +192,23 @@ func TestStarter_AFailedWaveDoesNotAck(t *testing.T) {
 	}
 }
 
+// after_read is at-most-once: the batch is acked as soon as it is read, before
+// the wave runs, so even a failed wave has consumed it. It used to be accepted
+// and never acked at all, which a read from the committed cursor would turn
+// into re-reading the same batch forever.
+func TestStarter_AfterReadAcksBeforeTheWave(t *testing.T) {
+	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{}`)}}}
+	r := starterRunner(ch, textSpawn(func(context.Context, string, Prompt, string) (string, error) {
+		return "", errors.New("boom")
+	}))
+	st := starterState()
+	st.Handler.Ack = teamgraph.AckAfterRead
+	_, _ = r.RunHandler(context.Background(), st, &Task{})
+	if len(ch.acked) != 1 || ch.acked[0] != "cur_last" {
+		t.Errorf("acked = %v, want the read cursor once, before the wave", ch.acked)
+	}
+}
+
 // An empty read is an ERROR, not a silent proceed: a walk that advanced on a
 // wave nobody produced would hand the next state an answer from nowhere.
 func TestStarter_NoMessageInTheWaitIsAWalkError(t *testing.T) {

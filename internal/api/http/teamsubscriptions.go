@@ -158,9 +158,11 @@ func (s *Server) driveTeamSubscription(ctx context.Context, sub teamSubscription
 	return started, nil
 }
 
-// sourceHasWork peeks the entry Starter's source. A peek, not a read: the walk
-// itself moves the cursor, and a sweep that consumed would eat the very message
-// it was starting the walk for.
+// sourceHasWork peeks the entry Starter's source after its committed cursor.
+// A peek, not a read: the walk itself moves the cursor, and a sweep that
+// consumed would eat the very message it was starting the walk for. From the
+// committed cursor, not the oldest message: acked messages are done, and
+// counting them as work re-walked the team on every tick.
 func (s *Server) sourceHasWork(ctx context.Context, sub teamSubscription) (bool, error) {
 	def, ok := s.ResolveChannelScope(ctx, sub.TenantID, sub.Source)
 	if !ok {
@@ -170,7 +172,11 @@ func (s *Server) sourceHasWork(ctx context.Context, sub teamSubscription) (bool,
 	if err != nil {
 		return false, err
 	}
-	msgs, err := s.store.ChannelPeek(ctx, sub.TenantID, sub.Source, scope, scopeID, "", 1)
+	from, err := s.store.ChannelCommittedCursor(ctx, sub.TenantID, sub.Source, scope, scopeID)
+	if err != nil {
+		return false, fmt.Errorf("cursor %q: %w", sub.Source, err)
+	}
+	msgs, err := s.store.ChannelPeek(ctx, sub.TenantID, sub.Source, scope, scopeID, from, 1)
 	if err != nil {
 		return false, fmt.Errorf("peek %q: %w", sub.Source, err)
 	}

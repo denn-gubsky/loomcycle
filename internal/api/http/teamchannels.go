@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 
@@ -89,6 +90,20 @@ func (io *teamChannelIO) resolve(ctx context.Context, channel string) (tools.Cha
 	}
 }
 
+// readPoll is how often Read re-peeks while it waits and the server has no bus
+// to wake it. A publish on this replica wakes the bus at once; the poll covers
+// a server without one.
+const readPoll = 250 * time.Millisecond
+
+// Read returns up to batch messages after the source's committed cursor,
+// waiting up to waitMS for at least want of them (0 = the operator's long-poll
+// cap). It peeks rather than subscribes: the cursor advances only when the
+// Starter acks, so a crash between reading and acking redelivers the batch.
+//
+// Reading from the committed cursor is what makes an ack mean anything: a
+// read from the oldest message re-saw every acked message on the next wave,
+// and a wave that arrived a moment after the read found nothing and failed the
+// walk instead of waiting for it.
 func (io *teamChannelIO) Read(ctx context.Context, channel string, want, batch, waitMS int) ([]teamrun.ChannelMessage, string, error) {
 	if err := io.allowed("subscribe", channel); err != nil {
 		return nil, "", err
@@ -100,20 +115,77 @@ func (io *teamChannelIO) Read(ctx context.Context, channel string, want, batch, 
 	if batch <= 0 {
 		batch = 10
 	}
-	// PEEK, not subscribe: the cursor advances on ack, after the wave's results
-	// are in. Subscribe would commit on read and lose a batch to any crash
-	// between reading and dispatching.
-	msgs, err := io.srv.store.ChannelPeek(ctx, io.tenant, channel, scope, scopeID, "", batch)
+	if want < 1 {
+		want = 1
+	}
+	from, err := io.srv.store.ChannelCommittedCursor(ctx, io.tenant, channel, scope, scopeID)
 	if err != nil {
 		return nil, "", err
 	}
+	deadline := time.Now().Add(io.readWait(waitMS))
+	for {
+		// Register before peeking: a publish that lands between the peek and the
+		// wait still wakes this read.
+		var waker chan struct{}
+		if io.srv.channelBus != nil {
+			waker = io.srv.channelBus.Register(channel)
+		}
+		msgs, err := io.srv.store.ChannelPeek(ctx, io.tenant, channel, scope, scopeID, from, batch)
+		remaining := time.Until(deadline)
+		if err != nil || len(msgs) >= want || remaining <= 0 {
+			if waker != nil {
+				io.srv.channelBus.Unregister(channel, waker)
+			}
+			if err != nil {
+				return nil, "", err
+			}
+			return toTeamMessages(msgs)
+		}
+		if waker == nil {
+			waker = make(chan struct{}) // never fires: the timer below paces the poll
+			if remaining > readPoll {
+				remaining = readPoll
+			}
+		}
+		t := time.NewTimer(remaining)
+		select {
+		case <-waker:
+		case <-t.C:
+		case <-ctx.Done():
+		}
+		t.Stop()
+		if io.srv.channelBus != nil {
+			io.srv.channelBus.Unregister(channel, waker)
+		}
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
+	}
+}
+
+// readWait is how long a Read may wait: the author's wait_ms, or the
+// operator's long-poll cap when it is 0, and never more than that cap. A cap
+// of 0 (long-poll disabled) means a Read never waits.
+func (io *teamChannelIO) readWait(waitMS int) time.Duration {
+	capMS := io.srv.cfg().Env.ChannelsLongPollCapMS
+	if waitMS <= 0 || waitMS > capMS {
+		waitMS = capMS
+	}
+	if waitMS <= 0 {
+		return 0
+	}
+	return time.Duration(waitMS) * time.Millisecond
+}
+
+func toTeamMessages(msgs []store.ChannelMessage) ([]teamrun.ChannelMessage, string, error) {
 	out := make([]teamrun.ChannelMessage, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, teamrun.ChannelMessage{ID: m.ID, Payload: m.Payload})
 	}
 	cursor := ""
-	if len(out) > 0 {
-		cursor = store.EncodeChannelCursor(msgs[len(msgs)-1].VisibleAt, msgs[len(msgs)-1].ID)
+	if len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		cursor = store.EncodeChannelCursor(last.VisibleAt, last.ID)
 	}
 	return out, cursor, nil
 }
