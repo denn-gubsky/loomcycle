@@ -365,3 +365,34 @@ func TestWorker_AnAnsweredHoldIsNotAskedAgain(t *testing.T) {
 		t.Fatalf("replay: %q %v (%d calls)", got, err, second.calls)
 	}
 }
+
+// A worker whose lease passed to another while a person was answering must
+// not act on the answer: the new owner decides the message. Before, the lost
+// lease surfaced as a failed hook, fail-open let the chain go on, and the
+// message was delivered past the person's "no".
+func TestWorker_ALostLeaseSettlesNothing(t *testing.T) {
+	f, runs, bus := askFixture(t, 5*time.Second)
+	f.hdefs["|review"] = hooks.Def{Event: hooks.PhaseChannelPublish, Body: hooks.DefBody{Kind: hooks.BodyKindCode,
+		Code: `function hook(ev){ var a = Interruption.ask({question: "ship?", options: ["yes","no"]}); return a === "yes" ? {} : {decision: "drop"}; }`}}
+	f.setDef("", "inbox", Def{Hooks: chain(hooks.Entry{Ref: "review"})})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, nil)
+	wait := runAsync(f)
+	row := pendingAsk(t, f.st, runs)
+	// Another worker takes the message over (as after a lease that lapsed).
+	later := time.Now().Add(time.Hour)
+	if w, _ := f.st.ChannelHookClaim(context.Background(), "w2", later, later.Add(time.Hour), 1); len(w) != 1 {
+		t.Fatal("w2 did not take the lease")
+	}
+	resolveAsk(t, f.st, bus, row, "no")
+	wait()
+	if got := len(f.peek("inbox", "", store.MemoryScopeGlobal)); got != 0 {
+		t.Fatalf("delivered %d past the person's no", got)
+	}
+	items, _ := f.st.ChannelHookClaim(context.Background(), "w3", later.Add(2*time.Hour), later.Add(3*time.Hour), 1)
+	if len(items) != 1 {
+		t.Fatal("the message is no longer waiting for its new owner")
+	}
+	if _, finished := runs.snapshot(); len(finished) != 0 {
+		t.Fatalf("the old worker ended the hook run the new owner uses: %v", finished)
+	}
+}

@@ -37,7 +37,7 @@ func keyArgs(k store.ChannelMessageKey) []any {
 const keyWhere = `tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ? AND id = ?`
 
 // ChannelReleaseHookHeld implements store.Store.
-func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, payload json.RawMessage, to time.Time) (bool, error) {
+func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string, payload json.RawMessage, to time.Time) (bool, error) {
 	now := time.Now()
 	// Never earlier than now: a release that landed in the past would sort
 	// behind a subscriber that has already read past it.
@@ -56,13 +56,18 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 	}
 	args = append(args, keyArgs(key)...)
 	args = append(args, store.ChannelHookHeldVisibleAt().UnixNano(), now.UnixNano())
+	args = append(append(args, keyArgs(key)...), owner)
 	res, err := tx.ExecContext(ctx,
 		`UPDATE channel_messages SET `+set+`
-		  WHERE `+keyWhere+` AND visible_at = ? AND (expires_at IS NULL OR expires_at > ?)`, args...)
+		  WHERE `+keyWhere+` AND visible_at = ? AND (expires_at IS NULL OR expires_at > ?)
+		    AND EXISTS (SELECT 1 FROM channel_hook_state WHERE `+keyWhere+` AND lease_owner = ?)`, args...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook release: %w", err)
 	}
 	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil // decided elsewhere, gone, or not this worker's to decide
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_hook_state WHERE `+keyWhere, keyArgs(key)...); err != nil {
 		return false, fmt.Errorf("channel hook release state: %w", err)
 	}
@@ -73,18 +78,23 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 }
 
 // ChannelDropHookHeld implements store.Store.
-func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey) (bool, error) {
+func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `DELETE FROM channel_messages WHERE `+keyWhere+` AND visible_at = ?`,
-		append(keyArgs(key), store.ChannelHookHeldVisibleAt().UnixNano())...)
+	args := append(keyArgs(key), store.ChannelHookHeldVisibleAt().UnixNano())
+	args = append(append(args, keyArgs(key)...), owner)
+	res, err := tx.ExecContext(ctx, `DELETE FROM channel_messages WHERE `+keyWhere+` AND visible_at = ?
+		AND EXISTS (SELECT 1 FROM channel_hook_state WHERE `+keyWhere+` AND lease_owner = ?)`, args...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop: %w", err)
 	}
 	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false, nil
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_hook_state WHERE `+keyWhere, keyArgs(key)...); err != nil {
 		return false, fmt.Errorf("channel hook drop state: %w", err)
 	}

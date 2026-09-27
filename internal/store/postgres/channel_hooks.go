@@ -34,7 +34,7 @@ const keyWhere = `tenant_id = $1 AND channel = $2 AND scope = $3 AND scope_id = 
 // never earlier than NOW() — the same clock a publish takes its visible_at
 // from — so a released message cannot sort behind a subscriber that has
 // already read past it.
-func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, payload json.RawMessage, to time.Time) (bool, error) {
+func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string, payload json.RawMessage, to time.Time) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("channel hook release begin: %w", err)
@@ -49,10 +49,16 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 		`UPDATE channel_messages
 		    SET visible_at = GREATEST(NOW(), COALESCE($6::timestamptz, NOW())),
 		        payload = COALESCE($7::jsonb, payload)
-		  WHERE `+keyWhere+` AND visible_at = $8 AND (expires_at IS NULL OR expires_at > NOW())`,
-		append(keyArgs(key), timeOrNil(to), body, store.ChannelHookHeldVisibleAt())...)
+		  WHERE `+keyWhere+` AND visible_at = $8 AND (expires_at IS NULL OR expires_at > NOW())
+		    AND EXISTS (SELECT 1 FROM channel_hook_state h
+		                 WHERE h.tenant_id = $1 AND h.channel = $2 AND h.scope = $3 AND h.scope_id = $4 AND h.id = $5
+		                   AND h.lease_owner = $9)`,
+		append(keyArgs(key), timeOrNil(to), body, store.ChannelHookHeldVisibleAt(), owner)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook release: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil // decided elsewhere, gone, or not this worker's to decide
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE `+keyWhere, keyArgs(key)...); err != nil {
 		return false, fmt.Errorf("channel hook release state: %w", err)
@@ -64,16 +70,22 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 }
 
 // ChannelDropHookHeld implements store.Store.
-func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey) (bool, error) {
+func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE `+keyWhere+` AND visible_at = $6`,
-		append(keyArgs(key), store.ChannelHookHeldVisibleAt())...)
+	tag, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE `+keyWhere+` AND visible_at = $6
+		AND EXISTS (SELECT 1 FROM channel_hook_state h
+		             WHERE h.tenant_id = $1 AND h.channel = $2 AND h.scope = $3 AND h.scope_id = $4 AND h.id = $5
+		               AND h.lease_owner = $7)`,
+		append(keyArgs(key), store.ChannelHookHeldVisibleAt(), owner)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE `+keyWhere, keyArgs(key)...); err != nil {
 		return false, fmt.Errorf("channel hook drop state: %w", err)

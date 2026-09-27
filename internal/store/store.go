@@ -2549,11 +2549,15 @@ type Store interface {
 	// is deleted. A compare-and-set on the hook instant: false when the message
 	// no longer awaits a decision (already decided, expired, trimmed or
 	// purged), so a decision takes effect at most once whatever races it.
-	ChannelReleaseHookHeld(ctx context.Context, key ChannelMessageKey, payload json.RawMessage, to time.Time) (bool, error)
+	// Only owner — the worker holding the message's lease — may settle it:
+	// false too when the lease has passed to another worker, whose decision
+	// (on its own answers) is the one that counts.
+	ChannelReleaseHookHeld(ctx context.Context, key ChannelMessageKey, owner string, payload json.RawMessage, to time.Time) (bool, error)
 
 	// ChannelDropHookHeld deletes ONE message awaiting its channel's hooks,
-	// and its hook progress row. The same compare-and-set as the release.
-	ChannelDropHookHeld(ctx context.Context, key ChannelMessageKey) (bool, error)
+	// and its hook progress row. The same compare-and-set, and lease check,
+	// as the release.
+	ChannelDropHookHeld(ctx context.Context, key ChannelMessageKey, owner string) (bool, error)
 
 	// ChannelHookClaim leases up to `limit` messages awaiting hooks to owner
 	// until leaseUntil, oldest first: messages not expired, with no live lease

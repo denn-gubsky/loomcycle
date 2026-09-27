@@ -261,6 +261,9 @@ type job struct {
 	jrnl     journal
 	chSem    chan struct{} // the channel slot the job holds
 	runEmit  tools.EventEmitterFunc
+	// lost stops the job: its lease has passed to another worker, whose
+	// decision is the one that counts.
+	lost context.CancelFunc
 }
 
 func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
@@ -272,19 +275,22 @@ func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
 		progress: it.Progress,
 		deadline: w.deadlineFor(m),
 	}
-	sem, ok := w.channelSlot(ctx, m.HookTenant, m.Channel)
+	// Renew the lease from the moment the message is claimed — a job waiting
+	// for its channel's slot holds a lease too, and letting it lapse there
+	// would hand the message to a second worker while this one still means
+	// to decide it. Losing the lease stops the job; the store settles a
+	// message only for the worker holding its lease.
+	jctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	j.lost = cancel
+	go j.renew(jctx, cancel)
+	sem, ok := w.channelSlot(jctx, m.HookTenant, m.Channel)
 	if !ok {
 		return
 	}
 	j.chSem = sem
 	defer func() { <-sem }()
 	j.loadJournal()
-
-	// Renew the lease while the chain runs. Losing it means another worker
-	// has the message; stop, and let the compare-and-set settle who decides.
-	jctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go j.renew(jctx, cancel)
 	j.decide(jctx)
 }
 
@@ -567,6 +573,11 @@ func (j *job) saveProgress(ctx context.Context, pos int, body json.RawMessage, a
 	}
 	j.progress = p
 	if !ok {
+		// Another worker has the message now. Nothing this job does next may
+		// count — not a hook failure read as fail-open, not a release.
+		if j.lost != nil {
+			j.lost()
+		}
 		return errors.New("the message's lease was lost")
 	}
 	return nil
@@ -585,17 +596,19 @@ func (j *job) release(ctx context.Context, def *Def, body json.RawMessage, chang
 	case j.msg.RequestedVisibleAt.After(time.Now()):
 		to = j.msg.RequestedVisibleAt
 	}
-	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, bodyOrNil(body, changed), to)
+	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, j.w.cfg.Owner, bodyOrNil(body, changed), to)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: release: %v", j.msg.Channel, j.msg.ID, err)
 		}
 		return
 	}
-	j.finishRun("released")
 	if !ok {
-		return // settled elsewhere, expired, trimmed or purged
+		// Settled elsewhere, expired, trimmed or purged — or this worker's
+		// lease passed to another, which still decides it (and ends its run).
+		return
 	}
+	j.finishRun("released")
 	switch {
 	case held:
 	case !to.IsZero() && j.w.cfg.Scheduler != nil:
@@ -615,13 +628,16 @@ func (j *job) drop(ctx context.Context, def *Def, reason, by string) {
 		j.release(ctx, def, sinkError(j.msg.Payload, reason), true)
 		return
 	}
-	if _, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key); err != nil {
+	ok, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key, j.w.cfg.Owner)
+	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: drop: %v", j.msg.Channel, j.msg.ID, err)
 		}
 		return
 	}
-	j.finishRun("dropped: " + reason)
+	if ok {
+		j.finishRun("dropped: " + reason)
+	}
 }
 
 // sinkError turns a Starter's sink message into the error result a dropped
