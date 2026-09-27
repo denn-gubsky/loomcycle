@@ -426,6 +426,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			publisher    TEXT    NOT NULL DEFAULT '',
 			period       TEXT    NOT NULL DEFAULT '',
 			hold         INTEGER NOT NULL DEFAULT 0,
+			hooks        TEXT,
 			created_at   INTEGER NOT NULL,
 			tenant_id    TEXT    NOT NULL DEFAULT '',
 			PRIMARY KEY (tenant_id, name)
@@ -1131,6 +1132,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// release. Mirrors postgres migration 0075. Idempotent ALTER for
 		// existing DBs; the CREATE TABLE above already declares it.
 		`ALTER TABLE channels ADD COLUMN hold INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE channels ADD COLUMN hooks TEXT`,
 		// Channel hooks: a message's hook context. Mirrors postgres
 		// migration 0084; the CREATE TABLE above already declares them.
 		`ALTER TABLE channel_messages ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
@@ -5960,12 +5962,15 @@ func (s *Store) ChannelRelease(ctx context.Context, tenantID, channel string, sc
 
 func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
 	now := time.Now().UnixNano()
+	held, hook := store.ChannelHeldVisibleAt().UnixNano(), store.ChannelHookHeldVisibleAt().UnixNano()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT tenant_id, channel, COUNT(*), MIN(visible_at), MAX(visible_at)
+		SELECT tenant_id, channel, COUNT(*),
+		       MIN(CASE WHEN visible_at < ? THEN visible_at END), MAX(CASE WHEN visible_at < ? THEN visible_at END),
+		       SUM(CASE WHEN visible_at = ? THEN 1 ELSE 0 END), SUM(CASE WHEN visible_at = ? THEN 1 ELSE 0 END)
 		FROM channel_messages
 		WHERE (expires_at IS NULL OR expires_at > ?)
 		GROUP BY tenant_id, channel
-		ORDER BY tenant_id, channel`, now)
+		ORDER BY tenant_id, channel`, held, held, held, hook, now)
 	if err != nil {
 		return nil, fmt.Errorf("channel stats query: %w", err)
 	}
@@ -5978,11 +5983,12 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 			name             string
 			count            int64
 			oldestNS, newest sql.NullInt64
+			nHeld, nAwaiting int64
 		)
-		if err := rows.Scan(&tenantID, &name, &count, &oldestNS, &newest); err != nil {
+		if err := rows.Scan(&tenantID, &name, &count, &oldestNS, &newest, &nHeld, &nAwaiting); err != nil {
 			return nil, fmt.Errorf("channel stats scan: %w", err)
 		}
-		st := store.ChannelStats{Channel: name, TenantID: tenantID, MessageCount: count}
+		st := store.ChannelStats{Channel: name, TenantID: tenantID, MessageCount: count, Held: nHeld, AwaitingHooks: nAwaiting}
 		if oldestNS.Valid {
 			st.OldestVisibleAt = time.Unix(0, oldestNS.Int64).UTC()
 		}

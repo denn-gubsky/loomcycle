@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,7 +21,7 @@ import (
 func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, hold, created_at
+		       default_ttl, max_messages, publisher, period, hold, hooks, created_at
 		FROM channels
 		ORDER BY tenant_id, name
 	`)
@@ -32,13 +33,15 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	for rows.Next() {
 		var r store.ChannelRow
 		var createdNano int64
+		var hooks sql.NullString
 		if err := rows.Scan(
 			&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 			&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-			&r.Hold, &createdNano,
+			&r.Hold, &hooks, &createdNano,
 		); err != nil {
 			return nil, fmt.Errorf("channels list scan: %w", err)
 		}
+		r.Hooks = hooksFrom(hooks)
 		r.CreatedAt = time.Unix(0, createdNano).UTC()
 		out = append(out, r)
 	}
@@ -53,16 +56,18 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 func (s *Store) ChannelGet(ctx context.Context, tenantID, name string) (store.ChannelRow, error) {
 	var r store.ChannelRow
 	var createdNano int64
+	var hooks sql.NullString
 	err := s.db.QueryRowContext(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, hold, created_at
+		       default_ttl, max_messages, publisher, period, hold, hooks, created_at
 		FROM channels
 		WHERE tenant_id = ? AND name = ?
 	`, tenantID, name).Scan(
 		&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-		&r.Hold, &createdNano,
+		&r.Hold, &hooks, &createdNano,
 	)
+	r.Hooks = hooksFrom(hooks)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
 	}
@@ -84,12 +89,12 @@ func (s *Store) ChannelsCreate(ctx context.Context, row store.ChannelRow) error 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO channels (
 			name, description, scope, semantic,
-			default_ttl, max_messages, publisher, period, hold, created_at, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			default_ttl, max_messages, publisher, period, hold, hooks, created_at, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		row.Name, row.Description, row.Scope, row.Semantic,
 		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period,
-		row.Hold, row.CreatedAt.UnixNano(), row.TenantID,
+		row.Hold, hooksArg(row.Hooks), row.CreatedAt.UnixNano(), row.TenantID,
 	)
 	if err != nil {
 		// modernc.org/sqlite surfaces UNIQUE-constraint failures
@@ -132,6 +137,10 @@ func (s *Store) ChannelsUpdate(ctx context.Context, tenantID, name string, patch
 	if patch.Hold != nil {
 		sets = append(sets, "hold = ?")
 		args = append(args, *patch.Hold)
+	}
+	if patch.Hooks != nil {
+		sets = append(sets, "hooks = ?")
+		args = append(args, hooksArg(*patch.Hooks))
 	}
 	if len(sets) == 0 {
 		// Nothing to update — verify existence and return.
@@ -231,4 +240,20 @@ func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string) (int, e
 		return 0, fmt.Errorf("channel purge commit: %w", err)
 	}
 	return int(n), nil
+}
+
+// hooksArg is a channel's hooks as stored: NULL for none (nil, empty, JSON
+// null or an empty object), so "no hooks" has one spelling.
+func hooksArg(h json.RawMessage) any {
+	if store.NoChannelHooks(h) {
+		return nil
+	}
+	return string(h)
+}
+
+func hooksFrom(v sql.NullString) json.RawMessage {
+	if !v.Valid || v.String == "" {
+		return nil
+	}
+	return json.RawMessage(v.String)
 }

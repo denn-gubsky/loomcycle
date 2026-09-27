@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,7 +24,7 @@ import (
 func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, hold, created_at
+		       default_ttl, max_messages, publisher, period, hold, hooks::text, created_at
 		FROM channels
 		ORDER BY tenant_id, name
 	`)
@@ -35,13 +36,15 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 	for rows.Next() {
 		var r store.ChannelRow
 		var createdAt time.Time
+		var hooks *string
 		if err := rows.Scan(
 			&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 			&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-			&r.Hold, &createdAt,
+			&r.Hold, &hooks, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("channels list scan: %w", err)
 		}
+		r.Hooks = hooksFrom(hooks)
 		r.CreatedAt = createdAt.UTC()
 		out = append(out, r)
 	}
@@ -56,16 +59,18 @@ func (s *Store) ChannelsList(ctx context.Context) ([]store.ChannelRow, error) {
 func (s *Store) ChannelGet(ctx context.Context, tenantID, name string) (store.ChannelRow, error) {
 	var r store.ChannelRow
 	var createdAt time.Time
+	var hooks *string
 	err := s.pool.QueryRow(ctx, `
 		SELECT name, tenant_id, description, scope, semantic,
-		       default_ttl, max_messages, publisher, period, hold, created_at
+		       default_ttl, max_messages, publisher, period, hold, hooks::text, created_at
 		FROM channels
 		WHERE tenant_id = $1 AND name = $2
 	`, tenantID, name).Scan(
 		&r.Name, &r.TenantID, &r.Description, &r.Scope, &r.Semantic,
 		&r.DefaultTTL, &r.MaxMessages, &r.Publisher, &r.Period,
-		&r.Hold, &createdAt,
+		&r.Hold, &hooks, &createdAt,
 	)
+	r.Hooks = hooksFrom(hooks)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.ChannelRow{}, &store.ErrNotFound{Kind: "channel", ID: name}
 	}
@@ -87,11 +92,11 @@ func (s *Store) ChannelsCreate(ctx context.Context, row store.ChannelRow) error 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO channels (
 			name, description, scope, semantic,
-			default_ttl, max_messages, publisher, period, hold, created_at, tenant_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			default_ttl, max_messages, publisher, period, hold, hooks, created_at, tenant_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
 	`,
 		row.Name, row.Description, row.Scope, row.Semantic,
-		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period, row.Hold, createdAt, row.TenantID,
+		row.DefaultTTL, row.MaxMessages, row.Publisher, row.Period, row.Hold, hooksArg(row.Hooks), createdAt, row.TenantID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -134,6 +139,11 @@ func (s *Store) ChannelsUpdate(ctx context.Context, tenantID, name string, patch
 	if patch.Hold != nil {
 		sets = append(sets, fmt.Sprintf("hold = $%d", idx))
 		args = append(args, *patch.Hold)
+		idx++
+	}
+	if patch.Hooks != nil {
+		sets = append(sets, fmt.Sprintf("hooks = $%d::jsonb", idx))
+		args = append(args, hooksArg(*patch.Hooks))
 		idx++
 	}
 	if len(sets) == 0 {
@@ -223,4 +233,20 @@ func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string) (int, e
 		return 0, fmt.Errorf("channel purge commit: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// hooksArg is a channel's hooks as stored: NULL for none (nil, empty, JSON
+// null or an empty object), so "no hooks" has one spelling.
+func hooksArg(h json.RawMessage) any {
+	if store.NoChannelHooks(h) {
+		return nil
+	}
+	return string(h)
+}
+
+func hooksFrom(v *string) json.RawMessage {
+	if v == nil || *v == "" {
+		return nil
+	}
+	return json.RawMessage(*v)
 }

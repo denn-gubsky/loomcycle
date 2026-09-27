@@ -5096,11 +5096,13 @@ func (s *Store) ChannelRelease(ctx context.Context, tenantID, channel string, sc
 
 func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT tenant_id, channel, COUNT(*), MIN(visible_at), MAX(visible_at)
+		SELECT tenant_id, channel, COUNT(*),
+		       MIN(visible_at) FILTER (WHERE visible_at < $1), MAX(visible_at) FILTER (WHERE visible_at < $1),
+		       COUNT(*) FILTER (WHERE visible_at = $1), COUNT(*) FILTER (WHERE visible_at = $2)
 		FROM channel_messages
 		WHERE (expires_at IS NULL OR expires_at > NOW())
 		GROUP BY tenant_id, channel
-		ORDER BY tenant_id, channel`)
+		ORDER BY tenant_id, channel`, store.ChannelHeldVisibleAt(), store.ChannelHookHeldVisibleAt())
 	if err != nil {
 		return nil, fmt.Errorf("channel stats query: %w", err)
 	}
@@ -5109,15 +5111,16 @@ func (s *Store) ChannelStats(ctx context.Context) ([]store.ChannelStats, error) 
 	var out []store.ChannelStats
 	for rows.Next() {
 		var (
-			tenantID       string
-			name           string
-			count          int64
-			oldest, newest *time.Time
+			tenantID         string
+			name             string
+			count            int64
+			oldest, newest   *time.Time
+			nHeld, nAwaiting int64
 		)
-		if err := rows.Scan(&tenantID, &name, &count, &oldest, &newest); err != nil {
+		if err := rows.Scan(&tenantID, &name, &count, &oldest, &newest, &nHeld, &nAwaiting); err != nil {
 			return nil, fmt.Errorf("channel stats scan: %w", err)
 		}
-		st := store.ChannelStats{Channel: name, TenantID: tenantID, MessageCount: count}
+		st := store.ChannelStats{Channel: name, TenantID: tenantID, MessageCount: count, Held: nHeld, AwaitingHooks: nAwaiting}
 		if oldest != nil {
 			st.OldestVisibleAt = oldest.UTC()
 		}
