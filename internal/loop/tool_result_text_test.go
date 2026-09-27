@@ -17,17 +17,41 @@ import (
 
 func dur(d time.Duration) *time.Duration { return &d }
 
-// The overwhelming majority of tool results are unclassified, and those must
-// come through byte-identical — otherwise this phase changes every prompt in
-// the runtime rather than only the failing ones.
-func TestRenderToolResultText_UnclassifiedIsUntouched(t *testing.T) {
+// decodeInband parses a rendered failure, failing the test when it is not the
+// structured error object.
+func decodeInband(t *testing.T, s string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("a failure did not render as one JSON object: %v\n%s", err, s)
+	}
+	if m["isError"] != true {
+		t.Fatalf("rendered failure lacks isError:true:\n%s", s)
+	}
+	return m
+}
+
+// A success is the tool's own output, byte for byte: the structured shape is
+// for failures only, so it changes no successful call's prompt.
+func TestRenderToolResultText_SuccessIsUntouched(t *testing.T) {
+	for _, text := range []string{"ordinary output", `{"value":null}`, ""} {
+		if got := renderToolResultText(tools.Result{Text: text}); got != text {
+			t.Errorf("success text altered:\n got %q\nwant %q", got, text)
+		}
+	}
+}
+
+// An unclassified failure is still the object — the model reads one shape for
+// every failure — but claims nothing it does not know: no category, and no
+// isRetryable, which is only known once a failure is classified.
+func TestRenderToolResultText_UnclassifiedFailureClaimsNothing(t *testing.T) {
 	for _, res := range []tools.Result{
-		{Text: "ordinary output"},
 		{Text: "a failure nobody classified", IsError: true},
-		{Text: "classified-but-empty", IsError: true, Error: &tools.ErrorInfo{}},
+		{Text: "a failure nobody classified", IsError: true, Error: &tools.ErrorInfo{}},
 	} {
-		if got := renderToolResultText(res); got != res.Text {
-			t.Errorf("text altered for an unclassified result:\n got %q\nwant %q", got, res.Text)
+		got := renderToolResultText(res)
+		if got != `{"isError":true,"error":"a failure nobody classified"}` {
+			t.Errorf("unclassified failure rendered as:\n%s", got)
 		}
 	}
 }
@@ -36,7 +60,7 @@ func TestRenderToolResultText_CarriesTheDecision(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		res  tools.Result
-		want []string
+		want map[string]any
 		deny []string
 	}{
 		{
@@ -51,7 +75,10 @@ func TestRenderToolResultText_CarriesTheDecision(t *testing.T) {
 					RetryAfter:  dur(5 * time.Second),
 				},
 			},
-			want: []string{"[transient", "retryable", "retry in 5s", "concurrency limit", "spawn_run: backpressure"},
+			want: map[string]any{
+				"error": "spawn_run: backpressure", "errorCategory": "transient", "isRetryable": true,
+				"retryAfterSeconds": float64(5), "description": "The runtime is at a concurrency limit.",
+			},
 		},
 		{
 			name: "business is explicitly NOT retryable",
@@ -64,58 +91,54 @@ func TestRenderToolResultText_CarriesTheDecision(t *testing.T) {
 					Description: "The token budget for this scope is exhausted.",
 				},
 			},
-			want: []string{"[business", "not retryable", "budget"},
+			want: map[string]any{"errorCategory": "business", "isRetryable": false},
 			// A backoff here would tell the model to wait for something that
 			// cannot clear without a human.
-			deny: []string{"retry in"},
+			deny: []string{"retryAfterSeconds"},
 		},
 		{
 			name: "retryable with no hint says nothing about timing",
 			res: tools.Result{
 				Text:    "memory: backend unavailable",
 				IsError: true,
-				Error: &tools.ErrorInfo{
-					Category:  tools.CategoryTransient,
-					Retryable: true,
-				},
+				Error:   &tools.ErrorInfo{Category: tools.CategoryTransient, Retryable: true},
 			},
-			want: []string{"[transient", "retryable"},
-			deny: []string{"retry in", "0s"},
+			want: map[string]any{"errorCategory": "transient", "isRetryable": true},
+			deny: []string{"retryAfterSeconds", "description"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := renderToolResultText(tc.res)
-			for _, w := range tc.want {
-				if !strings.Contains(got, w) {
-					t.Errorf("missing %q in:\n%s", w, got)
+			got := decodeInband(t, renderToolResultText(tc.res))
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("%s = %v, want %v", k, got[k], v)
 				}
 			}
 			for _, d := range tc.deny {
-				if strings.Contains(got, d) {
-					t.Errorf("unexpectedly contains %q in:\n%s", d, got)
+				if _, ok := got[d]; ok {
+					t.Errorf("unexpectedly carries %q: %v", d, got)
 				}
 			}
-			// The tool's own output is never lost — the prefix is additional
-			// signal, not a replacement.
-			if !strings.Contains(got, tc.res.Text) {
-				t.Errorf("tool output dropped:\n%s", got)
+			// The tool's own output is never lost.
+			if got["error"] != tc.res.Text {
+				t.Errorf("error = %v, want the tool's own text %q", got["error"], tc.res.Text)
 			}
 		})
 	}
 }
 
 // A zero backoff must not render. "Wait as you judge best" and "retry
-// immediately" are opposite instructions and 0s would silently mean the second.
+// immediately" are opposite instructions and 0 would silently mean the second.
 func TestRenderToolResultText_ZeroBackoffIsNotRendered(t *testing.T) {
-	got := renderToolResultText(tools.Result{
+	got := decodeInband(t, renderToolResultText(tools.Result{
 		Text:    "x",
 		IsError: true,
 		Error: &tools.ErrorInfo{
 			Category: tools.CategoryTransient, Retryable: true, RetryAfter: dur(0),
 		},
-	})
-	if strings.Contains(got, "retry in") {
-		t.Errorf("rendered a zero backoff as a hint: %s", got)
+	}))
+	if _, ok := got["retryAfterSeconds"]; ok {
+		t.Errorf("rendered a zero backoff as a hint: %v", got)
 	}
 }
 
@@ -123,27 +146,52 @@ func TestRenderToolResultText_ZeroBackoffIsNotRendered(t *testing.T) {
 // decision, so it is not printed twice.
 func TestRenderToolResultText_DoesNotRestateTheSameSentence(t *testing.T) {
 	const msg = "the runtime is paused"
-	got := renderToolResultText(tools.Result{
+	got := decodeInband(t, renderToolResultText(tools.Result{
 		Text:    msg,
 		IsError: true,
 		Error: &tools.ErrorInfo{
 			Category: tools.CategoryTransient, Retryable: true, Description: msg,
 		},
-	})
-	if strings.Count(got, msg) != 1 {
-		t.Errorf("message rendered %d times:\n%s", strings.Count(got, msg), got)
+	}))
+	if _, ok := got["description"]; ok {
+		t.Errorf("the description restates the error: %v", got)
 	}
 }
 
-// THE SUBTLE ONE. The emitted event is what gets persisted, and
-// replayTranscript rebuilds the model's tool_result block from that persisted
-// Text. Rendering at the block and not at the event would make the same tool
-// call read differently before and after a resume — the classification would
-// silently vanish on replay, which is the same class of bug as a continuation
-// losing IsError.
-//
-// Asserted as a property of the renderer being deterministic and applied once:
-// whatever text the event carries is exactly what the block carries.
+// The correct call format rides as its own section, not as prose in the error.
+func TestRenderToolResultText_CarriesTheCorrectCallFormat(t *testing.T) {
+	got := decodeInband(t, renderToolResultText(tools.Result{
+		Text:    "Document: unknown argument \"text\" — nothing was done.",
+		IsError: true,
+		Error: &tools.ErrorInfo{
+			Category:    tools.CategoryValidation,
+			Description: "Pass only this tool's own arguments, at the top level.",
+			CallFormat: &tools.CallFormat{
+				Tool: "Document", Op: "create_chunk",
+				Example:   json.RawMessage(`{"op":"create_chunk","document_id":"d1","title":"Flights"}`),
+				Reference: &tools.CallRef{Tool: "Context", Input: json.RawMessage(`{"op":"help","topic":"Document/create_chunk"}`)},
+			},
+		},
+	}))
+	cf, ok := got["correctCallFormat"].(map[string]any)
+	if !ok {
+		t.Fatalf("no correctCallFormat section: %v", got)
+	}
+	if cf["tool"] != "Document" || cf["op"] != "create_chunk" {
+		t.Errorf("correctCallFormat = %v", cf)
+	}
+	if ex, _ := cf["example"].(map[string]any); ex["title"] != "Flights" {
+		t.Errorf("the example is not the argument object: %v", cf["example"])
+	}
+	if strings.Contains(got["error"].(string), "Flights") {
+		t.Errorf("the example leaked into the error text: %v", got["error"])
+	}
+}
+
+// Rendering is deterministic, and happens once: the emitted event is what gets
+// persisted, and replayTranscript rebuilds the model's tool_result block from
+// that persisted text without rendering it again. So the same call reads the
+// same before and after a resume.
 func TestRenderToolResultText_IsStableForPersistAndReplay(t *testing.T) {
 	res := tools.Result{
 		Text:    "spawn_run: runtime paused",
@@ -155,24 +203,8 @@ func TestRenderToolResultText_IsStableForPersistAndReplay(t *testing.T) {
 			RetryAfter:  dur(15 * time.Second),
 		},
 	}
-
-	// What the event carries, and what the block carries, come from one call
-	// in executePendingTools. Rendering twice must therefore be identical, or
-	// a replay could not reproduce the original prompt.
-	first := renderToolResultText(res)
-	second := renderToolResultText(res)
-	if first != second {
+	if first, second := renderToolResultText(res), renderToolResultText(res); first != second {
 		t.Fatalf("renderer is not deterministic:\n1: %s\n2: %s", first, second)
-	}
-
-	// And re-rendering an already-rendered result must not double-prefix,
-	// which is what a replay path would do if it classified again.
-	replayed := renderToolResultText(tools.Result{Text: first, IsError: true})
-	if replayed != first {
-		t.Errorf("replaying a rendered result changed it:\n got %s\nwant %s", replayed, first)
-	}
-	if strings.Count(replayed, "[transient") != 1 {
-		t.Errorf("double-prefixed on replay:\n%s", replayed)
 	}
 }
 
@@ -234,7 +266,7 @@ func TestExecutePendingTools_EventAndBlockCarryTheSameText(t *testing.T) {
 	blockText := blocks[0].Text
 	eventText := toolResultEvents[0].Text
 
-	if !strings.Contains(blockText, "[transient") {
+	if decodeInband(t, blockText)["errorCategory"] != "transient" {
 		t.Errorf("the MODEL's block is missing the classification:\n%s", blockText)
 	}
 	if eventText != blockText {
@@ -325,7 +357,7 @@ func runFailerThrough(t *testing.T, hd *hooks.Dispatcher) string {
 // fields dropped every classification in production while they stayed green.
 func TestExecutePendingTools_ClassificationSurvivesAnIdleHookDispatcher(t *testing.T) {
 	text := runFailerThrough(t, hooks.NewDispatcher(hooks.NewSet(), nil))
-	if !strings.Contains(text, "[transient") {
+	if decodeInband(t, text)["errorCategory"] != "transient" {
 		t.Errorf("a dispatcher with no matching hook dropped the classification:\n%s", text)
 	}
 }
@@ -337,10 +369,11 @@ func TestExecutePendingTools_ClassificationSurvivesAWrappingPostHook(t *testing.
 		return &hooks.ToolResult{Text: "<untrusted>" + r.Text + "</untrusted>", IsError: r.IsError}
 	})
 	text := runFailerThrough(t, hd)
-	if !strings.Contains(text, "[transient") {
+	got := decodeInband(t, text)
+	if got["errorCategory"] != "transient" {
 		t.Errorf("a wrapping Post hook dropped the classification:\n%s", text)
 	}
-	if !strings.Contains(text, "<untrusted>upstream: connection reset</untrusted>") {
+	if got["error"] != "<untrusted>upstream: connection reset</untrusted>" {
 		t.Errorf("the hook's rewrite did not reach the model:\n%s", text)
 	}
 }
