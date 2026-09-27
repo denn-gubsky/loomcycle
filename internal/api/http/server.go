@@ -2271,33 +2271,38 @@ func (s *Server) ResolveChannelScope(ctx context.Context, tenantID, channel stri
 	return def, ok
 }
 
-// ChannelHeld reports whether a channel is declared `hold:` (RFC CY) —
-// publishes are stored but never delivered until a release. Wired into the
-// SystemPublisher so every internal publish path (heartbeats, the webhook
-// relay, interrupts, the admin endpoint) honours the hold without each one
-// resolving the definition itself.
+// ChannelWriteDef resolves what the channel writer needs from a channel's
+// definition, in the tenant the message is written in. Wired as the writer's
+// DefResolver, so every write — the Channel tool, the scheduler, webhooks,
+// heartbeats, interrupts, the admin endpoints — honours the definition
+// through this one lookup, fresh on each write (a hold set mid-run applies to
+// the run's next publish).
 //
-// A POINT lookup, not the mergedChannelDefs scan ResolveChannelScope uses:
-// this runs on every system publish, including the webhook relay's hot path.
-// Static yaml wins over a runtime row, matching the merge order everywhere
-// else. A store fault answers false — an unreachable definition plane must
-// not silently start holding a channel that isn't declared held.
+// A POINT lookup, not the mergedChannelDefs scan ResolveChannelScope uses: it
+// runs on every write. Static yaml wins over a runtime row, matching the merge
+// order everywhere else. A channel declared nowhere is written as-is (a
+// document's change feed, an undeclared `_system/*` channel). A store fault is
+// an error, and the write is refused: a definition that cannot be read must
+// not be written past.
 //
-// tenantID is the tenant the message is published in (see
-// channels.StorePublisher.HoldFn): never read from ctx, which on the webhook
-// relay and a schedule tick carries no identity.
-func (s *Server) ChannelHeld(ctx context.Context, tenantID, channel string) bool {
+// tenantID is never read from ctx, which on the webhook relay and a schedule
+// tick carries no identity.
+func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) (channels.WriteDef, error) {
 	if def, ok := s.cfg().Channels[channel]; ok {
-		return def.Hold
+		return channels.WriteDef{Hold: def.Hold}, nil
 	}
 	if s.store == nil {
-		return false
+		return channels.WriteDef{}, nil
 	}
 	row, err := s.store.ChannelGet(ctx, tenantID, channel)
-	if err != nil {
-		return false
+	switch {
+	case err == nil:
+		return channels.WriteDef{Hold: row.Hold}, nil
+	case isNotFound(err):
+		return channels.WriteDef{}, nil
+	default:
+		return channels.WriteDef{}, err
 	}
-	return row.Hold
 }
 
 // fallbackForRun builds the v0.8.2 PR-2 runtime-fallback policy +

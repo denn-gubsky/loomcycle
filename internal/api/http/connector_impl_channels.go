@@ -68,7 +68,6 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 		return channelDef{
 			MaxMessages: def.MaxMessages,
 			DefaultTTL:  def.DefaultTTL,
-			Hold:        def.Hold,
 		}, nil
 	}
 	if s.store != nil {
@@ -82,7 +81,6 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 			return channelDef{
 				MaxMessages: row.MaxMessages,
 				DefaultTTL:  row.DefaultTTL,
-				Hold:        row.Hold,
 			}, nil
 		case isNotFound(err):
 			// fall through to the not-declared signal below
@@ -98,7 +96,6 @@ func (s *Server) requireChannelDeclared(ctx context.Context, name string) (chann
 type channelDef struct {
 	MaxMessages int
 	DefaultTTL  int
-	Hold        bool
 }
 
 // PublishChannel publishes a message to a declared channel. Delegates
@@ -140,13 +137,6 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		}
 		deliverAt = parsed
 	}
-	// A hold overrides deliver_at: the message waits for a release, not for
-	// a clock. Passed as the reserved instant so the publisher's own HoldFn
-	// short-circuits instead of resolving the definition a second time.
-	if def.Hold {
-		deliverAt = store.ChannelHeldVisibleAt()
-	}
-
 	// Audit attribution: "_admin" for global-scope (operator), the
 	// user_id for user-scope (per-end-user). The bearer's identity
 	// is the same either way (operator's LOOMCYCLE_AUTH_TOKEN);
@@ -170,7 +160,8 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		Channel:   req.Channel,
 		CreatedAt: msg.PublishedAt.UTC().Format(time.RFC3339Nano),
 	}
-	if def.Hold {
+	// Whether it is held is the writer's decision, read back from the message.
+	if store.IsChannelHeld(msg.VisibleAt) {
 		// Report the hold instead of a visible_at in the year 2200 — the
 		// reserved instant is an implementation marker, not a promise about
 		// when this message is coming.
@@ -473,7 +464,8 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 			MsgID:     msg.ID,
 			CreatedAt: msg.PublishedAt.UTC().Format(time.RFC3339Nano),
 		}
-		if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) {
+		// A held message's reserved instant is not a delivery time.
+		if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) && !store.IsChannelHeld(msg.VisibleAt) {
 			entry.VisibleAt = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
 		}
 		out.Results = append(out.Results, entry)

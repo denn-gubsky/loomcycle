@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +23,7 @@ import (
 
 // channelHoldFixture is channelCRUDFixture with one held channel and one
 // ordinary one, and — importantly — the SystemPublisher wired the way main.go
-// wires it, HoldFn included. Without that wiring the hold is a setting nothing
+// wires it, Defs included. Without that wiring the hold is a setting nothing
 // reads, which is precisely the regression these tests guard.
 func channelHoldFixture(t *testing.T) (*Server, store.Store, func()) {
 	t.Helper()
@@ -53,7 +54,7 @@ func channelHoldFixture(t *testing.T) (*Server, store.Store, func()) {
 		sem:            concurrency.New(8, 16, 30000),
 	}
 	srv.SetSystemPublisher(&channels.StorePublisher{
-		Store: s, Bus: bus, Scheduler: sched, HoldFn: srv.ChannelHeld,
+		Store: s, Bus: bus, Scheduler: sched, Defs: srv.ChannelWriteDef,
 	})
 	srv.SetChannelBus(bus)
 	return srv, s, func() { _ = s.Close() }
@@ -233,7 +234,7 @@ func TestChannelHold_RuntimeDeclaredChannelHoldsAndReleases(t *testing.T) {
 
 // An INTERNAL publisher — one that never resolves a channel definition, the
 // shape heartbeats, interrupts and the webhook relay use — is held too. This
-// is the HoldFn seam: the hold is enforced inside StorePublisher, so a caller
+// is the writer seam: the hold is enforced inside StorePublisher, so a caller
 // that knows nothing about the definition cannot walk past the breakpoint.
 //
 // Without this the hold would only be as good as the call sites that remember
@@ -302,19 +303,24 @@ func TestChannelHold_ReleaseBadCountIs400(t *testing.T) {
 	}
 }
 
-// ChannelHeld resolves yaml first (operator-global, so every tenant sees it)
-// and then the runtime row IN THE NAMED TENANT — the tenant the message is
-// published in, never the ctx's. An internal publisher's ctx often carries no
-// identity (the inbound webhook relay, a schedule tick); resolving the tenant
-// from it looked in the shared tenant, so a tenant's own runtime hold was not
-// held.
-func TestChannelHeld_ResolvesTheRuntimeRowInTheNamedTenant(t *testing.T) {
+// ChannelWriteDef resolves yaml first (operator-global, so every tenant sees
+// it) and then the runtime row IN THE NAMED TENANT — the tenant the message is
+// written in, never the ctx's. An internal publisher's ctx often carries no
+// identity (the inbound webhook relay, a schedule tick).
+func TestChannelWriteDef_ResolvesTheRuntimeRowInTheNamedTenant(t *testing.T) {
 	srv, st, cleanup := channelHoldFixture(t)
 	defer cleanup()
 	ctx := context.Background() // no identity, like the webhook relay's
+	held := func(tenant, ch string) bool {
+		t.Helper()
+		def, err := srv.ChannelWriteDef(ctx, tenant, ch)
+		if err != nil {
+			t.Fatalf("ChannelWriteDef(%q, %q): %v", tenant, ch, err)
+		}
+		return def.Hold
+	}
 
-	// yaml: seen in any tenant.
-	if !srv.ChannelHeld(ctx, "t1", "gate") || !srv.ChannelHeld(ctx, "", "gate") {
+	if !held("t1", "gate") || !held("", "gate") {
 		t.Errorf("a yaml-declared hold was not seen in every tenant")
 	}
 	if err := st.ChannelsCreate(ctx, store.ChannelRow{
@@ -322,11 +328,34 @@ func TestChannelHeld_ResolvesTheRuntimeRowInTheNamedTenant(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if !srv.ChannelHeld(ctx, "t1", "t1-only") {
-		t.Errorf("a tenant's own runtime hold was not seen when publishing in that tenant")
+	if !held("t1", "t1-only") {
+		t.Errorf("a tenant's own runtime hold was not seen when writing in that tenant")
 	}
-	if srv.ChannelHeld(ctx, "t2", "t1-only") || srv.ChannelHeld(ctx, "", "t1-only") {
+	if held("t2", "t1-only") || held("", "t1-only") {
 		t.Errorf("a tenant's runtime hold leaked into another tenant")
+	}
+	if held("t1", "undeclared") {
+		t.Errorf("a channel declared nowhere was held")
+	}
+}
+
+// A fault reading the definition refuses the write: a definition that cannot
+// be read must not be written past. (The old hold lookup answered "not held"
+// and delivered.)
+func TestChannelWriter_ADefinitionFaultRefusesTheWrite(t *testing.T) {
+	srv, st, cleanup := channelHoldFixture(t)
+	defer cleanup()
+	w := &channels.StorePublisher{Store: st, Defs: func(context.Context, string, string) (channels.WriteDef, error) {
+		return channels.WriteDef{}, errors.New("definition plane unreachable")
+	}}
+	_, err := w.Write(context.Background(), channels.WriteRequest{
+		Channel: "open", TenantID: "t1", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
+	})
+	if err == nil {
+		t.Fatalf("a write went through a channel whose definition could not be read")
+	}
+	if n := peekCount(t, srv, "open"); n != 0 {
+		t.Errorf("the refused write delivered %d message(s)", n)
 	}
 }
 
