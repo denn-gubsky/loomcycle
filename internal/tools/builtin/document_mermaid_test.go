@@ -267,8 +267,8 @@ func TestEmbedBody_TypeChangeToMermaidReembedsAsLabels(t *testing.T) {
 		t.Fatalf("create_chunk: %v %s", err, res.Text)
 	}
 	chunkID := resultField(res, "id")
-	if got := embeddedTextFor(t, vs, chunkID); got != "draft prose" {
-		t.Fatalf("prose precondition: want %q, got %q", "draft prose", got)
+	if got := embeddedTextFor(t, vs, chunkID); got != "Evolving — Later a diagram\ndraft prose" {
+		t.Fatalf("prose precondition: want %q, got %q", "Evolving — Later a diagram\ndraft prose", got)
 	}
 
 	upd, _ := json.Marshal(map[string]any{

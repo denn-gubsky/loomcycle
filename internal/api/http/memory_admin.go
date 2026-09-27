@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // v0.9.0 Vector Memory admin endpoints. Drive the Web UI Memory tab's
@@ -56,13 +57,18 @@ type memoryReembedDryRunResponse struct {
 }
 
 type memoryReembedRealResponse struct {
-	Scope           string                  `json:"scope"`
-	ScopeID         string                  `json:"scope_id"`
-	DryRun          bool                    `json:"dry_run"`
-	RowsReembedded  int                     `json:"rows_reembedded"`
-	RowsFailed      int                     `json:"rows_failed"`
-	CurrentEmbedder memoryReembedConfigured `json:"current_embedder"`
-	FailedKeys      []string                `json:"failed_keys,omitempty"`
+	Scope          string `json:"scope"`
+	ScopeID        string `json:"scope_id"`
+	DryRun         bool   `json:"dry_run"`
+	RowsReembedded int    `json:"rows_reembedded"`
+	RowsFailed     int    `json:"rows_failed"`
+	// RowsSkippedEmpty counts document chunks whose index text derives to nothing (a
+	// bodyless document root, a chunk with no content and no usable header). They are
+	// not re-embedded, and their old-model vector is removed so they stop being both a
+	// search result and a migration candidate.
+	RowsSkippedEmpty int                     `json:"rows_skipped_empty,omitempty"`
+	CurrentEmbedder  memoryReembedConfigured `json:"current_embedder"`
+	FailedKeys       []string                `json:"failed_keys,omitempty"`
 }
 
 type memoryReembedConfigured struct {
@@ -171,14 +177,14 @@ const reembedEmbedBatch = 64
 // and a row written with 0 makes every later search in that scope report a spurious
 // dimension mismatch).
 func (s *Server) writeReembeddedRow(ctx context.Context, tenantID, scope, storeScopeID string,
-	row store.MemoryEntry, vec []float32, currentEmbedder memoryReembedConfigured) bool {
+	row store.MemoryEntry, text string, vec []float32, currentEmbedder memoryReembedConfigured) bool {
 	return s.store.MemoryEmbedSet(ctx, tenantID, store.MemoryScope(scope), storeScopeID, row.Key,
 		store.MemoryEmbedding{
 			Provider:  currentEmbedder.Provider,
 			Model:     currentEmbedder.Model,
 			Dimension: len(vec),
 			Vector:    vec,
-			EmbedText: string(row.Value),
+			EmbedText: text,
 			CreatedAt: time.Now().UTC(),
 		}) == nil
 }
@@ -343,16 +349,44 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 	// resumable. A client timeout or a cancelled context mid-sweep costs only the rows
 	// in the current batch, and the next call picks up whatever is left — which is how
 	// an operator paginates a scope too large for one request.
-	for start := 0; start < len(rows); start += reembedEmbedBatch {
+	//
+	// WHAT TEXT. A document chunk is re-embedded under the text the write path gives it
+	// (its header + content, via the one builder every path shares). It used to be the
+	// raw JSON envelope, which indexed field names and dropped an image's generated
+	// description. Any other row keeps the raw value, as before. A chunk that derives to
+	// nothing is skipped, not embedded as junk.
+	var (
+		work         []store.MemoryEntry
+		workTexts    []string
+		skippedEmpty int
+	)
+	for _, row := range rows {
+		text, isChunk := builtin.ChunkIndexTextForRow(r.Context(), s.sqlMem, tenantID,
+			store.MemoryScope(scope), scopeID, row)
+		if !isChunk {
+			text = string(row.Value)
+		} else if text == "" {
+			// A chunk that derives to nothing must not stay indexed — and it must not stay a
+			// CANDIDATE either. Its old-model vector is exactly what makes this listing return
+			// it, so leaving it would re-list it on every call, and once such rows fill the
+			// page (one bodyless root per document, in a store past `limit` documents) the
+			// migration stops making progress. Removing the vector is the end state the
+			// stale-embedding purge would reach anyway. Best-effort: a failed delete leaves
+			// the row for the next call or the purge, and is still counted as skipped.
+			_ = s.store.MemoryEmbedDelete(r.Context(), tenantID, store.MemoryScope(scope), storeScopeID, row.Key)
+			skippedEmpty++
+			continue
+		}
+		work = append(work, row)
+		workTexts = append(workTexts, text)
+	}
+	for start := 0; start < len(work); start += reembedEmbedBatch {
 		end := start + reembedEmbedBatch
-		if end > len(rows) {
-			end = len(rows)
+		if end > len(work) {
+			end = len(work)
 		}
-		batch := rows[start:end]
-		texts := make([]string, len(batch))
-		for i, row := range batch {
-			texts[i] = string(row.Value)
-		}
+		batch := work[start:end]
+		texts := workTexts[start:end]
 		vecs, err := s.embedder.Embed(r.Context(), texts)
 		if err != nil || len(vecs) != len(batch) {
 			// FALL BACK TO PER ROW rather than failing the batch. One unembeddable row
@@ -360,14 +394,14 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 			// skipped and the rest still migrated, and that accounting is the thing an
 			// operator reads to decide whether a sweep is done. Retrying singly restores
 			// it exactly, at the cost of one extra call per genuinely bad batch.
-			for _, row := range batch {
-				one, oneErr := s.embedder.Embed(r.Context(), []string{string(row.Value)})
+			for i, row := range batch {
+				one, oneErr := s.embedder.Embed(r.Context(), []string{texts[i]})
 				if oneErr != nil || len(one) != 1 {
 					failed++
 					failedKeys = append(failedKeys, row.Key)
 					continue
 				}
-				if !s.writeReembeddedRow(r.Context(), tenantID, scope, storeScopeID, row, one[0], currentEmbedder) {
+				if !s.writeReembeddedRow(r.Context(), tenantID, scope, storeScopeID, row, texts[i], one[0], currentEmbedder) {
 					failed++
 					failedKeys = append(failedKeys, row.Key)
 					continue
@@ -377,7 +411,7 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for i, row := range batch {
-			if !s.writeReembeddedRow(r.Context(), tenantID, scope, storeScopeID, row, vecs[i], currentEmbedder) {
+			if !s.writeReembeddedRow(r.Context(), tenantID, scope, storeScopeID, row, texts[i], vecs[i], currentEmbedder) {
 				failed++
 				failedKeys = append(failedKeys, row.Key)
 				continue
@@ -387,12 +421,13 @@ func (s *Server) handleMemoryReembed(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(memoryReembedRealResponse{
-		Scope:           scope,
-		ScopeID:         storeScopeID,
-		DryRun:          false,
-		RowsReembedded:  reembedded,
-		RowsFailed:      failed,
-		CurrentEmbedder: currentEmbedder,
-		FailedKeys:      failedKeys,
+		Scope:            scope,
+		ScopeID:          storeScopeID,
+		DryRun:           false,
+		RowsReembedded:   reembedded,
+		RowsFailed:       failed,
+		RowsSkippedEmpty: skippedEmpty,
+		CurrentEmbedder:  currentEmbedder,
+		FailedKeys:       failedKeys,
 	})
 }

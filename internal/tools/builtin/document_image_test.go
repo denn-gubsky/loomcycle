@@ -95,9 +95,10 @@ func TestEmbedBody_ImageCaptionIsEmbeddedWithoutAModel(t *testing.T) {
 		t.Fatalf("create_chunk: %v %s", err, res.Text)
 	}
 	// Title AND caption: an image's title is a third source rather than a fallback
-	// (see imageEmbedText), because an image has no body to restate its heading.
+	// (see imageEmbedText), because an image has no body to restate its heading. Like
+	// every chunk it is indexed under its header (document — heading path).
 	got := embeddedTextFor(t, vs, resultField(res, "id"))
-	if got != "image: Login the login screen" {
+	if got != "Shots — Login\nimage: Login the login screen" {
 		t.Errorf("caption was not embedded on write with its title: %q", got)
 	}
 }
@@ -128,8 +129,8 @@ func TestEmbedBody_ImageDataURIBodyIsNeverIndexedAsBase64(t *testing.T) {
 	// The title carries it instead — the data URI contributed nothing. It arrives
 	// through imageEmbedText now rather than the generic title fallback, so it is
 	// labelled like every other image row.
-	if got != "image: Raw" {
-		t.Errorf("embed text = %q, want the labelled chunk title \"image: Raw\"", got)
+	if got != "Shots — Raw\nimage: Raw" {
+		t.Errorf("embed text = %q, want the header and the labelled chunk title", got)
 	}
 }
 
@@ -252,8 +253,8 @@ func TestEmbedBody_UncaptionedImageStillEmbedsItsDescription(t *testing.T) {
 
 	// Precondition: with no caption and no description yet, the chunk is searchable by
 	// its TITLE (the fallback) — and notably NOT by anything describing the picture.
-	if got := embeddedTextFor(t, vs, chunkID); got != "image: Logo" {
-		t.Fatalf("precondition: want the title-only text %q, got %q", "image: Logo", got)
+	if got := embeddedTextFor(t, vs, chunkID); got != "Logos — Logo\nimage: Logo" {
+		t.Fatalf("precondition: want the header + title-only text %q, got %q", "Logos — Logo\nimage: Logo", got)
 	}
 
 	// The describe pass persists a description and re-embeds.
@@ -328,16 +329,22 @@ func TestEmbedBody_BodylessChunkFallsBackToItsTitle(t *testing.T) {
 		t.Fatalf("create_chunk: %v %s", err, res.Text)
 	}
 	got := embeddedTextFor(t, vs, resultField(res, "id"))
-	if got != "Phase 2 — name-links + transclusion" {
-		t.Errorf("a bodyless heading embedded %q, want its title — a heading organises "+
+	// Indexed under its header alone: document title, then the heading itself.
+	if got != "Plan — Phase 2 — name-links + transclusion" {
+		t.Errorf("a bodyless heading embedded %q, want its header — a heading organises "+
 			"the document and is exactly what a searcher types", got)
 	}
 }
 
-// TestEmbedBody_BodyWinsOverTitle — the title is a FALLBACK, never an addition.
-// Appending it would double-weight whatever the author happened to put in the
-// heading, on every chunk in the corpus.
-func TestEmbedBody_BodyWinsOverTitle(t *testing.T) {
+// TestEmbedBody_BodyIsIndexedUnderItsHeader — a chunk with a body is indexed as its
+// header (document title — heading path) followed by the body, the header exactly once.
+//
+// This replaced "the title is a fallback, never an addition". Adding the heading was
+// measured before it was adopted (pre-registered, 911 Natural Questions): R@5 0.912 →
+// 0.935, p=0.0046, because a section's text rarely names its document or even its own
+// topic. What still must not happen is the doubling the old rule guarded against: the
+// heading appearing once in the header AND again appended after the body.
+func TestEmbedBody_BodyIsIndexedUnderItsHeader(t *testing.T) {
 	d, vs, ctx := mermaidDocFixture(t, "savepoint", "nesting", "heading", "words")
 
 	res, _ := d.Execute(ctx, json.RawMessage(`{"op":"create_document","title":"Doc"}`))
@@ -351,8 +358,11 @@ func TestEmbedBody_BodyWinsOverTitle(t *testing.T) {
 		t.Fatalf("create_chunk: %v %s", err, res.Text)
 	}
 	got := embeddedTextFor(t, vs, resultField(res, "id"))
-	if got != "SAVEPOINT nesting is LIFO" {
-		t.Errorf("embed text = %q, want the body alone; the title must not be appended", got)
+	if got != "Doc — heading words\nSAVEPOINT nesting is LIFO" {
+		t.Errorf("embed text = %q, want the header then the body", got)
+	}
+	if strings.Count(got, "heading words") != 1 {
+		t.Errorf("the heading appears %d times in %q, want once", strings.Count(got, "heading words"), got)
 	}
 }
 

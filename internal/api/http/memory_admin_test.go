@@ -64,6 +64,16 @@ func (v *vectorAdminStore) MemoryEmbedGet(ctx context.Context, tenantID string, 
 	return e, nil
 }
 
+// MemoryEmbedDelete drops the fake's row, keyed with the tenant like every other method
+// here. Without it the call fell through to the embedded sqlite store, which never held
+// these embeddings, so a delete silently did nothing and a test of it could not fail.
+func (v *vectorAdminStore) MemoryEmbedDelete(_ context.Context, tenantID string, scope store.MemoryScope, scopeID, key string) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.embeds, embedKey(tenantID, scope, scopeID, key))
+	return nil
+}
+
 func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
 	if !v.supports {
 		return nil, store.ErrVectorUnsupported
