@@ -54,10 +54,34 @@ func TestResolveChannelScope_StaticRuntimeAndPrecedence(t *testing.T) {
 		{"undeclared", "", false},
 	}
 	for _, tc := range cases {
-		gotDef, gotOK := srv.ResolveChannelScope(ctx, tc.channel)
+		gotDef, gotOK := srv.ResolveChannelScope(ctx, "", tc.channel)
 		if gotDef.Scope != tc.wantScope || gotOK != tc.wantOK {
 			t.Errorf("ResolveChannelScope(%q) = (%q, %v), want (%q, %v)",
 				tc.channel, gotDef.Scope, gotOK, tc.wantScope, tc.wantOK)
+		}
+	}
+}
+
+// A tenant's runtime channel resolves in that tenant and nowhere else, named
+// explicitly rather than read from ctx — the scheduler and the team walks
+// resolve on a ctx that carries no identity.
+func TestResolveChannelScope_ConfinesRuntimeRowsToTheNamedTenant(t *testing.T) {
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	srv := &Server{cfgHolder: config.NewHolder(&config.Config{}), store: st}
+	ctx := context.Background()
+	if err := st.ChannelsCreate(ctx, store.ChannelRow{Name: "inbox", TenantID: "t1", Scope: "tenant", Semantic: "queue"}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if def, ok := srv.ResolveChannelScope(ctx, "t1", "inbox"); !ok || def.Scope != "tenant" {
+		t.Errorf("t1's own channel: got (%+v, %v), want its tenant-scoped def", def, ok)
+	}
+	for _, other := range []string{"t2", ""} {
+		if _, ok := srv.ResolveChannelScope(ctx, other, "inbox"); ok {
+			t.Errorf("t1's channel resolved in tenant %q", other)
 		}
 	}
 }
