@@ -24,7 +24,10 @@
 // somewhere else.
 package errkind
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Category says what KIND of failure was hit, because that is the only thing
 // the caller actually has to decide from: resend this call, change it, or
@@ -82,4 +85,40 @@ type Info struct {
 	// A pointer because an absent hint and a zero hint are opposite
 	// instructions: "wait as you see fit" versus "retry immediately".
 	RetryAfter *time.Duration
+
+	// CallFormat is the correct shape of the call that failed, when the tool is
+	// documented and the call's shape may be the cause: a validation failure,
+	// or one nobody has classified yet. Nil otherwise — for a transient,
+	// business or permission failure a correct example would read as if the
+	// shape were the problem.
+	//
+	// It can be set on an Info with no Category: that is an unclassified
+	// failure that still carries the call format, not a classification.
+	//
+	// omitempty: a run event serializes Info as its SSE error_info, and a run
+	// error never carries a call format, so that wire stays exactly as it was.
+	CallFormat *CallFormat `json:",omitempty"`
+}
+
+// CallFormat is what a correct call to a documented tool looks like, taken from
+// the operation's own help article. Measured on local models: a model rarely
+// follows a pointer to a manual, but it does copy a correct call it is shown.
+type CallFormat struct {
+	Tool string `json:"tool"`
+	// Op is the operation the example is for; empty when the call named no
+	// valid op, in which case Operations says which exist.
+	Op string `json:"op,omitempty"`
+	// Example is the argument object of one correct call.
+	Example json.RawMessage `json:"example,omitempty"`
+	// Operations lists the tool's valid operations — only when the op itself
+	// was missing or unknown, the one case where it is the fix.
+	Operations []string `json:"operations,omitempty"`
+	// Reference is the call that returns the full article.
+	Reference *CallRef `json:"reference,omitempty"`
+}
+
+// CallRef is one tool call, as its tool name and argument object.
+type CallRef struct {
+	Tool  string          `json:"tool"`
+	Input json.RawMessage `json:"input"`
 }

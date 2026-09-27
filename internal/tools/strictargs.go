@@ -46,28 +46,39 @@ func (d *Dispatcher) refuseUnknownFields(t Tool, input json.RawMessage) (Result,
 	}
 	sort.Strings(unknown)
 
-	var b strings.Builder
 	quoted := make([]string, len(unknown))
 	for i, k := range unknown {
 		quoted[i] = fmt.Sprintf("%q", k)
 	}
-	fmt.Fprintf(&b, "%s: unknown argument %s — nothing was done. Pass only this tool's own arguments, at the top level.",
-		t.Name(), strings.Join(quoted, ", "))
+	msg := fmt.Sprintf("%s: unknown argument %s — nothing was done.", t.Name(), strings.Join(quoted, ", "))
+	var fix strings.Builder
+	fix.WriteString("Pass only this tool's own arguments, at the top level.")
 	// The two shapes seen most: arguments wrapped in an envelope, and a near
 	// spelling of a real argument.
 	for _, k := range unknown {
 		switch k {
 		case "input", "arguments", "args", "params", "parameters":
 			if json.Valid(in[k]) && strings.HasPrefix(strings.TrimSpace(string(in[k])), "{") {
-				fmt.Fprintf(&b, " Do not wrap the arguments in %q; put them directly in the call.", k)
+				fmt.Fprintf(&fix, " Do not wrap the arguments in %q; put them directly in the call.", k)
 			}
 			continue
 		}
 		if s := nearArgument(k, props); s != "" {
-			fmt.Fprintf(&b, " Did you mean %q instead of %q?", s, k)
+			fmt.Fprintf(&fix, " Did you mean %q instead of %q?", s, k)
 		}
 	}
-	return Result{Text: b.String(), IsError: true}, true
+	return validationRefusal(msg, fix.String()), true
+}
+
+// validationRefusal is a refusal the dispatcher makes itself because the call
+// is malformed: the caller can fix it alone and send a new call. msg says what
+// was wrong; fix is the next step.
+func validationRefusal(msg, fix string) Result {
+	return Result{
+		Text:    msg,
+		IsError: true,
+		Error:   &ErrorInfo{Category: CategoryValidation, Retryable: false, Description: fix},
+	}
 }
 
 // ArgumentRefusal reports whether Execute would refuse input to the named tool
@@ -80,6 +91,9 @@ func (d *Dispatcher) ArgumentRefusal(name string, input json.RawMessage) (string
 		return "", false
 	}
 	r, refused := d.refuseUnknownFields(t, input)
+	if refused && r.Error != nil && r.Error.Description != "" {
+		return r.Text + " " + r.Error.Description, true
+	}
 	return r.Text, refused
 }
 
@@ -137,25 +151,21 @@ func (d *Dispatcher) refuseSiblingArguments(t Tool, in map[string]json.RawMessag
 	}
 	sort.Strings(stray)
 
-	var b strings.Builder
-	for i, k := range stray {
-		if i == 0 {
-			fmt.Fprintf(&b, "%s %s: ", t.Name(), op)
-		} else {
-			b.WriteString(" ")
-		}
-		fmt.Fprintf(&b, "argument %q is not one %s takes (it belongs to %s).", k, op, owner[k])
+	var msg, fix strings.Builder
+	fmt.Fprintf(&msg, "%s %s:", t.Name(), op)
+	for _, k := range stray {
+		fmt.Fprintf(&msg, " argument %q is not one %s takes (it belongs to %s).", k, op, owner[k])
 		if s := ownNearArgument(k, own); s != "" {
-			fmt.Fprintf(&b, " Did you mean %q?", s)
+			fmt.Fprintf(&fix, "Did you mean %q instead of %q? ", s, k)
 		}
 	}
-	b.WriteString(" Nothing was done.")
+	msg.WriteString(" Nothing was done.")
 	if len(own) == 0 {
-		fmt.Fprintf(&b, " %s takes no arguments besides op.", op)
+		fmt.Fprintf(&fix, "%s takes no arguments besides op.", op)
 	} else {
-		fmt.Fprintf(&b, " %s takes: %s.", op, strings.Join(own, ", "))
+		fmt.Fprintf(&fix, "%s takes: %s.", op, strings.Join(own, ", "))
 	}
-	return Result{Text: b.String(), IsError: true}, true
+	return validationRefusal(msg.String(), fix.String()), true
 }
 
 // ownNearArgument suggests the op's own argument a sibling's argument was

@@ -32,6 +32,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -1138,10 +1139,16 @@ func (s *Server) Redactor() *redact.Redactor { return s.redactor }
 // fallback automatically. With s.mcpFallback nil this is identical
 // to tools.NewDispatcher(allowedTools).
 func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
+	var d *tools.Dispatcher
 	if s.mcpFallback == nil {
-		return tools.NewDispatcher(allowedTools)
+		d = tools.NewDispatcher(allowedTools)
+	} else {
+		d = tools.NewDispatcherWithFallback(allowedTools, s.mcpFallback)
 	}
-	return tools.NewDispatcherWithFallback(allowedTools, s.mcpFallback)
+	// A Go error a tool returns reaches the model classified — the same
+	// category, retryability and next step the transports give it.
+	d.SetErrorClassifier(errclassify.CategoryOf)
+	return d
 }
 
 // SessionLocks exposes the per-session lock map so the gRPC server
