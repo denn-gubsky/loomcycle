@@ -2991,8 +2991,8 @@ func main() {
 		// Adapt the server's channel def to the scheduler's DeclaredChannel:
 		// the two packages meet here rather than importing each other for the
 		// sake of one struct.
-		sched.SetChannelScope(func(ctx context.Context, name string) (scheduler.DeclaredChannel, bool) {
-			def, ok := srv.ResolveChannelScope(ctx, name)
+		sched.SetChannelScope(func(ctx context.Context, tenantID, name string) (scheduler.DeclaredChannel, bool) {
+			def, ok := srv.ResolveChannelScope(ctx, tenantID, name)
 			if !ok {
 				return scheduler.DeclaredChannel{}, false
 			}

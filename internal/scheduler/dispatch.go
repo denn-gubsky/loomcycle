@@ -68,7 +68,7 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	target, err := s.resolvePublishTarget(ctx, h.Channel, userID, agentName)
+	target, err := s.resolvePublishTarget(ctx, tenantID, h.Channel, userID, agentName)
 	if err != nil {
 		return err
 	}
@@ -114,14 +114,14 @@ func (s *Scheduler) dispatchChannelPublish(ctx context.Context, scheduleName, us
 // With no resolver (nil — small embeds / tests that don't wire one), it
 // falls back to the legacy behavior: user scope when the schedule has a
 // user_id, else global.
-func (s *Scheduler) resolvePublishTarget(ctx context.Context, channel, userID, agentName string) (publishTarget, error) {
+func (s *Scheduler) resolvePublishTarget(ctx context.Context, tenantID, channel, userID, agentName string) (publishTarget, error) {
 	if s.chScope == nil {
 		if userID != "" {
 			return publishTarget{Scope: store.MemoryScopeUser, ScopeID: userID}, nil
 		}
 		return publishTarget{Scope: store.MemoryScopeGlobal}, nil
 	}
-	declared, ok := s.chScope(ctx, channel)
+	declared, ok := s.chScope(ctx, tenantID, channel)
 	if !ok {
 		return publishTarget{}, fmt.Errorf("channel.publish: channel %q is not declared (static yaml or runtime substrate)", channel)
 	}
@@ -129,6 +129,10 @@ func (s *Scheduler) resolvePublishTarget(ctx context.Context, channel, userID, a
 	switch declared.Scope {
 	case "global":
 		out.Scope = store.MemoryScopeGlobal
+	case "tenant":
+		// Shared across the tenant (scope_id ""), isolated from other tenants
+		// by the message's tenant — the same keying the Channel tool uses.
+		out.Scope = store.MemoryScopeTenant
 	case "user":
 		if userID == "" {
 			return publishTarget{}, fmt.Errorf("channel.publish: channel %q has scope=user but schedule has no user_id", channel)

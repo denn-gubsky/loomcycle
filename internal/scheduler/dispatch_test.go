@@ -45,7 +45,9 @@ func channelHookDef(channel string) scheduleDef {
 func TestScheduler_OnCompleteHookUsesSurvivalCtx(t *testing.T) {
 	def := channelHookDef("ctx-survival")
 	sched, _, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global"}, true
+	})
 
 	// Parent ctx already cancelled — the run still "completes" (the fake
 	// runner ignores ctx), so status=="completed" and the survival ctx kicks
@@ -73,7 +75,9 @@ func TestScheduler_OnCompleteHookUsesSurvivalCtx(t *testing.T) {
 // global peek returns 0 and the user peek returns 1 (both assertions flip).
 func TestScheduler_OnCompleteChannelPublish_HonorsGlobalScope(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, channelHookDef("exp5-pings"), time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "global"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "global"}, true
+	})
 
 	fireT(t, sched)
 
@@ -89,7 +93,9 @@ func TestScheduler_OnCompleteChannelPublish_HonorsGlobalScope(t *testing.T) {
 // still publishes under user/<user_id> (unchanged from pre-fix).
 func TestScheduler_OnCompleteChannelPublish_UserScope(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, channelHookDef("results-alice"), time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "user"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "user"}, true
+	})
 
 	fireT(t, sched)
 
@@ -105,7 +111,9 @@ func TestScheduler_OnCompleteChannelPublish_UserScope(t *testing.T) {
 // publishes under agent/<agent name> (the schedule's def.Agent).
 func TestScheduler_OnCompleteChannelPublish_AgentScope(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, channelHookDef("agent-bus"), time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{Scope: "agent"}, true })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
+		return DeclaredChannel{Scope: "agent"}, true
+	})
 
 	fireT(t, sched)
 
@@ -119,7 +127,7 @@ func TestScheduler_OnCompleteChannelPublish_AgentScope(t *testing.T) {
 // mis-scoping — nothing is published.
 func TestScheduler_OnCompleteChannelPublish_UndeclaredFails(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, channelHookDef("ghost"), time.Now().Add(-1*time.Minute))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) { return DeclaredChannel{}, false })
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) { return DeclaredChannel{}, false })
 
 	fireT(t, sched)
 
@@ -148,7 +156,7 @@ func TestScheduler_OnCompleteChannelPublish_LegacyNilResolver(t *testing.T) {
 // does. Without this a completed run would walk past the same breakpoint.
 func TestDispatchChannelPublish_HonoursAHold(t *testing.T) {
 	sched, _, _, _, st := schedulerFixture(t, channelHookDef("done"), time.Now().Add(time.Hour))
-	sched.SetChannelScope(func(context.Context, string) (DeclaredChannel, bool) {
+	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
 		return DeclaredChannel{Scope: "global", Hold: true}, true
 	})
 

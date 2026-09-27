@@ -171,7 +171,10 @@ type DeclaredChannel struct {
 // honours the channel's declared retention. Satisfied by
 // (*http.Server).ResolveChannelScope; nil leaves the legacy user-scope
 // behavior untouched.
-type ChannelScopeResolver func(ctx context.Context, channel string) (DeclaredChannel, bool)
+//
+// tenantID is the schedule's own tenant: a sweep runs on a ctx with no
+// identity, so the resolver cannot find the tenant's runtime channels from ctx.
+type ChannelScopeResolver func(ctx context.Context, tenantID, channel string) (DeclaredChannel, bool)
 
 // SetChannelScope wires the channel-scope resolver. Must be called before
 // Start (the sweeper reads chScope when dispatching on_complete hooks). A
@@ -507,7 +510,7 @@ func (s *Scheduler) publishTick(ctx context.Context, scheduleName string, def sc
 	if err != nil {
 		return fmt.Errorf("marshal tick: %w", err)
 	}
-	target, err := s.resolvePublishTarget(ctx, def.Channel, def.UserID, def.Agent)
+	target, err := s.resolvePublishTarget(ctx, def.TenantID, def.Channel, def.UserID, def.Agent)
 	if err != nil {
 		return err
 	}
