@@ -57,11 +57,11 @@ const maxRememberChars = 1000
 func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	text := strings.TrimSpace(in.Text)
 	if text == "" {
-		return errResult("remember: missing required field: text (the statement to remember, " +
-			"as one self-contained sentence)"), nil
+		return errValidation("remember: missing required field: text (the statement to remember, "+
+			"as one self-contained sentence)", ""), nil
 	}
 	if len(text) > maxRememberChars {
-		return errResult("remember: that is longer than a fact — store it as a document instead"), nil
+		return errValidation("remember: that is longer than a fact — store it as a document instead", "Shorten it to one sentence, or store it with op=create_document."), nil
 	}
 
 	// Get-or-create the scope's entity document, mirroring what the consolidation pass
@@ -69,7 +69,7 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// graph a recall walks would have two disconnected halves.
 	docID, err := d.entityDocumentID(ctx, key, mscope, in.Scope)
 	if err != nil {
-		return errResult("remember: " + err.Error()), nil
+		return errFrom("remember: "+err.Error(), err), nil
 	}
 
 	// Composed as an upsert rather than duplicating its write path: one place still

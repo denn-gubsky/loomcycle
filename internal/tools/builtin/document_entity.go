@@ -52,10 +52,10 @@ var entityClasses = map[string]bool{"derived": true, "evidential": true}
 // would make every consolidation pass guess a revision it has no way to hold.
 func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if strings.TrimSpace(in.NaturalKey) == "" {
-		return errResult("upsert_chunk: missing required field: natural_key (the idempotency handle — without it this is create_chunk)"), nil
+		return errValidation("upsert_chunk: missing required field: natural_key (the idempotency handle — without it this is create_chunk)", "Pass `natural_key`, or use op=create_chunk for a chunk with no idempotency handle."), nil
 	}
 	if in.Class != "" && !entityClasses[in.Class] {
-		return errResult(fmt.Sprintf("upsert_chunk: unknown class %q (want derived or evidential)", in.Class)), nil
+		return errValidation(fmt.Sprintf("upsert_chunk: unknown class %q (want derived or evidential)", in.Class), "Omit `class`, or pass derived or evidential."), nil
 	}
 	// The ontology governs what an entity assertion may be about, so every writer is
 	// held to it here rather than only the one that carries its own list.
@@ -65,7 +65,7 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 
 	existing, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey)
 	if err != nil {
-		return errResult("upsert_chunk: lookup: " + err.Error()), nil
+		return errFrom("upsert_chunk: lookup: "+err.Error(), err), nil
 	}
 
 	// upsert_chunk IS the fact-tier write op — every write through it gets a
@@ -100,10 +100,10 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			ID string `json:"id"`
 		}
 		if uerr := json.Unmarshal([]byte(res.Text), &created); uerr != nil || created.ID == "" {
-			return errResult("upsert_chunk: created the chunk but could not read its id back"), nil
+			return errBusiness("upsert_chunk: created the chunk but could not read its id back", "The chunk may exist without its natural_key. Find it with op=search before writing again, so a retry does not create a duplicate."), nil
 		}
 		if werr := d.writeChunkMeta(ctx, key, created.ID, in); werr != nil {
-			return errResult("upsert_chunk: chunk created but its metadata write failed: " + werr.Error()), nil
+			return errFrom("upsert_chunk: chunk created but its metadata write failed: "+werr.Error(), werr), nil
 		}
 		return okJSON(map[string]any{
 			"id": created.ID, "natural_key": in.NaturalKey, "created": true,
@@ -113,10 +113,10 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// Update in place. Only the fields the caller actually supplied move, so an
 	// upsert that carries a new body does not blank a title it never mentioned.
 	if uerr := d.updateChunkForUpsert(ctx, key, mscope, existing, in); uerr != nil {
-		return errResult("upsert_chunk: " + uerr.Error()), nil
+		return errFrom("upsert_chunk: "+uerr.Error(), uerr), nil
 	}
 	if werr := d.writeChunkMeta(ctx, key, existing, in); werr != nil {
-		return errResult("upsert_chunk: metadata write failed: " + werr.Error()), nil
+		return errFrom("upsert_chunk: metadata write failed: "+werr.Error(), werr), nil
 	}
 	return okJSON(map[string]any{
 		"id": existing, "natural_key": in.NaturalKey, "created": false,
@@ -359,7 +359,7 @@ const identityNodeExclusion = `NOT EXISTS (SELECT 1 FROM chunk_edges e ` +
 // "fact" mean "has a sidecar" rather than "any chunk".
 func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.Class != "" && !entityClasses[in.Class] {
-		return errResult("list_facts: class must be one of: derived, evidential"), nil
+		return errValidation("list_facts: class must be one of: derived, evidential", ""), nil
 	}
 	// Same default/cap as graph_recall — a fact list is a browse surface, so the
 	// bound is a page size, not a correctness limit.
@@ -415,14 +415,14 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.About != "" {
 		docID, ok, derr := d.documentOfChunk(ctx, key, in.About)
 		if derr != nil {
-			return errResult("list_facts: about: " + derr.Error()), nil
+			return errFrom("list_facts: about: "+derr.Error(), derr), nil
 		}
 		if !ok {
 			// Reported rather than answered with an empty list: a filter naming a
 			// chunk that does not exist is a caller mistake, and "no facts about it"
 			// is indistinguishable from "that subject has none".
-			return errResult("list_facts: no such chunk: " + in.About +
-				" (about takes a SUBJECT's entity chunk id — a subject document's root_chunk_id)"), nil
+			return errNotFound("list_facts: no such chunk: "+in.About+
+				" (about takes a SUBJECT's entity chunk id — a subject document's root_chunk_id)", "Pass a subject document's root_chunk_id; find one with op=query_documents or op=search."), nil
 		}
 		frag, fargs := factsAboutSubjectSQL(in.About, docID)
 		where = append(where, frag)
@@ -433,8 +433,8 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		// the flag would silently do nothing and the caller would read the local answer
 		// as the wide one. That silent-downgrade shape is what a dropped source
 		// selector already cost once.
-		return errResult("list_facts: across_scopes needs `about` — it finds the SAME " +
-			"SUBJECT in your other readable scopes, so there has to be a subject to find"), nil
+		return errValidation("list_facts: across_scopes needs `about` — it finds the SAME "+
+			"SUBJECT in your other readable scopes, so there has to be a subject to find", "Pass `about` with across_scopes, or drop across_scopes."), nil
 	}
 	// Reuse graph_recall's temporal filter so "currently true" means the same
 	// thing on both surfaces. The INNER JOIN makes m.chunk_id non-null, so the
@@ -459,7 +459,7 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 
 	res, err := d.query(ctx, key, stmt, args...)
 	if err != nil {
-		return errResult("list_facts: " + err.Error()), nil
+		return errFrom("list_facts: "+err.Error(), err), nil
 	}
 	truncated := len(res.Rows) > limit
 	rows := res.Rows
@@ -820,13 +820,13 @@ func originForEntityWrite(ctx context.Context) string {
 // memory-content family past an age, gated by its class.
 func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("supersede_chunk: missing required field: id (the REPLACEMENT chunk)"), nil
+		return errValidation("supersede_chunk: missing required field: id (the REPLACEMENT chunk)", ""), nil
 	}
 	if in.SupersedesID == "" {
-		return errResult("supersede_chunk: missing required field: supersedes_id (the chunk being retired)"), nil
+		return errValidation("supersede_chunk: missing required field: supersedes_id (the chunk being retired)", ""), nil
 	}
 	if in.ID == in.SupersedesID {
-		return errResult("supersede_chunk: a chunk cannot supersede itself"), nil
+		return errValidation("supersede_chunk: a chunk cannot supersede itself", "Pass a different chunk as `id` — the replacement that carries the corrected fact."), nil
 	}
 
 	// Both chunks must exist, checked BEFORE anything is written: a supersede that
@@ -836,10 +836,10 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 	for _, id := range []string{in.ID, in.SupersedesID} {
 		res, err := d.query(ctx, key, `SELECT id FROM chunks WHERE id = ?`, id)
 		if err != nil {
-			return errResult("supersede_chunk: lookup: " + err.Error()), nil
+			return errFrom("supersede_chunk: lookup: "+err.Error(), err), nil
 		}
 		if len(res.Rows) == 0 {
-			return errResult(fmt.Sprintf("supersede_chunk: chunk %q not found in this scope", id)), nil
+			return errNotFound(fmt.Sprintf("supersede_chunk: chunk %q not found in this scope", id), "Pass chunk ids from this scope; find them with op=list_facts or op=search."), nil
 		}
 	}
 
@@ -862,7 +862,7 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 	// internals into a model-visible result.
 	existing, err := d.priorSuperseder(ctx, key, in.SupersedesID)
 	if err != nil {
-		return errResult("supersede_chunk: supersession lookup: " + err.Error()), nil
+		return errFrom("supersede_chunk: supersession lookup: "+err.Error(), err), nil
 	}
 	if existing == in.ID {
 		return okJSON(map[string]any{
@@ -870,15 +870,15 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 		})
 	}
 	if existing != "" {
-		return errResult(fmt.Sprintf(
+		return errBusiness(fmt.Sprintf(
 			"supersede_chunk: chunk %q is already superseded by %q. To correct that newer "+
 				"fact, supersede %q instead — superseding the same chunk twice would leave two "+
-				"contradictory current facts.", in.SupersedesID, existing, existing)), nil
+				"contradictory current facts.", in.SupersedesID, existing, existing), ""), nil
 	}
 
 	now, _, txErr := d.retireChunk(ctx, key, in.SupersedesID, in.ID)
 	if txErr != nil {
-		return errResult("supersede_chunk: " + txErr.Error()), nil
+		return errFrom("supersede_chunk: "+txErr.Error(), txErr), nil
 	}
 	return okJSON(map[string]any{
 		"id": in.ID, "supersedes": in.SupersedesID, "retired_at": now,

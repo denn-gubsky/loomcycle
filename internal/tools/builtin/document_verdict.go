@@ -86,14 +86,14 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	case "mistyped":
 		confidence = confidenceMistyped
 	default:
-		return errResult("judge_fact: verdict must be \"supported\", \"unclear\", \"mistyped\" or " +
-			"\"unsupported\" — a number is not accepted, because the scale belongs to the " +
-			"server and two callers using different scales would make the floor meaningless"), nil
+		return errValidation("judge_fact: verdict must be \"supported\", \"unclear\", \"mistyped\" or "+
+			"\"unsupported\" — a number is not accepted, because the scale belongs to the "+
+			"server and two callers using different scales would make the floor meaningless", ""), nil
 	}
 	if strings.TrimSpace(in.Reason) == "" {
-		return errResult("judge_fact: reason is required — a verdict an operator cannot act on " +
-			"is a verdict nobody trusts, and a withheld fact with no stated ground is indistinguishable " +
-			"from a bug"), nil
+		return errValidation("judge_fact: reason is required — a verdict an operator cannot act on "+
+			"is a verdict nobody trusts, and a withheld fact with no stated ground is indistinguishable "+
+			"from a bug", "Resend with a `reason` naming what in the source span supports or contradicts the fact."), nil
 	}
 
 	chunkID := strings.TrimSpace(in.ID)
@@ -101,22 +101,22 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		if nk := strings.TrimSpace(in.NaturalKey); nk != "" {
 			id, err := d.chunkIDByNaturalKey(ctx, key, nk)
 			if err != nil {
-				return errResult("judge_fact: lookup: " + err.Error()), nil
+				return errFrom("judge_fact: lookup: "+err.Error(), err), nil
 			}
 			chunkID = id
 		}
 	}
 	if chunkID == "" {
-		return errResult("judge_fact: name the fact by id or natural_key"), nil
+		return errValidation("judge_fact: name the fact by id or natural_key", "Pass `id`, or a `natural_key` that exists in this scope; find facts with op=list_facts."), nil
 	}
 	prev, found, err := d.readChunkMeta(ctx, key, chunkID)
 	if err != nil {
-		return errResult("judge_fact: " + err.Error()), nil
+		return errFrom("judge_fact: "+err.Error(), err), nil
 	}
 	if !found {
 		// Only a fact can be judged. A plain chunk has no claim to check and no span to
 		// check it against.
-		return errResult("judge_fact: that chunk is not a fact (it carries no entity metadata)"), nil
+		return errNotFound("judge_fact: that chunk is not a fact (it carries no entity metadata)", "Pass a fact's chunk id; find facts with op=list_facts."), nil
 	}
 	// A fact with no span cannot be CHECKED against anything — but a person can still
 	// vouch for it, and that is a different act with a different authority.
@@ -141,17 +141,17 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	judgedBy := judgedByForVerdict(ctx)
 	mayVouch := judgedBy == "operator" && verdict != "mistyped"
 	if prev.SourceQuote == "" && verdict != "unclear" && !mayVouch {
-		return errResult("judge_fact: that fact records no source span, so there is nothing to " +
-			"check it against. An operator may still vouch for it from the console — a run " +
-			"may not, because affirming what you cannot check is the failure a span exists " +
-			"to prevent. Leave it unjudged, which reads as unverified"), nil
+		return errBusiness("judge_fact: that fact records no source span, so there is nothing to "+
+			"check it against. An operator may still vouch for it from the console — a run "+
+			"may not, because affirming what you cannot check is the failure a span exists "+
+			"to prevent. Leave it unjudged, which reads as unverified", ""), nil
 	}
 
 	now := time.Now().UnixNano()
 	if err := d.exec(ctx, key,
 		`UPDATE chunk_memory_meta SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE chunk_id = ?`,
 		confidence, now, in.Reason, judgedBy, chunkID); err != nil {
-		return errResult("judge_fact: " + err.Error()), nil
+		return errFrom("judge_fact: "+err.Error(), err), nil
 	}
 	return jsonResult(map[string]any{
 		"chunk_id":   chunkID,
