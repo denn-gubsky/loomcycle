@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -47,8 +48,10 @@ func (p *iterCounterProvider) Call(_ context.Context, _ providers.Request) (<-ch
 
 	ch := make(chan providers.Event, 3)
 	if turn < p.target {
+		// A distinct argument per turn: these are `target` real steps, not one
+		// call repeated, which the dispatcher refuses the third time in a row.
 		ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{
-			ID: "t", Name: "Noop", Input: json.RawMessage(`{}`),
+			ID: "t", Name: "Noop", Input: json.RawMessage(fmt.Sprintf(`{"step":%d}`, turn)),
 		}}
 		ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
 	} else {
