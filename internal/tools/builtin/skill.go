@@ -119,7 +119,7 @@ func (s *SkillTool) InputSchema() json.RawMessage { return json.RawMessage(skill
 func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
 	var in skillInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return tools.Result{IsError: true, Text: fmt.Sprintf("invalid input JSON: %s", err)}, nil
+		return errValidation(fmt.Sprintf("invalid input JSON: %s", err), "Send the input as a JSON object matching the tool schema."), nil
 	}
 	op := strings.TrimSpace(in.Op)
 	if op == "" {
@@ -132,7 +132,7 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	case "invoke":
 		return s.execInvoke(ctx, policy, strings.TrimSpace(in.Name))
 	default:
-		return tools.Result{IsError: true, Text: fmt.Sprintf("Skill: unknown op %q (want \"invoke\" or \"list\")", op)}, nil
+		return errValidation(fmt.Sprintf("Skill: unknown op %q (want \"invoke\" or \"list\")", op), ""), nil
 	}
 }
 
@@ -140,15 +140,16 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 // allowlist and the skill-tools ⊆ agent-tools invariant.
 func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValue, name string) (tools.Result, error) {
 	if name == "" {
-		return tools.Result{IsError: true, Text: "missing required field: name"}, nil
+		return errValidation("missing required field: name", "Pass `name`: a skill from op=list."), nil
 	}
 	// RFC BA: the agent's `skills:` allowlist gates WHICH skills it may load.
 	if !skillmatch.Allowed(policy.Patterns, name) {
-		return tools.Result{IsError: true, Text: fmt.Sprintf("skill %q is not permitted by this agent's `skills:` allowlist", name)}, nil
+		return errPermission(fmt.Sprintf("skill %q is not permitted by this agent's `skills:` allowlist", name),
+			"Use a skill from op=list, or ask an operator to add this one to the agent's skills."), nil
 	}
-	body, allowedTools, source, err := s.resolveSkill(ctx, name)
-	if err != nil {
-		return tools.Result{IsError: true, Text: err.Error()}, nil
+	body, allowedTools, source, fail := s.resolveSkill(ctx, name)
+	if fail != nil {
+		return *fail, nil
 	}
 	// SECURITY: enforce skill.tools ⊆ agent.tools at tool-call time. Agent
 	// tools are read from ctx so the SkillTool struct stays per-server. Prefer
@@ -157,13 +158,10 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 	agentTools := tools.AgentTools(ctx)
 	agentPatterns := tools.AgentToolPatterns(ctx)
 	if widening := skillToolsExceedingAgent(allowedTools, agentTools, agentPatterns); len(widening) > 0 {
-		return tools.Result{
-			IsError: true,
-			Text: fmt.Sprintf(
-				"skill %q (%s) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
-				name, source, widening,
-			),
-		}, nil
+		return errPermission(fmt.Sprintf(
+			"skill %q (%s) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
+			name, source, widening,
+		), "Use another skill, or ask an operator to grant this agent those tools."), nil
 	}
 	return tools.Result{Text: body}, nil
 }
@@ -213,11 +211,17 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 	return okJSONCount(map[string]any{"skills": out}, len(out))
 }
 
+// skillFail boxes a classified failure for resolveSkill's return.
+func skillFail(r tools.Result) *tools.Result { return &r }
+
 // resolveSkill looks up a skill by name. Returns (body, tools,
-// source, err) where `source` is "skill_def" or "static" for the
+// source, fail) where `source` is "skill_def" or "static" for the
 // resolution branch — useful for operator diagnostics in widening
-// refusals.
-func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []string, string, error) {
+// refusals. fail is the classified tool result when the lookup fails
+// (nil on success): its reasons differ in kind (a name that does not
+// exist, no skills configured at all, a broken stored definition, a
+// store error), and only here is the reason known.
+func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []string, string, *tools.Result) {
 	// 1. DB-promoted active SkillDef wins when Store is wired.
 	if s.Store != nil {
 		// RFC N: read the active pointer within the agent's own tenant
@@ -226,19 +230,21 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 		if err == nil {
 			var def skillDefOverlay
 			if uerr := json.Unmarshal(row.Definition, &def); uerr != nil {
-				return "", nil, "", fmt.Errorf("skill %q: corrupt active def %s: %v", name, row.DefID, uerr)
+				return "", nil, "", skillFail(errBusiness(fmt.Sprintf("skill %q: corrupt active def %s: %v", name, row.DefID, uerr),
+					"Ask an operator to repair or re-promote this skill; continue without it."))
 			}
 			if strings.TrimSpace(def.Body) == "" {
 				// Shouldn't happen — SkillDef.create/fork reject empty
 				// bodies — but defend against a hand-mucked DB row
 				// rather than silently emitting an empty tool_result.
-				return "", nil, "", fmt.Errorf("skill %q: active def %s has empty body", name, row.DefID)
+				return "", nil, "", skillFail(errBusiness(fmt.Sprintf("skill %q: active def %s has empty body", name, row.DefID),
+					"Ask an operator to repair or re-promote this skill; continue without it."))
 			}
 			return def.Body, def.Tools, "skill_def", nil
 		}
 		var nf *store.ErrNotFound
 		if !errors.As(err, &nf) {
-			return "", nil, "", fmt.Errorf("skill %q: lookup active def: %v", name, err)
+			return "", nil, "", skillFail(errFrom(fmt.Sprintf("skill %q: lookup active def: %v", name, err), err))
 		}
 		// Fall through to static lookup.
 	}
@@ -267,10 +273,12 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 				if len(names) > cap {
 					more = ", ..."
 				}
-				return "", nil, "", fmt.Errorf("unknown skill %q (substrate has: %s%s)", name, strings.Join(avail, ", "), more)
+				return "", nil, "", skillFail(errNotFound(fmt.Sprintf("unknown skill %q (substrate has: %s%s)", name, strings.Join(avail, ", "), more),
+					"Use a skill name from op=list."))
 			}
 		}
-		return "", nil, "", fmt.Errorf("Skill tool: no skills configured (push via POST /v1/_skilldef create, or set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md for the static-MD path)")
+		return "", nil, "", skillFail(errBusiness("Skill tool: no skills configured (push via POST /v1/_skilldef create, or set LOOMCYCLE_SKILLS_ROOT and populate <root>/<name>/SKILL.md for the static-MD path)",
+			"No skills are available on this deployment; continue without one."))
 	}
 	sk, ok := s.Set.Get(name)
 	if !ok {
@@ -288,7 +296,7 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 			}
 			hint += ")"
 		}
-		return "", nil, "", fmt.Errorf("unknown skill %q%s", name, hint)
+		return "", nil, "", skillFail(errNotFound(fmt.Sprintf("unknown skill %q%s", name, hint), "Use a skill name from op=list."))
 	}
 	return sk.Body, sk.Tools, "static", nil
 }

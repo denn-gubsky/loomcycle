@@ -48,8 +48,8 @@ const windowMaxContext = 10
 func (h *History) window(ctx context.Context, scope string, in historyInput) (tools.Result, error) {
 	quote := strings.TrimSpace(in.Quote)
 	if quote == "" {
-		return errResult("history: window requires quote — the fact's source span, which is what " +
-			"anchors it to a turn (recall returns it as `source`)"), nil
+		return errValidation("history: window requires quote — the fact's source span, which is what "+
+			"anchors it to a turn (recall returns it as `source`)", "Pass quote: the fact's `source` span as recall returned it."), nil
 	}
 	sess, err := h.loadSessionInScope(ctx, scope, "window", in.SessionID)
 	if err != nil {
@@ -57,12 +57,12 @@ func (h *History) window(ctx context.Context, scope string, in historyInput) (to
 		// the fact before it removes the session, so the caller still holds the evidence;
 		// what it has lost is the surrounding context. Saying which of the two happened
 		// is the difference between "look elsewhere" and "this is broken".
-		return errResult("history: window: " + err.Error() + " — the fact's span survives on " +
-			"the fact itself; only the surrounding turns are gone"), nil
+		return errNotFound("history: window: "+err.Error()+" — the fact's span survives on "+
+			"the fact itself; only the surrounding turns are gone", "Pass the session_id recall reported on the fact; if that chat is gone, answer from the span the fact carries."), nil
 	}
 	events, err := h.Store.GetTranscript(ctx, sess.ID)
 	if err != nil {
-		return errResult("history: window: transcript: " + err.Error()), nil
+		return errFrom("history: window: transcript: "+err.Error(), err), nil
 	}
 	turns := conversationTurns(events)
 

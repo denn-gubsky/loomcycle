@@ -453,18 +453,18 @@ func newDocID() string {
 
 func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return errResult("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)"), nil
+		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
 	}
 	var in docInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errResult("invalid input JSON: " + err.Error()), nil
+		return errValidation("invalid input JSON: "+err.Error(), "Resend the call as one JSON object matching the Document input schema."), nil
 	}
 	key, mscope, err := d.resolveScope(ctx, in.Scope)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return docFail("", err), nil
 	}
 	if err := d.ensureSchema(ctx, key); err != nil {
-		return errResult("document: schema init: " + err.Error()), nil
+		return errFrom("document: schema init: "+err.Error(), err), nil
 	}
 	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
 	// single dispatch point rather than inside each op — a per-op check is one op away
@@ -572,9 +572,9 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	case "diff_remote":
 		return d.diffRemote(ctx, key, mscope, in)
 	case "":
-		return errResult("missing required field: op"), nil
+		return errValidation("missing required field: op", "Pass `op`, e.g. op=query_documents to list documents or op=get_document to read one."), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q", in.Op)), nil
+		return errValidation(fmt.Sprintf("unknown op %q", in.Op), "Pass one of the ops in the Document tool's `op` enum."), nil
 	}
 }
 
@@ -593,19 +593,21 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 	// agent holds the tenant grants below. Server-derived from the run's Isolated
 	// bit; a non-isolated run is unaffected.
 	if err := tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)); err != nil {
-		return sqlmem.ScopeKey{}, "", err
+		return sqlmem.ScopeKey{}, "", docClassify(err, errPermission, "Use scope=user or scope=agent.")
 	}
 	switch requested {
 	case "agent":
 		name := tools.AgentName(ctx)
 		if name == "" {
-			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=agent requires a yaml-declared agent")
+			return sqlmem.ScopeKey{}, "", docClassify(fmt.Errorf("Document: scope=agent requires a yaml-declared agent"),
+				errBusiness, "Use scope=user.")
 		}
 		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "agent", ScopeID: name}, store.MemoryScopeAgent, nil
 	case "user":
 		uid := tools.RunIdentity(ctx).UserID
 		if uid == "" {
-			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=user requires a user_id on the run")
+			return sqlmem.ScopeKey{}, "", docClassify(fmt.Errorf("Document: scope=user requires a user_id on the run"),
+				errBusiness, "Use scope=agent, or start the run with a user_id.")
 		}
 		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "user", ScopeID: uid}, store.MemoryScopeUser, nil
 	case "tenant":
@@ -651,15 +653,61 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 			missing = append(missing, "sql_scopes: [tenant]")
 		}
 		if len(missing) > 0 {
-			return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: scope=tenant is not granted to this agent — "+
+			return sqlmem.ScopeKey{}, "", docClassify(fmt.Errorf("Document: scope=tenant is not granted to this agent — "+
 				"a tenant document is readable and writable by every user and agent in the tenant, so the "+
 				"operator must opt in. Missing on the agent: %s (a document needs both — structure lives in "+
-				"SQL Memory, chunk bodies in Memory)", strings.Join(missing, " and "))
+				"SQL Memory, chunk bodies in Memory)", strings.Join(missing, " and ")),
+				errPermission, "Use scope=user or scope=agent, or ask an operator to grant the tenant scope.")
 		}
 		return sqlmem.ScopeKey{Tenant: sqlTenant, Scope: "tenant", ScopeID: sqlTenant}, store.MemoryScopeTenant, nil
 	default:
-		return sqlmem.ScopeKey{}, "", fmt.Errorf("Document: unknown scope %q (agent | user | tenant)", requested)
+		return sqlmem.ScopeKey{}, "", docClassify(fmt.Errorf("Document: unknown scope %q (agent | user | tenant)", requested),
+			errValidation, "Pass scope as agent, user or tenant.")
 	}
+}
+
+// docClassified is an error this file built whose failure category is already
+// known where it was made — a refused scope, a malformed path. A helper returns
+// it as an error, and the op that surfaces it prefixes its own name; docFail
+// recovers the category so the prefix does not cost the model the kind of
+// failure. Its text is the wrapped error's, unchanged.
+type docClassified struct {
+	err  error
+	kind func(msg, next string) tools.Result
+	next string
+}
+
+func (e *docClassified) Error() string { return e.err.Error() }
+func (e *docClassified) Unwrap() error { return e.err }
+
+func docClassify(err error, kind func(msg, next string) tools.Result, next string) error {
+	return &docClassified{err: err, kind: kind, next: next}
+}
+
+// docPathFix is the next step for a Path-tree path that is not well formed.
+const docPathFix = "Pass an absolute path below the root, e.g. /documents/<name>."
+
+// docFail is the failure prefix+err.Error(). An error built by docClassify keeps
+// its category; any other came back from a store or backend and is classified
+// by its type (errFrom).
+func docFail(prefix string, err error) tools.Result {
+	msg := prefix + err.Error()
+	var dc *docClassified
+	if errors.As(err, &dc) {
+		return dc.kind(msg, dc.next)
+	}
+	return errFrom(msg, err)
+}
+
+// docRawSQLFail is a failure of query_chunks' raw `sql` escape hatch. The SQL
+// is the caller's own, so a statement the read-only validator refuses is the
+// caller's to fix; a driver or backend fault is classified by its type.
+func docRawSQLFail(msg string, err error) tools.Result {
+	var se *sqlmem.ErrStatement
+	if errors.As(err, &se) {
+		return errValidation(msg, "Send one read-only SELECT statement, or use query_chunks' filters (document_id, type, status, tag) instead of `sql`.")
+	}
+	return errFrom(msg, err)
 }
 
 // direntTenant is the tenant used for Path-tree dirents — the RAW
@@ -1605,7 +1653,7 @@ func (d *Document) SetChunkStatus(ctx context.Context, scope, chunkID, status st
 
 func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.Title == "" {
-		return errResult("create_document: missing required field: title"), nil
+		return errValidation("create_document: missing required field: title", "Pass `title`, the document's name."), nil
 	}
 	now := time.Now().UnixNano()
 	docID := newDocID()
@@ -1631,12 +1679,12 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		// hits this is looking at a store whose entities have not been moved into
 		// their own documents yet, and that is what the message has to say.
 		if held, herr := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey); herr != nil {
-			return errResult("create_document: natural key lookup: " + herr.Error()), nil
+			return errFrom("create_document: natural key lookup: "+herr.Error(), herr), nil
 		} else if held != "" {
-			return errResult("create_document: chunk " + held + " already holds the natural key " +
-				strconv.Quote(in.NaturalKey) + ", and a key names ONE thing per scope. That entity " +
-				"has not been moved into its own document yet — run the subject-homing migration " +
-				"(POST /v1/_memory/home_facts), which moves the node itself rather than copying it."), nil
+			return errBusiness("create_document: chunk "+held+" already holds the natural key "+
+				strconv.Quote(in.NaturalKey)+", and a key names ONE thing per scope. That entity "+
+				"has not been moved into its own document yet — run the subject-homing migration "+
+				"(POST /v1/_memory/home_facts), which moves the node itself rather than copying it.", "Use the existing entity (read it with op=get_chunk on that id), or ask an operator to run the subject-homing migration."), nil
 		}
 	}
 	rootID := newDocID()
@@ -1645,15 +1693,15 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// get_document read). They start in sync here; update_chunk keeps them so.
 	if err := d.exec(ctx, key, `INSERT INTO documents (id, title, root_chunk_id, type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		docID, in.Title, rootID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), now, now); err != nil {
-		return errResult("create_document: " + err.Error()), nil
+		return errFrom("create_document: "+err.Error(), err), nil
 	}
 	// The root chunk anchors the hierarchy (parent_id NULL).
 	if err := d.exec(ctx, key, `INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision) VALUES (?, ?, NULL, 0, ?, ?, ?, ?, ?, 1)`,
 		rootID, docID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now); err != nil {
-		return errResult("create_document: root chunk: " + err.Error()), nil
+		return errFrom("create_document: root chunk: "+err.Error(), err), nil
 	}
 	if err := d.writeBody(ctx, mscope, key, rootID, "", "", nil); err != nil {
-		return errResult("create_document: root body: " + err.Error()), nil
+		return errFrom("create_document: root body: "+err.Error(), err), nil
 	}
 	// A DOCUMENT'S ROOT CAN BE THE ENTITY ITSELF (RFC CV decision 1). When the
 	// caller names the entity pair AND a natural key, the root chunk gets the
@@ -1683,14 +1731,14 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			_ = d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, rootID)
 			_ = d.exec(ctx, key, `DELETE FROM documents WHERE id = ?`, docID)
 			_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(rootID))
-			return errResult("create_document: the root's entity metadata could not be written, " +
-				"so nothing was created: " + err.Error()), nil
+			return errFrom("create_document: the root's entity metadata could not be written, "+
+				"so nothing was created: "+err.Error(), err), nil
 		}
 	}
 	// A document's tags are its own (independent of the root chunk's tags).
 	if len(in.Tags) > 0 {
 		if err := d.replaceDocumentTags(ctx, key, docID, in.Tags); err != nil {
-			return errResult("create_document: tags: " + err.Error()), nil
+			return errFrom("create_document: tags: "+err.Error(), err), nil
 		}
 	}
 	resp := map[string]any{"document_id": docID, "root_chunk_id": rootID, "title": in.Title}
@@ -1761,23 +1809,23 @@ func (d *Document) setPath(ctx context.Context, key sqlmem.ScopeKey, in docInput
 		docID = in.DocumentID
 	}
 	if docID == "" {
-		return errResult("set_path: missing required field: id (the document_id)"), nil
+		return errValidation("set_path: missing required field: id (the document_id)", "Pass `id`, a document_id from create_document or query_documents."), nil
 	}
 	if in.Path == "" {
-		return errResult("set_path: missing required field: path"), nil
+		return errValidation("set_path: missing required field: path", "Pass `path`, e.g. /documents/<name>."), nil
 	}
 	// Verify the document exists in THIS scope — never name a phantom (and so a
 	// cross-scope id opaquely 404s rather than creating a dangling dirent).
 	res, err := d.query(ctx, key, `SELECT id FROM documents WHERE id = ? LIMIT 1`, docID)
 	if err != nil {
-		return errResult("set_path: " + err.Error()), nil
+		return errFrom("set_path: "+err.Error(), err), nil
 	}
 	if len(res.Rows) == 0 {
-		return errResult("set_path: no such document: " + docID), nil
+		return errNotFound("set_path: no such document: "+docID, "Pass a document_id from op=query_documents in the same scope."), nil
 	}
 	p, perr := d.registerDocDirent(ctx, key, docID, in.Path)
 	if perr != nil {
-		return errResult("set_path: " + perr.Error()), nil
+		return docFail("set_path: ", perr), nil
 	}
 	return jsonResult(map[string]any{"document_id": docID, "path": p})
 }
@@ -1811,11 +1859,11 @@ func direntScopeID(key sqlmem.ScopeKey) string {
 func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, docID, rawPath string) (string, error) {
 	canonical, err := normalizePath(rawPath)
 	if err != nil {
-		return "", err
+		return "", docClassify(err, errValidation, docPathFix)
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
-		return "", fmt.Errorf("path may not be the root")
+		return "", docClassify(fmt.Errorf("path may not be the root"), errValidation, docPathFix)
 	}
 	ref, _ := json.Marshal(map[string]any{"document_id": docID})
 	if _, err := d.Store.DirentCreate(ctx, store.DirentRow{
@@ -1835,7 +1883,8 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 	// both costs nothing; accepting both when they DISAGREE would mean silently
 	// acting on one of two documents the caller named, so that is refused.
 	if in.ID != "" && in.DocumentID != "" && in.ID != in.DocumentID {
-		return "", fmt.Errorf("id %q and document_id %q name different documents; pass one", in.ID, in.DocumentID)
+		return "", docClassify(fmt.Errorf("id %q and document_id %q name different documents; pass one", in.ID, in.DocumentID),
+			errValidation, "")
 	}
 	if in.ID != "" {
 		return in.ID, nil
@@ -1844,26 +1893,31 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 		return in.DocumentID, nil
 	}
 	if in.Path == "" {
-		return "", fmt.Errorf("missing required field: document_id (or id, or path)")
+		return "", docClassify(fmt.Errorf("missing required field: document_id (or id, or path)"),
+			errValidation, "Pass `document_id` from create_document or query_documents, or the document's `path`.")
 	}
 	canonical, err := normalizePath(in.Path)
 	if err != nil {
-		return "", err
+		return "", docClassify(err, errValidation, docPathFix)
 	}
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
-		return "", fmt.Errorf("path may not be the root")
+		return "", docClassify(fmt.Errorf("path may not be the root"), errValidation, docPathFix)
 	}
+	// A path of another scope is simply absent from this scope's dirents, so it
+	// reads exactly like a path that does not exist.
 	row, err := d.Store.DirentGet(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), parent, name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
-			return "", fmt.Errorf("no such path: %s", canonical)
+			return "", docClassify(fmt.Errorf("no such path: %s", canonical),
+				errNotFound, "List the scope's documents with op=query_documents, or browse with the Path tool's ls.")
 		}
 		return "", err
 	}
 	if row.Kind != "document" {
-		return "", fmt.Errorf("path %s is a %s, not a document", canonical, row.Kind)
+		return "", docClassify(fmt.Errorf("path %s is a %s, not a document", canonical, row.Kind),
+			errValidation, "Pass the path of a document, or its document_id.")
 	}
 	var ref struct {
 		DocumentID string `json:"document_id"`
@@ -1875,14 +1929,14 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	docID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
-		return errResult("get_document: " + err.Error()), nil
+		return docFail("get_document: ", err), nil
 	}
 	res, err := d.query(ctx, key, `SELECT id, title, root_chunk_id, type, status, created_at, updated_at FROM documents WHERE id = ? LIMIT 1`, docID)
 	if err != nil {
-		return errResult("get_document: " + err.Error()), nil
+		return errFrom("get_document: "+err.Error(), err), nil
 	}
 	if len(res.Rows) == 0 {
-		return errResult("get_document: no such document: " + docID), nil
+		return errNotFound("get_document: no such document: "+docID, "Find the document with op=query_documents in the same scope."), nil
 	}
 	m := map[string]any{}
 	for i, c := range res.Columns {
@@ -1905,7 +1959,7 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// The document's own tags (independent of the root chunk's tags).
 	tags, terr := d.listDocumentTags(ctx, key, docID)
 	if terr != nil {
-		return errResult("get_document: tags: " + terr.Error()), nil
+		return errFrom("get_document: tags: "+terr.Error(), terr), nil
 	}
 	if len(tags) > 0 {
 		resp["tags"] = tags
@@ -1933,7 +1987,7 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		// omitted — a gate would cost a query to save one.
 		refs, refsTruncated, rerr := d.inboundSubjectRefs(ctx, key, rootID, docID)
 		if rerr != nil {
-			return errResult("get_document: references: " + rerr.Error()), nil
+			return errFrom("get_document: references: "+rerr.Error(), rerr), nil
 		}
 		if len(refs) > 0 {
 			resp["references"] = refs
@@ -2004,7 +2058,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 	if in.UnderPath != "" {
 		under, err := d.documentsUnderPath(ctx, key, in.UnderPath)
 		if err != nil {
-			return errResult("documents_summary: " + err.Error()), nil
+			return docFail("documents_summary: ", err), nil
 		}
 		ids = append(ids, under...)
 	}
@@ -2024,8 +2078,8 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 		// as "no documents exist": measured live, a model that had just created
 		// a document then doubted it and made two more. Say what to pass.
 		if len(in.DocumentIDs) == 0 && in.UnderPath == "" {
-			return errResult("documents_summary: pass document_ids (the documents to summarize) or under_path " +
-				"(a Path-tree subtree, e.g. /documents). To list the documents in a scope, use query_documents."), nil
+			return errValidation("documents_summary: pass document_ids (the documents to summarize) or under_path "+
+				"(a Path-tree subtree, e.g. /documents). To list the documents in a scope, use query_documents.", ""), nil
 		}
 		return jsonResult(map[string]any{"documents": []any{}})
 	}
@@ -2060,7 +2114,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 	ph, args := inPlaceholders(uniq)
 	dres, err := d.query(ctx, key, `SELECT id, title, root_chunk_id FROM documents WHERE id IN (`+ph+`)`, args...)
 	if err != nil {
-		return errResult("documents_summary: " + err.Error()), nil
+		return errFrom("documents_summary: "+err.Error(), err), nil
 	}
 	type docMeta struct{ title, root string }
 	docs := map[string]docMeta{}
@@ -2078,7 +2132,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 		rph, rargs := inPlaceholders(rootIDs)
 		rres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE id IN (`+rph+`)`, rargs...)
 		if err != nil {
-			return errResult("documents_summary: " + err.Error()), nil
+			return errFrom("documents_summary: "+err.Error(), err), nil
 		}
 		for _, r := range rres.Rows {
 			row := scanChunkRow(rres.Columns, r)
@@ -2127,7 +2181,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	docID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
-		return errResult("delete_document: " + err.Error()), nil
+		return docFail("delete_document: ", err), nil
 	}
 	// The SQL side runs in ONE transaction: enumerate the chunk ids (for the
 	// Memory-body cleanup below), then delete edges (BOTH directions — so an
@@ -2185,7 +2239,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		return d.execTxn(ctx, txnID, `DELETE FROM documents WHERE id = ?`, docID)
 	})
 	if txErr != nil {
-		return errResult("delete_document: " + txErr.Error()), nil
+		return errFrom("delete_document: "+txErr.Error(), txErr), nil
 	}
 	// Bodies AFTER commit (separate store; best-effort — an orphaned body is
 	// invisible dead k/v, never reachable once its chunk row is gone).
@@ -2218,10 +2272,10 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 
 func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.DocumentID == "" {
-		return errResult("create_chunk: missing required field: document_id"), nil
+		return errValidation("create_chunk: missing required field: document_id", "Pass `document_id` from create_document or query_documents."), nil
 	}
 	if in.Title == "" {
-		return errResult("create_chunk: missing required field: title"), nil
+		return errValidation("create_chunk: missing required field: title", "Pass `title`, the chunk's heading."), nil
 	}
 	// RFC BP — after_id inserts the new chunk immediately after an existing
 	// sibling: adopt that sibling's parent, and insert-and-shift the later
@@ -2248,38 +2302,38 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if in.ParentID == "" && in.AfterID == "" {
 		root, rerr := d.documentRootChunk(ctx, key, in.DocumentID)
 		if rerr != nil {
-			return errResult("create_chunk: " + rerr.Error() +
-				" (pass the document_id create_document returned, in the same scope)"), nil
+			return errNotFound("create_chunk: "+rerr.Error()+
+				" (pass the document_id create_document returned, in the same scope)", ""), nil
 		}
 		parentID = root
 	}
 	if in.ParentID != "" {
 		par, ok, perr := d.getChunkRow(ctx, key, in.ParentID)
 		if perr != nil {
-			return errResult("create_chunk: parent lookup: " + perr.Error()), nil
+			return errFrom("create_chunk: parent lookup: "+perr.Error(), perr), nil
 		}
 		if !ok {
-			return errResult("create_chunk: no such parent_id: " + in.ParentID +
-				" (the chunk would be unreachable from the document root; pass the document's " +
-				"root_chunk_id to put it under the document's title)"), nil
+			return errNotFound("create_chunk: no such parent_id: "+in.ParentID+
+				" (the chunk would be unreachable from the document root; pass the document's "+
+				"root_chunk_id to put it under the document's title)", ""), nil
 		}
 		if par.DocumentID != in.DocumentID {
-			return errResult(fmt.Sprintf(
+			return errValidation(fmt.Sprintf(
 				"create_chunk: parent_id %q belongs to document %q, not %q — a chunk cannot be "+
-					"parented across documents", in.ParentID, par.DocumentID, in.DocumentID)), nil
+					"parented across documents", in.ParentID, par.DocumentID, in.DocumentID), "Pass a parent_id from the same document, or omit it to put the chunk under the document's root."), nil
 		}
 	}
 	pos := 0
 	if in.AfterID != "" {
 		sib, ok, err := d.getChunkRow(ctx, key, in.AfterID)
 		if err != nil {
-			return errResult("create_chunk: " + err.Error()), nil
+			return errFrom("create_chunk: "+err.Error(), err), nil
 		}
 		if !ok {
-			return errResult("create_chunk: no such after_id chunk: " + in.AfterID), nil
+			return errNotFound("create_chunk: no such after_id chunk: "+in.AfterID, "Pass the id of an existing chunk in this document (list them with op=query_chunks and document_id)."), nil
 		}
 		if sib.DocumentID != in.DocumentID {
-			return errResult("create_chunk: after_id belongs to a different document"), nil
+			return errValidation("create_chunk: after_id belongs to a different document", "Pass an after_id from the same document as document_id."), nil
 		}
 		parentID = sib.ParentID
 		pos = sib.Position + 1
@@ -2329,20 +2383,20 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		insErr = insert(func(stmt string, args ...any) error { return d.exec(ctx, key, stmt, args...) })
 	}
 	if insErr != nil {
-		return errResult("create_chunk: " + insErr.Error()), nil
+		return errFrom("create_chunk: "+insErr.Error(), insErr), nil
 	}
 	if err := d.writeBodyAs(ctx, mscope, key, id, in.Type, in.Body, in.Fields, in.bodyOrigin); err != nil {
-		return errResult("create_chunk: body: " + err.Error()), nil
+		return errFrom("create_chunk: body: "+err.Error(), err), nil
 	}
 	// Seed the body-change log at revision 1 (RFC BS Phase 3a) — the chunk's body
 	// exists as of now, so it is the first snapshot even when in.Body is empty.
 	if err := d.recordRevision(ctx, key, id, 1, in.Body); err != nil {
-		return errResult("create_chunk: history: " + err.Error()), nil
+		return errFrom("create_chunk: history: "+err.Error(), err), nil
 	}
 	// Derive this chunk's inline [[name]] link edges from its body (RFC BS Phase
 	// 2a). A body with no resolvable name-links materializes no edges.
 	if err := d.reconcileNameLinks(ctx, key, id, in.Body); err != nil {
-		return errResult("create_chunk: name links: " + err.Error()), nil
+		return errFrom("create_chunk: name links: "+err.Error(), err), nil
 	}
 	// Tags on a fresh chunk (also serves upsert_chunk's create path, which
 	// delegates here). replaceChunkTags is delete-then-insert; on a new id the
@@ -2350,7 +2404,7 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// write.
 	if len(in.Tags) > 0 {
 		if err := d.replaceChunkTags(ctx, key, id, in.Tags); err != nil {
-			return errResult("create_chunk: tags: " + err.Error()), nil
+			return errFrom("create_chunk: tags: "+err.Error(), err), nil
 		}
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, in.DocumentID, "create_chunk", id)
@@ -2359,27 +2413,27 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 
 func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("get_chunk: missing required field: id"), nil
+		return errValidation("get_chunk: missing required field: id", "Pass `id`, a chunk id from query_chunks, search or create_chunk."), nil
 	}
 	row, ok, err := d.getChunkRow(ctx, key, in.ID)
 	if err != nil {
-		return errResult("get_chunk: " + err.Error()), nil
+		return errFrom("get_chunk: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult("get_chunk: no such chunk: " + in.ID), nil
+		return errNotFound("get_chunk: no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 	}
 	// Surface a body-read fault instead of returning the chunk with an empty
 	// body: a silent empty read is indistinguishable from a deleted body, which
 	// is exactly how the v1.33.0 tenant regression went unnoticed.
 	cb, err := d.readBody(ctx, mscope, key.ScopeID, in.ID)
 	if err != nil {
-		return errResult("get_chunk: body: " + err.Error()), nil
+		return errFrom("get_chunk: body: "+err.Error(), err), nil
 	}
 	resp := chunkResponse(row, cb)
 	// The chunk's tags (RFC BS) — the primary read surfaces them so a reader (and
 	// the editor's load) sees a chunk's tags without a separate list_tags call.
 	if tags, terr := d.listChunkTags(ctx, key, in.ID); terr != nil {
-		return errResult("get_chunk: tags: " + terr.Error()), nil
+		return errFrom("get_chunk: tags: "+terr.Error(), terr), nil
 	} else if len(tags) > 0 {
 		resp["tags"] = tags
 	}
@@ -2392,7 +2446,7 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// the bi-temporal / provenance block so the memory view reads it typed —
 	// without it, a fact and a plain chunk are indistinguishable on read.
 	if meta, ok, merr := d.readChunkMeta(ctx, key, in.ID); merr != nil {
-		return errResult("get_chunk: entity: " + merr.Error()), nil
+		return errFrom("get_chunk: entity: "+merr.Error(), merr), nil
 	} else if ok {
 		resp["entity"] = chunkMetaToJSON(meta)
 	}
@@ -2453,41 +2507,41 @@ func (d *Document) maxAssetBytes() int {
 // (create_chunk first) — mirrors document create + set_path.
 func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("set_asset: missing required field: id (the chunk id)"), nil
+		return errValidation("set_asset: missing required field: id (the chunk id)", "Create the chunk with op=create_chunk first, then pass its id."), nil
 	}
 	if in.MediaType == "" {
-		return errResult("set_asset: missing required field: media_type"), nil
+		return errValidation("set_asset: missing required field: media_type", "Pass media_type: image/png, image/jpeg, image/gif or image/webp."), nil
 	}
 	if !validImageMediaTypes[in.MediaType] {
-		return errResult(fmt.Sprintf("set_asset: unsupported media_type %q (allowed: image/png, image/jpeg, image/gif, image/webp)", in.MediaType)), nil
+		return errValidation(fmt.Sprintf("set_asset: unsupported media_type %q (allowed: image/png, image/jpeg, image/gif, image/webp)", in.MediaType), "Convert the image to one of the allowed types and resend."), nil
 	}
 	if in.Data == "" {
-		return errResult("set_asset: missing required field: data (base64 image bytes)"), nil
+		return errValidation("set_asset: missing required field: data (base64 image bytes)", "Pass `data`, the image bytes as standard base64."), nil
 	}
 	// Bound the ENCODED length before decoding. base64 expands 3 bytes into 4, so
 	// len(data)*3/4 is an exact upper bound on what the decode will allocate —
 	// checking after the fact means materialising an oversize image in order to
 	// reject it.
 	if maxB := d.maxAssetBytes(); len(in.Data)/4*3 > maxB {
-		return errResult(fmt.Sprintf("set_asset: image is at least %d bytes, exceeds the %d-byte cap",
-			len(in.Data)/4*3, maxB)), nil
+		return errValidation(fmt.Sprintf("set_asset: image is at least %d bytes, exceeds the %d-byte cap",
+			len(in.Data)/4*3, maxB), "Send a smaller image (resize or recompress it)."), nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(in.Data)
 	if err != nil {
-		return errResult("set_asset: data must be valid standard base64 (no data: prefix): " + err.Error()), nil
+		return errValidation("set_asset: data must be valid standard base64 (no data: prefix): "+err.Error(), ""), nil
 	}
 	if len(raw) == 0 {
-		return errResult("set_asset: empty image data"), nil
+		return errValidation("set_asset: empty image data", "Pass the image bytes, base64-encoded, in `data`."), nil
 	}
 	if len(raw) > d.maxAssetBytes() {
-		return errResult(fmt.Sprintf("set_asset: image is %d bytes, exceeds the %d-byte cap", len(raw), d.maxAssetBytes())), nil
+		return errValidation(fmt.Sprintf("set_asset: image is %d bytes, exceeds the %d-byte cap", len(raw), d.maxAssetBytes()), "Send a smaller image (resize or recompress it)."), nil
 	}
 	row, ok, err := d.getChunkRow(ctx, key, in.ID)
 	if err != nil {
-		return errResult("set_asset: " + err.Error()), nil
+		return errFrom("set_asset: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult("set_asset: no such chunk: " + in.ID), nil
+		return errNotFound("set_asset: no such chunk: "+in.ID, "Create the chunk with op=create_chunk first, then pass its id."), nil
 	}
 	now := time.Now().UnixNano()
 	// Upsert the asset row + mark the chunk type=image in ONE transaction
@@ -2503,7 +2557,7 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return d.execTxn(ctx, txnID, `UPDATE chunks SET type = 'image', updated_at = ?, revision = revision + 1 WHERE id = ?`, now, in.ID)
 	})
 	if txErr != nil {
-		return errResult("set_asset: " + txErr.Error()), nil
+		return errFrom("set_asset: "+txErr.Error(), txErr), nil
 	}
 	// Record the asset facts in the chunk's fields (merged — keep any existing
 	// keys + the caption body). Fields live in Memory alongside the body.
@@ -2512,7 +2566,7 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// body we could not read.
 	cb, rerr := d.readBody(ctx, mscope, key.ScopeID, in.ID)
 	if rerr != nil {
-		return errResult("set_asset: body: " + rerr.Error()), nil
+		return errFrom("set_asset: body: "+rerr.Error(), rerr), nil
 	}
 	fields := map[string]any{}
 	if len(cb.Fields) > 0 {
@@ -2526,13 +2580,13 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	nf, _ := json.Marshal(fields)
 	if err := d.writeBody(ctx, mscope, key, in.ID, "image", cb.Body, nf); err != nil {
-		return errResult("set_asset: fields: " + err.Error()), nil
+		return errFrom("set_asset: fields: "+err.Error(), err), nil
 	}
 	// set_asset sets type='image' on the chunk; if that chunk is a document's root,
 	// mirror it onto the documents row so get_document/query_documents stay in sync
 	// (a no-op for a non-root chunk). RFC BS.
 	if err := d.mirrorRootFacets(ctx, key, in.ID); err != nil {
-		return errResult("set_asset: " + err.Error()), nil
+		return errFrom("set_asset: "+err.Error(), err), nil
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "set_asset", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
@@ -2542,11 +2596,11 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 // the bytes (those come from GET /v1/_document/asset/{id}).
 func (d *Document) getAsset(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("get_asset: missing required field: id (the chunk id)"), nil
+		return errValidation("get_asset: missing required field: id (the chunk id)", "Pass `id`, the image chunk's id."), nil
 	}
 	mt, sz, ok := d.assetMeta(ctx, key, in.ID)
 	if !ok {
-		return errResult("get_asset: no asset on chunk: " + in.ID), nil
+		return errNotFound("get_asset: no asset on chunk: "+in.ID, "Attach an image with op=set_asset, or check the id with op=get_chunk."), nil
 	}
 	out := map[string]any{"chunk_id": in.ID, "media_type": mt, "size": sz}
 	// RFC BU phase 4 — report the description state, because "unsearchable" must be
@@ -2619,20 +2673,20 @@ func (d *Document) ReadAsset(ctx context.Context, scope, chunkID string) (mediaT
 
 func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("update_chunk: missing required field: id"), nil
+		return errValidation("update_chunk: missing required field: id", "Pass `id`, the chunk to update."), nil
 	}
 	if in.Revision == nil {
-		return errResult("update_chunk: missing required field: revision (optimistic concurrency — pass the chunk's current revision)"), nil
+		return errValidation("update_chunk: missing required field: revision (optimistic concurrency — pass the chunk's current revision)", "Read the chunk with op=get_chunk and pass its `revision`."), nil
 	}
 	row, ok, err := d.getChunkRow(ctx, key, in.ID)
 	if err != nil {
-		return errResult("update_chunk: " + err.Error()), nil
+		return errFrom("update_chunk: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult("update_chunk: no such chunk: " + in.ID), nil
+		return errNotFound("update_chunk: no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 	}
 	if row.Revision != *in.Revision {
-		return errResult(fmt.Sprintf("update_chunk: revision conflict (you passed %d, current is %d) — re-read the chunk and retry", *in.Revision, row.Revision)), nil
+		return errBusiness(fmt.Sprintf("update_chunk: revision conflict (you passed %d, current is %d) — re-read the chunk and retry", *in.Revision, row.Revision), "Call op=get_chunk for the current revision and body, then resend with that revision."), nil
 	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
@@ -2642,10 +2696,10 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	now := time.Now().UnixNano()
 	bumped, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{now, in.ID, *in.Revision}, 0)
 	if err != nil {
-		return errResult("update_chunk: " + err.Error()), nil
+		return errFrom("update_chunk: "+err.Error(), err), nil
 	}
 	if bumped.RowsAffected == 0 {
-		return errResult(fmt.Sprintf("update_chunk: revision conflict (revision %d was changed by a concurrent write) — re-read the chunk and retry", *in.Revision)), nil
+		return errBusiness(fmt.Sprintf("update_chunk: revision conflict (revision %d was changed by a concurrent write) — re-read the chunk and retry", *in.Revision), "Call op=get_chunk for the current revision and body, then resend with that revision."), nil
 	}
 	// Detect which fields the caller actually provided (presence-based; lets a
 	// field be set to empty, unlike a zero-value check).
@@ -2653,17 +2707,17 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	_ = json.Unmarshal(raw, &present)
 	if _, has := present["title"]; has {
 		if err := d.exec(ctx, key, `UPDATE chunks SET title = ? WHERE id = ?`, in.Title, in.ID); err != nil {
-			return errResult("update_chunk: " + err.Error()), nil
+			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
 	if _, has := present["type"]; has {
 		if err := d.exec(ctx, key, `UPDATE chunks SET type = ? WHERE id = ?`, nullIfEmpty(in.Type), in.ID); err != nil {
-			return errResult("update_chunk: " + err.Error()), nil
+			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
 	if _, has := present["status"]; has {
 		if err := d.exec(ctx, key, `UPDATE chunks SET status = ? WHERE id = ?`, nullIfEmpty(in.Status), in.ID); err != nil {
-			return errResult("update_chunk: " + err.Error()), nil
+			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
 	_, hasBody := present["body"]
@@ -2686,7 +2740,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// colour-scheme write, on a chunk whose body had become unreadable.
 			stored, rerr := d.readBody(ctx, mscope, key.ScopeID, in.ID)
 			if rerr != nil {
-				return errResult("update_chunk: body: " + rerr.Error()), nil
+				return errFrom("update_chunk: body: "+rerr.Error(), rerr), nil
 			}
 			cb = stored
 		}
@@ -2699,7 +2753,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			cb.Fields = in.Fields
 		}
 		if err := d.writeBody(ctx, mscope, key, in.ID, effType, cb.Body, cb.Fields); err != nil {
-			return errResult("update_chunk: body: " + err.Error()), nil
+			return errFrom("update_chunk: body: "+err.Error(), err), nil
 		}
 		// Re-derive [[name]] link edges only when the BODY actually changed (RFC BS
 		// Phase 2a). A fields-only update preserves the body verbatim, so its links
@@ -2711,10 +2765,10 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// *in.Revision+1, so that is the revision this body now carries. A
 			// fields-only update skips this branch (its body did not change).
 			if err := d.recordRevision(ctx, key, in.ID, *in.Revision+1, cb.Body); err != nil {
-				return errResult("update_chunk: history: " + err.Error()), nil
+				return errFrom("update_chunk: history: "+err.Error(), err), nil
 			}
 			if err := d.reconcileNameLinks(ctx, key, in.ID, cb.Body); err != nil {
-				return errResult("update_chunk: name links: " + err.Error()), nil
+				return errFrom("update_chunk: name links: "+err.Error(), err), nil
 			}
 		}
 	}
@@ -2722,7 +2776,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// clears, an absent key leaves them untouched (same presence rule as above).
 	if _, has := present["tags"]; has {
 		if err := d.replaceChunkTags(ctx, key, in.ID, in.Tags); err != nil {
-			return errResult("update_chunk: tags: " + err.Error()), nil
+			return errFrom("update_chunk: tags: "+err.Error(), err), nil
 		}
 	}
 	// If this chunk is a document's root and its type/status just changed, mirror
@@ -2731,7 +2785,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	_, hasStatus := present["status"]
 	if hasType || hasStatus {
 		if err := d.mirrorRootFacets(ctx, key, in.ID); err != nil {
-			return errResult("update_chunk: " + err.Error()), nil
+			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", in.ID)
@@ -2740,23 +2794,23 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 
 func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("delete_chunk: missing required field: id"), nil
+		return errValidation("delete_chunk: missing required field: id", "Pass `id`, the chunk to delete."), nil
 	}
 	row, ok, err := d.getChunkRow(ctx, key, in.ID)
 	if err != nil {
-		return errResult("delete_chunk: " + err.Error()), nil
+		return errFrom("delete_chunk: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult("delete_chunk: no such chunk: " + in.ID), nil
+		return errNotFound("delete_chunk: no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 	}
 	// Refuse to delete a document's ROOT chunk — that would orphan the
 	// documents row (root_chunk_id dangling, zero chunks). Use delete_document.
 	// Fail CLOSED if the lookup errors: a guard that silently skips on a query
 	// fault would let exactly the orphan it protects against slip through.
 	if rr, rerr := d.query(ctx, key, `SELECT 1 FROM documents WHERE root_chunk_id = ? LIMIT 1`, in.ID); rerr != nil {
-		return errResult("delete_chunk: " + rerr.Error()), nil
+		return errFrom("delete_chunk: "+rerr.Error(), rerr), nil
 	} else if len(rr.Rows) > 0 {
-		return errResult("delete_chunk: refusing to delete a document's root chunk — use delete_document"), nil
+		return errBusiness("delete_chunk: refusing to delete a document's root chunk — use delete_document", ""), nil
 	}
 	// The cascade runs in ONE transaction: enumerate the chunk + all
 	// descendants (iterative BFS — portable, no recursive CTE; a visited set
@@ -2842,7 +2896,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		return nil
 	})
 	if txErr != nil {
-		return errResult("delete_chunk: " + txErr.Error()), nil
+		return errFrom("delete_chunk: "+txErr.Error(), txErr), nil
 	}
 	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
@@ -2854,14 +2908,14 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 
 func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("move_chunk: missing required field: id"), nil
+		return errValidation("move_chunk: missing required field: id", "Pass `id`, the chunk to move."), nil
 	}
 	row, ok, err := d.getChunkRow(ctx, key, in.ID)
 	if err != nil {
-		return errResult("move_chunk: " + err.Error()), nil
+		return errFrom("move_chunk: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult("move_chunk: no such chunk: " + in.ID), nil
+		return errNotFound("move_chunk: no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 	}
 	// An empty new_parent_id moves the chunk under the document's root, for the
 	// same reason create_chunk parents to it: a parentless chunk sits BESIDE the
@@ -2870,7 +2924,7 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.NewParentID == "" {
 		root, rerr := d.documentRootChunk(ctx, key, row.DocumentID)
 		if rerr != nil {
-			return errResult("move_chunk: " + rerr.Error()), nil
+			return errFrom("move_chunk: "+rerr.Error(), rerr), nil
 		}
 		if root != in.ID {
 			in.NewParentID = root
@@ -2882,7 +2936,7 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	// root; if we reach the chunk being moved, it's a cycle.
 	if in.NewParentID != "" {
 		if in.NewParentID == in.ID {
-			return errResult("move_chunk: cannot move a chunk under itself"), nil
+			return errValidation("move_chunk: cannot move a chunk under itself", "Pass a different new_parent_id, or omit it to move the chunk under the document's root."), nil
 		}
 		// The new parent must EXIST, and must live in the same document.
 		//
@@ -2901,30 +2955,30 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		// the root above, so it is checked here like any other parent.
 		newParent, found, perr := d.getChunkRow(ctx, key, in.NewParentID)
 		if perr != nil {
-			return errResult("move_chunk: new parent lookup: " + perr.Error()), nil
+			return errFrom("move_chunk: new parent lookup: "+perr.Error(), perr), nil
 		}
 		if !found {
-			return errResult("move_chunk: no such new_parent_id: " + in.NewParentID +
-				" (moving under a parent that does not exist would orphan the chunk; " +
-				"pass the document's root_chunk_id to move it under the document's title)"), nil
+			return errNotFound("move_chunk: no such new_parent_id: "+in.NewParentID+
+				" (moving under a parent that does not exist would orphan the chunk; "+
+				"pass the document's root_chunk_id to move it under the document's title)", ""), nil
 		}
 		if newParent.DocumentID != row.DocumentID {
-			return errResult(fmt.Sprintf(
+			return errValidation(fmt.Sprintf(
 				"move_chunk: new_parent_id %q belongs to document %q, but this chunk is in %q — "+
 					"a chunk cannot be parented across documents",
-				in.NewParentID, newParent.DocumentID, row.DocumentID)), nil
+				in.NewParentID, newParent.DocumentID, row.DocumentID), "Pass a new_parent_id from this chunk's own document."), nil
 		}
 		cur := in.NewParentID
 		for i := 0; cur != "" && i <= maxChunkDepth; i++ {
 			anc, found, aerr := d.getChunkRow(ctx, key, cur)
 			if aerr != nil {
-				return errResult("move_chunk: " + aerr.Error()), nil
+				return errFrom("move_chunk: "+aerr.Error(), aerr), nil
 			}
 			if !found {
 				break
 			}
 			if anc.ID == in.ID {
-				return errResult("move_chunk: cannot move a chunk into its own subtree (would create a cycle)"), nil
+				return errBusiness("move_chunk: cannot move a chunk into its own subtree (would create a cycle)", "Pass a new_parent_id outside this chunk's own subtree."), nil
 			}
 			cur = anc.ParentID
 		}
@@ -2936,7 +2990,7 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	now := time.Now().UnixNano()
 	if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?`,
 		nullIfEmpty(in.NewParentID), pos, now, in.ID); err != nil {
-		return errResult("move_chunk: " + err.Error()), nil
+		return errFrom("move_chunk: "+err.Error(), err), nil
 	}
 	d.publishChange(ctx, store.MemoryScope(key.Scope), key.ScopeID, row.DocumentID, "move_chunk", in.ID)
 	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
@@ -2951,17 +3005,17 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 // just a sibling among any other root-level chunks).
 func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("reorder_chunk: missing required field: id"), nil
+		return errValidation("reorder_chunk: missing required field: id", "Pass `id`, the chunk to reorder."), nil
 	}
 	if in.Direction != "up" && in.Direction != "down" {
-		return errResult(`reorder_chunk: direction must be "up" or "down"`), nil
+		return errValidation(`reorder_chunk: direction must be "up" or "down"`, ""), nil
 	}
 	row, ok, err := d.getChunkRow(ctx, key, in.ID)
 	if err != nil {
-		return errResult("reorder_chunk: " + err.Error()), nil
+		return errFrom("reorder_chunk: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult("reorder_chunk: no such chunk: " + in.ID), nil
+		return errNotFound("reorder_chunk: no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 	}
 	// Load same-parent siblings in canonical order (the id tiebreaker makes the
 	// order deterministic even if positions currently tie). NULL-branch for the
@@ -2973,7 +3027,7 @@ func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope
 		sres, err = d.query(ctx, key, `SELECT id FROM chunks WHERE document_id = ? AND parent_id = ? ORDER BY position, id`, row.DocumentID, row.ParentID)
 	}
 	if err != nil {
-		return errResult("reorder_chunk: " + err.Error()), nil
+		return errFrom("reorder_chunk: "+err.Error(), err), nil
 	}
 	ids := make([]string, 0, len(sres.Rows))
 	for _, r := range sres.Rows {
@@ -2987,7 +3041,7 @@ func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 	}
 	if idx < 0 {
-		return errResult("reorder_chunk: chunk not found among its siblings"), nil
+		return errTransient("reorder_chunk: chunk not found among its siblings", "The chunk moved or was deleted while this ran; read it with op=get_chunk, then try again."), nil
 	}
 	swap := idx - 1
 	if in.Direction == "down" {
@@ -3009,7 +3063,7 @@ func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 		return nil
 	}); err != nil {
-		return errResult("reorder_chunk: " + err.Error()), nil
+		return errFrom("reorder_chunk: "+err.Error(), err), nil
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "reorder_chunk", in.ID)
 	return jsonResult(map[string]any{"reordered": true, "id": in.ID, "direction": in.Direction})
@@ -3019,31 +3073,31 @@ func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope
 
 func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.FromID == "" || in.ToID == "" || in.Kind == "" {
-		return errResult("link_chunks: from_id, to_id, and kind are required"), nil
+		return errValidation("link_chunks: from_id, to_id, and kind are required", "Pass all three: from_id and to_id (chunk ids) and a kind label."), nil
 	}
 	// Both endpoints MUST exist (in this scope) — otherwise the edge is born
 	// dangling. Cross-document edges are allowed (both chunks just have to
 	// exist; they may be in different documents of this scope), but an edge to
 	// a non-existent chunk is refused.
 	if _, ok, err := d.getChunkRow(ctx, key, in.FromID); err != nil {
-		return errResult("link_chunks: " + err.Error()), nil
+		return errFrom("link_chunks: "+err.Error(), err), nil
 	} else if !ok {
-		return errResult("link_chunks: from_id: no such chunk: " + in.FromID), nil
+		return errNotFound("link_chunks: from_id: no such chunk: "+in.FromID, "Pass a chunk id from this scope (find one with op=query_chunks or op=search)."), nil
 	}
 	if _, ok, err := d.getChunkRow(ctx, key, in.ToID); err != nil {
-		return errResult("link_chunks: " + err.Error()), nil
+		return errFrom("link_chunks: "+err.Error(), err), nil
 	} else if !ok {
-		return errResult("link_chunks: to_id: no such chunk: " + in.ToID), nil
+		return errNotFound("link_chunks: to_id: no such chunk: "+in.ToID, "Pass a chunk id from this scope (find one with op=query_chunks or op=search)."), nil
 	}
 	now := time.Now().UnixNano()
 	// Idempotent (INSERT OR IGNORE-equivalent via existence check for portability).
 	res, err := d.query(ctx, key, `SELECT 1 FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = ? LIMIT 1`, in.FromID, in.ToID, in.Kind)
 	if err != nil {
-		return errResult("link_chunks: " + err.Error()), nil
+		return errFrom("link_chunks: "+err.Error(), err), nil
 	}
 	if len(res.Rows) == 0 {
 		if err := d.exec(ctx, key, `INSERT INTO chunk_edges (from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?)`, in.FromID, in.ToID, in.Kind, now); err != nil {
-			return errResult("link_chunks: " + err.Error()), nil
+			return errFrom("link_chunks: "+err.Error(), err), nil
 		}
 	}
 	return jsonResult(map[string]any{"ok": true, "from_id": in.FromID, "to_id": in.ToID, "kind": in.Kind})
@@ -3051,10 +3105,10 @@ func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, in docIn
 
 func (d *Document) unlinkChunks(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.FromID == "" || in.ToID == "" || in.Kind == "" {
-		return errResult("unlink_chunks: from_id, to_id, and kind are required"), nil
+		return errValidation("unlink_chunks: from_id, to_id, and kind are required", "Pass all three: from_id, to_id and kind, exactly as the link was made (see op=get_edges)."), nil
 	}
 	if err := d.exec(ctx, key, `DELETE FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = ?`, in.FromID, in.ToID, in.Kind); err != nil {
-		return errResult("unlink_chunks: " + err.Error()), nil
+		return errFrom("unlink_chunks: "+err.Error(), err), nil
 	}
 	return jsonResult(map[string]any{"removed": true})
 }
@@ -3077,7 +3131,7 @@ var edgeEndpointFields = []string{
 // false = a manual link_chunks edge — RFC BS Phase 2a).
 func (d *Document) getEdges(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.DocumentID == "" {
-		return errResult("get_edges: missing required field: document_id"), nil
+		return errValidation("get_edges: missing required field: document_id", "Pass `document_id`, from query_documents or create_document."), nil
 	}
 	res, err := d.query(ctx, key, `SELECT e.from_id AS from_id, e.to_id AS to_id, e.kind AS kind, e.auto AS auto,
        cf.title AS from_title, cf.type AS from_type, cf.status AS from_status, cf.document_id AS from_document_id,
@@ -3089,7 +3143,7 @@ WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?)
    OR e.to_id IN (SELECT id FROM chunks WHERE document_id = ?)
 ORDER BY e.kind, e.created_at`, in.DocumentID, in.DocumentID)
 	if err != nil {
-		return errResult("get_edges: " + err.Error()), nil
+		return errFrom("get_edges: "+err.Error(), err), nil
 	}
 	edges := make([]map[string]any, 0, len(res.Rows))
 	for _, r := range res.Rows {
@@ -3126,7 +3180,7 @@ var backlinkEndpointFields = []string{"from_title", "from_type", "from_status", 
 // body of any listed revision is fetched with get_version.
 func (d *Document) chunkHistory(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("history: missing required field: id"), nil
+		return errValidation("history: missing required field: id", "Pass `id`, the chunk whose revisions to list."), nil
 	}
 	limit := 100
 	if in.Limit > 0 {
@@ -3136,7 +3190,7 @@ func (d *Document) chunkHistory(ctx context.Context, key sqlmem.ScopeKey, in doc
 		`SELECT revision, created_at, actor FROM chunk_revisions WHERE chunk_id = ? ORDER BY revision DESC LIMIT ?`,
 		in.ID, limit)
 	if err != nil {
-		return errResult("history: " + err.Error()), nil
+		return errFrom("history: "+err.Error(), err), nil
 	}
 	// Positional read: the SELECT fixes the column order (revision, created_at,
 	// actor). created_at is a NOT-NULL unix-nanos BIGINT → asInt64 keeps its full
@@ -3169,17 +3223,17 @@ func (d *Document) revisionBody(ctx context.Context, key sqlmem.ScopeKey, chunkI
 // getVersion returns a single revision's exact body.
 func (d *Document) getVersion(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("get_version: missing required field: id"), nil
+		return errValidation("get_version: missing required field: id", "Pass `id`, the chunk id."), nil
 	}
 	if in.Revision == nil {
-		return errResult("get_version: missing required field: revision"), nil
+		return errValidation("get_version: missing required field: revision", "Pass `revision`; list a chunk's revisions with op=history."), nil
 	}
 	body, ok, err := d.revisionBody(ctx, key, in.ID, *in.Revision)
 	if err != nil {
-		return errResult("get_version: " + err.Error()), nil
+		return errFrom("get_version: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult(fmt.Sprintf("get_version: no such revision %d for chunk %s", *in.Revision, in.ID)), nil
+		return errNotFound(fmt.Sprintf("get_version: no such revision %d for chunk %s", *in.Revision, in.ID), "List the chunk's revisions with op=history."), nil
 	}
 	return jsonResult(map[string]any{"chunk_id": in.ID, "revision": *in.Revision, "body": body})
 }
@@ -3188,24 +3242,24 @@ func (d *Document) getVersion(ctx context.Context, key sqlmem.ScopeKey, in docIn
 // missing revision is a clear error rather than a diff against "".
 func (d *Document) diffVersions(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("diff: missing required field: id"), nil
+		return errValidation("diff: missing required field: id", "Pass `id`, the chunk id."), nil
 	}
 	if in.FromRevision == nil || in.ToRevision == nil {
-		return errResult("diff: from_revision and to_revision are required"), nil
+		return errValidation("diff: from_revision and to_revision are required", "Pass both; list the chunk's revisions with op=history."), nil
 	}
 	fromBody, ok, err := d.revisionBody(ctx, key, in.ID, *in.FromRevision)
 	if err != nil {
-		return errResult("diff: " + err.Error()), nil
+		return errFrom("diff: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult(fmt.Sprintf("diff: no such revision %d for chunk %s", *in.FromRevision, in.ID)), nil
+		return errNotFound(fmt.Sprintf("diff: no such revision %d for chunk %s", *in.FromRevision, in.ID), "List the chunk's revisions with op=history."), nil
 	}
 	toBody, ok, err := d.revisionBody(ctx, key, in.ID, *in.ToRevision)
 	if err != nil {
-		return errResult("diff: " + err.Error()), nil
+		return errFrom("diff: "+err.Error(), err), nil
 	}
 	if !ok {
-		return errResult(fmt.Sprintf("diff: no such revision %d for chunk %s", *in.ToRevision, in.ID)), nil
+		return errNotFound(fmt.Sprintf("diff: no such revision %d for chunk %s", *in.ToRevision, in.ID), "List the chunk's revisions with op=history."), nil
 	}
 	// go-difflib produces a correct, standard unified diff (LCS-aligned hunks with
 	// context). It is preferred over a hand-rolled line differ because a correct
@@ -3220,7 +3274,7 @@ func (d *Document) diffVersions(ctx context.Context, key sqlmem.ScopeKey, in doc
 		Context:  3,
 	})
 	if derr != nil {
-		return errResult("diff: " + derr.Error()), nil
+		return errFrom("diff: "+derr.Error(), derr), nil
 	}
 	return jsonResult(map[string]any{
 		"chunk_id":      in.ID,
@@ -3237,7 +3291,7 @@ func (d *Document) diffVersions(ctx context.Context, key sqlmem.ScopeKey, in doc
 // (get_edges is per-document). Served by the chunk_edges_to_kind reverse index.
 func (d *Document) backlinks(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("backlinks: missing required field: id"), nil
+		return errValidation("backlinks: missing required field: id", "Pass `id`, the chunk to find incoming links for."), nil
 	}
 	// BOUNDED, and it takes `limit` like its siblings. Inbound degree is the one
 	// direction that concentrates: on a 304-chunk benchmark store the maximum
@@ -3260,7 +3314,7 @@ WHERE e.to_id = ?
 ORDER BY e.kind, e.created_at
 LIMIT ?`, in.ID, limit)
 	if err != nil {
-		return errResult("backlinks: " + err.Error()), nil
+		return errFrom("backlinks: "+err.Error(), err), nil
 	}
 	links := make([]map[string]any, 0, len(res.Rows))
 	for _, r := range res.Rows {
@@ -3337,10 +3391,10 @@ func (d *Document) chunkMetaByIDs(ctx context.Context, key sqlmem.ScopeKey, ids 
 func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	q := strings.TrimSpace(in.Query)
 	if q == "" {
-		return errResult("search: missing required field: query (the text to match against chunk bodies)"), nil
+		return errValidation("search: missing required field: query (the text to match against chunk bodies)", ""), nil
 	}
 	if d.Embedder == nil {
-		return errResult("search: requires a configured embedder / vector memory"), nil
+		return errBusiness("search: requires a configured embedder / vector memory", "Semantic search is not available on this server; filter with op=query_chunks instead."), nil
 	}
 	topK := 10
 	if in.Limit > 0 {
@@ -3351,17 +3405,17 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	vec, err := d.Embedder.Embed(ctx, []string{q})
 	if err != nil {
-		return errResult("search: embed: " + err.Error()), nil
+		return errFrom("search: embed: "+err.Error(), err), nil
 	}
 	if len(vec) == 0 {
-		return errResult("search: embed: embedder returned no vector"), nil
+		return errTransient("search: embed: embedder returned no vector", "Try again; if it keeps failing, filter with op=query_chunks instead."), nil
 	}
 	// No topK+1 here, unlike `related`: there is no self-hit to drop when the query is
 	// text the caller typed rather than a chunk that is already in the index.
 	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
 		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK)
 	if err != nil {
-		return errResult("search: " + err.Error()), nil
+		return errFrom("search: "+err.Error(), err), nil
 	}
 	ids := make([]string, 0, len(entries))
 	scores := make(map[string]float64, len(entries))
@@ -3375,7 +3429,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	meta, err := d.chunkMetaByIDs(ctx, key, ids)
 	if err != nil {
-		return errResult("search: enrich: " + err.Error()), nil
+		return errFrom("search: enrich: "+err.Error(), err), nil
 	}
 	out := make([]map[string]any, 0, len(ids))
 	for _, cid := range ids {
@@ -3406,12 +3460,12 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 // vector search is bounded to the caller's own tenant/scope/scope_id.
 func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("related: missing required field: id"), nil
+		return errValidation("related: missing required field: id", "Pass `id`, the chunk to find neighbours of."), nil
 	}
 	// Semantic neighbours need both a vector index and something to turn the query
 	// body into a vector. No embedder → there is no vector plane to search.
 	if d.Embedder == nil {
-		return errResult("related: requires a configured embedder / vector memory"), nil
+		return errBusiness("related: requires a configured embedder / vector memory", "Semantic neighbours are not available on this server; use op=backlinks or op=query_chunks instead."), nil
 	}
 	topK := 10
 	if in.Limit > 0 {
@@ -3426,7 +3480,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	// legitimately has no body).
 	cb, err := d.readBody(ctx, mscope, key.ScopeID, in.ID)
 	if err != nil {
-		return errResult("related: body: " + err.Error()), nil
+		return errFrom("related: body: "+err.Error(), err), nil
 	}
 	body := strings.TrimSpace(cb.Body)
 	if body == "" {
@@ -3437,17 +3491,17 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 	vec, err := d.Embedder.Embed(ctx, []string{body})
 	if err != nil {
-		return errResult("related: embed: " + err.Error()), nil
+		return errFrom("related: embed: "+err.Error(), err), nil
 	}
 	if len(vec) == 0 {
-		return errResult("related: embed: embedder returned no vector"), nil
+		return errTransient("related: embed: embedder returned no vector", "Try again; if it keeps failing, use op=backlinks or op=query_chunks instead."), nil
 	}
 	// topK+1: a chunk is its own nearest neighbour, so the search ranks self first;
 	// ask for one extra to leave room to drop it and still return topK others.
 	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
 		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK+1)
 	if err != nil {
-		return errResult("related: search: " + err.Error()), nil
+		return errFrom("related: search: "+err.Error(), err), nil
 	}
 	type hit struct {
 		id    string
@@ -3468,7 +3522,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 	meta, err := d.chunkMetaByIDs(ctx, key, ids)
 	if err != nil {
-		return errResult("related: enrich: " + err.Error()), nil
+		return errFrom("related: enrich: "+err.Error(), err), nil
 	}
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
@@ -3502,7 +3556,7 @@ const unlinkedMentionScanCap = 5000
 // and the target's own body mentioning its own title is excluded. Scope-confined.
 func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if in.ID == "" {
-		return errResult("unlinked_mentions: missing required field: id"), nil
+		return errValidation("unlinked_mentions: missing required field: id", "Pass `id`, the chunk whose title to look for."), nil
 	}
 	limit := 50
 	if in.Limit > 0 {
@@ -3514,14 +3568,14 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	// Resolve the target's title — the text to look for in other bodies.
 	tres, err := d.query(ctx, key, `SELECT title FROM chunks WHERE id = ? LIMIT 1`, in.ID)
 	if err != nil {
-		return errResult("unlinked_mentions: " + err.Error()), nil
+		return errFrom("unlinked_mentions: "+err.Error(), err), nil
 	}
 	if len(tres.Rows) == 0 {
-		return errResult("unlinked_mentions: no such chunk: " + in.ID), nil
+		return errNotFound("unlinked_mentions: no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 	}
 	title := strings.TrimSpace(asStr(tres.Rows[0][0]))
 	if title == "" {
-		return errResult("unlinked_mentions: target chunk has no title to match on"), nil
+		return errBusiness("unlinked_mentions: target chunk has no title to match on", "Give the chunk a title with op=update_chunk, then try again."), nil
 	}
 	// The already-linked set: every chunk that already references the target
 	// (manual OR [[name]] edge — both live in chunk_edges as from→to). A mention
@@ -3529,7 +3583,7 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	linked := map[string]bool{}
 	lres, err := d.query(ctx, key, `SELECT from_id FROM chunk_edges WHERE to_id = ?`, in.ID)
 	if err != nil {
-		return errResult("unlinked_mentions: edges: " + err.Error()), nil
+		return errFrom("unlinked_mentions: edges: "+err.Error(), err), nil
 	}
 	for _, r := range lres.Rows {
 		linked[asStr(r[0])] = true
@@ -3539,7 +3593,7 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	// key.ScopeID) — reading a different plane would silently return zero hits.
 	entries, listTruncated, err := d.Store.MemoryList(ctx, direntTenant(ctx), mscope, key.ScopeID, "doc.chunk:", unlinkedMentionScanCap)
 	if err != nil {
-		return errResult("unlinked_mentions: scan: " + err.Error()), nil
+		return errFrom("unlinked_mentions: scan: "+err.Error(), err), nil
 	}
 	needle := strings.ToLower(title)
 	matchIDs := make([]string, 0, limit)
@@ -3564,7 +3618,7 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	meta, err := d.chunkMetaByIDs(ctx, key, matchIDs)
 	if err != nil {
-		return errResult("unlinked_mentions: enrich: " + err.Error()), nil
+		return errFrom("unlinked_mentions: enrich: "+err.Error(), err), nil
 	}
 	out := make([]map[string]any, 0, len(matchIDs))
 	for _, cid := range matchIDs {
@@ -3768,7 +3822,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		// could corrupt a `?` inside a string literal). Validator-gated.
 		res, err := d.SqlMem.Query(ctx, key, in.SQL, nil)
 		if err != nil {
-			return errResult("query_chunks: " + err.Error()), nil
+			return docRawSQLFail("query_chunks: "+err.Error(), err), nil
 		}
 		return jsonResult(map[string]any{"columns": res.Columns, "rows": res.Rows, "truncated": res.Truncated})
 	}
@@ -3782,7 +3836,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 	if in.UnderPath != "" {
 		docIDs, err := d.documentsUnderPath(ctx, key, in.UnderPath)
 		if err != nil {
-			return errResult("query_chunks: " + err.Error()), nil
+			return docFail("query_chunks: ", err), nil
 		}
 		if len(docIDs) == 0 {
 			return jsonResult(map[string]any{"chunks": []any{}})
@@ -3831,7 +3885,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 	args = append(args, limit)
 	res, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE `+where+` ORDER BY document_id, parent_id, position LIMIT ?`, args...)
 	if err != nil {
-		return errResult("query_chunks: " + err.Error()), nil
+		return errFrom("query_chunks: "+err.Error(), err), nil
 	}
 	chunks := make([]map[string]any, 0, len(res.Rows))
 	for _, r := range res.Rows {
@@ -3865,7 +3919,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 func (d *Document) documentsUnderPath(ctx context.Context, key sqlmem.ScopeKey, rawPath string) ([]string, error) {
 	canonical, err := normalizePath(rawPath)
 	if err != nil {
-		return nil, err
+		return nil, docClassify(err, errValidation, docPathFix)
 	}
 	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), dirPrefix(canonical))
 	if err != nil {
@@ -3970,15 +4024,15 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		var err error
 		docID, err = d.docIDFromInput(ctx, key, in)
 		if err != nil {
-			return errResult("export_md: " + err.Error()), nil
+			return docFail("export_md: ", err), nil
 		}
 	}
 	dres, err := d.query(ctx, key, `SELECT title, root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
 	if err != nil {
-		return errResult("export_md: " + err.Error()), nil
+		return errFrom("export_md: "+err.Error(), err), nil
 	}
 	if len(dres.Rows) == 0 {
-		return errResult("export_md: no such document: " + docID), nil
+		return errNotFound("export_md: no such document: "+docID, "Find the document with op=query_documents in the same scope."), nil
 	}
 	title := asStr(dres.Rows[0][0])
 
@@ -3988,7 +4042,7 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// (reachable via an explicit `position` on create_chunk/move_chunk).
 	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY parent_id, position, id`, docID)
 	if err != nil {
-		return errResult("export_md: " + err.Error()), nil
+		return errFrom("export_md: "+err.Error(), err), nil
 	}
 	// Group children by parent (the global position ORDER BY keeps each parent's
 	// slice in ascending position). parent_id "" = a top-level (root) chunk.
@@ -4078,7 +4132,7 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		walk(r, 0)
 	}
 	if walkErr != nil {
-		return errResult("export_md: body: " + walkErr.Error()), nil
+		return errFrom("export_md: body: "+walkErr.Error(), walkErr), nil
 	}
 
 	// Edges trailer — the free-form graph edges originating from this document's
@@ -4087,7 +4141,7 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if includeMeta {
 		eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID)
 		if err != nil {
-			return errResult("export_md: edges: " + err.Error()), nil
+			return errFrom("export_md: edges: "+err.Error(), err), nil
 		}
 		var lines []string
 		for _, r := range eres.Rows {
@@ -4320,11 +4374,11 @@ func (d *Document) importAsset(ctx context.Context, key sqlmem.ScopeKey, mscope 
 // failure leaves a partial document the caller can delete and retry.
 func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if strings.TrimSpace(in.Markdown) == "" {
-		return errResult("import_md: missing required field: markdown"), nil
+		return errValidation("import_md: missing required field: markdown", "Pass `markdown`, the document text with at least one '# Heading'."), nil
 	}
 	chunks, edges := parseLoomMarkdown(in.Markdown)
 	if len(chunks) == 0 {
-		return errResult("import_md: no headings found — a document needs at least one '# Heading'"), nil
+		return errValidation("import_md: no headings found — a document needs at least one '# Heading'", ""), nil
 	}
 	oldToNew := map[string]string{}
 	type frame struct {
@@ -4346,16 +4400,16 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
 		if err := d.writeBody(ctx, mscope, key, rootID, first.typ, first.body, first.fields); err != nil {
-			return errResult("import_md: root body: " + err.Error()), nil
+			return errFrom("import_md: root body: "+err.Error(), err), nil
 		}
 		if first.typ != "" || first.status != "" {
 			if err := d.exec(ctx, key, `UPDATE chunks SET type = ?, status = ? WHERE id = ?`, nullIfEmpty(first.typ), nullIfEmpty(first.status), rootID); err != nil {
-				return errResult("import_md: " + err.Error()), nil
+				return errFrom("import_md: "+err.Error(), err), nil
 			}
 			// Keep the documents row's mirrored facets in step with the root chunk
 			// (createDocument set them from an empty type/status above).
 			if err := d.mirrorRootFacets(ctx, key, rootID); err != nil {
-				return errResult("import_md: " + err.Error()), nil
+				return errFrom("import_md: "+err.Error(), err), nil
 			}
 		}
 		if first.assetData != "" {
@@ -4372,16 +4426,16 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		if base == "" {
 			dres, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
 			if err != nil {
-				return errResult("import_md: " + err.Error()), nil
+				return errFrom("import_md: "+err.Error(), err), nil
 			}
 			if len(dres.Rows) == 0 {
-				return errResult("import_md: no such document: " + docID), nil
+				return errNotFound("import_md: no such document: "+docID, "Find the document with op=query_documents in the same scope, or omit document_id to import as a new document."), nil
 			}
 			base = asStr(dres.Rows[0][0])
 		} else if _, ok, err := d.getChunkRow(ctx, key, base); err != nil {
-			return errResult("import_md: " + err.Error()), nil
+			return errFrom("import_md: "+err.Error(), err), nil
 		} else if !ok {
-			return errResult("import_md: no such parent chunk: " + base), nil
+			return errNotFound("import_md: no such parent chunk: "+base, "Pass a parent_id from this document, or omit it to import under the document's root."), nil
 		}
 		rootID = base
 		stack = []frame{{level: 0, id: base}}
@@ -4532,15 +4586,15 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 		var err error
 		docID, err = d.docIDFromInput(ctx, key, in)
 		if err != nil {
-			return errResult("export_canvas: " + err.Error()), nil
+			return docFail("export_canvas: ", err), nil
 		}
 	}
 	dres, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
 	if err != nil {
-		return errResult("export_canvas: " + err.Error()), nil
+		return errFrom("export_canvas: "+err.Error(), err), nil
 	}
 	if len(dres.Rows) == 0 {
-		return errResult("export_canvas: no such document: " + docID), nil
+		return errNotFound("export_canvas: no such document: "+docID, "Find the document with op=query_documents in the same scope."), nil
 	}
 	rootID := asStr(dres.Rows[0][0])
 
@@ -4548,14 +4602,14 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// (parent_id, position, id) so the auto-grid index is stable across exports.
 	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY parent_id, position, id`, docID)
 	if err != nil {
-		return errResult("export_canvas: " + err.Error()), nil
+		return errFrom("export_canvas: "+err.Error(), err), nil
 	}
 
 	// Stored layouts for this document's chunks in one query.
 	layouts := map[string]canvasLayout{}
 	lres, err := d.query(ctx, key, `SELECT chunk_id, x, y, width, height, color FROM chunk_layout WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID)
 	if err != nil {
-		return errResult("export_canvas: layout: " + err.Error()), nil
+		return errFrom("export_canvas: layout: "+err.Error(), err), nil
 	}
 	for _, r := range lres.Rows {
 		layouts[asStr(r[0])] = canvasLayout{x: asInt(r[1]), y: asInt(r[2]), w: asInt(r[3]), h: asInt(r[4]), color: asStr(r[5])}
@@ -4571,7 +4625,7 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 		cb, rerr := d.readBody(ctx, mscope, key.ScopeID, row.ID)
 		if rerr != nil {
-			return errResult("export_canvas: body: " + rerr.Error()), nil
+			return errFrom("export_canvas: body: "+rerr.Error(), rerr), nil
 		}
 		text := cb.Body
 		if strings.TrimSpace(text) == "" {
@@ -4596,7 +4650,7 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// the root (the one in-document chunk that is not a node).
 	eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND to_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID, docID)
 	if err != nil {
-		return errResult("export_canvas: edges: " + err.Error()), nil
+		return errFrom("export_canvas: edges: "+err.Error(), err), nil
 	}
 	edges := []canvasEdge{}
 	for _, r := range eres.Rows {
@@ -4624,11 +4678,11 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 // would.
 func (d *Document) importCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if len(in.Canvas) == 0 {
-		return errResult("import_canvas: missing required field: canvas"), nil
+		return errValidation("import_canvas: missing required field: canvas", "Pass `canvas`, a JSON Canvas object with nodes and edges."), nil
 	}
 	var cv canvasDoc
 	if err := json.Unmarshal(in.Canvas, &cv); err != nil {
-		return errResult("import_canvas: invalid canvas JSON: " + err.Error()), nil
+		return errValidation("import_canvas: invalid canvas JSON: "+err.Error(), "Pass `canvas` as a valid JSON Canvas object with \"nodes\" and \"edges\" arrays."), nil
 	}
 	title := in.Title
 	if strings.TrimSpace(title) == "" {
@@ -4673,7 +4727,7 @@ func (d *Document) importCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 		nodeToChunk[n.ID] = newID
 		if err := d.exec(ctx, key, `INSERT INTO chunk_layout (chunk_id, x, y, width, height, color) VALUES (?, ?, ?, ?, ?, ?)`,
 			newID, n.X, n.Y, n.Width, n.Height, nullIfEmpty(n.Color)); err != nil {
-			return errResult("import_canvas: layout: " + err.Error()), nil
+			return errFrom("import_canvas: layout: "+err.Error(), err), nil
 		}
 		created++
 	}
@@ -4706,7 +4760,7 @@ func (d *Document) importCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 
 func (d *Document) defineType(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	if in.Name == "" {
-		return errResult("define_type: missing required field: name"), nil
+		return errValidation("define_type: missing required field: name", "Pass `name`, the type's name."), nil
 	}
 	fields := in.Fields
 	if len(fields) == 0 {
@@ -4717,10 +4771,10 @@ func (d *Document) defineType(ctx context.Context, key sqlmem.ScopeKey, in docIn
 	docID := in.DocumentID
 	// Upsert via delete+insert for portability (no ON CONFLICT dialect dance).
 	if err := d.exec(ctx, key, `DELETE FROM chunk_types WHERE document_id = ? AND name = ?`, docID, in.Name); err != nil {
-		return errResult("define_type: " + err.Error()), nil
+		return errFrom("define_type: "+err.Error(), err), nil
 	}
 	if err := d.exec(ctx, key, `INSERT INTO chunk_types (document_id, name, fields, created_at) VALUES (?, ?, ?, ?)`, docID, in.Name, string(fields), now); err != nil {
-		return errResult("define_type: " + err.Error()), nil
+		return errFrom("define_type: "+err.Error(), err), nil
 	}
 	return jsonResult(map[string]any{"ok": true, "name": in.Name, "document_id": docID})
 }
@@ -4728,7 +4782,7 @@ func (d *Document) defineType(ctx context.Context, key sqlmem.ScopeKey, in docIn
 func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	res, err := d.query(ctx, key, `SELECT document_id, name, fields FROM chunk_types WHERE document_id = ? ORDER BY name`, in.DocumentID)
 	if err != nil {
-		return errResult("list_types: " + err.Error()), nil
+		return errFrom("list_types: "+err.Error(), err), nil
 	}
 	types := make([]map[string]any, 0, len(res.Rows))
 	for _, r := range res.Rows {
@@ -4767,7 +4821,7 @@ func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscop
 	}
 	if jsonHasField(raw, "tags") {
 		if terr := d.replaceChunkTags(ctx, key, meta.ID, in.Tags); terr != nil {
-			return errResult("upsert_chunk: tags: " + terr.Error()), nil
+			return errFrom("upsert_chunk: tags: "+terr.Error(), terr), nil
 		}
 	}
 	// Only worth a mirror when the upsert could have moved a root chunk's facets
@@ -4775,7 +4829,7 @@ func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscop
 	// guaranteed 0-row UPDATE on the entity tier's hot path.
 	if in.Type != "" || in.Status != "" {
 		if terr := d.mirrorRootFacets(ctx, key, meta.ID); terr != nil {
-			return errResult("upsert_chunk: " + terr.Error()), nil
+			return errFrom("upsert_chunk: "+terr.Error(), terr), nil
 		}
 	}
 	return res, nil
@@ -4980,7 +5034,7 @@ func (d *Document) mutateTags(ctx context.Context, key sqlmem.ScopeKey, in docIn
 		op = "add_tags"
 	}
 	if len(in.Tags) == 0 {
-		return errResult(op + ": missing required field: tags"), nil
+		return errValidation(op+": missing required field: tags", "Pass `tags`, a list of tag strings."), nil
 	}
 	apply := func(table, keyCol, id string) error {
 		if add {
@@ -4991,34 +5045,34 @@ func (d *Document) mutateTags(ctx context.Context, key sqlmem.ScopeKey, in docIn
 	switch {
 	case in.ID != "":
 		if _, ok, err := d.getChunkRow(ctx, key, in.ID); err != nil {
-			return errResult(op + ": " + err.Error()), nil
+			return errFrom(op+": "+err.Error(), err), nil
 		} else if !ok {
-			return errResult(op + ": no such chunk: " + in.ID), nil
+			return errNotFound(op+": no such chunk: "+in.ID, "Find the chunk with op=query_chunks or op=search in the same scope."), nil
 		}
 		if err := apply("chunk_tags", "chunk_id", in.ID); err != nil {
-			return errResult(op + ": " + err.Error()), nil
+			return errFrom(op+": "+err.Error(), err), nil
 		}
 		tags, err := d.listChunkTags(ctx, key, in.ID)
 		if err != nil {
-			return errResult(op + ": " + err.Error()), nil
+			return errFrom(op+": "+err.Error(), err), nil
 		}
 		return jsonResult(map[string]any{"chunk_id": in.ID, "tags": tags})
 	case in.DocumentID != "":
 		if ok, err := d.documentExists(ctx, key, in.DocumentID); err != nil {
-			return errResult(op + ": " + err.Error()), nil
+			return errFrom(op+": "+err.Error(), err), nil
 		} else if !ok {
-			return errResult(op + ": no such document: " + in.DocumentID), nil
+			return errNotFound(op+": no such document: "+in.DocumentID, "Find the document with op=query_documents in the same scope."), nil
 		}
 		if err := apply("document_tags", "document_id", in.DocumentID); err != nil {
-			return errResult(op + ": " + err.Error()), nil
+			return errFrom(op+": "+err.Error(), err), nil
 		}
 		tags, err := d.listDocumentTags(ctx, key, in.DocumentID)
 		if err != nil {
-			return errResult(op + ": " + err.Error()), nil
+			return errFrom(op+": "+err.Error(), err), nil
 		}
 		return jsonResult(map[string]any{"document_id": in.DocumentID, "tags": tags})
 	default:
-		return errResult(op + ": target a chunk (id) or a document (document_id)"), nil
+		return errValidation(op+": target a chunk (id) or a document (document_id)", ""), nil
 	}
 }
 
@@ -5040,7 +5094,7 @@ func (d *Document) listTags(ctx context.Context, key sqlmem.ScopeKey, in docInpu
 	}
 	res, err := d.query(ctx, key, stmt, args...)
 	if err != nil {
-		return errResult("list_tags: " + err.Error()), nil
+		return errFrom("list_tags: "+err.Error(), err), nil
 	}
 	tags := make([]map[string]any, 0, len(res.Rows))
 	for _, r := range res.Rows {
@@ -5062,7 +5116,7 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 	if in.UnderPath != "" {
 		docIDs, err := d.documentsUnderPath(ctx, key, in.UnderPath)
 		if err != nil {
-			return errResult("query_documents: " + err.Error()), nil
+			return docFail("query_documents: ", err), nil
 		}
 		if len(docIDs) == 0 {
 			return jsonResult(map[string]any{"documents": []any{}})
@@ -5086,7 +5140,7 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 	args = append(args, limit)
 	res, err := d.query(ctx, key, `SELECT id, title, type, status, root_chunk_id, created_at, updated_at FROM documents WHERE `+where+` ORDER BY title, id LIMIT ?`, args...)
 	if err != nil {
-		return errResult("query_documents: " + err.Error()), nil
+		return errFrom("query_documents: "+err.Error(), err), nil
 	}
 	docs := make([]map[string]any, 0, len(res.Rows))
 	for _, r := range res.Rows {
