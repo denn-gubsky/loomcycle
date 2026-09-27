@@ -949,6 +949,98 @@ func TestContextTool_EvaluationsRefusesWithoutStore(t *testing.T) {
 	}
 }
 
+// ---- tenant boundary on def reads by id ----
+
+// tenantDefsFixture adds, beside substrateFixture's shared ("") v1→v2 chain, a
+// private def in tenant-a and tenant-a's fork of the shared v1. It returns a
+// tenant-b run ctx.
+func tenantDefsFixture(t *testing.T) (tool *Context, tenantB context.Context, sharedV1, privateA, forkA string) {
+	t.Helper()
+	tool, s, _, _, v1ID, _ := substrateFixture(t)
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(t.Name(), "/", "_")
+	privateA = "def_private_a_" + suffix
+	forkA = "def_fork_a_" + suffix
+	if _, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID: privateA, TenantID: "tenant-a", Name: "pricing_" + suffix,
+		Definition: json.RawMessage(`{"system_prompt":"a"}`),
+	}); err != nil {
+		t.Fatalf("AgentDefCreate private: %v", err)
+	}
+	shared, err := s.AgentDefGet(ctx, v1ID)
+	if err != nil {
+		t.Fatalf("AgentDefGet v1: %v", err)
+	}
+	if _, err := s.AgentDefCreate(ctx, store.AgentDefRow{
+		DefID: forkA, TenantID: "tenant-a", Name: shared.Name, ParentDefID: v1ID,
+		Definition: json.RawMessage(`{"system_prompt":"a-fork"}`),
+	}); err != nil {
+		t.Fatalf("AgentDefCreate fork: %v", err)
+	}
+	sess, _ := s.CreateSession(ctx, "tenant-a", "pricing_"+suffix, "alice")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_eval", AgentDefID: privateA})
+	if _, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+		EvalID: "eval_a_" + suffix, RunID: run.ID, DefID: privateA, Score: 0.3, EmitterRole: "self",
+	}); err != nil {
+		t.Fatalf("EvaluationSubmit: %v", err)
+	}
+	tenantB = tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_b", UserID: "bob", TenantID: "tenant-b"})
+	return tool, tenantB, v1ID, privateA, forkA
+}
+
+// Another tenant's def_id must read exactly like one that does not exist: the
+// same refusal text, so a guessed id tells nothing across the boundary.
+func TestContextTool_AnotherTenantsDefReadsLikeAMissingOne(t *testing.T) {
+	tool, ctx, _, privateA, _ := tenantDefsFixture(t)
+	const missing = "def_nope_does_not_exist"
+	for _, op := range []string{"lineage", "evaluations"} {
+		theirs, _ := tool.Execute(ctx, json.RawMessage(`{"op":"`+op+`","def_id":"`+privateA+`"}`))
+		none, _ := tool.Execute(ctx, json.RawMessage(`{"op":"`+op+`","def_id":"`+missing+`"}`))
+		if !theirs.IsError || !none.IsError {
+			t.Fatalf("%s: both must refuse; theirs=%q none=%q", op, theirs.Text, none.Text)
+		}
+		if got, want := strings.ReplaceAll(theirs.Text, privateA, "ID"), strings.ReplaceAll(none.Text, missing, "ID"); got != want {
+			t.Errorf("%s: another tenant's def reads differently from a missing one:\n theirs: %s\n none:   %s", op, got, want)
+		}
+		if strings.Contains(theirs.Text, "0.3") || strings.Contains(theirs.Text, "pricing_") {
+			t.Errorf("%s: refusal leaks the other tenant's def: %s", op, theirs.Text)
+		}
+	}
+}
+
+// The shared base is forked by every tenant; its lineage must not list another
+// tenant's fork.
+func TestContextTool_LineageOfSharedDefHidesOtherTenantsForks(t *testing.T) {
+	tool, ctx, sharedV1, _, forkA := tenantDefsFixture(t)
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"lineage","def_id":"`+sharedV1+`"}`))
+	if res.IsError {
+		t.Fatalf("lineage of the shared def: %s", res.Text)
+	}
+	if strings.Contains(res.Text, forkA) {
+		t.Errorf("lineage lists tenant-a's fork to a tenant-b run: %s", res.Text)
+	}
+	if n := len(decodeResult(t, res.Text)["descendants"].([]any)); n != 1 {
+		t.Errorf("descendants = %d, want 1 (the shared v2 only)", n)
+	}
+}
+
+// The owning tenant and a substrate:admin still read the def.
+func TestContextTool_OwnTenantAndAdminReadTheDef(t *testing.T) {
+	tool, _, _, privateA, _ := tenantDefsFixture(t)
+	own := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_a", UserID: "alice", TenantID: "tenant-a"})
+	admin := auth.WithPrincipal(
+		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_op", TenantID: "ops"}),
+		auth.Principal{TenantID: "ops", Subject: "op", Scopes: []string{auth.ScopeAdmin}})
+	for name, ctx := range map[string]context.Context{"own tenant": own, "admin": admin} {
+		for _, op := range []string{"lineage", "evaluations"} {
+			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"`+op+`","def_id":"`+privateA+`"}`))
+			if res.IsError {
+				t.Errorf("%s %s: %s", name, op, res.Text)
+			}
+		}
+	}
+}
+
 // ---- channels (PR 3) ----
 
 func TestContextTool_ChannelsListsAccessible(t *testing.T) {
