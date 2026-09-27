@@ -45,6 +45,9 @@ type Backend struct {
 	// returns (RFC BL hybrid retrieval, OQ #4). nil in tests and when the
 	// server didn't wire it — searches then simply skip access tracking.
 	accessFlusher *memory.AccessFlusher
+	// reranker serves an agent's opt-in rerank (memory.reranker). nil when the
+	// operator declared none: a requested rerank then reports not_configured.
+	reranker memory.RerankModel
 }
 
 // New builds the in-process backend. Either argument may be nil at the
@@ -59,6 +62,10 @@ func New(s store.Store, e providers.Embedder) *Backend {
 // when unset, Search does no access tracking. main wires exactly one flusher
 // shared across the tool's default backend.
 func (b *Backend) SetAccessFlusher(f *memory.AccessFlusher) { b.accessFlusher = f }
+
+// SetReranker wires the operator's reranker. Optional; unset, a search whose
+// agent enabled the rerank keeps its own order and says why.
+func (b *Backend) SetReranker(r memory.RerankModel) { b.reranker = r }
 
 // Get delegates to the store.
 func (b *Backend) Get(ctx context.Context, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
@@ -221,7 +228,9 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		return memory.SearchResult{}, ferr
 	}
 
-	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled
+	// A requested rerank needs the deep pool too: the cheap path fetches top_k+1
+	// rows, and a rerank shown only those can promote nothing from below top_k.
+	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled || q.Rerank.Enabled
 
 	var pool []store.MemorySearchEntry
 	if hybrid {
@@ -230,6 +239,12 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// back-fill from below top_k. The pool is bounded by the store's
 		// defensive cap (<=51); the rows beyond top_k also probe truncation.
 		fetch := topK * 4
+		// The rerank shows the model its first `candidates` rows, so the pool must
+		// hold that many whatever top_k is — at top_k 5 the over-fetch alone is 20,
+		// at top_k 2 it would be 8.
+		if q.Rerank.Enabled && q.Rerank.EffectiveCandidates() > fetch {
+			fetch = q.Rerank.EffectiveCandidates()
+		}
 		if fetch > 51 {
 			fetch = 51
 		}
@@ -311,6 +326,15 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		ranked = demoteUndated(ranked, q.When)
 	}
 	deduped, dropped := memory.DedupResults(ranked, dedup)
+	// The rerank runs on the fused, ranked, deduplicated pool, BEFORE the trim:
+	// its whole value is promoting a candidate from below top_k, and after the
+	// trim there is nothing below top_k left to promote.
+	var rerankReport *memory.RerankReport
+	if q.Rerank.Enabled {
+		var rep memory.RerankReport
+		deduped, rep = b.rerankPool(ctx, tenant, scope, scopeID, q, deduped)
+		rerankReport = &rep
+	}
 	if len(deduped) > topK {
 		deduped = deduped[:topK]
 	}
@@ -351,6 +375,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// can declare that it was honoured. A backend that cannot must leave this
 		// false rather than let a caller trust a label it did not earn.
 		SourcesApplied: true,
+		Rerank:         rerankReport,
 	}
 	if rank.SourceReserved() {
 		out.RankNote = "source_weight is reserved and contributes 0 until source-score tracking ships"
@@ -541,7 +566,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 		sources = []memory.Source{memory.SourceFacts, memory.SourceNotes}
 	}
 	res, err := b.Search(ctx, scope, scopeID,
-		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When},
+		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When, Rerank: q.Rerank},
 		memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		return memory.RecallResult{}, err
@@ -563,7 +588,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	if len(facts) > topK {
 		facts = facts[:topK]
 	}
-	return memory.RecallResult{Facts: facts, SourcesApplied: true, TimeFilter: res.TimeFilter}, nil
+	return memory.RecallResult{Facts: facts, SourcesApplied: true, TimeFilter: res.TimeFilter, Rerank: res.Rerank}, nil
 }
 
 // recallText renders a stored value as human text: a JSON string round-trips to

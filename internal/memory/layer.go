@@ -154,6 +154,10 @@ type RecallQuery struct {
 
 	// When bounds the rows' OBSERVED time (RFC CL); zero constrains nothing.
 	When ObservedWindow
+
+	// Rerank is the agent's opt-in listwise rerank, as on SearchQuery. It runs only
+	// when the recall can return documents.
+	Rerank RerankOptions
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned
@@ -194,4 +198,7 @@ type RecallResult struct {
 	// matters most: its default EXCLUDES documents, so a backend that ignored the
 	// selector would return exactly the prose the default exists to keep out.
 	SourcesApplied bool
+
+	// Rerank mirrors SearchResult.Rerank.
+	Rerank *RerankReport
 }
