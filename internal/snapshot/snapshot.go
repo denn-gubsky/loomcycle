@@ -525,6 +525,13 @@ func captureChannels(ctx context.Context, s store.Store, cfg []ChannelConfigEntr
 			Payload:           m.Payload,
 			PublishedAt:       m.PublishedAt,
 			PublishedByUserID: m.PublishedByUserID,
+			TenantID:          m.TenantID,
+			Origin:            m.Origin,
+			HookTenant:        m.HookTenant,
+		}
+		if !m.RequestedVisibleAt.IsZero() {
+			t := m.RequestedVisibleAt
+			entry.RequestedVisibleAt = &t
 		}
 		if !m.ExpiresAt.IsZero() {
 			t := m.ExpiresAt
