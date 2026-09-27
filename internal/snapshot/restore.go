@@ -527,23 +527,30 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				fmt.Sprintf("channels.config: %d declared channels in snapshot; reconcile against operator yaml on the restoring host", len(sec.Config)))
 		}
 		for _, m := range sec.Messages {
-			var expires, visible time.Time
+			var expires, visible, requested time.Time
 			if m.ExpiresAt != nil {
 				expires = *m.ExpiresAt
 			}
 			if m.VisibleAt != nil {
 				visible = *m.VisibleAt
 			}
+			if m.RequestedVisibleAt != nil {
+				requested = *m.RequestedVisibleAt
+			}
 			inserted, err := s.SnapshotRestoreChannelMessage(ctx, store.ChannelMessage{
-				ID:                m.ID,
-				Channel:           m.Channel,
-				Scope:             store.MemoryScope(m.Scope),
-				ScopeID:           m.ScopeID,
-				Payload:           m.Payload,
-				PublishedAt:       m.PublishedAt,
-				ExpiresAt:         expires,
-				VisibleAt:         visible,
-				PublishedByUserID: m.PublishedByUserID,
+				ID:                 m.ID,
+				Channel:            m.Channel,
+				Scope:              store.MemoryScope(m.Scope),
+				ScopeID:            m.ScopeID,
+				Payload:            m.Payload,
+				PublishedAt:        m.PublishedAt,
+				ExpiresAt:          expires,
+				VisibleAt:          visible,
+				PublishedByUserID:  m.PublishedByUserID,
+				TenantID:           m.TenantID,
+				Origin:             m.Origin,
+				HookTenant:         m.HookTenant,
+				RequestedVisibleAt: requested,
 			})
 			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_message %s: %v", m.ID, err))

@@ -579,6 +579,53 @@ func TestRoundTrip_PreservesParentContext(t *testing.T) {
 	}
 }
 
+// A message awaiting its channel's hooks survives a snapshot as one: under its
+// own tenant, still at the hook instant, and with the context the hook worker
+// needs (the governing tenant, the origin, the publisher's deliver_at). The
+// entry used to carry none of these, so it restored into the shared tenant.
+func TestRoundTrip_PreservesAMessageAwaitingHooks(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	requested := time.Now().Add(time.Hour).Truncate(time.Microsecond)
+	if _, _, err := src.ChannelPublish(ctx, store.ChannelMessage{
+		ID:                 store.MintChannelMessageID(time.Now()),
+		Channel:            "inbox",
+		TenantID:           "acme",
+		Scope:              store.MemoryScopeUser,
+		ScopeID:            "u1",
+		Payload:            json.RawMessage(`{"n":1}`),
+		PublishedAt:        time.Now(),
+		VisibleAt:          store.ChannelHookHeldVisibleAt(),
+		Origin:             "starter_sink",
+		HookTenant:         "acme",
+		RequestedVisibleAt: requested,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	now := time.Now()
+	w, err := dst.ChannelHookClaim(ctx, "worker", now, now.Add(time.Minute), 10)
+	if err != nil || len(w) != 1 {
+		t.Fatalf("claim on dst: %d messages (err %v), want the one awaiting hooks", len(w), err)
+	}
+	m := w[0].Message
+	if m.TenantID != "acme" || m.Origin != "starter_sink" || m.HookTenant != "acme" || !m.RequestedVisibleAt.Equal(requested) {
+		t.Errorf("restored tenant=%q origin=%q hook_tenant=%q requested=%v", m.TenantID, m.Origin, m.HookTenant, m.RequestedVisibleAt)
+	}
+}
+
 // TestRoundTrip_PreservesInteractiveFlag pins F42 / RFC X Phase 2: a paused
 // interactive run's `interactive` flag survives pause→snapshot→restore, so the
 // run re-dispatches with the correct park-at-end_turn (vs run-to-completion)

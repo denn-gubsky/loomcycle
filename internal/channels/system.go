@@ -130,7 +130,7 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 		return WriteResult{}, fmt.Errorf("channel writer: no Store configured")
 	}
 	// The reserved instants mark a message held; only the writer may set them.
-	if store.IsChannelHeld(req.DeliverAt) {
+	if store.IsChannelReservedVisibleAt(req.DeliverAt) {
 		return WriteResult{}, fmt.Errorf("channel writer: deliver_at %s is a reserved instant", req.DeliverAt.UTC().Format(time.RFC3339))
 	}
 	var def WriteDef

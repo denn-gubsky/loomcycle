@@ -175,11 +175,13 @@ func TestWriter_RefusesAReservedDeliverAt(t *testing.T) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	defer s.Close()
-	_, err = (&StorePublisher{Store: s}).Write(context.Background(), WriteRequest{
-		Channel: "c", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
-		DeliverAt: store.ChannelHeldVisibleAt(),
-	})
-	if err == nil {
-		t.Fatal("a caller-supplied reserved instant was accepted")
+	for _, at := range []time.Time{store.ChannelHeldVisibleAt(), store.ChannelHookHeldVisibleAt()} {
+		_, err = (&StorePublisher{Store: s}).Write(context.Background(), WriteRequest{
+			Channel: "c", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
+			DeliverAt: at,
+		})
+		if err == nil {
+			t.Errorf("a caller-supplied reserved instant %s was accepted", at.Format(time.RFC3339))
+		}
 	}
 }

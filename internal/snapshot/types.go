@@ -402,6 +402,17 @@ type ChannelMessageEntry struct {
 	ExpiresAt         *time.Time      `json:"expires_at,omitempty"`
 	VisibleAt         *time.Time      `json:"visible_at,omitempty"`
 	PublishedByUserID string          `json:"published_by_user_id,omitempty"`
+	// TenantID is the tenant the row is stored under; "" (omitted) is the
+	// shared tenant, so a tenant-less entry from an older snapshot restores
+	// there as it always did.
+	TenantID string `json:"tenant_id,omitempty"`
+	// Origin, HookTenant and RequestedVisibleAt carry a message awaiting its
+	// channel's hooks across a restore: without them the restored message
+	// would lose the definition that governs it and the delivery time its
+	// publisher asked for.
+	Origin             string     `json:"origin,omitempty"`
+	HookTenant         string     `json:"hook_tenant,omitempty"`
+	RequestedVisibleAt *time.Time `json:"requested_visible_at,omitempty"`
 }
 
 type ChannelCursorEntry struct {

@@ -197,6 +197,9 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_cursors WHERE tenant_id = ? AND channel = ?`, msgTenant, name); err != nil {
 		return fmt.Errorf("channels delete cursors cascade: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_hook_state WHERE tenant_id = ? AND channel = ?`, msgTenant, name); err != nil {
+		return fmt.Errorf("channels delete hook state cascade: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("channels delete commit: %w", err)
 	}
@@ -207,13 +210,25 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 // returns the count. Leaves the channels row + channel_cursors intact
 // — see store.Store.ChannelPurge. One DELETE; no transaction needed.
 func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string) (int, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM channel_messages WHERE tenant_id = ? AND channel = ?`, tenantID, name)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("channel purge begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `DELETE FROM channel_messages WHERE tenant_id = ? AND channel = ?`, tenantID, name)
 	if err != nil {
 		return 0, fmt.Errorf("channel purge: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("channel purge rows-affected: %w", err)
+	}
+	// A purged message awaiting hooks takes its hook progress with it.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_hook_state WHERE tenant_id = ? AND channel = ?`, tenantID, name); err != nil {
+		return 0, fmt.Errorf("channel purge hook state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("channel purge commit: %w", err)
 	}
 	return int(n), nil
 }
