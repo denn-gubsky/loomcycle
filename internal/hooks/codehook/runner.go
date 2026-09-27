@@ -456,7 +456,9 @@ func eventValue(event string, payload any) (map[string]any, error) {
 	return ev, nil
 }
 
-// seedFor derives the RNG seed from the hook and the call it decides on.
+// seedFor derives the RNG seed from the hook and the call it decides on: a
+// tool call, or a channel message. A channel hook has no run or tool call, so
+// without the message id every message would draw the same sequence.
 func seedFor(hookID string, ev map[string]any) uint32 {
 	h := fnv.New32a()
 	runID, _ := ev["run_id"].(string)
@@ -464,7 +466,11 @@ func seedFor(hookID string, ev map[string]any) uint32 {
 	if tc, ok := ev["tool_call"].(map[string]any); ok {
 		toolID, _ = tc["id"].(string)
 	}
-	_, _ = h.Write([]byte(hookID + "|" + runID + "|" + toolID))
+	key := hookID + "|" + runID + "|" + toolID
+	if msgID, _ := ev["message_id"].(string); msgID != "" {
+		key += "|" + msgID
+	}
+	_, _ = h.Write([]byte(key))
 	return h.Sum32()
 }
 

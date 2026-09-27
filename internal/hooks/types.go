@@ -66,7 +66,17 @@ const (
 	PhasePostCompact Phase = "post_compact"
 	// PhaseRunEnd reports how a run ended, whatever the outcome. Observe only.
 	PhaseRunEnd Phase = "run_end"
+	// PhaseChannelPublish runs on each message published to a channel that
+	// carries hooks, whoever published it, before any reader can see it. The
+	// hook releases the message (as it is, or with a rewritten body), drops it,
+	// or holds it for a person's decision. It is a channel's event: an agent,
+	// a team or a run cannot attach it.
+	PhaseChannelPublish Phase = "channel_publish"
 )
+
+// IsChannelPhase reports whether hooks of this phase decide on a channel
+// message rather than on something a run does.
+func IsChannelPhase(p Phase) bool { return p == PhaseChannelPublish }
 
 // IsObservePhase reports whether hooks of this phase only report: their
 // result is ignored.
@@ -367,7 +377,7 @@ type Decision struct {
 	Phase Phase
 	// Kind: "deny" | "rewrite_input" | "rewrite_output" | "context" |
 	// "block" | "hold" | "unavailable" (the hook failed; FailMode says what
-	// that meant).
+	// that meant), and a channel hook's "release" | "rewrite_body" | "drop".
 	Kind     string
 	FailMode FailMode
 	// Reason is shown to the run's viewer and persisted: for "unavailable" it
@@ -404,13 +414,21 @@ type CodeDecision struct {
 	UpdatedOutput     *ToolResult     `json:"updated_output,omitempty"`
 	AdditionalContext string          `json:"additional_context,omitempty"`
 	AllowHosts        []string        `json:"allow_hosts,omitempty"`
+	// UpdatedBody replaces a channel message's body (channel_publish only).
+	UpdatedBody json.RawMessage `json:"updated_body,omitempty"`
 }
+
+// errUpdatedBodyChannelOnly refuses a channel hook's field in any other hook.
+var errUpdatedBodyChannelOnly = fmt.Errorf("updated_body applies to channel_publish hooks only")
 
 // preResult translates a pre hook's decision into the webhook response shape
 // the pre chain already applies.
 func (d CodeDecision) preResult(h *Hook) (PreHookResult, error) {
 	if d.UpdatedOutput != nil || d.AdditionalContext != "" {
 		return PreHookResult{}, fmt.Errorf("updated_output and additional_context apply to post hooks only")
+	}
+	if len(d.UpdatedBody) > 0 {
+		return PreHookResult{}, errUpdatedBodyChannelOnly
 	}
 	switch d.Decision {
 	case "", "allow":
@@ -431,6 +449,9 @@ func (d CodeDecision) postResult() (PostHookResult, error) {
 	if len(d.UpdatedInput) > 0 || len(d.AllowHosts) > 0 {
 		return PostHookResult{}, fmt.Errorf("updated_input and allow_hosts apply to pre hooks only")
 	}
+	if len(d.UpdatedBody) > 0 {
+		return PostHookResult{}, errUpdatedBodyChannelOnly
+	}
 	if d.Decision != "" && d.Decision != "allow" {
 		return PostHookResult{}, fmt.Errorf("decision %q does not apply after the tool ran; return updated_output to change its result", d.Decision)
 	}
@@ -442,21 +463,32 @@ func (d CodeDecision) lifecycleResult() (LifecycleHookResult, error) {
 	if len(d.UpdatedInput) > 0 || d.UpdatedOutput != nil || len(d.AllowHosts) > 0 {
 		return LifecycleHookResult{}, fmt.Errorf("updated_input, updated_output and allow_hosts apply to tool hooks only")
 	}
+	if len(d.UpdatedBody) > 0 {
+		return LifecycleHookResult{}, errUpdatedBodyChannelOnly
+	}
 	return LifecycleHookResult{Decision: d.Decision, Reason: d.Reason, AdditionalContext: d.AdditionalContext}, nil
 }
 
+// channelResult translates a channel_publish hook's decision.
+func (d CodeDecision) channelResult() (ChannelHookResult, error) {
+	if len(d.UpdatedInput) > 0 || d.UpdatedOutput != nil || len(d.AllowHosts) > 0 || d.AdditionalContext != "" {
+		return ChannelHookResult{}, fmt.Errorf("updated_input, updated_output, allow_hosts and additional_context apply to hooks on a run; a channel hook returns decision, updated_body and reason")
+	}
+	return ChannelHookResult{Decision: d.Decision, UpdatedBody: d.UpdatedBody, Reason: d.Reason}, nil
+}
+
 // eventFor names the thing a hook in this phase decides on, as a code body
-// sees it.
+// sees it. Only the tool phases are renamed; every other phase is its own name,
+// so a phase added later is not silently presented to a body as a tool call.
 func eventFor(p Phase) string {
 	switch p {
 	case PhasePre:
 		return "pre_tool_use"
+	case PhasePost:
+		return "post_tool_use"
 	case PhasePostFailure:
 		return "post_tool_use_failure"
-	case PhaseAgentStart, PhaseAgentStop, PhaseSubagentStart, PhaseSubagentStop,
-		PhasePreCompact, PhasePostCompact, PhaseRunEnd:
-		return string(p)
 	default:
-		return "post_tool_use"
+		return string(p)
 	}
 }

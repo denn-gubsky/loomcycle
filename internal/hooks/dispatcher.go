@@ -232,7 +232,7 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 			// Fail-mode branch: open → pass through, closed → synthesize
 			// a deny error so the loop short-circuits.
 			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if ctx.Err() != nil {
 				log.Printf("hooks: pre %s/%s failed (run ended): %v", h.Owner, h.Name, err)
 				// The run was cancelled while the hook ran (a code hook can be
@@ -383,7 +383,7 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 		var res PostHookResult
 		if err := d.invoke(ctx, h, &call, &res); err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if h.FailMode == FailClosed {
 				log.Printf("hooks: %s %s/%s failed (fail_mode=closed): %v", h.Phase, h.Owner, h.Name, err)
 				out.Result = ToolResult{
@@ -466,6 +466,12 @@ func (d *Dispatcher) invokeCode(ctx context.Context, h *Hook, body, out any) err
 			return err
 		}
 		*o = res
+	case *ChannelHookResult:
+		res, err := dec.channelResult()
+		if err != nil {
+			return err
+		}
+		*o = res
 	default:
 		return fmt.Errorf("hooks: unexpected response type %T", out)
 	}
@@ -527,7 +533,7 @@ func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, i
 		res, err := d.invokeLifecycle(ctx, h, ident, info)
 		if err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if h.FailMode == FailClosed || ctx.Err() != nil {
 				log.Printf("hooks: %s %s/%s failed (fail_mode=%s): %v", phase, h.Owner, h.Name, failModeOf(h), err)
 				out.Denied, out.Reason = true, "hook "+h.Owner+"/"+h.Name+" is unavailable"
@@ -656,7 +662,7 @@ func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop Life
 		res, err := d.invokeLifecycle(ctx, h, ident, stop)
 		if err != nil {
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
-				Kind: "unavailable", FailMode: failModeOf(h), Reason: decisionReason(err)})
+				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if ctx.Err() != nil {
 				// The run ended while the hook was deciding. Reported as allow,
 				// the loop left normally and recorded an answer nobody approved

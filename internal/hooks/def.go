@@ -67,14 +67,14 @@ func (d *Def) Normalize() {
 func (d Def) Validate() error {
 	switch {
 	case IsToolPhase(d.Event):
-	case isRunPhase(d.Event):
+	case isRunPhase(d.Event), IsChannelPhase(d.Event):
 		if d.Match != nil && len(d.Match.Tools) > 0 {
 			return fmt.Errorf("match.tools selects tool calls; a %s hook has no tool to match", d.Event)
 		}
 	case d.Event == "":
-		return fmt.Errorf("event is required (one of %s)", phaseList)
+		return fmt.Errorf("event is required (one of %s)", defPhaseList)
 	default:
-		return fmt.Errorf("event %q is not one of %s", d.Event, phaseList)
+		return fmt.Errorf("event %q is not one of %s", d.Event, defPhaseList)
 	}
 	switch d.Body.Kind {
 	case BodyKindCode:
@@ -114,7 +114,12 @@ func (d Def) Validate() error {
 	return nil
 }
 
-const phaseList = "pre, post, post_failure, agent_start, agent_stop, subagent_start, subagent_stop, pre_compact, post_compact, run_end"
+// phaseList is the events an agent, a team or a run may attach; defPhaseList
+// adds the channel's own, which a HookDef may also answer.
+const (
+	phaseList    = "pre, post, post_failure, agent_start, agent_stop, subagent_start, subagent_stop, pre_compact, post_compact, run_end"
+	defPhaseList = phaseList + ", channel_publish"
+)
 
 func isRunPhase(p Phase) bool {
 	switch p {

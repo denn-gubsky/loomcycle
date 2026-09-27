@@ -127,6 +127,8 @@ func (e EventHooks) Validate(tool string) error {
 			if tool != "" {
 				return fmt.Errorf("tool %s: %s is a run event; attach it under the agent's hooks, not a tool's", tool, phase)
 			}
+		case IsChannelPhase(phase):
+			return fmt.Errorf("hooks: %s is a channel's event; attach it under the channel's hooks", phase)
 		default:
 			return fmt.Errorf("hooks: unknown event %q (one of %s)", phase, phaseList)
 		}
