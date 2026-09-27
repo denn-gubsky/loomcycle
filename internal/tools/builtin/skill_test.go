@@ -397,6 +397,47 @@ func TestSkillTool_SubstrateOnlyHintsAtAvailable(t *testing.T) {
 	}
 }
 
+// TestSkillTool_UnknownSkillHintIsTenantConfined: the "substrate has: …" hint
+// names only skills of the caller's OWN tenant — the ones it could load. It
+// used to list every tenant's skill names, disclosing them to anyone who asked
+// for a skill that does not exist.
+func TestSkillTool_UnknownSkillHintIsTenantConfined(t *testing.T) {
+	emptySet, err := skills.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	defer st.Close()
+
+	seed := func(tenant, name string) {
+		t.Helper()
+		ctx := tools.WithSkillPolicy(tools.WithAgentTools(context.Background(), []string{"Read"}), tools.SkillPolicyValue{})
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_seed", TenantID: tenant})
+		body := `{"op":"create","name":"` + name + `","overlay":{"body":"b"},"promote":true}`
+		if res, _ := (&SkillDef{Store: st, Set: emptySet}).Execute(ctx, json.RawMessage(body)); res.IsError {
+			t.Fatalf("seed %s/%s: %s", tenant, name, res.Text)
+		}
+	}
+	seed("tenant-a", "acme-pricing-playbook")
+	seed("tenant-b", "own-skill")
+
+	ctx := tools.WithRunIdentity(tools.WithAgentTools(context.Background(), []string{"Read"}),
+		tools.RunIdentityValue{AgentID: "a_caller", TenantID: "tenant-b"})
+	res, _ := (&SkillTool{Set: emptySet, Store: st}).Execute(ctx, json.RawMessage(`{"name":"does-not-exist"}`))
+	if !res.IsError {
+		t.Fatalf("expected IsError for unknown skill; got %+v", res)
+	}
+	if strings.Contains(res.Text, "acme-pricing-playbook") {
+		t.Errorf("the hint discloses another tenant's skill name: %s", res.Text)
+	}
+	if !strings.Contains(res.Text, "own-skill") {
+		t.Errorf("the hint should list the caller's own tenant's skills: %s", res.Text)
+	}
+}
+
 // TestSkillTool_NoSourcesConfigured exercises the path where neither
 // the substrate nor the static set has any skills. The error message
 // should point at BOTH paths — substrate first (the modern default)

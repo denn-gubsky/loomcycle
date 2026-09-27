@@ -253,7 +253,18 @@ func (s *SkillTool) resolveSkill(ctx context.Context, name string) (string, []st
 		// Differentiate: substrate registered some skills (just not
 		// this one) vs neither source configured at all.
 		if s.Store != nil {
-			names, lerr := s.Store.SkillDefListNames(ctx)
+			all, lerr := s.Store.SkillDefListNames(ctx)
+			// Only the names THIS run could load: its own tenant's, which is
+			// the one tenant resolveSkill reads. The listing spans every
+			// tenant, and hinting from all of it disclosed other tenants'
+			// skill names to anyone who asked for one that does not exist.
+			tenant := tools.RunIdentity(ctx).TenantID
+			var names []store.SkillDefNameSummary
+			for _, n := range all {
+				if n.TenantID == tenant {
+					names = append(names, n)
+				}
+			}
 			if lerr == nil && len(names) > 0 {
 				cap := 10
 				if len(names) < cap {
