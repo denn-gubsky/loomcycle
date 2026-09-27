@@ -2,7 +2,9 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -62,7 +64,7 @@ func fakeLookup(defs map[string]Def) LookupDef {
 	return func(_ context.Context, tenant, name string, version int) (Def, string, error) {
 		d, ok := defs[tenant+"|"+name]
 		if !ok {
-			return Def{}, "", errNotFoundForTest
+			return Def{}, "", DefNotFound(errNotFoundForTest)
 		}
 		return d, "hdf_" + tenant + "_" + name, nil
 	}
@@ -171,5 +173,35 @@ func TestAdditions_MergeAppendsAndValidateChecksTheAgentsTools(t *testing.T) {
 	}
 	if err := b.Validate([]string{"Write"}); err == nil {
 		t.Fatalf("a hook on a tool the agent lacks was accepted")
+	}
+}
+
+// A reference falls back to the shared tenant only when its own tenant has no
+// such HookDef. A retired version, or a fault reading the store, is the
+// answer: running the operator's same-named definition in its place would
+// swap in a body another author wrote.
+func TestResolve_FallsBackToSharedOnlyWhenNotFound(t *testing.T) {
+	shared := Def{Event: PhasePre, Body: DefBody{Kind: BodyKindHTTP, URL: "https://operator.example"}}
+	lookup := func(_ context.Context, tenant, name string, _ int) (Def, string, error) {
+		if tenant == "acme" {
+			return Def{}, "", errors.New("HookDef gate v3 is retired")
+		}
+		return shared, "hdf_shared", nil
+	}
+	err := Resolve(context.Background(), Source{Owner: "agent:a", Tenant: "acme"},
+		EventHooks{PhasePre: {{Ref: "gate@3"}}}, nil, lookup, Permits{}, NewSet())
+	if err == nil || !strings.Contains(err.Error(), "retired") {
+		t.Fatalf("err = %v; want the tenant's retired version reported, not the shared one run", err)
+	}
+}
+
+// A run's tool_hooks may name a tool the agent holds through a glob.
+func TestAdditions_ValidateMatchesTheAgentsToolGlobs(t *testing.T) {
+	a := Additions{ToolHooks: ToolHooks{"mcp__jobs__patch": {PhasePre: {{Ref: "gate"}}}}}
+	if err := a.Validate([]string{"Read", "mcp__jobs__*"}); err != nil {
+		t.Fatalf("a globbed tool: %v", err)
+	}
+	if err := a.Validate([]string{"Read"}); err == nil {
+		t.Fatal("a tool the agent lacks was accepted")
 	}
 }
