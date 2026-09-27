@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -149,27 +150,62 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 	// RFC N: the owning tenant is derived from the authenticated principal,
 	// never from the request body or scope_id.
 	tenantID := tenantFromCtx(ctx)
-	msg, err := s.systemPublisher.Publish(ctx, req.Channel, tenantID, scope, scopeID,
-		req.Payload, deliverAt, publishedBy, def.MaxMessages, def.DefaultTTL)
+	res, err := s.writeChannel(ctx, channels.WriteRequest{
+		Channel: req.Channel, TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+		Payload: req.Payload, DeliverAt: deliverAt, PublishedBy: publishedBy,
+		MaxMessages: def.MaxMessages, ExpiresAt: ttlExpiry(def.DefaultTTL),
+	})
 	if err != nil {
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: %w", err)
 	}
-
+	msg := res.Message
 	out := connector.ChannelPublishResult{
-		MsgID:     msg.ID,
-		Channel:   req.Channel,
-		CreatedAt: msg.PublishedAt.UTC().Format(time.RFC3339Nano),
+		MsgID:         msg.ID,
+		Channel:       req.Channel,
+		CreatedAt:     msg.PublishedAt.UTC().Format(time.RFC3339Nano),
+		Held:          res.Held,
+		AwaitingHooks: res.AwaitingHooks,
+		DroppedOldest: res.Dropped,
 	}
-	// Whether it is held is the writer's decision, read back from the message.
-	if store.IsChannelHeld(msg.VisibleAt) {
-		// Report the hold instead of a visible_at in the year 2200 — the
-		// reserved instant is an implementation marker, not a promise about
-		// when this message is coming.
-		out.Held = true
-	} else if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) {
+	// A held or hook-held message's reserved instant is an implementation
+	// marker, not a promise about when it is coming: the flags say that.
+	if res.Deferred {
 		out.VisibleAt = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
 	}
 	return out, nil
+}
+
+// ttlExpiry is a channel's default TTL applied from now; zero = no expiry.
+func ttlExpiry(defaultTTLSeconds int) time.Time {
+	if defaultTTLSeconds <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(time.Duration(defaultTTLSeconds) * time.Second)
+}
+
+// writeChannel writes one message through the channel writer, reporting what
+// it did. The system publisher is the writer everywhere it is wired; one that
+// is not (a test double) is written through its Publish, and what it did is
+// read back from the message.
+func (s *Server) writeChannel(ctx context.Context, req channels.WriteRequest) (channels.WriteResult, error) {
+	if w, ok := s.systemPublisher.(channels.Writer); ok {
+		return w.Write(ctx, req)
+	}
+	ttl := 0
+	if !req.ExpiresAt.IsZero() {
+		ttl = int(time.Until(req.ExpiresAt).Seconds())
+	}
+	msg, err := s.systemPublisher.Publish(ctx, req.Channel, req.TenantID, req.Scope, req.ScopeID,
+		req.Payload, req.DeliverAt, req.PublishedBy, req.MaxMessages, ttl)
+	if err != nil {
+		return channels.WriteResult{}, err
+	}
+	return channels.WriteResult{
+		Message:       msg,
+		Held:          store.IsChannelHeld(msg.VisibleAt),
+		AwaitingHooks: store.IsChannelHookHeld(msg.VisibleAt),
+		Deferred:      !store.IsChannelReservedVisibleAt(msg.VisibleAt) && msg.VisibleAt.After(msg.PublishedAt),
+	}, nil
 }
 
 // ReleaseChannel implements the operator half of the hold breakpoint: hand
@@ -451,21 +487,27 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 	tenantID := tenantFromCtx(ctx) // RFC N: authoritative principal tenant
 	out := connector.ChannelBroadcastResult{Results: make([]connector.ChannelBroadcastEntry, 0, len(targets))}
 	for _, t := range targets {
-		msg, perr := s.systemPublisher.Publish(ctx, t.name, tenantID, scope, scopeID,
-			req.Payload, deliverAt, publishedBy, t.def.MaxMessages, t.def.DefaultTTL)
+		res, perr := s.writeChannel(ctx, channels.WriteRequest{
+			Channel: t.name, TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+			Payload: req.Payload, DeliverAt: deliverAt, PublishedBy: publishedBy,
+			MaxMessages: t.def.MaxMessages, ExpiresAt: ttlExpiry(t.def.DefaultTTL),
+		})
 		if perr != nil {
 			out.Failed++
 			out.Results = append(out.Results, connector.ChannelBroadcastEntry{Channel: t.name, Error: perr.Error()})
 			continue
 		}
 		out.Published++
+		msg := res.Message
 		entry := connector.ChannelBroadcastEntry{
-			Channel:   t.name,
-			MsgID:     msg.ID,
-			CreatedAt: msg.PublishedAt.UTC().Format(time.RFC3339Nano),
+			Channel:       t.name,
+			MsgID:         msg.ID,
+			CreatedAt:     msg.PublishedAt.UTC().Format(time.RFC3339Nano),
+			Held:          res.Held,
+			AwaitingHooks: res.AwaitingHooks,
 		}
 		// A held message's reserved instant is not a delivery time.
-		if !msg.VisibleAt.IsZero() && !msg.VisibleAt.Equal(msg.PublishedAt) && !store.IsChannelHeld(msg.VisibleAt) {
+		if res.Deferred {
 			entry.VisibleAt = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
 		}
 		out.Results = append(out.Results, entry)

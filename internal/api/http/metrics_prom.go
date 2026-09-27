@@ -121,6 +121,26 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 
+	// Channel hooks — only when the worker runs.
+	if s.channelHookStats != nil {
+		st := s.channelHookStats()
+		writeGauge(w, "loomcycle_channel_hooks_in_flight",
+			"Channel messages this replica's hook worker is deciding now.",
+			replicaLabels, float64(st.InFlight))
+		kinds := make([]string, 0, len(st.Decisions))
+		for k := range st.Decisions {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		fmt.Fprintln(w, "# HELP loomcycle_channel_hooks_decisions_total Channel hook decisions made by this replica, by decision (release, rewrite_body, drop, hold, unavailable).")
+		fmt.Fprintln(w, "# TYPE loomcycle_channel_hooks_decisions_total counter")
+		for _, k := range kinds {
+			labels := mergeLabels(replicaLabels, map[string]string{"decision": k})
+			fmt.Fprintf(w, "loomcycle_channel_hooks_decisions_total%s %d\n", labels, st.Decisions[k])
+		}
+		fmt.Fprintln(w)
+	}
+
 	// Build info as a single-series gauge=1 with version metadata as
 	// labels. Standard Prometheus convention — operators alert on
 	// version churn or filter by version in a multi-replica cluster.

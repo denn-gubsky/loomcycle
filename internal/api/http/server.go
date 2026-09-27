@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/channelhooks"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/clienttools"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
@@ -304,6 +305,9 @@ type Server struct {
 	// admin endpoint. Nil = endpoint refuses every request with a
 	// "system publisher not wired" 503. Set via SetSystemPublisher.
 	systemPublisher channels.SystemPublisher
+	// channelHookStats reads the channel-hook worker's counters for
+	// /metrics; nil when the worker does not run.
+	channelHookStats func() channelhooks.Stats
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -865,6 +869,10 @@ func (s *Server) SetMCPHTTPHandler(h http.Handler) {
 func (s *Server) SetSystemPublisher(p channels.SystemPublisher) {
 	s.systemPublisher = p
 }
+
+// SetChannelHookStats wires the channel-hook worker's counters into /metrics.
+// Boot wiring only.
+func (s *Server) SetChannelHookStats(f func() channelhooks.Stats) { s.channelHookStats = f }
 
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked
@@ -2289,7 +2297,8 @@ func (s *Server) ResolveChannelScope(ctx context.Context, tenantID, channel stri
 // tick carries no identity.
 func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) (channels.WriteDef, error) {
 	if def, ok := s.cfg().Channels[channel]; ok {
-		return channels.WriteDef{Hold: def.Hold}, nil
+		// An operator's channel: its hooks are the operator's, whoever writes.
+		return channels.WriteDef{Hold: def.Hold, Hooked: def.HasHooks(), HookTenant: ""}, nil
 	}
 	if s.store == nil {
 		return channels.WriteDef{}, nil
@@ -2302,6 +2311,29 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 		return channels.WriteDef{}, nil
 	default:
 		return channels.WriteDef{}, err
+	}
+}
+
+// ChannelHookDef resolves a channel's definition for the channel-hook worker,
+// in the tenant whose definition carries the hooks (the message's hook
+// tenant): the operator's yaml first, then that tenant's runtime row. Read
+// when a message is decided, so a hook added or removed since it was written
+// applies, and so does a hold.
+func (s *Server) ChannelHookDef(ctx context.Context, tenant, channel string) (channelhooks.Def, bool, error) {
+	if def, ok := s.cfg().Channels[channel]; ok {
+		return channelhooks.Def{Hold: def.Hold, Hooks: def.Hooks}, true, nil
+	}
+	if s.store == nil {
+		return channelhooks.Def{}, false, nil
+	}
+	row, err := s.store.ChannelGet(ctx, tenant, channel)
+	switch {
+	case err == nil:
+		return channelhooks.Def{Hold: row.Hold}, true, nil
+	case isNotFound(err):
+		return channelhooks.Def{}, false, nil
+	default:
+		return channelhooks.Def{}, false, err
 	}
 }
 

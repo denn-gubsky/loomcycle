@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
@@ -93,6 +94,10 @@ func writeChannelError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "channel_name_in_use", err.Error())
 	case errors.Is(err, connector.ErrChannelNotFound):
 		writeJSONError(w, http.StatusNotFound, "channel_not_found", err.Error())
+	case errors.Is(err, channels.ErrChannelHooksDisabled):
+		// The channel carries hooks and nothing on this server would decide
+		// the message: refused, not stored.
+		writeJSONError(w, http.StatusConflict, "channel_hooks_disabled", err.Error())
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "channel_op_failed", err.Error())
 	}
