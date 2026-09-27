@@ -552,7 +552,49 @@ type MemoryConfig struct {
 	// a prompt: cosine scale differs per model, and a threshold that is
 	// right for one is wrong for another.
 	Consolidation ConsolidationConfig `yaml:"consolidation"`
+
+	// Reranker is the model the opt-in search rerank calls. An agent turns the
+	// rerank on with `memory_rerank`; this block says what serves it. Shaped like
+	// Embedder — a declared provider and a model, with optional endpoint and key
+	// overrides — because it is the same kind of operator decision: which model,
+	// and whose account, pays for a step no agent chooses.
+	//
+	// There is no default model. Unset, no search is reranked anywhere, and an
+	// agent that enables the rerank gets `reranked: false` with the reason — never
+	// an error, because a rerank only reorders what search already found.
+	Reranker RerankerConfig `yaml:"reranker"`
 }
+
+// RerankerConfig is the memory.reranker block. The rerank is one listwise call:
+// the question plus the first N search candidates, answered with a JSON array of
+// candidate numbers.
+type RerankerConfig struct {
+	// Provider names a provider declared in `providers:` (as for the embedder).
+	Provider string `yaml:"provider"`
+	// Model is the wire model id the provider is asked for.
+	Model string `yaml:"model"`
+	// BaseURL and APIKeyEnv override the provider's own endpoint and key, as the
+	// embedder's do: empty inherits the provider's.
+	BaseURL   string `yaml:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
+	// TimeoutMs bounds one rerank call. A rerank that has not answered by then
+	// returns search's own order. 0 = 30000.
+	TimeoutMs int `yaml:"timeout_ms"`
+	// Effort is the reasoning hint sent with the call ("" = the provider's
+	// default). "low" turns thinking OFF on a hybrid local model (Ollama think),
+	// which is how the rerank was measured: with thinking on, the same call takes
+	// many times longer and the ranking gains nothing it needs.
+	Effort string `yaml:"effort"`
+	// ContextTokens is the context window requested for the call, applied by
+	// drivers that take one per request (Ollama num_ctx) and ignored by the rest.
+	// 0 = 16384. Twenty candidates of 1,200 characters are about 6,000 tokens,
+	// and Ollama silently truncates a prompt to its 4,096-token default when no
+	// window is sent — the rerank would then rank the candidates it could see.
+	ContextTokens int `yaml:"context_tokens"`
+}
+
+// Configured reports whether a reranker is declared at all.
+func (r RerankerConfig) Configured() bool { return r.Provider != "" }
 
 // ConsolidationConfig carries the similarity bands the consolidation pass uses
 // to decide whether a candidate fact duplicates an existing memory row. Both
@@ -7618,6 +7660,33 @@ func validate(c *Config) error {
 		}
 		if c.Memory.Embedder.BaseURL != "" {
 			if err := requireHTTPBaseURL("memory.embedder.base_url", c.Memory.Embedder.BaseURL); err != nil {
+				return err
+			}
+		}
+	}
+	// memory.reranker: structural checks here; whether the provider exists is
+	// decided when it is built, against the fully-layered providers map, and a
+	// provider that does not exist fails boot there.
+	if rr := c.Memory.Reranker; rr != (RerankerConfig{}) {
+		if rr.Provider == "" {
+			return fmt.Errorf("memory.reranker: provider is required when the reranker block is set")
+		}
+		if rr.Model == "" {
+			return fmt.Errorf("memory.reranker: model is required when the reranker block is set")
+		}
+		if rr.TimeoutMs < 0 {
+			return fmt.Errorf("memory.reranker.timeout_ms must be >= 0")
+		}
+		if rr.ContextTokens < 0 {
+			return fmt.Errorf("memory.reranker.context_tokens must be >= 0")
+		}
+		switch rr.Effort {
+		case "", "low", "medium", "high":
+		default:
+			return fmt.Errorf("memory.reranker.effort: %q is not one of low, medium, high", rr.Effort)
+		}
+		if rr.BaseURL != "" {
+			if err := requireHTTPBaseURL("memory.reranker.base_url", rr.BaseURL); err != nil {
 				return err
 			}
 		}
