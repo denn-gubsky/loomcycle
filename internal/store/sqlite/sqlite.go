@@ -4668,6 +4668,46 @@ func (s *Store) MemoryDeleteScope(ctx context.Context, tenantID string, scope st
 	return int(n), nil
 }
 
+// MemoryListAfter pages live rows under a prefix by key — see the interface.
+func (s *Store) MemoryListAfter(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key, value, created_at, updated_at
+		 FROM memory
+		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND key LIKE ? ESCAPE '\'
+		   AND key > ?
+		   AND (expires_at IS NULL OR expires_at > ?)
+		   AND superseded_at IS NULL
+		 ORDER BY key ASC
+		 LIMIT ?`,
+		tenantID, string(scope), scopeID, escapeLikePrefix(keyPrefix)+"%", afterKey, time.Now().UnixNano(), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory list after: %w", err)
+	}
+	defer rows.Close()
+	out := []store.MemoryEntry{}
+	for rows.Next() {
+		var (
+			key       string
+			valueText string
+			createdAt int64
+			updatedAt int64
+		)
+		if err := rows.Scan(&key, &valueText, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, store.MemoryEntry{Key: key, Value: json.RawMessage(valueText),
+			CreatedAt: time.Unix(0, createdAt), UpdatedAt: time.Unix(0, updatedAt)})
+	}
+	return out, rows.Err()
+}
+
 // MemoryList enumerates entries for a (scope, scopeID), filtered by
 // prefix and capped at limit rows. Expired rows are filtered in the
 // WHERE clause so callers never see them. truncated == true when the

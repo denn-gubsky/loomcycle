@@ -48,6 +48,16 @@ func vsKey(scope store.MemoryScope, scopeID, key string) string {
 
 func (v *vectorStore) SupportsVectors() bool { return v.enabled }
 
+// MemoryEmbedDelete drops the fake's row. Without it the call fell through to the
+// embedded sqlite store, which never held these embeddings, so a delete did nothing and a
+// test that a chunk was UN-indexed could not fail.
+func (v *vectorStore) MemoryEmbedDelete(_ context.Context, _ string, scope store.MemoryScope, scopeID, key string) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.embeds, vsKey(scope, scopeID, key))
+	return nil
+}
+
 func (v *vectorStore) MemoryEmbedSet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string, e store.MemoryEmbedding) error {
 	if !v.enabled {
 		return store.ErrVectorUnsupported

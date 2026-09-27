@@ -163,6 +163,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryOverwriteUpdatesValue", testMemoryOverwriteUpdatesValue},
 		{"MemoryDelete", testMemoryDelete},
 		{"MemoryDeleteScope", testMemoryDeleteScope},
+		{"MemoryListAfterPagesEveryLiveRow", testMemoryListAfterPagesEveryLiveRow},
 		{"MemoryCountScopeMatchesTheDelete", testMemoryCountScopeMatchesTheDelete},
 		{"MemoryListPrefix", testMemoryListPrefix},
 		{"MemoryListTruncation", testMemoryListTruncation},
@@ -3976,6 +3977,68 @@ func testMemoryDelete(t *testing.T, s store.Store) {
 	}
 	if deleted {
 		t.Error("expected deleted=false on a missing key")
+	}
+}
+
+// testMemoryListAfterPagesEveryLiveRow: MemoryListAfter walks every live row under a
+// prefix exactly once, in key order, by cursor — and never an expired row, a superseded
+// one, another prefix, another scope_id or another tenant.
+func testMemoryListAfterPagesEveryLiveRow(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const tenant, sid = "t-after", "walker"
+	want := map[string]bool{}
+	for i := 0; i < 25; i++ {
+		k := fmt.Sprintf("doc.chunk:%02d", i)
+		want[k] = true
+		if err := s.MemorySet(ctx, tenant, store.MemoryScopeUser, sid, k, json.RawMessage(`{"body":"x"}`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Rows the walk must never return.
+	_ = s.MemorySet(ctx, tenant, store.MemoryScopeUser, sid, "doc.chunk:zz-old", json.RawMessage(`1`), 0)
+	if err := s.MemorySupersede(ctx, tenant, store.MemoryScopeUser, sid, "doc.chunk:zz-old"); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.MemorySet(ctx, tenant, store.MemoryScopeUser, sid, "doc.chunk:zz-expired", json.RawMessage(`1`), time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	_ = s.MemorySet(ctx, tenant, store.MemoryScopeUser, sid, "memory/fact/x", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, tenant, store.MemoryScopeUser, "other", "doc.chunk:00", json.RawMessage(`1`), 0)
+	_ = s.MemorySet(ctx, "t-else", store.MemoryScopeUser, sid, "doc.chunk:00", json.RawMessage(`1`), 0)
+
+	seen := map[string]bool{}
+	after, prev := "", ""
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("the walk did not terminate")
+		}
+		page, err := s.MemoryListAfter(ctx, tenant, store.MemoryScopeUser, sid, "doc.chunk:", after, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, e := range page {
+			if e.Key <= prev {
+				t.Errorf("keys out of order or repeated: %q after %q", e.Key, prev)
+			}
+			prev = e.Key
+			if seen[e.Key] {
+				t.Errorf("%s returned twice", e.Key)
+			}
+			seen[e.Key] = true
+		}
+		after = page[len(page)-1].Key
+	}
+	for k := range want {
+		if !seen[k] {
+			t.Errorf("the walk missed %s", k)
+		}
+	}
+	for k := range seen {
+		if !want[k] {
+			t.Errorf("the walk returned %s, which is not a live row under the prefix", k)
+		}
 	}
 }
 

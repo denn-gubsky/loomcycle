@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -64,6 +65,10 @@ type Document struct {
 	// (a peer loomcycle) for the RFC CE set_remote / sync ops. Set in main.go
 	// (documentTool.Cfg = cfg); nil disables remote document sources.
 	Cfg *config.Config
+
+	// reindexJobs tracks background subtree re-indexes (see reindexSubtree), so a test
+	// can wait for their end state. A Document is only ever used by pointer.
+	reindexJobs sync.WaitGroup
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -1211,6 +1216,10 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 	// row that exists ranks against every query.
 	text := d.chunkIndexText(ctx, key, chunkID, chunkType, body)
 	if text == "" {
+		// Nothing to index — so nothing may STAY indexed either. A rename to a
+		// letterless heading, or a body edited down to scaffolding, would otherwise keep
+		// the vector of what the chunk used to say. Deleting an absent row is a no-op.
+		_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, scopeID, bodyKey)
 		return
 	}
 	vec, err := d.Embedder.Embed(ctx, []string{text})
@@ -2708,6 +2717,12 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
+	if _, has := present["title"]; has {
+		// A title is part of the index text of this chunk and of every chunk beneath it
+		// (their headers), so a rename re-indexes the subtree. A root rename is a
+		// document rename, and re-indexes every chunk in the document.
+		d.reindexSubtree(ctx, key, mscope, in.ID)
+	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
 }
@@ -2912,6 +2927,8 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		nullIfEmpty(in.NewParentID), pos, now, in.ID); err != nil {
 		return errFrom("move_chunk: "+err.Error(), err), nil
 	}
+	// Moving changes the heading path of the chunk and everything under it.
+	d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), in.ID)
 	d.publishChange(ctx, store.MemoryScope(key.Scope), key.ScopeID, row.DocumentID, "move_chunk", in.ID)
 	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
 }

@@ -3556,6 +3556,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_memory/collapse_facts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryCollapseFacts))))
 	mux.Handle("POST /v1/_memory/home_facts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryHomeFacts))))
 	mux.Handle("POST /v1/_document/describe_images", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDescribeImages))))
+	mux.Handle("POST /v1/_document/reindex", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentReindex))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see
 	// internal/snapshot/snapshot.go for the wire shape.

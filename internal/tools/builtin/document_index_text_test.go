@@ -185,4 +185,14 @@ func TestChunkIndexText_PostgresTier(t *testing.T) {
 	if _, err := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, subject, chunkBodyKey(ids["root"])); err == nil {
 		t.Error("the bodyless root was indexed on the postgres tier")
 	}
+
+	// The subtree walk after a rename is a second recursive query (descendants, not
+	// ancestors); it has to hold on this dialect too.
+	get := docOp(t, d, ctx, map[string]any{"op": "get_chunk", "id": ids["setup"]})
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": int(get["revision"].(float64)), "title": "Getting started"})
+	e, err = vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, subject, chunkBodyKey(ids["install"]))
+	if err != nil || e.EmbedText != "Guide — Getting started > Install\nRun the installer twice." {
+		t.Errorf("postgres tier: after renaming its parent the child is indexed as %q (%v)", e.EmbedText, err)
+	}
 }

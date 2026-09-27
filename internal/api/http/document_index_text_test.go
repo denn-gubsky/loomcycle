@@ -111,3 +111,75 @@ func TestReembed_ChunkKeepsItsIndexTextAndImageDescription(t *testing.T) {
 		t.Errorf("the bodyless root still has an embedding (model %s, text %q); it must be un-indexed", e.Model, e.EmbedText)
 	}
 }
+
+// TestDocumentReindex_EndpointDryRunsThenFixesAnOldChunk wires POST
+// /v1/_document/reindex end to end: the dry run (the default) reports and writes nothing;
+// a real run re-indexes a chunk still carrying its pre-header text.
+func TestDocumentReindex_EndpointDryRunsThenFixesAnOldChunk(t *testing.T) {
+	srv, emb, vs := vectorAdminFixture(t, true)
+	mgr, err := sqlmem.New(sqlmem.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	srv.sqlMem = mgr
+
+	ctx := tools.WithAgentName(context.Background(), "doc-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: "alice"})
+	doc := &builtin.Document{Store: vs, SqlMem: mgr, Embedder: emb}
+	run := func(v map[string]any) map[string]any {
+		t.Helper()
+		b, _ := json.Marshal(v)
+		r, err := doc.Execute(ctx, b)
+		if err != nil || r.IsError {
+			t.Fatalf("%v: %v %s", v["op"], err, r.Text)
+		}
+		var out map[string]any
+		_ = json.Unmarshal([]byte(r.Text), &out)
+		return out
+	}
+	d := run(map[string]any{"op": "create_document", "scope": "user", "title": "Guide"})
+	install := run(map[string]any{"op": "create_chunk", "scope": "user", "document_id": d["document_id"],
+		"title": "Install", "body": "Run the installer twice."})["id"].(string)
+	// What a pre-header deployment stored for this chunk.
+	if err := vs.MemoryEmbedSet(context.Background(), "", store.MemoryScopeUser, "alice", "doc.chunk:"+install,
+		store.MemoryEmbedding{Provider: emb.provider, Model: emb.model, Dimension: 4, Vector: []float32{1, 0, 0, 0},
+			EmbedText: "Run the installer twice.", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	call := func(qs string) builtin.ReindexReport {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.handleDocumentReindex(rec, httptest.NewRequest("POST", "/v1/_document/reindex?scope=user&scope_id=alice"+qs, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var rep builtin.ReindexReport
+		if err := json.NewDecoder(rec.Body).Decode(&rep); err != nil {
+			t.Fatal(err)
+		}
+		return rep
+	}
+	text := func() string {
+		e, _ := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "alice", "doc.chunk:"+install)
+		return e.EmbedText
+	}
+
+	if rep := call(""); !rep.DryRun || rep.Reindexed != 1 || text() != "Run the installer twice." {
+		t.Errorf("default call must be a dry run that reports and writes nothing: %+v, text now %q", rep, text())
+	}
+	if rep := call("&dry_run=false"); rep.Reindexed != 1 || text() != "Guide — Install\nRun the installer twice." {
+		t.Errorf("real run: %+v, text now %q", rep, text())
+	}
+}
+
+// TestDocumentReindex_NeedsSQLMemory — without SQL Memory there is no tree to derive a
+// header from, and the endpoint says so instead of reporting an empty success.
+func TestDocumentReindex_NeedsSQLMemory(t *testing.T) {
+	srv, _, _ := vectorAdminFixture(t, true)
+	rec := httptest.NewRecorder()
+	srv.handleDocumentReindex(rec, httptest.NewRequest("POST", "/v1/_document/reindex?scope=user&scope_id=alice", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status=%d, want 503: %s", rec.Code, rec.Body.String())
+	}
+}
