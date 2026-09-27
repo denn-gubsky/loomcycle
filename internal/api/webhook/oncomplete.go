@@ -64,8 +64,8 @@ func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name,
 	if h.Channel == "" {
 		return fmt.Errorf("channel.publish missing `channel`")
 	}
-	if rec.store == nil {
-		return fmt.Errorf("channel.publish hook fired but no store wired")
+	if rec.publisher == nil {
+		return fmt.Errorf("channel.publish hook fired but no channel writer wired")
 	}
 	payload, err := json.Marshal(map[string]any{
 		"webhook_name": name,
@@ -82,57 +82,17 @@ func (rec *Receiver) dispatchOnCompleteChannelPublish(ctx context.Context, name,
 		scope = store.MemoryScopeUser
 		scopeID = userID
 	}
-	msg := store.ChannelMessage{
-		Channel: h.Channel,
-		// RFC N: the owning tenant comes from the webhook def (wd.TenantID),
-		// threaded down from dispatchOnComplete — never from the hook payload.
-		TenantID:          tenantID,
-		Scope:             scope,
-		ScopeID:           scopeID,
-		Payload:           payload,
-		PublishedAt:       rec.now(),
-		PublishedByUserID: userID,
-	}
-	// A HELD channel stores the hook's message without delivering it, like every
-	// other write to that channel. The rest of the definition — max_messages,
-	// default_ttl, the declared scope — is still not consulted here (this path
-	// has always passed 0 and derived the scope from the user id); widening that
-	// moves where existing messages LAND, which is a separate change. A hold is
-	// not: honouring it can only withhold a message the operator asked to be
-	// withheld.
-	if rec.channelHeld(ctx, tenantID, h.Channel) {
-		msg.VisibleAt = store.ChannelHeldVisibleAt()
-	}
-	_, _, err = rec.store.ChannelPublish(ctx, msg, 0)
+	// Through the channel writer, which decides from the channel's definition
+	// whether the message is delivered or held — like every other write to
+	// that channel. The rest of the definition (max_messages, default_ttl, the
+	// declared scope) is still not consulted here: this path has always passed
+	// 0 and derived the scope from the user id, and widening that moves where
+	// existing messages LAND, which is a separate change.
+	//
+	// RFC N: the owning tenant comes from the webhook def (wd.TenantID),
+	// threaded down from dispatchOnComplete — never from the hook payload.
+	_, err = rec.publisher.PublishNow(ctx, h.Channel, tenantID, scope, scopeID, payload, userID, 0, 0)
 	return err
-}
-
-// channelHeld reports whether a channel is declared `hold:` — yaml first
-// (operator-global, so every tenant sees it), then the tenant's runtime row.
-//
-// A store fault answers false: an unreachable definition plane must not start
-// holding channels nobody declared held. The choice is nearly moot in practice
-// — the publish on the next line uses the SAME store, so a fault here means the
-// message is not written either — and "don't invent a hold" is the safer
-// default for a transient error. A yaml-declared hold never touches the store
-// at all.
-//
-// Mirrors (*http.Server).ChannelHeld, which the in-process publishers use; the
-// receiver has its own because it holds a narrow store interface, not a server.
-func (rec *Receiver) channelHeld(ctx context.Context, tenantID, channel string) bool {
-	if rec.cfg != nil {
-		if def, ok := rec.cfg.Channels[channel]; ok {
-			return def.Hold
-		}
-	}
-	if rec.store == nil {
-		return false
-	}
-	row, err := rec.store.ChannelGet(ctx, tenantID, channel)
-	if err != nil {
-		return false
-	}
-	return row.Hold
 }
 
 // dispatchOnCompleteMemorySet mirrors scheduler.dispatchMemorySet. agent
