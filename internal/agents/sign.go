@@ -203,10 +203,14 @@ type AgentContent struct {
 	// (RFC BL P1) are content-identifying. Tags are kept in alphabetical order:
 	// memory_index_max_bytes < memory_inject_max_tokens < memory_protocol, and
 	// memory_roots sorts between memory_quota_bytes and memory_scopes.
+	// MemoryRerank (memory_rerank, between memory_quota_bytes and memory_roots) is
+	// content-identifying too: it changes what every search the agent makes
+	// returns, so two agents differing only there are not the same agent.
 	MemoryIndexMaxBytes   int                        `json:"memory_index_max_bytes,omitempty"`
 	MemoryInjectMaxTokens int                        `json:"memory_inject_max_tokens,omitempty"`
 	MemoryProtocol        bool                       `json:"memory_protocol,omitempty"`
 	MemoryQuotaBytes      int                        `json:"memory_quota_bytes,omitempty"`
+	MemoryRerank          *MemoryRerank              `json:"memory_rerank,omitempty"`
 	MemoryRoots           string                     `json:"memory_roots,omitempty"`
 	MemoryScopes          []string                   `json:"memory_scopes,omitempty"`
 	Model                 string                     `json:"model,omitempty"`
@@ -359,6 +363,10 @@ func normalize(c *AgentContent) {
 		c.Sampling.Seed == nil && len(c.Sampling.Stop) == 0 {
 		c.Sampling = nil
 	}
+	// An empty memory_rerank block asks for nothing, so it hashes as absent.
+	if c.MemoryRerank != nil && c.MemoryRerank.Enabled == nil && c.MemoryRerank.Candidates == 0 && c.MemoryRerank.MaxChars == 0 {
+		c.MemoryRerank = nil
+	}
 	if c.OutputFormat != nil && c.OutputFormat.Type == "" && len(c.OutputFormat.Schema) == 0 {
 		c.OutputFormat = nil
 	}
@@ -449,6 +457,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		MemoryConsolidation:   a.MemoryConsolidation,
 		RecallIncludeTurns:    a.RecallIncludeTurns,
 		RecallAttachTraces:    a.RecallAttachTraces,
+		MemoryRerank:          a.MemoryRerank,
 		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
 		MemoryRoots:           a.MemoryRoots,
 	}

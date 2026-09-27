@@ -862,6 +862,11 @@ type MemoryPolicyValue struct {
 	// extracted from, and the 24-point gap between the two routes on a cloud reader is
 	// exactly the turns the extractor passed over.
 	RecallAttachTraces bool
+
+	// Rerank is the agent's `memory_rerank` block: its document searches are
+	// reordered by the operator's memory.reranker. nil = off. Operator-resolved
+	// from the agent def — never model-supplied, and there is no tool parameter.
+	Rerank *config.MemoryRerank
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.

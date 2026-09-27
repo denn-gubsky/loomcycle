@@ -1442,6 +1442,12 @@ type AgentDef struct {
 	// is why the response reports how many it found.
 	RecallAttachTraces bool `yaml:"recall_attach_traces"`
 
+	// MemoryRerank opts this agent's document searches into the listwise rerank
+	// served by memory.reranker (see MemoryRerank). nil = off. Operator-set only:
+	// no tool parameter and no per-run override. Content-identifying — it changes
+	// what every search the agent makes returns.
+	MemoryRerank *MemoryRerank `yaml:"memory_rerank,omitempty"`
+
 	// Hooks are the agent's own hooks: the run events (agent_start, agent_stop,
 	// …) and tool events that apply to every tool. Each entry is a HookDef name
 	// ("gate", or "gate@3" pinned) or an inline webhook {name, url, fail_mode,
@@ -7264,6 +7270,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: invalid effort %q (want one of low/medium/high or empty)", name, agent.Effort)
 		}
 		if err := agent.Sampling.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := agent.MemoryRerank.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.ToolChoice.Validate(); err != nil {

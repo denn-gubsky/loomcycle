@@ -195,6 +195,9 @@ type SubstrateAgentDef struct {
 	// mergedDef). Pointer so substrate JSON persists nil (provider default)
 	// vs an explicit temperature:0.0 (deterministic).
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// MemoryRerank: the agent's opt-in to the listwise search rerank (mirrors
+	// config.AgentDef.MemoryRerank). Kept in sync with builtin.mergedDef.
+	MemoryRerank *config.MemoryRerank `json:"memory_rerank,omitempty"`
 	// ToolChoice (RFC DI): mirrors config.ToolChoice / mergedDef.
 	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
 	// OutputFormat (RFC DI): mirrors config.OutputFormat / mergedDef.
@@ -354,6 +357,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		MemoryConsolidation:    def.MemoryConsolidation,
 		RecallIncludeTurns:     def.RecallIncludeTurns,
 		RecallAttachTraces:     def.RecallAttachTraces,
+		MemoryRerank:           config.MergeMemoryRerank(nil, def.MemoryRerank),
 		MemoryIndexMaxBytes:    def.MemoryIndexMaxBytes,
 		MemoryRoots:            def.MemoryRoots,
 		RetryAttempts:          def.RetryAttempts,
@@ -414,6 +418,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		MemoryConsolidation:   s.MemoryConsolidation,
 		RecallIncludeTurns:    s.RecallIncludeTurns,
 		RecallAttachTraces:    s.RecallAttachTraces,
+		MemoryRerank:          config.MergeMemoryRerank(nil, s.MemoryRerank),
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
