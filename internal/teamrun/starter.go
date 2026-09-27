@@ -54,6 +54,13 @@ type ChannelIO interface {
 	Publish(ctx context.Context, channel string, payload json.RawMessage) error
 }
 
+// SinkPublisher is a ChannelIO that can mark a message as a Starter's
+// per-run result, which a channel hook on the sink may not make disappear.
+// The sink is published through it when the ChannelIO has it.
+type SinkPublisher interface {
+	PublishSink(ctx context.Context, channel string, payload json.RawMessage) error
+}
+
 // SinkMessage is what the RUNTIME publishes for every spawned run — one
 // message each, on a guaranteed path, so a downstream fan-in count is never
 // short. A timed-out or crashed agent publishes `status: error` rather than
@@ -424,7 +431,11 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 	// make a downstream fan-in wait forever.
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if perr := r.channels.Publish(pctx, st.Handler.Sink.Channel, payload); perr != nil {
+	publish := r.channels.Publish
+	if sp, ok := r.channels.(SinkPublisher); ok {
+		publish = sp.PublishSink
+	}
+	if perr := publish(pctx, st.Handler.Sink.Channel, payload); perr != nil {
 		r.log("teamrun: state %q sink publish: %v", st.ID, perr)
 	}
 }

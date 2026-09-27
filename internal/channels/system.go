@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -61,7 +62,25 @@ type WriteRequest struct {
 	ExpiresAt   time.Time // zero: no expiry; the caller applies its TTL precedence
 	PublishedBy string    // audit attribution
 	MaxMessages int       // 0: the store default
+	// Origin marks a message a reader of the store must treat specially:
+	// OriginStarterSink for a Starter's per-run result. "" for everything else.
+	Origin string
 }
+
+// OriginStarterSink marks a Starter's per-run result. A channel hook cannot
+// make one disappear: the downstream fan-in counts one per run, so a drop is
+// delivered as an error result instead.
+const OriginStarterSink = "starter_sink"
+
+// HookWakeKey is the bus key a write to a hooked channel notifies, waking the
+// channel-hook worker on every replica (the bus fans a notify out over the
+// cluster backplane). Not a channel name: a name cannot contain a colon.
+const HookWakeKey = "chook:wake"
+
+// ErrChannelHooksDisabled refuses a write to a channel that carries hooks
+// while channel hooks are off: nothing would ever decide the message, and
+// delivering it past its hooks would open the gate they stand for.
+var ErrChannelHooksDisabled = errors.New("channel hooks are not enabled on this server (LOOMCYCLE_CHANNEL_HOOKS=1)")
 
 // WriteResult is what a write did.
 type WriteResult struct {
@@ -72,12 +91,22 @@ type WriteResult struct {
 	Held bool
 	// Deferred: stored, visible at Message.VisibleAt.
 	Deferred bool
+	// AwaitingHooks: stored, not delivered until the channel's hooks decide.
+	AwaitingHooks bool
 }
 
 // WriteDef is what a write needs from the channel's definition.
 type WriteDef struct {
 	// Hold: store the message but deliver nothing until it is released.
 	Hold bool
+	// Hooked: the channel carries hooks, which decide each message before any
+	// reader sees it.
+	Hooked bool
+	// HookTenant is the tenant whose definition carries the hooks: "" for the
+	// operator's yaml, the row's tenant for a runtime channel. Not the
+	// writer's tenant — a tenant publishing to an operator's channel must not
+	// have its own HookDef of the same name decide in place of the operator's.
+	HookTenant string
 }
 
 // DefResolver resolves a channel's definition in tenantID for a write. A
@@ -116,6 +145,10 @@ type StorePublisher struct {
 	// the runtime substrate, tenant-scoped) lives in the server. nil = no
 	// channel is held.
 	Defs DefResolver
+
+	// HooksEnabled: the channel-hook worker runs, so a write to a hooked
+	// channel may wait for it. Off, such a write is refused.
+	HooksEnabled bool
 }
 
 // SystemPublisherUserID is the audit-trail sentinel for internal Go
@@ -141,11 +174,22 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 		}
 		def = d
 	}
+	if def.Hooked && !p.HooksEnabled {
+		return WriteResult{}, fmt.Errorf("channel writer: %q carries hooks: %w", req.Channel, ErrChannelHooksDisabled)
+	}
 
 	now := time.Now()
-	var visibleAt time.Time
+	var visibleAt, requested time.Time
 	deferred := false
 	switch {
+	case def.Hooked:
+		// Hooks decide first; a hold, and a deliver_at, apply to what they
+		// release. The deliver_at is kept on the message so the release lands
+		// no earlier.
+		visibleAt = store.ChannelHookHeldVisibleAt()
+		if req.DeliverAt.After(now) {
+			requested = req.DeliverAt
+		}
 	case def.Hold:
 		// A hold overrides any deliver_at: the message waits for a release,
 		// not for a clock.
@@ -163,6 +207,10 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 		ExpiresAt:         req.ExpiresAt,
 		VisibleAt:         visibleAt, // zero = "now" inside the store
 		PublishedByUserID: req.PublishedBy,
+		Origin:            req.Origin,
+	}
+	if def.Hooked {
+		msg.HookTenant, msg.RequestedVisibleAt = def.HookTenant, requested
 	}
 	id, dropped, err := p.Store.ChannelPublish(ctx, msg, req.MaxMessages)
 	if err != nil {
@@ -182,13 +230,18 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 	// nobody — that is what holding means, and a timer for the reserved
 	// instant would be a timer for the year 2200.
 	switch {
+	case def.Hooked:
+		// Its readers wake when the hooks release it; the worker wakes now.
+		if p.Bus != nil {
+			p.Bus.Notify(HookWakeKey)
+		}
 	case def.Hold:
 	case deferred && p.Scheduler != nil:
 		p.Scheduler.Schedule(req.Channel, id, visibleAt)
 	case p.Bus != nil:
 		p.Bus.Notify(req.Channel)
 	}
-	return WriteResult{Message: msg, Dropped: dropped, Held: def.Hold, Deferred: deferred}, nil
+	return WriteResult{Message: msg, Dropped: dropped, Held: def.Hold && !def.Hooked, Deferred: deferred, AwaitingHooks: def.Hooked}, nil
 }
 
 // Publish implements SystemPublisher.
