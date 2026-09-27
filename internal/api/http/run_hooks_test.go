@@ -222,6 +222,28 @@ func TestRunHooks_ARunRequestAddsHooks(t *testing.T) {
 	}
 }
 
+// A caller cannot name a credential in its own hook's headers: the value would
+// be resolved for the run (the tenant's, the agent's) and sent to whatever URL
+// the caller chose. Before, any principal allowed to start a run could post a
+// tenant credential to its own host this way.
+func TestRunHooks_ARequestHookCannotNameACredential(t *testing.T) {
+	h := newReviewHarness(t)
+	calls := newRecordingHook(t, `{}`)
+	body := `{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write"}]}],
+	  "hooks":{"agent_start":[{"name":"x","url":"` + calls.srv.URL + `","headers":{"X":"$cred:SHARED_KEY"}}]}}`
+	runID, _, _, stop := h.start(body)
+	defer stop()
+	run := waitRunStatus(t, h.st, runID, store.RunFailed)
+	if !strings.Contains(run.ErrorMsg, "names a credential") {
+		t.Fatalf("error = %q", run.ErrorMsg)
+	}
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if len(calls.bodies) != 0 {
+		t.Fatalf("the caller's webhook was called %d times", len(calls.bodies))
+	}
+}
+
 // A caller's hook on a tool the agent does not have stops the run: the caller
 // believes a gate is there.
 func TestRunHooks_ARequestHookOnAToolTheAgentLacksStopsTheRun(t *testing.T) {

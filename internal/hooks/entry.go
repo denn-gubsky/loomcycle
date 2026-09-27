@@ -473,6 +473,39 @@ func (a Additions) Validate(agentTools []string) error {
 	return nil
 }
 
+// RefuseCredentials refuses additions a caller named with a webhook whose
+// headers reference a credential. A header value naming one is resolved for
+// the run — the agent's, the user's or the tenant's credential — and sent to
+// the webhook's URL, so a caller who may start a run but not read a credential
+// could name one and aim it at any host. A hook that needs a credential is a
+// HookDef an operator wrote, whose URL is fixed with it.
+func (a Additions) RefuseCredentials() error {
+	check := func(where string, e EventHooks) error {
+		for _, phase := range sortedPhases(e) {
+			for _, entry := range e[phase] {
+				if entry.Inline == nil {
+					continue
+				}
+				for k, v := range entry.Inline.Headers {
+					if strings.Contains(v, "$") {
+						return fmt.Errorf("%s%s: webhook %s: header %s names a credential; a run's own hooks cannot — attach a HookDef an operator wrote", where, phase, entry.Inline.Name, k)
+					}
+				}
+			}
+		}
+		return nil
+	}
+	if err := check("hooks.", a.Hooks); err != nil {
+		return err
+	}
+	for tool, events := range a.ToolHooks {
+		if err := check("tool_hooks."+tool+".", events); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type additionsKey struct{}
 
 // WithAdditions records the additions a run carries, so the sub-agents it

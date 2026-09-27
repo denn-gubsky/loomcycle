@@ -46,6 +46,9 @@ func (s *Server) resolveRunHooks(ctx context.Context, agentName string, def conf
 	if err := requested.Validate(def.Tools); err != nil {
 		return hooks.FailedSet(fmt.Errorf("the run's hooks: %w", err))
 	}
+	if err := requested.RefuseCredentials(); err != nil {
+		return hooks.FailedSet(fmt.Errorf("the run's hooks: %w", err))
+	}
 	set := hooks.NewSet()
 	lookup := builtin.HookDefLookup(s.store)
 	agent := hooks.Source{Owner: "agent:" + agentName, Tenant: def.OwnerTenant, OperatorAuthored: def.OperatorAuthored}
