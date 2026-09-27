@@ -1,4 +1,4 @@
-import { AGENT_HOOK_EVENTS } from "../lib/hooks";
+import { HOOKDEF_EVENTS } from "../lib/hooks";
 import type { DefRegistry } from "../types";
 
 // The HookDef parameter registry: one hook, stored once and named wherever it
@@ -15,8 +15,8 @@ export const hookDefRegistry: DefRegistry = {
     { key: "description", label: "Description", group: "What it answers", type: "textarea",
       hint: "Shown to whoever this hook stops, including a tenant that did not write it — say what it checks and why. The body is never shown.",
       unsetMeans: "no description" },
-    { key: "event", label: "Event", group: "What it answers", type: "enum", options: AGENT_HOOK_EVENTS,
-      hint: "pre / post / post_failure run around tool calls; the others on the run's lifecycle. Required." },
+    { key: "event", label: "Event", group: "What it answers", type: "enum", options: HOOKDEF_EVENTS,
+      hint: "pre / post / post_failure run around tool calls; channel_publish on each message of a channel that attaches it; the others on the run's lifecycle. Required." },
     { key: "match", label: "Match", group: "What it answers", type: "object",
       hint: "Narrows a tool-event hook to some tools, within whatever it is attached to. Tool events only.",
       unsetMeans: "every tool it is attached to",

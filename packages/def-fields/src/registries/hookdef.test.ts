@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { HOOK_EVENT_HINTS } from "../lib/hooks";
 import { hookDefRegistry } from "./hookdef";
 
 // Drift guard: the registry must cover exactly what a HookDef stores. The keys
@@ -29,6 +30,18 @@ describe("hookDefRegistry matches hooks.Def", () => {
     const field = (k: string) => hookDefRegistry.fields.find((f) => f.key === k);
     expect(keysOf(field("match")?.fields)).toEqual(goJSONKeys(src, "DefMatch"));
     expect(keysOf(field("body")?.fields)).toEqual(goJSONKeys(src, "DefBody"));
+  });
+
+  it("offers every event the runtime's hooks answer, and nothing else", () => {
+    // Read from the Phase constants in the runtime, so an event added there
+    // fails here until a HookDef can be made for it.
+    const typesFile = fileURLToPath(new URL("../../../../internal/hooks/types.go", import.meta.url));
+    if (!existsSync(typesFile)) return;
+    const phases = [...readFileSync(typesFile, "utf8").matchAll(/^\s*Phase\w+\s+Phase\s*=\s*"([a-z_]+)"/gm)].map((m) => m[1]!);
+    expect(phases.length).toBeGreaterThan(10);
+    const event = hookDefRegistry.fields.find((f) => f.key === "event") as { options?: readonly string[] } | undefined;
+    expect([...(event?.options ?? [])].sort()).toEqual([...phases].sort());
+    for (const p of phases) expect(HOOK_EVENT_HINTS[p], `no hint for ${p}`).toBeTruthy();
   });
 
   it("every field folds under a declared group", () => {

@@ -51,6 +51,8 @@ export { hookDefRegistry } from "./registries/hookdef";
 export { HookEntryList, HookEventsControl, ToolHooksControl } from "./components/HookControls";
 export {
   AGENT_HOOK_EVENTS,
+  CHANNEL_HOOK_EVENTS,
+  HOOKDEF_EVENTS,
   HOOK_EVENT_HINTS,
   TOOL_HOOK_EVENTS,
   asEventHooks,

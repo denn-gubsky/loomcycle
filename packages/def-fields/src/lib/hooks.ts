@@ -39,6 +39,13 @@ export const AGENT_HOOK_EVENTS = [
   "run_end",
 ] as const;
 
+/** The event a channel's hooks answer: each message published to it, before
+ *  any reader sees it. Only a channel attaches it. */
+export const CHANNEL_HOOK_EVENTS = ["channel_publish"] as const;
+
+/** Every event a HookDef may answer. */
+export const HOOKDEF_EVENTS = [...AGENT_HOOK_EVENTS, ...CHANNEL_HOOK_EVENTS] as const;
+
 /** What an event means, for the editor's labels. */
 export const HOOK_EVENT_HINTS: Record<string, string> = {
   pre: "before a tool call — may deny it or rewrite its input",
@@ -51,6 +58,7 @@ export const HOOK_EVENT_HINTS: Record<string, string> = {
   pre_compact: "before the context is compacted — may decline it",
   post_compact: "after a compaction (observe only)",
   run_end: "when the run ends, whatever its outcome (observe only)",
+  channel_publish: "each message published to the channel, before any reader sees it — may release it (rewritten or not), drop it or hold it",
 };
 
 export const isInline = (e: HookEntry): e is InlineWebhook => typeof e === "object" && e !== null;
