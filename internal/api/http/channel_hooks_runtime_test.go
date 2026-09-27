@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // putHookDef stores an active HookDef in a tenant.
@@ -116,7 +117,7 @@ func TestRuntimeChannel_EachTenantsHooksDecideItsOwnMessages(t *testing.T) {
 			t.Fatalf("%s publish: %v", tenant, err)
 		}
 	}
-	w := srv.NewChannelHookWorker("w1", nil)
+	w := srv.NewChannelHookWorker("w1", nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { w.Run(ctx); close(done) }()
@@ -150,5 +151,38 @@ func TestRuntimeChannel_EachTenantsHooksDecideItsOwnMessages(t *testing.T) {
 	if a, g := decisions("acme"), decisions("globex"); !strings.Contains(a, "rewrite_body") || strings.Contains(a, "globex") ||
 		!strings.Contains(g, "globex says no") || strings.Contains(g, "rewrite_body") {
 		t.Fatalf("acme's decisions %s; globex's %s", a, g)
+	}
+}
+
+// A hook run belongs to the tenant whose definition carries the hook: that
+// tenant's operators may answer its ask, another tenant cannot even see it,
+// and the run's user is the system, never the publisher.
+func TestHookRun_AnswerableInItsOwnerTenantOnly(t *testing.T) {
+	srv, st := channelHooksFixture(t, true)
+	rctx, runID, err := channelHookRuns{srv}.Open(context.Background(), "acme", "hook:gate", "")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if ident := tools.RunIdentity(rctx); ident.TenantID != "acme" || ident.UserID != "_system" || tools.RunID(rctx) != runID {
+		t.Fatalf("hook run identity = %+v (run %s)", ident, tools.RunID(rctx))
+	}
+	row := store.InterruptRow{InterruptID: store.MintInterruptID(time.Now()), RunID: runID, Kind: store.InterruptKindQuestion,
+		Status: store.InterruptStatusPending, Question: "deliver?", Options: json.RawMessage(`["release","drop"]`), CreatedAt: time.Now(), UserID: "_system"}
+	if _, err := st.InterruptCreate(context.Background(), row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.ResolveInterrupt(tenantCtx("globex"), runID, row.InterruptID, "question", "release", "api", "answer"); !errors.Is(err, connector.ErrInterruptNotFound) {
+		t.Fatalf("another tenant resolving: %v, want not found", err)
+	}
+	if _, err := srv.ResolveInterrupt(tenantCtx("acme"), runID, row.InterruptID, "question", "release", "api", "answer"); err != nil {
+		t.Fatalf("the owner tenant resolving: %v", err)
+	}
+	// Reopening an open run keeps it; an ended one is replaced.
+	if _, again, _ := (channelHookRuns{srv}).Open(context.Background(), "acme", "hook:gate", runID); again != runID {
+		t.Fatalf("an open run was replaced: %s", again)
+	}
+	channelHookRuns{srv}.Finish(runID, store.RunCompleted, "released")
+	if _, fresh, _ := (channelHookRuns{srv}).Open(context.Background(), "acme", "hook:gate", runID); fresh == runID || fresh == "" {
+		t.Fatalf("an ended run was reused: %s", fresh)
 	}
 }

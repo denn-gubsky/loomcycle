@@ -2524,7 +2524,7 @@ func main() {
 		}
 		log.Printf("channel hooks: worker started (owner %s, concurrency %d, per channel %d, max wait %s)",
 			owner, cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel, cfg.Env.ChannelHooksMaxWait)
-		go srv.NewChannelHookWorker(owner, channelScheduler).Run(bgCtx)
+		go srv.NewChannelHookWorker(owner, channelScheduler, interruptionTool).Run(bgCtx)
 	} else {
 		for name, ch := range cfg.Channels {
 			if ch.HasHooks() {
