@@ -24,6 +24,14 @@ import (
 const (
 	defaultTimeout       = 30 * time.Second
 	defaultContextTokens = 16384
+	// defaultMaxConcurrent bounds reranks in flight across the process. Each one
+	// is a ~6,000-token prompt, and they arrive per SEARCH: a fan-out of agents,
+	// each searching several times a turn, would otherwise send every one at
+	// once, whatever the operator set for the provider.
+	defaultMaxConcurrent = 4
+	// rerankerKeyEnvName is the credential name a reranker answers to when the
+	// operator pointed it at its own endpoint without naming a key. See Build.
+	rerankerKeyEnvName = "LOOMCYCLE_RERANKER_API_KEY"
 	// A ranking of twenty numbers is well under a hundred tokens; this is a
 	// ceiling against a model that keeps talking, not a budget.
 	maxOutputTokens = 256
@@ -38,6 +46,10 @@ type Model struct {
 	timeout       time.Duration
 	effort        string
 	contextTokens int
+	// slots bounds reranks in flight (memory.reranker.max_concurrent). A rerank
+	// waiting for one spends its own timeout doing so, and one that times out
+	// waiting keeps search's order like any other timeout.
+	slots chan struct{}
 
 	// NO PROVIDER CONCURRENCY SLOT IS TAKEN, deliberately. The per-provider gates
 	// cap in-flight RUNS, and a rerank runs inside a run that already holds a slot
@@ -83,6 +95,15 @@ func Build(cfg *config.Config) (*Model, error) {
 			log.Printf("memory.reranker: api_key_env=%s is set but empty — the reranker will call %s unauthenticated",
 				rc.APIKeyEnv, rc.Provider)
 		}
+	} else if rc.BaseURL != "" {
+		// A TENANT'S PROVIDER KEY MUST NOT TRAVEL TO AN ENDPOINT THAT PROVIDER DOES
+		// NOT RUN. The driver resolves a tenant's own stored credential by its key
+		// name (OPENAI_API_KEY for the openai driver) before falling back to the
+		// operator's, so a reranker pointed at an operator's own endpoint would hand
+		// every such tenant's real vendor key to that endpoint — and book the call
+		// as tenant-paid for an account it never touched. A name no provider uses
+		// means only a credential stored FOR the reranker can override.
+		opts.KeyEnvName = rerankerKeyEnvName
 	}
 	p, err := providers.NewDriver(pc.Driver, opts)
 	if err != nil {
@@ -111,6 +132,11 @@ func New(p providers.Provider, rc config.RerankerConfig) *Model {
 	if m.contextTokens <= 0 {
 		m.contextTokens = defaultContextTokens
 	}
+	n := rc.MaxConcurrent
+	if n <= 0 {
+		n = defaultMaxConcurrent
+	}
+	m.slots = make(chan struct{}, n)
 	return m
 }
 
@@ -123,6 +149,12 @@ func (m *Model) ModelID() string    { return m.model }
 func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
+	select {
+	case m.slots <- struct{}{}:
+		defer func() { <-m.slots }()
+	case <-callCtx.Done():
+		return "", deadlineAware(callCtx, callCtx.Err())
+	}
 
 	zero := 0.0
 	req := providers.Request{
@@ -143,6 +175,7 @@ func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 	var b strings.Builder
 	var callErr error
 	var usage *providers.Usage
+	done := false
 	// Drain to completion even after an error: abandoning the channel leaves the
 	// driver's goroutine blocked on a send.
 	for ev := range ch {
@@ -152,10 +185,24 @@ func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 		switch ev.Type {
 		case providers.EventText:
 			b.WriteString(ev.Text)
+		case providers.EventDone:
+			done = true
 		case providers.EventError:
 			if callErr == nil {
 				callErr = errors.New(ev.Error)
 			}
+		}
+	}
+	// A REPLY THAT NEVER FINISHED IS NOT A REPLY. A driver's send gives up once
+	// its context ends, so a stream cut off by the timeout can close with neither
+	// an error nor a done event — and the text so far ("[3, 1, 7,", or an early
+	// "passage [4]") would otherwise be parsed as the whole answer. Every driver
+	// ends a completed reply with EventDone.
+	if callErr == nil && !done {
+		if err := callCtx.Err(); err != nil {
+			callErr = err
+		} else {
+			callErr = errors.New("the reply stream ended before it completed")
 		}
 	}
 	// Recorded even for a failed call: tokens a provider reports were spent.

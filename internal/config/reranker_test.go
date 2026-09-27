@@ -19,6 +19,7 @@ memory:
     timeout_ms: 20000
     effort: low
     context_tokens: 32768
+    max_concurrent: 2
 `))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -26,7 +27,7 @@ memory:
 	want := RerankerConfig{
 		Provider: "ollama-local", Model: "qwen3.6:latest",
 		BaseURL: "http://gpu.internal:11434", APIKeyEnv: "MY_RERANK_TOKEN",
-		TimeoutMs: 20000, Effort: "low", ContextTokens: 32768,
+		TimeoutMs: 20000, Effort: "low", ContextTokens: 32768, MaxConcurrent: 2,
 	}
 	if cfg.Memory.Reranker != want {
 		t.Errorf("reranker = %+v, want %+v", cfg.Memory.Reranker, want)
@@ -60,6 +61,7 @@ func TestRerankerConfig_RejectsAnIncompleteOrInvalidBlock(t *testing.T) {
 		{"provider: p\n    model: m\n    timeout_ms: -1", "memory.reranker.timeout_ms"},
 		{"provider: p\n    model: m\n    context_tokens: -5", "memory.reranker.context_tokens"},
 		{"provider: p\n    model: m\n    effort: max", "memory.reranker.effort"},
+		{"provider: p\n    model: m\n    max_concurrent: -1", "memory.reranker.max_concurrent"},
 		{"provider: p\n    model: m\n    base_url: gpu.internal:11434", "memory.reranker.base_url"},
 	} {
 		_, err := Load(writeCfg(t, `
