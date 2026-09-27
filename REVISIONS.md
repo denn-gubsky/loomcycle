@@ -8,6 +8,115 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.98.0
+
+*A failed tool call now tells the model what kind of failure it was, on every interface. Runs and teams may add hooks, and the Web UI edits them. Also three existence oracles closed, a hold bypass in the webhook relay, and fixes from measuring local models, including consolidator fact writes that had been refused since v1.95.0.*
+
+Seventeen PRs, #1393 to #1409:
+- #1404, #1405 and #1406 are structured tool errors (RFC DA amendment 1);
+- #1393, #1395, #1400 and #1402 finish hooks-in-definitions (RFC DK-P4c, P4d);
+- #1407 and #1409 are the prerequisites for channel hooks (RFC DK-P5);
+- #1408 closes three isolation gaps;
+- the rest come from measuring local models, plus one erasure fix.
+
+### A failed tool call says what kind of failure it was (#1404, #1405, #1406)
+
+A model used to get a failed call back as bare text. It could not tell "fix your input" from "this will never work" from "try again later", and the correct call format was prose tacked onto the error.
+
+- **What the model receives.** A failed call's `tool_result` is one JSON object:
+
+  ```json
+  {"isError":true,"error":"…","errorCategory":"validation","isRetryable":false,
+   "description":"…","correctCallFormat":{"tool":"Document","op":"create_chunk","example":{…}}}
+  ```
+
+  - `errorCategory` is `validation`, `business`, `permission` or `transient`. `description` is the next step.
+  - `correctCallFormat` comes from the operation's help article. It is attached only where the call's shape may be the cause: a `validation` failure, or an unclassified one.
+  - Keys with nothing to say are left out, and a success is unchanged.
+  - The stateful loop's own refusals use the same object, without the old `ERROR:` prefix.
+  - The object is rendered before the event is stored, so a resumed run replays the same text.
+- **Every interface carries it.**
+  - Every builtin call from MCP, HTTP and gRPC now goes through the same dispatcher a run uses. It gets the argument checks, the classification and the call format.
+  - **MCP:** `structuredContent`.
+  - **HTTP:** the `tool_refused` envelope.
+  - **gRPC:** `ErrorInfo.call_format`, and `SubstrateResponse.error_info` on the substrate RPCs.
+  - **SSE:** a failed `tool_result` event carries `error_info`.
+  - **Adapters:** TS `ErrorInfo.correct_call_format` and Python `ErrorInfo.call_format`, with new `CallFormat` / `CallRef` types in both.
+- **Eight tools are classified.** Every failure of Document, Memory, History, Path, Channel, Agent, Context and Skill carries a category (575 call sites).
+  - The category is chosen where the code knows the reason, never inferred from the text.
+  - A wrapped store error is classified by its type, so a database outage never reads as "fix your input".
+  - Every message is byte-identical to before.
+  - A test fails if any of these tools gains an unclassified failure.
+  - The other builtins are not classified yet: their failures carry no category.
+- **A row the caller may not see reads exactly like a missing one**, category and next step included, never `permission`. `permission` is only for the caller's own grant, where no row is read.
+
+### Runs and teams add hooks; the Web UI edits them (#1393, #1395, #1400, #1402, RFC DK-P4c/P4d)
+
+Since v1.97.0 a run fires exactly its AgentDef's hooks. A run may now **add** hooks, never remove one.
+
+- **The run request takes `hooks` and `tool_hooks`**, in the AgentDef's shapes.
+  - Supported on HTTP `POST /v1/runs` and the continuation, MCP `spawn_run` / `spawn_runs`, gRPC `hooks_json`, TS `hooks` / `toolHooks`, and Python `hooks=` / `tool_hooks=`.
+  - Additions run after the agent's own hooks. They resolve in the run's tenant and never widen hosts.
+  - A `tool_hooks` entry for a tool the agent lacks stops the run before it starts, because the caller believes a gate is there.
+- **Sub-agents inherit** their parent run's additions. A resumed run fires them again.
+- **A TeamDef adds hooks:**
+  - a state's hooks go to every run it starts: its agent, fan-out members and consolidator;
+  - the team's top-level `hooks` belong to the walk, `run_end` only;
+  - a walk whose hooks cannot be resolved does not start;
+  - a TeamDef fork no longer drops `hooks`, and a new test makes every Definition field survive a fork.
+- **The Web UI:**
+  - a Library Hooks tab to create, fork, promote and retire HookDefs;
+  - hook editors in the agent editor (both surfaces) and the Teams editor;
+  - a save stops on an entry the runtime would refuse.
+  - The shared editor is in `@loomcycle/def-fields` 0.2.0, and `@loomcycle/library` 0.6.0 uses it.
+  - Also fixed: "+ add entry" on any key/value field did nothing.
+
+### Three existence oracles closed (#1408)
+
+A row belonging to another tenant or user must read exactly like a missing one. Three places did not:
+
+- **Memory `cursor_advance`** told another user's chat apart from a missing chat, so a guessed chat id could be probed.
+- **The Skill "unknown skill" hint** listed skill names from every tenant. It now lists only the caller's tenant's.
+- **Context `lineage` and `evaluations`** read any def by id with no tenant check. That exposed another tenant's def name, description, fork tree and evaluation scores.
+  - Both ops now see the run's own tenant, the shared base, or every tenant for `substrate:admin`.
+  - `lineage` also skips other tenants' forks of a shared def.
+
+### Channels: definitions resolved in the right tenant, and Starter reads fixed (#1407, #1409)
+
+Prerequisites for channel hooks.
+
+- **A tenant's webhook relay delivered past the tenant's own `hold:` channel.** The hold was looked up in the shared tenant. It is now resolved in the tenant the message is published in.
+- **A tenant's schedule could not publish to that tenant's runtime channel**, and a `scope: tenant` channel could never be a schedule's target. Both work now.
+- **The MCP `channel` tool could reach no channel:** every one read as "not declared". It now uses the caller's tenant's channel catalog, with the same grants and confinement as a run.
+- **A Starter reads from its committed cursor and waits for its batch.**
+  - It re-read acked messages on every wave.
+  - It ignored `want` and `wait_ms`.
+  - A promoted team started a new walk on every subscription tick for work already done: 6 walks for one message.
+  - `ack: after_read` never acked; it now acks before the wave.
+
+### Fixes from measuring local models
+
+- **Consolidator fact writes were refused since v1.95.0 (#1398).** Document's schema did not declare `source_session_id` or `source_run_id`, so the unknown-argument check refused every call passing one. That included the bundled memory consolidator's transcript-path facts, which were never written. A new test requires every argument a builtin decodes to be in its schema.
+- **Runtime-created agents get the Context tool (#1394).** An agent created with `AgentDef create` or `register_agent` ran without Context. It had no help and no correct-call examples, and unknown arguments were not refused. The default is applied when the agent resolves and is not stored, so no definition's hash changes.
+- **History `get` reads a chat in pages of turns (#1396):** `offset` / `limit` count turns, and `from` / `to` select a time range. Every page says where it sits (`turns_total`, `has_more`, `next_offset`). A page inside a run is capped to fit the run's context window. One long chat had been 33K–51K tokens and overflowed a 32K window.
+- **History `list` returns 10 chats by default inside a run (#1399)**, down from 50, with `has_more` / `next_offset`. Off-run callers keep 50.
+- **An argument that belongs to a sibling operation is refused (#1401).** For example, `parent` on `create_chunk` (whose argument is `parent_id`) used to be dropped silently, so the chunk landed under the root. The refusal names the op's own near name. All 141 operation help articles were audited against their handlers, adding 22 arguments.
+- **The third identical call in a row is refused (#1403).** A local model re-sent one successful save 36 times. Another call in between, or any change to the arguments, starts the count over. A model that keeps sending it is stopped by the existing failed-call guard.
+
+### Erasure previews count what the erasure deletes (#1397)
+
+The erasure report, its dry run and the directory's per-subject inspection counted a subject's memory through a listing capped at 100 rows. That listing also skipped expired and superseded rows. A real subject's preview read "100". The erasure itself was always complete. A new store count matches exactly the rows the erasure deletes.
+
+### Changes to note
+
+- **A failed `tool_result`'s text is now a JSON object**, not bare text, and the stateful loop's `ERROR:` prefix is gone. Anything that parsed that text should read `errorCategory` / `error` instead.
+- **SSE `error_info` now uses its declared keys:** `category`, `is_retryable`, `description`, `retry_after_ms`. It used to go out as Go field names (`Category`, `Retryable`, `RetryAfter` in nanoseconds), so a TS consumer reading `error_info.category` got `undefined`. Stored events in the old shape still decode.
+- **`Context op=evaluations` with an unknown `def_id` now refuses** instead of returning a zero-count aggregate.
+- **History `list` inside a run** returns 10 by default.
+- **A Starter with `ack: after_read`** now acks, as documented, so its batch is not redelivered.
+
+**Adapters:** `@loomcycle/client` 1.98.0 adds run `hooks` / `toolHooks`, `ErrorInfo.correct_call_format`, and exports `ErrorInfo`, `CallFormat`, `CallRef` and `HookDecisionInfo`. The Python adapter's version is 1.98.0, with `hooks=` / `tool_hooks=` and `ErrorInfo.call_format`.
+
 ## What's in v1.97.0
 
 *⚠️ BREAKING: hooks move onto the run, and the hook registration API is removed. Also a data-loss fix in the dead-link sweeper, credentials in hook headers, and chat agents that can write for the whole tenant.*
