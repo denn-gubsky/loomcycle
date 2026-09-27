@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -186,5 +187,45 @@ func TestDocumentSearch_RunsOnTheWiredBackend(t *testing.T) {
 	d.Backend = spy
 	if got, _ := firstChunk(t, d, ctx, "failed err_4711", 1); got != target || spy.searches != 1 {
 		t.Errorf("wired backend served %d searches (top %s)", spy.searches, got)
+	}
+}
+
+// TestDocumentSearch_TheAgentsRerankAppliesHereToo — the agent's memory_rerank
+// reaches op=search as it reaches Memory op=search: it is the same search, so an
+// agent's reranked document searches must not depend on which tool it used.
+func TestDocumentSearch_TheAgentsRerankAppliesHereToo(t *testing.T) {
+	d, ctx, decoy, target := lexicalFixture(t)
+	b := inprocess.New(d.Store, d.Embedder)
+	rr := &stubRerankModel{reply: "[2]"}
+	b.SetReranker(rr)
+	d.Backend = b
+
+	// Without the agent's opt-in: search's own order, and the response shape it had.
+	got, hit := firstChunk(t, d, ctx, "failed err_4711", 2)
+	if _, has := hit["reranked"]; has || rr.calls != 0 {
+		t.Fatalf("an agent without memory_rerank was reranked (%d calls)", rr.calls)
+	}
+	if got != target {
+		t.Fatalf("precondition: search order puts %s first, want %s", got, target)
+	}
+
+	rctx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Rerank: rerankOn()})
+	b2, _ := json.Marshal(map[string]any{"op": "search", "query": "failed err_4711", "limit": 2})
+	out, err := d.Execute(rctx, b2)
+	if err != nil || out.IsError {
+		t.Fatalf("search: %v %s", err, out.Text)
+	}
+	var res struct {
+		Chunks []struct {
+			ChunkID string `json:"chunk_id"`
+		} `json:"chunks"`
+		Reranked *bool `json:"reranked"`
+	}
+	_ = json.Unmarshal([]byte(out.Text), &res)
+	if res.Reranked == nil || !*res.Reranked || rr.calls != 1 {
+		t.Fatalf("reranked = %v after %d calls, want true after 1: %s", res.Reranked, rr.calls, out.Text)
+	}
+	if len(res.Chunks) == 0 || res.Chunks[0].ChunkID != decoy {
+		t.Errorf("the reranker's pick (%s) is not first: %+v", decoy, res.Chunks)
 	}
 }

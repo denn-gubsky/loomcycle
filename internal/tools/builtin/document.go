@@ -3367,10 +3367,16 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// A key prefix, not `sources=[documents]`: this op has always returned every
 	// chunk body, fact chunks included, and the documents selector excludes the
 	// chunks memory's facts are homed in.
+	//
+	// The agent's memory_rerank applies here as it does to Memory op=search: it is
+	// the same search, and an agent whose document searches are reranked should not
+	// get a different order depending on which tool it reached them through.
+	rerank := rerankOptions(ctx)
 	res, err := d.searchBackend().Search(ctx, mscope, key.ScopeID, memrank.SearchQuery{
 		QueryText: q,
 		Prefix:    chunkBodyKeyPrefix,
 		TopK:      topK,
+		Rerank:    rerank,
 	}, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
 		return errFrom("search: "+err.Error(), err), nil
@@ -3415,7 +3421,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// In the backend's order, and the enrichment loop preserves it — a caller
 	// reading the first element must get the best match, not whatever order the
 	// metadata query returned.
-	return jsonResult(map[string]any{"chunks": out})
+	result := map[string]any{"chunks": out}
+	renderRerank(result, rerank, res.Rerank)
+	return jsonResult(result)
 }
 
 // searchBackend is the backend op=search runs on: the wired one, else an

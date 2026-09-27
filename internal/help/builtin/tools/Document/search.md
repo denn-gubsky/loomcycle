@@ -37,7 +37,10 @@ embedding model, so compare within one result rather than to a fixed number.
 Bodies are not included: read a hit with `{"op":"get_chunk","id":<chunk_id>}`.
 
 The order is the same as `Memory op=search` over the same scope with prefix
-`doc.chunk:` — the two run one search.
+`doc.chunk:` — the two run one search. That includes the operator's rerank:
+when your document searches are reranked by a model, the response carries
+`reranked`, and `rerank_reason` when it is false (see `Memory` `search`). A
+false is never an error — the order is then the search's own.
 
 A chunk with an empty body is never found. An image chunk is found by its
 caption (and its description, once one exists).
