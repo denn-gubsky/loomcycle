@@ -68,6 +68,11 @@ type UnitValue struct {
 	// written from, which is how a later pass finds the stale ones.
 	Model        string `json:"model,omitempty"`
 	BodyRevision int    `json:"body_revision,omitempty"`
+	// BodySHA256 is the hash of the body text the unit was written from. It, not
+	// the revision, decides staleness: a chunk's revision also moves when its
+	// status or fields change, and regenerating units for those would spend a
+	// model call on a body nobody edited.
+	BodySHA256 string `json:"body_sha256,omitempty"`
 }
 
 // MatchedUnit is the unit that found a chunk, as a search reports it.

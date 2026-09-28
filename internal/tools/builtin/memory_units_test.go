@@ -91,7 +91,7 @@ func TestMemoryUnits_OverlayRoundTripsAndIsHashed(t *testing.T) {
 // matched_unit, and an agent with memory_units:false never sees one.
 func TestMemorySearch_ReportsTheUnitThatFoundAChunk(t *testing.T) {
 	d, _, ctx, ids := unitsDocFixture(t)
-	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitQuestion, Text: "how often to reboot"}}, "m", 1); err != nil {
+	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitQuestion, Text: "how often to reboot"}}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	m := &Memory{Store: d.Store, Embedder: d.Embedder, SqlMem: d.SqlMem, MaxValueBytes: 1 << 16, DefaultQuotaBytes: 1 << 20}

@@ -37,7 +37,7 @@ func TestReplaceUnits_IndexesEachUnitUnderItsChunksHeader(t *testing.T) {
 		{Kind: memrank.UnitQuestion, Text: "how often to reboot"},
 		{Kind: memrank.UnitClaim, Text: "the installer runs twice"},
 		{Kind: memrank.UnitQuestion, Text: "what does setup do"},
-	}, "local-medium", 3)
+	}, UnitSource{Model: "local-medium", BodyRevision: 3})
 	if err != nil || n != 3 {
 		t.Fatalf("ReplaceUnits = %d, %v", n, err)
 	}
@@ -51,7 +51,7 @@ func TestReplaceUnits_IndexesEachUnitUnderItsChunksHeader(t *testing.T) {
 		t.Errorf("stored units = %+v", us)
 	}
 
-	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitDescription, Text: "installs it"}}, "m", 4); err != nil {
+	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitDescription, Text: "installs it"}}, UnitSource{Model: "m", BodyRevision: 4}); err != nil {
 		t.Fatal(err)
 	}
 	if got := unitKeysOf(t, d, ctx, ids["install"]); len(got) != 1 || got[0] != memrank.UnitKey(ids["install"], memrank.UnitDescription, 0) {
@@ -69,7 +69,7 @@ func TestReplaceUnits_RefusesWhatCouldNotStandForAChunk(t *testing.T) {
 		"empty text":    {ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "  "}}},
 		"missing chunk": {"no-such-chunk", []DerivedUnit{{Kind: memrank.UnitClaim, Text: "x"}}},
 	} {
-		if _, err := d.ReplaceUnits(ctx, "user", c.chunk, c.units, "m", 1); err == nil {
+		if _, err := d.ReplaceUnits(ctx, "user", c.chunk, c.units, UnitSource{Model: "m", BodyRevision: 1}); err == nil {
 			t.Errorf("%s: ReplaceUnits accepted it", name)
 		}
 	}
@@ -83,7 +83,7 @@ func TestDocumentSearch_FindsAChunkThroughItsUnit(t *testing.T) {
 	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{
 		{Kind: memrank.UnitQuestion, Text: "how often to reboot"},
 		{Kind: memrank.UnitQuestion, Text: "reboot after installing"},
-	}, "m", 1); err != nil {
+	}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	got, hit := firstChunk(t, d, ctx, "reboot", 5)
@@ -112,7 +112,7 @@ func TestDocumentSearch_FindsAChunkThroughItsUnit(t *testing.T) {
 func TestUnits_GoWithTheirChunkAndDocument(t *testing.T) {
 	d, _, ctx, ids := unitsDocFixture(t)
 	for _, role := range []string{"install", "screen"} {
-		if _, err := d.ReplaceUnits(ctx, "user", ids[role], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "a claim"}}, "m", 1); err != nil {
+		if _, err := d.ReplaceUnits(ctx, "user", ids[role], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "a claim"}}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestUnits_GoWithTheirChunkAndDocument(t *testing.T) {
 // a heading above it must re-index it too.
 func TestUnits_ARenameReindexesThem(t *testing.T) {
 	d, vs, ctx, ids := unitsDocFixture(t)
-	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "runs twice"}}, "m", 1); err != nil {
+	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "runs twice"}}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
@@ -148,7 +148,7 @@ func TestUnits_ARenameReindexesThem(t *testing.T) {
 // like an orphaned body.
 func TestUnits_TheSweeperReapsAnOrphan(t *testing.T) {
 	d, _, ctx, ids := unitsDocFixture(t)
-	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "a"}, {Kind: memrank.UnitClaim, Text: "b"}}, "m", 1); err != nil {
+	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "a"}, {Kind: memrank.UnitClaim, Text: "b"}}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	key, mscope, err := d.resolveScope(ctx, "user")
@@ -175,7 +175,7 @@ func TestUnits_TheSweeperReapsAnOrphan(t *testing.T) {
 // bodies, in one cursor.
 func TestReindexScope_BringsUnitsUpToDateToo(t *testing.T) {
 	d, vs, ctx, ids := unitsDocFixture(t)
-	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "runs twice"}}, "m", 1); err != nil {
+	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{{Kind: memrank.UnitClaim, Text: "runs twice"}}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	k := memrank.UnitKey(ids["install"], memrank.UnitClaim, 0)
