@@ -8,6 +8,109 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.99.0
+
+*Channels can carry hooks that decide every message before a reader sees it, and a hold can ask a person. Document search finds chunks by their document and section, by their words as well as their meaning, and can rerank. Also: global channels are split by tenant, a DeepSeek thinking model runs in stateful mode, and a malformed call carries the help its run skipped.*
+
+Seventeen PRs, #1411 to #1427:
+- #1412, #1413, #1415, #1417, #1420 and #1421 are channel hooks (RFC DK-P5a–P5f); #1422 is the fixes from the RFC DK code review;
+- #1426 splits global channels by tenant, from the same review;
+- #1411, #1414, #1416, #1418 and #1419 are document retrieval quality (RFC DM);
+- #1423 to #1425 and #1427 come from the 1.98.0 tool-usage eval.
+
+### Channel hooks: every message decided before a reader sees it (#1412, #1413, #1415, #1417, #1420, #1421, RFC DK-P5)
+
+A channel's `hooks` run on the new `channel_publish` event. Each message published to the channel, by anyone, waits unseen until its hooks decide it:
+- `release` — delivered as written;
+- `release` with `updated_body` — delivered rewritten;
+- `drop` — removed;
+- `hold` — kept from every reader until a person decides.
+
+A hook's answer that does not say exactly one of these is a failed hook, not a release, so a mistake in a gate cannot let a message through.
+
+- **Where hooks attach:**
+  - a channel declared in the operator's yaml (`channels.<name>.hooks`), which resolves in the operator's tenant;
+  - a channel created at runtime (create/update take `hooks`; `{}` removes them), which resolves in the tenant that created it, whoever publishes. A reference is checked when it is attached: it must be a HookDef that answers `channel_publish`, or the call gets 400 `channel_hooks_invalid`.
+
+  A `_system/` channel, a `documents/` feed and a `publisher: system` channel cannot carry hooks.
+- **The worker** (one per replica, `internal/channelhooks`):
+  - claims messages under per-message leases, runs the chain a hook at a time, and saves progress between hooks;
+  - settles each message exactly once; a worker that lost its lease settles nothing;
+  - resolves the chain at decision time. A changed chain starts over from the first hook on the original body. A HookDef that no longer resolves fails closed, and so does a hooked channel that disappeared;
+  - `fail_mode: open` lets a message through. `closed` retries with backoff until the message's deadline (15 minutes after publishing, within its TTL), then drops it;
+  - a Starter's per-run result is never lost: a drop delivers it as a `status: error` result, and a rewrite keeps its wave fields;
+  - bounded at 16 messages per replica and 4 per channel, so **delivery may be reordered**;
+  - dials a tenant's webhook through the private-address guard, and resolves `$cred:` in the definition's tenant, never the publisher's.
+- **A hold asks a person.** The message's first ask opens a `hook:<name>` run, filed in the tenant whose definition carries the hook (user `_system`):
+  - that tenant's operators answer it the way they answer any interruption (Web UI, `POST /v1/runs/{id}/interrupts/{iid}/resolve`, MCP `interruption_resolve`);
+  - `release` goes on to the next hook, while `drop`, a decline or a timeout drops the message;
+  - answers are kept in the message's journal. An ask left pending by a worker that died is cancelled and asked again under the same run;
+  - a code hook's own `Interruption.ask` works the same way;
+  - a waiting ask gives up its concurrency slot.
+- **One writer decides every message's fate** (`channels.StorePublisher.Write`). The Channel tool, Document's change feed, the scheduler, webhooks and the connector all go through it; a census test fails on any other writer. A hold is now honoured on every surface the same way.
+- **What a publish reports:** `awaiting_hooks` on every transport, plus `held` and `dropped_oldest` where gRPC and TS lacked them. Channel descriptors gain `hooks`, `held_count` and `awaiting_hooks_count`.
+- **Records:** decisions go to `_system/channel_hooks/decisions` at tenant scope. `/metrics` gains `loomcycle_channel_hooks_in_flight` and `loomcycle_channel_hooks_decisions_total{decision}`.
+- **Wire:** `hook_decision` gains `channel` and `message_id` and the decisions `release`, `rewrite_body` and `drop`, on SSE, gRPC, TS and Python.
+- **The Web UI:** the channel editor has a Hooks control and the tenant scope; the channel page shows the hooks badge and the held and awaiting counts.
+- **Configuration:**
+  - `LOOMCYCLE_CHANNEL_HOOKS` turns them on. **Off (the default), a channel's hooks are skipped:** the message is delivered at once, or held if the channel also holds, and the boot log says so. A runtime channel still accepts hooks while they are off, so turning them on enforces them.
+  - Tuning: `LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY`, `…_PER_CHANNEL`, `…_MAX_WAIT`.
+- **Postgres migrations 0084 and 0085** are additive (message hook context, the `channel_hook_state` table, `channels.hooks`).
+
+### Fixes from the RFC DK code review (#1422, #1426)
+
+- **A run's own hooks cannot name a credential.** A `$cred:` header on an inline webhook in a run request is refused; only a definition, reviewed on save, can name one.
+- **An agent in a run cannot change an AgentDef's hooks.** A create or fork from inside a run must keep the parent's `hooks` and `tool_hooks` exactly.
+- **A run's added hooks sit outside the agent's own:** the agent's `pre` gates decide last and its `post` hooks act first, so an added `post` hook sees the agent's redaction, never the raw output.
+- **A resident child goes through its parent's subagent hooks.** `Agent op=open` now runs `subagent_start`, and every hand-back (`open`, `send`, `poll`, `cancel`) passes `subagent_stop`.
+- **A tenant's channel list shows only its own:** no yaml webhook URLs or headers, and stats per tenant.
+- **A HookDef reference falls back to the shared tenant only when it is not found**, never on a retired version or a store error.
+- **A team walk's hooks resolve in the team's tenant**, and the walk's run is stored in that tenant.
+- **Global channels are split by tenant over a shared operator layer (#1426).** Before, every message on a `global` channel lived in one keyspace, so a tenant could publish under the name of the operator's hooked or held global channel, through its own unhooked channel, where every tenant reads.
+  - Now a tenant writes and reads its own layer; every tenant also reads the operator's layer.
+  - The operator's writers, and an admin publishing on a yaml channel, write to the operator's layer.
+  - Cursors are per tenant; release and purge act on the caller's layer, and an admin's purge empties every layer.
+  - **No data migration:** everything written before is in the operator's layer, which every tenant still reads.
+- **A Web UI fork can clear hooks.** Removing the last hook in the agent or team editor now removes it; it used to keep the parent's.
+
+### Document retrieval: by document and section, by words, and reranked (#1411, #1414, #1416, #1418, #1419, RFC DM)
+
+- **Each chunk is indexed under its document and section path (#1411):** `<document title> — <heading path>` then its content. It is derived at index time, never stored or shown. On the NQ probe it lifted R@5 from 0.912 to 0.935 (p=0.0046).
+  - A bodyless root is no longer indexed.
+  - The admin re-embed now keeps each chunk's index text and an image's description, where it used to embed the raw JSON value.
+- **Renaming or moving a chunk re-indexes its subtree (#1414).** A heading that derives to no text has its stale vector removed.
+- **`POST /v1/_document/reindex` brings an existing store up to date (#1414).** It is operator-admin, takes `scope`, `dry_run` (default **true**), `limit` and an `after` cursor, and makes no embed call for a chunk that is already current, so it is resumable.
+- **`Document op=search` runs the memory search pipeline (#1418):** vector and full-text, fused. A chunk found by its words, such as an error code, now surfaces; where the word index exists, which needs Postgres + pgvector. Hits add `rank_score`, the value the order is built on.
+- **Opt-in listwise rerank (#1416, #1419).** On NQ it moved R@1 from 0.515 to 0.754.
+  - The operator declares `memory.reranker`, shaped like the embedder, with `max_concurrent` (default 4). There is no default model.
+  - An agent opts in with `memory_rerank: {enabled, candidates, max_chars}`. There is no tool parameter.
+  - It applies to `Memory op=search` and `Document op=search`, and reports `reranked` / `rerank_reason`.
+  - Every fault keeps search's own order.
+  - Each call is booked on the searching run's token ledger.
+  - With `base_url` overridden and no `api_key_env`, it answers only to `LOOMCYCLE_RERANKER_API_KEY`, so a tenant's own provider key never reaches the operator's endpoint.
+
+### From the 1.98.0 tool-usage eval (#1423, #1424, #1425, #1427)
+
+- **A DeepSeek thinking model now runs in stateful mode (#1423).** DeepSeek refuses a `required` or named `tool_choice` in thinking mode, and the stateful loop forces one on every step, so `chat/medium` on `deepseek-v4-flash` failed before its first answer. The driver no longer sends a forced choice in thinking mode (the V4 family, reasoner, r1, `*-pro`, or any effort hint), as the Anthropic driver already does under thinking. A failed stateful step now says when the call was not enforced.
+- **A malformed call carries the help its run skipped (#1427).** The in-band error object gains a `hint` key: the failing operation's help article (or the tool's, when the operation was wrong), the text `Context op=help` returns.
+  - It is attached only on validation or unclassified failures, only while the run has read none of that tool's help, and once per tool and operation.
+  - A stateful run gets it on every such failure until the help is read, since its model sees only its latest observation.
+  - It is attached in runs only, and not on the SSE, gRPC or MCP `error_info`.
+- **`Memory/set` says text is a plain string (#1424).** "`value` must be valid JSON" led a model to send `"\"text\""`, which stores the quote marks.
+- **`create_chunk` checks the document before its parent (#1425).** A wrong scope used to be refused as "no such parent_id … pass the document's root_chunk_id", even when that was exactly what was passed.
+
+### Changes to note
+
+- **A tenant no longer sees another tenant's messages on a global channel**, and a legacy admin reading through the HTTP routes sees the operator's layer and its own tenant's (`default`), not other tenants'.
+- **Run request hooks (new in 1.98.0) changed:** a `$cred:` header in them is refused, and they now run outside the agent's own hooks (added `pre` hooks first, added `post` hooks last), where 1.98.0 ran them after the agent's.
+- **A channel's hold set during a run applies to the run's next publish**, and **a fault reading a channel's definition refuses the write** (it used to deliver). A `deliver_at` of either reserved instant (2200-01-01, 2200-01-02) is refused.
+- **A snapshot restores a tenant's channel messages under that tenant**; before, they restored into the shared tenant.
+- **Existing document chunks keep their old index text until reindexed.** Run `POST /v1/_document/reindex` (a dry run by default) to update them; new and edited chunks are indexed the new way at once.
+- **`Document op=search` ordering changes** where full-text search exists, and every hit carries `rank_score`.
+- **A failed tool call's in-band text may carry a long `hint` key** (1–10K characters), once per tool and operation.
+
+**Adapters:** `@loomcycle/client` 1.99.0 adds the channel-hook wire (the `hook_decision` fields and decisions, `ChannelHookCall` / `ChannelHookResult`, `awaiting_hooks` / `held` / `dropped_oldest` on a publish, the descriptor fields, `hooks` on `createChannel` / `updateChannel`) and `memory_rerank` on the AgentDef overlay. The Python adapter's version is 1.99.0, with the same channel wire.
+
 ## What's in v1.98.0
 
 *A failed tool call now tells the model what kind of failure it was, on every interface. Runs and teams may add hooks, and the Web UI edits them. Also three existence oracles closed, a hold bypass in the webhook relay, and fixes from measuring local models, including consolidator fact writes that had been refused since v1.95.0.*
