@@ -383,11 +383,7 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	// stamps it on the run's ParentContext. A join, not a copy.
 	// The member's review arming rides ctx to its run, read live: a state armed
 	// part-way through a wave holds the members that have not finished yet.
-	mctx := r.withWave(ctx, env.WalkID, waveID, index)
-	if r.reviewAt != nil {
-		mctx = WithReviewArming(mctx, func(context.Context) bool { return r.reviewArmed(st) })
-		mctx = WithReviewTTL(mctx, r.reviewTTL)
-	}
+	mctx := r.withMemberReview(r.withWave(ctx, env.WalkID, waveID, index), st)
 	// timeout_ms bounds EACH run of a wave, from its dispatch — see timeout.go.
 	var clk *heldClock
 	var timeout *TimeoutError

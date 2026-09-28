@@ -280,6 +280,19 @@ func (r *agentRunner) reviewArmed(st teamgraph.State) bool {
 	return r.reviewAt != nil && r.reviewAt.Armed(st.ID, Review)
 }
 
+// withMemberReview attaches st's review arming and the walk's review deadline
+// to the ctx a member run is spawned from. The arming is read live, when the
+// member finishes an answer, so a state armed part-way through its work holds
+// the members that have not finished yet. A walk with no review source hands
+// its members nothing, the path a walk took before review existed.
+func (r *agentRunner) withMemberReview(ctx context.Context, st teamgraph.State) context.Context {
+	if r.reviewAt == nil {
+		return ctx
+	}
+	ctx = WithReviewArming(ctx, func(context.Context) bool { return r.reviewArmed(st) })
+	return WithReviewTTL(ctx, r.reviewTTL)
+}
+
 // previewPrompts renders the pending runs for the BeforeDispatch pause, in wave
 // order. It takes the indices rather than a range because the pending set is
 // not always a suffix.
