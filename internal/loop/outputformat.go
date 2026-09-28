@@ -7,6 +7,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // outputFormatPolicy applies a run's output_format across its model calls
@@ -80,6 +81,30 @@ func (p *outputFormatPolicy) promptNote(prov providers.Provider, model string, h
 	}
 	return providers.ContentBlock{Type: "text", Text: "Your final answer must be a single JSON object that follows this " +
 		"JSON Schema, with no text before or after it:\n" + string(p.wire.Schema)}, true
+}
+
+// report is what Context op=self shows for this policy on the given target, or
+// nil when the run has no output_format. Enforcement is derived from the same
+// two answers forCall and promptNote give, so it cannot disagree with what the
+// request actually carries.
+func (p *outputFormatPolicy) report(prov providers.Provider, model string, hasTools bool) *tools.OutputFormatReport {
+	if p.wire == nil {
+		return nil
+	}
+	r := &tools.OutputFormatReport{Type: p.of.EffectiveType(), Name: p.of.EffectiveName(), Schema: p.of.Schema}
+	enforced := prov != nil && providers.EnforcesStructuredOutput(prov, model, hasTools)
+	_, inPrompt := p.promptNote(prov, model, hasTools)
+	switch {
+	case enforced && !inPrompt:
+		r.Enforcement = tools.EnforcementNative
+	case enforced:
+		r.Enforcement = tools.EnforcementGrammar
+	case inPrompt:
+		r.Enforcement = tools.EnforcementPrompt
+	default:
+		r.Enforcement = tools.EnforcementNone
+	}
+	return r
 }
 
 // structured parses the run's final answer for RunResult.Structured. A JSON

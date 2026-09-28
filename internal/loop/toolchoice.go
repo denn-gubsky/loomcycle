@@ -5,6 +5,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // toolChoicePolicy applies a run's tool_choice across its model calls (RFC DI).
@@ -89,6 +90,20 @@ func (p *toolChoicePolicy) observe(calls []providers.ToolUse) {
 			}
 		}
 	}
+}
+
+// report is what Context op=self shows for this policy on the given target, or
+// nil when the run has no forced choice (including one a retune named but the
+// run could not apply).
+func (p *toolChoicePolicy) report(prov providers.Provider, model, effort string) *tools.ToolChoiceReport {
+	if p.tc == nil {
+		return nil
+	}
+	r := &tools.ToolChoiceReport{Mode: p.tc.Mode, Name: p.tc.Name, Until: p.tc.EffectiveUntil(), InEffect: !p.done}
+	if prov != nil {
+		r.Enforced = providers.EnforcesToolChoice(prov, model, effort, p.choice())
+	}
+	return r
 }
 
 // checkTool refuses a named choice for a tool the run does not have: the model

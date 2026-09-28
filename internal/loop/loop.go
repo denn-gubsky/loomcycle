@@ -2405,6 +2405,12 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}()
 	}
 
+	// What Context op=self reports about tool_choice / output_format. Stamped
+	// before the stateful branch so a stateful run — which ignores both —
+	// shadows its parent's holder with an empty one instead of inheriting it.
+	var answerShape atomic.Pointer[tools.AnswerShape]
+	ctx = tools.WithAnswerShape(ctx, &answerShape)
+
 	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
 	// the model emits a patch + action each step. Branch here, after the preamble
 	// P (`system`) and the action-tool catalog are resolved, into the self-
@@ -2446,6 +2452,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 		return RunResult{}, err
 	}
+	// Published, not stamped: see tools.AnswerShape. Re-published wherever the
+	// answer can move — the policies, the target, or a spent `until`.
+	publishAnswerShape := func() {
+		answerShape.Store(&tools.AnswerShape{
+			ToolChoice:   toolChoice.report(opts.Provider, opts.Model, opts.Effort),
+			OutputFormat: outputFormat.report(opts.Provider, opts.Model, len(toolSpecs) > 0),
+		})
+	}
+	publishAnswerShape()
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
 	// sets (checked at the next iteration boundary), plus the previous iteration's
@@ -2877,6 +2892,7 @@ outerLoop:
 		// was built from; rebuild it so this call, not a later one, carries it.
 		toolChoice = toolChoice.adopt(opts.ToolChoice, toolSpecs, emit)
 		outputFormat = outputFormat.adopt(opts.OutputFormat)
+		publishAnswerShape()
 		// RFC DI: re-checked per request so a fallback onto a target that cannot
 		// enforce the choice is reported too; a no-op while the target is unchanged.
 		toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
@@ -3262,6 +3278,7 @@ outerLoop:
 		stopReason = iterStop
 		finalText = iterText
 		toolChoice.observe(pendingTools) // a COMPLETED turn advances the tool_choice
+		publishAnswerShape()
 
 		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
 		// the model was streaming. Keep the partial assistant output (appended
