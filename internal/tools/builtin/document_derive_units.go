@@ -160,21 +160,21 @@ func (d *Document) DeriveUnits(ctx context.Context, scope string, gen memrank.Un
 // deriveDocument handles one document. done is false when the call stopped inside
 // it at the limit (the cursor is then set).
 func (d *Document) deriveDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, gen memrank.UnitGenerator,
-	opts DeriveUnitsOptions, rep *DeriveUnitsReport, docID, title, rootID, path, fromChunk string, limit int) (bool, error) {
+	opts DeriveUnitsOptions, rep *DeriveUnitsReport, docID, title, rootID string, paths []string, fromChunk string, limit int) (bool, error) {
 
 	if fromChunk == "" {
 		rep.DocumentsExamined++
 	}
-	kinds := d.unitKindsFor(ctx, mscope, key, rootID, path, opts.Generator)
+	kinds := d.unitKindsFor(ctx, mscope, key, rootID, paths, opts.Generator)
 	if len(kinds) == 0 {
 		return true, nil // not opted in: never touched
 	}
 	if fromChunk == "" {
 		rep.DocumentsOptedIn++
 	}
-	if reason := d.unitsRefusedFor(ctx, key, docID, path); reason != "" {
+	if reason, where := d.unitsRefusedFor(ctx, key, docID, paths); reason != "" {
 		if fromChunk == "" {
-			rep.SkippedByRule = append(rep.SkippedByRule, SkippedDocument{DocumentID: docID, Title: title, Path: path, Reason: reason})
+			rep.SkippedByRule = append(rep.SkippedByRule, SkippedDocument{DocumentID: docID, Title: title, Path: where, Reason: reason})
 		}
 		return true, nil
 	}
@@ -275,8 +275,8 @@ func lastChunkBefore(rows [][]any, chunkID string) string {
 }
 
 // unitKindsFor is the kinds a document asks for: its root's own index_units wins,
-// else the deepest marked subtree its path lies under, else none.
-func (d *Document) unitKindsFor(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, rootID, path string, gen config.UnitGeneratorConfig) []string {
+// else the deepest marked subtree ANY of its names lies under, else none.
+func (d *Document) unitKindsFor(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, rootID string, paths []string, gen config.UnitGeneratorConfig) []string {
 	if cb, err := d.readBody(ctx, mscope, key.ScopeID, rootID); err == nil && len(cb.Fields) > 0 {
 		var f struct {
 			IndexUnits json.RawMessage `json:"index_units"`
@@ -285,11 +285,33 @@ func (d *Document) unitKindsFor(ctx context.Context, mscope store.MemoryScope, k
 			return parseIndexUnits(f.IndexUnits)
 		}
 	}
-	if path == "" {
-		return nil
+	// The deepest subtree wins across all of a document's names, as it does within
+	// one: every document imported by title is ALSO named /documents/<title>, so the
+	// name an operator gave it is rarely its only one.
+	var kinds []string
+	best := -1
+	for _, p := range paths {
+		k, ok := gen.SubtreeKinds(p)
+		if !ok {
+			continue
+		}
+		if depth := deepestSubtree(gen, p); depth > best {
+			best, kinds = depth, k
+		}
 	}
-	kinds, _ := gen.SubtreeKinds(path)
 	return kinds
+}
+
+// deepestSubtree is the length of the deepest marked subtree covering path.
+func deepestSubtree(gen config.UnitGeneratorConfig, path string) int {
+	best := -1
+	for _, st := range gen.Subtrees {
+		root := strings.TrimRight(st.Path, "/")
+		if (path == root || strings.HasPrefix(path, root+"/")) && len(root) > best {
+			best = len(root)
+		}
+	}
+	return best
 }
 
 // parseIndexUnits reads a document's `index_units`: true = all three kinds, false
@@ -319,21 +341,25 @@ func parseIndexUnits(raw json.RawMessage) []string {
 	return out
 }
 
-// unitsRefusedFor says why a document may never get units, or "".
-func (d *Document) unitsRefusedFor(ctx context.Context, key sqlmem.ScopeKey, docID, path string) string {
-	if path != "" && config.UnitsExcludedPath(path) {
-		return "it is named in a memory tree (/facts, /memory)"
+// unitsRefusedFor says why a document may never get units, or "" — and, for a name
+// in a memory tree, which name. ANY such name refuses it: a document is memory's
+// own data if it is filed there under one of its names.
+func (d *Document) unitsRefusedFor(ctx context.Context, key sqlmem.ScopeKey, docID string, paths []string) (string, string) {
+	for _, p := range paths {
+		if config.UnitsExcludedPath(p) {
+			return "it is named in a memory tree (/facts, /memory)", p
+		}
 	}
 	res, err := d.query(ctx, key, `SELECT 1 FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id WHERE c.document_id = ? LIMIT 1`, docID)
 	if err != nil {
 		// Unknowable is refused: the rule protects against a recursion, and a pass
 		// that cannot tell must not risk one.
-		return "its chunks could not be checked for memory entity metadata: " + err.Error()
+		return "its chunks could not be checked for memory entity metadata: " + err.Error(), ""
 	}
 	if len(res.Rows) > 0 {
-		return "its chunks carry memory entity metadata"
+		return "its chunks carry memory entity metadata", ""
 	}
-	return ""
+	return "", ""
 }
 
 // unitSourceText is the text units are written from: the chunk's prose. ok is false
@@ -393,10 +419,9 @@ func kindOption(kind string) string {
 	return kind
 }
 
-// documentPaths maps each document id to the Path-tree path naming it (the first,
-// by path, when several do).
-func (d *Document) documentPaths(ctx context.Context, key sqlmem.ScopeKey) map[string]string {
-	out := map[string]string{}
+// documentPaths maps each document id to EVERY Path-tree path naming it.
+func (d *Document) documentPaths(ctx context.Context, key sqlmem.ScopeKey) map[string][]string {
+	out := map[string][]string{}
 	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, key.ScopeID, "/")
 	if err != nil {
 		return out
@@ -414,9 +439,7 @@ func (d *Document) documentPaths(ctx context.Context, key sqlmem.ScopeKey) map[s
 		if json.Unmarshal(r.ResourceRef, &ref) != nil || ref.DocumentID == "" {
 			continue
 		}
-		if _, seen := out[ref.DocumentID]; !seen {
-			out[ref.DocumentID] = r.ParentPath + r.Name
-		}
+		out[ref.DocumentID] = append(out[ref.DocumentID], r.ParentPath+r.Name)
 	}
 	return out
 }

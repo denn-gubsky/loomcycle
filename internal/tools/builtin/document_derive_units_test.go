@@ -235,3 +235,36 @@ func TestParseIndexUnits(t *testing.T) {
 		}
 	}
 }
+
+// TestDeriveUnits_EveryNameOfADocumentCounts — import_md names a document
+// /documents/<title>; an operator's set_path adds a second name. The marked subtree
+// must apply through the name the operator gave it, and a name in a memory tree
+// refuses the document whatever its other names are. (The first cut kept only the
+// alphabetically first name, so every imported document read as unmarked.)
+func TestDeriveUnits_EveryNameOfADocumentCounts(t *testing.T) {
+	d, _, ctx, _ := unitsDocFixture(t)
+	named := func(title, path string) string {
+		out := docOp(t, d, ctx, map[string]any{"op": "import_md", "markdown": "# " + title + "\n\n## A\n\nsome policy text\n"})
+		docOp(t, d, ctx, map[string]any{"op": "set_path", "id": out["document_id"], "path": path})
+		return out["document_id"].(string)
+	}
+	named("Leave", "/policies/leave")
+	named("Facts", "/facts/ada")
+	gen := &countingGenerator{}
+	rep := derive(t, d, ctx, gen, DeriveUnitsOptions{Generator: config.UnitGeneratorConfig{
+		Subtrees: []config.UnitSubtree{{Path: "/policies"}}}})
+	if rep.DocumentsOptedIn != 1 || rep.Generated != 1 {
+		t.Errorf("a document named /documents/leave AND /policies/leave was not marked: %+v", rep)
+	}
+	rep = derive(t, d, ctx, &countingGenerator{}, DeriveUnitsOptions{Generator: config.UnitGeneratorConfig{
+		Subtrees: []config.UnitSubtree{{Path: "/documents"}}}})
+	var refused bool
+	for _, s := range rep.SkippedByRule {
+		if s.Path == "/facts/ada" {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Errorf("a document also named under /facts must be refused: %+v", rep.SkippedByRule)
+	}
+}
