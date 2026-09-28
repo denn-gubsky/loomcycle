@@ -120,6 +120,10 @@ func (s *Server) runForSteer(ctx context.Context, runID string) (store.Run, erro
 	if !ok {
 		return s.remoteRunForSteer(ctx, runID)
 	}
+	if entry.VerdictsOnly {
+		// A sub-agent its parent drives: it takes a verdict, nothing else.
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
 	if entry.SessionID != "" {
 		sess, err := s.store.GetSession(ctx, entry.SessionID)
 		if err != nil || !sessionOwnershipOK(ctx, sess) {

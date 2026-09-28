@@ -56,3 +56,28 @@ func TestRegistry_Get(t *testing.T) {
 		t.Error("Get(missing) = true, want false")
 	}
 }
+
+// A verdict-only run (a sub-agent its parent drives) takes a review verdict
+// and nothing else: a steer or a compaction is refused as if the run were not
+// live, on the local push and on a cluster delivery alike.
+func TestRegistry_AVerdictOnlyRunTakesOnlyVerdicts(t *testing.T) {
+	r := NewRegistry(4)
+	q, dereg := r.Register(Entry{RunID: "child", VerdictsOnly: true})
+	defer dereg()
+	for _, m := range []Message{{Text: "steer"}, {Kind: KindCompact}} {
+		if _, err := r.Push(context.Background(), "child", m); !errors.Is(err, ErrRunNotFound) {
+			t.Errorf("push %+v: err %v, want ErrRunNotFound", m, err)
+		}
+		if _, found := r.PushLocal("child", m); found {
+			t.Errorf("PushLocal %+v was accepted", m)
+		}
+	}
+	for _, kind := range []string{KindApprove, KindReject} {
+		if ok, err := r.Push(context.Background(), "child", Message{Kind: kind}); !ok || err != nil {
+			t.Errorf("verdict %s: %v %v", kind, ok, err)
+		}
+	}
+	if len(q) != 2 {
+		t.Fatalf("queue holds %d, want the 2 verdicts", len(q))
+	}
+}
