@@ -4542,7 +4542,7 @@ func anyScopeIDs(scopeIDs []string) []any {
 // The live predicate mirrors MemoryList exactly (unexpired + not superseded) so
 // the quota measures what a read would actually surface. `value` is jsonb here, so
 // the byte length is taken from its text rendering to match the sqlite tier.
-func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, excludeKeyPrefix string) (int, int, error) {
+func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, excludeKeyPrefixes ...string) (int, int, error) {
 	// The exclusion is a CONDITIONAL clause, not a sentinel value: an empty prefix
 	// must exclude NOTHING, and that is simply a different query. A NUL sentinel is
 	// not even representable here — Postgres rejects it with "invalid byte sequence
@@ -4554,9 +4554,12 @@ func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope sto
 		    AND (expires_at IS NULL OR expires_at > NOW())
 		    AND superseded_at IS NULL`
 	args := []any{tenantID, string(scope), scopeID}
-	if excludeKeyPrefix != "" {
-		q += ` AND key NOT LIKE $4 ESCAPE '\'`
-		args = append(args, escapeLikePrefix(excludeKeyPrefix)+"%")
+	for _, prefix := range excludeKeyPrefixes {
+		if prefix == "" {
+			continue
+		}
+		args = append(args, escapeLikePrefix(prefix)+"%")
+		q += fmt.Sprintf(` AND key NOT LIKE $%d ESCAPE '\'`, len(args))
 	}
 	var keys, bytes int64
 	err := s.pool.QueryRow(ctx, q, args...).Scan(&keys, &bytes)

@@ -5297,7 +5297,7 @@ func placeholders(n int) string {
 // MemoryScopeUsage sums the scope's live footprint in SQL, excluding a namespace.
 // The live predicate mirrors MemoryList exactly (unexpired + not superseded) so
 // the quota measures what a read would actually surface.
-func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, excludeKeyPrefix string) (int, int, error) {
+func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, excludeKeyPrefixes ...string) (int, int, error) {
 	// The exclusion is a CONDITIONAL clause, not a sentinel value. An earlier cut
 	// used an impossible-string sentinel to keep the query shape fixed; Postgres
 	// rejected it outright ("invalid byte sequence for encoding UTF8: 0x00"), and
@@ -5309,9 +5309,12 @@ func (s *Store) MemoryScopeUsage(ctx context.Context, tenantID string, scope sto
 		    AND (expires_at IS NULL OR expires_at > ?)
 		    AND superseded_at IS NULL`
 	args := []any{tenantID, string(scope), scopeID, time.Now().UnixNano()}
-	if excludeKeyPrefix != "" {
+	for _, prefix := range excludeKeyPrefixes {
+		if prefix == "" {
+			continue
+		}
 		q += ` AND key NOT LIKE ? ESCAPE '\'`
-		args = append(args, escapeLikePrefix(excludeKeyPrefix)+"%")
+		args = append(args, escapeLikePrefix(prefix)+"%")
 	}
 	var keys, bytes sql.NullInt64
 	err := s.db.QueryRowContext(ctx, q, args...).Scan(&keys, &bytes)

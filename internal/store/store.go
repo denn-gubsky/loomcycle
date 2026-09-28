@@ -2270,10 +2270,11 @@ type Store interface {
 	// kilobytes. Summing in SQL has no cap and needs one round trip, which also
 	// retires the "if we ever need to scale this" note on the old path.
 	//
-	// excludeKeyPrefix is a caller-supplied namespace (the Document chunk-body
-	// prefix in practice); empty counts everything. Expired and superseded rows
-	// are excluded, matching what a read would actually surface.
-	MemoryScopeUsage(ctx context.Context, tenantID string, scope MemoryScope, scopeID, excludeKeyPrefix string) (keys int, bytes int, err error)
+	// excludeKeyPrefixes are caller-supplied namespaces left out of the count (the
+	// Document chunk-body and derived-unit prefixes in practice); none, or only
+	// empty ones, counts everything. Expired and superseded rows are excluded,
+	// matching what a read would actually surface.
+	MemoryScopeUsage(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, excludeKeyPrefixes ...string) (keys int, bytes int, err error)
 
 	// MemoryCursorGet returns the consolidation cursor for a target. It is a
 	// GET-OR-DEFAULT: a target with no row yet returns a zero-watermark,
@@ -3572,6 +3573,14 @@ type MemorySearchFilter struct {
 	// to exclude rather than include.
 	ExcludeTracePrefix string
 
+	// ExcludeUnitPrefix drops Document derived search units (RFC DM Design C). A
+	// unit is an index row that stands for its chunk: it never reaches a caller as
+	// itself, so every selector that is not a document search — notes, facts,
+	// traces — must not see one, and an agent that opted out of units must not
+	// either. A SEPARATE FIELD for the reason ExcludeTracePrefix is: it has to hold
+	// at the same time as the others.
+	ExcludeUnitPrefix string
+
 	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT provenance —
 	// which is exactly the document class, and nothing else.
 	//
@@ -3717,7 +3726,7 @@ func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
 // reasoning; they are predicates like any other.
 func (f MemorySearchFilter) IsZero() bool {
 	return f.KeyPrefix == "" && f.ExcludeKeyPrefix == "" && f.ExcludeDocumentPrefix == "" &&
-		f.ExcludeTracePrefix == "" &&
+		f.ExcludeTracePrefix == "" && f.ExcludeUnitPrefix == "" &&
 		f.Provenance == ProvenanceAny &&
 		f.ObservedFrom.IsZero() && f.ObservedTo.IsZero() && !f.RequireObserved &&
 		f.AsOf.IsZero() && !f.RequireValid
