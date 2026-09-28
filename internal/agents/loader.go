@@ -111,6 +111,7 @@ type Agent struct {
 	MemoryConsolidation   bool
 	RecallIncludeTurns    bool
 	RecallAttachTraces    bool
+	MemoryRerank          *MemoryRerank // opt-in listwise search rerank; nil = off
 	MemoryIndexMaxBytes   int
 	MemoryRoots           string
 	// Channels is the v0.8.4 Channel-tool ACL. Empty Publish /
@@ -178,6 +179,14 @@ type Sampling struct {
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 	Seed             *int     `json:"seed,omitempty"`
 	Stop             []string `json:"stop,omitempty"`
+}
+
+// MemoryRerank mirrors config.MemoryRerank locally (the agents package stays
+// config-free). json: tags are LOAD-BEARING for content_sha256.
+type MemoryRerank struct {
+	Enabled    *bool `json:"enabled,omitempty"    yaml:"enabled"`
+	Candidates int   `json:"candidates,omitempty" yaml:"candidates"`
+	MaxChars   int   `json:"max_chars,omitempty"  yaml:"max_chars"`
 }
 
 // OutputFormat mirrors config.OutputFormat locally (the agents package stays
@@ -388,6 +397,7 @@ type frontmatter struct {
 	MemoryConsolidation   bool                       `yaml:"memory_consolidation"`     // RFC BL P2
 	RecallIncludeTurns    bool                       `yaml:"recall_include_turns"`     // RFC DF
 	RecallAttachTraces    bool                       `yaml:"recall_attach_traces"`     // question-anchored turns
+	MemoryRerank          *MemoryRerank              `yaml:"memory_rerank"`            // opt-in search rerank
 	MemoryIndexMaxBytes   int                        `yaml:"memory_index_max_bytes"`   // RFC BL P1
 	MemoryRoots           string                     `yaml:"memory_roots"`             // RFC BL P1
 	Channels              AgentChannelACL            `yaml:"channels"`
@@ -468,6 +478,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.MemoryConsolidation = fm.MemoryConsolidation
 	a.RecallIncludeTurns = fm.RecallIncludeTurns
 	a.RecallAttachTraces = fm.RecallAttachTraces
+	a.MemoryRerank = fm.MemoryRerank
 	a.MemoryIndexMaxBytes = fm.MemoryIndexMaxBytes
 	a.MemoryRoots = fm.MemoryRoots
 	a.Channels = fm.Channels

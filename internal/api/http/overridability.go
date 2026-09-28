@@ -116,6 +116,13 @@ var agentDefOverridability = map[string]overridability{
 	// where the decision sits with the caller instead of the operator.
 	"RecallAttachTraces": notOverridable,
 
+	// COST, DECIDED BY WHOEVER OWNS THE AGENT'S COST: the rerank is a model call on
+	// every document search. There is no tool parameter for the same reason there is
+	// no per-run override — a caller that could switch it on would spend the
+	// operator's reranker, and one that could switch it off would undo a quality
+	// decision the operator made for every run of the agent.
+	"MemoryRerank": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,

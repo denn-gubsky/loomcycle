@@ -16,7 +16,7 @@ const AGENTDEF_OVERLAY_KEYS = [
   "max_concurrent_children", "max_context_tokens", "max_iterations",
   "max_tokens", "memory_backend", "memory_consolidation",
   "memory_index_max_bytes", "memory_inject_max_tokens", "memory_protocol",
-  "memory_quota_bytes", "memory_roots", "memory_scopes", "model", "models",
+  "memory_quota_bytes", "memory_rerank", "memory_roots", "memory_scopes", "model", "models",
   "output_format", "provider", "providers", "recall_attach_traces", "recall_include_turns",
   "retry_attempts",
   "run_timeout_seconds", "sampling",

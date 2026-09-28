@@ -93,6 +93,13 @@ type Memory struct {
 	// six-op Backend surface (see internal/memory/backend.go).
 	Backend memrank.Backend
 
+	// Reranker serves an agent's opt-in `memory_rerank` (the operator's
+	// memory.reranker). Set on EVERY in-process backend this tool builds, not just
+	// the default one: an agent routed through a named in-process memory_backend
+	// would otherwise report not_configured on a server that has a reranker. nil
+	// when none is declared — main.go must never store a typed-nil here.
+	Reranker memrank.RerankModel
+
 	// Cfg is the operator config, used to resolve a per-agent
 	// memory_backend NAME to its MemoryBackendDef via lookup.MemoryBackend
 	// (RFC I MR-3b). Set in main.go (memoryTool.Cfg = cfg). When nil, the
@@ -163,7 +170,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	}
 	switch def.Kind {
 	case "", "inprocess":
-		return inprocess.New(m.Store, m.Embedder)
+		return m.newInprocess()
 	case "remote":
 		rb, err := m.newRemoteBackend(def)
 		if err != nil {
@@ -257,7 +264,17 @@ func (m *Memory) defaultBackend() memrank.Backend {
 	if m.Backend != nil {
 		return m.Backend
 	}
-	return inprocess.New(m.Store, m.Embedder)
+	return m.newInprocess()
+}
+
+// newInprocess builds an in-process backend over this tool's store, embedder
+// and reranker.
+func (m *Memory) newInprocess() *inprocess.Backend {
+	b := inprocess.New(m.Store, m.Embedder)
+	if m.Reranker != nil {
+		b.SetReranker(m.Reranker)
+	}
+	return b
 }
 
 const memoryDescription = `Persistent storage scoped to this agent, the end-user, or the tenant. ` +
@@ -1496,12 +1513,14 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if serr != nil {
 		return errValidation(fmt.Sprintf("search: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
+	rerank := rerankOptions(ctx)
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
 		Sources:   sources,
 		TopK:      topK,
 		When:      when,
+		Rerank:    rerank,
 	}, rankCfg, dedupCfg)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
@@ -1661,6 +1680,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if res.RankNote != "" {
 		out["rank_note"] = res.RankNote
 	}
+	renderRerank(out, rerank, res.Rerank)
 	return okJSONCount(out, len(entries))
 }
 
@@ -1747,12 +1767,14 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if serr != nil {
 		return errValidation(fmt.Sprintf("recall: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
+	rerank := rerankOptions(ctx)
 	res, err := layer.Recall(ctx, scope, scopeID, memrank.RecallQuery{
 		Query:     in.Query,
 		TopK:      topK,
 		Threshold: in.Threshold,
 		Sources:   sources,
 		When:      when,
+		Rerank:    rerank,
 	})
 	if err != nil {
 		return errFrom(fmt.Sprintf("recall: %s", err), err), nil
@@ -1982,6 +2004,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		out["note"] = "this memory backend did not apply the source selector, so these " +
 			"results may include document prose rather than only your own remembered facts and notes"
 	}
+	renderRerank(out, rerank, res.Rerank)
 	return okJSONCount(out, len(memories))
 }
 

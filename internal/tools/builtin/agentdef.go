@@ -804,6 +804,9 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := ov.OutputFormat.Validate(); err != nil {
 			return mergedDef{}, err
 		}
+		if err := ov.MemoryRerank.Validate(); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
@@ -990,6 +993,10 @@ type mergedDef struct {
 	// object; applyOverlay merges it PER FIELD (a fork that sets only
 	// temperature keeps the parent's top_p). Content-identifying (hashed).
 	Sampling *config.Sampling `json:"sampling,omitempty"`
+	// MemoryRerank: the opt-in listwise search rerank. applyOverlay merges it PER
+	// FIELD (a fork that changes only candidates keeps the parent's switch).
+	// Content-identifying (hashed). Kept in sync with lookup.SubstrateAgentDef.
+	MemoryRerank *config.MemoryRerank `json:"memory_rerank,omitempty"`
 	// ToolChoice (RFC DI): whether and which tool the model must call.
 	// Content-identifying; an overlay REPLACES it whole (its fields constrain
 	// each other, so a per-field merge could mix two layers' intent).
@@ -1249,6 +1256,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.RecallAttachTraces {
 		d.RecallAttachTraces = true
 	}
+	if !ov.MemoryRerank.IsZero() {
+		d.MemoryRerank = config.MergeMemoryRerank(d.MemoryRerank, ov.MemoryRerank)
+	}
 	if ov.RecallIncludeTurns {
 		d.RecallIncludeTurns = true
 	}
@@ -1428,6 +1438,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		MemoryConsolidation:   s.MemoryConsolidation,
 		RecallIncludeTurns:    s.RecallIncludeTurns,
 		RecallAttachTraces:    s.RecallAttachTraces,
+		MemoryRerank:          config.MergeMemoryRerank(nil, s.MemoryRerank),
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
@@ -1580,6 +1591,10 @@ func signFromMergedDef(name string, def mergedDef) string {
 			Seed:             s.Seed,
 			Stop:             s.Stop,
 		}
+	}
+	// MemoryRerank is content-identifying: it changes what every search returns.
+	if mr := def.MemoryRerank; !mr.IsZero() {
+		c.MemoryRerank = &agents.MemoryRerank{Enabled: mr.Enabled, Candidates: mr.Candidates, MaxChars: mr.MaxChars}
 	}
 	// ToolChoice is content-identifying, same as Sampling.
 	if tc := def.ToolChoice; !tc.IsZero() {

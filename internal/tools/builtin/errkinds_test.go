@@ -27,7 +27,7 @@ var classifiedToolFiles = []string{
 	"document_prune.go", "document_remember.go", "document_subject_proposal.go", "document_subject_refs.go",
 	"document_sync.go", "document_verbatim.go", "document_verdict.go",
 	// Memory
-	"memory.go", "memory_placement.go", "memory_recall_traces.go", "memory_recall_turns.go", "memory_source_span.go",
+	"memory.go", "memory_placement.go", "memory_recall_traces.go", "memory_recall_turns.go", "memory_rerank.go", "memory_source_span.go",
 	// History
 	"history.go", "history_content_search.go", "history_page.go", "history_window.go",
 	// Path, Channel, Context, Agent, Skill

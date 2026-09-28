@@ -139,6 +139,24 @@ type SearchQuery struct {
 	// When bounds the rows' OBSERVED time (RFC CL). The zero value constrains
 	// nothing, so a caller that never mentions time is unaffected.
 	When ObservedWindow
+
+	// Rerank is the agent's opt-in listwise rerank. The zero value asks for none.
+	// Set by the tool from the agent definition, never from tool input.
+	Rerank RerankOptions
+}
+
+// CanReturnDocuments reports whether this query's source selector admits
+// Document chunk bodies. An empty selector is unrestricted.
+func (q SearchQuery) CanReturnDocuments() bool {
+	if len(q.Sources) == 0 {
+		return true
+	}
+	for _, s := range q.Sources {
+		if s == SourceDocuments {
+			return true
+		}
+	}
+	return false
 }
 
 // Source is one kind of remembered thing a search may return.
@@ -396,4 +414,9 @@ type SearchResult struct {
 	// the thing you have to declare.
 	SourcesApplied bool
 	DedupDropped   int
+
+	// Rerank is what the requested rerank did; nil when none was requested, or
+	// when the backend does not rerank at all (the tool reports that as its own
+	// reason rather than as silence).
+	Rerank *RerankReport
 }
