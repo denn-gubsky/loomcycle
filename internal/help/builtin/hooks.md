@@ -334,9 +334,10 @@ channels:
 ```
 
 Channel hooks run only when the operator sets `LOOMCYCLE_CHANNEL_HOOKS=1`.
-Without it, a publish to a channel that carries hooks is **refused** (HTTP
-409 `channel_hooks_disabled`, gRPC `FailedPrecondition`) rather than stored
-for a decision nothing would make, and the server logs a warning at boot.
+Without it, a channel's hooks are **skipped**: a publish is delivered as if
+the channel declared none, and the server logs, at boot and at a channel's
+first publish, that its hooks are not enforced. A message stored while hooks
+were on and not yet decided waits until they are on again.
 A `_system/*` channel, a document's `documents/*` feed and a
 `publisher: system` channel cannot carry hooks.
 
@@ -425,8 +426,8 @@ tenant-scoped peek (MCP `peek_channel`, gRPC `PeekChannel`). `/metrics` adds
 `hooks` map on create and update; an update with `hooks: {}` removes them. A
 hook is checked when it is attached: a HookDef that does not exist in the
 channel's tenant or the shared one, or answers another event, is refused
-(400 `channel_hooks_invalid`), as is any hook while the server runs none (409
-`channel_hooks_disabled`). A channel's descriptor shows its `hooks`, and
+(400 `channel_hooks_invalid`). Hooks attached while the server runs none are
+checked and kept, and skipped until channel hooks are on. A channel's descriptor shows its `hooks`, and
 `held_count` / `awaiting_hooks_count` beside `message_count`.
 
 **Whose hooks.** A channel's hooks belong to whoever defined the channel: an

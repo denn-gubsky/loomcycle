@@ -3060,8 +3060,8 @@ export interface CreateChannelOptions {
   hold?: boolean;
   /** Hooks that decide each message published to the channel before any
    *  reader sees it: `{ channel_publish: [HookDef name | inline webhook] }`.
-   *  Refused (409 `channel_hooks_disabled`) unless the server runs channel
-   *  hooks; an unknown HookDef is refused (400 `channel_hooks_invalid`). */
+   *  Skipped while the server runs no channel hooks; an unknown HookDef is
+   *  refused (400 `channel_hooks_invalid`). */
   hooks?: EventHooks;
   signal?: AbortSignal;
 }

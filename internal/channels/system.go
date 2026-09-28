@@ -3,8 +3,9 @@ package channels
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -77,11 +78,6 @@ const OriginStarterSink = "starter_sink"
 // cluster backplane). Not a channel name: a name cannot contain a colon.
 const HookWakeKey = "chook:wake"
 
-// ErrChannelHooksDisabled refuses a write to a channel that carries hooks
-// while channel hooks are off: nothing would ever decide the message, and
-// delivering it past its hooks would open the gate they stand for.
-var ErrChannelHooksDisabled = errors.New("channel hooks are not enabled on this server (LOOMCYCLE_CHANNEL_HOOKS=1)")
-
 // WriteResult is what a write did.
 type WriteResult struct {
 	Message store.ChannelMessage
@@ -147,8 +143,12 @@ type StorePublisher struct {
 	Defs DefResolver
 
 	// HooksEnabled: the channel-hook worker runs, so a write to a hooked
-	// channel may wait for it. Off, such a write is refused.
+	// channel waits for it. Off, a channel's hooks are skipped: channel hooks
+	// are an opt-in feature, and a deployment that has not turned it on
+	// delivers its channels' messages as if no hooks were declared.
 	HooksEnabled bool
+
+	skipped sync.Map // channel name → struct{}: hooks already reported skipped
 }
 
 // SystemPublisherUserID is the audit-trail sentinel for internal Go
@@ -175,7 +175,10 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 		def = d
 	}
 	if def.Hooked && !p.HooksEnabled {
-		return WriteResult{}, fmt.Errorf("channel writer: %q carries hooks: %w", req.Channel, ErrChannelHooksDisabled)
+		def.Hooked = false
+		if _, seen := p.skipped.LoadOrStore(req.Channel, struct{}{}); !seen {
+			log.Printf("channels: %q declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS); its messages are delivered unhooked", req.Channel)
+		}
 	}
 
 	now := time.Now()

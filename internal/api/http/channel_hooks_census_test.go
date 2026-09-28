@@ -123,15 +123,19 @@ func TestChannelHookCensus_EverySurfaceIsIntercepted(t *testing.T) {
 	}
 }
 
-// With channel hooks off, a publish to a hooked channel is refused on the
-// wire, with a code a caller can act on, and nothing is stored.
-func TestChannelHooks_APublishIsRefusedWhenDisabled(t *testing.T) {
+// With channel hooks off, a hooked channel's hooks are skipped: a publish is
+// delivered at once, as if the channel declared none, and nothing waits for a
+// worker that is not running.
+func TestChannelHooks_HooksAreSkippedWhenDisabled(t *testing.T) {
 	srv, st := channelHooksFixture(t, false)
 	rec := postJSON(t, srv, "/v1/_channels/screened/publish", `{"payload":{}}`)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "channel_hooks_disabled") {
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"awaiting_hooks":true`) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
-	if snap, _ := st.SnapshotReadChannelMessages(context.Background()); len(snap) != 0 {
-		t.Fatalf("stored %d message(s)", len(snap))
+	if msgs, _ := st.ChannelPeek(context.Background(), "", "screened", store.MemoryScopeGlobal, "", "", 10); len(msgs) != 1 {
+		t.Fatalf("delivered %d message(s), want the 1 published", len(msgs))
+	}
+	if items, _ := st.ChannelHookClaim(context.Background(), "w", time.Now(), time.Now().Add(time.Minute), 10); len(items) != 0 {
+		t.Fatalf("%d message(s) wait for hooks that will never run", len(items))
 	}
 }

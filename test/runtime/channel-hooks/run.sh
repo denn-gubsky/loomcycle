@@ -9,7 +9,7 @@
 #     /metrics
 #   - after a kill -9 with messages still waiting, a restart decides each one
 #     exactly once
-#   - with channel hooks off, a publish to the hooked channel is refused
+#   - with channel hooks off, the hooked channel's hooks are skipped
 #
 # Open mode (no LOOMCYCLE_AUTH_TOKEN), deliberately: the yaml channel's hooks
 # resolve in the operator's own tenant (""), which is where an open-mode
@@ -175,12 +175,12 @@ api -X POST "$BASE/v1/runs/$NEW_RUN/interrupts/$NEW_ASK/resolve" -d '{"kind":"qu
 for i in $(seq 1 100); do [[ "$(gated_count)" == "2" ]] && break; sleep 0.1; done
 [[ "$(gated_count)" == "2" ]] || fail "the re-asked hold did not deliver"
 
-echo "[7/7] with channel hooks off, a publish to the hooked channel is refused"
+echo "[7/7] with channel hooks off, the channel's hooks are skipped"
 kill "$PID"; wait "$PID" 2>/dev/null || true; PID=""
 boot 0
-grep -q 'carries hooks, but channel hooks are off' "$TEST_DIR/boot.log" || fail "no boot warning for the hooked channel"
-code=$(curl -sS -o "$TEST_DIR/refused.json" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -X POST "$BASE/v1/_channels/inbox/publish" -d '{"payload":{"text":"x"}}')
-[[ "$code" == "409" ]] && grep -q channel_hooks_disabled "$TEST_DIR/refused.json" || fail "want 409 channel_hooks_disabled, got $code: $(cat "$TEST_DIR/refused.json")"
+grep -q 'declares hooks, but channel hooks are off' "$TEST_DIR/boot.log" || fail "no boot warning for the hooked channel"
+publish '{"text":"unhooked"}' | grep -q '"awaiting_hooks":true' && fail "a publish waited for hooks that are off"
+wait_for_count 24 20
+peek_inbox | grep -q '"text":"unhooked"' || fail "the unhooked message was not delivered as written"
 
-echo "PASS ✓ — channel hooks decided every surface's messages, recorded their decisions, survived a kill -9, and refuse when off"
+echo "PASS ✓ — channel hooks decided every surface's messages, recorded their decisions, survived a kill -9, and are skipped when off"

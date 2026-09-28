@@ -2528,7 +2528,7 @@ func main() {
 	} else {
 		for name, ch := range cfg.Channels {
 			if ch.HasHooks() {
-				log.Printf("WARNING: channel %q carries hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1): every publish to it is refused", name)
+				log.Printf("channel hooks: %q declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1 turns them on); they are skipped and its messages are delivered unhooked", name)
 			}
 		}
 	}

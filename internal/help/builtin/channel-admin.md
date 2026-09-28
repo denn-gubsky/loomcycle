@@ -164,7 +164,6 @@ const batch = await c.subscribeChannel("team-updates", {
 | 401 | `unauthorized` | bearer mismatch | `AuthError` |
 | 404 | `channel_not_declared` | channel not in operator yaml | `NotFoundError` |
 | 409 | `channel_cursor_regression` | ack cursor older than committed | `ChannelCursorRegressionError` |
-| 409 | `channel_hooks_disabled` | the channel carries hooks and the server runs none (`LOOMCYCLE_CHANNEL_HOOKS`) | `LoomcycleError` |
 | 503 | `system_publisher_unwired` | server constructed without SetSystemPublisher | `UnavailableError` |
 
 gRPC errors map to the corresponding `codes.*` (NotFound,

@@ -3,7 +3,6 @@ package channels
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -235,21 +234,27 @@ func TestWriter_AHookedChannelAwaitsItsHooks(t *testing.T) {
 	}
 }
 
-// With channel hooks off, a write to a channel that carries them is refused:
-// nothing would decide it, and delivering it would open the gate.
-func TestWriter_HookedChannelRefusedWhenDisabled(t *testing.T) {
+// With channel hooks off, a channel's hooks are skipped: the write is stored
+// as if the channel declared none — delivered at once, or held for release
+// when the channel also holds, but never left waiting for a worker.
+func TestWriter_HooksAreSkippedWhenDisabled(t *testing.T) {
 	s, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	_, err = (&StorePublisher{Store: s, Defs: hookedDefs}).Write(context.Background(), WriteRequest{
-		Channel: "inbox", TenantID: "t", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
-	})
-	if !errors.Is(err, ErrChannelHooksDisabled) {
-		t.Fatalf("err = %v, want ErrChannelHooksDisabled", err)
-	}
-	if snap, _ := s.SnapshotReadChannelMessages(context.Background()); len(snap) != 0 {
-		t.Fatalf("stored %d message(s) nothing would decide", len(snap))
+	for _, hold := range []bool{false, true} {
+		defs := func(context.Context, string, string) (WriteDef, error) {
+			return WriteDef{Hooked: true, Hold: hold, HookTenant: "owner"}, nil
+		}
+		res, err := (&StorePublisher{Store: s, Defs: defs}).Write(context.Background(), WriteRequest{
+			Channel: "inbox", TenantID: "t", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
+		})
+		if err != nil || res.AwaitingHooks || store.IsChannelHookHeld(res.Message.VisibleAt) || res.Held != hold {
+			t.Fatalf("hold=%v: result = %+v, err %v", hold, res, err)
+		}
+		if !hold && res.Message.VisibleAt.After(time.Now()) {
+			t.Fatalf("not delivered now: %s", res.Message.VisibleAt)
+		}
 	}
 }
