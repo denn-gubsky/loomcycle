@@ -73,6 +73,13 @@ func Build(cfg *config.Config) (*Model, error) {
 	if !rc.Configured() {
 		return nil, nil
 	}
+	// The model may be a models: alias (e.g. local-medium); resolve it, and the
+	// provider it carries when the block names none, as an agent's model resolves.
+	provider, model, err := cfg.ExpandServiceModel("memory.reranker", rc.Provider, rc.Model)
+	if err != nil {
+		return nil, err
+	}
+	rc.Provider, rc.Model = provider, model
 	pc, ok := cfg.Providers[rc.Provider]
 	if !ok {
 		known := make([]string, 0, len(cfg.Providers))
