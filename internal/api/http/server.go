@@ -8270,6 +8270,20 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	if s.hookDispatcher != nil {
 		gate := s.hookDispatcher.RunGate(hookCtx, hookIdent, hooks.PhasePreCompact,
 			hooks.LifecycleInfo{Trigger: "manual", ContextTokens: before})
+		// Recorded on the run like the loop's own compaction records them. This
+		// path has no loop emitter to hand them to — a terminal run has no loop,
+		// and a live one is parked — so they go straight onto the transcript.
+		// Before the refusal, so a refused compaction leaves its reason behind;
+		// detached from the request, so a caller hanging up does not lose it.
+		loop.EmitHookDecisions(func(ev providers.Event) {
+			payload, merr := json.Marshal(ev)
+			if merr != nil {
+				return
+			}
+			if aerr := s.store.AppendEvent(context.WithoutCancel(ctx), runID, string(ev.Type), payload); aerr != nil {
+				log.Printf("compact %s: hook decision not recorded: %v", runID, aerr)
+			}
+		}, providers.ToolUse{}, gate.Decisions)
 		if gate.Denied {
 			return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "denied_by_hook",
 				msg: "the compaction was refused: " + gate.Reason}

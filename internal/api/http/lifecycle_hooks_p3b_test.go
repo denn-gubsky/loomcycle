@@ -190,6 +190,12 @@ func TestCompactRun_HooksGateAndReportAManualCompaction(t *testing.T) {
 	if !strings.Contains(deny.waitBody(t, `"phase":"pre_compact"`), `"trigger":"manual"`) {
 		t.Error("the payload does not name the trigger")
 	}
+	// The refusal is on the run's transcript, as the loop's own compaction
+	// records it — not only in the 409 the caller got.
+	if hd := preCompactDecision(t, srv, runID); hd == nil || hd.Decision != "deny" || hd.Hook != "ops/keep" ||
+		hd.Reason != "keep the whole history for the audit" {
+		t.Errorf("recorded decision = %+v", hd)
+	}
 
 	srv.resetTestHooks()
 	report := newRecordingHook(t, `{}`)
@@ -202,6 +208,29 @@ func TestCompactRun_HooksGateAndReportAManualCompaction(t *testing.T) {
 	if !strings.Contains(body, `"trigger":"manual"`) || !strings.Contains(body, `"after_tokens":`) {
 		t.Errorf("payload = %s", body)
 	}
+}
+
+// preCompactDecision is the pre_compact hook_decision recorded on runID, or
+// nil when there is none.
+func preCompactDecision(t *testing.T, srv *Server, runID string) *providers.HookDecisionInfo {
+	t.Helper()
+	events, err := srv.store.GetRunEventsSince(t.Context(), runID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type != string(providers.EventHookDecision) {
+			continue
+		}
+		var pe providers.Event
+		if err := json.Unmarshal(ev.Payload, &pe); err != nil {
+			t.Fatal(err)
+		}
+		if pe.HookDecision != nil && pe.HookDecision.Phase == string(hooks.PhasePreCompact) {
+			return pe.HookDecision
+		}
+	}
+	return nil
 }
 
 // run_end reports a finished run, after its row is final, through the real
