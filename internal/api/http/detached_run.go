@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -61,4 +62,28 @@ func (s *Server) startDetachedLoop(d detachedLoop) <-chan struct{} {
 		s.finishRunWithCancel(context.WithoutCancel(d.runCtx), d.runCtx, d.runID, loopRes, runErr, d.meta)
 	}()
 	return done
+}
+
+// forwardWhileAttached wraps a detached run's forward to its caller so that it
+// stops once the caller has gone. detach returns only when no delivery is in
+// flight, so after it returns fwd is never called again — which is what lets a
+// caller return while the run goes on: net/http forbids writing to a
+// ResponseWriter after its handler returns, and a gRPC stream is dead after its
+// handler returns.
+func forwardWhileAttached(fwd func(providers.Event)) (forward func(providers.Event), detach func()) {
+	var mu sync.Mutex
+	attached := true
+	forward = func(ev providers.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if attached {
+			fwd(ev)
+		}
+	}
+	detach = func() {
+		mu.Lock()
+		attached = false
+		mu.Unlock()
+	}
+	return forward, detach
 }

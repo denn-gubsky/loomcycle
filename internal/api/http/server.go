@@ -2834,8 +2834,24 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Cancel registry ----
-	runCtx, cancelFn := context.WithCancelCause(ctx)
-	defer cancelFn(nil)
+	// A detached run outlives this call (RunInput.Detached): its ctx keeps the
+	// caller's values but not its cancellation, and startDetachedLoop runs the
+	// loop in a goroutine that takes over the teardown — the same goroutine
+	// POST /v1/runs uses for an interactive run. Until handOff, and always for
+	// a run that is not detached, the defers here own the teardown. runParent
+	// is ctx for a run that is not detached, so that path is unchanged.
+	detached := in.Detached
+	runParent := ctx
+	if detached {
+		runParent = context.WithoutCancel(ctx)
+	}
+	handOff := false
+	runCtx, cancelFn := context.WithCancelCause(runParent)
+	defer func() {
+		if !handOff {
+			cancelFn(nil)
+		}
+	}()
 	// v0.10.0 OTEL: top-level loomcycle.run span covers the entire
 	// run. Loop iterations + provider calls + tool dispatch nest
 	// under it via context propagation. Span name + attribute set
@@ -2847,7 +2863,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentName: effectiveAgentName,
 		UserID:    effectiveUserID,
 	})
-	defer runSpan.End()
+	defer func() {
+		if !handOff {
+			runSpan.End()
+		}
+	}()
 	// v0.10.1: surface the semaphore queue wait on the run span. 0
 	// means immediate acquire; a sustained non-zero distribution per
 	// user_id is the operator's signal that fairness is engaging.
@@ -2885,18 +2905,22 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		s.finishRunFailedReason(runID, "registry register failed: "+regErr.Error(), meta)
 		return fmt.Errorf("%w: %v", runner.ErrInternal, regErr)
 	}
-	defer s.cancelReg.Deregister(agentID)
+	defer func() {
+		if !handOff {
+			s.cancelReg.Deregister(agentID)
+		}
+	}()
 	s.publishRunState(meta, "running", "", "")
 
 	// ---- Persist input segments ----
-	s.persistUserInput(ctx, runID, sessionID, effectiveTenantID, effectiveUserID, in.Segments)
+	s.persistUserInput(runParent, runID, sessionID, effectiveTenantID, effectiveUserID, in.Segments)
 	// v0.9.x: persist the resolved system prompt + provenance so the
 	// transcript carries WHAT the agent received, not just WHAT the
 	// model emitted. The companion Web UI rendering surfaces this as
 	// the first card on /ui run views. agent_def_id is empty here —
 	// RunInput doesn't pin a def, so the field stays unset (operators
 	// inspecting can look up the run row's AgentDefID column directly).
-	s.emitSystemPromptEvent(ctx, runID, agentDef.SystemPrompt, "", promptProv)
+	s.emitSystemPromptEvent(runParent, runID, agentDef.SystemPrompt, "", promptProv)
 
 	// ---- Caller registration callback ----
 	if cb.OnRegistered != nil {
@@ -2920,11 +2944,18 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OperatorKeyRestricted: operatorKeyRestricted,
 		Isolated:              isolated, // RFC BX P2b: confine data tools to own scope
 	}
-	emit := s.makeRecordingEmit(ctx, runID, rid, sessionID, func(ev providers.Event) {
+	fwd := func(ev providers.Event) {
 		if cb.OnEvent != nil {
 			cb.OnEvent(ev)
 		}
-	})
+	}
+	// A detached run stops forwarding once its caller has gone (callerGone),
+	// and keeps recording: a later reader re-attaches from the store.
+	callerGone := func() {}
+	if detached {
+		fwd, callerGone = forwardWhileAttached(fwd)
+	}
+	emit := s.makeRecordingEmit(runParent, runID, rid, sessionID, fwd)
 	// RFC AW: emit any soft budget crossings the admission check found, so the
 	// warning lands at run start in the transcript/stream (dedup'd once-per-run
 	// by makeRecordingEmit's seenLimit set).
@@ -2937,8 +2968,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	emitInertCapabilityWarnings(agentDef, emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
-	steerQ, onSteer, deregSteer := s.makeSteer(ctx, runID, agentID, sessionID, effectiveUserID, emit)
-	defer deregSteer()
+	steerQ, onSteer, deregSteer := s.makeSteer(runParent, runID, agentID, sessionID, effectiveUserID, emit)
+	defer func() {
+		if !handOff {
+			deregSteer()
+		}
+	}()
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	// Raw (glob-preserving) patterns for the Skill tool's subset check — the
@@ -3027,9 +3062,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	heartbeat := s.makeHeartbeat(runID)
 
 	// Cooperative pause quiesce (RFC X / F41): park at an iteration boundary
-	// while paused. RunOnce is synchronous, so a plain defer-deregister works.
+	// while paused. Deregistered here, or by the detached goroutine.
 	gate, deregGate := s.newPauseGate(runID)
-	defer deregGate()
+	defer func() {
+		if !handOff {
+			deregGate()
+		}
+	}()
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
@@ -3038,13 +3077,24 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// sub-agents it spawns skip the gate for the SAME provider (the deadlock
 	// carve-out) while still gating on any OTHER provider. No-op for an
 	// uncapped/noop slot, so uncapped runs stay zero-overhead.
-	loopCtx = s.heldSlotCtx(loopCtx, provSlot)
-	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, provSlot, runRouting)
+	//
+	// A detached run releases both slots when this call returns, which can be
+	// before the run ends (the caller left), as POST /v1/runs does for its
+	// detached runs. So it neither publishes the held provider nor hands the
+	// holder to the fallback: a swap on an already-released holder would
+	// acquire a slot that nothing releases.
+	fbSlot := provSlot
+	if detached {
+		fbSlot = nil
+	} else {
+		loopCtx = s.heldSlotCtx(loopCtx, provSlot)
+	}
+	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, fbSlot, runRouting)
 	seed, seeded := statefulContinuationSeed(sessionEvents, mergedContext, provider.Capabilities().Local, in.Interactive, segments)
 	if seeded {
 		priorMessages = nil
 	}
-	res, runErr := loop.Run(loopCtx, loop.RunOptions{
+	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
 		Tools:               allowedTools,
@@ -3074,6 +3124,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,
 		Interactive:         in.Interactive,
 		InteractiveNow:      s.interactiveNowFn(runID, in.Interactive),
+		ArmTurnCancel:       s.armTurnCancelIf(in.Interactive, runID), // an interactive run's turn can be stopped; it parks
 		Review:              in.Review,
 		ReviewNow:           s.reviewNowFn(runID, in.Review),
 		ReviewTTL:           runCfg.reviewTTL(),
@@ -3096,7 +3147,29 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
-	})
+	}
+	if detached {
+		handOff = true
+		done := s.startDetachedLoop(detachedLoop{
+			runID: runID, meta: meta, loopCtx: loopCtx, runCtx: runCtx, opts: runOpts, emit: emit,
+			teardown: func() {
+				deregSteer()
+				deregGate()
+				s.cancelReg.Deregister(agentID)
+				runSpan.End()
+				cancelFn(nil)
+			},
+		})
+		// Forward to the caller until the run ends or the caller leaves; the
+		// run is not stopped by the latter.
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+		callerGone()
+		return nil
+	}
+	res, runErr := loop.Run(loopCtx, runOpts)
 	s.finishRunWithCancel(ctx, runCtx, runID, res, runErr, meta)
 	return nil
 }

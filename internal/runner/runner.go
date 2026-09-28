@@ -49,7 +49,9 @@ type Runner interface {
 	// ErrInternal.
 	//
 	// The function blocks until the loop terminates. Caller's ctx
-	// cancellation cascades into the loop ctx.
+	// cancellation cascades into the loop ctx — except for a
+	// RunInput.Detached run, which the caller's ctx ending leaves
+	// running: RunOnce then returns nil and stops calling cb.
 	RunOnce(ctx context.Context, in RunInput, cb RunCallbacks) error
 }
 
@@ -383,6 +385,16 @@ type RunInput struct {
 	// edit that lands while the start waits for admission is refused rather
 	// than silently dropped (ErrDraftChanged). Empty skips that check.
 	ConfiguredDraft json.RawMessage
+
+	// Detached runs the loop so that it outlives this call, as POST /v1/runs
+	// does for an interactive or review run: the caller's ctx ending (a
+	// client leaving) neither cancels it nor tears it down — only the cancel
+	// registry stops it — and RunOnce returns once the run finishes or the
+	// caller's ctx ends, whichever is first. Events reach cb only while the
+	// caller is there; a later reader re-attaches through the run's stored
+	// events (GET /v1/runs/{run_id}/stream). Set for a started draft that is
+	// interactive or held for review.
+	Detached bool
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
