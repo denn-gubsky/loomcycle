@@ -8416,10 +8416,16 @@ type ChannelDescriptor struct {
 	MaxMessages  int32                  `protobuf:"varint,7,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"`
 	MessageCount int64                  `protobuf:"varint,8,opt,name=message_count,json=messageCount,proto3" json:"message_count,omitempty"`
 	// RFC3339 strings — empty when count == 0.
-	OldestVisibleAt string `protobuf:"bytes,9,opt,name=oldest_visible_at,json=oldestVisibleAt,proto3" json:"oldest_visible_at,omitempty"`
-	NewestVisibleAt string `protobuf:"bytes,10,opt,name=newest_visible_at,json=newestVisibleAt,proto3" json:"newest_visible_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	OldestVisibleAt    string `protobuf:"bytes,9,opt,name=oldest_visible_at,json=oldestVisibleAt,proto3" json:"oldest_visible_at,omitempty"`
+	NewestVisibleAt    string `protobuf:"bytes,10,opt,name=newest_visible_at,json=newestVisibleAt,proto3" json:"newest_visible_at,omitempty"`
+	Description        string `protobuf:"bytes,11,opt,name=description,proto3" json:"description,omitempty"`
+	Hold               bool   `protobuf:"varint,12,opt,name=hold,proto3" json:"hold,omitempty"`                                                         // stores publishes without delivering until released
+	Source             string `protobuf:"bytes,13,opt,name=source,proto3" json:"source,omitempty"`                                                      // "yaml" | "runtime" | "orphan"
+	HooksJson          []byte `protobuf:"bytes,14,opt,name=hooks_json,json=hooksJson,proto3" json:"hooks_json,omitempty"`                               // the channel's hooks, JSON ({"channel_publish": [...]}); empty when none
+	HeldCount          int64  `protobuf:"varint,15,opt,name=held_count,json=heldCount,proto3" json:"held_count,omitempty"`                              // messages held for a release (in message_count)
+	AwaitingHooksCount int64  `protobuf:"varint,16,opt,name=awaiting_hooks_count,json=awaitingHooksCount,proto3" json:"awaiting_hooks_count,omitempty"` // messages waiting for the channel's hooks (in message_count)
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ChannelDescriptor) Reset() {
@@ -8520,6 +8526,48 @@ func (x *ChannelDescriptor) GetNewestVisibleAt() string {
 		return x.NewestVisibleAt
 	}
 	return ""
+}
+
+func (x *ChannelDescriptor) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetHold() bool {
+	if x != nil {
+		return x.Hold
+	}
+	return false
+}
+
+func (x *ChannelDescriptor) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *ChannelDescriptor) GetHooksJson() []byte {
+	if x != nil {
+		return x.HooksJson
+	}
+	return nil
+}
+
+func (x *ChannelDescriptor) GetHeldCount() int64 {
+	if x != nil {
+		return x.HeldCount
+	}
+	return 0
+}
+
+func (x *ChannelDescriptor) GetAwaitingHooksCount() int64 {
+	if x != nil {
+		return x.AwaitingHooksCount
+	}
+	return 0
 }
 
 type StreamUserRunStatesRequest struct {
@@ -10725,7 +10773,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"error_info\x18\x03 \x01(\v2\x17.loomcycle.v1.ErrorInfoR\terrorInfo\"\x15\n" +
 	"\x13ListChannelsRequest\"S\n" +
 	"\x14ListChannelsResponse\x12;\n" +
-	"\bchannels\x18\x01 \x03(\v2\x1f.loomcycle.v1.ChannelDescriptorR\bchannels\"\xd0\x02\n" +
+	"\bchannels\x18\x01 \x03(\v2\x1f.loomcycle.v1.ChannelDescriptorR\bchannels\"\x8e\x04\n" +
 	"\x11ChannelDescriptor\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x1a\n" +
@@ -10738,7 +10786,15 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\rmessage_count\x18\b \x01(\x03R\fmessageCount\x12*\n" +
 	"\x11oldest_visible_at\x18\t \x01(\tR\x0foldestVisibleAt\x12*\n" +
 	"\x11newest_visible_at\x18\n" +
-	" \x01(\tR\x0fnewestVisibleAt\"\x80\x01\n" +
+	" \x01(\tR\x0fnewestVisibleAt\x12 \n" +
+	"\vdescription\x18\v \x01(\tR\vdescription\x12\x12\n" +
+	"\x04hold\x18\f \x01(\bR\x04hold\x12\x16\n" +
+	"\x06source\x18\r \x01(\tR\x06source\x12\x1d\n" +
+	"\n" +
+	"hooks_json\x18\x0e \x01(\fR\thooksJson\x12\x1d\n" +
+	"\n" +
+	"held_count\x18\x0f \x01(\x03R\theldCount\x120\n" +
+	"\x14awaiting_hooks_count\x18\x10 \x01(\x03R\x12awaitingHooksCount\"\x80\x01\n" +
 	"\x1aStreamUserRunStatesRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
 	"\bstatuses\x18\x02 \x03(\tR\bstatuses\x12\x14\n" +

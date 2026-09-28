@@ -1020,6 +1020,9 @@ type ChannelDef struct {
 	// delivered or notified until a release. See store.ChannelHeldVisibleAt
 	// for how a held message is marked.
 	Hold bool
+	// Hooked: the channel carries hooks, which decide each message published
+	// to it before any reader sees it.
+	Hooked bool
 }
 
 // WithChannelPolicy attaches the agent's resolved Channel policy to ctx.

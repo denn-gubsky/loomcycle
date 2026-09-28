@@ -16,6 +16,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -3403,8 +3404,32 @@ type ChannelRow struct {
 	Period      string
 	// Hold makes the channel a breakpoint: a publish is stored but never
 	// delivered or notified until a release. See ChannelHeldVisibleAt.
-	Hold      bool
+	Hold bool
+	// Hooks is the channel's hooks, as JSON ({"channel_publish": [...]});
+	// nil for none. Kept as JSON so the store does not depend on the hooks
+	// package; the server validates it before it is written.
+	Hooks     json.RawMessage
 	CreatedAt time.Time
+}
+
+// NoChannelHooks reports whether a channel's stored hooks are none: absent,
+// JSON null, or an object with no entries.
+func NoChannelHooks(h json.RawMessage) bool {
+	t := bytes.TrimSpace(h)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return true
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(t, &m) != nil {
+		return false
+	}
+	for _, v := range m {
+		var list []json.RawMessage
+		if json.Unmarshal(v, &list) != nil || len(list) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // ChannelPatch carries the subset of fields ChannelsUpdate can
@@ -3417,6 +3442,8 @@ type ChannelPatch struct {
 	MaxMessages *int
 	Semantic    *string
 	Hold        *bool
+	// Hooks replaces the channel's hooks; an empty value clears them.
+	Hooks *json.RawMessage
 }
 
 // MemoryScope is the addressing axis for a Memory or Channel row.
@@ -4130,6 +4157,12 @@ type ChannelStats struct {
 	MessageCount    int64     `json:"message_count"`
 	OldestVisibleAt time.Time `json:"oldest_visible_at,omitempty"`
 	NewestVisibleAt time.Time `json:"newest_visible_at,omitempty"`
+	// Held counts the messages held for a release, AwaitingHooks those
+	// waiting for the channel's hooks. Both are in MessageCount; neither is
+	// in the visible_at range, which spans only messages with a delivery
+	// time (a reserved instant is a marker, not one).
+	Held          int64 `json:"held,omitempty"`
+	AwaitingHooks int64 `json:"awaiting_hooks,omitempty"`
 }
 
 // ErrChannelCursorRegression is returned by ChannelAck when a caller

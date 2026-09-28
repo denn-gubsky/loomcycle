@@ -28,7 +28,7 @@ import (
 // that; the timestamp says nothing, which is the truth — a held message has no
 // scheduled arrival.
 func formatVisibleAt(t time.Time) string {
-	if t.IsZero() || store.IsChannelHeld(t) {
+	if t.IsZero() || store.IsChannelReservedVisibleAt(t) {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
@@ -39,17 +39,9 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 	if err != nil {
 		return connector.ListChannelsResponse{}, err
 	}
-	statsByName := make(map[string]struct {
-		Count           int64
-		OldestVisibleAt time.Time
-		NewestVisibleAt time.Time
-	}, len(stats))
+	statsByName := make(map[string]store.ChannelStats, len(stats))
 	for _, st := range stats {
-		statsByName[st.Channel] = struct {
-			Count           int64
-			OldestVisibleAt time.Time
-			NewestVisibleAt time.Time
-		}{st.MessageCount, st.OldestVisibleAt, st.NewestVisibleAt}
+		statsByName[st.Channel] = st
 	}
 
 	out := make([]connector.ChannelDescriptor, 0, len(s.cfg().Channels))
@@ -64,12 +56,11 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			DefaultTTL:  ch.DefaultTTL,
 			MaxMessages: ch.MaxMessages,
 			Hold:        ch.Hold,
+			Hooks:       ch.Hooks,
 			Source:      "yaml",
 		}
 		if st, ok := statsByName[name]; ok {
-			desc.MessageCount = st.Count
-			desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
-			desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
+			attachStats(&desc, st)
 		}
 		out = append(out, desc)
 	}
@@ -91,22 +82,9 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		if _, yaml := s.cfg().Channels[r.Name]; yaml {
 			continue
 		}
-		desc := connector.ChannelDescriptor{
-			Name:        r.Name,
-			Description: r.Description,
-			Scope:       r.Scope,
-			Semantic:    r.Semantic,
-			Publisher:   r.Publisher,
-			Period:      r.Period,
-			DefaultTTL:  r.DefaultTTL,
-			MaxMessages: r.MaxMessages,
-			Hold:        r.Hold,
-			Source:      "runtime",
-		}
+		desc := rowToBareDescriptor(r)
 		if st, ok := statsByName[r.Name]; ok {
-			desc.MessageCount = st.Count
-			desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
-			desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
+			attachStats(&desc, st)
 		}
 		out = append(out, desc)
 	}
@@ -124,9 +102,8 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		if runtimeNames[name] {
 			continue
 		}
-		desc := connector.ChannelDescriptor{Name: name, MessageCount: st.Count, Source: "orphan"}
-		desc.OldestVisibleAt = formatVisibleAt(st.OldestVisibleAt)
-		desc.NewestVisibleAt = formatVisibleAt(st.NewestVisibleAt)
+		desc := connector.ChannelDescriptor{Name: name, Source: "orphan"}
+		attachStats(&desc, st)
 		out = append(out, desc)
 	}
 	// Deterministic order — easier on transports that snapshot the

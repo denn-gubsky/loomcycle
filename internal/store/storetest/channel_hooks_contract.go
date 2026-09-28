@@ -486,3 +486,95 @@ func testChannelTrimTakesDeliveredBeforeAwaiting(t *testing.T, s store.Store) {
 		t.Fatalf("awaiting %v; want the two newest awaiting (the oldest trimmed once they alone overflow)", got)
 	}
 }
+
+// A runtime channel's hooks round-trip through create, get and list; an
+// update replaces them, a patch without them leaves them, and an empty value
+// clears them (to none, however "none" was spelled).
+func testChannelsHooksRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	hooksJSON := json.RawMessage(`{"channel_publish":["screen",{"name":"audit","url":"https://h.example/a"}]}`)
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "hk-def", TenantID: "t1", Scope: "tenant", Semantic: "queue", Hooks: hooksJSON}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.ChannelGet(ctx, "t1", "hk-def")
+	if err != nil || !jsonEqual(got.Hooks, string(hooksJSON)) {
+		t.Fatalf("get: hooks %s (err %v)", got.Hooks, err)
+	}
+	rows, err := s.ChannelsList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name == "hk-def" && !jsonEqual(r.Hooks, string(hooksJSON)) {
+			t.Errorf("list: hooks %s", r.Hooks)
+		}
+	}
+	desc := "d"
+	if err := s.ChannelsUpdate(ctx, "t1", "hk-def", store.ChannelPatch{Description: &desc}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ChannelGet(ctx, "t1", "hk-def"); !jsonEqual(got.Hooks, string(hooksJSON)) {
+		t.Errorf("a patch without hooks changed them: %s", got.Hooks)
+	}
+	replaced := json.RawMessage(`{"channel_publish":["other"]}`)
+	if err := s.ChannelsUpdate(ctx, "t1", "hk-def", store.ChannelPatch{Hooks: &replaced}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ChannelGet(ctx, "t1", "hk-def"); !jsonEqual(got.Hooks, string(replaced)) {
+		t.Errorf("replaced hooks = %s", got.Hooks)
+	}
+	for _, none := range []string{`{}`, `null`, `{"channel_publish":[]}`, ``} {
+		clear := json.RawMessage(none)
+		if err := s.ChannelsUpdate(ctx, "t1", "hk-def", store.ChannelPatch{Hooks: &clear}); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := s.ChannelGet(ctx, "t1", "hk-def"); got.Hooks != nil {
+			t.Errorf("clearing with %q left %s", none, got.Hooks)
+		}
+		if err := s.ChannelsUpdate(ctx, "t1", "hk-def", store.ChannelPatch{Hooks: &replaced}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "hk-none", TenantID: "t1", Scope: "tenant", Semantic: "queue"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ChannelGet(ctx, "t1", "hk-none"); got.Hooks != nil {
+		t.Errorf("a channel created without hooks has %s", got.Hooks)
+	}
+}
+
+// Stats count held messages and messages awaiting hooks separately, and the
+// visible_at range spans only messages with a delivery time: a reserved
+// instant in the year 2200 is a marker, not a time anything arrives.
+func testChannelStatsCountHeldAndAwaitingSeparately(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const ch = "hk-stats"
+	pub := func(at time.Time) {
+		t.Helper()
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: ch, Scope: store.MemoryScopeAgent, ScopeID: "x",
+			Payload: json.RawMessage(`{}`), VisibleAt: at}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pub(time.Time{})
+	pub(store.ChannelHeldVisibleAt())
+	pub(store.ChannelHookHeldVisibleAt())
+	pub(store.ChannelHookHeldVisibleAt())
+	stats, err := s.ChannelStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range stats {
+		if st.Channel != ch {
+			continue
+		}
+		if st.MessageCount != 4 || st.Held != 1 || st.AwaitingHooks != 2 {
+			t.Fatalf("stats = %+v, want 4 messages, 1 held, 2 awaiting hooks", st)
+		}
+		if store.IsChannelReservedVisibleAt(st.NewestVisibleAt) || st.NewestVisibleAt.Year() >= 2200 {
+			t.Fatalf("newest_visible_at = %v: a reserved instant leaked into the range", st.NewestVisibleAt)
+		}
+		return
+	}
+	t.Fatal("no stats for the channel")
+}

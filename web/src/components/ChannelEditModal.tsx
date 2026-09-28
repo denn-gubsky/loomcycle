@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { CHANNEL_HOOK_EVENTS, HookEventsControl, type EventHooks } from "@loomcycle/def-fields";
 import {
   type ChannelDescriptor,
   type ChannelCreateRequest,
   type ChannelUpdateRequest,
   createChannel,
+  listHookDefNames,
   updateChannel,
 } from "../api";
 
@@ -45,6 +47,16 @@ export default function ChannelEditModal({
     existing?.max_messages !== undefined ? String(existing.max_messages) : "0",
   );
   const [hold, setHold] = useState<boolean>(existing?.hold ?? false);
+  const [hooks, setHooks] = useState<EventHooks | undefined>(existing?.hooks as EventHooks | undefined);
+  const [hookNames, setHookNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listHookDefNames().then(
+      (r) => { if (!cancelled) setHookNames([...new Set((r.names ?? []).map((n) => n.name))]); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, []);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -65,6 +77,7 @@ export default function ChannelEditModal({
           max_messages: max,
           hold,
         };
+        if (hooks) req.hooks = hooks;
         saved = await createChannel(req);
       } else {
         if (!existing) throw new Error("edit mode requires an existing channel");
@@ -74,6 +87,8 @@ export default function ChannelEditModal({
           max_messages: max,
           semantic,
           hold,
+          // Always sent on edit: {} is how the last hook is removed.
+          hooks: hooks ?? {},
         };
         saved = await updateChannel(existing.name, patch);
       }
@@ -122,6 +137,7 @@ export default function ChannelEditModal({
                 disabled={mode === "edit"}
               >
                 <option value="global">global</option>
+                <option value="tenant">tenant</option>
                 <option value="agent">agent</option>
                 <option value="user">user</option>
               </select>
@@ -175,6 +191,22 @@ export default function ChannelEditModal({
               them — one at a time from the channel page.
             </small>
           </label>
+
+          <div className="library-modal-field">
+            <span>Hooks</span>
+            <small>
+              Decide each message published to this channel before anyone
+              sees it: deliver it, rewrite it or drop it. They run in order,
+              so delivery may be reordered. The server must run channel hooks.
+            </small>
+            <HookEventsControl
+              value={hooks}
+              events={CHANNEL_HOOK_EVENTS}
+              hookNames={hookNames}
+              disabled={submitting}
+              onChange={(v) => setHooks(v as EventHooks | undefined)}
+            />
+          </div>
         </div>
 
         {err && <div className="error-banner">{err}</div>}
@@ -214,6 +246,13 @@ function explainChannelRefusal(msg: string): string {
   }
   if (msg.includes("channel_not_found")) {
     return "Channel not found in the runtime substrate.";
+  }
+  if (msg.includes("channel_hooks_disabled")) {
+    return "This server does not run channel hooks (LOOMCYCLE_CHANNEL_HOOKS=1), so a channel cannot carry them.";
+  }
+  if (msg.includes("channel_hooks_invalid")) {
+    const match = msg.match(/"error":"([^"]+)"/);
+    return "A hook cannot be attached: " + (match?.[1] ?? msg);
   }
   if (msg.includes("invalid_request") || msg.includes("invalid_body")) {
     // Strip the {…} envelope prefix to surface the human text.

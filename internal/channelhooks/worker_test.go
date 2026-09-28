@@ -555,3 +555,20 @@ func TestWorker_RunWakesOnAWrite(t *testing.T) {
 	}
 	t.Fatal("the worker did not wake on the write")
 }
+
+// A tenant's channel hook dials through the private-address guard, as a
+// tenant's run hooks do: its webhook never reaches an internal address, and a
+// hook that fails closed keeps the message from everyone.
+func TestWorker_ATenantsWebhookIsGuarded(t *testing.T) {
+	f := newFixture(t)
+	srv, n := answer(t, ``)
+	f.setDef("acme", "inbox", Def{Hooks: chain(webhookEntry("screen", srv.URL))})
+	f.publish("inbox", "acme", store.MemoryScopeTenant, `{}`, nil)
+	f.drain()
+	if n.Load() != 0 {
+		t.Fatalf("a tenant's webhook reached %s (%d calls)", srv.URL, n.Load())
+	}
+	if msgs := f.peek("inbox", "acme", store.MemoryScopeTenant); len(msgs) != 0 {
+		t.Fatalf("delivered %d past a hook that could not run", len(msgs))
+	}
+}

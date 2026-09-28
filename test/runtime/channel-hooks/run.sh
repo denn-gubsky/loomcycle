@@ -116,6 +116,20 @@ echo "$DEC" | grep -q 'drop' || fail "no drop decision recorded: $DEC"
 echo "$DEC" | grep -q 'rewrite_body' || fail "no rewrite decision recorded: $DEC"
 api "$BASE/metrics" | grep -q 'loomcycle_channel_hooks_decisions_total{.*decision="drop"' || fail "/metrics has no drop counter"
 
+echo "[5b/7] a runtime channel carries hooks too"
+out=$(api -X POST "$BASE/v1/_channels" -d '{"name":"rt-inbox","scope":"global","hooks":{"channel_publish":["screen"]}}')
+echo "$out" | grep -q '"channel_publish"' || fail "runtime channel create did not keep its hooks: $out"
+out=$(api -X POST "$BASE/v1/_channels" -d '{"name":"rt-bad","scope":"global","hooks":{"channel_publish":["no-such-hook"]}}')
+echo "$out" | grep -q 'channel_hooks_invalid' || fail "an unknown HookDef was accepted: $out"
+out=$(api -X POST "$BASE/v1/_channels/rt-inbox/publish" -d '{"payload":{"text":"runtime secret"}}')
+echo "$out" | grep -q '"awaiting_hooks":true' || fail "runtime publish did not report awaiting_hooks: $out"
+for i in $(seq 1 100); do
+  api "$BASE/v1/_channels/rt-inbox/peek?max_messages=10" | grep -q 'runtime \[redacted\]' && break
+  sleep 0.1
+done
+api "$BASE/v1/_channels/rt-inbox/peek?max_messages=10" | grep -q 'runtime \[redacted\]' || fail "the runtime channel's message was not decided by its hook"
+api "$BASE/v1/_channels" | grep -q '"hooks"' || fail "the channel list does not show hooks"
+
 echo "[6/7] kill -9 with messages waiting; a restart decides each exactly once"
 for i in $(seq 1 20); do publish "{\"text\":\"batch $i\"}" > /dev/null; done
 kill -9 "$PID"; wait "$PID" 2>/dev/null || true; PID=""

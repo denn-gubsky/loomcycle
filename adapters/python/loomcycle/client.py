@@ -2316,6 +2316,13 @@ def _channel_descriptor_to_dict(c: "pb.ChannelDescriptor") -> Mapping[str, Any]:
         "message_count": c.message_count,
         "oldest_visible_at": c.oldest_visible_at,
         "newest_visible_at": c.newest_visible_at,
+        "description": c.description,
+        "hold": c.hold,
+        "source": c.source,
+        # The channel's hooks as JSON bytes (b"" when none); decode with json.loads.
+        "hooks_json": c.hooks_json,
+        "held_count": c.held_count,
+        "awaiting_hooks_count": c.awaiting_hooks_count,
     }
 
 

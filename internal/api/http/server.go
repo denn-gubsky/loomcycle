@@ -2211,6 +2211,7 @@ func (s *Server) mergedChannelDefsFor(ctx context.Context, tenantID string, incl
 			Semantic:    ch.Semantic,
 			Publisher:   ch.Publisher, // v0.8.6: agent publish refusal when "system"
 			Hold:        ch.Hold,      // RFC CY: store-without-delivering breakpoint
+			Hooked:      ch.HasHooks(),
 		}
 	}
 	if includeRuntime && s.store != nil {
@@ -2233,6 +2234,7 @@ func (s *Server) mergedChannelDefsFor(ctx context.Context, tenantID string, incl
 					Semantic:    r.Semantic,
 					Publisher:   r.Publisher,
 					Hold:        r.Hold,
+					Hooked:      !store.NoChannelHooks(r.Hooks),
 				}
 			}
 		}
@@ -2306,7 +2308,8 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 	row, err := s.store.ChannelGet(ctx, tenantID, channel)
 	switch {
 	case err == nil:
-		return channels.WriteDef{Hold: row.Hold}, nil
+		// A runtime channel's hooks are its owner's.
+		return channels.WriteDef{Hold: row.Hold, Hooked: !store.NoChannelHooks(row.Hooks), HookTenant: row.TenantID}, nil
 	case isNotFound(err):
 		return channels.WriteDef{}, nil
 	default:
@@ -2329,7 +2332,15 @@ func (s *Server) ChannelHookDef(ctx context.Context, tenant, channel string) (ch
 	row, err := s.store.ChannelGet(ctx, tenant, channel)
 	switch {
 	case err == nil:
-		return channelhooks.Def{Hold: row.Hold}, true, nil
+		def := channelhooks.Def{Hold: row.Hold}
+		if !store.NoChannelHooks(row.Hooks) {
+			// Not guessed past: a stored value that does not decode is a
+			// fault, and the worker retries rather than deliver.
+			if err := json.Unmarshal(row.Hooks, &def.Hooks); err != nil {
+				return channelhooks.Def{}, false, fmt.Errorf("channel %q: stored hooks: %w", channel, err)
+			}
+		}
+		return def, true, nil
 	case isNotFound(err):
 		return channelhooks.Def{}, false, nil
 	default:
