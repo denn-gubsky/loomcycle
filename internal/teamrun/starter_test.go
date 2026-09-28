@@ -492,3 +492,33 @@ func TestStarterFanout_AgentsListCyclesAcrossMessages(t *testing.T) {
 		t.Errorf("agent spread = %v, want 2 each", counts)
 	}
 }
+
+// sinkMarkingChannels is a channel IO that can mark a message as a Starter's
+// result, and records which messages came through that path.
+type sinkMarkingChannels struct {
+	fakeChannels
+	marked []string
+}
+
+func (s *sinkMarkingChannels) PublishSink(ctx context.Context, channel string, payload json.RawMessage) error {
+	s.mu.Lock()
+	s.marked = append(s.marked, channel)
+	s.mu.Unlock()
+	return s.Publish(ctx, channel, payload)
+}
+
+// A Starter publishes each run's result through PublishSink when its channel
+// IO has one, so the message is marked as a Starter's result: a channel hook
+// on the sink may not make it disappear.
+func TestStarter_PublishesItsSinkMarkedAsASinkMessage(t *testing.T) {
+	ch := &sinkMarkingChannels{fakeChannels: fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{}`)}}}}
+	r := &agentRunner{channels: ch, logf: func(string, ...any) {}, spawn: textSpawn(func(context.Context, string, Prompt, string) (string, error) {
+		return "ok", nil
+	})}
+	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "start", WalkID: "w"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ch.marked) != 1 || ch.marked[0] != "verdicts" {
+		t.Fatalf("marked sink publishes = %v, want the one to verdicts", ch.marked)
+	}
+}

@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -183,5 +184,72 @@ func TestWriter_RefusesAReservedDeliverAt(t *testing.T) {
 		if err == nil {
 			t.Errorf("a caller-supplied reserved instant %s was accepted", at.Format(time.RFC3339))
 		}
+	}
+}
+
+func hookedDefs(_ context.Context, _, _ string) (WriteDef, error) {
+	return WriteDef{Hooked: true, Hold: true, HookTenant: "owner"}, nil
+}
+
+// A write to a channel that carries hooks waits at the hook instant — ahead
+// of the channel's hold and of any deliver_at, which apply to what the hooks
+// release — carrying what the worker needs: the tenant whose definition
+// governs it, the publisher's deliver_at and the origin. It wakes the worker,
+// not the channel's readers.
+func TestWriter_AHookedChannelAwaitsItsHooks(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	bus := NewBus()
+	worker, readers := bus.Register(HookWakeKey), bus.Register("inbox")
+	at := time.Now().Add(time.Hour)
+	res, err := (&StorePublisher{Store: s, Bus: bus, Defs: hookedDefs, HooksEnabled: true}).Write(context.Background(), WriteRequest{
+		Channel: "inbox", TenantID: "writer", Scope: store.MemoryScopeTenant, Payload: json.RawMessage(`{}`),
+		DeliverAt: at, Origin: OriginStarterSink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.AwaitingHooks || res.Held || res.Deferred || !store.IsChannelHookHeld(res.Message.VisibleAt) {
+		t.Fatalf("result = %+v", res)
+	}
+	items, err := s.ChannelHookClaim(context.Background(), "w", time.Now(), time.Now().Add(time.Minute), 10)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("claim: %d (err %v)", len(items), err)
+	}
+	m := items[0].Message
+	if m.HookTenant != "owner" || !m.RequestedVisibleAt.Equal(at) || m.Origin != OriginStarterSink || m.TenantID != "writer" {
+		t.Fatalf("stored %+v", m)
+	}
+	select {
+	case <-worker:
+	default:
+		t.Error("the worker was not woken")
+	}
+	select {
+	case <-readers:
+		t.Error("the channel's readers were woken for a message they cannot see")
+	default:
+	}
+}
+
+// With channel hooks off, a write to a channel that carries them is refused:
+// nothing would decide it, and delivering it would open the gate.
+func TestWriter_HookedChannelRefusedWhenDisabled(t *testing.T) {
+	s, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, err = (&StorePublisher{Store: s, Defs: hookedDefs}).Write(context.Background(), WriteRequest{
+		Channel: "inbox", TenantID: "t", Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`),
+	})
+	if !errors.Is(err, ErrChannelHooksDisabled) {
+		t.Fatalf("err = %v, want ErrChannelHooksDisabled", err)
+	}
+	if snap, _ := s.SnapshotReadChannelMessages(context.Background()); len(snap) != 0 {
+		t.Fatalf("stored %d message(s) nothing would decide", len(snap))
 	}
 }

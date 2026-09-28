@@ -8935,8 +8935,11 @@ type PublishChannelResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MsgId         string                 `protobuf:"bytes,1,opt,name=msg_id,json=msgId,proto3" json:"msg_id,omitempty"`
 	Channel       string                 `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
-	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC3339Nano
-	VisibleAt     string                 `protobuf:"bytes,4,opt,name=visible_at,json=visibleAt,proto3" json:"visible_at,omitempty"` // RFC3339Nano; empty when not deferred
+	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`              // RFC3339Nano
+	VisibleAt     string                 `protobuf:"bytes,4,opt,name=visible_at,json=visibleAt,proto3" json:"visible_at,omitempty"`              // RFC3339Nano; empty when not deferred
+	Held          bool                   `protobuf:"varint,5,opt,name=held,proto3" json:"held,omitempty"`                                        // stored, not delivered until released (a hold: channel)
+	AwaitingHooks bool                   `protobuf:"varint,6,opt,name=awaiting_hooks,json=awaitingHooks,proto3" json:"awaiting_hooks,omitempty"` // stored, delivered only if the channel's hooks release it
+	DroppedOldest int32                  `protobuf:"varint,7,opt,name=dropped_oldest,json=droppedOldest,proto3" json:"dropped_oldest,omitempty"` // oldest messages trimmed to stay within max_messages
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8997,6 +9000,27 @@ func (x *PublishChannelResponse) GetVisibleAt() string {
 		return x.VisibleAt
 	}
 	return ""
+}
+
+func (x *PublishChannelResponse) GetHeld() bool {
+	if x != nil {
+		return x.Held
+	}
+	return false
+}
+
+func (x *PublishChannelResponse) GetAwaitingHooks() bool {
+	if x != nil {
+		return x.AwaitingHooks
+	}
+	return false
+}
+
+func (x *PublishChannelResponse) GetDroppedOldest() int32 {
+	if x != nil {
+		return x.DroppedOldest
+	}
+	return 0
 }
 
 type SubscribeChannelRequest struct {
@@ -9770,6 +9794,8 @@ type BroadcastChannelEntry struct {
 	CreatedAt     string                 `protobuf:"bytes,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC3339Nano
 	VisibleAt     string                 `protobuf:"bytes,4,opt,name=visible_at,json=visibleAt,proto3" json:"visible_at,omitempty"` // RFC3339Nano; set when deferred
 	Error         string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	Held          bool                   `protobuf:"varint,6,opt,name=held,proto3" json:"held,omitempty"`
+	AwaitingHooks bool                   `protobuf:"varint,7,opt,name=awaiting_hooks,json=awaitingHooks,proto3" json:"awaiting_hooks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9837,6 +9863,20 @@ func (x *BroadcastChannelEntry) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *BroadcastChannelEntry) GetHeld() bool {
+	if x != nil {
+		return x.Held
+	}
+	return false
+}
+
+func (x *BroadcastChannelEntry) GetAwaitingHooks() bool {
+	if x != nil {
+		return x.AwaitingHooks
+	}
+	return false
 }
 
 type BroadcastChannelsResponse struct {
@@ -10735,14 +10775,17 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
 	"\n" +
-	"deliver_at\x18\x05 \x01(\tR\tdeliverAt\"\x87\x01\n" +
+	"deliver_at\x18\x05 \x01(\tR\tdeliverAt\"\xe9\x01\n" +
 	"\x16PublishChannelResponse\x12\x15\n" +
 	"\x06msg_id\x18\x01 \x01(\tR\x05msgId\x12\x18\n" +
 	"\achannel\x18\x02 \x01(\tR\achannel\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\x03 \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"visible_at\x18\x04 \x01(\tR\tvisibleAt\"\xc1\x01\n" +
+	"visible_at\x18\x04 \x01(\tR\tvisibleAt\x12\x12\n" +
+	"\x04held\x18\x05 \x01(\bR\x04held\x12%\n" +
+	"\x0eawaiting_hooks\x18\x06 \x01(\bR\rawaitingHooks\x12%\n" +
+	"\x0edropped_oldest\x18\a \x01(\x05R\rdroppedOldest\"\xc1\x01\n" +
 	"\x17SubscribeChannelRequest\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
 	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +
@@ -10807,7 +10850,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1d\n" +
 	"\n" +
-	"deliver_at\x18\x05 \x01(\tR\tdeliverAt\"\x9c\x01\n" +
+	"deliver_at\x18\x05 \x01(\tR\tdeliverAt\"\xd7\x01\n" +
 	"\x15BroadcastChannelEntry\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x15\n" +
 	"\x06msg_id\x18\x02 \x01(\tR\x05msgId\x12\x1d\n" +
@@ -10815,7 +10858,9 @@ const file_loomcycle_proto_rawDesc = "" +
 	"created_at\x18\x03 \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"visible_at\x18\x04 \x01(\tR\tvisibleAt\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\"\x90\x01\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x12\x12\n" +
+	"\x04held\x18\x06 \x01(\bR\x04held\x12%\n" +
+	"\x0eawaiting_hooks\x18\a \x01(\bR\rawaitingHooks\"\x90\x01\n" +
 	"\x19BroadcastChannelsResponse\x12\x1c\n" +
 	"\tpublished\x18\x01 \x01(\x05R\tpublished\x12\x16\n" +
 	"\x06failed\x18\x02 \x01(\x05R\x06failed\x12=\n" +

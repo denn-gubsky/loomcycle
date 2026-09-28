@@ -1,0 +1,29 @@
+# test/runtime/channel-hooks — a channel that carries a hook. Deterministic:
+# the hook is a code-js HookDef, the publishing agent is code-js, no LLM.
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+channels:
+  # Every publish to inbox is decided by the `screen` HookDef (created by
+  # run.sh) before any reader sees it.
+  inbox:
+    scope: global
+    semantic: queue
+    max_messages: 1000
+    hooks:
+      channel_publish: [screen]
+  # Declared so the operator can read the decision records.
+  _system/channel_hooks/decisions:
+    scope: global
+    publisher: system
+
+agents:
+  # Publishes one message to inbox through the Channel tool.
+  screened_writer:
+    provider: code-js
+    description: "Publishes to a hooked channel."
+    tools: [Channel]
+    channels:
+      publish: [inbox]

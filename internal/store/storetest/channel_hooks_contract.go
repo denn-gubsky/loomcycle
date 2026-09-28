@@ -438,3 +438,51 @@ func testChannelHookGCRemovesOrphans(t *testing.T, s store.Store) {
 		t.Errorf("a second GC deleted %d (err %v), want 0 — the live row must stay", n, err)
 	}
 }
+
+// Overflow trims delivered messages first: a message awaiting hooks sorts at
+// its reserved instant, after every delivered one, so it is trimmed only once
+// the messages awaiting hooks alone exceed max_messages (oldest first).
+func testChannelTrimTakesDeliveredBeforeAwaiting(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const ch = "hk-trim"
+	pub := func(awaiting bool, body string) string {
+		t.Helper()
+		m := store.ChannelMessage{Channel: ch, Scope: store.MemoryScopeAgent, ScopeID: "x", Payload: json.RawMessage(body)}
+		if awaiting {
+			m.VisibleAt = store.ChannelHookHeldVisibleAt()
+		}
+		id, _, err := s.ChannelPublish(ctx, m, 2)
+		if err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		return id
+	}
+	awaiting := func() map[string]bool {
+		t.Helper()
+		out := map[string]bool{}
+		items, err := s.ChannelHookClaim(ctx, "probe", time.Now(), time.Now(), 10)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		for _, it := range items {
+			if it.Message.Channel == ch {
+				out[it.Message.ID] = true
+			}
+		}
+		return out
+	}
+	a := pub(true, `"a"`)
+	pub(false, `"b"`)
+	c := pub(false, `"c"`)
+	if got := awaiting(); !got[a] {
+		t.Fatalf("the message awaiting hooks was trimmed before the delivered ones: %v", got)
+	}
+	if msgs, _ := readAll(t, s, ch, ""); len(msgs) != 1 || msgs[0].ID != c {
+		t.Fatalf("delivered %+v, want only the newest delivered one", msgs)
+	}
+	d := pub(true, `"d"`)
+	e := pub(true, `"e"`)
+	if got := awaiting(); got[a] || !got[d] || !got[e] {
+		t.Fatalf("awaiting %v; want the two newest awaiting (the oldest trimmed once they alone overflow)", got)
+	}
+}

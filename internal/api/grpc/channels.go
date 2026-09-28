@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
@@ -34,6 +35,8 @@ func channelErrCode(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, connector.ErrSystemPublisherUnwired):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, channels.ErrChannelHooksDisabled):
+		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
@@ -61,10 +64,13 @@ func (s *Server) PublishChannel(ctx context.Context, req *loomcyclepb.PublishCha
 		return nil, channelErrCode(err)
 	}
 	return &loomcyclepb.PublishChannelResponse{
-		MsgId:     resp.MsgID,
-		Channel:   resp.Channel,
-		CreatedAt: resp.CreatedAt,
-		VisibleAt: resp.VisibleAt,
+		MsgId:         resp.MsgID,
+		Channel:       resp.Channel,
+		CreatedAt:     resp.CreatedAt,
+		VisibleAt:     resp.VisibleAt,
+		Held:          resp.Held,
+		AwaitingHooks: resp.AwaitingHooks,
+		DroppedOldest: int32(resp.DroppedOldest),
 	}, nil
 }
 
@@ -230,11 +236,13 @@ func (s *Server) BroadcastChannels(ctx context.Context, req *loomcyclepb.Broadca
 	}
 	for _, e := range resp.Results {
 		out.Results = append(out.Results, &loomcyclepb.BroadcastChannelEntry{
-			Channel:   e.Channel,
-			MsgId:     e.MsgID,
-			CreatedAt: e.CreatedAt,
-			VisibleAt: e.VisibleAt,
-			Error:     e.Error,
+			Channel:       e.Channel,
+			MsgId:         e.MsgID,
+			CreatedAt:     e.CreatedAt,
+			VisibleAt:     e.VisibleAt,
+			Error:         e.Error,
+			Held:          e.Held,
+			AwaitingHooks: e.AwaitingHooks,
 		})
 	}
 	return out, nil

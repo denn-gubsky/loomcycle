@@ -2876,6 +2876,13 @@ export interface ChannelPublishResult {
   created_at: string;
   /** RFC3339Nano. Omitted when the publish was immediate. */
   visible_at?: string;
+  /** The channel holds: stored, not delivered until released. */
+  held?: boolean;
+  /** The channel carries hooks: stored, delivered only if they release it. */
+  awaiting_hooks?: boolean;
+  /** How many of the channel's oldest messages the write trimmed to stay
+   *  within max_messages. */
+  dropped_oldest?: number;
 }
 
 /** Options for {@link LoomcycleClient.subscribeChannel}. The call is a
@@ -3008,6 +3015,9 @@ export interface ChannelBroadcastEntry {
   created_at?: string;
   visible_at?: string;
   error?: string;
+  /** As on a single publish. */
+  held?: boolean;
+  awaiting_hooks?: boolean;
 }
 
 /** Response shape for {@link LoomcycleClient.broadcastChannels}.

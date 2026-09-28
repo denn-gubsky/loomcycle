@@ -41,6 +41,15 @@ _system/provider-events: { scope: global, publisher: system }
 No `period:` needed — these fire from internal subsystem hooks
 (pause/resume, provider fallback, cache invalidation).
 
+`_system/channel_hooks/decisions` receives a record of every decision a
+channel hook makes (see the `hooks` topic, *Channel hooks*). It is written at
+**tenant** scope, in the tenant whose definition carries the hook, so read it
+with a tenant-scoped peek:
+
+```yaml
+_system/channel_hooks/decisions: { scope: global, publisher: system }
+```
+
 **Agent-publishable system channels** (no `publisher: system`):
 
 ```yaml

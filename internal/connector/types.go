@@ -622,6 +622,12 @@ type ChannelPublishResult struct {
 	// stored but was NOT delivered and woke no subscriber. Said out loud
 	// because a msg_id with no further word reads as "delivered".
 	Held bool `json:"held,omitempty"`
+	// AwaitingHooks reports that the channel carries hooks: the message is
+	// stored and reaches readers only if they release it.
+	AwaitingHooks bool `json:"awaiting_hooks,omitempty"`
+	// DroppedOldest is how many of the channel's oldest messages the write
+	// trimmed to stay within max_messages.
+	DroppedOldest int `json:"dropped_oldest,omitempty"`
 }
 
 // ChannelSubscribeRequest is the input to Connector.SubscribeChannel.
@@ -751,6 +757,9 @@ type ChannelBroadcastEntry struct {
 	CreatedAt string `json:"created_at,omitempty"` // RFC3339Nano
 	VisibleAt string `json:"visible_at,omitempty"` // RFC3339Nano; set when deferred
 	Error     string `json:"error,omitempty"`
+	// Held and AwaitingHooks: as on a single publish.
+	Held          bool `json:"held,omitempty"`
+	AwaitingHooks bool `json:"awaiting_hooks,omitempty"`
 }
 
 // ChannelBroadcastResult reports how many channels received the payload.

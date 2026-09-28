@@ -19,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -218,5 +219,27 @@ func (io *teamChannelIO) Publish(ctx context.Context, channel string, payload js
 	// nothing from it. This one resolves it.
 	_, err = io.srv.systemPublisher.PublishNow(ctx, channel, io.tenant, scope, scopeID,
 		payload, "_team", def.MaxMessages, def.DefaultTTL)
+	return err
+}
+
+// PublishSink publishes a Starter's per-run result, marked as one: a channel
+// hook on the sink cannot make it disappear (a drop is delivered as an error
+// result), because the downstream fan-in counts one per run.
+func (io *teamChannelIO) PublishSink(ctx context.Context, channel string, payload json.RawMessage) error {
+	if err := io.allowed("publish", channel); err != nil {
+		return err
+	}
+	def, scope, scopeID, err := io.resolve(ctx, channel)
+	if err != nil {
+		return err
+	}
+	if io.srv.systemPublisher == nil {
+		return fmt.Errorf("no system publisher wired")
+	}
+	_, err = io.srv.writeChannel(ctx, channels.WriteRequest{
+		Channel: channel, TenantID: io.tenant, Scope: scope, ScopeID: scopeID,
+		Payload: payload, PublishedBy: "_team", MaxMessages: def.MaxMessages,
+		ExpiresAt: ttlExpiry(def.DefaultTTL), Origin: channels.OriginStarterSink,
+	})
 	return err
 }

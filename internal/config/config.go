@@ -2677,7 +2677,19 @@ type Channel struct {
 	// a human says go. Default false: every existing channel delivers as
 	// before.
 	Hold bool `yaml:"hold"`
+
+	// Hooks decide on each message published to the channel, by anyone,
+	// before any reader sees it: release it (as it is, or rewritten), drop
+	// it, or hold it for a person. `channel_publish` is the only event; its
+	// entries are HookDef names or inline webhooks, run in order. A hold on
+	// the same channel applies to what the hooks release. Needs
+	// LOOMCYCLE_CHANNEL_HOOKS=1: without it a publish to a hooked channel is
+	// refused.
+	Hooks hooks.EventHooks `yaml:"hooks"`
 }
+
+// HasHooks reports whether the channel carries any channel_publish hook.
+func (c Channel) HasHooks() bool { return len(c.Hooks[hooks.PhaseChannelPublish]) > 0 }
 
 // PeriodDuration parses Period as a Go time.Duration. Returns 0 + nil
 // when Period is empty; an error when the string is non-parseable.
@@ -3785,6 +3797,23 @@ type Env struct {
 	// different decision from letting one agent be JavaScript. Env:
 	// LOOMCYCLE_CODE_HOOKS_ENABLED=1.
 	CodeHooksEnabled bool
+
+	// ChannelHooksEnabled runs the channel-hook worker, which decides the
+	// messages of channels that carry hooks. Default OFF; off, a publish to a
+	// hooked channel is refused rather than stored for a decision nobody will
+	// make. Env: LOOMCYCLE_CHANNEL_HOOKS=1.
+	ChannelHooksEnabled bool
+	// ChannelHooksConcurrency bounds the messages one replica decides at
+	// once (default 16); ChannelHooksPerChannel, those of one channel
+	// (default 4). Env: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY,
+	// LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL.
+	ChannelHooksConcurrency int
+	ChannelHooksPerChannel  int
+	// ChannelHooksMaxWait bounds how long a message waits for hooks that
+	// fail closed before it is dropped as "hook unavailable" (default 15m;
+	// a message's own TTL, less a margin, bounds it too). Env:
+	// LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT (a Go duration).
+	ChannelHooksMaxWait time.Duration
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
@@ -5097,6 +5126,20 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// the skills bundling convention). Timeout floored at 1s.
 	cfg.Env.CodeAgentsEnabled = os.Getenv("LOOMCYCLE_CODE_AGENTS_ENABLED") == "1"
 	cfg.Env.CodeHooksEnabled = os.Getenv("LOOMCYCLE_CODE_HOOKS_ENABLED") == "1"
+	cfg.Env.ChannelHooksEnabled = os.Getenv("LOOMCYCLE_CHANNEL_HOOKS") == "1"
+	cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel = 16, 4
+	for name, dst := range map[string]*int{
+		"LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY": &cfg.Env.ChannelHooksConcurrency,
+		"LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL": &cfg.Env.ChannelHooksPerChannel,
+	} {
+		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
+			*dst = n
+		}
+	}
+	cfg.Env.ChannelHooksMaxWait = 15 * time.Minute
+	if d, err := time.ParseDuration(os.Getenv("LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT")); err == nil && d > 0 {
+		cfg.Env.ChannelHooksMaxWait = d
+	}
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
 		cfg.Env.CodeAgentsRoot = v
@@ -6430,6 +6473,28 @@ func sqlScopeNames() string {
 // validChannelScopes is the closed set of Channel tool scope names
 // accepted on a top-level `channels:` entry. agent + user mirror
 // Memory's vocabulary; global is the cross-tenant fan-out shape.
+// ValidateChannelHooks checks a channel's hooks where they are declared (yaml
+// at load, a runtime channel on save): the shape, and that the channel may
+// carry hooks at all. The runtime's own channels may not: an asking hook on
+// `_system/interrupts/*` would ask through the channel it is deciding, the
+// decisions channel is under `_system/`, a document's change feed is the
+// store's own record, and a `publisher: system` channel is written only by
+// loomcycle itself.
+func ValidateChannelHooks(name, publisher string, h hooks.EventHooks) error {
+	if len(h) == 0 {
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(name, "_system/"):
+		return fmt.Errorf("hooks: a _system/ channel cannot carry hooks")
+	case strings.HasPrefix(name, "documents/"):
+		return fmt.Errorf("hooks: a documents/ channel cannot carry hooks")
+	case publisher == "system":
+		return fmt.Errorf("hooks: a publisher: system channel cannot carry hooks")
+	}
+	return hooks.ValidateChannelHooks(h)
+}
+
 var validChannelScopes = map[string]bool{
 	"agent":  true,
 	"user":   true,
@@ -6458,6 +6523,9 @@ var eventDrivenSystemChannels = map[string]bool{
 	// PUBLISHED today — the call sites are real.
 	"_system/interrupts/pending":  true, // Interruption `ask` (internal/tools/builtin/interruption.go)
 	"_system/interrupts/resolved": true, // the resolve endpoint + the interrupt sweeper
+	// The channel-hook worker's decision records (internal/channelhooks),
+	// written at tenant scope in the tenant whose definition carries the hook.
+	"_system/channel_hooks/decisions": true,
 
 	// RESERVED, NOT PUBLISHED. Nothing in the runtime writes these: a sweep of
 	// every SystemPublisher call site finds only the two above. They stay in
@@ -7556,6 +7624,9 @@ func validate(c *Config) error {
 		}
 		if ch.Publisher == "system" && periodDur == 0 && !eventDrivenSystemChannels[name] {
 			return fmt.Errorf("channels.%s: publisher: system requires a `period:` (cadence) or the channel name must be in the event-driven set (%v)", name, eventDrivenSystemChannelNames())
+		}
+		if err := ValidateChannelHooks(name, ch.Publisher, ch.Hooks); err != nil {
+			return fmt.Errorf("channels.%s: %w", name, err)
 		}
 		// `_system/` prefix is reserved — channels with this prefix
 		// can only be operator-declared (we're inside the iteration

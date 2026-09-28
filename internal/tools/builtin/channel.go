@@ -124,7 +124,9 @@ const channelDescription = `Persistent inter-agent message bus. ` +
 	`broadcast is the symmetric fan-OUT: publish one payload to MULTIPLE channels in a single call (e.g. ping N workers to start). ` +
 	`Both await and broadcast cap at 32 channels and refuse the whole op if any channel fails its ACL (no partial broadcast). ` +
 	`A channel the operator declared hold: stores publishes without delivering them; release hands over the oldest count (default 1) ` +
-	`so a workflow wired through that channel can be single-stepped. release needs the PUBLISH allowlist — it completes a publish.`
+	`so a workflow wired through that channel can be single-stepped. release needs the PUBLISH allowlist — it completes a publish. ` +
+	`A channel that carries hooks has each publish checked before any reader sees it (publish returns awaiting_hooks): ` +
+	`the operator's hooks may deliver it, rewrite it, or drop it, and delivery order may differ from publish order.`
 
 const channelInputSchema = `{
   "type": "object",
@@ -414,7 +416,8 @@ func parsePublishDeliverAt(deliverAt string, now time.Time) (visibleAt time.Time
 // subscribers (or arms the deferred-visibility timer), and emits the typed
 // audit event — the side-effecting half of a publish, shared by publish +
 // broadcast. Returns the per-channel result map (message_id / channel /
-// dropped_oldest, + visible_at when deferred, + held when the channel holds).
+// dropped_oldest, + visible_at when deferred, + held when the channel holds,
+// + awaiting_hooks when its hooks decide).
 func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.ChannelDef, scope store.MemoryScope, scopeID string, value json.RawMessage, ttl int64, visibleAt time.Time, deferred bool, now time.Time) (map[string]any, error) {
 	// TTL precedence: per-message > channel default > none. TTL counts
 	// from publish time, not deliver_at — a deferred message never
@@ -479,6 +482,10 @@ func (c *Channel) storeAndNotify(ctx context.Context, channel string, def tools.
 		// Say so in the result: a publisher that gets back a message_id and
 		// no further word would reasonably assume the message was delivered.
 		result["held"] = true
+	}
+	if res.AwaitingHooks {
+		// Likewise: the channel's hooks decide whether it is delivered.
+		result["awaiting_hooks"] = true
 	}
 	return result, nil
 }
