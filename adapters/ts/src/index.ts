@@ -382,6 +382,7 @@ export type {
   EffectiveValue,
   RetuneRunResponse,
   RunConfigRecord,
+  SubagentHoldInfo,
   RunConfigResponse,
   RunPromptResponse,
   RunPromptSnapshot,

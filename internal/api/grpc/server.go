@@ -1529,6 +1529,17 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 		}
 	}
 	// RFC AI interactive payloads — previously dropped on the gRPC wire.
+	if ev.SubagentHold != nil {
+		out.SubagentHold = &loomcyclepb.SubagentHold{
+			Subagent:      ev.SubagentHold.Subagent,
+			SubagentRunId: ev.SubagentHold.SubagentRunID,
+			State:         ev.SubagentHold.State,
+			HeldBy:        ev.SubagentHold.HeldBy,
+			Round:         int32(ev.SubagentHold.Round),
+			ExpiresAt:     ev.SubagentHold.ExpiresAt,
+			Status:        ev.SubagentHold.Status,
+		}
+	}
 	if ev.AwaitingReview != nil {
 		out.AwaitingReview = &loomcyclepb.AwaitingReview{
 			SinceTurn: int32(ev.AwaitingReview.SinceTurn),
