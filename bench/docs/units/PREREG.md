@@ -77,3 +77,14 @@ units per chunk.
   with this result.
 - H2 says whether units still add anything once the rerank is on; it does not change
   the H1 decision.
+
+## Amendment 1 — 2026-09-28, before any result
+
+The first generation pass (dry run and real) generated **nothing**: every policy came
+back `documents_opted_in: 0`. Cause, a bug in the feature under test, not in the
+probe: `import_md` names a document `/documents/<title>` and the probe's `set_path`
+adds `/policies/pqa-NN`; the pass considered only the alphabetically first name, so no
+imported document matched the marked `/policies` subtree. Fixed on the C2 branch
+(`12f5022f`, with a regression test that fails without it). The server is rebuilt from
+that commit; ingestion (unchanged by the fix) is kept; generation and every search run
+after this amendment. Nothing else changes. No search had been run.
