@@ -117,7 +117,7 @@ func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, h
 // hookCallError is a failed webhook call. Error() is the full detail, for the
 // server log: it can name the callback URL — whose query string may carry a
 // token — and quote up to 1 KiB of the callback's response body. category is
-// the short, fixed text a run's viewer is shown instead (see decisionReason).
+// the short, fixed text a run's viewer is shown instead (see DecisionReason).
 type hookCallError struct {
 	category string
 	err      error
@@ -128,12 +128,12 @@ func callError(category string, err error) error { return &hookCallError{categor
 func (e *hookCallError) Error() string { return e.err.Error() }
 func (e *hookCallError) Unwrap() error { return e.err }
 
-// decisionReason is the reason an "unavailable" decision carries to the run —
+// DecisionReason is the reason an "unavailable" decision carries to the run —
 // streamed to its viewer and persisted. A webhook failure is reduced to its
 // category, which never contains the callback URL or its response. Any other
 // error (a code hook's, which the runner writes and which has no callback)
 // keeps its message.
-func decisionReason(err error) string {
+func DecisionReason(err error) string {
 	var ce *hookCallError
 	if errors.As(err, &ce) {
 		return ce.category

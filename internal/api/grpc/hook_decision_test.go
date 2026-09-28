@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"encoding/json"
+	"os"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -31,5 +34,68 @@ func TestEventToProto_ARunHeldByAHookNamesIt(t *testing.T) {
 		AwaitingReview: &providers.AwaitingReviewEventInfo{SinceTurn: 1, Round: 1, HeldBy: "ops/hold"}})
 	if out.GetAwaitingReview().GetHeldBy() != "ops/hold" {
 		t.Errorf("proto = %+v", out.GetAwaitingReview())
+	}
+}
+
+// A channel hook's decision names the message it decided on, over gRPC too.
+func TestEventToProto_CarriesAChannelHookDecision(t *testing.T) {
+	hd := eventToProto(providers.Event{Type: providers.EventHookDecision, HookDecision: &providers.HookDecisionInfo{
+		Hook: "channel:inbox/screen", Phase: "channel_publish", Channel: "inbox", MessageID: "m1", Decision: "drop", Reason: "spam",
+	}}).GetHookDecision()
+	if hd.GetChannel() != "inbox" || hd.GetMessageId() != "m1" || hd.GetDecision() != "drop" || hd.GetReason() != "spam" {
+		t.Fatalf("got %+v", hd)
+	}
+}
+
+// Every field of the hook_decision payload is on every transport: the proto
+// message, the TS adapter's interface and the Python adapter's dataclass. The
+// fields are read from the Go struct, so a field added there fails here until
+// each transport carries it — a transport that lacks one delivers the event
+// with that part silently missing.
+func TestHookDecision_ThreeWayDrift(t *testing.T) {
+	var fields []string
+	rt := reflect.TypeOf(providers.HookDecisionInfo{})
+	for i := 0; i < rt.NumField(); i++ {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		fields = append(fields, name)
+	}
+	if len(fields) < 9 {
+		t.Fatalf("read %d fields from HookDecisionInfo", len(fields))
+	}
+	for _, tc := range []struct {
+		what, path, start, end string
+		spell                  func(string) []string
+	}{
+		{"the proto", "../../../proto/loomcycle.proto", "message HookDecision {", "\n}",
+			func(f string) []string { return []string{" " + f + " = "} }},
+		{"the TS adapter", "../../../adapters/ts/src/types.ts", "export interface HookDecisionInfo {", "\n}",
+			func(f string) []string { return []string{" " + f + ":", " " + f + "?:"} }},
+		{"the Python dataclass", "../../../adapters/python/loomcycle/events.py", "class HookDecision:", "\n\n\n",
+			func(f string) []string { return []string{" " + f + ":"} }},
+		{"the Python decode", "../../../adapters/python/loomcycle/events.py", "hd = HookDecision(", ")",
+			func(f string) []string { return []string{f + "=h." + f} }},
+	} {
+		b, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Skipf("%s not readable from here: %v", tc.path, err)
+		}
+		src := string(b)
+		i := strings.Index(src, tc.start)
+		if i < 0 {
+			t.Fatalf("%s: %q not found", tc.what, tc.start)
+		}
+		blk := src[i:]
+		if j := strings.Index(blk, tc.end); j >= 0 {
+			blk = blk[:j]
+		}
+		for _, f := range fields {
+			found := false
+			for _, s := range tc.spell(f) {
+				found = found || strings.Contains(blk, s)
+			}
+			if !found {
+				t.Errorf("%s does not carry hook_decision.%s", tc.what, f)
+			}
+		}
 	}
 }

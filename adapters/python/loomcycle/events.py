@@ -242,7 +242,10 @@ class HookDecision:
     or ``unavailable``; ``block`` and ``hold`` are agent_stop's, and
     ``tool_use_id`` / ``tool_name`` are empty for agent_start / agent_stop.
     ``updated_input`` (JSON bytes) is the input the tool ran with after a
-    rewrite. Mirrors ``providers.HookDecisionInfo``."""
+    rewrite. A ``channel_publish`` hook decides on a channel message instead:
+    ``channel`` and ``message_id`` name it, and ``decision`` is ``release``,
+    ``rewrite_body``, ``drop``, ``hold`` or ``unavailable``. Mirrors
+    ``providers.HookDecisionInfo``."""
 
     hook: str
     phase: str
@@ -253,6 +256,8 @@ class HookDecision:
     reason: str = ""
     updated_input: bytes = b""
     additional_context: str = ""
+    channel: str = ""
+    message_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -350,6 +355,8 @@ class AgentEvent:
                 reason=h.reason,
                 updated_input=h.updated_input,
                 additional_context=h.additional_context,
+                channel=h.channel,
+                message_id=h.message_id,
             )
         ui: Optional[UserInput] = None
         if ev.HasField("user_input"):

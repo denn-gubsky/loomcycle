@@ -1508,6 +1508,7 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Hook: hd.Hook, Phase: hd.Phase, ToolUseId: hd.ToolUseID, ToolName: hd.ToolName,
 			Decision: hd.Decision, FailMode: hd.FailMode, Reason: hd.Reason,
 			UpdatedInput: hd.UpdatedInput, AdditionalContext: hd.AdditionalContext,
+			Channel: hd.Channel, MessageId: hd.MessageID,
 		}
 	}
 	if ev.CapabilityInert != nil {

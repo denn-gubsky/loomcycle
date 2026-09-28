@@ -408,9 +408,15 @@ export interface HookDecisionInfo {
   /** The call a tool hook decided on; absent for agent_start / agent_stop. */
   tool_use_id?: string;
   tool_name?: string;
+  /** The message a `channel_publish` hook decided on. */
+  channel?: string;
+  message_id?: string;
   /** `block` and `hold` are agent_stop's: the model was sent back with
-   *  `reason`, or the answer is held for a verdict. */
-  decision: "deny" | "rewrite_input" | "rewrite_output" | "context" | "block" | "hold" | "unavailable";
+   *  `reason`, or the answer is held for a verdict. `release`,
+   *  `rewrite_body` and `drop` are a channel hook's (it may `hold` too). */
+  decision:
+    | "deny" | "rewrite_input" | "rewrite_output" | "context" | "block" | "hold" | "unavailable"
+    | "release" | "rewrite_body" | "drop";
   /** For `unavailable`: `open` (the call went ahead) or `closed` (refused). */
   fail_mode?: "open" | "closed";
   /** A deny's or block's text, a hold's reason, or the error that made the
@@ -2115,7 +2121,10 @@ export type HookPhase =
   | "subagent_stop"
   | "pre_compact"
   | "post_compact"
-  | "run_end";
+  | "run_end"
+  /** A channel's event: runs on each message published to a channel that
+   *  carries hooks, before any reader sees it. */
+  | "channel_publish";
 
 export type HookFailMode = "open" | "closed";
 
@@ -2176,6 +2185,37 @@ export interface PostHookCall {
   agent_id?: string;
   tool_call: HookToolCall;
   tool_result: HookToolResult;
+}
+
+/** What a `channel_publish` webhook receives: one message, before any reader
+ *  of the channel sees it. */
+export interface ChannelHookCall {
+  phase: "channel_publish";
+  /** `"channel:<name>"`. */
+  owner: string;
+  hook_name: string;
+  channel: string;
+  scope: string;
+  scope_id?: string;
+  /** The same on every call for this message — a retry, or after a restart. */
+  message_id: string;
+  published_at: string;
+  published_by?: string;
+  /** `"starter_sink"` for a Starter's per-run result: a drop delivers it as
+   *  an error result rather than removing it. */
+  origin?: string;
+  /** Counts this hook's calls for this message, from 1. */
+  attempt: number;
+  /** The message as the previous hook in the chain left it. */
+  body: unknown;
+}
+
+/** What a `channel_publish` webhook returns. An empty body releases the
+ *  message as it is. `updated_body` goes with `release` only. */
+export interface ChannelHookResult {
+  decision?: "release" | "drop" | "hold";
+  updated_body?: unknown;
+  reason?: string;
 }
 
 // ---- v0.8.22 substrate admin (AgentDef + SkillDef) ----
@@ -3334,7 +3374,9 @@ export interface AgentInterruptionACL {
 export type HookEvent =
   | "pre" | "post" | "post_failure"
   | "agent_start" | "agent_stop" | "subagent_start" | "subagent_stop"
-  | "pre_compact" | "post_compact" | "run_end";
+  | "pre_compact" | "post_compact" | "run_end"
+  /** A channel's own event; an agent, a team or a run cannot attach it. */
+  | "channel_publish";
 
 /** A webhook written into the definition that attaches it. */
 export interface InlineWebhook {

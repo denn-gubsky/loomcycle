@@ -1390,14 +1390,16 @@ message Retry {
 // providers.HookDecisionInfo.
 message HookDecision {
   string hook = 1;          // "<owner>/<name>"
-  string phase = 2;         // a tool phase or a deciding run phase
+  string phase = 2;         // a tool phase, a deciding run phase, or channel_publish
   string tool_use_id = 3;   // the call a tool hook decided on; empty for agent_start / agent_stop
   string tool_name = 4;
-  string decision = 5;      // deny | rewrite_input | rewrite_output | context | block | hold | unavailable
+  string decision = 5;      // deny | rewrite_input | rewrite_output | context | block | hold | unavailable; a channel hook's release | rewrite_body | drop
   string fail_mode = 6;     // for unavailable: open | closed
   string reason = 7;
   bytes updated_input = 8;  // for rewrite_input: the JSON the tool ran with
   string additional_context = 9;
+  string channel = 10;      // channel_publish: the channel the message was published to
+  string message_id = 11;   // channel_publish: the message decided on
 }
 
 message CapabilityInertInfo {
