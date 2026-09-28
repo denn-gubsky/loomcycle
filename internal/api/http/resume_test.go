@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -388,5 +389,103 @@ func TestResumePausedRuns_FanoutFlagOff_NotReconciled(t *testing.T) {
 	got, _ := srv.store.GetRun(ctx, run.ID)
 	if got.Status != store.RunFailed {
 		t.Errorf("status = %q, want failed (flagged unresumable, not reconciled)", got.Status)
+	}
+}
+
+// A child still running when its fan-out parent was snapshotted finishes after
+// the resume, and its result reaches the parent through the parent's
+// subagent_stop hooks, as it would have live: context is added, a refusal
+// replaces the result. Before, the reconcile read the child's result straight
+// from its run and no hook saw it.
+func TestResumePausedRuns_AResumedChildGoesThroughTheParentsStopHook(t *testing.T) {
+	for _, tc := range []struct {
+		name, answer string
+		check        func(t *testing.T, r builtin.ParallelSpawnResult)
+	}{
+		{"context", `{"additional_context":"(checked by ops)"}`, func(t *testing.T, r builtin.ParallelSpawnResult) {
+			if !r.Ok || !strings.HasSuffix(r.Output, "(checked by ops)") {
+				t.Fatalf("result = %+v, want the hook's context on it", r)
+			}
+		}},
+		{"deny", `{"decision":"deny","reason":"no sources"}`, func(t *testing.T, r builtin.ParallelSpawnResult) {
+			if r.Ok || !strings.Contains(r.Error, "was refused: no sources") || strings.Contains(r.Output, "done") {
+				t.Fatalf("result = %+v, want the refusal in place of the output", r)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := newRecordingHook(t, tc.answer)
+			cfg := &config.Config{
+				Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
+				Agents: map[string]config.AgentDef{
+					"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", Tools: []string{"Agent"},
+						Hooks: hooks.EventHooks{hooks.PhaseSubagentStop: {{Inline: &hooks.Inline{Name: "check", URL: hook.srv.URL}}}}},
+					"solver": {Provider: "scripted", Model: "stub-model", SystemPrompt: "solve", Tools: []string{}},
+				},
+				Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8, QueueTimeoutMS: 1000},
+			}
+			cfg.Env.AuthToken = ""
+			cfg.Env.ResumeFanout = true
+			cfg.Hooks.PrivateHostAllowlist = []string{"127.0.0.1"} // the recorder is on loopback
+			prov := &scriptedProvider{defaultS: []providers.Event{
+				{Type: providers.EventText, Text: "done"},
+				{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}},
+			}}
+			srv, _ := makeServer(t, prov, cfg)
+			srv.resetTestHooks()
+			ctx := context.Background()
+
+			childSess, _ := srv.store.CreateSession(ctx, "", "solver", "alice")
+			child, _ := srv.store.CreateRun(ctx, childSess.ID, store.RunIdentity{AgentID: "a_child", UserID: "alice", Model: "stub-model"})
+			appendResumeEvent(t, srv, child.ID, "user_input", []loop.PromptSegment{
+				{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "solve 0"}}},
+			})
+			if err := srv.store.SetRunPauseState(ctx, child.ID, store.PauseStatePaused); err != nil {
+				t.Fatal(err)
+			}
+			parentSess, _ := srv.store.CreateSession(ctx, "", "breeder", "alice")
+			parent, _ := srv.store.CreateRun(ctx, parentSess.ID, store.RunIdentity{AgentID: "a_parent", UserID: "alice", Model: "stub-model"})
+			appendResumeEvent(t, srv, parent.ID, "user_input", []loop.PromptSegment{
+				{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "breed"}}},
+			})
+			appendResumeEvent(t, srv, parent.ID, "tool_call", providers.Event{
+				Type:    providers.EventToolCall,
+				ToolUse: &providers.ToolUse{ID: "tu_fan", Name: "Agent", Input: json.RawMessage(`{"op":"parallel_spawn","spawns":[{"name":"solver","prompt":"solve 0"}]}`)},
+			})
+			appendResumeEvent(t, srv, parent.ID, string(providers.EventSpawnChildStarted), providers.Event{
+				Type:       providers.EventSpawnChildStarted,
+				SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_fan", Index: 0, RunID: child.ID, Agent: "solver"},
+			})
+			if err := srv.store.SetRunPauseState(ctx, parent.ID, store.PauseStatePaused); err != nil {
+				t.Fatal(err)
+			}
+			if n, warnings := srv.ResumePausedRuns(ctx); n != 2 {
+				t.Fatalf("re-dispatched %d, want 2; warnings=%v", n, warnings)
+			}
+
+			deadline := time.Now().Add(15 * time.Second)
+			var envText string
+			for envText == "" && time.Now().Before(deadline) {
+				events, _ := srv.store.GetTranscript(ctx, parentSess.ID)
+				for _, e := range events {
+					var pe providers.Event
+					if e.RunID == parent.ID && e.Type == "tool_result" && json.Unmarshal(e.Payload, &pe) == nil && pe.ToolUse != nil && pe.ToolUse.ID == "tu_fan" {
+						envText = pe.Text
+					}
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			var env struct {
+				Results []builtin.ParallelSpawnResult `json:"results"`
+			}
+			if err := json.Unmarshal([]byte(envText), &env); err != nil || len(env.Results) != 1 {
+				t.Fatalf("envelope %q: %v", envText, err)
+			}
+			tc.check(t, env.Results[0])
+			body := hook.waitBody(t, `"phase":"subagent_stop"`)
+			if !strings.Contains(body, `"subagent_run_id":"`+child.ID+`"`) {
+				t.Errorf("hook payload names another child: %s", body)
+			}
+		})
 	}
 }

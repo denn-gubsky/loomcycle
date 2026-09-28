@@ -601,9 +601,12 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		// OWN per-user slots when ResumePausedRuns re-dispatches them) — holding a
 		// slot here while awaiting could deadlock the per-user semaphore. The
 		// synthesized parallel_spawn tool_result is appended to PriorMessages so
-		// loop.Run continues past the dangling tool_use.
+		// loop.Run continues past the dangling tool_use. It runs on the loop's
+		// context, which carries the parent's hooks and identity: a child that
+		// finishes during the reconcile goes through the parent's
+		// subagent_stop hooks there.
 		if isFanout {
-			toolResult, rerr := s.reconcileFanoutParent(runCtx, run, runEvents, fanout, emit)
+			toolResult, rerr := s.reconcileFanoutParent(loopCtx, run, runEvents, fanout, emit)
 			if rerr != nil {
 				s.finishRunFailedReason(run.ID, "resume: reconcile fan-out parent: "+rerr.Error(), meta)
 				return
@@ -944,8 +947,9 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: c.result.Agent, Ok: c.result.Ok, Output: c.result.Output, Error: c.result.Error, State: c.result.State}
 		case c != nil && c.runID != "":
 			// Still running (parked) at snapshot → re-dispatched independently
-			// by ResumePausedRuns. Await it + read its result.
-			results[i] = s.awaitChildResult(ctx, i, name, c.runID)
+			// by ResumePausedRuns. Await it + read its result, which has not
+			// yet been through the parent's subagent_stop hooks.
+			results[i] = s.resumedChildThroughStop(ctx, s.awaitChildResult(ctx, i, name, c.runID), c.runID)
 		default:
 			results[i] = builtin.ParallelSpawnResult{Index: i, Agent: name, Ok: false,
 				Error: "child was not dispatched before the snapshot; re-issue if its result is required"}
@@ -977,6 +981,27 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 			Text:      string(body),
 		}},
 	}, nil
+}
+
+// resumedChildThroughStop passes the result of a child that finished after the
+// snapshot through the parent's subagent_stop hooks, as parallel_spawn would
+// have: it records a child's result only once the hooks have seen it, so a
+// ledger result is already through them and this one is not. A refusal
+// replaces the result with the reason, as a live refusal does.
+func (s *Server) resumedChildThroughStop(ctx context.Context, r builtin.ParallelSpawnResult, childRunID string) builtin.ParallelSpawnResult {
+	status := string(store.RunCompleted)
+	var runErr error
+	if !r.Ok {
+		status, runErr = string(store.RunFailed), errors.New(r.Error)
+	}
+	out, err := s.subagentStop(ctx, r.Agent, childRunID, status, r.Output, runErr)
+	switch {
+	case err == nil:
+		r.Output = out
+	case err != runErr:
+		r = builtin.ParallelSpawnResult{Index: r.Index, Agent: r.Agent, Ok: false, Error: err.Error(), RunID: r.RunID}
+	}
+	return r
 }
 
 // fanoutChildPollInterval / fanoutChildAwaitTimeout bound the reconcile's wait
