@@ -2133,6 +2133,11 @@ export class LoomcycleClient {
    *  at the next point the walk reaches; disarming RELEASES whatever is still
    *  pending rather than stranding it.
    *
+   *  Each state is checked against the walk's own team, as it is when the run
+   *  starts: an entry naming a state the team does not have, or a pause on a
+   *  state that is not a starter, is refused with 400 `invalid_breakpoint` and
+   *  the previous arming is kept — rather than armed and silently never hit.
+   *
    *  A pause is read and answered through the run's interrupts. */
   async setRunBreakpoints(
     runId: string,
