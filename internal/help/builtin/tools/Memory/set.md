@@ -2,10 +2,13 @@
 name: Memory/set
 description: "Memory op=set — write or overwrite one key/value entry, with optional TTL, embedding for semantic search, a Path-tree name, and dates for when it was said or true."
 ---
-`set` writes one JSON value under a key, replacing whatever was there. It is
+`set` writes one value under a key, replacing whatever was there. It is
 synchronous: a `get` right after sees the new value. Use it for anything you
-must read back reliably. **`value` must be valid JSON** — to store text, pass
-a JSON string (`"value": "Prefers email"`), not bare words.
+must read back reliably. **Put `value` in the call as it is** — a string,
+number, boolean, list or object. Text is an ordinary string:
+`"value": "Prefers email"` stores `Prefers email`. Do not add quotes inside
+the string: `"value": "\"Prefers email\""` stores the quote marks too, and
+`get` returns them.
 
 ## Arguments
 
@@ -13,7 +16,8 @@ a JSON string (`"value": "Prefers email"`), not bare words.
 - `key` (required) — the entry's key. Slash-separated keys such as
   `prefs/voice` group well under `list`'s `prefix`. Keys starting with
   `trace.turn:` are reserved and refused.
-- `value` (required) — any JSON value.
+- `value` (required) — the value itself: a string, number, boolean, list or
+  object. Text goes in as a plain string, with no quotes inside it.
 - `ttl` — seconds until the entry expires. Omit for no expiry.
 - `path` — also name the entry in the Path tree at this absolute path (e.g.
   `/prefs/voice`), in the same scope, so `get` and `Path op=ls` can find it.
@@ -41,7 +45,8 @@ a JSON string (`"value": "Prefers email"`), not bare words.
 
 ## Errors
 
-- `set: value is not valid JSON` — quote strings: `"value": "text"`.
+- `set: value is not valid JSON` — send text as a plain string:
+  `"value": "text"`.
 - `set: missing required field: key` / `value`.
 - `set: value (N bytes) exceeds max M bytes`, or `Memory.set: scope "user"
   quota ... would be exceeded` — store less, or `delete` old entries first.

@@ -279,7 +279,7 @@ const memoryInputSchema = `{
     "scope":      {"type": "string", "enum": ["agent","user","tenant","run"], "description": "Which keyspace/database. ONE scope per call, and a call reads ONLY the scope you name: a user-scope search or recall does NOT see tenant knowledge, and a tenant-scope one does not see the user's. To consult both, make TWO calls and merge the results by score — that recovers exactly what one combined query would have returned. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). tenant: knowledge shared across the tenant — the place for what is true of the whole organisation rather than of one person, read by every user and agent, and never included in a user-scope recall. run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "path":       {"type": "string", "description": "set: also name this entry in the Path tree at this absolute path (e.g. /prefs/voice), in the same scope. get: read the entry by that path instead of by key."},
-    "value":      {"description": "The JSON value. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
+    "value":      {"description": "The value itself, placed in the call as it is: a string, number, boolean, list or object. Text is a plain string (\"value\": \"Helix\" stores Helix) — do not add quotes inside it, or they are stored too. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
     "delta":      {"type": "integer", "description": "Increment delta for incr (default 1, may be negative)."},
     "ttl":        {"type": "integer", "description": "Optional time-to-live in seconds. Applies to write ops; 0 means no expiry (or keep existing on update)."},
     "prefix":     {"type": "string", "description": "Optional key prefix filter for list / search."},
@@ -1257,7 +1257,7 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 		return errValidation("set: missing required field: value", "Pass value as a JSON value, for example \"text\" or {\"a\":1}."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errValidation("set: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
+		return errValidation("set: value is not valid JSON", "Send text as a plain string, with no quotes inside it: \"text\", not \"\\\"text\\\"\"."), nil
 	}
 	// Fail fast on a malformed path before writing the value (RFC AL).
 	if in.Path != "" {
@@ -2630,7 +2630,7 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 		return errValidation("merge: missing required field: value", "Pass value as a JSON value."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errValidation("merge: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
+		return errValidation("merge: value is not valid JSON", "Send text as a plain string, with no quotes inside it: \"text\", not \"\\\"text\\\"\"."), nil
 	}
 	// Validate the incoming value is an object up-front so we refuse
 	// before taking the row lock.
@@ -2700,7 +2700,7 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 		return errValidation("append_dedupe: missing required field: value", "Pass value as a JSON value."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errValidation("append_dedupe: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
+		return errValidation("append_dedupe: value is not valid JSON", "Send text as a plain string, with no quotes inside it: \"text\", not \"\\\"text\\\"\"."), nil
 	}
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the appended value.
@@ -2771,7 +2771,7 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 		return errValidation("bounded_list: missing required field: value", "Pass value as a JSON value."), nil
 	}
 	if !json.Valid(in.Value) {
-		return errValidation("bounded_list: value is not valid JSON", "Send value as valid JSON; quote a plain string."), nil
+		return errValidation("bounded_list: value is not valid JSON", "Send text as a plain string, with no quotes inside it: \"text\", not \"\\\"text\\\"\"."), nil
 	}
 	if in.Limit < 1 {
 		return errValidation("bounded_list: limit must be >= 1", "Pass limit: how many of the newest items to keep."), nil
