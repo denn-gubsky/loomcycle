@@ -26,6 +26,7 @@ package deepseek
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 
@@ -196,7 +197,38 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	// Never forward a schema the inner OpenAI encoder would turn into a
 	// json_schema response_format DeepSeek does not accept.
 	req.OutputFormat = nil
+	// DeepSeek refuses a required or named tool_choice in thinking mode with a
+	// 400 ("Thinking mode does not support this tool_choice"), before the model
+	// runs at all. The stateful loop forces its state tool on every step, so a
+	// V4 model behind context.mode auto (which routes a cloud model to
+	// stateful) could not run a single step. Drop the forced choice, as the
+	// Anthropic driver does under extended thinking: the tool is still offered
+	// and asked for in the prompt, and EnforcesToolChoice tells the loop the
+	// choice is not held here so a failure says so.
+	if req.ToolChoice.Forces() && !d.EnforcesToolChoice(req.Model, req.Effort, req.ToolChoice) {
+		log.Printf("deepseek: dropped tool_choice %q — model %q runs in thinking mode, which refuses a forced tool choice; "+
+			"the model is asked for the tool in the prompt instead", req.ToolChoice.Mode, req.Model)
+		req.ToolChoice = providers.ToolChoice{}
+	}
 	return d.inner.Call(lcotel.WithProviderOverride(ctx, d.ID()), req)
+}
+
+// thinkingMode reports whether a call to this model runs in DeepSeek's thinking
+// mode. A thinking-class model runs in it by default, and any effort hint turns
+// it on for the rest: the inner encoder sends effort as reasoning_effort, which
+// DeepSeek documents as the thinking-mode toggle.
+func thinkingMode(model, effort string) bool {
+	return IsThinkingModel(model) || effort != ""
+}
+
+// EnforcesToolChoice implements providers.ModelToolChoiceEnforcer. "none" is
+// accepted in every mode; required and a named tool are refused in thinking
+// mode, so Call drops them there and the choice is only asked for.
+func (d *Driver) EnforcesToolChoice(model, effort string, tc providers.ToolChoice) bool {
+	if tc.Mode == providers.ToolChoiceNone {
+		return true
+	}
+	return !thinkingMode(model, effort)
 }
 
 // Probe delegates to the OpenAI driver, which hits GET /v1/models
