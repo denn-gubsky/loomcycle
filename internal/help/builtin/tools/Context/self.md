@@ -37,6 +37,15 @@ Present when they apply:
   WebSearch may reach. An empty list means no web access.
 - `sampling`, `max_context_tokens`, `compaction`, `context_policy` — the
   generation and context settings in effect.
+- `tool_choice` — `{mode, name?, until, in_effect, enforced}`: your next
+  reply must call the tool `name` (mode `tool`), must call some tool
+  (`required`), or may call none (`none`). `in_effect: false` means it has run
+  its course and you are free to choose; `enforced: false` means your model is
+  only asked, not held to it.
+- `output_format` — `{type, name, schema, enforcement}`: the JSON Schema your
+  final answer must follow. `enforcement` is `native` or `grammar` when the
+  model is held to it, `prompt` when it is only asked for — then your answer
+  is not checked, so follow the schema exactly and add nothing around it.
 - `context` — `{used_tokens, max_tokens?, used_pct?}` as of your last
   completed turn. Absent before your first turn completes.
 - `context_distill_declined` — `{mode, reason, message?}` when an attempt to

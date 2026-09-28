@@ -3151,6 +3151,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
+
+		// A parked run adopts a retuned tool_choice / output_format at the same
+		// boundary; the baseline is what the run starts with.
+		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
 	if detached {
 		handOff = true
@@ -4993,6 +4997,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
+
+		// A parked run adopts a retuned tool_choice / output_format at the same
+		// boundary; the baseline is what the run starts with.
+		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
 
 	// Cooperative pause quiesce (RFC X / F41): the loop parks at an iteration
@@ -5719,6 +5727,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
+
+		// A parked run adopts a retuned tool_choice / output_format at the same
+		// boundary; the baseline is what the run starts with.
+		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(run.ID, runCfg.ToolChoice, runCfg.OutputFormat),
 	})
 	if runErr != nil {
 		stream.send(runErrorEvent(runErr))

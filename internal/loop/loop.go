@@ -175,6 +175,21 @@ type RunOptions struct {
 	// has, not stop mid-conversation.
 	ReResolveOnOperatorTurn func(ctx context.Context) (provider providers.Provider, model, effort string, changed bool, err error)
 
+	// ReReadShapeOnOperatorTurn, when non-nil, is consulted at the same moment
+	// as ReResolveOnOperatorTurn — a parked run receiving its operator's next
+	// message — for the two request-shaping settings a retune may have replaced
+	// while it waited: ToolChoice and OutputFormat.
+	//
+	// Separate from the routing hook because nothing about them needs a
+	// resolver, and because each is reported changed on its own: replacing only
+	// the answer schema must not restart a tool_choice whose `until` is part
+	// spent. A replaced tool_choice starts afresh — its `until` counts from the
+	// next model call — because the operator chose it for what comes next.
+	//
+	// An error is logged and ignored, like the routing hook's: the run goes on
+	// with the settings it has.
+	ReReadShapeOnOperatorTurn func(ctx context.Context) (RetunedShape, error)
+
 	// StartParked makes an interactive run park BEFORE its first model call
 	// instead of after it.
 	//
@@ -1083,6 +1098,7 @@ func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []provi
 		// at each of the three park call sites so there is one place it can be
 		// forgotten from, and none where it can disagree.
 		reResolveForOperatorTurn(ctx, opts, emit)
+		reReadShapeForOperatorTurn(ctx, opts)
 		return messages, lastCtxTokens, true
 	}
 }
@@ -1136,6 +1152,42 @@ func reResolveForOperatorTurn(ctx context.Context, opts *RunOptions, emit func(p
 			Fields: []string{"model"},
 		},
 	})
+}
+
+// RetunedShape is ReReadShapeOnOperatorTurn's answer. A field is adopted only
+// when its Changed bit is set, so an unchanged tool_choice keeps its progress.
+type RetunedShape struct {
+	ToolChoice          *config.ToolChoice
+	ToolChoiceChanged   bool
+	OutputFormat        *config.OutputFormat
+	OutputFormatChanged bool
+}
+
+// reReadShapeForOperatorTurn adopts a retuned tool_choice / output_format when
+// a parked run takes its operator's next turn. It replaces the options the
+// per-call policies are built from; Run rebuilds a policy when its source
+// changes, so the swap reaches the very next model call.
+//
+// It emits NO override event, unlike the routing hook. A pair-less override
+// event already means "an operator asked for these fields" (see OverrideInfo),
+// and the server wrote that one when the retune was made; a second one here
+// would read as a second request. Nothing is re-resolved, so there is no
+// from/to the transcript does not already have.
+func reReadShapeForOperatorTurn(ctx context.Context, opts *RunOptions) {
+	if opts.ReReadShapeOnOperatorTurn == nil {
+		return
+	}
+	shape, err := opts.ReReadShapeOnOperatorTurn(ctx)
+	if err != nil {
+		log.Printf("loop: could not re-read tool_choice/output_format for the operator's turn: %v", err)
+		return
+	}
+	if shape.ToolChoiceChanged {
+		opts.ToolChoice = shape.ToolChoice
+	}
+	if shape.OutputFormatChanged {
+		opts.OutputFormat = shape.OutputFormat
+	}
 }
 
 // CompactionMessages builds the replacement conversation for a compaction: an
@@ -2353,6 +2405,12 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}()
 	}
 
+	// What Context op=self reports about tool_choice / output_format. Stamped
+	// before the stateful branch so a stateful run — which ignores both —
+	// shadows its parent's holder with an empty one instead of inheriting it.
+	var answerShape atomic.Pointer[tools.AnswerShape]
+	ctx = tools.WithAnswerShape(ctx, &answerShape)
+
 	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
 	// the model emits a patch + action each step. Branch here, after the preamble
 	// P (`system`) and the action-tool catalog are resolved, into the self-
@@ -2394,6 +2452,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 		return RunResult{}, err
 	}
+	// Published, not stamped: see tools.AnswerShape. Re-published wherever the
+	// answer can move — the policies, the target, or a spent `until`.
+	publishAnswerShape := func() {
+		answerShape.Store(&tools.AnswerShape{
+			ToolChoice:   toolChoice.report(opts.Provider, opts.Model, opts.Effort),
+			OutputFormat: outputFormat.report(opts.Provider, opts.Model, len(toolSpecs) > 0),
+		})
+	}
+	publishAnswerShape()
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
 	// sets (checked at the next iteration boundary), plus the previous iteration's
@@ -2821,6 +2888,11 @@ outerLoop:
 			disarmTurn = opts.ArmTurnCancel(turnCancelFn)
 		}
 
+		// A retune adopted at the last operator turn replaced the source a policy
+		// was built from; rebuild it so this call, not a later one, carries it.
+		toolChoice = toolChoice.adopt(opts.ToolChoice, toolSpecs, emit)
+		outputFormat = outputFormat.adopt(opts.OutputFormat)
+		publishAnswerShape()
 		// RFC DI: re-checked per request so a fallback onto a target that cannot
 		// enforce the choice is reported too; a no-op while the target is unchanged.
 		toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
@@ -3206,6 +3278,7 @@ outerLoop:
 		stopReason = iterStop
 		finalText = iterText
 		toolChoice.observe(pendingTools) // a COMPLETED turn advances the tool_choice
+		publishAnswerShape()
 
 		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
 		// the model was streaming. Keep the partial assistant output (appended

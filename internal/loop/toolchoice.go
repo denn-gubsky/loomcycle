@@ -5,6 +5,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // toolChoicePolicy applies a run's tool_choice across its model calls (RFC DI).
@@ -15,6 +16,9 @@ import (
 // call. It is consumed by a COMPLETED turn, never by a request that failed and
 // is being retried — a first_call whose call errored still applies to the retry.
 type toolChoicePolicy struct {
+	// src is the option this policy was built from, so a retune that replaces
+	// it is noticed by identity (see adopt).
+	src  *config.ToolChoice
 	tc   *config.ToolChoice
 	done bool
 	// reported remembers the (provider, model, effort) it last checked, so an
@@ -25,9 +29,35 @@ type toolChoicePolicy struct {
 
 func newToolChoicePolicy(tc *config.ToolChoice) *toolChoicePolicy {
 	if tc.IsZero() {
-		return &toolChoicePolicy{done: true}
+		return &toolChoicePolicy{src: tc, done: true}
 	}
-	return &toolChoicePolicy{tc: tc}
+	return &toolChoicePolicy{src: tc, tc: tc}
+}
+
+// adopt returns the policy for tc: p itself while tc is the option p was built
+// from, else a fresh policy — a replaced choice starts its `until` over.
+//
+// A replacement naming a tool the run does not have is reported and not
+// applied, rather than failing the run: at start the same choice is refused
+// before any model call, but here the run is mid-conversation and the fault is
+// in the operator's change, not in the run.
+func (p *toolChoicePolicy) adopt(tc *config.ToolChoice, specs []providers.ToolSpec, emit func(providers.Event)) *toolChoicePolicy {
+	if tc == p.src {
+		return p
+	}
+	next := newToolChoicePolicy(tc)
+	if err := next.checkTool(specs); err != nil {
+		msg := err.Error() + "; the change is not applied"
+		emit(providers.Event{
+			Type: providers.EventCapabilityInert,
+			Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{
+				Tool: tc.Name, Gate: "tool_choice", Message: msg,
+			},
+		})
+		return &toolChoicePolicy{src: tc, done: true}
+	}
+	return next
 }
 
 func (p *toolChoicePolicy) choice() providers.ToolChoice {
@@ -60,6 +90,20 @@ func (p *toolChoicePolicy) observe(calls []providers.ToolUse) {
 			}
 		}
 	}
+}
+
+// report is what Context op=self shows for this policy on the given target, or
+// nil when the run has no forced choice (including one a retune named but the
+// run could not apply).
+func (p *toolChoicePolicy) report(prov providers.Provider, model, effort string) *tools.ToolChoiceReport {
+	if p.tc == nil {
+		return nil
+	}
+	r := &tools.ToolChoiceReport{Mode: p.tc.Mode, Name: p.tc.Name, Until: p.tc.EffectiveUntil(), InEffect: !p.done}
+	if prov != nil {
+		r.Enforced = providers.EnforcesToolChoice(prov, model, effort, p.choice())
+	}
+	return r
 }
 
 // checkTool refuses a named choice for a tool the run does not have: the model

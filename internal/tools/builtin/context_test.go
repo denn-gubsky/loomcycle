@@ -274,6 +274,37 @@ func TestContextTool_SelfOmitsSamplingWhenUnset(t *testing.T) {
 	}
 }
 
+// op=self reads tool_choice / output_format from what the loop LAST published,
+// not from a value fixed when the ctx was built: the loop publishes again when
+// a first_call is spent after the call, and op=self runs after that call.
+func TestContextTool_SelfReportsThePublishedAnswerShape(t *testing.T) {
+	tool := &Context{}
+	var shape atomic.Pointer[tools.AnswerShape]
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
+	ctx = tools.WithAnswerShape(ctx, &shape)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if out := decodeResult(t, res.Text); out["tool_choice"] != nil || out["output_format"] != nil {
+		t.Errorf("nothing published yet, but op=self reported %v / %v", out["tool_choice"], out["output_format"])
+	}
+
+	shape.Store(&tools.AnswerShape{
+		ToolChoice: &tools.ToolChoiceReport{Mode: "none", Until: "first_call", InEffect: true},
+		OutputFormat: &tools.OutputFormatReport{Type: "json_schema", Name: "output",
+			Schema: map[string]any{"type": "object"}, Enforcement: tools.EnforcementGrammar},
+	})
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	out := decodeResult(t, res.Text)
+	tc, _ := out["tool_choice"].(map[string]any)
+	if tc["mode"] != "none" || tc["in_effect"] != true || tc["enforced"] != false {
+		t.Errorf("tool_choice = %v", out["tool_choice"])
+	}
+	of, _ := out["output_format"].(map[string]any)
+	if of["enforcement"] != "grammar" || of["name"] != "output" {
+		t.Errorf("output_format = %v", out["output_format"])
+	}
+}
+
 // op=self reports the resolved compaction settings when configured (so an agent
 // can decide whether to self-compact).
 func TestContextTool_SelfReportsCompaction(t *testing.T) {

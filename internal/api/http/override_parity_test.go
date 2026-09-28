@@ -28,6 +28,9 @@ var overrideWireNames = []string{
 	"interactive", "interruption",
 	// Hold its finished answer for an operator's verdict.
 	"review",
+	// The forced tool and the answer schema: start-time fields that a retune
+	// can also replace, so they belong in the one list every surface carries.
+	"tool_choice", "output_format",
 }
 
 // The Go side first: RunInput and the connector's spawn shape must both be able
@@ -40,6 +43,7 @@ func TestOverrideParity_GoShapesCarryEveryOverride(t *testing.T) {
 		"retry_attempts": "RetryAttempts", "memory_inject_max_tokens": "MemoryInjectMaxTokens",
 		"memory_index_max_bytes": "MemoryIndexMaxBytes", "inject_tool_guide": "InjectToolGuide",
 		"interactive": "Interactive", "interruption": "Interruption", "review": "Review",
+		"tool_choice": "ToolChoice", "output_format": "OutputFormat",
 	}
 	for _, tc := range []struct {
 		name string
@@ -231,6 +235,7 @@ func TestOverrideParity_TypeScriptOptionTypesShareOneDeclaration(t *testing.T) {
 		"retry_attempts": "retryAttempts", "memory_inject_max_tokens": "memoryInjectMaxTokens",
 		"memory_index_max_bytes": "memoryIndexMaxBytes", "inject_tool_guide": "injectToolGuide",
 		"interactive": "interactive", "interruption": "interruption", "review": "review",
+		"tool_choice": "toolChoice", "output_format": "outputFormat",
 	}
 	var missing []string
 	for _, wire := range overrideWireNames {

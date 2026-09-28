@@ -258,9 +258,6 @@ function runBody(opts: RunOptions): Record<string, unknown> {
   if (opts.hooks !== undefined) body.hooks = opts.hooks;
   if (opts.toolHooks !== undefined) body.tool_hooks = opts.toolHooks;
   if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
-  // Same keys on the wire as in the option (mode / name / until).
-  if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
-  if (opts.outputFormat !== undefined) body.output_format = opts.outputFormat;
   if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
   if (opts.context !== undefined) body.context = contextToWire(opts.context);
   if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;
@@ -298,6 +295,9 @@ function applyOverridesToWire(body: Record<string, unknown>, opts: RunOverrideOp
   if (opts.interactive !== undefined) body.interactive = opts.interactive;
   if (opts.interruption !== undefined) body.interruption = opts.interruption;
   if (opts.review !== undefined) body.review = opts.review;
+  // Same keys on the wire as in the option (mode / name / until).
+  if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
+  if (opts.outputFormat !== undefined) body.output_format = opts.outputFormat;
 }
 
 
@@ -376,8 +376,6 @@ export class LoomcycleClient {
     if (opts.hooks !== undefined) body.hooks = opts.hooks;
     if (opts.toolHooks !== undefined) body.tool_hooks = opts.toolHooks;
     if (opts.sampling !== undefined) body.sampling = samplingToWire(opts.sampling);
-    if (opts.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
-    if (opts.outputFormat !== undefined) body.output_format = opts.outputFormat;
     if (opts.compaction !== undefined) body.compaction = compactionToWire(opts.compaction);
     if (opts.context !== undefined) body.context = contextToWire(opts.context);
     if (opts.maxContextTokens !== undefined) body.max_context_tokens = opts.maxContextTokens;

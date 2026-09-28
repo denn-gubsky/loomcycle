@@ -226,3 +226,16 @@ func TestOutputFormat_TheSchemaIsInThePromptUnlessANativeAPIShowsIt(t *testing.T
 		t.Error("the schema note was added to a run with no output_format")
 	}
 }
+
+// A retuned schema replaces the policy; an unchanged one keeps it.
+func TestOutputFormat_AdoptReplacesOnlyOnANewSchema(t *testing.T) {
+	started := &config.OutputFormat{Schema: map[string]any{"type": "object"}}
+	p := newOutputFormatPolicy(started)
+	if p.adopt(started) != p {
+		t.Error("the unchanged schema rebuilt its policy")
+	}
+	retuned := &config.OutputFormat{Name: "city", Schema: map[string]any{"type": "object"}}
+	if q := p.adopt(retuned); q == p || q.wire == nil || q.wire.Name != "city" {
+		t.Errorf("a retuned schema was not adopted: %+v", q.wire)
+	}
+}

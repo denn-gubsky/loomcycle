@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -54,6 +55,16 @@ type runOverridesWire struct {
 	// definition does not enable it. See the record's field for why this is not
 	// the "reach" class it used to be filed under.
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
+
+	// ToolChoice and OutputFormat REPLACE the run's own whole, as they do at
+	// start — their fields constrain each other, so a per-field merge could
+	// build a combination nobody asked for. A live run adopts them at its next
+	// operator turn, the same boundary a routing change waits for, and a
+	// replaced tool_choice starts its `until` afresh from there. tool_choice
+	// mode "auto" removes the forcing; there is no way to remove an
+	// output_format, only to replace it.
+	ToolChoice   *config.ToolChoice   `json:"tool_choice,omitempty"`
+	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
 }
 
 // isZero reports whether the caller supplied nothing at all.
@@ -72,7 +83,7 @@ func (w *runOverridesWire) isZero() bool {
 		w.MaxConcurrentChildren == 0 && w.RetryAttempts == nil &&
 		w.MemoryInjectMaxTokens == nil && w.MemoryIndexMaxBytes == nil &&
 		w.InjectToolGuide == nil && w.Interactive == nil && w.Interruption == nil &&
-		w.Review == nil
+		w.Review == nil && w.ToolChoice == nil && w.OutputFormat == nil
 }
 
 // split turns the wire object into the three records the run's configuration
@@ -208,6 +219,27 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	}
 	if in.Interruption != nil {
 		merged.Interruption = in.Interruption
+	}
+	// The start-time validators, so a retune cannot store a block a run start
+	// would have refused.
+	if in.ToolChoice != nil {
+		if err := in.ToolChoice.Validate(); err != nil {
+			return runConfigRecord{}, fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+		}
+		// Plain auto asks for nothing, and an absent record field is how every
+		// reader already spells "no forced choice".
+		merged.ToolChoice = nil
+		if !in.ToolChoice.IsZero() {
+			merged.ToolChoice = in.ToolChoice.Clone()
+		}
+	}
+	if in.OutputFormat != nil {
+		// Validate refuses an empty schema, which is what keeps `{}` from
+		// silently meaning "remove it".
+		if err := in.OutputFormat.Validate(); err != nil {
+			return runConfigRecord{}, fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+		}
+		merged.OutputFormat = in.OutputFormat.Clone()
 	}
 
 	// Refuse now, not next turn.
@@ -355,6 +387,54 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 	}
 }
 
+// reReadShapeOnOperatorTurnFn builds the loop hook that lets a PARKED run adopt
+// a retuned tool_choice / output_format on its next turn — the sibling of
+// reResolveOnOperatorTurnFn, read at the same moment for the same reason.
+//
+// "Changed" is judged against what the loop last held, not against the
+// definition: startTC / startOF are the values the run was STARTED with. For a
+// resumed run that is its record's value even when resume dropped a tool_choice
+// the run had already spent, so an unchanged record does not re-force it.
+//
+// Compared as JSON because a schema that came from yaml holds ints where the
+// same schema decoded from the record holds float64s; equal-as-JSON is the
+// equality the wire sees.
+func (s *Server) reReadShapeOnOperatorTurnFn(runID string, startTC *config.ToolChoice, startOF *config.OutputFormat) func(context.Context) (loop.RetunedShape, error) {
+	if s.store == nil || runID == "" {
+		return nil
+	}
+	lastTC, lastOF := shapeKey(startTC), shapeKey(startOF)
+	return func(ctx context.Context) (loop.RetunedShape, error) {
+		run, err := s.store.GetRun(ctx, runID)
+		if err != nil {
+			return loop.RetunedShape{}, err
+		}
+		rec, ok := decodeRunConfig(run.RunConfig)
+		if !ok {
+			return loop.RetunedShape{}, nil
+		}
+		var out loop.RetunedShape
+		if k := shapeKey(rec.ToolChoice); k != lastTC {
+			lastTC, out.ToolChoice, out.ToolChoiceChanged = k, rec.ToolChoice, true
+		}
+		if k := shapeKey(rec.OutputFormat); k != lastOF {
+			lastOF, out.OutputFormat, out.OutputFormatChanged = k, rec.OutputFormat, true
+		}
+		return out, nil
+	}
+}
+
+// shapeKey is v's JSON, or "null" when it is a nil pointer. A marshal failure
+// cannot happen for these config types (they are round-tripped through the
+// record already); it collapses to "" rather than panicking.
+func shapeKey(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // retuneRequest is the JSON body for POST /v1/runs/{run_id}/retune.
 //
 // The overrides are INLINE here, not nested under `overrides` as they are on
@@ -397,7 +477,7 @@ func (s *Server) handleRetuneRun(w http.ResponseWriter, r *http.Request) {
 	// override names were misspelled or nested, and answering 200 would report
 	// success for a call that changed nothing.
 	if req.runOverridesWire.isZero() {
-		http.Error(w, "at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide)", http.StatusUnprocessableEntity)
+		http.Error(w, "at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide, interactive, interruption, review, tool_choice, output_format)", http.StatusUnprocessableEntity)
 		return
 	}
 	run, rerr := s.runForSteer(r.Context(), runID)
@@ -509,6 +589,8 @@ func (w *runOverridesWire) setFields() []string {
 	add("interactive", w.Interactive != nil)
 	add("review", w.Review != nil)
 	add("interruption", w.Interruption != nil)
+	add("tool_choice", w.ToolChoice != nil)
+	add("output_format", w.OutputFormat != nil)
 	return f
 }
 

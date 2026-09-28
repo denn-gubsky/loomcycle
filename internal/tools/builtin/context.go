@@ -296,6 +296,19 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if s := tools.ResolvedSampling(ctx); !s.IsZero() {
 		out["sampling"] = s
 	}
+	// tool_choice / output_format: the forced tool and the answer schema this
+	// run's NEXT model call carries, with how much of the choice is left and
+	// what holds the answer to the schema on the current model. Both can change
+	// mid-run (an operator can replace them, a first_call is spent by a call),
+	// so they are read from what the loop last published. Omitted when unset.
+	if shape := tools.AnswerShapeNow(ctx); shape != nil {
+		if shape.ToolChoice != nil {
+			out["tool_choice"] = shape.ToolChoice
+		}
+		if shape.OutputFormat != nil {
+			out["output_format"] = shape.OutputFormat
+		}
+	}
 	// max_context_tokens: the CONFIGURED per-agent context-WINDOW cap in effect
 	// (RFC CJ; per-run > per-agent). Reported even before the first turn (unlike
 	// the effective `context.max_tokens` below, which is only known post-turn).

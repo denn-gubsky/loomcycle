@@ -7,12 +7,15 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // outputFormatPolicy applies a run's output_format across its model calls
 // (RFC DI). Unlike tool_choice it never expires: every call carries the schema,
 // because the model cannot know which turn will be its last.
 type outputFormatPolicy struct {
+	// src is the option this policy was built from (see adopt).
+	src  *config.OutputFormat
 	of   *config.OutputFormat
 	wire *providers.OutputFormat
 	// reported remembers the (provider, model, tools?) target it last checked,
@@ -22,11 +25,20 @@ type outputFormatPolicy struct {
 
 func newOutputFormatPolicy(of *config.OutputFormat) *outputFormatPolicy {
 	if of.IsZero() {
-		return &outputFormatPolicy{}
+		return &outputFormatPolicy{src: of}
 	}
 	// Validate ran at intake, so the schema is a JSON object and marshals.
 	schema, _ := json.Marshal(of.Schema)
-	return &outputFormatPolicy{of: of, wire: &providers.OutputFormat{Name: of.EffectiveName(), Schema: schema}}
+	return &outputFormatPolicy{src: of, of: of, wire: &providers.OutputFormat{Name: of.EffectiveName(), Schema: schema}}
+}
+
+// adopt returns the policy for of: p itself while of is the option p was built
+// from, else a fresh one (a retune replaced the schema).
+func (p *outputFormatPolicy) adopt(of *config.OutputFormat) *outputFormatPolicy {
+	if of == p.src {
+		return p
+	}
+	return newOutputFormatPolicy(of)
 }
 
 // forCall is the format to send on the next request, or nil. The loop, not
@@ -69,6 +81,30 @@ func (p *outputFormatPolicy) promptNote(prov providers.Provider, model string, h
 	}
 	return providers.ContentBlock{Type: "text", Text: "Your final answer must be a single JSON object that follows this " +
 		"JSON Schema, with no text before or after it:\n" + string(p.wire.Schema)}, true
+}
+
+// report is what Context op=self shows for this policy on the given target, or
+// nil when the run has no output_format. Enforcement is derived from the same
+// two answers forCall and promptNote give, so it cannot disagree with what the
+// request actually carries.
+func (p *outputFormatPolicy) report(prov providers.Provider, model string, hasTools bool) *tools.OutputFormatReport {
+	if p.wire == nil {
+		return nil
+	}
+	r := &tools.OutputFormatReport{Type: p.of.EffectiveType(), Name: p.of.EffectiveName(), Schema: p.of.Schema}
+	enforced := prov != nil && providers.EnforcesStructuredOutput(prov, model, hasTools)
+	_, inPrompt := p.promptNote(prov, model, hasTools)
+	switch {
+	case enforced && !inPrompt:
+		r.Enforcement = tools.EnforcementNative
+	case enforced:
+		r.Enforcement = tools.EnforcementGrammar
+	case inPrompt:
+		r.Enforcement = tools.EnforcementPrompt
+	default:
+		r.Enforcement = tools.EnforcementNone
+	}
+	return r
 }
 
 // structured parses the run's final answer for RunResult.Structured. A JSON

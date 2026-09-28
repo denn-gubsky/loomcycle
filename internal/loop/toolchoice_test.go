@@ -196,3 +196,48 @@ func TestToolChoice_StatefulRunReportsItIsNotApplied(t *testing.T) {
 		t.Error("a stateful run with a tool_choice did not report that it ignores it")
 	}
 }
+
+// A retune hands the loop a NEW choice; the same choice must keep its progress.
+// Rebuilding on every call would re-force a spent first_call on each one, and
+// never rebuilding would ignore the retune.
+func TestToolChoice_AdoptKeepsProgressUntilTheChoiceIsReplaced(t *testing.T) {
+	specs := []providers.ToolSpec{{Name: "WebFetch"}}
+	var events []providers.Event
+	emit := func(ev providers.Event) { events = append(events, ev) }
+
+	started := &config.ToolChoice{Mode: "tool", Name: "WebFetch"}
+	p := newToolChoicePolicy(started)
+	p.observe(nil) // the first call completed: first_call is spent
+	if p = p.adopt(started, specs, emit); p.forCall().Forces() {
+		t.Fatal("re-adopting the unchanged choice re-forced a spent first_call")
+	}
+
+	retuned := &config.ToolChoice{Mode: "none"}
+	p = p.adopt(retuned, specs, emit)
+	if got := p.forCall(); got.Mode != "none" {
+		t.Fatalf("after a replacement the next call sends %+v, want mode none", got)
+	}
+	p.observe(nil)
+	if p.forCall().Mode != "" {
+		t.Error("the replacement's first_call was not spent by the call after it")
+	}
+
+	// A replacement naming a tool the run lacks is reported once and not applied:
+	// the run is mid-conversation, so failing it would punish the run for the
+	// operator's mistake.
+	missing := &config.ToolChoice{Mode: "tool", Name: "Bash"}
+	p = p.adopt(missing, specs, emit)
+	p = p.adopt(missing, specs, emit)
+	if p.forCall().Forces() {
+		t.Error("a choice naming a missing tool was applied")
+	}
+	var inert int
+	for _, ev := range events {
+		if ev.Type == providers.EventCapabilityInert && ev.CapabilityInert.Gate == "tool_choice" {
+			inert++
+		}
+	}
+	if inert != 1 {
+		t.Errorf("the refused replacement was reported %d times, want once", inert)
+	}
+}

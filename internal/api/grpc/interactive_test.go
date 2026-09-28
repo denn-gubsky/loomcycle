@@ -197,6 +197,38 @@ func TestGrpcRetuneRun_ChangesTheRunWithoutDeliveringATurn(t *testing.T) {
 	}
 }
 
+// tool_choice and output_format reach the connector from BOTH steer-side RPCs;
+// a request carrying only one of them is not the empty set.
+func TestGrpcRetuneAndInput_CarryToolChoiceAndOutputFormat(t *testing.T) {
+	mc := &interactiveMock{steerDelivered: true}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	if _, err := client.RetuneRun(context.Background(), &loomcyclepb.RetuneRunRequest{
+		RunId:        "r_abc",
+		ToolChoice:   &loomcyclepb.ToolChoice{Mode: "tool", Name: "WebSearch", Until: "until_called"},
+		OutputFormat: &loomcyclepb.OutputFormat{Name: "city", Schema: []byte(`{"type":"object"}`)},
+	}); err != nil {
+		t.Fatalf("RetuneRun: %v", err)
+	}
+	tc, of := mc.gotRetuneOv.ToolChoice, mc.gotRetuneOv.OutputFormat
+	if tc == nil || tc.Mode != "tool" || tc.Name != "WebSearch" || tc.Until != "until_called" {
+		t.Errorf("tool_choice reached the connector as %+v", tc)
+	}
+	if of == nil || of.Name != "city" || of.Schema["type"] != "object" {
+		t.Errorf("output_format reached the connector as %+v", of)
+	}
+
+	if _, err := client.RunInput(context.Background(), &loomcyclepb.RunInputRequest{
+		RunId: "r_abc", Text: "go", ToolChoice: &loomcyclepb.ToolChoice{Mode: "none"},
+	}); err != nil {
+		t.Fatalf("RunInput: %v", err)
+	}
+	if got := mc.gotRetuneOv.ToolChoice; got == nil || got.Mode != "none" {
+		t.Errorf("RunInput's tool_choice reached the connector as %+v", got)
+	}
+}
+
 func TestGrpcRetuneRun_RefusesAnEmptyOverrideSet(t *testing.T) {
 	mc := &interactiveMock{}
 	client, cleanup := startTestServerWithConnector(t, mc)

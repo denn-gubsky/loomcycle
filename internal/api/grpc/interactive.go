@@ -48,7 +48,8 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 		RetryAttempts: req.RetryAttempts, MemInject: req.MemoryInjectMaxTokens,
 		MemIndex:    req.MemoryIndexMaxBytes,
 		Interactive: req.Interactive, Interruption: req.GetInterruption(),
-		Review: req.Review,
+		Review:     req.Review,
+		ToolChoice: req.GetToolChoice(), OutputFormat: req.GetOutputFormat(),
 	}); !ov.IsZero() {
 		switch err := s.connector.RetuneRun(ctx, runID, ov); {
 		case errors.Is(err, connector.ErrRunNotInFlight):
@@ -220,6 +221,8 @@ type protoOverrideFields struct {
 	Unbounded, InjectToolGuide, Interactive, Review *bool
 	RetryAttempts, MemInject, MemIndex              *int32
 	Interruption                                    *loomcyclepb.Interruption
+	ToolChoice                                      *loomcyclepb.ToolChoice
+	OutputFormat                                    *loomcyclepb.OutputFormat
 }
 
 func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
@@ -241,6 +244,8 @@ func overridesFromProto(f protoOverrideFields) connector.RunOverrides {
 		Interactive:  f.Interactive,
 		Interruption: interruptionFromProto(f.Interruption),
 		Review:       f.Review,
+		ToolChoice:   toolChoiceFromProto(f.ToolChoice),
+		OutputFormat: outputFormatFromProto(f.OutputFormat),
 	}
 }
 
@@ -264,7 +269,8 @@ func (s *Server) RetuneRun(ctx context.Context, req *loomcyclepb.RetuneRunReques
 		RetryAttempts: req.RetryAttempts, MemInject: req.MemoryInjectMaxTokens,
 		MemIndex:    req.MemoryIndexMaxBytes,
 		Interactive: req.Interactive, Interruption: req.GetInterruption(),
-		Review: req.Review,
+		Review:     req.Review,
+		ToolChoice: req.GetToolChoice(), OutputFormat: req.GetOutputFormat(),
 	})
 	if ov.IsZero() {
 		return nil, status.Error(codes.InvalidArgument, "at least one override is required")
