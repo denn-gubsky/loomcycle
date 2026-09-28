@@ -217,6 +217,7 @@ func (d *Dispatcher) withHelpPointer(name string, input json.RawMessage, res Res
 		info = *res.Error // a copy: the tool's own value is never written through
 	}
 	info.CallFormat = cf
+	info.Hint = d.helpHint(name, cf)
 	res.Error = &info
 	return res
 }

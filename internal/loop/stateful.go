@@ -659,6 +659,13 @@ func applyStatefulSampling(req *providers.Request, s *config.Sampling) {
 // split from opts.Segments); `initial` is the seed conversation (the task);
 // `toolSpecs` is the action-tool catalog; `emit` forwards + persists events.
 func runStateful(ctx context.Context, opts RunOptions, system []providers.ContentBlock, initial []providers.Message, toolSpecs []providers.ToolSpec, iterCap int, emit func(providers.Event)) (RunResult, error) {
+	// The model reads only its latest observation, so a help hint shown once
+	// would be gone the step after: attach it to every shape failure until the
+	// model reads that tool's help. Nothing accumulates here, so the repeat
+	// costs no context.
+	if opts.Dispatcher != nil {
+		opts.Dispatcher.SetHelpHintsUntilRead(true)
+	}
 	cx := opts.Context
 	var schema map[string]any
 	onInvalid := config.ContextDefaultOnInvalidPatch

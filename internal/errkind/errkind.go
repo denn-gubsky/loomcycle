@@ -95,6 +95,16 @@ type Info struct {
 	// It can be set on an Info with no Category: that is an unclassified
 	// failure that still carries the call format, not a classification.
 	CallFormat *CallFormat
+
+	// Hint is the help article for the call that failed, for a run that never
+	// read that tool's help: the operation's article, or the tool's when the
+	// operation itself was wrong. Set only by a run's dispatcher, on the
+	// failures that get a CallFormat, once per tool and operation (on every
+	// such failure in a stateful run, whose model sees only its latest
+	// observation). It is for the MODEL: rendered in-band only, never on the
+	// wire (see MarshalJSON), because the tool_result text a run persists
+	// already carries it.
+	Hint string
 }
 
 // infoWire is Info's JSON shape: the SSE `error_info` object, and a persisted

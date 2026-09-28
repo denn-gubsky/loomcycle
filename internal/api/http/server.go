@@ -1164,6 +1164,9 @@ func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
 	// A Go error a tool returns reaches the model classified — the same
 	// category, retryability and next step the transports give it.
 	d.SetErrorClassifier(errclassify.CategoryOf)
+	// Every caller builds a RUN's dispatcher, whose history of help reads and
+	// hints is what gates a help hint on a failed call.
+	d.EnableHelpHints()
 	return d
 }
 

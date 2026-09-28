@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,5 +76,45 @@ func TestConnectorBuiltin_ARefusalCarriesItsStructureOverHTTP(t *testing.T) {
 	cf, ok := env["correctCallFormat"].(map[string]any)
 	if !ok || cf["tool"] != "Document" || cf["op"] != "create_chunk" || cf["example"] == nil {
 		t.Errorf("correctCallFormat = %v; want the create_chunk example", env["correctCallFormat"])
+	}
+	// A caller outside a run has no run history to gate a help hint on, so its
+	// dispatcher attaches none.
+	if strings.Contains(string(raw), "You have not read the help") {
+		t.Errorf("an off-run refusal carries a help hint: %s", raw)
+	}
+}
+
+// The crossing for help hints: the dispatcher the SERVER builds for a run, the
+// real Context, and the real help corpus. A run that skipped Document's help
+// gets the create_chunk article with its first shape failure — here the
+// measured case, `parent` for `parent_id` — and none once it reads the help.
+func TestRunDispatcher_AShapeFailureCarriesTheSkippedArticle(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	art, ok := set.Get("Document/create_chunk")
+	if !ok {
+		t.Fatal("no Document/create_chunk article")
+	}
+	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}},
+		&stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	d := srv.newDispatcher([]tools.Tool{&builtin.Document{}, &builtin.Context{Help: set}})
+	ctx := context.Background()
+
+	res := d.Execute(ctx, "Document", json.RawMessage(`{"op":"create_chunk","document_id":"d1","title":"T","parent":"r"}`))
+	if !res.IsError || res.Error == nil {
+		t.Fatalf("want a refusal, got %+v", res)
+	}
+	if !strings.Contains(res.Error.Hint, strings.TrimSpace(art.Content)) {
+		t.Errorf("the refusal does not carry the create_chunk article; hint = %q", res.Error.Hint)
+	}
+
+	if r := d.Execute(ctx, "Context", json.RawMessage(`{"op":"help","topic":"Document"}`)); r.IsError {
+		t.Fatalf("help call: %s", r.Text)
+	}
+	res = d.Execute(ctx, "Document", json.RawMessage(`{"op":"get_document","parent":"r"}`))
+	if !res.IsError || res.Error == nil || res.Error.Hint != "" {
+		t.Errorf("after reading Document's help the failure still carries a hint: %+v", res.Error)
 	}
 }

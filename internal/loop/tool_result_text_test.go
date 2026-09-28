@@ -188,6 +188,33 @@ func TestRenderToolResultText_CarriesTheCorrectCallFormat(t *testing.T) {
 	}
 }
 
+// The help hint reaches the model as the object's LAST key, after the short
+// fields a model acts on, and only when there is one.
+func TestRenderToolResultText_CarriesTheHintLast(t *testing.T) {
+	res := tools.Result{
+		Text:    "Document: unknown argument \"parent\" — nothing was done.",
+		IsError: true,
+		Error: &tools.ErrorInfo{
+			Category:   tools.CategoryValidation,
+			CallFormat: &tools.CallFormat{Tool: "Document", Op: "create_chunk"},
+			Hint:       "You have not read the help for Document/create_chunk in this run.\n\nARTICLE",
+		},
+	}
+	s := renderToolResultText(res)
+	got := decodeInband(t, s)
+	if got["hint"] != res.Error.Hint {
+		t.Errorf("hint = %v, want the article as given", got["hint"])
+	}
+	if !strings.HasSuffix(s, `ARTICLE"}`) {
+		t.Errorf("the hint is not the last key:\n%s", s)
+	}
+
+	res.Error.Hint = ""
+	if _, ok := decodeInband(t, renderToolResultText(res))["hint"]; ok {
+		t.Error("a failure with no hint renders a hint key")
+	}
+}
+
 // Rendering is deterministic, and happens once: the emitted event is what gets
 // persisted, and replayTranscript rebuilds the model's tool_result block from
 // that persisted text without rendering it again. So the same call reads the
