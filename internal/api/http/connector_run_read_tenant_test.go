@@ -90,3 +90,20 @@ func TestConnectorListRuns_TenantSeesAllOwnRunsPastOtherTenantsNewer(t *testing.
 		t.Errorf("acme listed %d runs, want all 5 of its own", len(runs))
 	}
 }
+
+// The store reads tenant "" as "all tenants", but a non-admin session whose
+// tenant is "" is confined to tenant "". ListRuns' post-filter keeps it there.
+func TestConnectorListRuns_EmptyTenantPrincipalSeesOnlyEmptyTenant(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	seedTenantRun(t, srv.store, "", "shared-user", "a_default")
+	seedTenantRun(t, srv.store, "other", "shared-user", "a_other")
+
+	runs, err := srv.ListRuns(tenantPrincipal(""), connector.ListRunsFilter{UserID: "shared-user"})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].AgentID != "a_default" {
+		t.Errorf("empty-tenant session listed %+v, want only a_default", runs)
+	}
+}

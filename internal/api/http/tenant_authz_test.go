@@ -166,6 +166,37 @@ func TestHandleListUserAgents_TenantSeesAllOwnRunsPastOtherTenantsNewer(t *testi
 	}
 }
 
+// The store reads tenant "" as "all tenants", but a non-admin principal whose
+// tenant is "" (a config-declared principal may omit it) is confined to tenant
+// "". The handler's post-filter is what keeps it there.
+func TestHandleListUserAgents_EmptyTenantPrincipalSeesOnlyEmptyTenant(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	for _, tt := range []struct{ tenant, agentID string }{{"", "a_default"}, {"other", "a_other"}} {
+		sess, err := st.CreateSession(ctx, tt.tenant, "echo", "alice")
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		if _, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: tt.agentID, UserID: "alice", TenantID: tt.tenant}); err != nil {
+			t.Fatalf("create run: %v", err)
+		}
+	}
+
+	req := principalReq("GET", "/v1/users/alice/agents?status=all", auth.Principal{Subject: "alice", Scopes: []string{auth.ScopeRunsRead}})
+	req.SetPathValue("user_id", "alice")
+	rec := httptest.NewRecorder()
+	s.handleListUserAgents(rec, req)
+	var resp struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Agents) != 1 || resp.Agents[0]["agent_id"] != "a_default" {
+		t.Errorf("empty-tenant principal saw %v, want only a_default", resp.Agents)
+	}
+}
+
 // /v1/_users is reachable by any authenticated principal and tenant-scoped:
 // a tenant sees only its own tenant's users; admin sees all and can focus
 // one via ?tenant=. Drives the Web UI's per-tenant user picker.

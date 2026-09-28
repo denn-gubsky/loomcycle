@@ -132,6 +132,22 @@ func TestGrpcListUserAgents_TenantSeesAllOwnRunsPastOtherTenantsNewer(t *testing
 	}
 }
 
+// The store reads tenant "" as "all tenants", but a non-admin principal whose
+// tenant is "" is confined to tenant "". The RPC's post-filter keeps it there.
+func TestGrpcListUserAgents_EmptyTenantPrincipalSeesOnlyEmptyTenant(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	seedRun(t, st, "", "shared", "a_default")
+	seedRun(t, st, "evil", "shared", "a_evil")
+
+	resp, err := adapter.ListUserAgents(scopedCtx("", "shared", auth.ScopeRunsRead), &loomcyclepb.ListUserAgentsRequest{UserId: "shared"})
+	if err != nil {
+		t.Fatalf("ListUserAgents: %v", err)
+	}
+	if len(resp.GetAgents()) != 1 || resp.GetAgents()[0].GetAgentId() != "a_default" {
+		t.Errorf("empty-tenant principal saw %v, want only a_default", resp.GetAgents())
+	}
+}
+
 // TestGrpcChannelScope_ConfinedToSubjectAndAdmin locks the channel-scope gate:
 // a non-admin may touch only its own user scope; another subject folds to
 // NotFound and the operator global scope is admin-only.
