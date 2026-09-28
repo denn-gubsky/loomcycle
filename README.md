@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.98.0) made a failed tool call tell the model what
+The most recent line (v1.99.0) let a channel carry hooks that decide every
+message before a reader sees it (release, rewrite, drop, or hold for a person
+to answer), and split global channels by tenant over a shared operator layer.
+It indexed each document chunk under its document and section, made Document
+search match words as well as meaning, and added an opt-in rerank. It also let
+a DeepSeek thinking model run in stateful mode, and gave a malformed call the
+help its run skipped.
+
+Before it, v1.98.0 made a failed tool call tell the model what
 kind of failure it was (fix the input, it will never work, or try again later)
 together with the correct call format, on every interface. It let a run request,
 a parent run and a TeamDef add hooks, and the Web UI now edits them. It also
