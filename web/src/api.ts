@@ -299,6 +299,27 @@ export interface EventPayload {
   // "limit" sidecar (RFC AW) — a per-scope token-budget crossing. Present on
   // both the live SSE `limit` frame and the persisted `limit` transcript row.
   limit?: LimitEventInfo;
+  // "hook_decision" sidecar — what one hook did to a call, to the run, or to a
+  // channel message.
+  hook_decision?: HookDecisionEventInfo;
+}
+
+// HookDecisionEventInfo mirrors providers.HookDecisionInfo. A hook that passed
+// a call through reports nothing, so every event is a hook actually acting.
+export interface HookDecisionEventInfo {
+  hook: string; // "<owner>/<name>"
+  phase: string; // a tool phase (pre/post/...), a run phase, or channel_publish
+  tool_use_id?: string;
+  tool_name?: string;
+  channel?: string;
+  message_id?: string;
+  // deny | rewrite_input | rewrite_output | context | block | hold |
+  // unavailable, and a channel hook's release | rewrite_body | drop.
+  decision: string;
+  fail_mode?: "open" | "closed" | string; // set for "unavailable"
+  reason?: string;
+  updated_input?: unknown; // rewrite_input: what the tool actually ran with
+  additional_context?: string; // context: what was appended
 }
 
 // v0.9.x — payloads for event types whose shape doesn't fit

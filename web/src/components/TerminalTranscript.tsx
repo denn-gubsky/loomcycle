@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   EventPayload,
+  HookDecisionEventInfo,
   SystemPromptPayload,
   TranscriptEvent,
   UserInputPayload,
@@ -116,7 +117,7 @@ function TerminalRow({ line }: { line: FormattedLine }) {
   );
 }
 
-interface FormattedLine {
+export interface FormattedLine {
   key: number | string;
   ts: string;     // "[hh:mm:ss.SSS]" or blank
   kind: string;   // padded to KIND_PAD_WIDTH
@@ -153,7 +154,8 @@ function coalesceTextTerminal(events: TranscriptEvent[]): TranscriptEvent[] {
   return out;
 }
 
-function formatLine(row: TranscriptEvent): FormattedLine {
+// Exported for tests: the pure event → row mapping behind the terminal view.
+export function formatLine(row: TranscriptEvent): FormattedLine {
   const ts = row.ts_ns > 0 ? `[${formatHMSms(row.ts_ns)}]` : TS_PAD;
   const ev = row.event ?? ({ type: row.type } as EventPayload);
   const kindRaw = ev.type ?? row.type ?? "?";
@@ -265,6 +267,14 @@ function formatLine(row: TranscriptEvent): FormattedLine {
         payload: `${icon} token budget (${sev}): ${who} used ${used}/${limit} ${when}`.trimEnd(),
       };
     }
+    case "hook_decision": {
+      // Collapsed to a one-line "who did what to which call" summary; the
+      // expanded view carries the rewritten input / appended context, which
+      // can be large.
+      const hd = ev.hook_decision;
+      if (!hd) return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
+      return { key, ts, kind, ...hookDecisionLine(hd), collapsible: true };
+    }
     case "started":
       return { key, ts, kind, cls: "tl-meta", payload: "" };
     case "session":
@@ -295,6 +305,73 @@ function formatLine(row: TranscriptEvent): FormattedLine {
     default:
       return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
   }
+}
+
+// Decisions that stopped something: the call never ran, the model was sent
+// back, or the message was thrown away.
+const HOOK_REFUSALS = new Set(["deny", "block", "drop"]);
+
+// hookDecisionLine renders what a hook did as "⛨ <hook> <phase> <target> —
+// <what happened>". The target is the tool for a tool phase and the channel
+// for channel_publish; a run phase (agent_stop, ...) has none.
+function hookDecisionLine(hd: HookDecisionEventInfo): Pick<FormattedLine, "cls" | "payload" | "full"> {
+  const target = hd.tool_name || hd.channel || "";
+  const head = ["⛨", hd.hook || "?", hd.phase || "?", target].filter(Boolean).join(" ");
+  const reason = hd.reason ? oneLine(hd.reason) : "";
+  const withReason = (what: string) => (reason ? `${what}: ${truncate(reason, 100)}` : what);
+  let what: string;
+  switch (hd.decision) {
+    case "rewrite_input":
+      what = "rewrote the input";
+      break;
+    case "rewrite_output":
+      what = "rewrote the output";
+      break;
+    case "rewrite_body":
+      what = "rewrote the message";
+      break;
+    case "context":
+      what = hd.additional_context
+        ? `added context: ${truncate(oneLine(hd.additional_context), 100)}`
+        : "added context";
+      break;
+    case "hold":
+      what = withReason("held for review");
+      break;
+    case "unavailable":
+      what = withReason(hd.fail_mode ? `unavailable (fail ${hd.fail_mode})` : "unavailable");
+      break;
+    default:
+      what = withReason(hd.decision || "?");
+  }
+  const closed = hd.decision === "unavailable" && hd.fail_mode === "closed";
+  const cls = HOOK_REFUSALS.has(hd.decision) || closed
+    ? "tl-error"
+    : hd.decision === "hold"
+      ? "tl-interrupt"
+      : "tl-tool";
+
+  // Expanded view: every field the event carries, one per line, with the
+  // rewritten input pretty-printed and the reason / context unflattened.
+  const full: string[] = [`hook: ${hd.hook || "?"}`, `phase: ${hd.phase || "?"}`];
+  if (hd.tool_name || hd.tool_use_id) {
+    full.push(`tool: ${[hd.tool_name, hd.tool_use_id && `(${hd.tool_use_id})`].filter(Boolean).join(" ")}`);
+  }
+  if (hd.channel || hd.message_id) {
+    full.push(`channel: ${[hd.channel, hd.message_id && `(message ${hd.message_id})`].filter(Boolean).join(" ")}`);
+  }
+  full.push(`decision: ${hd.decision || "?"}`);
+  if (hd.fail_mode) full.push(`fail_mode: ${hd.fail_mode}`);
+  if (hd.reason) full.push(`reason: ${hd.reason}`);
+  if (hd.updated_input !== undefined) {
+    const input = typeof hd.updated_input === "string"
+      ? hd.updated_input
+      : JSON.stringify(hd.updated_input, null, 2);
+    full.push(`updated_input:\n${input}`);
+  }
+  if (hd.additional_context) full.push(`additional_context:\n${hd.additional_context}`);
+
+  return { cls, payload: `${head} — ${what}`, full: full.join("\n") };
 }
 
 function oneLine(s: string): string {
