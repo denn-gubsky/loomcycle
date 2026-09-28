@@ -100,6 +100,12 @@ The same shape goes in an AgentDef overlay (`tools` entries as
   a credential (use a HookDef an operator wrote); a
   `tool_hooks` entry must name a tool the agent has, or the run does not start.
   A resumed run keeps what it added.
+- **A run keeps the hooks it started with.** When it starts it records which
+  HookDef version each reference found (and a fingerprint of its agent's own
+  hooks, not their content). Resumed after a pause, it fires those: a newer
+  version promoted meanwhile does not replace them. If its agent's hooks were
+  changed, or a HookDef version it started with was deleted, the resumed run
+  stops with an error saying so rather than continuing under other hooks.
 - A sub-agent fires its own definition's hooks, not its parent's — plus
   everything its parent run added.
 - **A team adds hooks too.** A TeamDef state's `hooks` / `tool_hooks` are added

@@ -1331,6 +1331,11 @@ export interface RunSpec {
   /** Hooks the run added to its agent's own (its request's, and a
    *  sub-agent's inherited ones). */
   hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
+  /** What the run's hooks resolved to when it started, so a resumed run
+   *  fires those and no others: a fingerprint of the agent's own hooks and
+   *  the HookDef version each reference found. Present only on a run that
+   *  carries hooks. */
+  pinned_hooks?: { agent: string; defs?: Record<string, string> };
 }
 
 /** A finished run's answer (RFC DI). */
