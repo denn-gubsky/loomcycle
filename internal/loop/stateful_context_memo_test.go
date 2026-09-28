@@ -26,6 +26,46 @@ func TestContextMemo_KeepsEachCallOnceAndItsLatestResult(t *testing.T) {
 	}
 }
 
+// The same help topic asked for more than once is kept ONCE, however the call
+// was written: Context resolves "Memory.set", an alias or a different key order
+// to the same article, and names it in its response.
+func TestContextMemo_KeepsEachHelpTopicOnce(t *testing.T) {
+	article := func(name, body string) string {
+		b, _ := json.Marshal(map[string]string{"name": name, "content": body})
+		return string(b)
+	}
+	m := &contextMemo{}
+	m.add(json.RawMessage(`{"op":"help","topic":"Memory/set"}`), article("Memory/set", "first read"))
+	m.add(json.RawMessage(`{"op":"help","topic":"Memory.set","query":""}`), article("Memory/set", "second read"))
+	m.add(json.RawMessage(`{"topic":"Memory/set","op":"help"}`), article("Memory/set", "third read"))
+	m.add(json.RawMessage(`{"op":"help","topic":"Memory/get"}`), article("Memory/get", "get article"))
+	m.add(json.RawMessage(`{"op":"help","query":"how do I save"}`), `{"results":[]}`)
+	if len(m.entries) != 3 {
+		t.Fatalf("entries = %d, want 3 (Memory/set once, Memory/get, the search)", len(m.entries))
+	}
+	got := m.render("Context", "")
+	if n := strings.Count(got, " returned:\n"); n != 3 {
+		t.Errorf("rendered %d results, want 3:\n%s", n, got)
+	}
+	if strings.Contains(got, "first read") || strings.Contains(got, "second read") || !strings.Contains(got, "third read") {
+		t.Errorf("want Memory/set once, as its latest read:\n%s", got)
+	}
+}
+
+// Any other op is the same call when its arguments are, whatever their order
+// or empty extras.
+func TestMemoKey_OtherOpsIgnoreKeyOrderAndEmptyArguments(t *testing.T) {
+	a := memoKey(json.RawMessage(`{"op":"doc","name":"Memory"}`), `{}`)
+	b := memoKey(json.RawMessage(`{"name":"Memory","op":"doc","prefix":""}`), `{}`)
+	c := memoKey(json.RawMessage(`{"op":"doc","name":"Document"}`), `{}`)
+	if a != b {
+		t.Errorf("same call, different key order: %q vs %q", a, b)
+	}
+	if a == c {
+		t.Errorf("different calls share a key: %q", a)
+	}
+}
+
 func TestContextMemo_DropsTheOldestPastTheBudget(t *testing.T) {
 	m := &contextMemo{}
 	big := strings.Repeat("x", contextMemoBudget/2+1)

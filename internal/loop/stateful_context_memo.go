@@ -18,8 +18,9 @@ import (
 // returned (help, its scopes, its tools) is kept and shown on every later step.
 //
 // Bounded, because the stateful prompt is meant to stay flat: the kept text is
-// capped at contextMemoBudget characters, the oldest entry dropped first. The
-// same call made again replaces its entry rather than adding one.
+// capped at contextMemoBudget characters, the oldest entry dropped first. A
+// result of the same thing — the same help topic, however it was asked for —
+// replaces its entry rather than adding one (see memoKey).
 
 // contextMemoBudget bounds the kept Context results, in characters (about 4K
 // tokens). A help article is 1–10K characters, so this holds the few a task
@@ -27,8 +28,37 @@ import (
 const contextMemoBudget = 16000
 
 type contextMemoEntry struct {
-	call string // the call's input, compacted: the entry's identity
+	key  string // what the result is OF (see memoKey): the entry's identity
+	call string // the call's input, compacted, as shown to the model
 	text string
+}
+
+// memoKey is what a Context result is OF, so the same thing read twice is kept
+// once however the call was written. A help article's identity is the topic
+// Context resolved, which its response names: "Memory/set", "Memory.set", an
+// alias, a different key order or an extra empty argument all read one
+// article. Any other op's identity is the op and its arguments with the keys
+// sorted.
+func memoKey(input json.RawMessage, result string) string {
+	var in map[string]any
+	if json.Unmarshal(input, &in) != nil {
+		return "raw:" + string(input)
+	}
+	if in["op"] == "help" {
+		var out struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal([]byte(result), &out) == nil && out.Name != "" {
+			return "help:" + out.Name
+		}
+	}
+	for k, v := range in {
+		if v == nil || v == "" {
+			delete(in, k) // an empty argument changes nothing Context returns
+		}
+	}
+	b, _ := json.Marshal(in) // map keys marshal sorted
+	return "call:" + string(b)
 }
 
 type contextMemo struct {
@@ -53,13 +83,14 @@ func (m *contextMemo) add(input json.RawMessage, text string) {
 	if json.Compact(&b, input) == nil {
 		call = b.String()
 	}
+	key := memoKey(input, text)
 	kept := m.entries[:0]
 	for _, e := range m.entries {
-		if e.call != call {
+		if e.key != key {
 			kept = append(kept, e)
 		}
 	}
-	m.entries = append(kept, contextMemoEntry{call: call, text: text})
+	m.entries = append(kept, contextMemoEntry{key: key, call: call, text: text})
 	for len(m.entries) > 1 && m.size() > contextMemoBudget {
 		m.entries = m.entries[1:]
 	}
