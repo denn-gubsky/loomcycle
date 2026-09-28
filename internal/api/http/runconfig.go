@@ -94,6 +94,10 @@ type runConfigRecord struct {
 	// Hooks are the hooks the run added to its agent's — its request's, and a
 	// sub-agent's inherited ones — so a resumed run fires what it fired before.
 	Hooks *hooks.Additions `json:"hooks,omitempty"`
+
+	// PinnedHooks is what the run's hooks resolved to when it started, so a
+	// resumed run fires those and no others (see pinnedHooks).
+	PinnedHooks *pinnedHooks `json:"pinned_hooks,omitempty"`
 }
 
 // runHostRecord mirrors tools.HostPolicyValue. HasList is carried explicitly
