@@ -293,6 +293,16 @@ export interface EventPayload {
   user_input?: { text: string; source?: string; seen_at?: string };
   // "awaiting_input" sidecar — a persistent interactive run parked at end_turn.
   awaiting_input?: { since_turn?: number };
+  // "subagent_hold" sidecar — on a parent's stream, a sub-agent it started is
+  // held for a verdict ("held") or has ended ("released").
+  subagent_hold?: {
+    subagent?: string;
+    subagent_run_id?: string;
+    state?: "held" | "released";
+    held_by?: string;
+    round?: number;
+    status?: string;
+  };
   // "context_compaction" sidecar — the conversation before this marker was
   // summarized to free context (interactive compaction).
   context_compaction?: { summary?: string; before_tokens?: number; after_tokens?: number };

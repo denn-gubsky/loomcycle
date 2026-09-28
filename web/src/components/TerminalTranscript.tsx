@@ -243,6 +243,18 @@ function formatLine(row: TranscriptEvent): FormattedLine {
       return { key, ts, kind, cls: "tl-user", payload: `❯ ${ev.text ?? ""}` };
     case "awaiting_input":
       return { key, ts, kind, cls: "tl-meta", payload: "idle — waiting for operator input" };
+    case "subagent_hold": {
+      // A sub-agent this run started is held for a verdict: this run waits on
+      // it, and the verdict goes to the child's run.
+      const h = ev.subagent_hold;
+      const who = `${h?.subagent ?? "sub-agent"} (${(h?.subagent_run_id ?? "").slice(0, 12)})`;
+      if (h?.state === "released") {
+        return { key, ts, kind, cls: "tl-meta", payload: `⏵ ${who} released — ${h.status ?? "ended"}` };
+      }
+      const by = h?.held_by ? ` by ${h.held_by}` : "";
+      const round = h?.round && h.round > 1 ? `, round ${h.round}` : "";
+      return { key, ts, kind, cls: "tl-interrupt", payload: `⏸ ${who} is held for review${by}${round} — rule on it on its run` };
+    }
     case "context_compaction": {
       // The conversation before this point was summarized to free context.
       const before = ev.context_compaction?.before_tokens ?? 0;
