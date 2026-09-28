@@ -43,7 +43,8 @@ Extra keys: `turns_attached` (and `turns_dropped_for_budget`) when turns were
 requested; `source_turns` and `source_turns_found` when the operator has you
 attach matching conversation turns; `time_filter` when you passed `when`;
 `sources_applied: false` with a `note` when the backend ignored `sources`;
-`reranked` (and `rerank_reason` when false) when the operator has your
+`matched_unit: {kind, text}` on a document found through one of its derived
+search units (see `search`); `reranked` (and `rerank_reason` when false) when the operator has your
 document searches reranked — see `search`. A recall reaches the rerank only
 when `sources` includes `documents`.
 
