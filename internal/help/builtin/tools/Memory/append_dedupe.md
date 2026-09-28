@@ -24,7 +24,8 @@ one entry. A missing key starts from `[]`.
 
 - `append_dedupe: existing value is not a JSON array (use set to overwrite)`
   — the key holds something else. Retrying is pointless.
-- `append_dedupe: value is not valid JSON` — quote strings.
+- `append_dedupe: value is not valid JSON` — send text as a plain string,
+  with no quotes inside it.
 - `append_dedupe: array (N bytes) exceeds max M bytes`, or a size-cap refusal
   (`Memory.append_dedupe: … quota …` / `… limit_bytes …`). Nothing was written —
   the list is too big; remove items with `set` or `delete`.
