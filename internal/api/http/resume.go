@@ -496,7 +496,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	// From the run's record, which a retune may have changed since it started —
 	// an autonomous run that never parked adopts a retune here.
-	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, allowedTools, runCfg.Interruption)
+	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, runCfg.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	if added := runCfg.additions(); !added.Empty() {
 		// What the run added before it paused, restored as it was — a

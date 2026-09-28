@@ -411,33 +411,32 @@ func TestInterruptionPolicyForRun_NarrowsAndNeverGrants(t *testing.T) {
 	holder := config.AgentDef{Tools: []string{"Interruption"},
 		Interruption: config.AgentInterruptionACL{Kinds: []string{"question", "approval"}, MaxPending: 3}}
 	for _, tc := range []struct {
-		name  string
-		def   config.AgentDef
-		holds bool
-		run   *config.AgentInterruptionACL
-		want  tools.InterruptionPolicyValue
+		name string
+		def  config.AgentDef
+		run  *config.AgentInterruptionACL
+		want tools.InterruptionPolicyValue
 	}{
-		{"no block keeps the definition's", holder, true, nil,
+		{"no block keeps the definition's", holder, nil,
 			tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"question", "approval"}, MaxPending: 3}},
-		{"enabled:false switches it off", holder, true, &config.AgentInterruptionACL{},
+		{"enabled:false switches it off", holder, &config.AgentInterruptionACL{},
 			tools.InterruptionPolicyValue{}},
-		{"kinds intersect", holder, true, &config.AgentInterruptionACL{Enabled: true, Kinds: []string{"approval", "wait"}},
+		{"kinds intersect", holder, &config.AgentInterruptionACL{Enabled: true, Kinds: []string{"approval", "wait"}},
 			tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}, MaxPending: 3}},
-		{"no kind in common switches it off", holder, true, &config.AgentInterruptionACL{Enabled: true, Kinds: []string{"wait"}},
+		{"no kind in common switches it off", holder, &config.AgentInterruptionACL{Enabled: true, Kinds: []string{"wait"}},
 			tools.InterruptionPolicyValue{}},
-		{"max_pending cannot be raised", holder, true, &config.AgentInterruptionACL{Enabled: true, MaxPending: 10},
+		{"max_pending cannot be raised", holder, &config.AgentInterruptionACL{Enabled: true, MaxPending: 10},
 			tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"question", "approval"}, MaxPending: 3}},
-		{"max_pending can be lowered", holder, true, &config.AgentInterruptionACL{Enabled: true, MaxPending: 1},
+		{"max_pending can be lowered", holder, &config.AgentInterruptionACL{Enabled: true, MaxPending: 1},
 			tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"question", "approval"}, MaxPending: 1}},
-		{"an empty definition kind list means question", config.AgentDef{Tools: []string{"Interruption"}}, true,
+		{"an empty definition kind list means question", config.AgentDef{Tools: []string{"Interruption"}},
 			&config.AgentInterruptionACL{Enabled: true, Kinds: []string{"question", "approval"}},
 			tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"question"}}},
-		{"a run cannot grant the tool", config.AgentDef{Tools: []string{"Read"}}, false,
-			&config.AgentInterruptionACL{Enabled: true},
+		{"a run cannot grant the tool", config.AgentDef{Tools: []string{"Read"}},
+			&config.AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 1},
 			tools.InterruptionPolicyValue{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := s.interruptionPolicyForRun(tc.def, tc.holds, tc.run); !reflect.DeepEqual(got, tc.want) {
+			if got := s.interruptionPolicyForRun(tc.def, tc.run); !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("policy = %+v, want %+v", got, tc.want)
 			}
 		})

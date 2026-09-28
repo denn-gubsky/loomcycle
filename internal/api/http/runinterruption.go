@@ -28,9 +28,14 @@ import (
 //     agent cap; the operator's global applies".
 
 // interruptionPolicyForRun is the interruption policy a run actually has.
-func (s *Server) interruptionPolicyForRun(def config.AgentDef, holdsTool bool, run *config.AgentInterruptionACL) tools.InterruptionPolicyValue {
+//
+// It cannot grant because every branch returns the definition's policy or
+// something narrower: an agent whose definition does not enable the tool has a
+// disabled base, and a disabled base stays disabled. Whether the model can
+// reach the tool at all is the dispatcher's, from the run's own tool set.
+func (s *Server) interruptionPolicyForRun(def config.AgentDef, run *config.AgentInterruptionACL) tools.InterruptionPolicyValue {
 	base := s.interruptionPolicyForAgent(def)
-	if run == nil || !holdsTool {
+	if run == nil {
 		return base
 	}
 	if !run.Enabled || !base.Enabled {
@@ -85,27 +90,21 @@ func holdsInterruptionTool(allowed []tools.Tool) bool {
 // Interruption tool on the turn after it — the same boundary routing adopts a
 // retune at.
 type runInterruption struct {
-	holder    *tools.InterruptionPolicyHolder
-	holdsTool bool
+	holder *tools.InterruptionPolicyHolder
 }
 
 // startRunInterruption attaches the run's live interruption policy to ctx.
-func (s *Server) startRunInterruption(ctx context.Context, def config.AgentDef, allowed []tools.Tool, run *config.AgentInterruptionACL) (context.Context, *runInterruption) {
-	holds := holdsInterruptionTool(allowed)
-	live := &runInterruption{
-		holder:    tools.NewInterruptionPolicyHolder(s.interruptionPolicyForRun(def, holds, run)),
-		holdsTool: holds,
-	}
+func (s *Server) startRunInterruption(ctx context.Context, def config.AgentDef, run *config.AgentInterruptionACL) (context.Context, *runInterruption) {
+	live := &runInterruption{holder: tools.NewInterruptionPolicyHolder(s.interruptionPolicyForRun(def, run))}
 	return tools.WithInterruptionPolicyHolder(ctx, live.holder), live
 }
 
-// adopt re-derives the policy from the run's current record. The tool set is
-// the one the run started with: a retune changes settings, never tools.
+// adoptRunInterruption re-derives the policy from the run's current record.
 func (s *Server) adoptRunInterruption(live *runInterruption, def config.AgentDef, run *config.AgentInterruptionACL) {
 	if live == nil {
 		return
 	}
-	live.holder.Store(s.interruptionPolicyForRun(def, live.holdsTool, run))
+	live.holder.Store(s.interruptionPolicyForRun(def, run))
 }
 
 // emitInertInterruption reports a run that asked for interruptions on an agent

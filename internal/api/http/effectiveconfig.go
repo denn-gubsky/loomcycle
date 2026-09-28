@@ -291,7 +291,7 @@ func (s *Server) effectiveFields(ctx context.Context, run store.Run, def, eff co
 // or a resume since) is reported as what it will adopt there.
 func (s *Server) effectiveInterruption(ctx context.Context, run store.Run, eff config.AgentDef, rec runConfigRecord) effectiveValue {
 	holds := holdsInterruptionTool(filterTools(s.candidateTools(ctx, run.TenantID, eff.Tools), eff.Tools, nil))
-	p := s.interruptionPolicyForRun(eff, holds, rec.Interruption)
+	p := s.interruptionPolicyForRun(eff, rec.Interruption)
 	v := config.AgentInterruptionACL{Enabled: p.Enabled, Kinds: p.Kinds, MaxPending: p.MaxPending}
 	defSet := eff.Interruption.Enabled || len(eff.Interruption.Kinds) > 0 || eff.Interruption.MaxPending != 0
 	switch {
