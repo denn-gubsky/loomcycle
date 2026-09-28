@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -51,9 +52,10 @@ func (s *Server) handleGetRunBreakpoints(w http.ResponseWriter, r *http.Request)
 //
 // It takes effect at the NEXT point the walk consults it: the before_dispatch
 // of a wave that has not started, and — for "<state>:review" — each member run
-// as it finishes its answer, so arming mid-wave holds the members still out. It
-// cannot un-publish a result the next stage has already seen, and does not
-// pretend to.
+// as it finishes its answer, so arming mid-wave holds the members still out.
+// Disarming "<state>:review" releases that state's held members at once, as
+// approved. It cannot un-publish a result the next stage has already seen, and
+// does not pretend to.
 func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request) {
 	set, runID, ok := s.liveBreakpointSet(w, r)
 	if !ok {
@@ -71,7 +73,69 @@ func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "invalid_breakpoint", err.Error())
 		return
 	}
+	s.releaseDisarmedMembers(r.Context(), runID)
 	writeJSON(w, http.StatusOK, breakpointsResponse{RunID: runID, Armed: set.List()})
+}
+
+// releaseDisarmedMembers releases the walk's members held for review whose
+// state's review the new set no longer arms, the way a retune disarm releases
+// a single run. Without it they waited for their hold's next heartbeat, up to
+// 30 seconds, to notice. That heartbeat stays the backstop for a member that
+// finishes its answer as the set changes.
+//
+// Every member still armed is left held, and releaseHeldRun leaves a hold an
+// agent_stop hook took: disarming review did not take it.
+func (s *Server) releaseDisarmedMembers(ctx context.Context, walkRunID string) {
+	for memberRunID, armed := range s.reviewMembers.of(walkRunID) {
+		if !armed(ctx) {
+			s.releaseHeldRun(ctx, memberRunID)
+		}
+	}
+}
+
+// walkReviewMembers maps a live walk's run_id → member run_id → the member's
+// live review arming, for each member running under that walk. An entry lives
+// exactly as long as its member's run.
+type walkReviewMembers struct {
+	mu sync.Mutex
+	m  map[string]map[string]func(context.Context) bool
+}
+
+// add registers a member and returns its removal. A member with no walk run id
+// has no breakpoint set anyone can change, so there is nothing to register.
+func (w *walkReviewMembers) add(walkRunID, memberRunID string, armed func(context.Context) bool) func() {
+	if walkRunID == "" || memberRunID == "" || armed == nil {
+		return func() {}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.m == nil {
+		w.m = map[string]map[string]func(context.Context) bool{}
+	}
+	if w.m[walkRunID] == nil {
+		w.m[walkRunID] = map[string]func(context.Context) bool{}
+	}
+	w.m[walkRunID][memberRunID] = armed
+	return func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		delete(w.m[walkRunID], memberRunID)
+		if len(w.m[walkRunID]) == 0 {
+			delete(w.m, walkRunID)
+		}
+	}
+}
+
+// of returns a copy of a walk's members, so the caller reads their arming —
+// which may write the run record — without holding the lock.
+func (w *walkReviewMembers) of(walkRunID string) map[string]func(context.Context) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make(map[string]func(context.Context) bool, len(w.m[walkRunID]))
+	for id, armed := range w.m[walkRunID] {
+		out[id] = armed
+	}
+	return out
 }
 
 // liveBreakpointSet resolves the armed set for a run, or writes the refusal.
