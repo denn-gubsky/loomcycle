@@ -1504,7 +1504,7 @@ type Store interface {
 
 	// ListPurgeableRetiredDefVersions returns retired-and-old substrate def
 	// versions eligible for the RFC BM data-retention purge, for one def-type
-	// (agent / skill / team / mcp_server / schedule / a2a_server_card /
+	// (agent / skill / team / hook / mcp_server / schedule / a2a_server_card /
 	// a2a_agent / webhook / memory_backend — see RetentionDefTables). A row
 	// qualifies when ALL of:
 	//   - retired = true,
@@ -4402,7 +4402,7 @@ type RetiredDefRef struct {
 
 // retentionDefTables is the hardcoded allowlist mapping an RFC BM retention
 // def-type to its (defs, active) physical table pair. Both store backends
-// (SQLite + Postgres) use the SAME physical table names for these 9 uniform
+// (SQLite + Postgres) use the SAME physical table names for these 10 uniform
 // versioned def families, so the allowlist is shared here — a single source of
 // truth that can't drift between backends.
 //
@@ -4415,6 +4415,7 @@ var retentionDefTables = map[string][2]string{
 	"agent":           {"agent_defs", "agent_def_active"},
 	"skill":           {"skill_defs", "skill_def_active"},
 	"team":            {"teamdefs", "teamdef_active"},
+	"hook":            {"hook_defs", "hook_def_active"},
 	"mcp_server":      {"mcp_server_defs", "mcp_server_def_active"},
 	"schedule":        {"schedule_defs", "schedule_def_active"},
 	"a2a_server_card": {"a2a_server_card_defs", "a2a_server_card_def_active"},
@@ -4426,7 +4427,7 @@ var retentionDefTables = map[string][2]string{
 // RetentionDefTypes is the stable, ordered list of versioned substrate def-types
 // the RFC BM retention sweeper purges. Ordered for deterministic sweeps + reports.
 var RetentionDefTypes = []string{
-	"agent", "skill", "team", "mcp_server", "schedule",
+	"agent", "skill", "team", "hook", "mcp_server", "schedule",
 	"a2a_server_card", "a2a_agent", "webhook", "memory_backend",
 }
 

@@ -1,7 +1,7 @@
 // Package retention runs the periodic RFC BM data-retention sweeper alongside
 // the HTTP server. Without it, retired substrate def versions
-// (agent/skill/team/mcp_server/schedule/a2a_server_card/a2a_agent/webhook/
-// memory_backend) accumulate forever — a self-evolving fleet forks and retires
+// (agent/skill/team/hook/mcp_server/schedule/a2a_server_card/a2a_agent/
+// webhook/memory_backend) accumulate forever — a self-evolving fleet forks and retires
 // versions continuously, so the *_defs tables grow unbounded even though a
 // retired-and-old version is only ever read for lineage history.
 //
