@@ -229,9 +229,10 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
   );
 }
 
-// awaitClass maps a row to one of three tint classes. The server
-// only emits awaited_state for the channel / interrupted cases;
-// every other running row falls through to await-running (so the
+// awaitClass maps a row to one of three tint classes. Only the
+// channel / interrupted states have a tint of their own; every other
+// running row — a review hold included — falls through to
+// await-running (so the
 // whole running-status set is visually distinguishable in the
 // tree). Terminal rows (completed / failed / cancelled) return no
 // extra class — they keep the existing status-* styling.
