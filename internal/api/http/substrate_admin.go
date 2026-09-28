@@ -57,9 +57,15 @@ func (s *Server) handleSubstrateSkillDef(w http.ResponseWriter, r *http.Request)
 // handleSubstrateTeamDef serves POST /v1/_teamdef.
 // RFC AP Phase 2 team-workflow substrate. Bearer-authed; tenant-confined
 // (ScopeTenant via isTenantConfinedDefPath) — same dispatch shape as the
-// AgentDef + SkillDef admin endpoints.
+// AgentDef + SkillDef admin endpoints, but with the USER-aware ctx
+// (substrateAdminUserCtx): op=run files the walk's run — and every member run
+// it spawns — under RunIdentity.UserID, so under the synthetic http-admin id a
+// walk ran as a user nobody is. Its run-state events went to http-admin's bus
+// (the caller's own stream saw nothing), and its members read and wrote
+// http-admin's user-scope memory and documents and spent its budget. The def
+// ops key on tenant + the synthetic agent id, which this ctx leaves unchanged.
 func (s *Server) handleSubstrateTeamDef(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrate(w, r, "TeamDef", s.TeamDef)
+	s.dispatchSubstrateCtx(w, r, "TeamDef", s.TeamDef, substrateAdminUserCtx)
 }
 
 // handleSubstrateHookDef serves POST /v1/_hookdef — reusable hook definitions.

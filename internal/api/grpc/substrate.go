@@ -348,11 +348,13 @@ func (s *Server) HookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest)
 // routes via the Connector to the in-process tool. TENANT-CONFINED (the scope
 // gate maps it to ScopeTenant, like AgentDef/SkillDef); the tool has no
 // per-agent scope policy of its own (authoring is gated at the transport +
-// tenant), so it reuses the plain operator-trust substrateGRPCCtx. `run` walks
-// the team's graph, spawning each state's agent under the wired executor's
-// admission — same connector path the HTTP POST /v1/_teamdef endpoint takes.
+// tenant). `run` walks the team's graph, spawning each state's agent under the
+// wired executor's admission — same connector path the HTTP POST /v1/_teamdef
+// endpoint takes. It uses the USER-aware substrateGRPCUserCtx because the walk's
+// run and its member runs are filed under RunIdentity.UserID: under the
+// synthetic grpc-admin id the walk ran as nobody (see the HTTP handler).
 func (s *Server) TeamDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPC(ctx, "TeamDef", req, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "TeamDef", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.TeamDef(ctx, in)
 		if err != nil {
 			return connector.ToolResult{}, err

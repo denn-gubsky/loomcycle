@@ -29,7 +29,7 @@ import (
 //
 // The concrete failure this fixes: loomboard drives loomcycle through the TS
 // adapter over `POST /v1/_teamdef {op:"run"}`, which dispatches under
-// substrateAdminCtx — no run id, no Interruption policy. A breakpoint armed
+// the substrate admin ctx — no run id, no Interruption policy. A breakpoint armed
 // there could not be answered, and a pause that cannot be answered fails safe
 // to ABORT, so arming one killed the walk instead of pausing it.
 
