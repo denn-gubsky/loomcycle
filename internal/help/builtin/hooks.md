@@ -110,11 +110,16 @@ The same shape goes in an AgentDef overlay (`tools` entries as
   everything its parent run added.
 - **A team adds hooks too.** A TeamDef state's `hooks` / `tool_hooks` are added
   to every run it starts (its agent, each fan-out member, its consolidator),
-  outside the agent's own as a run request's are; they never widen hosts. A
-  TeamDef's top-level `hooks` belong to the walk itself and take only
+  outside the agent's own as a run request's are, and reach those runs'
+  sub-agents. They are the TeamDef's, not the caller's: they resolve in the
+  tenant that owns the TeamDef (`owner: team:<name>`), and a resumed run keeps
+  them as they were. Like an agent's own, a state's `pre` hook may widen hosts
+  only when an operator wrote the TeamDef and the permit list names it (below).
+  A TeamDef's top-level `hooks` belong to the walk itself and take only
   `run_end`, fired when the walk ends (`owner: team:<name>`); one that cannot be
   resolved stops the walk before it starts.
-- The payload's `owner` says where a hook came from (`agent:<name>`).
+- The payload's `owner` says where a hook came from (`agent:<name>`,
+  `team:<name>`, or `run` for a run request's).
 
 ## Hook definitions (HookDef)
 
@@ -479,9 +484,9 @@ hooks:
 
 A bare `name` binds to the shared tenant `""` — the operator's own yaml. And
 the grant counts only when the hook came from an **operator-authored**
-definition (the operator's yaml, or an AgentDef written under an operator
-token): a hook an agent's own definition carries never widens hosts, whatever
-the list says.
+definition (the operator's yaml, or an AgentDef or TeamDef written under an
+operator token): a hook an agent's own definition carries never widens hosts,
+whatever the list says, and neither does one a run request adds.
 
 Only for such a hook does the dispatcher union that hook's
 `allow_hosts` into a **ctx-scoped, this-call-only** extra list the
