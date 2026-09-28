@@ -20,7 +20,7 @@ import (
 func walkUnderReview(t *testing.T, h *reviewHarness, armed ...string) (string, *breakpoints.Set) {
 	t.Helper()
 	walkRunID := seedRunInTenant(t, h.st, "", "u1", "team:plan")
-	set, release, err := h.srv.breakpointReg.Open(walkRunID, armed)
+	set, release, err := h.srv.breakpointReg.Open(walkRunID, armed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

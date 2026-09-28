@@ -159,6 +159,38 @@ func TestTeamDefTool_Run_BreakpointRefusals(t *testing.T) {
 	}
 }
 
+// TestTeamDefTool_Run_LiveSetGetsTheWalksTargetCheck: the live set is what a
+// PUT re-arms, and it holds no definition — so the walk has to hand it the
+// same target check the run boundary applies, or a re-arm on a state the team
+// does not have is accepted and silently never hit.
+func TestTeamDefTool_Run_LiveSetGetsTheWalksTargetCheck(t *testing.T) {
+	tool, ctx, _, _, done := breakFixture(t)
+	defer done()
+	tool.AskHuman = func(context.Context, string) (string, error) { return "continue", nil }
+
+	var targets func(string) error
+	tool.LiveBreakpoints = func(_ context.Context, seed []string, check func(string) error) (teamrun.BreakpointSource, func(), error) {
+		targets = check
+		src, err := teamrun.NewStaticBreakpoints(seed)
+		return src, func() {}, err
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if targets == nil {
+		t.Fatal("the walk opened its live set with no target check")
+	}
+	if err := targets("wave:review"); err != nil {
+		t.Errorf("the team's starter was refused: %v", err)
+	}
+	for spec, want := range map[string]string{"nope": `has no state "nope"`, "done": "only a starter"} {
+		if err := targets(spec); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("targets(%q) = %v, want a refusal containing %q", spec, err, want)
+		}
+	}
+}
+
 // TestTeamDefTool_Run_BreakpointsRequireTheInterruptionMachinery: with no way
 // to ask, the run is REFUSED rather than silently running at full speed.
 // interrupt_on_cap may degrade to aborting because that fallback is still safe;
@@ -260,7 +292,7 @@ func TestTeamDefTool_Run_OpensALiveSetEvenWithNoBreakpoints(t *testing.T) {
 
 	opened, released := 0, 0
 	var seenSeed []string
-	tool.LiveBreakpoints = func(_ context.Context, seed []string) (teamrun.BreakpointSource, func(), error) {
+	tool.LiveBreakpoints = func(_ context.Context, seed []string, _ func(string) error) (teamrun.BreakpointSource, func(), error) {
 		opened++
 		seenSeed = seed
 		src, err := teamrun.NewStaticBreakpoints(seed)

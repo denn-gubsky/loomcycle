@@ -52,6 +52,22 @@ const (
 type Set struct {
 	mu sync.RWMutex
 	at map[string]map[string]bool
+	// checks are the target checks of the walks consulting this set, in the
+	// order they joined. A spec that parses can still name a state its walk
+	// does not have, or one of a kind that phase cannot arm — and that arming
+	// would be silently never hit.
+	checks    []check
+	nextCheck int
+}
+
+// Validator refuses a spec whose target its walk's definition cannot arm. It
+// sees one spec at a time, already parsed, so a set shared by two walks can
+// accept a spec either walk can arm.
+type Validator func(spec string) error
+
+type check struct {
+	id int
+	fn Validator
 }
 
 // NewSet builds a Set from breakpoint specs, refusing the whole list if any
@@ -86,7 +102,8 @@ func (s *Set) Armed(state, phase string) bool {
 //
 // It VALIDATES BEFORE it mutates, so a rejected call leaves the previous arming
 // exactly as it was — an operator fixing a typo must not discover they have
-// also disarmed everything that was working.
+// also disarmed everything that was working. That covers the targets too: a
+// spec naming a state no walk on this set has is refused, not armed on nothing.
 func (s *Set) Replace(specs []string) error {
 	next := make(map[string]map[string]bool, len(specs))
 	for _, spec := range specs {
@@ -103,10 +120,67 @@ func (s *Set) Replace(specs []string) error {
 		}
 		next[state][phase] = true
 	}
+	if err := s.checkTargets(specs); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	s.at = next
 	s.mu.Unlock()
 	return nil
+}
+
+// checkTargets accepts a spec when ANY walk on the set can arm it: two walks
+// sharing one run's set come from different definitions, and a state in either
+// is a real target. A spec neither can arm reports the first walk's reason.
+// A set no walk has checked (a detached or test set) accepts every spec.
+func (s *Set) checkTargets(specs []string) error {
+	s.mu.RLock()
+	checks := append([]check(nil), s.checks...)
+	s.mu.RUnlock()
+	if len(checks) == 0 {
+		return nil
+	}
+	for _, spec := range specs {
+		var first error
+		for _, c := range checks {
+			err := c.fn(spec)
+			if err == nil {
+				first = nil
+				break
+			}
+			if first == nil {
+				first = err
+			}
+		}
+		if first != nil {
+			return first
+		}
+	}
+	return nil
+}
+
+// addCheck registers a walk's target check and returns its withdrawal. A nil
+// check is a walk that cannot say what its targets are, so it accepts every
+// spec — which, in a union, means the set does too for as long as it runs.
+func (s *Set) addCheck(fn Validator) func() {
+	if fn == nil {
+		fn = func(string) error { return nil }
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.nextCheck
+	s.nextCheck++
+	s.checks = append(s.checks, check{id: id, fn: fn})
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i, c := range s.checks {
+			if c.id == id {
+				s.checks = append(s.checks[:i:i], s.checks[i+1:]...)
+				return
+			}
+		}
+	}
 }
 
 // List renders the armed set back as canonical specs, sorted, always
@@ -185,13 +259,15 @@ func NewRegistry() *Registry {
 }
 
 // Open registers a walk's armed set under runID, seeded with the run argument,
-// and returns it plus the release to call when the walk ends.
+// and returns it plus the release to call when the walk ends. targets is the
+// walk's check that a later Replace names states it can actually arm; the seed
+// is not re-checked here, because the run boundary already did.
 //
 // An empty runID gets a detached Set: the arming still works for whatever was
 // passed at dispatch, but nothing can reach it to change it. That is the honest
 // outcome for a walk started outside a run (there is no handle to address), and
 // it fails by being un-armable rather than by refusing to run.
-func (r *Registry) Open(runID string, seed []string) (*Set, func(), error) {
+func (r *Registry) Open(runID string, seed []string, targets Validator) (*Set, func(), error) {
 	set, err := NewSet(seed)
 	if err != nil {
 		return nil, nil, err
@@ -207,12 +283,15 @@ func (r *Registry) Open(runID string, seed []string) (*Set, func(), error) {
 	if e, ok := r.sets[runID]; ok {
 		// A second walk under the same run joins the existing set rather than
 		// replacing it, so an operator's arming is not silently dropped by a
-		// walk that started later.
+		// walk that started later. Its check joins too, and leaves with it: a
+		// state only the finished walk had is no longer a target.
 		e.refs++
-		return e.set, func() { r.release(runID) }, nil
+		withdraw := e.set.addCheck(targets)
+		return e.set, func() { withdraw(); r.release(runID) }, nil
 	}
+	withdraw := set.addCheck(targets)
 	r.sets[runID] = &entry{set: set, refs: 1}
-	return set, func() { r.release(runID) }, nil
+	return set, func() { withdraw(); r.release(runID) }, nil
 }
 
 func (r *Registry) release(runID string) {

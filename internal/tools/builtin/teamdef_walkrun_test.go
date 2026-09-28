@@ -131,7 +131,7 @@ func TestTeamDefTool_Run_DetachReleasesBreakpointsWhenTheWALKEnds(t *testing.T) 
 
 	var mu sync.Mutex
 	released := 0
-	tool.LiveBreakpoints = func(_ context.Context, seed []string) (teamrun.BreakpointSource, func(), error) {
+	tool.LiveBreakpoints = func(_ context.Context, seed []string, _ func(string) error) (teamrun.BreakpointSource, func(), error) {
 		src, err := teamrun.NewStaticBreakpoints(seed)
 		return src, func() { mu.Lock(); released++; mu.Unlock() }, err
 	}
