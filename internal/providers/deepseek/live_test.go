@@ -154,3 +154,48 @@ func TestLive_DeepSeekToolCall(t *testing.T) {
 
 	t.Logf("OK — model called tool %q", toolName)
 }
+
+// The stateful loop's request shape against a V4 model: a NAMED tool_choice,
+// which DeepSeek's thinking mode refuses with a 400. The driver must drop it,
+// so the call succeeds and the model still reaches the offered tool.
+func TestLive_DeepSeekThinkingModelWithAForcedToolChoice(t *testing.T) {
+	key := os.Getenv("DEEPSEEK_API_KEY")
+	if key == "" {
+		t.Skip("DEEPSEEK_API_KEY not set; skipping live test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	d := New(key, "", streamhttp.Options{}, nil)
+	ch, err := d.Call(ctx, providers.Request{
+		Model: "deepseek-v4-flash",
+		Messages: []providers.Message{{
+			Role:    "user",
+			Content: []providers.ContentBlock{{Type: "text", Text: "Record the state {\"done\": true} by calling emit_state."}},
+		}},
+		Tools: []providers.ToolSpec{{
+			Name:        "emit_state",
+			Description: "Record the run's state.",
+			InputSchema: []byte(`{"type":"object","properties":{"done":{"type":"boolean"}},"required":["done"]}`),
+		}},
+		ToolChoice: providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"},
+		MaxTokens:  1024,
+		Stream:     true,
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var toolName string
+	for ev := range ch {
+		switch ev.Type {
+		case providers.EventToolCall:
+			if ev.ToolUse != nil {
+				toolName = ev.ToolUse.Name
+			}
+		case providers.EventError:
+			t.Fatalf("provider error (a forced tool_choice reached thinking mode?): %s", ev.Error)
+		}
+	}
+	t.Logf("OK — no 400; model called %q", toolName)
+}

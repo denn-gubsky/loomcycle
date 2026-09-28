@@ -1224,12 +1224,22 @@ func schemasDiffer(a, b map[string]any) bool {
 // degrades rather than being refused (RFC DG) — which is the right call, and
 // exactly the kind of silent degradation this codebase keeps having to make
 // visible after the fact.
+//
+// Asks the per-model answer, not the provider's coarse bit: a provider that has
+// tool_choice on the wire still drops a forced one for a thinking model
+// (Anthropic under budgeted thinking, DeepSeek in thinking mode), and that run
+// was just as unenforced as one on Ollama.
 func unforcedNote(opts RunOptions) string {
-	if opts.Provider == nil || opts.Provider.Capabilities().SupportsToolChoice {
+	forced := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: emitStateToolName}
+	if opts.Provider == nil || providers.EnforcesToolChoice(opts.Provider, opts.Model, opts.Effort, forced) {
 		return ""
 	}
-	return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
-		"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
+	if !opts.Provider.Capabilities().SupportsToolChoice {
+		return fmt.Sprintf(" (note: provider %q has no tool_choice on the wire, so the call was NOT "+
+			"enforced — the tool was requested in the prompt only)", opts.Provider.ID())
+	}
+	return fmt.Sprintf(" (note: provider %q does not enforce tool_choice for model %q in this mode, so the call "+
+		"was NOT enforced — the tool was requested in the prompt only)", opts.Provider.ID(), opts.Model)
 }
 
 // missingRequiredInput names what an action's input lacks against its tool's

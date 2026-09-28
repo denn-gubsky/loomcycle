@@ -2,7 +2,9 @@ package deepseek
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -230,3 +232,89 @@ type closerBody struct {
 }
 
 func (closerBody) Close() error { return nil }
+
+// sentToolChoice runs one Call against a server that records the request body,
+// and returns the tool_choice DeepSeek would have received ("" when omitted).
+func sentToolChoice(t *testing.T, model, effort string, tc providers.ToolChoice) string {
+	t.Helper()
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n"+"data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	d := New("test-key", srv.URL, streamhttp.Options{}, nil)
+	ch, err := d.Call(context.Background(), providers.Request{
+		Model:      model,
+		Effort:     effort,
+		Messages:   []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Tools:      []providers.ToolSpec{{Name: "emit_state", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		ToolChoice: tc,
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	for range ch {
+	}
+	var sent struct {
+		ToolChoice json.RawMessage `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatalf("request body: %v (%s)", err, body)
+	}
+	return string(sent.ToolChoice)
+}
+
+// DeepSeek 400s a required or named tool_choice in thinking mode ("Thinking
+// mode does not support this tool_choice"), before the model runs. The stateful
+// loop forces its state tool on every step, so chat/medium on deepseek-v4-flash
+// failed at step 0. In thinking mode the forced choice must not be sent.
+func TestDriver_ThinkingModeNeverSendsAForcedToolChoice(t *testing.T) {
+	named := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"}
+	required := providers.ToolChoice{Mode: providers.ToolChoiceRequired}
+	for _, c := range []struct {
+		name, model, effort string
+		tc                  providers.ToolChoice
+	}{
+		{"v4 model, named", "deepseek-v4-flash", "", named},
+		{"v4 model, required", "deepseek-v4-flash", "", required},
+		{"reasoner, named", "deepseek-reasoner", "", named},
+		{"chat model with an effort hint, named", "deepseek-chat", "high", named},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sentToolChoice(t, c.model, c.effort, c.tc); got != "" {
+				t.Errorf("tool_choice sent in thinking mode: %s", got)
+			}
+		})
+	}
+}
+
+// Outside thinking mode the choice is still enforced on the wire, and "none" is
+// accepted in every mode, so neither is dropped.
+func TestDriver_ToolChoiceIsKeptWhereDeepSeekAcceptsIt(t *testing.T) {
+	named := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"}
+	if got := sentToolChoice(t, "deepseek-chat", "", named); !strings.Contains(got, `"emit_state"`) {
+		t.Errorf("deepseek-chat without effort: tool_choice = %q, want the named tool", got)
+	}
+	if got := sentToolChoice(t, "deepseek-v4-flash", "", providers.ToolChoice{Mode: providers.ToolChoiceNone}); got != `"none"` {
+		t.Errorf("v4 model, none: tool_choice = %q, want \"none\"", got)
+	}
+}
+
+// The loop learns from EnforcesToolChoice that the choice is only asked for, so
+// the run reports it instead of claiming a guarantee it does not have.
+func TestDriver_EnforcesToolChoiceFollowsThinkingMode(t *testing.T) {
+	d := New("k", "", streamhttp.Options{}, nil)
+	named := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"}
+	if providers.EnforcesToolChoice(d, "deepseek-v4-flash", "", named) {
+		t.Error("v4 model: a forced choice is dropped, so it must not report enforced")
+	}
+	if !providers.EnforcesToolChoice(d, "deepseek-chat", "", named) {
+		t.Error("deepseek-chat without effort: the choice is sent, so it is enforced")
+	}
+	if !providers.EnforcesToolChoice(d, "deepseek-v4-flash", "", providers.ToolChoice{Mode: providers.ToolChoiceNone}) {
+		t.Error("none is accepted in thinking mode, so it is enforced")
+	}
+}
