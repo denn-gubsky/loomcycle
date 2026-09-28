@@ -870,6 +870,11 @@ type MemoryPolicyValue struct {
 	// reordered by the operator's memory.reranker. nil = off. Operator-resolved
 	// from the agent def — never model-supplied, and there is no tool parameter.
 	Rerank *config.MemoryRerank
+
+	// Units is the agent's `memory_units`: false makes its searches ignore
+	// Document derived search units. nil (unset) USES them wherever an operator
+	// generated them. Operator-resolved from the agent def, like the rest.
+	Units *bool
 }
 
 // WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.

@@ -329,6 +329,12 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		args = append(args, likePrefixPattern(filter.ExcludeTracePrefix))
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
+	// Derived search units, dropped where the caller is not searching documents (or
+	// opted out of units). Namespace-only, like traces.
+	if filter.ExcludeUnitPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeUnitPrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
 	prefixCondition += provenanceCondition(filter.Provenance)
 	var observedCond string
 	observedCond, args = observedCondition(filter, args)
@@ -463,6 +469,12 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	// above there is no provenance to disambiguate.
 	if filter.ExcludeTracePrefix != "" {
 		args = append(args, likePrefixPattern(filter.ExcludeTracePrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
+	// Derived search units, dropped where the caller is not searching documents (or
+	// opted out of units). Namespace-only, like traces.
+	if filter.ExcludeUnitPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeUnitPrefix))
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)

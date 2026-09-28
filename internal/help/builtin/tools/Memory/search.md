@@ -52,6 +52,13 @@ Extra keys appear only when relevant: `time_filter` (when you passed `when`),
 `sources_applied: false` with a `note` when this backend ignored `sources` —
 then the results are NOT restricted to the kinds you asked for.
 
+A document hit may carry `matched_unit: {kind, text}`: the chunk was found
+through a short description, claim or question the operator generated for it
+(a "derived search unit"), and the unit is why it matched. The chunk appears
+once however many of its units matched. `sources: [notes]` or `[facts]` never
+returns units, and neither does any search when the operator switched them off
+for this agent.
+
 `reranked` appears when the operator has this agent's document searches
 reranked by a model: `true` means the order is the reranker's (so `rank_score`
 no longer describes it), and `false` comes with a `rerank_reason` —

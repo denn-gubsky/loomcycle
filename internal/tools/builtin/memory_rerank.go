@@ -39,3 +39,11 @@ func renderRerank(out map[string]any, opts memrank.RerankOptions, rep *memrank.R
 		out["rerank_reason"] = rep.Reason
 	}
 }
+
+// noUnits reports whether the agent opted its searches out of Document derived
+// search units (`memory_units: false`). Unset means units are used wherever an
+// operator generated them.
+func noUnits(ctx context.Context) bool {
+	u := tools.MemoryPolicy(ctx).Units
+	return u != nil && !*u
+}

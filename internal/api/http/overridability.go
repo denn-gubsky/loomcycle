@@ -123,6 +123,10 @@ var agentDefOverridability = map[string]overridability{
 	// decision the operator made for every run of the agent.
 	"MemoryRerank": notOverridable,
 
+	// Which rows an agent's document searches can match. Operator-declared for the
+	// same reason as the rerank: it decides what every search of the agent returns.
+	"MemoryUnits": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,

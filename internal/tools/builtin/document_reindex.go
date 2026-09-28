@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -75,16 +77,20 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 	tenant := direntTenant(ctx)
 	cursor := after
 	for {
-		page, err := d.Store.MemoryListAfter(ctx, tenant, mscope, key.ScopeID, chunkBodyKeyPrefix, cursor, reindexPage)
+		// ONE walk over "doc." covers chunk bodies and then their derived units:
+		// every doc.chunk: key sorts before every doc.unit: key, so the cursor stays a
+		// single key. Any other doc.* key is not Document material and is stepped over.
+		page, err := d.Store.MemoryListAfter(ctx, tenant, mscope, key.ScopeID, documentRowsPrefix, cursor, reindexPage)
 		if err != nil {
 			return rep, err
 		}
 		for _, row := range page {
 			cursor = row.Key
+			want, isDocRow := d.rowIndexText(ctx, key, row)
+			if !isDocRow {
+				continue
+			}
 			rep.Examined++
-			chunkID := ChunkIDFromBodyKey(row.Key)
-			body := bodyFromValue(row.Value)
-			want := d.chunkIndexText(ctx, key, chunkID, "", body)
 			stored, gerr := d.Store.MemoryEmbedGet(ctx, tenant, mscope, key.ScopeID, row.Key)
 			hasStored := gerr == nil
 			if gerr != nil && !isNotFound(gerr) {
@@ -118,6 +124,25 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 			return rep, nil // the walk reached the end of the scope
 		}
 	}
+}
+
+// documentRowsPrefix spans both Document namespaces in the memory keyspace.
+const documentRowsPrefix = "doc."
+
+// rowIndexText is the index text a Document row should carry: a chunk body's, or a
+// derived unit's (its chunk's header, then the unit). isDocRow is false for any
+// other row.
+func (d *Document) rowIndexText(ctx context.Context, key sqlmem.ScopeKey, row store.MemoryEntry) (string, bool) {
+	if chunkID, isUnit := memrank.UnitChunkID(row.Key); isUnit {
+		var v memrank.UnitValue
+		_ = json.Unmarshal(row.Value, &v)
+		return d.unitIndexText(ctx, key, chunkID, v.Text), true
+	}
+	chunkID := ChunkIDFromBodyKey(row.Key)
+	if chunkID == "" {
+		return "", false
+	}
+	return d.chunkIndexText(ctx, key, chunkID, "", bodyFromValue(row.Value)), true
 }
 
 func (r *ReindexReport) fail(key string) {

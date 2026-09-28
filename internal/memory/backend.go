@@ -143,6 +143,11 @@ type SearchQuery struct {
 	// Rerank is the agent's opt-in listwise rerank. The zero value asks for none.
 	// Set by the tool from the agent definition, never from tool input.
 	Rerank RerankOptions
+
+	// NoUnits makes the search ignore Document derived search units entirely (an
+	// agent's `memory_units: false`). The zero value USES them wherever they exist,
+	// which is only where an operator chose to generate them.
+	NoUnits bool
 }
 
 // CanReturnDocuments reports whether this query can return Document chunk bodies:
@@ -267,6 +272,15 @@ func ParseSources(in []string) ([]Source, error) {
 // Both refused combinations are also odd requests ("my facts and my documents but not
 // my notes"); if one turns out to be real, the disjunction is the fix.
 func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
+	f, err := q.selectorFilter()
+	if err != nil {
+		return f, err
+	}
+	return q.withUnitExclusion(f), nil
+}
+
+// selectorFilter is Filter without the derived-unit rule (see withUnitExclusion).
+func (q SearchQuery) selectorFilter() (store.MemorySearchFilter, error) {
 	// The RFC CL window is applied FIRST so it survives every return path below.
 	// Filter has several early exits (no selector, documents-only, the refusal), and
 	// attaching the window at each one is how a predicate ends up honoured on some
@@ -424,4 +438,9 @@ type SearchResult struct {
 	// when the backend does not rerank at all (the tool reports that as its own
 	// reason rather than as silence).
 	Rerank *RerankReport
+
+	// MatchedUnits is index-aligned with Entries: for a chunk found through one of
+	// its derived search units, the unit that found it; nil for an entry found
+	// directly. Nil (the whole slice) when no unit matched anything.
+	MatchedUnits []*MatchedUnit
 }

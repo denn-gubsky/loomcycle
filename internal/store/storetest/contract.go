@@ -191,6 +191,8 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryPendingEnqueueDrainAck", testMemoryPendingEnqueueDrainAck},
 		{"MemoryPendingOriginRoundTripsAndIsScoped", testMemoryPendingOriginRoundTripsAndIsScoped},
 		{"MemoryScopeUsageExcludesNamespace", testMemoryScopeUsageExcludesNamespace},
+		{"MemoryScopeUsageExcludesSeveralNamespaces", testMemoryScopeUsageExcludesSeveralNamespaces},
+		{"MemorySearchFilterExcludesUnits", testMemorySearchFilterExcludesUnits},
 		{"MemoryCursorGetDefault", testMemoryCursorGetDefault},
 		{"MemoryCursorLeaseCAS", testMemoryCursorLeaseCAS},
 		{"MemoryCursorAdvanceMonotonicAndOwner", testMemoryCursorAdvanceMonotonicAndOwner},
@@ -13496,5 +13498,94 @@ func testHookDefSnapshotRoundTrip(t *testing.T, s store.Store) {
 	}
 	if !found {
 		t.Error("restored pointer missing from snapshot read")
+	}
+}
+
+// testMemoryScopeUsageExcludesSeveralNamespaces: Document chunk bodies AND their
+// derived search units are left out of an agent's memory quota at once — units
+// are written by an operator pass, often a dozen per chunk, and must not lock an
+// agent out of its own memory.
+func testMemoryScopeUsageExcludesSeveralNamespaces(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const tenant, scopeID = "t-usage2", "u-usage2"
+	scope := store.MemoryScopeUser
+	for _, k := range []string{"memory/fact/a", "doc.chunk:c1", "doc.unit:c1:claim:0", "doc.unit:c1:question:0"} {
+		if err := s.MemorySet(ctx, tenant, scope, scopeID, k, json.RawMessage(`"v"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		excl []string
+		want int
+	}{
+		{nil, 4},
+		{[]string{"doc.chunk:"}, 3},
+		{[]string{"doc.chunk:", "doc.unit:"}, 1},
+		{[]string{"", "doc.unit:"}, 2}, // an empty prefix excludes nothing
+	} {
+		keys, _, err := s.MemoryScopeUsage(ctx, tenant, scope, scopeID, c.excl...)
+		if err != nil {
+			t.Fatalf("MemoryScopeUsage(%q): %v", c.excl, err)
+		}
+		if keys != c.want {
+			t.Errorf("MemoryScopeUsage(%q) keys = %d, want %d", c.excl, keys, c.want)
+		}
+	}
+}
+
+// testMemorySearchFilterExcludesUnits: ExcludeUnitPrefix drops derived search
+// units from BOTH retrieval legs and nothing else — a unit that reached a notes
+// or facts search would surface an index row as if it were a remembered thing.
+func testMemorySearchFilterExcludesUnits(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid = "unitfilter"
+	write := func(key string) {
+		t.Helper()
+		v, _ := json.Marshal("shared units topic")
+		if err := s.MemorySet(ctx, "", store.MemoryScopeUser, sid, key, v, 0); err != nil {
+			t.Fatalf("MemorySet %s: %v", key, err)
+		}
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, key, store.MemoryEmbedding{
+			Provider: "test", Model: "m", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: "shared units topic", CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s: %v", key, err)
+		}
+	}
+	write("memory/note/a")
+	write("doc.chunk:u1")
+	write("doc.unit:u1:claim:0")
+	f := store.MemorySearchFilter{ExcludeUnitPrefix: "doc.unit:"}
+	if f.IsZero() {
+		t.Error("a filter excluding units must not report that it constrains nothing")
+	}
+	rows, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid, f, floats32(1, 0, 0, 0), 10)
+	if err != nil {
+		t.Fatalf("vector leg: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("vector leg returned %d rows, want 2 (the unit dropped, the note and chunk kept)", len(rows))
+	}
+	for _, r := range rows {
+		if strings.HasPrefix(r.Key, "doc.unit:") {
+			t.Errorf("vector leg returned unit %s", r.Key)
+		}
+	}
+	if s.SupportsFullText() {
+		lex, err := s.MemoryFullTextSearch(ctx, "", store.MemoryScopeUser, sid, f, "units topic", 10)
+		if err != nil {
+			t.Fatalf("full-text leg: %v", err)
+		}
+		for _, r := range lex {
+			if strings.HasPrefix(r.Key, "doc.unit:") {
+				t.Errorf("full-text leg returned unit %s", r.Key)
+			}
+		}
+		if len(lex) != 2 {
+			t.Errorf("full-text leg returned %d rows, want 2", len(lex))
+		}
 	}
 }
