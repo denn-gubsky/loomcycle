@@ -39,7 +39,7 @@ const (
 	// off the sink. It is refused by name: holding results is each member run's
 	// review hold now (Review).
 	removedAfterCollection = "after_collection"
-	// Review holds a starter's member runs for an operator's verdict. Never
+	// Review holds a state's member runs for an operator's verdict. Never
 	// implied by the bare "<state>" form, which arms the two debug pauses:
 	// review is a separate decision, not a debugging mode.
 	Review = "review"

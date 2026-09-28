@@ -105,3 +105,73 @@ func TestTeamDefTool_Run_ReviewRefusals(t *testing.T) {
 		}
 	}
 }
+
+// pipelineGraph is an agent state, a parallel fan-out with its consolidator,
+// and a standalone consolidator — every kind review now reaches, and the one
+// it does not.
+const pipelineGraph = `{"entry":"draft","states":[` +
+	`{"state":"draft","handler":{"kind":"agent","agent":"writer"}},` +
+	`{"state":"fan","handler":{"kind":"parallel","agents":["a","b"],"consolidator":"merge"}},` +
+	`{"state":"judge","handler":{"kind":"consolidator","agent":"judge"}},` +
+	`{"state":"done","handler":{"kind":"terminal"}}],` +
+	`"transitions":[{"from":"draft","to":"fan","on":"success"},{"from":"fan","to":"judge","on":"success"},` +
+	`{"from":"judge","to":"done","on":"success"}]}`
+
+// agentArmingSpy records, per agent, whether its member was armed for review.
+type agentArmingSpy struct {
+	mu    sync.Mutex
+	armed map[string]bool
+}
+
+func (s *agentArmingSpy) spawn(ctx context.Context, agent string, _ teamrun.Prompt, _ string) (teamrun.SpawnResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := teamrun.ReviewArming(ctx)
+	s.armed[agent] = a != nil && a(ctx)
+	return teamrun.SpawnResult{Output: "work of " + agent, Status: "completed"}, nil
+}
+
+// op=run review arms an agent state's member and each member of a parallel
+// fan-out — never the consolidator that merges or judges them.
+func TestTeamDefTool_Run_ReviewArmsAgentAndParallelMembers(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	spy := &agentArmingSpy{armed: map[string]bool{}}
+	tool.Spawn = spy.spawn
+	createTeam(t, tool, ctx, "pipeline", pipelineGraph)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"pipeline","input":"x","review":["draft","fan"]}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	for _, m := range []string{"writer", "a", "b"} {
+		if !spy.armed[m] {
+			t.Errorf("member %q was not armed for review: %v", m, spy.armed)
+		}
+	}
+	for _, c := range []string{"merge", "judge"} {
+		if armed, ran := spy.armed[c]; !ran || armed {
+			t.Errorf("consolidator %q ran=%v armed=%v, want it run and unarmed", c, ran, armed)
+		}
+	}
+}
+
+// Review on a consolidator is refused at the run boundary, in either spelling,
+// with the reason — its answer is the verdict on the work, not the work.
+func TestTeamDefTool_Run_ReviewOnAConsolidatorIsRefused(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	spy := &agentArmingSpy{armed: map[string]bool{}}
+	tool.Spawn = spy.spawn
+	createTeam(t, tool, ctx, "pipeline", pipelineGraph)
+
+	for _, args := range []string{`"review":["judge"]`, `"breakpoints":["judge:review"]`} {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"pipeline","input":"x",`+args+`}`))
+		if !res.IsError || !strings.Contains(res.Text, "is a consolidator") {
+			t.Errorf("%s: isError=%v %q, want a refusal naming the consolidator", args, res.IsError, res.Text)
+		}
+	}
+	if len(spy.armed) != 0 {
+		t.Errorf("a refused run spawned %v", spy.armed)
+	}
+}
