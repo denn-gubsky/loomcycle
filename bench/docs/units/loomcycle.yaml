@@ -1,0 +1,49 @@
+# RFC DM C3 probe — an isolated loomcycle for the PolicyQA units measurement.
+# Every policy lives in its own user scope (user_id = pqa-NN); every document is named
+# under /policies, which is the subtree marked for unit generation.
+models:
+  local-medium:    { provider: ollama-local, model: qwen3.6:latest }
+  local-embedding: { provider: ollama-local, model: bge-m3:latest }
+memory:
+  embedder: { model: local-embedding }
+  reranker: { model: local-medium, effort: low }            # defaults: 20 candidates x 1,200 chars
+  unit_generator:
+    model: local-medium
+    effort: low
+    subtrees: [{ path: /policies }]                          # all three kinds
+
+x-search: &search
+  provider: code-js
+  tools: [Document]
+  skills: ["-*"]
+  memory_scopes: [user]
+  sql_scopes: [user]
+  code: |
+    function run(input) {
+      var r = JSON.parse(Document({ op: "search", scope: "user", query: input.prompt, limit: 10 }));
+      return { final_text: JSON.stringify(r) };
+    }
+
+agents:
+  pqa/writer:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    code: |
+      function run(input) {
+        return { final_text: Document(JSON.parse(input.prompt)) };
+      }
+  pqa/search-header:
+    <<: *search
+    memory_units: false
+  pqa/search-units:
+    <<: *search
+  pqa/search-header-rr:
+    <<: *search
+    memory_units: false
+    memory_rerank: { enabled: true }
+  pqa/search-units-rr:
+    <<: *search
+    memory_rerank: { enabled: true }
