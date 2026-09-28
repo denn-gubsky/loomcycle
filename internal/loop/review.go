@@ -185,6 +185,10 @@ const (
 // arming took it. A hook's hold is not released by disarming review: arming
 // did not take it.
 func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, round, lastCtxTokens, preambleTokens int, acceptFrom, heldSince time.Time, heldBy string, emit func(providers.Event)) ([]providers.Message, int, reviewOutcome) {
+	if opts.OnReviewHold != nil {
+		opts.OnReviewHold(true)
+		defer opts.OnReviewHold(false)
+	}
 	heldAt := acceptFrom
 	var deadline <-chan time.Time
 	expiresAt := ""
