@@ -17,6 +17,20 @@ research, …).
     outputs and picks the outgoing edge;
   - `consolidator` — a standalone judging step;
   - `terminal` — an end state (no agent, no outgoing edges).
+- **`timeout_ms`** on a handler bounds how long its runs may take (`0` or
+  unset = no limit):
+  - on `agent`, `parallel` and `consolidator` it bounds ONE execution of the
+    handler — every run it starts (the agent, each fan-out member, the
+    consolidator) — measured from when the state starts. When it runs out, the
+    runs still going are cancelled and the state fails with
+    `state "<id>" timed out: timeout_ms=<N> elapsed`, which ends the walk like
+    any other handler failure;
+  - on `starter` it bounds EACH spawned run, from its dispatch. A run that runs
+    out is cancelled and publishes `status: "timeout"` to the sink (still one
+    message per run); it does not count toward the wave's `wait`.
+  - Time a run spends held for a review verdict does not count. A starter run's
+    clock stops while it is held; a handler-wide clock stops while every run in
+    flight is held.
 - **Transitions** are the edges between states, gated by an `on` label:
   `success` (advance), `pushback:<reason>` (loop back for rework), or
   `conditional:<expr>`. A state's outbound labels are unique, and every cycle is
