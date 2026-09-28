@@ -413,11 +413,17 @@ func oneLineDesc(s string) string {
 // what to do, or, once, invented a value and reported it saved. The runtime
 // still does not write Σ; the task sits beside it, and "" (the first step,
 // whose observation IS the task) renders nothing extra.
-func statefulUserMessage(sigma map[string]any, task, obs string) providers.Message {
+//
+// reference is what the run's Context tool returned on earlier steps (see
+// contextMemo), shown between the task and the state; "" renders nothing.
+func statefulUserMessage(sigma map[string]any, task, reference, obs string) providers.Message {
 	sj, _ := json.Marshal(sigma)
 	var b strings.Builder
 	if task != "" && task != obs {
 		fmt.Fprintf(&b, "Your task (keep working on it until it is done):\n%s\n\n", task)
+	}
+	if reference != "" {
+		b.WriteString(reference)
 	}
 	fmt.Fprintf(&b, "Current state:\n%s\n\nLatest observation:\n%s", string(sj), obs)
 	return providers.Message{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: b.String()}}}
@@ -659,6 +665,9 @@ func applyStatefulSampling(req *providers.Request, s *config.Sampling) {
 // split from opts.Segments); `initial` is the seed conversation (the task);
 // `toolSpecs` is the action-tool catalog; `emit` forwards + persists events.
 func runStateful(ctx context.Context, opts RunOptions, system []providers.ContentBlock, initial []providers.Message, toolSpecs []providers.ToolSpec, iterCap int, emit func(providers.Event)) (RunResult, error) {
+	// What the run's Context tool returns is kept across steps (see contextMemo).
+	helpTool := helpToolName(opts.Tools)
+	memo := &contextMemo{}
 	// The model reads only its latest observation, so a help hint shown once
 	// would be gone the step after: attach it to every shape failure until the
 	// model reads that tool's help. Nothing accumulates here, so the repeat
@@ -792,7 +801,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
 			}
 		}
-		msgs := []providers.Message{statefulUserMessage(sigma, task, obs)}
+		msgs := []providers.Message{statefulUserMessage(sigma, task, memo.render(helpTool, obs), obs)}
 		var es *emitStateOut
 		for attempt := 0; ; attempt++ {
 			// RFC DG: say on the WIRE what the system prompt has only ever
@@ -1198,6 +1207,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
 			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text
+			if helpTool != "" && tu.Name == helpTool && !blocks[0].IsError {
+				memo.add(tu.Input, obs)
+			}
 			if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
 				msg := "run stopped: " + why + " after being told it cannot succeed as sent"
 				emit(providers.Event{Type: providers.EventError, Error: msg})
