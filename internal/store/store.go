@@ -5282,6 +5282,9 @@ const (
 	InterruptResolvedByAPI         = "api"
 	InterruptResolvedByTimeout     = "timeout"
 	InterruptResolvedByAgentCancel = "agent_cancel"
+	// A channel hook's ask left pending by a worker that is gone, cancelled
+	// when the message is claimed again (and asked afresh).
+	InterruptResolvedByHookRestart = "hook_restart"
 )
 
 // MintInterruptID returns a fresh interrupt_id that's monotonic-by-

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 func channelHook(code string) *hooks.Hook {
@@ -57,5 +58,65 @@ func TestCodeHook_EachMessageHasItsOwnSeed(t *testing.T) {
 	}
 	if a1 != a2 {
 		t.Errorf("one message drew %s, then %s", a1, a2)
+	}
+}
+
+// fakeSession is an AskSession over memory that counts what the runner does.
+type fakeSession struct {
+	recorded      []hooks.AskRecord
+	began, waited int
+	resumed       int
+}
+
+func (s *fakeSession) Recorded() []hooks.AskRecord { return s.recorded }
+func (s *fakeSession) Record(r hooks.AskRecord) error {
+	s.recorded = append(s.recorded, r)
+	return nil
+}
+func (s *fakeSession) Begin(ctx context.Context) (context.Context, error) {
+	s.began++
+	return tools.WithRunID(ctx, "run_hook"), nil
+}
+func (s *fakeSession) Wait() func() { s.waited++; return func() { s.resumed++ } }
+
+// An answer a person already gave is replayed from the session, not asked
+// again — the body decides on it as if it had just been answered. Without the
+// session the answers lived only in the invocation's memory, so a restart
+// asked the same question twice.
+func TestCodeHook_AskedAnswerReplaysFromTheJournal(t *testing.T) {
+	h := channelHook(`function hook(ev) {
+		var a = Interruption.ask({question: "deliver " + ev.message_id + "?", options: ["yes", "no"]});
+		return a === "yes" ? {decision: "release"} : {decision: "drop", reason: "a person said no"};
+	}`)
+	fi := &fakeInterruption{answer: func(int, string) tools.Result { return answered("no") }}
+	sess := &fakeSession{recorded: []hooks.AskRecord{{
+		Input: json.RawMessage(`{"op":"ask","options":["yes","no"],"question":"deliver m1?"}`),
+		Text:  `{"interrupt_id":"int_old","answer":"yes"}`,
+	}}}
+	got, err := New(fi).Run(hooks.WithAskSession(context.Background(), sess), h, "channel_publish", message("m1", `{}`))
+	if err != nil || got.Decision != "release" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if len(fi.inputs) != 0 || sess.began != 0 {
+		t.Fatalf("asked again (%d calls, %d runs opened)", len(fi.inputs), sess.began)
+	}
+}
+
+// A new ask goes through the session: under the run it opens, with the slot
+// given up while a person decides, and the answer kept before the body runs
+// again.
+func TestCodeHook_ANewAskGoesThroughTheSession(t *testing.T) {
+	h := channelHook(`function hook(ev) {
+		var a = Interruption.ask({question: "ok?", options: ["yes", "no"]});
+		return a === "yes" ? {decision: "release"} : {decision: "drop"};
+	}`)
+	fi := &fakeInterruption{answer: func(int, string) tools.Result { return answered("yes") }}
+	sess := &fakeSession{}
+	got, err := New(fi).Run(hooks.WithAskSession(context.Background(), sess), h, "channel_publish", message("m1", `{}`))
+	if err != nil || got.Decision != "release" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if sess.began != 1 || sess.waited != 1 || sess.resumed != 1 || len(sess.recorded) != 1 {
+		t.Fatalf("session: began %d, waited %d, resumed %d, recorded %d", sess.began, sess.waited, sess.resumed, len(sess.recorded))
 	}
 }

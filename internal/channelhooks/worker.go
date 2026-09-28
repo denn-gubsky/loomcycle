@@ -90,6 +90,12 @@ type Config struct {
 	// often the worker looks for work when nothing wakes it (default 5s).
 	Lease time.Duration
 	Poll  time.Duration
+
+	// Interruption asks a person for a hold's decision, and Runs opens the
+	// run such an ask is filed under. Without both, nobody can answer a hold,
+	// and the message waits out its deadline.
+	Interruption tools.Tool
+	Runs         RunMinter
 }
 
 // Worker decides the messages of hooked channels. Run starts it.
@@ -228,7 +234,7 @@ func (w *Worker) claim(ctx context.Context) bool {
 // channelSlot holds one of a channel's slots until release is called. A
 // channel at its bound waits here; the global slot it already holds is the
 // price of keeping claims simple, and claims are oldest first.
-func (w *Worker) channelSlot(ctx context.Context, tenant, channel string) (release func(), ok bool) {
+func (w *Worker) channelSlot(ctx context.Context, tenant, channel string) (sem chan struct{}, ok bool) {
 	key := tenant + "\x00" + channel
 	w.mu.Lock()
 	sem, found := w.perCh[key]
@@ -239,7 +245,7 @@ func (w *Worker) channelSlot(ctx context.Context, tenant, channel string) (relea
 	w.mu.Unlock()
 	select {
 	case sem <- struct{}{}:
-		return func() { <-sem }, true
+		return sem, true
 	case <-ctx.Done():
 		return nil, false
 	}
@@ -252,6 +258,9 @@ type job struct {
 	key      store.ChannelMessageKey
 	progress store.ChannelHookProgress
 	deadline time.Time
+	jrnl     journal
+	chSem    chan struct{} // the channel slot the job holds
+	runEmit  tools.EventEmitterFunc
 }
 
 func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
@@ -263,11 +272,13 @@ func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
 		progress: it.Progress,
 		deadline: w.deadlineFor(m),
 	}
-	release, ok := w.channelSlot(ctx, m.HookTenant, m.Channel)
+	sem, ok := w.channelSlot(ctx, m.HookTenant, m.Channel)
 	if !ok {
 		return
 	}
-	defer release()
+	j.chSem = sem
+	defer func() { <-sem }()
+	j.loadJournal()
 
 	// Renew the lease while the chain runs. Losing it means another worker
 	// has the message; stop, and let the compare-and-set settle who decides.
@@ -319,25 +330,19 @@ func (j *job) renew(ctx context.Context, lost func()) {
 	}
 }
 
-// heldMarker is the journal a hold leaves: the message waits, at that hook,
-// for a person's decision until its deadline.
-type heldMarker struct {
-	HeldBy string `json:"held_by"`
-	Reason string `json:"reason,omitempty"`
-}
-
 func (j *job) decide(ctx context.Context) {
 	def, declared, err := j.w.cfg.Defs(ctx, j.msg.HookTenant, j.msg.Channel)
 	var known *Def
 	if err == nil {
 		known = &def
 	}
-	var h heldMarker
-	if len(j.progress.Journal) > 0 && json.Unmarshal(j.progress.Journal, &h) == nil && h.HeldBy != "" {
-		// Held at a hook. Until a person can be asked, nobody can answer, so
-		// the message waits out its deadline and is dropped.
+	// Its previous worker is gone: nobody waits for the answers it asked for.
+	j.cancelStaleAsks(ctx)
+	if h := j.jrnl; h.HeldBy != "" {
+		// Held at a hook while nobody could be asked: the message waits out
+		// its deadline and is dropped.
 		if j.w.now().Before(j.deadline) {
-			j.save(ctx, j.progress.ChainPos, j.progress.Body, j.progress.Attempts, j.deadline, j.progress.LastError, j.progress.Journal)
+			_ = j.saveProgress(ctx, j.progress.ChainPos, j.progress.Body, j.progress.Attempts, j.deadline, j.progress.LastError)
 			return
 		}
 		reason := "held by hook " + h.HeldBy + ", and nobody decided before the deadline"
@@ -372,7 +377,10 @@ func (j *job) decide(ctx context.Context) {
 	for pos < len(chain) {
 		h := chain[pos]
 		name := h.Owner + "/" + h.Name
-		res, err := j.w.cfg.Dispatcher.InvokeChannel(hctx, h, hooks.ChannelHookCall{
+		// A code body's own asks go through the message's session: kept,
+		// replayed, and filed under its hook run.
+		sctx := hooks.WithAskSession(hctx, j.session(ctx, pos, h.Name, bodyOrNil(body, changed)))
+		res, err := j.w.cfg.Dispatcher.InvokeChannel(sctx, h, hooks.ChannelHookCall{
 			Channel: j.msg.Channel, Scope: string(j.msg.Scope), ScopeID: j.msg.ScopeID,
 			MessageID: j.msg.ID, PublishedAt: j.msg.PublishedAt, PublishedBy: j.msg.PublishedByUserID,
 			Origin: j.msg.Origin, Attempt: attempts + 1, Body: body,
@@ -408,18 +416,40 @@ func (j *job) decide(ctx context.Context) {
 			return
 		case hooks.ChannelHold:
 			j.record(providers.HookDecisionInfo{Hook: name, Decision: hooks.ChannelHold, Reason: res.Reason})
-			marker, _ := json.Marshal(heldMarker{HeldBy: name, Reason: res.Reason})
-			j.save(ctx, pos, bodyOrNil(body, changed), attempts, j.deadline, "", marker)
-			return
+			if j.w.cfg.Interruption == nil || j.w.cfg.Runs == nil {
+				j.jrnl = journal{Pos: pos, HeldBy: name, Reason: res.Reason}
+				_ = j.saveProgress(ctx, pos, bodyOrNil(body, changed), attempts, j.deadline, "")
+				return
+			}
+			answer, err := j.askHold(ctx, pos, h.Name, name, res.Reason, body, bodyOrNil(body, changed))
+			if ctx.Err() != nil {
+				return // shutting down, or the lease was lost: asked again on reclaim
+			}
+			if err != nil || answer == holdDrop {
+				reason := "dropped by a person at hook " + name + "'s hold"
+				if err != nil {
+					reason = "held by hook " + name + ", and nobody answered: " + err.Error()
+				}
+				j.record(providers.HookDecisionInfo{Hook: name, Decision: hooks.ChannelDrop, Reason: reason})
+				j.drop(ctx, &def, reason, name)
+				return
+			}
+			j.record(providers.HookDecisionInfo{Hook: name, Decision: hooks.ChannelRelease, Reason: "released by a person at the hold"})
+			pos, attempts = pos+1, 0
+			j.jrnl = journal{Pos: -1}
+			if pos < len(chain) {
+				_ = j.saveProgress(ctx, pos, bodyOrNil(body, changed), 0, time.Time{}, "")
+			}
 		default:
 			j.record(providers.HookDecisionInfo{Hook: name, Decision: res.Kind(), Reason: res.Reason})
 			if res.UpdatedBody != nil {
 				body, changed = res.UpdatedBody, true
 			}
 			pos, attempts = pos+1, 0
+			j.jrnl = journal{Pos: -1}
 			if pos < len(chain) {
 				// Saved between hooks, so a restart resumes at the next one.
-				j.save(ctx, pos, bodyOrNil(body, changed), 0, time.Time{}, "", nil)
+				_ = j.saveProgress(ctx, pos, bodyOrNil(body, changed), 0, time.Time{}, "")
 			}
 		}
 	}
@@ -495,7 +525,7 @@ func (j *job) retryAt(ctx context.Context, def *Def, pos int, body json.RawMessa
 		j.drop(ctx, def, reason, by)
 		return
 	}
-	j.save(ctx, pos, body, attempts, next, lastErr, nil)
+	_ = j.saveProgress(ctx, pos, body, attempts, next, lastErr)
 }
 
 func nonEmpty(a, b string) string {
@@ -517,19 +547,29 @@ func backoff(attempts int) time.Duration {
 	return d
 }
 
-// save records the chain's progress and gives the lease up, so the message
-// is claimed again at next (zero: at once, by whoever claims first).
-func (j *job) save(ctx context.Context, pos int, body json.RawMessage, attempts int, next time.Time, lastErr string, journal json.RawMessage) {
-	p := store.ChannelHookProgress{ChainPos: pos, Body: body, Journal: journal, Attempts: attempts, NextAttemptAt: next, LastError: lastErr}
+// saveProgress records the chain's progress — with the message's hook run
+// and its asks so far — and, when next is set, gives the lease up so the
+// message is claimed again at next.
+func (j *job) saveProgress(ctx context.Context, pos int, body json.RawMessage, attempts int, next time.Time, lastErr string) error {
+	p := store.ChannelHookProgress{RunID: j.progress.RunID, ChainPos: pos, Body: body, Journal: j.journalJSON(),
+		Attempts: attempts, NextAttemptAt: next, LastError: lastErr}
 	leaseUntil := j.w.now()
 	if next.IsZero() {
-		// Between hooks: keep the lease, the chain goes on.
+		// Between hooks (or asks): keep the lease, the chain goes on.
 		leaseUntil = leaseUntil.Add(j.w.cfg.Lease)
 	}
-	if _, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.w.cfg.Owner, p, leaseUntil); err != nil && ctx.Err() == nil {
-		log.Printf("channelhooks: %s message %s: save progress: %v", j.msg.Channel, j.msg.ID, err)
+	ok, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.w.cfg.Owner, p, leaseUntil)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("channelhooks: %s message %s: save progress: %v", j.msg.Channel, j.msg.ID, err)
+		}
+		return err
 	}
 	j.progress = p
+	if !ok {
+		return errors.New("the message's lease was lost")
+	}
+	return nil
 }
 
 // release delivers the message: into the channel's hold when it is held,
@@ -552,6 +592,7 @@ func (j *job) release(ctx context.Context, def *Def, body json.RawMessage, chang
 		}
 		return
 	}
+	j.finishRun("released")
 	if !ok {
 		return // settled elsewhere, expired, trimmed or purged
 	}
@@ -574,9 +615,13 @@ func (j *job) drop(ctx context.Context, def *Def, reason, by string) {
 		j.release(ctx, def, sinkError(j.msg.Payload, reason), true)
 		return
 	}
-	if _, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key); err != nil && ctx.Err() == nil {
-		log.Printf("channelhooks: %s message %s: drop: %v", j.msg.Channel, j.msg.ID, err)
+	if _, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("channelhooks: %s message %s: drop: %v", j.msg.Channel, j.msg.ID, err)
+		}
+		return
 	}
+	j.finishRun("dropped: " + reason)
 }
 
 // sinkError turns a Starter's sink message into the error result a dropped
@@ -595,10 +640,11 @@ func sinkError(payload json.RawMessage, reason string) json.RawMessage {
 // definition carries the hooks, and counts it.
 func (j *job) record(d providers.HookDecisionInfo) {
 	j.w.count(d.Decision)
+	d.Phase, d.Channel, d.MessageID = string(hooks.PhaseChannelPublish), j.msg.Channel, j.msg.ID
+	j.emitDecision(d)
 	if j.w.cfg.Writer == nil {
 		return
 	}
-	d.Phase, d.Channel, d.MessageID = string(hooks.PhaseChannelPublish), j.msg.Channel, j.msg.ID
 	payload, err := json.Marshal(d)
 	if err != nil {
 		return

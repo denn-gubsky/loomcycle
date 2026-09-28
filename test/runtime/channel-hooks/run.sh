@@ -79,6 +79,8 @@ print(json.dumps({"op": "create", "name": "screen", "overlay": {
     "event": "channel_publish", "fail_mode": "closed", "body": {"kind": "code-js", "code": code}}}))
 PY
 api -X POST "$BASE/v1/_hookdef" -d @"$TEST_DIR/hookdef.req" > "$TEST_DIR/hookdef.json"
+api -X POST "$BASE/v1/_hookdef" -d '{"op":"create","name":"gate","overlay":{"event":"channel_publish","fail_mode":"closed","body":{"kind":"code-js","code":"function hook(ev){ return {decision: \"hold\", reason: \"needs a person\"}; }"}}}' > "$TEST_DIR/gate.json"
+grep -q '"def_id"' "$TEST_DIR/gate.json" || fail "gate HookDef create: $(cat "$TEST_DIR/gate.json")"
 grep -q '"def_id"' "$TEST_DIR/hookdef.json" || fail "HookDef create: $(cat "$TEST_DIR/hookdef.json")"
 
 echo "[3/7] publish over HTTP: plain, secret, spam"
@@ -130,7 +132,32 @@ done
 api "$BASE/v1/_channels/rt-inbox/peek?max_messages=10" | grep -q 'runtime \[redacted\]' || fail "the runtime channel's message was not decided by its hook"
 api "$BASE/v1/_channels" | grep -q '"hooks"' || fail "the channel list does not show hooks"
 
+# pending_ask prints the id and run of the one pending ask filed by a hook run
+# (their user is the system), waiting for it to appear; $1 = an id to skip.
+pending_ask() {
+  for i in $(seq 1 900); do
+    out=$(api "$BASE/v1/users/_system/interrupts" | python3 -c "import sys,json
+rows=[r for r in json.load(sys.stdin)['interrupts'] if r['interrupt_id']!='${1:-}']
+print(rows[0]['interrupt_id'], rows[0]['run_id']) if rows else None" 2>/dev/null)
+    [[ -n "$out" ]] && { echo "$out"; return 0; }
+    sleep 0.1
+  done
+  fail "no hook ask became pending"
+}
+gated_count() { api "$BASE/v1/_channels/gated/peek?max_messages=10" | count; }
+
+echo "[5c/7] a hold asks a person, under a hook:gate run; the answer decides"
+api -X POST "$BASE/v1/_channels/gated/publish" -d '{"payload":{"text":"first"}}' | grep -q '"awaiting_hooks":true' || fail "gated publish"
+read -r ASK RUN <<< "$(pending_ask)"
+api "$BASE/v1/runs/$RUN/interrupts" | grep -q '"agent_id":"hook:gate"' || fail "the ask is not filed under a hook:gate run: $(api "$BASE/v1/runs/$RUN/interrupts")"
+[[ "$(gated_count)" == "0" ]] || fail "a held message was delivered before anyone answered"
+api -X POST "$BASE/v1/runs/$RUN/interrupts/$ASK/resolve" -d '{"kind":"question","answer":"release"}' > /dev/null
+for i in $(seq 1 100); do [[ "$(gated_count)" == "1" ]] && break; sleep 0.1; done
+[[ "$(gated_count)" == "1" ]] || fail "answering release did not deliver the held message"
+
 echo "[6/7] kill -9 with messages waiting; a restart decides each exactly once"
+api -X POST "$BASE/v1/_channels/gated/publish" -d '{"payload":{"text":"second"}}' > /dev/null
+read -r OLD_ASK OLD_RUN <<< "$(pending_ask "$ASK")"
 for i in $(seq 1 20); do publish "{\"text\":\"batch $i\"}" > /dev/null; done
 kill -9 "$PID"; wait "$PID" 2>/dev/null || true; PID=""
 boot 1
@@ -139,6 +166,14 @@ boot 1
 wait_for_count 23 900
 N=$(peek_inbox | python3 -c "import sys,json; m=json.load(sys.stdin)['messages']; print(len([x for x in m if 'batch' in json.dumps(x)]))")
 [[ "$N" == "20" ]] || fail "delivered $N of the 20 batch messages after the restart"
+# The ask the killed worker left pending is cancelled, and a fresh one asked
+# under the same run; answering it delivers.
+read -r NEW_ASK NEW_RUN <<< "$(pending_ask "$OLD_ASK")"
+[[ "$NEW_RUN" == "$OLD_RUN" ]] || fail "the re-ask opened a new run ($NEW_RUN, was $OLD_RUN)"
+api "$BASE/v1/runs/$OLD_RUN/interrupts?status=all" | grep -q '"resolved_by":"hook_restart"' || fail "the stale ask was not cancelled"
+api -X POST "$BASE/v1/runs/$NEW_RUN/interrupts/$NEW_ASK/resolve" -d '{"kind":"question","answer":"release"}' > /dev/null
+for i in $(seq 1 100); do [[ "$(gated_count)" == "2" ]] && break; sleep 0.1; done
+[[ "$(gated_count)" == "2" ]] || fail "the re-asked hold did not deliver"
 
 echo "[7/7] with channel hooks off, a publish to the hooked channel is refused"
 kill "$PID"; wait "$PID" 2>/dev/null || true; PID=""

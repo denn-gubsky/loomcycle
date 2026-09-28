@@ -348,12 +348,31 @@ previous hook in the chain left it. Nothing of the publisher's run is sent.
   deliver that instead. The next hook sees the updated body.
 - `{"decision": "drop", "reason": "..."}` — remove it. The first drop stops
   the chain.
-- `{"decision": "hold", "reason": "..."}` — keep it from every reader for a
-  person to decide. Until asks are available to channel hooks, nobody can
-  answer a hold, and the message is dropped at its deadline.
+- `{"decision": "hold", "reason": "..."}` — keep it from every reader and
+  ask a person: "deliver it?", with the answers `release` and `drop` (see
+  *Asks*, below).
 
 A response that does not say one thing — an unknown decision, an
 `updated_body` with a drop — is a failed hook, not a release.
+
+**Asks.** A hold, or a code body's own `Interruption.ask`, is an ordinary
+pending interrupt, filed under a run the message's first ask opens:
+`hook:<name>` (the hook that asked), in the tenant whose definition carries
+the hook, its user `_system`. That tenant's operators answer it the usual way
+(the Web UI's interrupts, `POST /v1/runs/{run_id}/interrupts/{id}/resolve`,
+MCP `interruption_resolve`); an isolated member, and every other tenant, never
+see it. A message no hook asked about opens no run. The run records the
+hooks' decisions, and ends when the message is decided.
+
+- `release` lets the message go on to the next hook; `drop` drops it. An ask
+  declined, or not answered within the Interruption timeout (and before the
+  message's TTL runs out), drops it: a hold means a person must approve.
+- An answer is kept before it is acted on. A worker that picks the message up
+  again — after a restart, or a lost lease — replays it rather than asking
+  again; an ask still pending when its worker died is cancelled (resolved by
+  `hook_restart`) and asked afresh, under the same run.
+- While an ask waits, it gives up its concurrency slot: a person's time never
+  holds up other messages.
 
 **Order and repeats.** Hooks run in the listed order, one message at a time
 per hook. Messages are decided concurrently (4 per channel, 16 per replica
