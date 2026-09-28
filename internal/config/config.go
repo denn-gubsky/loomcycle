@@ -1455,6 +1455,12 @@ type AgentDef struct {
 	// what every search the agent makes returns.
 	MemoryRerank *MemoryRerank `yaml:"memory_rerank,omitempty"`
 
+	// MemoryUnits: false makes this agent's searches ignore Document derived search
+	// units. nil (unset) uses them wherever an operator generated them — which is
+	// only where an operator chose to. Content-identifying: it changes what every
+	// document search returns. Operator-set only, like memory_rerank.
+	MemoryUnits *bool `yaml:"memory_units,omitempty"`
+
 	// Hooks are the agent's own hooks: the run events (agent_start, agent_stop,
 	// …) and tool events that apply to every tool. Each entry is a HookDef name
 	// ("gate", or "gate@3" pinned) or an inline webhook {name, url, fail_mode,

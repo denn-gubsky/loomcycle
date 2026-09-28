@@ -213,6 +213,7 @@ type AgentContent struct {
 	MemoryRerank          *MemoryRerank              `json:"memory_rerank,omitempty"`
 	MemoryRoots           string                     `json:"memory_roots,omitempty"`
 	MemoryScopes          []string                   `json:"memory_scopes,omitempty"`
+	MemoryUnits           *bool                      `json:"memory_units,omitempty"`
 	Model                 string                     `json:"model,omitempty"`
 	Models                map[string][]TierCandidate `json:"models,omitempty"`
 	Name                  string                     `json:"name,omitempty"`
@@ -458,6 +459,7 @@ func FromYAMLAgent(a *Agent) AgentContent {
 		RecallIncludeTurns:    a.RecallIncludeTurns,
 		RecallAttachTraces:    a.RecallAttachTraces,
 		MemoryRerank:          a.MemoryRerank,
+		MemoryUnits:           a.MemoryUnits,
 		MemoryIndexMaxBytes:   a.MemoryIndexMaxBytes,
 		MemoryRoots:           a.MemoryRoots,
 	}

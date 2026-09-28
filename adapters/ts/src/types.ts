@@ -3493,6 +3493,12 @@ export interface AgentDefOverlay {
    *  reports `reranked` (and `rerank_reason` when false); a failed or unavailable
    *  rerank keeps the search's own order. */
   memory_rerank?: MemoryRerank;
+  /** `false` makes this agent's searches ignore Document derived search units — the
+   *  short descriptions, claims and questions an operator may generate for a
+   *  document so a question can match them. Unset uses them wherever they exist
+   *  (only where an operator generated them). A chunk found through a unit carries
+   *  `matched_unit: {kind, text}`. */
+  memory_units?: boolean;
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;
