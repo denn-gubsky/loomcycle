@@ -2189,6 +2189,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// invisible dead k/v, never reachable once its chunk row is gone).
 	for _, id := range ids {
 		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(id))
+		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, id)
 	}
 	n := len(ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
@@ -2858,6 +2859,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
 		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(cid))
+		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, cid)
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "delete_chunk", in.ID)
 	return jsonResult(map[string]any{"deleted": true, "cascade_deleted_descendants": len(ids) - 1})
@@ -3381,6 +3383,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		Prefix:    chunkBodyKeyPrefix,
 		TopK:      topK,
 		Rerank:    rerank,
+		NoUnits:   noUnits(ctx),
 	}, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
 		return errFrom("search: "+err.Error(), err), nil
@@ -3388,6 +3391,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	ids := make([]string, 0, len(res.Entries))
 	scores := make(map[string]float64, len(res.Entries))
 	rankScores := make(map[string]float64, len(res.Entries))
+	matched := make(map[string]*memrank.MatchedUnit)
 	for i, e := range res.Entries {
 		cid := ChunkIDFromBodyKey(e.Key)
 		if cid == "" {
@@ -3397,6 +3401,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		scores[cid] = e.Score
 		if i < len(res.RankScores) {
 			rankScores[cid] = res.RankScores[i]
+		}
+		if i < len(res.MatchedUnits) && res.MatchedUnits[i] != nil {
+			matched[cid] = res.MatchedUnits[i]
 		}
 	}
 	meta, err := d.chunkMetaByIDs(ctx, key, ids)
@@ -3419,6 +3426,10 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 			if md.documentID != "" {
 				m["document_id"] = md.documentID
 			}
+		}
+		// Found through one of its derived search units: which one, and so why.
+		if mu, ok := matched[cid]; ok {
+			m["matched_unit"] = mu
 		}
 		out = append(out, m)
 	}

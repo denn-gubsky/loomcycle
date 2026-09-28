@@ -158,6 +158,9 @@ type RecallQuery struct {
 	// Rerank is the agent's opt-in listwise rerank, as on SearchQuery. It runs only
 	// when the recall can return documents.
 	Rerank RerankOptions
+
+	// NoUnits ignores Document derived search units, as on SearchQuery.
+	NoUnits bool
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned

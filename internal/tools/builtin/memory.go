@@ -1293,6 +1293,9 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	//
 	// Refused rather than silently re-prefixed: a write that lands somewhere other
 	// than where the caller asked is worse than one that does not land.
+	if res, refused := refuseUnitWrite("set", in.Key); refused {
+		return res, nil
+	}
 	if strings.HasPrefix(in.Key, store.TraceTurnKeyPrefix) {
 		return errValidation("set: the "+store.TraceTurnKeyPrefix+" namespace is written by the "+
 			"server when it indexes a conversation turn, and cannot be written through this tool — "+
@@ -1521,6 +1524,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		TopK:      topK,
 		When:      when,
 		Rerank:    rerank,
+		NoUnits:   noUnits(ctx),
 	}, rankCfg, dedupCfg)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
@@ -1604,6 +1608,11 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		// that matters — it is what History resolves into the whole conversation.
 		if kind == store.MemoryRowTrace {
 			addTraceAttribution(entry, r.Value)
+		}
+		// A chunk found through one of its derived search units says which: the unit
+		// is WHY it matched, which a reader weighing the hit needs to see.
+		if i < len(res.MatchedUnits) && res.MatchedUnits[i] != nil {
+			entry["matched_unit"] = res.MatchedUnits[i]
 		}
 		entries = append(entries, entry)
 	}
@@ -1775,6 +1784,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		Sources:   sources,
 		When:      when,
 		Rerank:    rerank,
+		NoUnits:   noUnits(ctx),
 	})
 	if err != nil {
 		return errFrom(fmt.Sprintf("recall: %s", err), err), nil
@@ -1922,6 +1932,9 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		}
 		if len(f.Metadata) > 0 {
 			mem["metadata"] = f.Metadata
+		}
+		if f.MatchedUnit != nil {
+			mem["matched_unit"] = f.MatchedUnit
 		}
 		memories = append(memories, mem)
 	}
@@ -2605,6 +2618,9 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	}
 	// RFC BL P1: a read_only core block refuses incr too. limit_bytes is moot
 	// for a bounded-width number, so pass -1 to skip the size check.
+	if res, refused := refuseUnitWrite("incr", in.Key); refused {
+		return res, nil
+	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "incr", -1); err != nil {
 		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
@@ -2667,6 +2683,9 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 	// RFC BL P1: refuse a read_only core block BEFORE taking the row lock — the
 	// mutation must not commit. The size caps run inside the reducer, on the
 	// merged value, for the same reason.
+	if res, refused := refuseUnitWrite("merge", in.Key); refused {
+		return res, nil
+	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
 		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
@@ -2727,6 +2746,9 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	}
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the appended value.
+	if res, refused := refuseUnitWrite("append_dedupe", in.Key); refused {
+		return res, nil
+	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
 		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
@@ -2805,6 +2827,9 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 	}
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the trimmed value.
+	if res, refused := refuseUnitWrite("bounded_list", in.Key); refused {
+		return res, nil
+	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {
 		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
@@ -3176,4 +3201,18 @@ func addTraceAttribution(entry map[string]any, value json.RawMessage) {
 	if turn.At != "" {
 		entry["said_at"] = turn.At
 	}
+}
+
+// refuseUnitWrite keeps the derived-unit namespace server-only. A unit VOTES for its
+// chunk in every document search of its scope and is shown to the reader as the
+// reason the chunk matched, so a unit an agent wrote itself would steer other
+// callers' searches — in a tenant scope, everyone's — and put its own words in
+// front of them as a finding. Units are written only by the operator's generation
+// pass. Refused rather than re-prefixed, as the trace namespace is.
+func refuseUnitWrite(op, key string) (tools.Result, bool) {
+	if !strings.HasPrefix(key, memrank.DocumentUnitKeyPrefix) {
+		return tools.Result{}, false
+	}
+	return errValidation(op+": the "+memrank.DocumentUnitKeyPrefix+" namespace holds Document search units, "+
+		"which only the server's derived-unit pass writes — use an ordinary key", ""), true
 }

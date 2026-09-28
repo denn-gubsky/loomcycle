@@ -128,6 +128,7 @@ func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey,
 		// real path caught it; a unit test on the SQL half alone would not have.
 		for _, tenant := range bodyTenantsFor(key.Tenant) {
 			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, key.ScopeID, chunkBodyKey(id)); removed {
+				d.deleteUnitsOf(ctx, tenant, mscope, key.ScopeID, id) // its units live beside it
 				break
 			}
 		}

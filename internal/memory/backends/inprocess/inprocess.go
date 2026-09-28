@@ -611,7 +611,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 		sources = []memory.Source{memory.SourceFacts, memory.SourceNotes}
 	}
 	res, err := b.Search(ctx, scope, scopeID,
-		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When, Rerank: q.Rerank},
+		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When, Rerank: q.Rerank, NoUnits: q.NoUnits},
 		memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		return memory.RecallResult{}, err

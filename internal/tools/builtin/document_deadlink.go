@@ -29,8 +29,8 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -47,6 +47,7 @@ type DeadLinkReport struct {
 
 	// Reaped (or, in a dry run, reapable).
 	Bodies   int // doc.chunk:<id> in Memory with no chunks row
+	Units    int // doc.unit:<id>:… derived search units whose chunk is gone
 	Sidecars int // chunk_memory_meta rows with no chunks row
 	Edges    int // chunk_edges with a missing endpoint
 	Assets   int // chunk_assets rows with no chunks row
@@ -60,7 +61,7 @@ type DeadLinkReport struct {
 }
 
 // Total is the reaped count across every class.
-func (r DeadLinkReport) Total() int { return r.Bodies + r.Sidecars + r.Edges + r.Assets }
+func (r DeadLinkReport) Total() int { return r.Bodies + r.Units + r.Sidecars + r.Edges + r.Assets }
 
 // Empty reports whether there is nothing worth logging.
 func (r DeadLinkReport) Empty() bool {
@@ -71,8 +72,8 @@ func (r DeadLinkReport) String() string {
 	if r.Skipped != "" {
 		return fmt.Sprintf("%s/%s/%s: skipped (%s)", r.Scope.Tenant, r.Scope.Scope, r.Scope.ScopeID, r.Skipped)
 	}
-	s := fmt.Sprintf("%s/%s/%s: %d body, %d sidecar, %d edge, %d asset",
-		r.Scope.Tenant, r.Scope.Scope, r.Scope.ScopeID, r.Bodies, r.Sidecars, r.Edges, r.Assets)
+	s := fmt.Sprintf("%s/%s/%s: %d body, %d unit, %d sidecar, %d edge, %d asset",
+		r.Scope.Tenant, r.Scope.Scope, r.Scope.ScopeID, r.Bodies, r.Units, r.Sidecars, r.Edges, r.Assets)
 	if r.OrphanChunks > 0 {
 		s += fmt.Sprintf(" (+%d chunk(s) whose document is gone — reported, not deleted)", r.OrphanChunks)
 	}
@@ -109,8 +110,18 @@ func (d *Document) ReconcileDeadLinks(ctx context.Context, key sqlmem.ScopeKey, 
 	if err != nil {
 		return rep, err
 	}
-	if len(live) == 0 && len(bodies) > 0 {
-		rep.Skipped = fmt.Sprintf("%d chunk bodies but no chunk rows — refusing to treat that as a fully-deleted scope", len(bodies))
+	// Derived search units are index rows that stand for a chunk, so a unit whose
+	// chunk is gone is unreachable exactly as its body is — and is reaped the same way.
+	units, err := d.memoryKeysUnder(ctx, key, mscope, memrank.DocumentUnitKeyPrefix, func(k string) string {
+		id, _ := memrank.UnitChunkID(k)
+		return id
+	})
+	if err != nil {
+		return rep, err
+	}
+	if len(live) == 0 && (len(bodies) > 0 || len(units) > 0) {
+		rep.Skipped = fmt.Sprintf("%d chunk bodies and %d units but no chunk rows — refusing to treat that as a fully-deleted scope",
+			len(bodies), len(units))
 		return rep, nil
 	}
 
@@ -152,6 +163,20 @@ func (d *Document) ReconcileDeadLinks(ctx context.Context, key sqlmem.ScopeKey, 
 	// Not expressible as a join: the two live in different stores. Which is also
 	// why this class exists at all, since a cross-store delete cannot be
 	// transactional.
+	for _, u := range units {
+		if live[u.chunkID] {
+			continue
+		}
+		rep.Units++
+		if dryRun {
+			continue
+		}
+		for _, tenant := range bodyTenantsFor(key.Tenant) {
+			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, key.ScopeID, u.key); removed {
+				break
+			}
+		}
+	}
 	for _, b := range bodies {
 		if live[b.chunkID] {
 			continue
@@ -223,7 +248,14 @@ const chunkBodyListLimit = 1_000_000
 // chunkBodyKeys lists ALL of the scope's chunk-body keys from the Memory plane, or
 // fails: a truncated listing is refused rather than reconciled against.
 func (d *Document) chunkBodyKeys(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope) ([]chunkBodyRow, error) {
-	const prefix = "doc.chunk:"
+	return d.memoryKeysUnder(ctx, key, mscope, chunkBodyKeyPrefix, ChunkIDFromBodyKey)
+}
+
+// memoryKeysUnder lists ALL of the scope's Memory keys under prefix, with the chunk
+// each belongs to (chunkOf), or fails: a truncated listing is refused rather than
+// reconciled against.
+func (d *Document) memoryKeysUnder(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope,
+	prefix string, chunkOf func(string) string) ([]chunkBodyRow, error) {
 	var out []chunkBodyRow
 	for _, tenant := range bodyTenantsFor(key.Tenant) {
 		entries, truncated, err := d.Store.MemoryList(ctx, tenant, mscope, key.ScopeID, prefix, chunkBodyListLimit)
@@ -231,11 +263,11 @@ func (d *Document) chunkBodyKeys(ctx context.Context, key sqlmem.ScopeKey, mscop
 			return nil, err
 		}
 		if truncated {
-			return nil, fmt.Errorf("deadlink: more than %d chunk bodies in scope %s/%s — refusing to reconcile a partial listing",
-				chunkBodyListLimit, mscope, key.ScopeID)
+			return nil, fmt.Errorf("deadlink: more than %d %s rows in scope %s/%s — refusing to reconcile a partial listing",
+				chunkBodyListLimit, prefix, mscope, key.ScopeID)
 		}
 		for _, e := range entries {
-			if id := strings.TrimPrefix(e.Key, prefix); id != e.Key && id != "" {
+			if id := chunkOf(e.Key); id != "" {
 				out = append(out, chunkBodyRow{key: e.Key, chunkID: id})
 			}
 		}

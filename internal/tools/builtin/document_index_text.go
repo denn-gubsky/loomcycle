@@ -189,16 +189,14 @@ func indexHeader(titles []string) string {
 func ChunkIndexTextForRow(ctx context.Context, mgr *sqlmem.Manager, tenant string,
 	mscope store.MemoryScope, scopeID string, row store.MemoryEntry) (text string, isChunk bool) {
 
-	chunkID := ChunkIDFromBodyKey(row.Key)
-	if chunkID == "" {
-		return "", false
-	}
-	// No SQL Memory means no tree to read a header or a type from; chunkIndexText then
-	// falls back to the content alone (see its fail-safe note), so a nil manager is
-	// handled there rather than by indexing nothing here.
+	// No SQL Memory means no tree to read a header or a type from; the builders then
+	// fall back to the content alone (see chunkIndexText's fail-safe note), so a nil
+	// manager is handled there rather than by indexing nothing here. A derived search
+	// unit is a Document row too: an admin re-embed that treated it as a plain row
+	// would embed its JSON envelope.
 	d := &Document{SqlMem: mgr}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenant), Scope: string(mscope), ScopeID: scopeID}
-	return d.chunkIndexText(ctx, key, chunkID, "", bodyFromValue(row.Value)), true
+	return d.rowIndexText(ctx, key, row)
 }
 
 // reindexSyncMax is the subtree size up to which a re-index runs inline, before the op
@@ -259,6 +257,8 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 				continue
 			}
 			d.embedBody(ctx, tenant, mscope, key, chunkBodyKey(id), id, types[i], cb.Body)
+			// A chunk's units carry its header too.
+			d.reindexUnitsOf(ctx, tenant, mscope, key, id)
 		}
 	}
 	if len(ids) <= reindexSyncMax {
