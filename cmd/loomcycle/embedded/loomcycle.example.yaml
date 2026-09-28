@@ -356,7 +356,8 @@ channels:
 # memory:
 #   embedder:
 #     provider: openai                       # openai | gemini | anthropic (Voyage AI)
-#     model: text-embedding-3-large          # voyage-3 / voyage-4 for anthropic
+#     model: text-embedding-3-large          # voyage-3 / voyage-4 for anthropic — or a models: alias
+#                                            # (e.g. local-embedding), which also supplies the provider
 #     timeout_ms: 30000                      # optional; overrides env
 #     batch_size: 100                        # optional; overrides env (Voyage caps voyage-3 at 128)
 #
@@ -366,7 +367,7 @@ channels:
 #   # asks for one gets `reranked: false, rerank_reason: not_configured`.
 #   reranker:
 #     provider: ollama-local                 # a provider declared in providers:
-#     model: qwen3.6:latest
+#     model: qwen3.6:latest                  # or a models: alias (e.g. local-medium)
 #     effort: low                            # thinking off on a hybrid local model
 #     timeout_ms: 30000                      # a slower rerank keeps search's own order
 #     max_concurrent: 2                      # reranks in flight (default 4)
