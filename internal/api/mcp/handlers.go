@@ -1041,6 +1041,25 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 	if a.UserID == "" {
 		return toolErr("stream_user_run_states: user_id is required"), nil
 	}
+	// A user id is unique only within its tenant, so the stream is confined to
+	// the session principal's tenant exactly as the HTTP and gRPC streams are —
+	// otherwise a tenant session naming a user id receives that id's run
+	// transitions from every tenant. Open mode, the legacy operator and an admin
+	// stay unscoped. An isolated member may watch only its own user; any other
+	// id gets the same opaque answer HTTP gives (404, no cross-user oracle).
+	p, ok := auth.PrincipalFromContext(ctx)
+	if auth.IsIsolated(p, ok) && a.UserID != p.Subject {
+		return toolErr("stream_user_run_states: no such user"), nil
+	}
+	req := connector.StreamUserRunStatesRequest{
+		UserID:   a.UserID,
+		Statuses: a.Statuses,
+		Agent:    a.Agent,
+		WalkID:   a.WalkID,
+	}
+	if ok && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		req.TenantID, req.TenantScoped = p.TenantID, true
+	}
 	if a.MaxEvents <= 0 {
 		a.MaxEvents = 16
 	}
@@ -1068,12 +1087,7 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 		return nil
 	}
 
-	err := env.connector.StreamUserRunStates(streamCtx, connector.StreamUserRunStatesRequest{
-		UserID:   a.UserID,
-		Statuses: a.Statuses,
-		Agent:    a.Agent,
-		WalkID:   a.WalkID,
-	}, visit)
+	err := env.connector.StreamUserRunStates(streamCtx, req, visit)
 	if err != nil {
 		return toolErrFrom("stream_user_run_states", err), nil
 	}
