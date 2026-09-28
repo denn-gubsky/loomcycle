@@ -95,9 +95,27 @@ type runConfigRecord struct {
 	// sub-agent's inherited ones — so a resumed run fires what it fired before.
 	Hooks *hooks.Additions `json:"hooks,omitempty"`
 
+	// SourcedHooks are the hooks a definition added to the run — a TeamDef
+	// state's — each with the definition it came from, so a resumed run
+	// resolves them in that definition's tenant and with its authorship, as it
+	// did at start. Kept apart from Hooks because only the runtime writes this
+	// record: no request shape can carry a source (hooks.Additions.Sourced).
+	SourcedHooks []hooks.SourcedAdditions `json:"sourced_hooks,omitempty"`
+
 	// PinnedHooks is what the run's hooks resolved to when it started, so a
 	// resumed run fires those and no others (see pinnedHooks).
 	PinnedHooks *pinnedHooks `json:"pinned_hooks,omitempty"`
+}
+
+// additions is what the run added to its agent's hooks, as the record keeps
+// it: a caller's, and a definition's with their source.
+func (rc runConfigRecord) additions() hooks.Additions {
+	var a hooks.Additions
+	if rc.Hooks != nil {
+		a.Hooks, a.ToolHooks = rc.Hooks.Hooks, rc.Hooks.ToolHooks
+	}
+	a.Sourced = rc.SourcedHooks
+	return a
 }
 
 // runHostRecord mirrors tools.HostPolicyValue. HasList is carried explicitly

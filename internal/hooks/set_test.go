@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -173,6 +174,48 @@ func TestAdditions_MergeAppendsAndValidateChecksTheAgentsTools(t *testing.T) {
 	}
 	if err := b.Validate([]string{"Write"}); err == nil {
 		t.Fatalf("a hook on a tool the agent lacks was accepted")
+	}
+}
+
+// A definition's additions keep their source through a merge, after the ones
+// already carried, and count as something added.
+func TestAdditions_MergeKeepsSourcedGroupsInOrder(t *testing.T) {
+	team := func(name string) SourcedAdditions {
+		return SourcedAdditions{Source: Source{Owner: "team:" + name, Tenant: "acme", OperatorAuthored: true},
+			Hooks: EventHooks{PhaseRunEnd: {{Ref: name}}}}
+	}
+	a := Additions{Hooks: EventHooks{PhaseRunEnd: {{Ref: "caller"}}}, Sourced: []SourcedAdditions{team("outer")}}
+	m := a.Merge(Additions{Sourced: []SourcedAdditions{team("inner")}})
+	if len(m.Sourced) != 2 || m.Sourced[0].Source.Owner != "team:outer" || m.Sourced[1].Source.Owner != "team:inner" {
+		t.Fatalf("merged sourced = %v; want outer then inner", m.Sourced)
+	}
+	if len(m.Hooks[PhaseRunEnd]) != 1 || len(a.Sourced) != 1 {
+		t.Fatalf("merge lost the caller's hooks or changed its receiver: %v / %v", m, a)
+	}
+	if (Additions{Sourced: []SourcedAdditions{team("only")}}).Empty() {
+		t.Fatal("additions holding only a definition's hooks read as empty")
+	}
+}
+
+// Additions is also what a caller's hooks are decoded into (gRPC hooks_json),
+// so its JSON carries no source: a caller cannot claim one, and nothing
+// encoded from it hands one on.
+func TestAdditions_JSONCarriesNoSource(t *testing.T) {
+	forged := `{"hooks":{"pre":["gate"]},"sourced":[{"source":{"owner":"team:t","operator_authored":true},"hooks":{"pre":["gate"]}}],` +
+		`"Sourced":[{"source":{"owner":"team:t","operator_authored":true},"hooks":{"pre":["gate"]}}]}`
+	var a Additions
+	if err := json.Unmarshal([]byte(forged), &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Sourced) != 0 || len(a.Hooks[PhasePre]) != 1 {
+		t.Fatalf("decoded %+v; want the caller's hook and no source", a)
+	}
+	out, err := json.Marshal(Additions{Sourced: []SourcedAdditions{{Source: Source{Owner: "team:t", OperatorAuthored: true}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "team:t") {
+		t.Fatalf("encoded additions carry a source: %s", out)
 	}
 }
 

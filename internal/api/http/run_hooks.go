@@ -97,6 +97,16 @@ func (s *Server) resolveRunHooks(ctx context.Context, agentName string, def conf
 	if err := hooks.Resolve(ctx, run, added.Hooks, added.ToolHooks, lookup, s.hookPermits, set); err != nil {
 		return hooks.FailedSet(fmt.Errorf("the run's hooks: %w", err))
 	}
+	// What a definition added (a TeamDef state's hooks) resolves as that
+	// definition's: in its tenant, and able to widen hosts when an operator
+	// wrote it and the permit list names the hook. After the caller's, which
+	// keeps the order they were added in: a caller's additions come from a
+	// run request, at the top of the tree, before any team adds its own.
+	for _, g := range added.Sourced {
+		if err := hooks.Resolve(ctx, g.Source, g.Hooks, g.ToolHooks, lookup, s.hookPermits, set); err != nil {
+			return hooks.FailedSet(fmt.Errorf("%s's hooks: %w", g.Source.Owner, err))
+		}
+	}
 	agent := hooks.Source{Owner: "agent:" + agentName, Tenant: def.OwnerTenant, OperatorAuthored: def.OperatorAuthored}
 	if err := hooks.Resolve(ctx, agent, def.Hooks, def.ToolHooks, lookup, s.hookPermits, set); err != nil {
 		return hooks.FailedSet(fmt.Errorf("agent %s: %w", agentName, err))
@@ -104,12 +114,15 @@ func (s *Server) resolveRunHooks(ctx context.Context, agentName string, def conf
 	return set
 }
 
-// additionsRecord is what a run's record keeps of its additions (nil = none).
+// additionsRecord is what a run's record keeps of a caller's additions (nil =
+// none). A definition's (Sourced) are kept under their own key, with their
+// source; see runConfigRecord.SourcedHooks.
 func additionsRecord(a hooks.Additions) *hooks.Additions {
-	if a.Empty() {
+	caller := hooks.Additions{Hooks: a.Hooks, ToolHooks: a.ToolHooks}
+	if caller.Empty() {
 		return nil
 	}
-	return &a
+	return &caller
 }
 
 // runHookSet is the resolved set of a live run, or nil.

@@ -7092,6 +7092,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	subContext := config.MergeContext(def.Context, tools.ContextPolicy(ctx))
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
+		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
 		Sampling:          def.Sampling,
 		ToolChoice:        def.ToolChoice, // the child's own, like sampling
 		OutputFormat:      def.OutputFormat,

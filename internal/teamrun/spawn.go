@@ -227,6 +227,11 @@ type agentRunner struct {
 	// the widened families, which is the safe direction for a test double or
 	// an embed that never sets it.
 	operatorAuthored bool
+	// teamName / teamTenant are the TEAM DEFINITION's name and owning tenant,
+	// from its def row: a state's hooks are the definition's, so they resolve
+	// in its tenant (not the run's, which differs when an admin runs another
+	// tenant's team) and carry its authorship.
+	teamName, teamTenant string
 	// maxWave is the DEPLOYMENT's ceiling on one wave's width, distinct from
 	// the definition's own `fanout.max`. Dynamic fan-out is a spawn amplifier,
 	// and the definition is authored by whoever can write a def — the operator
@@ -278,6 +283,13 @@ func WithWaveContext(f func(ctx context.Context, walkID, waveID string, index in
 // every node prompt the walk hands out — see Prompt.OperatorAuthored.
 func WithOperatorAuthored(v bool) RunnerOption {
 	return func(r *agentRunner) { r.operatorAuthored = v }
+}
+
+// WithTeamSource records the name and owning tenant of the definition this
+// runner walks, read from its def row: the source a state's hooks are added
+// under (with WithOperatorAuthored's authorship).
+func WithTeamSource(name, tenant string) RunnerOption {
+	return func(r *agentRunner) { r.teamName, r.teamTenant = name, tenant }
 }
 
 // WithMaxWave wires the deployment's ceiling on one Starter wave.
@@ -342,8 +354,15 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
 	// The state's hooks are added to every run it starts, on top of that
 	// agent's own, and ride down to their sub-agents: they go on the ctx every
-	// spawn below is made from.
-	if add := (hooks.Additions{Hooks: st.Handler.Hooks, ToolHooks: st.Handler.ToolHooks}); !add.Empty() {
+	// spawn below is made from. They are the definition's, not a caller's, so
+	// they travel with its source — its tenant, and whether an operator wrote
+	// it, the precondition for a hook to widen hosts.
+	if len(st.Handler.Hooks) > 0 || len(st.Handler.ToolHooks) > 0 {
+		add := hooks.Additions{Sourced: []hooks.SourcedAdditions{{
+			Source:    hooks.Source{Owner: "team:" + r.teamName, Tenant: r.teamTenant, OperatorAuthored: r.operatorAuthored},
+			Hooks:     st.Handler.Hooks,
+			ToolHooks: st.Handler.ToolHooks,
+		}}}
 		ctx = hooks.WithAdditions(ctx, hooks.AdditionsFrom(ctx).Merge(add))
 	}
 	input := task.Input

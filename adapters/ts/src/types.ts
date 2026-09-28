@@ -1351,6 +1351,15 @@ export interface RunSpec {
   /** Hooks the run added to its agent's own (its request's, and a
    *  sub-agent's inherited ones). */
   hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
+  /** Hooks a definition added to the run (a team state's), each with the
+   *  definition it came from: its owner (`team:<name>`), owning tenant and
+   *  whether an operator wrote it. Written by the server only — no run
+   *  request can set a source. */
+  sourced_hooks?: Array<{
+    source: { owner: string; tenant?: string; operator_authored?: boolean };
+    hooks?: EventHooks;
+    tool_hooks?: ToolHooksByTool;
+  }>;
   /** What the run's hooks resolved to when it started, so a resumed run
    *  fires those and no others: a fingerprint of the agent's own hooks and
    *  the HookDef version each reference found. Present only on a run that

@@ -239,16 +239,20 @@ func sortedPhases(e EventHooks) []Phase {
 
 // Source says where a run's hooks come from, which decides where their HookDef
 // references resolve and whether they may widen hosts.
+//
+// The JSON tags exist for one reader: a run's own record, which keeps the
+// source of hooks a definition added (SourcedAdditions) so a resumed run
+// resolves them as it started. No request shape carries a Source.
 type Source struct {
 	// Owner labels the hooks in the chain and in the payload ("agent:<name>").
-	Owner string
+	Owner string `json:"owner"`
 	// Tenant owns the definition; its references resolve there, then in the
 	// shared "" tenant. Never the run's tenant: a static agent run in tenant T
 	// must not pick up T's HookDef of the same name in place of the operator's.
-	Tenant string
+	Tenant string `json:"tenant,omitempty"`
 	// OperatorAuthored: the definition was written by an operator, which is a
 	// precondition for any of its hooks to widen hosts.
-	OperatorAuthored bool
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // LookupDef returns a HookDef version: the active one when version is 0. tenant
@@ -457,12 +461,35 @@ func LiftToolEntries(def json.RawMessage) (json.RawMessage, error) {
 type Additions struct {
 	Hooks     EventHooks `json:"hooks,omitempty"`
 	ToolHooks ToolHooks  `json:"tool_hooks,omitempty"`
+	// Sourced are hooks a DEFINITION added — a TeamDef state's, for every run
+	// it starts — kept with the definition they came from, so they resolve in
+	// its tenant and, when an operator wrote it and the permit list names the
+	// hook, may widen hosts. Hooks and ToolHooks above are a caller's and never
+	// do.
+	//
+	// Never read from or written to JSON: Additions is also the shape a run
+	// request's hooks are decoded into (gRPC hooks_json), and a caller must not
+	// be able to claim a source, least of all an operator-authored one. Only
+	// the runtime sets it, from a definition row, and a run's record keeps it
+	// under its own key.
+	Sourced []SourcedAdditions `json:"-"`
+}
+
+// SourcedAdditions are hooks added from one known definition (see
+// Additions.Sourced).
+type SourcedAdditions struct {
+	Source    Source     `json:"source"`
+	Hooks     EventHooks `json:"hooks,omitempty"`
+	ToolHooks ToolHooks  `json:"tool_hooks,omitempty"`
 }
 
 // Empty reports whether nothing is added.
-func (a Additions) Empty() bool { return len(a.Hooks) == 0 && len(a.ToolHooks) == 0 }
+func (a Additions) Empty() bool {
+	return len(a.Hooks) == 0 && len(a.ToolHooks) == 0 && len(a.Sourced) == 0
+}
 
-// Merge returns a's entries followed by b's, per event and per tool.
+// Merge returns a's entries followed by b's, per event and per tool, and a's
+// sourced groups followed by b's.
 func (a Additions) Merge(b Additions) Additions {
 	if b.Empty() {
 		return a
@@ -472,6 +499,7 @@ func (a Additions) Merge(b Additions) Additions {
 	}
 	out := Additions{Hooks: EventHooks{}, ToolHooks: ToolHooks{}}
 	for _, src := range []Additions{a, b} {
+		out.Sourced = append(out.Sourced, src.Sourced...)
 		for phase, entries := range src.Hooks {
 			out.Hooks[phase] = append(out.Hooks[phase], entries...)
 		}
