@@ -172,6 +172,10 @@ type Server struct {
 	// there is worse than one that refuses), and entries live only as long as
 	// the walk.
 	breakpointReg *breakpoints.Registry
+	// reviewMembers maps a live walk's run_id → its members that review arming
+	// can hold, so disarming review through the breakpoint set releases the
+	// held ones now rather than at their next hold heartbeat. Zero value works.
+	reviewMembers walkReviewMembers
 
 	// advisoryLock, when set, gates the team-subscription sweep so exactly one
 	// replica drives a given promoted team at a time. nil = single-process
@@ -6722,6 +6726,9 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	prep.Opts.SteerQueue, prep.Opts.OnSteer = steerQ, onSteer
 	if armed := teamrun.ReviewArming(ctx); armed != nil {
 		prep.Opts.ReviewNow = s.recordReviewArming(prep.RunID, armed, teamrun.ReviewTTL(ctx))
+		// ctx still carries the walk's run id here — the key its breakpoint set
+		// is registered under — not the member's own.
+		defer s.reviewMembers.add(tools.RunID(ctx), prep.RunID, prep.Opts.ReviewNow)()
 	}
 	prep.Opts.ReviewTTL = teamrun.ReviewTTL(ctx)
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
