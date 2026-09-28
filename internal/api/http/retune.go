@@ -187,27 +187,19 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 
 	cur, _ := decodeRunConfig(run.RunConfig)
 	next := in.split()
-	merged := runConfigRecord{
-		Sampling:          cur.Sampling,
-		ToolChoice:        cur.ToolChoice,
-		OutputFormat:      cur.OutputFormat,
-		Compaction:        cur.Compaction,
-		Context:           cur.Context,
-		MaxContextTokens:  cur.MaxContextTokens,
-		RunTimeoutSeconds: cur.RunTimeoutSeconds,
-		Hosts:             cur.Hosts,
-		Routing:           mergeRouting(cur.Routing, next.Routing),
-		Resources:         mergeResources(cur.Resources, next.Resources),
-		Tuning:            mergeTuning(cur.Tuning, next.Tuning),
-		// Last writer wins for these two, unlike the merged blocks above: they
-		// are single decisions rather than field sets, so "keep what is there
-		// unless this call says otherwise" IS the merge.
-		Interactive:  cur.Interactive,
-		Interruption: cur.Interruption,
-		Review:       cur.Review,
-		// Set at start only; a retune keeps it.
-		ReviewTTLSeconds: cur.ReviewTTLSeconds,
-	}
+	// Start from the whole record and change only what a retune may change.
+	// It used to be rebuilt field by field, which silently dropped every field
+	// the list did not name — the hooks the run added and the hooks it pinned
+	// at start — so a retuned run that later paused resumed under re-resolved
+	// hooks. The start-only fields (sampling, compaction, hosts, the review
+	// deadline, …) are kept by the copy.
+	merged := cur
+	merged.Routing = mergeRouting(cur.Routing, next.Routing)
+	merged.Resources = mergeResources(cur.Resources, next.Resources)
+	merged.Tuning = mergeTuning(cur.Tuning, next.Tuning)
+	// Last writer wins for the single decisions below, unlike the merged
+	// blocks above: "keep what is there unless this call says otherwise" IS
+	// the merge.
 	if in.Interactive != nil {
 		merged.Interactive = in.Interactive
 	}
