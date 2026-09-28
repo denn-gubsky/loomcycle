@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -705,5 +706,39 @@ func TestRetune_ARoutingChangeProducesBothEventsAndTheyAreDistinguishable(t *tes
 	}
 	if applied != 1 {
 		t.Errorf("routing-applied events = %d, want 1", applied)
+	}
+}
+
+// A retune changes what it names and keeps the rest of the run's record —
+// including what only the run's start writes: the hooks it added and the
+// hooks it pinned. It used to rebuild the record field by field and drop
+// those, so a retuned run that later paused resumed under re-resolved hooks.
+func TestRetune_KeepsEveryFieldItDoesNotChange(t *testing.T) {
+	srv, ts, _, run := parkedRoutedRun(t)
+	ctx := context.Background()
+	seed := runConfigRecord{
+		Resources:         &resourceOverride{MaxTokens: 4321},
+		RunTimeoutSeconds: 90,
+		ReviewTTLSeconds:  60,
+		Hooks: &hooks.Additions{Hooks: hooks.EventHooks{
+			hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "audit", URL: "https://hooks.example/audit"}}},
+		}},
+		PinnedHooks: &pinnedHooks{Agent: "fingerprint", Defs: map[string]string{"acme/gate@0": "hdf_gate"}},
+	}
+	if err := srv.store.SetRunConfig(ctx, run.ID, seed.marshal()); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := postInput(t, ts, run.ID, `{"text":"go on","overrides":{"model":"model-b"}}`); code != 200 {
+		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
+	}
+	got, ok := decodeRunConfig(mustGetRun(t, srv.store, run.ID).RunConfig)
+	if !ok || got.Routing == nil || got.Routing.Model != "model-b" {
+		t.Fatalf("the retune itself did not apply: %+v", got.Routing)
+	}
+	got.Routing = seed.Routing
+	if !reflect.DeepEqual(got, seed) {
+		gb, _ := json.Marshal(got)
+		sb, _ := json.Marshal(seed)
+		t.Fatalf("the retune changed fields it did not name:\n got  %s\n want %s", gb, sb)
 	}
 }
