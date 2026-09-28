@@ -1624,7 +1624,13 @@ type Store interface {
 	// the supplied filter. An empty status returns ALL statuses
 	// (caller can filter further). Results are bounded — 100 rows max,
 	// ordered by started_at DESC.
-	ListActiveRunsByUser(ctx context.Context, userID string, status RunStatus) ([]Run, error)
+	//
+	// tenantID scopes the result to one tenant; "" returns all tenants
+	// (mirrors ListUsers). The tenant is applied BEFORE the bound: user
+	// ids are unique only within a tenant, so filtering after it let
+	// another tenant's newer runs for a colliding user id crowd a
+	// tenant's own runs out of the 100.
+	ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status RunStatus) ([]Run, error)
 
 	// ListRunsByParentAgentID returns the runs whose parent_agent_id
 	// matches the given value. Drives cascade-cancel discovery.

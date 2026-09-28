@@ -1688,43 +1688,36 @@ func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]store.UserSum
 
 // ListActiveRunsByUser returns up to 100 runs for the user, ordered by
 // started_at DESC. Empty status returns all statuses; non-empty filters
-// to the exact status string. Empty userID short-circuits to no rows.
-func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status store.RunStatus) ([]store.Run, error) {
+// to the exact status string; empty tenantID returns all tenants. Empty
+// userID short-circuits to no rows.
+func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status store.RunStatus) ([]store.Run, error) {
 	if userID == "" {
 		return nil, nil
 	}
 	const limit = 100
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if status == "" {
-		rows, err = s.pool.Query(ctx,
-			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
-			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-			        r.model, r.provider, r.error,
-			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text, r.result::text,
-			        s.agent
-			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
-			 WHERE r.user_id = $1
-			 ORDER BY r.started_at DESC LIMIT $2`, userID, limit)
-	} else {
-		rows, err = s.pool.Query(ctx,
-			`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
-			        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
-			        r.model, r.provider, r.error,
-			        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
-			        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
-		        r.run_config::text, r.result::text,
-			        s.agent
-			 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
-			 WHERE r.user_id = $1 AND r.status = $2
-			 ORDER BY r.started_at DESC LIMIT $3`, userID, string(status), limit)
+	where := `r.user_id = $1`
+	args := []any{userID}
+	if tenantID != "" {
+		args = append(args, tenantID)
+		where += fmt.Sprintf(` AND r.tenant_id = $%d`, len(args))
 	}
+	if status != "" {
+		args = append(args, string(status))
+		where += fmt.Sprintf(` AND r.status = $%d`, len(args))
+	}
+	args = append(args, limit)
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.run_config::text, r.result::text,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE `+where+`
+		 ORDER BY r.started_at DESC LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list active runs: %w", err)
 	}

@@ -7940,18 +7940,27 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	if statusFilter == "all" {
 		statusFilter = ""
 	}
-	runs, err := s.store.ListActiveRunsByUser(r.Context(), userID, statusFilter)
+	// Multi-tenant authz: a tenant principal sees only runs in its own
+	// tenant (requesting another tenant's user_id yields an empty list);
+	// super-admin sees all, or focuses one tenant via ?tenant= (the UI's
+	// tenant switcher). allTenants=true → no tenant filter. The tenant goes
+	// into the query so it applies before the store's row bound.
+	scopeTenant, allTenants := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	queryTenant := scopeTenant
+	if allTenants {
+		queryTenant = ""
+	}
+	runs, err := s.store.ListActiveRunsByUser(r.Context(), queryTenant, userID, statusFilter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Multi-tenant authz: a tenant principal sees only runs in its own
-	// tenant (requesting another tenant's user_id yields an empty list);
-	// super-admin sees all, or focuses one tenant via ?tenant= (the UI's
-	// tenant switcher). allTenants=true → no tenant filter.
-	scopeTenant, allTenants := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
 	out := make([]agentResponse, 0, len(runs))
 	for _, run := range runs {
+		// Still needed: the store reads tenant "" as "all tenants", so a
+		// non-admin principal whose tenant is "" (a config-declared
+		// principal may omit it) gets every tenant's rows back and must be
+		// narrowed here.
 		if !allTenants && run.TenantID != scopeTenant {
 			continue
 		}

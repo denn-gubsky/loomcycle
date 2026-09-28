@@ -3008,25 +3008,26 @@ func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]store.UserSum
 }
 
 // ListActiveRunsByUser returns runs for userID whose status matches the
-// supplied filter. An empty status returns ALL statuses. Capped at 100
-// rows ordered by started_at DESC.
-func (s *Store) ListActiveRunsByUser(ctx context.Context, userID string, status store.RunStatus) ([]store.Run, error) {
+// supplied filter. An empty status returns ALL statuses; an empty tenantID
+// returns all tenants. Capped at 100 rows ordered by started_at DESC.
+func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status store.RunStatus) ([]store.Run, error) {
 	if userID == "" {
 		return nil, nil
 	}
-	var rows *sql.Rows
-	var err error
-	if status == "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.user_id = ? ORDER BY r.started_at DESC LIMIT 100`,
-			userID,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.user_id = ? AND r.status = ? ORDER BY r.started_at DESC LIMIT 100`,
-			userID, string(status),
-		)
+	where := `r.user_id = ?`
+	args := []any{userID}
+	if tenantID != "" {
+		where += ` AND r.tenant_id = ?`
+		args = append(args, tenantID)
 	}
+	if status != "" {
+		where += ` AND r.status = ?`
+		args = append(args, string(status))
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE `+where+` ORDER BY r.started_at DESC LIMIT 100`,
+		args...,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -365,9 +365,18 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	// User ids are only unique within a tenant, so the tenant goes into the
+	// query: a tenant session asking about a user id that also exists in
+	// another tenant sees only its own runs, and the other tenant's rows
+	// cannot use up the store's row bound. "" = every tenant.
+	ts := s.tenantStore(ctx)
+	queryTenant := ts.tenantID
+	if ts.allTenants {
+		queryTenant = ""
+	}
 	var rows []store.Run
 	if filter.UserID != "" {
-		rs, err := s.store.ListActiveRunsByUser(ctx, filter.UserID, store.RunStatus(filter.Status))
+		rs, err := s.store.ListActiveRunsByUser(ctx, queryTenant, filter.UserID, store.RunStatus(filter.Status))
 		if err != nil {
 			return nil, err
 		}
@@ -379,10 +388,9 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 		// don't accidentally walk the entire runs table.
 		return nil, fmt.Errorf("list_runs without user_id is not supported in v0.8.15; supply user_id in filter")
 	}
-	// The store lists by user id alone, and user ids are only unique within a
-	// tenant, so the tenant is applied here: a tenant session asking about a
-	// user id that also exists in another tenant sees only its own runs.
-	ts := s.tenantStore(ctx)
+	// Still needed: the store reads tenant "" as "all tenants", so a
+	// non-admin principal whose tenant is "" gets every tenant's rows back
+	// and must be narrowed here.
 	out := make([]connector.Run, 0, len(rows))
 	for _, r := range rows {
 		if len(out) >= limit {

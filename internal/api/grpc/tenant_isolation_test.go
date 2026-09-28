@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -108,6 +109,26 @@ func TestGrpcListUserAgents_DropsCrossTenant(t *testing.T) {
 	}
 	if len(resp.GetAgents()) != 1 || resp.GetAgents()[0].GetAgentId() != "a_acme_shared" {
 		t.Errorf("scoped list = %v, want only a_acme_shared", resp.GetAgents())
+	}
+}
+
+// Another tenant's newer runs for a colliding user id must not crowd a scoped
+// principal's own runs out of the store's row bound.
+func TestGrpcListUserAgents_TenantSeesAllOwnRunsPastOtherTenantsNewer(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	for i := 0; i < 5; i++ {
+		seedRun(t, st, "acme", "shared", fmt.Sprintf("a_acme_%d", i))
+	}
+	for i := 0; i < 150; i++ {
+		seedRun(t, st, "evil", "shared", fmt.Sprintf("a_evil_%d", i))
+	}
+
+	resp, err := adapter.ListUserAgents(scopedCtx("acme", "shared", auth.ScopeRunsRead), &loomcyclepb.ListUserAgentsRequest{UserId: "shared"})
+	if err != nil {
+		t.Fatalf("ListUserAgents: %v", err)
+	}
+	if len(resp.GetAgents()) != 5 {
+		t.Errorf("acme saw %d agents, want all 5 of its own", len(resp.GetAgents()))
 	}
 }
 

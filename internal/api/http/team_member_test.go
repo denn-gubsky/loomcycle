@@ -47,7 +47,7 @@ func memberUnderReview(t *testing.T, h *reviewHarness) (string, <-chan teamrun.S
 	var runID string
 	deadline := time.Now().Add(3 * time.Second)
 	for runID == "" && time.Now().Before(deadline) {
-		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			if heldForReview(context.Background(), h.st, r.ID) {
 				runID = r.ID
@@ -184,7 +184,7 @@ func TestTeamMember_WalkAbortClosesAHeldMember(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	held := false
 	for !held && time.Now().Before(deadline) {
-		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			held = held || heldForReview(context.Background(), h.st, r.ID)
 		}
@@ -214,7 +214,7 @@ func TestTeamMember_RecordsItsReviewArmingForAResume(t *testing.T) {
 	}()
 	var runID string
 	waitFor(t, "the member to be held", func() bool {
-		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			if heldForReview(context.Background(), h.st, r.ID) {
 				runID = r.ID
@@ -275,7 +275,7 @@ func TestTeamMember_ReportsItsHoldToTheWalksClock(t *testing.T) {
 	}
 	var runID string
 	waitFor(t, "the member to be held", func() bool {
-		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			if heldForReview(context.Background(), h.st, r.ID) {
 				runID = r.ID

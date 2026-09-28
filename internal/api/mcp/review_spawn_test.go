@@ -36,7 +36,7 @@ func TestSpawnRun_ReviewReturnsOnceTheAnswerIsApproved(t *testing.T) {
 	var runID string
 	deadline := time.Now().Add(3 * time.Second)
 	for runID == "" && time.Now().Before(deadline) {
-		runs, _ := st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			if ev, err := st.GetLastEventForRun(context.Background(), r.ID); err == nil && ev.Type == string(providers.EventAwaitingReview) {
 				runID = r.ID
@@ -73,7 +73,7 @@ func heldRun(t *testing.T, st store.Store, round int) store.Run {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		runs, _ := st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			ev, err := st.GetLastEventForRun(context.Background(), r.ID)
 			if err != nil || ev.Type != string(providers.EventAwaitingReview) {

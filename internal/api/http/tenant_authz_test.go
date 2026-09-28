@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -124,6 +125,44 @@ func TestHandleListUserAgents_TenantFiltersCrossTenant(t *testing.T) {
 	// A tenant principal cannot widen via ?tenant= — still only its own.
 	if escaped := call(auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}}, base+"&tenant=other"); len(escaped) != 1 || escaped[0]["agent_id"] != "a_acme" {
 		t.Errorf("tenant ?tenant=other leaked %d agents (want 1 = a_acme): %v", len(escaped), escaped)
+	}
+}
+
+// Another tenant's newer runs for a colliding user id must not crowd a
+// tenant's own runs out of the store's row bound: all 5 acme runs are listed
+// even though tenant other has 150 newer ones for the same "alice".
+func TestHandleListUserAgents_TenantSeesAllOwnRunsPastOtherTenantsNewer(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	seed := func(tenant string, n int) {
+		sess, err := st.CreateSession(ctx, tenant, "echo", "alice")
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+		for i := 0; i < n; i++ {
+			if _, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: fmt.Sprintf("a_%s_%d", tenant, i), UserID: "alice", TenantID: tenant}); err != nil {
+				t.Fatalf("create run: %v", err)
+			}
+		}
+	}
+	seed("acme", 5)
+	seed("other", 150)
+
+	req := principalReq("GET", "/v1/users/alice/agents?status=all", auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsRead}})
+	req.SetPathValue("user_id", "alice")
+	rec := httptest.NewRecorder()
+	s.handleListUserAgents(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Agents) != 5 {
+		t.Errorf("acme saw %d agents, want all 5 of its own", len(resp.Agents))
 	}
 }
 
