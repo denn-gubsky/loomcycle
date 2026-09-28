@@ -132,3 +132,33 @@ func TestToolChoiceSpent_ReadsTheRunsOwnEvents(t *testing.T) {
 		t.Error("always is never spent")
 	}
 }
+
+// A retune replaces the choice, so the calls BEFORE it spent a different one: a
+// resume after a tool_choice retune must still force the new choice, and a
+// retune of something else must not revive a spent one.
+func TestToolChoiceSpent_ARetuneOfTheChoiceStartsTheCountOver(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	run := seedTenantRun(t, srv.store, "acme", "u1", "a_retuned")
+	first := &config.ToolChoice{Mode: "required"}
+	appendEv := func(typ string, payload string) {
+		if err := srv.store.AppendEvent(ctx, run.ID, typ, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	appendEv("usage", `{"type":"usage","usage":{}}`)
+	appendEv("override", `{"type":"override","override":{"source":"operator","fields":["max_tokens"]}}`)
+	if !toolChoiceSpent(ctx, srv.store, run.ID, first) {
+		t.Error("a retune that did not touch tool_choice revived a spent first_call")
+	}
+	appendEv("override", `{"type":"override","override":{"source":"operator","fields":["tool_choice"]}}`)
+	if toolChoiceSpent(ctx, srv.store, run.ID, first) {
+		t.Error("the retuned choice was counted as spent by a call made before it existed")
+	}
+	appendEv("usage", `{"type":"usage","usage":{}}`)
+	if !toolChoiceSpent(ctx, srv.store, run.ID, first) {
+		t.Error("a call after the retune spends the retuned first_call")
+	}
+}

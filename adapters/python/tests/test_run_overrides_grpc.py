@@ -187,6 +187,41 @@ async def test_run_input_carries_every_override_beside_the_text():
 
 
 @pytest.mark.asyncio
+async def test_retune_and_input_carry_tool_choice_and_output_format():
+    """Both steer-side requests replace the run's tool_choice / output_format;
+    the schema travels as JSON bytes, like the run-start path. Omitted, they
+    stay unset — which the server reads as "keep what the run has"."""
+    client = _make_client()
+    captured: list = []
+
+    async def fake_retune(req, metadata=None):
+        captured.append(req)
+        return pb.RetuneRunResponse(run_id="r_1", retuned=True)
+
+    async def fake_input(req, metadata=None):
+        captured.append(req)
+        return pb.RunInputResponse(run_id="r_1", delivered=True)
+
+    client._stub.RetuneRun = fake_retune  # type: ignore[attr-defined]
+    client._stub.RunInput = fake_input  # type: ignore[attr-defined]
+
+    tc = {"mode": "tool", "name": "WebSearch", "until": "until_called"}
+    schema = {"type": "object", "properties": {"city": {"type": "string"}}}
+    await client.retune_run("r_1", tool_choice=tc, output_format={"schema": schema})
+    await client.run_input("r_1", "go", tool_choice={"mode": "auto"})
+    await client.run_input("r_1", "and again")
+
+    retune, with_auto, bare = captured
+    assert (retune.tool_choice.mode, retune.tool_choice.name, retune.tool_choice.until) == (
+        "tool", "WebSearch", "until_called")
+    assert json.loads(retune.output_format.schema) == schema
+    # {"mode": "auto"} is a real value — it removes forcing — so it must be SENT.
+    assert with_auto.HasField("tool_choice") and with_auto.tool_choice.mode == "auto"
+    assert not with_auto.HasField("output_format")
+    assert not bare.HasField("tool_choice") and not bare.HasField("output_format")
+
+
+@pytest.mark.asyncio
 async def test_run_input_without_overrides_leaves_them_unset():
     """Non-vacuity, and the contract: saying nothing must reach the wire as an
     UNSET field, never as the zero that means 'no retries' / 'inject nothing'."""

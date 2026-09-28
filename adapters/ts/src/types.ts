@@ -830,6 +830,17 @@ export interface RunOverrideOptions {
    *  timeout and the interruption's own. */
   interruption?: { enabled?: boolean; kinds?: string[]; max_pending?: number };
 
+  /** Per-run tool choice: whether and which tool the model must call, and
+   *  for how many calls. REPLACES the agent's own whole. On a retune it
+   *  replaces the run's own and takes effect from the run's next turn, where
+   *  its `until` starts counting; mode `auto` removes the forcing. */
+  toolChoice?: ToolChoiceOptions;
+  /** Per-run answer schema: the final answer is held to it where the model
+   *  supports it, and returned parsed as `result.structured`. REPLACES the
+   *  agent's own whole. On a retune it replaces the run's own and takes
+   *  effect from the run's next turn; a retune cannot remove it. */
+  outputFormat?: OutputFormatOptions;
+
 }
 
 export interface RunOptions extends RunOverrideOptions {
@@ -923,13 +934,6 @@ export interface RunOptions extends RunOverrideOptions {
    *  agent's own sampling (this wins; unset fields inherit). Omitted =
    *  inherit entirely. */
   sampling?: SamplingOptions;
-  /** Per-run tool choice (RFC DI): whether and which tool the model must
-   *  call, and for how many calls. REPLACES the agent's own whole. */
-  toolChoice?: ToolChoiceOptions;
-  /** Per-run answer schema (RFC DI): the final answer is held to it where
-   *  the model supports it, and returned parsed as `result.structured`.
-   *  REPLACES the agent's own whole. */
-  outputFormat?: OutputFormatOptions;
   /** Per-run context-compaction override (v0.32.0), merged PER FIELD over
    *  the agent's own compaction block (this wins; unset fields inherit).
    *  Omitted = inherit entirely. Trigger compaction mid-run with
@@ -1208,13 +1212,6 @@ export interface ContinueOptions extends RunOverrideOptions {
   toolHooks?: ToolHooksByTool;
   /** Per-continuation LLM sampling override — see {@link RunOptions.sampling}. */
   sampling?: SamplingOptions;
-  /** Per-run tool choice (RFC DI): whether and which tool the model must
-   *  call, and for how many calls. REPLACES the agent's own whole. */
-  toolChoice?: ToolChoiceOptions;
-  /** Per-run answer schema (RFC DI): the final answer is held to it where
-   *  the model supports it, and returned parsed as `result.structured`.
-   *  REPLACES the agent's own whole. */
-  outputFormat?: OutputFormatOptions;
   /** Per-continuation context-compaction override — see {@link RunOptions.compaction}. */
   compaction?: CompactionOptions;
   /** Per-continuation context-distillation override — see

@@ -580,6 +580,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		// it is the one an operator comes back to and retunes.
 		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
 		PauseGate:               gate,
+
+		// The RECORD's tool_choice, not resumedToolChoice: the baseline is what
+		// the run holds, so a choice resume dropped as spent is not re-forced.
+		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(run.ID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
 
 	go func() {

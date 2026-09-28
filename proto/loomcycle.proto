@@ -1099,6 +1099,11 @@ message RunInputRequest {
   // Arm (true) or disarm (false) the hold for an operator's verdict when the
   // model finishes. Disarming a held run releases it as approved.
   optional bool review = 18;
+  // Replace the run's tool_choice / output_format whole (see RunRequest). The
+  // run adopts them at the operator turn this message starts; a replaced
+  // tool_choice counts its `until` from there. mode "auto" removes forcing.
+  ToolChoice tool_choice = 19;
+  OutputFormat output_format = 20;
 }
 
 // RetuneRunRequest changes a run's settings and delivers no turn. The override
@@ -1125,6 +1130,11 @@ message RetuneRunRequest {
   // Arm (true) or disarm (false) the hold for an operator's verdict when the
   // model finishes. Disarming a held run releases it as approved.
   optional bool review = 16;
+  // Replace the run's tool_choice / output_format whole (see RunRequest). A
+  // live run adopts them at its next operator turn; a replaced tool_choice
+  // counts its `until` from there. mode "auto" removes forcing.
+  ToolChoice tool_choice = 17;
+  OutputFormat output_format = 18;
 }
 
 message RetuneRunResponse {

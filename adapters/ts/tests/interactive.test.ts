@@ -159,6 +159,22 @@ describe("retuning a parked run", () => {
     expect(body.unbounded_iterations).toBe(false);
   });
 
+  it("retuneRun and sendRunInput carry toolChoice and outputFormat in snake_case", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_abc", retuned: true }),
+      jsonResponse({ run_id: "r_abc", delivered: true }),
+    ]);
+    const toolChoice = { mode: "tool" as const, name: "WebSearch", until: "until_called" as const };
+    const outputFormat = { schema: { type: "object", properties: { city: { type: "string" } } } };
+    await client.retuneRun("r_abc", { toolChoice, outputFormat });
+    await client.sendRunInput("r_abc", "go", { overrides: { toolChoice } });
+
+    const retune = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(retune).toEqual({ tool_choice: toolChoice, output_format: outputFormat });
+    const input = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(input.overrides).toEqual({ tool_choice: toolChoice });
+  });
+
   it("InteractiveSession.retune() drives it, and send() can carry overrides", async () => {
     const calls: Array<Record<string, unknown>> = [];
     const sess = new InteractiveSession((async function* () {})(), {

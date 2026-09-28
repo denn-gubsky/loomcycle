@@ -1354,7 +1354,7 @@ func handleRetuneRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		// Not an absorbed no-op: an empty set means the field names were
 		// misspelled, and reporting success for a call that changed nothing is
 		// how that mistake stays invisible.
-		return toolErr("retune_run: at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide, interactive, interruption, review)"), nil
+		return toolErr("retune_run: at least one override is required (model, provider, tier, effort, max_tokens, max_iterations, unbounded_iterations, max_concurrent_children, retry_attempts, memory_inject_max_tokens, memory_index_max_bytes, inject_tool_guide, interactive, interruption, review, tool_choice, output_format)"), nil
 	}
 	run, err := env.connector.GetRun(ctx, p.AgentID)
 	if err != nil {

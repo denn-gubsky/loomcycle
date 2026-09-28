@@ -13,6 +13,8 @@ import (
 // (RFC DI). Unlike tool_choice it never expires: every call carries the schema,
 // because the model cannot know which turn will be its last.
 type outputFormatPolicy struct {
+	// src is the option this policy was built from (see adopt).
+	src  *config.OutputFormat
 	of   *config.OutputFormat
 	wire *providers.OutputFormat
 	// reported remembers the (provider, model, tools?) target it last checked,
@@ -22,11 +24,20 @@ type outputFormatPolicy struct {
 
 func newOutputFormatPolicy(of *config.OutputFormat) *outputFormatPolicy {
 	if of.IsZero() {
-		return &outputFormatPolicy{}
+		return &outputFormatPolicy{src: of}
 	}
 	// Validate ran at intake, so the schema is a JSON object and marshals.
 	schema, _ := json.Marshal(of.Schema)
-	return &outputFormatPolicy{of: of, wire: &providers.OutputFormat{Name: of.EffectiveName(), Schema: schema}}
+	return &outputFormatPolicy{src: of, of: of, wire: &providers.OutputFormat{Name: of.EffectiveName(), Schema: schema}}
+}
+
+// adopt returns the policy for of: p itself while of is the option p was built
+// from, else a fresh one (a retune replaced the schema).
+func (p *outputFormatPolicy) adopt(of *config.OutputFormat) *outputFormatPolicy {
+	if of == p.src {
+		return p
+	}
+	return newOutputFormatPolicy(of)
 }
 
 // forCall is the format to send on the next request, or nil. The loop, not

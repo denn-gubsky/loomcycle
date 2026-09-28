@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"slices"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -207,12 +208,20 @@ func decodeRunConfig(raw json.RawMessage) (runConfigRecord, bool) {
 //
 // A store read failure counts as not spent: re-forcing once is a smaller harm
 // than dropping a choice the run never got to use.
+//
+// A RETUNE starts the count over. tc is the run's current choice, and the
+// operator override event naming tool_choice (written when the retune was made)
+// means the calls before it spent a DIFFERENT choice. Known imprecision: a run
+// retuned while mid-turn keeps its old choice until its next operator turn, so
+// that turn's call — completing after the marker — is counted against the new
+// choice if the run is paused before that turn.
 func toolChoiceSpent(ctx context.Context, st store.Store, runID string, tc *config.ToolChoice) bool {
 	if tc.IsZero() || st == nil || tc.EffectiveUntil() == config.ToolChoiceUntilAlways {
 		return false
 	}
 	const page = 500
 	var after int64
+	spent := false
 	for {
 		evs, err := st.GetRunEventsSince(ctx, runID, after, page)
 		if err != nil {
@@ -221,18 +230,25 @@ func toolChoiceSpent(ctx context.Context, st store.Store, runID string, tc *conf
 		for _, ev := range evs {
 			after = ev.Seq
 			switch {
+			case ev.Type == string(providers.EventOverride):
+				var pe providers.Event
+				if json.Unmarshal(ev.Payload, &pe) == nil && pe.Override != nil &&
+					slices.Contains(pe.Override.Fields, "tool_choice") {
+					spent = false
+				}
+			case spent:
 			case tc.EffectiveUntil() == config.ToolChoiceUntilFirstCall && ev.Type == string(providers.EventUsage):
-				return true // a model call completed
+				spent = true // a model call completed
 			case tc.EffectiveUntil() == config.ToolChoiceUntilUntilCalled && ev.Type == string(providers.EventToolCall):
 				var pe providers.Event
 				if json.Unmarshal(ev.Payload, &pe) == nil && pe.ToolUse != nil &&
 					(tc.Mode == config.ToolChoiceModeRequired || pe.ToolUse.Name == tc.Name) {
-					return true
+					spent = true
 				}
 			}
 		}
 		if len(evs) < page {
-			return false
+			return spent
 		}
 	}
 }

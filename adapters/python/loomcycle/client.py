@@ -1205,6 +1205,8 @@ class LoomcycleClient:
         interactive: Optional[bool] = None,
         interruption: Optional[Mapping[str, Any]] = None,
         review: Optional[bool] = None,
+        tool_choice: Optional[Mapping[str, Any]] = None,
+        output_format: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
@@ -1243,6 +1245,7 @@ class LoomcycleClient:
         )
         if interruption is not None:
             req.interruption.CopyFrom(_build_interruption(interruption))
+        _set_retuned_shape(req, tool_choice, output_format)
         try:
             resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -1268,6 +1271,8 @@ class LoomcycleClient:
         interactive: Optional[bool] = None,
         interruption: Optional[Mapping[str, Any]] = None,
         review: Optional[bool] = None,
+        tool_choice: Optional[Mapping[str, Any]] = None,
+        output_format: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         """Change a run's settings WITHOUT sending it a turn (mirror of
         ``POST /v1/runs/{run_id}/retune``).
@@ -1278,7 +1283,10 @@ class LoomcycleClient:
         said. :meth:`run_input` is the other half: retune and speak at once.
 
         The overrides select WITHIN what the agent's definition allows and
-        cannot widen it. Returns ``{run_id, retuned}``. An unknown or
+        cannot widen it. ``tool_choice`` and ``output_format`` replace the
+        run's own whole and take effect from its next turn, where a replaced
+        tool_choice starts counting its ``until``; tool_choice mode ``auto``
+        removes the forcing. Returns ``{run_id, retuned}``. An unknown or
         cross-tenant run_id maps to :class:`AgentNotFoundError` (NotFound) —
         the same answer for both, so the gate is not an existence oracle —
         and supplying no override at all is an ``InvalidArgumentError``."""
@@ -1303,6 +1311,7 @@ class LoomcycleClient:
         )
         if interruption is not None:
             req.interruption.CopyFrom(_build_interruption(interruption))
+        _set_retuned_shape(req, tool_choice, output_format)
         try:
             resp = await self._stub.RetuneRun(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -2059,6 +2068,20 @@ def _build_output_format(d: Mapping[str, Any]) -> "pb.OutputFormat":
         name=d.get("name", ""),
         schema=json.dumps(schema).encode() if schema is not None else b"",
     )
+
+
+def _set_retuned_shape(
+    req: Any,
+    tool_choice: Optional[Mapping[str, Any]],
+    output_format: Optional[Mapping[str, Any]],
+) -> None:
+    """Set tool_choice / output_format on a RetuneRun or RunInput request.
+    None leaves the field unset, which the server reads as "keep what the run
+    has"; a dict (even ``{"mode": "auto"}``) is sent and replaces it."""
+    if tool_choice is not None:
+        req.tool_choice.CopyFrom(_build_tool_choice(tool_choice))
+    if output_format is not None:
+        req.output_format.CopyFrom(_build_output_format(output_format))
 
 
 def _build_sampling(d: Mapping[str, Any]) -> "pb.Sampling":

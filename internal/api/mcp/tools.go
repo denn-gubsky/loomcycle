@@ -49,8 +49,8 @@ const spawnPerRunProps = `
 
 // retuneProps is the JSON-schema fragment for a RETUNE, which accepts a
 // strictly smaller set than a spawn: the twelve per-run overrides plus
-// interactive, interruption and review, and NOT sampling / compaction / context /
-// max_context_tokens / metadata.
+// interactive, interruption, review, tool_choice and output_format, and NOT
+// sampling / compaction / context / max_context_tokens / metadata.
 //
 // Spliced from spawnPerRunProps' own entries rather than rewritten, so the two
 // tools cannot end up describing the same field differently — but filtered,
@@ -61,6 +61,7 @@ var retuneProps = filterProps(spawnPerRunProps, []string{
 	"max_tokens", "max_iterations", "unbounded_iterations", "max_concurrent_children",
 	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes",
 	"inject_tool_guide", "interactive", "interruption", "review",
+	"tool_choice", "output_format",
 })
 
 // filterProps keeps the named entries of a schema-property fragment, in the
@@ -239,7 +240,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "retune_run",
-			Description: "Change a RUNNING agent's settings without sending it a turn. Targets a run by `agent_id`. Use it to take hold of a run that is going the wrong way: move it to a different model, raise its iteration bound, or park it at its next turn boundary so a person can correct it (`interactive`). Returns the run's merged configuration, which is what it now holds — not an echo of what you sent, because the merge is not a field-wise union: naming a model clears the provider, and naming a tier clears the model. Overrides select WITHIN what the agent's definition already allows and cannot widen it; one it forbids is REFUSED here rather than applied and discovered later. Do NOT use it to send the agent a message — that is spawn_run with the run's session_id, and a retune deliberately writes nothing to the transcript that the operator did not say. At least one field is required: an empty call is refused rather than reported as a no-op change.",
+			Description: "Change a RUNNING agent's settings without sending it a turn. Targets a run by `agent_id`. Use it to take hold of a run that is going the wrong way: move it to a different model, raise its iteration bound, or park it at its next turn boundary so a person can correct it (`interactive`). `tool_choice` and `output_format` replace the run's own whole and take effect from its next turn; a replaced tool_choice counts `until` from there, and mode auto removes the forcing. Returns the run's merged configuration, which is what it now holds — not an echo of what you sent, because the merge is not a field-wise union: naming a model clears the provider, and naming a tier clears the model. Overrides select WITHIN what the agent's definition already allows and cannot widen it; one it forbids is REFUSED here rather than applied and discovered later. Do NOT use it to send the agent a message — that is spawn_run with the run's session_id, and a retune deliberately writes nothing to the transcript that the operator did not say. At least one field is required: an empty call is refused rather than reported as a no-op change.",
 			InputSchema: rawJSON(`{
 				"type": "object",
 				"required": ["agent_id"],

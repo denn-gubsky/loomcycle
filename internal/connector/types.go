@@ -916,6 +916,10 @@ type RunOverrides struct {
 	// Review arms or disarms the hold for an operator's verdict; disarming a
 	// held run releases it as approved. nil = leave what the run has.
 	Review *bool `json:"review,omitempty"`
+	// ToolChoice and OutputFormat each REPLACE the run's own whole; the run
+	// adopts them at its next operator turn. nil = leave what the run has.
+	ToolChoice   *config.ToolChoice   `json:"tool_choice,omitempty"`
+	OutputFormat *config.OutputFormat `json:"output_format,omitempty"`
 }
 
 // IsZero reports whether the caller supplied no override at all. Transports
@@ -932,7 +936,7 @@ func (o RunOverrides) IsZero() bool {
 		o.MaxConcurrentChildren == 0 && o.RetryAttempts == nil &&
 		o.MemoryInjectMaxTokens == nil && o.MemoryIndexMaxBytes == nil &&
 		o.InjectToolGuide == nil && o.Interactive == nil && o.Interruption == nil &&
-		o.Review == nil
+		o.Review == nil && o.ToolChoice == nil && o.OutputFormat == nil
 }
 
 // ConfiguredRunRequest is a run to create without starting it: a spawn request
