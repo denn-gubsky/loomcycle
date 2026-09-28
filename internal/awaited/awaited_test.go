@@ -1,4 +1,4 @@
-package http
+package awaited
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-func TestDeriveAwaitedState(t *testing.T) {
+func TestFromEvent_ReportsWhatTheOpenToolCallBlocksOn(t *testing.T) {
 	cases := []struct {
 		name      string
 		ev        store.Event
@@ -95,7 +95,7 @@ func TestDeriveAwaitedState(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotS, gotO := deriveAwaitedState(tc.ev)
+			gotS, gotO := FromEvent(tc.ev)
 			if gotS != tc.wantState || gotO != tc.wantOn {
 				t.Errorf("got (%q,%q), want (%q,%q)", gotS, gotO, tc.wantState, tc.wantOn)
 			}

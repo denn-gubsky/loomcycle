@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -80,28 +81,12 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 	})
 }
 
-// holdEndingEvents are what a run writes when it leaves a hold, whatever the
-// verdict: the feedback turn (user_input), the park an approved interactive run
-// moves to (awaiting_input), or the end (done). The run is held while its
-// latest awaiting_review is newer than all of them.
-//
-// Keyed on what ENDS a hold rather than on the run's latest event, because
-// other writers append to a held run without ending it — a retune's override
-// event, a budget limit, a compaction marker — and each of those would make
-// "the latest event is awaiting_review" false for a run that is still held.
-var holdEndingEvents = []string{
-	string(providers.EventAwaitingReview), // listed so the query can return it
-	"user_input",
-	string(providers.EventAwaitingInput),
-	string(providers.EventDone),
-}
-
 // heldReviewFrom is the hold a run was in when its events stop — the same rule
 // as heldForReview, read from events already in hand — or nil when its latest
 // hold-ending event is not a hold.
 func heldReviewFrom(events []store.Event) *loop.HeldReview {
 	ending := map[string]bool{}
-	for _, t := range holdEndingEvents {
+	for _, t := range awaited.HoldEndingEvents {
 		ending[t] = true
 	}
 	for i := len(events) - 1; i >= 0; i-- {
@@ -127,22 +112,8 @@ func (s *Server) isHeld(ctx context.Context, runID string) bool {
 }
 
 func heldForReview(ctx context.Context, st store.Store, runID string) bool {
-	held, _ := heldBy(ctx, st, runID)
+	held, _ := awaited.HeldBy(ctx, st, runID)
 	return held
-}
-
-// heldBy reports whether the run is held for review and, if an agent_stop
-// hook took the hold, which one.
-func heldBy(ctx context.Context, st store.Store, runID string) (bool, string) {
-	last, err := st.GetLastEventOfTypes(ctx, runID, holdEndingEvents)
-	if err != nil || last.Type != string(providers.EventAwaitingReview) {
-		return false, ""
-	}
-	var p providers.Event
-	if json.Unmarshal(last.Payload, &p) == nil && p.AwaitingReview != nil {
-		return true, p.AwaitingReview.HeldBy
-	}
-	return true, ""
 }
 
 // releaseHeldRun approves a held run whose review was just disarmed, so the
@@ -157,7 +128,7 @@ func (s *Server) releaseHeldRun(ctx context.Context, runID string) {
 	if s.steerReg == nil || s.store == nil {
 		return
 	}
-	if held, by := heldBy(ctx, s.store, runID); !held || by != "" {
+	if held, by := awaited.HeldBy(ctx, s.store, runID); !held || by != "" {
 		return
 	}
 	if _, err := s.pushVerdict(ctx, runID, steer.Message{

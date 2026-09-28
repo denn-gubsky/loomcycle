@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -233,7 +234,7 @@ func TestReview_RejectWithFeedbackThenApprove(t *testing.T) {
 	var a agentResponse
 	_ = json.NewDecoder(resp.Body).Decode(&a)
 	resp.Body.Close()
-	if a.Status != store.RunRunning || a.AwaitedState != awaitedStateReview {
+	if a.Status != store.RunRunning || a.AwaitedState != awaited.Review {
 		t.Errorf("held run reads status=%q awaited_state=%q, want running/review", a.Status, a.AwaitedState)
 	}
 
@@ -487,7 +488,7 @@ func TestReview_ARetuneDoesNotEndTheHold(t *testing.T) {
 	var a agentResponse
 	_ = json.NewDecoder(resp.Body).Decode(&a)
 	resp.Body.Close()
-	if a.AwaitedState != awaitedStateReview {
+	if a.AwaitedState != awaited.Review {
 		t.Errorf("awaited_state after a retune = %q, want review", a.AwaitedState)
 	}
 	if code, body := h.review(runID, `{"decision":"reject"}`); code != http.StatusOK {
