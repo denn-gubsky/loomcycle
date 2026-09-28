@@ -2239,12 +2239,19 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// model or human, meant "a section of this document". The root lookup also
 	// makes a mistyped document_id an error instead of an orphan chunk that no
 	// document shows.
+	//
+	// The document is resolved FIRST, whatever else was passed. It used to be
+	// looked up only when neither parent_id nor after_id was given, so a call in
+	// the wrong scope that named the document's real root as parent_id was
+	// refused "no such parent_id … pass the document's root_chunk_id" — which is
+	// exactly what it had passed. A model reading that retries the same id or
+	// drops it, never the scope (measured: qwen3.6 made two more failing calls).
+	root, rerr := d.documentRootChunk(ctx, key, in.DocumentID)
+	if rerr != nil {
+		return errNotFound("create_chunk: "+rerr.Error()+
+			" (pass the document_id create_document returned, in the same scope)", ""), nil
+	}
 	if in.ParentID == "" && in.AfterID == "" {
-		root, rerr := d.documentRootChunk(ctx, key, in.DocumentID)
-		if rerr != nil {
-			return errNotFound("create_chunk: "+rerr.Error()+
-				" (pass the document_id create_document returned, in the same scope)", ""), nil
-		}
 		parentID = root
 	}
 	if in.ParentID != "" {
