@@ -77,6 +77,23 @@ Without the `interruption` block, every op returns
 default-deny shape as memory_scopes / channels /
 agent_def_scopes / evaluation_scopes.
 
+## Per-run narrowing
+
+A run can carry its own `interruption` block — on `POST /v1/runs`,
+a session continuation, a configured run, `spawn_run`, gRPC, or a
+retune. It only ever NARROWS the agent's policy:
+
+- `enabled` must be `true` to keep the tool usable; `false` (or
+  leaving it out) switches it off for that run.
+- `kinds` keeps only the kinds the agent's definition also allows.
+- `max_pending` takes the smaller of the run's and the definition's.
+
+It never grants the tool: on an agent whose `tools` do not include
+`Interruption`, the block has no effect and the run reports it once
+as a `capability_inert` event. A retune reaches a parked interactive
+run at its next operator turn; a run that never parks adopts it when
+it resumes.
+
 ## Forward-compatible kind
 
 The storage `kind` column is a **closed enum** owned by loomcycle.
