@@ -366,3 +366,22 @@ func TestWithRunIdentity_PreservesOtherCreds(t *testing.T) {
 		}
 	}
 }
+
+// A holder's Store is what the next Load — and so the next tool call — sees;
+// a fixed policy attached later shadows it, which is how a sub-agent's own
+// policy stays its own under a parent that carries a live one.
+func TestInterruptionPolicyHolder_LaterStoreIsWhatTheToolReads(t *testing.T) {
+	h := NewInterruptionPolicyHolder(InterruptionPolicyValue{Enabled: true, MaxPending: 3})
+	ctx := WithInterruptionPolicyHolder(context.Background(), h)
+	if got := InterruptionPolicy(ctx); !got.Enabled || got.MaxPending != 3 {
+		t.Fatalf("initial policy = %+v", got)
+	}
+	h.Store(InterruptionPolicyValue{})
+	if got := InterruptionPolicy(ctx); got.Enabled {
+		t.Errorf("after Store the tool still read the old policy: %+v", got)
+	}
+	child := WithInterruptionPolicy(ctx, InterruptionPolicyValue{Enabled: true})
+	if got := InterruptionPolicy(child); !got.Enabled {
+		t.Errorf("a fixed policy attached later did not shadow the holder: %+v", got)
+	}
+}
