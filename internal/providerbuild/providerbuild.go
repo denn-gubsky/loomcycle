@@ -226,3 +226,63 @@ func ProviderEndpoint(cfg *config.Config, id string) (baseURL, apiKey, keyEnvNam
 	pc := cfg.Providers[id]
 	return resolveBaseURL(id, pc, cfg), os.Getenv(pc.APIKeyEnv), pc.APIKeyEnv
 }
+
+// ServiceEndpoint is a SERVICE block's model choice — memory.reranker,
+// memory.unit_generator: a provider and model (either may come from a models:
+// alias), plus optional endpoint and key overrides.
+type ServiceEndpoint struct {
+	Provider, Model    string
+	BaseURL, APIKeyEnv string
+}
+
+// ServiceProvider builds the provider a service block names — one construction for
+// every such block, so the rules below cannot drift between them. field names the
+// block in errors ("memory.reranker"); ownKeyName is the credential name the
+// service answers to when its endpoint is overridden without a key (see below).
+// It returns the provider and the resolved provider id and model.
+//
+// Resolution matches an agent's: a models: alias supplies the concrete model and,
+// when the block names none, the provider. The provider must be declared. The
+// block's own base_url and api_key_env win over the provider's, as the embedder's
+// do.
+//
+// A TENANT'S PROVIDER KEY MUST NOT TRAVEL TO AN ENDPOINT THAT PROVIDER DOES NOT RUN.
+// A driver resolves a tenant's own stored credential by its key name
+// (OPENAI_API_KEY for the openai driver) before falling back to the operator's,
+// so a service pointed at an operator's own endpoint would hand every such
+// tenant's real vendor key to that endpoint — and book the call as tenant-paid for
+// an account it never touched. With base_url overridden and no api_key_env, the
+// service answers only to ownKeyName, a name no provider uses.
+func ServiceProvider(cfg *config.Config, field string, ep ServiceEndpoint, ownKeyName string) (providers.Provider, string, string, error) {
+	provider, model, err := cfg.ExpandServiceModel(field, ep.Provider, ep.Model)
+	if err != nil {
+		return nil, "", "", err
+	}
+	pc, ok := cfg.Providers[provider]
+	if !ok {
+		known := make([]string, 0, len(cfg.Providers))
+		for k := range cfg.Providers {
+			known = append(known, k)
+		}
+		sort.Strings(known)
+		return nil, "", "", fmt.Errorf("%s.provider: %q is not declared in providers (declared: %v)", field, provider, known)
+	}
+	opts := DriverOptions(provider, pc, cfg)
+	if ep.BaseURL != "" {
+		opts.BaseURL = ep.BaseURL
+	}
+	if ep.APIKeyEnv != "" {
+		opts.APIKey = os.Getenv(ep.APIKeyEnv)
+		opts.KeyEnvName = ep.APIKeyEnv
+		if opts.APIKey == "" {
+			log.Printf("%s: api_key_env=%s is set but empty — it will call %s unauthenticated", field, ep.APIKeyEnv, provider)
+		}
+	} else if ep.BaseURL != "" {
+		opts.KeyEnvName = ownKeyName
+	}
+	p, err := providers.NewDriver(pc.Driver, opts)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("%s: provider %q: %w", field, provider, err)
+	}
+	return p, provider, model, nil
+}
