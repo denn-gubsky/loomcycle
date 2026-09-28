@@ -127,7 +127,7 @@ const MemberRejected = "rejected"
 // rejected member ends without an error, but its answer was never accepted,
 // so it counts as failed here rather than as work to thread onward.
 func (r *agentRunner) spawnWork(ctx context.Context, agent string, p Prompt) (SpawnResult, error) {
-	sp, err := r.spawn(ctx, agent, p, "")
+	sp, err := r.spawnMember(ctx, agent, p, "")
 	if err == nil && sp.Status == MemberRejected {
 		err = fmt.Errorf("the answer of %q was rejected (run %s)", agent, sp.RunID)
 	}
@@ -321,6 +321,25 @@ func WithRunnerLogf(f func(format string, args ...any)) RunnerOption {
 }
 
 func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
+	if !boundsWholeHandler(st.Handler) {
+		return r.runHandler(ctx, st, task)
+	}
+	// timeout_ms bounds this execution of the handler — see timeout.go. The
+	// clock's ctx is the one every run below is started from, so its expiry
+	// cancels them through the path a walk abort already takes.
+	timeout := &TimeoutError{State: st.ID, TimeoutMS: st.Handler.TimeoutMS}
+	cctx, clk := startClock(ctx, time.Duration(st.Handler.TimeoutMS)*time.Millisecond, timeout)
+	defer clk.finish()
+	oc, err := r.runHandler(cctx, st, task)
+	if err != nil && clk.timedOut() && ctx.Err() == nil {
+		// What the cancelled runs reported is only the echo of the timeout;
+		// the timeout is the reason.
+		return Outcome{}, timeout
+	}
+	return oc, err
+}
+
+func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
 	// The state's hooks are added to every run it starts, on top of that
 	// agent's own, and ride down to their sub-agents: they go on the ctx every
 	// spawn below is made from.
@@ -734,8 +753,9 @@ type agentResult struct {
 	Error  string `json:"error,omitempty"`
 	// Status is set only for a member a reviewer REJECTED ("rejected"): not ok,
 	// but not a failure either — the run did its work and a person turned the
-	// answer down. Absent otherwise, so an envelope nobody reviewed is
-	// byte-identical to before review existed.
+	// answer down — and for a Starter run that outlived timeout_ms ("timeout").
+	// Absent otherwise, so an envelope with neither is byte-identical to before
+	// either existed.
 	Status string `json:"status,omitempty"`
 }
 

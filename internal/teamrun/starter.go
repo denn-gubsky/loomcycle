@@ -63,9 +63,9 @@ type SinkPublisher interface {
 
 // SinkMessage is what the RUNTIME publishes for every spawned run — one
 // message each, on a guaranteed path, so a downstream fan-in count is never
-// short. A timed-out or crashed agent publishes `status: error` rather than
-// vanishing: a wait unblocked by failure beats a wait that hangs on it, and a
-// downstream judge sees the failure as content.
+// short. A timed-out or crashed agent publishes `status: timeout` / `error`
+// rather than vanishing: a wait unblocked by failure beats a wait that hangs
+// on it, and a downstream judge sees the failure as content.
 type SinkMessage struct {
 	Wave     string `json:"wave"`
 	WaveSize int    `json:"wave_size"`
@@ -79,11 +79,13 @@ type SinkMessage struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// Sink statuses. `timeout` arrives with the per-run wall clock in the fan-out
-// phase.
+// Sink statuses.
 const (
 	SinkOK    = "ok"
 	SinkError = "error"
+	// SinkTimeout: the run outlived the state's timeout_ms and was cancelled.
+	// Like an error it does not count toward the wave's wait.
+	SinkTimeout = "timeout"
 	// SinkRejected: a member held for review was turned down (or its review
 	// deadline passed). Not a success and not a failure; one message per run
 	// either way, so a downstream fan-in still gets its count.
@@ -386,10 +388,23 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 		mctx = WithReviewArming(mctx, func(context.Context) bool { return r.reviewArmed(st) })
 		mctx = WithReviewTTL(mctx, r.reviewTTL)
 	}
-	sp, err := r.spawn(mctx, agent, prompt, "")
+	// timeout_ms bounds EACH run of a wave, from its dispatch — see timeout.go.
+	var clk *heldClock
+	var timeout *TimeoutError
+	if ms := st.Handler.TimeoutMS; ms > 0 {
+		timeout = &TimeoutError{State: st.ID, TimeoutMS: ms, Agent: agent}
+		mctx, clk = startClock(mctx, time.Duration(ms)*time.Millisecond, timeout)
+		defer clk.finish()
+	}
+	sp, err := r.spawnMember(mctx, agent, prompt, "")
 	res.RunID = sp.RunID
 	if err != nil {
 		res.Error = err.Error()
+		if clk != nil && clk.timedOut() && ctx.Err() == nil {
+			// Not a failure of the agent's: it ran out of the time the
+			// definition gave it. The sink says which.
+			res.Status, res.Error = SinkTimeout, timeout.Error()
+		}
 		return res
 	}
 	if sp.Status == MemberRejected {
@@ -412,6 +427,8 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 		Status: SinkOK, Output: res.Output,
 	}
 	switch {
+	case res.Status == SinkTimeout:
+		msg.Status, msg.Output, msg.Error = SinkTimeout, "", res.Error
 	case res.Status == SinkRejected:
 		// The answer a person rejected is kept: the downstream decides what a
 		// rejection means, and it cannot decide without seeing what was
