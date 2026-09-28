@@ -95,9 +95,17 @@ func (w *runOverridesWire) split() runOverrides {
 	}
 }
 
-// runForSteer returns the run a steer/retune is addressed to, gated EXACTLY as
-// SteerRun gates it: the run must be live in the steer registry, and its session
-// must pass the tenant-ownership check.
+// runForSteer returns the run a steer/retune is addressed to — the one gate
+// SteerRun, retune and the run-config reads share: the run must be live, and
+// its session must pass the tenant-ownership check.
+//
+// Live means in this replica's steer registry, or — in a cluster — running on
+// the replica that owns it: its row says running and names another replica,
+// and a steer push routes there. Gating on the local registry alone refused
+// every call that landed on a replica that does not own the run, so in a
+// cluster steering, retune and a run's config worked only by luck of routing.
+// A running row stamped with this replica but absent from its registry is not
+// steerable here, and is not live anywhere else either.
 //
 // Deliberately the same gate and the same opaque failure. A retune that could
 // distinguish "not yours" from "does not exist" would turn this endpoint into an
@@ -110,7 +118,7 @@ func (s *Server) runForSteer(ctx context.Context, runID string) (store.Run, erro
 	}
 	entry, ok := s.steerReg.Get(runID)
 	if !ok {
-		return store.Run{}, connector.ErrRunNotInFlight
+		return s.remoteRunForSteer(ctx, runID)
 	}
 	if entry.SessionID != "" {
 		sess, err := s.store.GetSession(ctx, entry.SessionID)
@@ -121,6 +129,26 @@ func (s *Server) runForSteer(ctx context.Context, runID string) (store.Run, erro
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
 		return store.Run{}, connector.ErrRunNotInFlight
+	}
+	return run, nil
+}
+
+// remoteRunForSteer is runForSteer for a run this replica does not have: in a
+// cluster, a run another replica owns and is running, read through the
+// tenant-scoped store and the session gate, as ReviewRun reads it.
+func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run, error) {
+	if !s.steerReg.Clustered() {
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
+	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
+	if err != nil || run.Status != store.RunRunning || run.ReplicaID == "" || run.ReplicaID == s.replicaID {
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
+	if run.SessionID != "" {
+		sess, serr := s.store.GetSession(ctx, run.SessionID)
+		if serr != nil || !sessionOwnershipOK(ctx, sess) {
+			return store.Run{}, connector.ErrRunNotInFlight
+		}
 	}
 	return run, nil
 }

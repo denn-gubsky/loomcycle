@@ -197,6 +197,14 @@ func (r *Registry) PushLocal(runID string, m Message) (delivered, found bool) {
 	}
 }
 
+// Clustered reports whether a push that misses locally is routed to the
+// replica that owns the run.
+func (r *Registry) Clustered() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cluster != nil
+}
+
 // Get returns the live entry for run_id (and a presence bool). Used by the
 // HTTP handler to resolve the run's session for the tenant-ownership gate
 // before pushing. The returned Entry's channel is unexported, so callers
