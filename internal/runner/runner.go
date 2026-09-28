@@ -290,7 +290,8 @@ type RunInput struct {
 	ToolHooks hooks.ToolHooks
 
 	// Interruption is the run's own answer to whether the agent may ASK a human
-	// a question, overriding the definition's block. nil = inherit it.
+	// a question. It narrows the definition's policy and never grants the
+	// Interruption tool (see interruptionPolicyForRun). nil = inherit it.
 	//
 	// It is overridable because an interruption touches no data and no host — it
 	// blocks and waits for a person — so the exposure is liveness, which

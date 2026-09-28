@@ -76,7 +76,12 @@ var agentDefOverridability = map[string]overridability{
 	// could not let it ask a question, because that decision was frozen into the
 	// definition before the run existed. An untrusted trigger still cannot set
 	// it — webhook / A2A / scheduled runs build their input from the definition.
-	"Interruption": runMayChoose,
+	//
+	// NARROW ONLY, though. Enabling it for an agent that does not hold the tool
+	// would hand the run a tool its definition never listed, and `Tools` below
+	// may only shrink. So a run may switch it off, drop kinds and lower
+	// max_pending — interruptionPolicyForRun — and nothing else.
+	"Interruption": runMayNarrow,
 
 	// --- narrowing-only: a run may give up reach it was granted, never take
 	// more. Restoring these on resume makes a resumed run no WIDER than the

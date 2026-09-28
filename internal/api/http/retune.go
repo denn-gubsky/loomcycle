@@ -51,9 +51,10 @@ type runOverridesWire struct {
 	// approved.
 	Review *bool `json:"review,omitempty"`
 
-	// Interruption lets the run's agent ask a human a question even when its
-	// definition does not enable it. See the record's field for why this is not
-	// the "reach" class it used to be filed under.
+	// Interruption narrows the run's interruption policy — kinds, max_pending,
+	// or enabled:false to switch it off. It never grants the Interruption tool
+	// to an agent whose definition does not hold it. A parked run adopts it at
+	// its next operator turn; one that never parks, on resume.
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 
 	// ToolChoice and OutputFormat REPLACE the run's own whole, as they do at
@@ -341,7 +342,11 @@ func mergeTuning(cur, next *tuningOverride) *tuningOverride {
 //
 // One read per OPERATOR TURN, not per iteration: a parked run does nothing until
 // someone types, so this is bounded by human typing rather than by the loop.
-func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, userTier string, restricted bool) func(context.Context) (providers.Provider, string, string, bool, error) {
+//
+// The same read also moves the run's live interruption policy (when live is
+// non-nil), so a retuned `interruption` takes effect at the same boundary as a
+// retuned model — one rule for "when does a retune land", and no second read.
+func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, userTier string, restricted bool, live *runInterruption) func(context.Context) (providers.Provider, string, string, bool, error) {
 	if s.store == nil {
 		return nil
 	}
@@ -358,6 +363,7 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 		if !found {
 			return nil, "", "", false, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, agentName)
 		}
+		s.adoptRunInterruption(live, agentDef, cfg.Interruption)
 		eff, err := s.effectiveDef(ctx, agentDef, runOverrides{
 			Routing: cfg.Routing, Resources: cfg.Resources, Tuning: cfg.Tuning,
 		})

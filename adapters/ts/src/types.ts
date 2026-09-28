@@ -822,12 +822,12 @@ export interface RunOverrideOptions {
    *  on a run that is held releases it as approved. */
   review?: boolean;
 
-  /** Let this run's agent ASK a human a question, overriding what its
-   *  definition allows.
-   *
-   *  Overridable because an interruption touches no data and no host — it blocks
-   *  and waits for a person — so the exposure is liveness, bounded by the run's
-   *  timeout and the interruption's own. */
+  /** Narrow whether this run's agent may ASK a human a question. `enabled`
+   *  must be true to keep asking (false switches it off); `kinds` keeps only
+   *  those the definition also allows; `max_pending` takes the smaller. It
+   *  never grants the Interruption tool to an agent that does not hold it —
+   *  there it is reported as `capability_inert`. A retune reaches a parked run
+   *  at its next operator turn. */
   interruption?: { enabled?: boolean; kinds?: string[]; max_pending?: number };
 
   /** Per-run tool choice: whether and which tool the model must call, and

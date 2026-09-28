@@ -2793,6 +2793,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Review:            reviewRecord(in.Review),
 		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks}),
+		Interruption:      in.Interruption, // the run's own block, so a resume re-narrows from it
 	}
 
 	// ---- Session+run creation ----
@@ -2970,6 +2971,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// A tool the agent holds and cannot use, said once here rather than
 	// discovered by the model being refused mid-task.
 	emitInertCapabilityWarnings(agentDef, emit)
+	emitInertInterruption(holdsInterruptionTool(allowedTools), in.Interruption, emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(runParent, runID, agentID, sessionID, effectiveUserID, emit)
@@ -3058,7 +3060,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, allowedTools, in.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, runID)
 	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef, hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -3150,7 +3152,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, in.UserTier),
 		// RFC DC P3: a parked run adopts a retune on its next operator turn.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -4272,6 +4274,14 @@ type runRequest struct {
 	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
 	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
 	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
+
+	// Interruption is this run's own interruption policy: whether the agent may
+	// ask a person, which kinds, how many at once. It NARROWS the definition's
+	// and never grants the Interruption tool to an agent that does not hold it
+	// (there it is inert and reported once as capability_inert). The tool stays
+	// usable only while the block says enabled:true; kinds intersect with the
+	// definition's; max_pending takes the smaller. nil = the definition's.
+	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -4664,6 +4674,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Review:            reviewRecord(req.Review),
 		ReviewTTLSeconds:  positiveOrZero(req.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: req.Hooks, ToolHooks: req.ToolHooks}),
+		Interruption:      req.Interruption, // the run's own block, so a resume re-narrows from it
 	}
 
 	// Persistence: resolve or create a session, create a run, route every
@@ -4856,6 +4867,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// A tool the agent holds and cannot use, said once here rather than
 	// discovered by the model being refused mid-task.
 	emitInertCapabilityWarnings(agentDef, emit)
+	emitInertInterruption(holdsInterruptionTool(allowedTools), req.Interruption, emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
@@ -4931,7 +4943,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, allowedTools, req.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, runID)
 	loopCtx = s.withRunHooks(loopCtx, runID, req.Agent, agentDef, hooks.Additions{Hooks: req.Hooks, ToolHooks: req.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -4996,7 +5008,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		ReResolve:               fbReResolve,
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, req.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(runID, req.TenantID, req.UserID, req.Agent, req.UserTier, operatorKeyRestricted, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -5195,6 +5207,14 @@ type messagesRequest struct {
 	MemoryInjectMaxTokens *int  `json:"memory_inject_max_tokens,omitempty"`
 	MemoryIndexMaxBytes   *int  `json:"memory_index_max_bytes,omitempty"`
 	InjectToolGuide       *bool `json:"inject_tool_guide,omitempty"`
+
+	// Interruption is this run's own interruption policy: whether the agent may
+	// ask a person, which kinds, how many at once. It NARROWS the definition's
+	// and never grants the Interruption tool to an agent that does not hold it
+	// (there it is inert and reported once as capability_inert). The tool stays
+	// usable only while the block says enabled:true; kinds intersect with the
+	// definition's; max_pending takes the smaller. nil = the definition's.
+	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -5462,6 +5482,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Review:            reviewRecord(body.Review),
 		ReviewTTLSeconds:  positiveOrZero(body.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks}),
+		Interruption:      body.Interruption, // the run's own block, so a resume re-narrows from it
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -5604,6 +5625,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// A tool the agent holds and cannot use, said once here rather than
 	// discovered by the model being refused mid-task.
 	emitInertCapabilityWarnings(agentDef, emit)
+	emitInertInterruption(holdsInterruptionTool(allowedTools), body.Interruption, emit)
 
 	// PR 2: operator steering queue for this continuation run.
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, agentID, id, sess.UserID, emit)
@@ -5664,7 +5686,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, allowedTools, body.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	loopCtx = s.withRunHooks(loopCtx, run.ID, sess.Agent, agentDef, hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -5726,7 +5748,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		ReResolve:               fbReResolve,
 		Hooks:                   s.hookDispatcher,
 		MaxSameProviderRetries:  s.retryAttemptsForAgent(agentDef, body.UserTier),
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, sess.TenantID, sess.UserID, sess.Agent, body.UserTier, operatorKeyRestricted, liveInterruption),
 
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
@@ -7469,7 +7491,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
 	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
 	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(subCtx, def))
-	subCtx = tools.WithInterruptionPolicy(subCtx, s.interruptionPolicyForAgent(def))
+	subCtx, _ = s.startRunInterruption(subCtx, def, subTools, subRunCfg.Interruption)
 	// subCtx still carries the PARENT's run id here, which is exactly the
 	// parent id; it is replaced by the child's on the next line.
 	subCtx = tools.WithParentRunID(subCtx, tools.RunID(subCtx))

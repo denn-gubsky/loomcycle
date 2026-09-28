@@ -108,7 +108,7 @@ func TestOverridability_OverrideStructsExpressOnlyAllowedFields(t *testing.T) {
 // "may only be shrunk" are different permissions, and a table that blurred them
 // would let a lower-only bound be raised by anyone reading only the first column.
 func TestOverridability_NarrowingOnlyFieldsAreDistinctFromFreeOnes(t *testing.T) {
-	want := map[string]bool{"MaxConcurrentChildren": true, "Tools": true}
+	want := map[string]bool{"MaxConcurrentChildren": true, "Tools": true, "Interruption": true}
 	got := map[string]bool{}
 	for name, kind := range agentDefOverridability {
 		if kind == runMayNarrow {
