@@ -400,6 +400,9 @@ func (s *Server) configuredRunInputCore(ctx context.Context, runID string, secre
 	in := spawnRequestToRunInput(d.SpawnRunRequest)
 	in.RunTimeoutSeconds = d.RunTimeoutSeconds
 	in.Interactive = d.Interactive != nil && *d.Interactive
+	// Detached on the same condition POST /v1/runs detaches on: a run that
+	// parks for input or waits for a verdict must not end with its starter.
+	in.Detached = in.Interactive || in.Review
 	in.ConfiguredRunID = run.ID
 	in.ConfiguredDraft = raw
 	in.SessionID = ""
@@ -489,7 +492,10 @@ func (s *Server) handleDeleteConfiguredRun(w http.ResponseWriter, r *http.Reques
 // webhooks share — which runs today's admission and then moves the row
 // configured → running. A refusal before that point answers with a status
 // code and leaves the draft as it was; once the run is registered the response
-// is the run's SSE stream, as for POST /v1/runs.
+// is the run's SSE stream, as for POST /v1/runs. An interactive draft, or one
+// held for review, outlives this request as it would started by POST /v1/runs:
+// the stream's agent frame carries its run_id, and leaving the stream does not
+// stop it (GET /v1/runs/{run_id}/stream re-attaches).
 func (s *Server) handleStartConfiguredRun(w http.ResponseWriter, r *http.Request) {
 	var secrets connector.RunSecrets
 	if r.Body != nil && r.ContentLength != 0 {
