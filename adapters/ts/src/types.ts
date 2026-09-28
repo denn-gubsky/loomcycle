@@ -1252,6 +1252,10 @@ export interface ClientOptions {
 /** `rejected` is a run a reviewer turned down without feedback (RFC DJ). */
 export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
 
+/** What a running run is blocked on: an open Channel subscribe, an open
+ *  Interruption ask, or a hold for an operator's review verdict. */
+export type AwaitedState = "channel" | "interrupted" | "review";
+
 export interface AgentUsage {
   input_tokens?: number;
   output_tokens?: number;
@@ -1281,6 +1285,24 @@ export interface Agent {
   usage: AgentUsage;
   last_heartbeat_at: string | null;
   live: boolean;
+  /** A persistent interactive run — it parks at end_turn waiting for operator
+   *  input. Absent for ordinary runs. */
+  interactive?: boolean;
+  /** What a RUNNING run is currently blocked on; absent while it makes
+   *  progress and for every run that is not running. See {@link AwaitedState}. */
+  awaited_state?: AwaitedState;
+  /** The channel name (`awaited_state: "channel"`) or interruption kind
+   *  (`awaited_state: "interrupted"`) the run waits on. */
+  awaited_on?: string;
+  /** The replica owning the run's live cancel handle. Absent in a
+   *  single-replica deployment. */
+  replica_id?: string;
+  /** This run is a LIVE resident interactive sub-agent (opened with Agent
+   *  op=open) on the replica that answered. HTTP listings only — the gRPC read
+   *  cannot reach the per-replica registry this comes from. */
+  resident?: boolean;
+  /** A resident sub-agent's current state; set only with `resident`. */
+  resident_state?: "running" | "awaiting_input" | "completed" | "failed";
   /** Opaque caller-tracking lineage this run carries (inherited from its
    *  root for sub-agents), v0.12.x. Echoed here alongside `usage` so you
    *  can attribute a child sub-agent's cost to the user-initiated request

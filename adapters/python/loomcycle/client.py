@@ -1987,6 +1987,7 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         "agent_id": a.agent_id,
         "run_id": a.run_id,
         "session_id": a.session_id,
+        "agent": a.agent,
         "user_id": a.user_id,
         "parent_agent_id": a.parent_agent_id,
         "status": a.status,
@@ -2000,9 +2001,20 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
             "cache_creation_tokens": a.usage.cache_creation_tokens,
             "cache_read_tokens": a.usage.cache_read_tokens,
             "model": a.usage.model,
+            "provider": a.usage.provider,
         } if a.HasField("usage") else None,
         "last_heartbeat_at": _ts_to_iso(a.last_heartbeat_at) if a.HasField("last_heartbeat_at") else None,
         "live": a.live,
+        "interactive": a.interactive,
+        # What a RUNNING run is blocked on: "channel", "interrupted" or
+        # "review"; "" while it makes progress and for every ended run.
+        # awaited_on names the channel or interruption kind.
+        "awaited_state": a.awaited_state,
+        "awaited_on": a.awaited_on,
+        "replica_id": a.replica_id,
+        # The run's lineage, or None when it carried none (see
+        # _parent_context_to_dict for why None rather than an empty dict).
+        "parent_context": _parent_context_to_dict(a),
         # The run's answer (RFC DI): {"final_text", "state"}. get_agent only;
         # list_user_agents leaves it empty. None while running and when the run
         # finished with nothing to report.
@@ -2414,7 +2426,7 @@ def _run_state_event_to_dict(e: "pb.RunStateEvent") -> Mapping[str, Any]:
     }
 
 
-def _parent_context_to_dict(e: "pb.RunStateEvent") -> Optional[Mapping[str, Any]]:
+def _parent_context_to_dict(e: "pb.RunStateEvent | pb.Agent") -> Optional[Mapping[str, Any]]:
     """Project the run's lineage, or None when it carried none.
 
     HasField is the presence test rather than a truthiness check on the

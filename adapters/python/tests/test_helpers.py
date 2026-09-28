@@ -149,3 +149,42 @@ def test_agent_to_dict_decodes_a_configured_runs_draft():
     a = pb.Agent(agent_id="ag-1", status="configured", draft=b'{"agent": "qa"}')
     assert _agent_to_dict(a)["draft"] == {"agent": "qa"}
     assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="completed"))["draft"] is None
+
+
+def test_agent_to_dict_carries_the_http_read_fields():
+    # The gRPC read carries what the HTTP agent response does: the agent
+    # name, what a running run is blocked on, its lineage and the provider
+    # that served it. A key missing here is a field a Python caller cannot
+    # read at all.
+    a = pb.Agent(
+        agent_id="ag-3",
+        run_id="rn-3",
+        session_id="sess-3",
+        agent="qa-agent",
+        user_id="u-3",
+        status="running",
+        interactive=True,
+        awaited_state="channel",
+        awaited_on="findings",
+        replica_id="r-1",
+    )
+    a.usage.provider = "deepseek"
+    a.parent_context.walk_id = "walk-1"
+    a.parent_context.wave_index = 0
+    out = _agent_to_dict(a)
+    assert out["agent"] == "qa-agent"
+    assert out["interactive"] is True
+    assert out["awaited_state"] == "channel"
+    assert out["awaited_on"] == "findings"
+    assert out["replica_id"] == "r-1"
+    assert out["usage"]["provider"] == "deepseek"
+    assert out["parent_context"]["walk_id"] == "walk-1"
+    assert out["parent_context"]["wave_index"] == 0
+
+
+def test_agent_to_dict_run_without_lineage_has_parent_context_none():
+    a = pb.Agent(agent_id="ag-4", run_id="rn-4", session_id="sess-4", status="completed")
+    out = _agent_to_dict(a)
+    assert "parent_context" in out
+    assert out["parent_context"] is None
+    assert out["awaited_state"] == ""

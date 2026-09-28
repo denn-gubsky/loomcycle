@@ -157,6 +157,7 @@ export type {
   // Agent metadata
   Agent,
   AgentStatus,
+  AwaitedState,
   AgentUsage,
   RunResult,
   RunSpec,
