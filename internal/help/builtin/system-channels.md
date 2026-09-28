@@ -29,7 +29,10 @@ _system/heartbeat-1m: { scope: global, publisher: system, period: 1m }
 ```
 
 Loomcycle's heartbeat goroutine emits `{ts, version, uptime_s}` once
-per period. Useful for "is the runtime alive" dashboards.
+per period. Useful for "is the runtime alive" dashboards. The runtime
+publishes as the operator, so its messages reach every tenant: a global
+channel is split by tenant over a shared operator layer, and each tenant
+reads its own messages merged with the operator's.
 
 **Event-driven channels** publish on internal state transitions:
 

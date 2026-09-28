@@ -235,7 +235,8 @@ search_priority: [serper, brave, searxng]
 #                              cross-user — researcher's queue is
 #                              shared across every researcher run)
 #                   * user   = one cursor per user_id
-#                   * global = one shared cursor for the whole channel
+#                   * global = one cursor per tenant for the whole channel; an
+#                     operator's publishes reach every tenant, a tenant's only itself
 #   default_ttl   — per-message TTL in seconds (0 = no default)
 #   max_messages  — bounded storage cap; OLDEST trimmed first on
 #                   overflow (publishers never block). 0 = unbounded.
@@ -270,13 +271,14 @@ channels:
     max_messages: 10000
     semantic: queue
 
-  # Cross-tenant alerts broadcast. Every subscriber sees every
-  # message. global scope = one shared cursor for the whole channel,
-  # so this is fan-out (every subscriber agent reads the same
-  # sequence from the same cursor). For per-subscriber broadcast
-  # use scope: agent + a queue-semantic channel + multiple cursors.
+  # Alerts broadcast. global scope = one cursor per tenant for the whole
+  # channel, so this is fan-out (every subscriber agent in a tenant reads
+  # the same sequence from the same cursor). An operator's publish (an
+  # admin's, a yaml schedule's) reaches every tenant; a tenant's publish
+  # reaches only that tenant. For per-subscriber broadcast use scope:
+  # agent + a queue-semantic channel + multiple cursors.
   alerts:
-    description: "Cross-tenant alerts broadcast — every subscriber sees every message."
+    description: "Alerts broadcast — every subscriber sees every message; an operator's reach every tenant."
     scope: global
     default_ttl: 3600
     max_messages: 1000
