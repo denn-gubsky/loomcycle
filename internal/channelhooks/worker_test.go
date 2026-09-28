@@ -277,7 +277,8 @@ func TestWorker_AnOperatorChannelResolvesInTheOperatorsTenant(t *testing.T) {
 	f.setDef("", "inbox", Def{Hooks: chain(hooks.Entry{Ref: "screen"})})
 	f.publish("inbox", "acme", store.MemoryScopeGlobal, `{}`, nil)
 	f.drain()
-	msgs := f.peek("inbox", "", store.MemoryScopeGlobal)
+	// Delivered in acme's layer of the global channel, which acme reads.
+	msgs := f.peek("inbox", "acme", store.MemoryScopeGlobal)
 	if len(msgs) != 1 || string(msgs[0].Payload) != `{"by":"operator"}` {
 		t.Fatalf("delivered %+v", msgs)
 	}

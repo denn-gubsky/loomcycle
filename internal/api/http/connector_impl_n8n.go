@@ -66,10 +66,10 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			Hooks:       yamlHooks,
 			Source:      "yaml",
 		}
-		// A yaml channel's messages are keyed by the writer's tenant (or the
-		// shared keyspace, for a global one): a tenant sees its own, an admin
-		// every tenant's summed.
-		st, ok := ix.forKeyspace(name, store.ChannelScopeTenant(tenantID, store.MemoryScope(ch.Scope)))
+		// A yaml channel's messages are keyed by the writer's tenant (and a
+		// global one's also by the operator layer every tenant reads): a
+		// tenant sees what it reads, an admin every tenant's summed.
+		st, ok := ix.forReader(name, tenantID, store.MemoryScope(ch.Scope))
 		if all {
 			st, ok = ix.acrossTenants(name)
 		}
@@ -96,7 +96,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			continue
 		}
 		desc := rowToBareDescriptor(r)
-		if st, ok := ix.forKeyspace(r.Name, store.ChannelScopeTenant(r.TenantID, store.MemoryScope(r.Scope))); ok {
+		if st, ok := ix.runtimeStats(r, all); ok {
 			attachStats(&desc, st)
 		}
 		out = append(out, desc)
@@ -257,20 +257,42 @@ func (ix statsIndex) forKeyspace(name, keyspace string) (store.ChannelStats, boo
 	return st, ok
 }
 
+// forReader is one channel's stats as a reader in tenant sees them: its own
+// keyspace, and for a global channel the operator layer every tenant reads.
+func (ix statsIndex) forReader(name, tenant string, scope store.MemoryScope) (store.ChannelStats, bool) {
+	own, shared := store.ChannelReadTenants(tenant, scope)
+	var parts []store.ChannelStats
+	for _, k := range []string{own, shared} {
+		if st, ok := ix.forKeyspace(name, k); ok {
+			parts = append(parts, st)
+		}
+		if shared == own {
+			break
+		}
+	}
+	return sumStats(parts)
+}
+
 // acrossTenants is one channel's stats summed over every keyspace, for a
 // caller who sees them all.
 func (ix statsIndex) acrossTenants(name string) (store.ChannelStats, bool) {
-	var out store.ChannelStats
-	found := false
+	var parts []store.ChannelStats
 	for _, st := range ix {
-		if st.Channel != name {
-			continue
+		if st.Channel == name {
+			parts = append(parts, st)
 		}
-		if !found {
-			out, found = st, true
-			out.TenantID = ""
-			continue
-		}
+	}
+	return sumStats(parts)
+}
+
+// sumStats folds several keyspaces' stats for one channel into one.
+func sumStats(parts []store.ChannelStats) (store.ChannelStats, bool) {
+	if len(parts) == 0 {
+		return store.ChannelStats{}, false
+	}
+	out := parts[0]
+	out.TenantID = ""
+	for _, st := range parts[1:] {
 		out.MessageCount += st.MessageCount
 		out.Held += st.Held
 		out.AwaitingHooks += st.AwaitingHooks
@@ -281,5 +303,14 @@ func (ix statsIndex) acrossTenants(name string) (store.ChannelStats, bool) {
 			out.NewestVisibleAt = st.NewestVisibleAt
 		}
 	}
-	return out, found
+	return out, true
+}
+
+// runtimeStats is a runtime channel's stats for the lister: an admin sees a
+// global channel's every layer, anyone else what its owner's readers see.
+func (ix statsIndex) runtimeStats(r store.ChannelRow, all bool) (store.ChannelStats, bool) {
+	if all && store.MemoryScope(r.Scope) == store.MemoryScopeGlobal {
+		return ix.acrossTenants(r.Name)
+	}
+	return ix.forReader(r.Name, r.TenantID, store.MemoryScope(r.Scope))
 }

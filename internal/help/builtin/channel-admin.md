@@ -44,8 +44,11 @@ Read this section before anything else.
 Both gate on the operator's `LOOMCYCLE_AUTH_TOKEN` and call the same
 underlying store + Bus helpers. The split is about scope:
 
-**Admin (scope=global)** — operator-level addressing, cursor namespace
-keyed by channel name only:
+**Admin (scope=global)** — a global channel is split by tenant over a
+shared operator layer. A tenant operator's publish reaches only its own
+tenant; an admin's publish to a channel declared in the operator's yaml
+goes into the operator layer, which every tenant reads. A reader sees its
+own tenant's messages merged with the operator's, and keeps its own cursor:
 
 ```
 POST /v1/_channels/{name}/publish
@@ -173,8 +176,9 @@ underlying messages.
 
 ## When to use each URL family
 
-- **Admin (scope=global)**: operator-level pub/sub, alerts the whole
-  org should see, broadcast notifications, audit-log streams.
+- **Admin (scope=global)**: operator-level pub/sub; an admin's publish
+  on a yaml channel is an alert every tenant sees, a tenant's stays in
+  that tenant. Broadcast notifications, audit-log streams.
 - **Per-user (scope=user)**: per-end-user inboxes, per-end-user
   notifications, n8n workflows acting on behalf of a specific user.
 

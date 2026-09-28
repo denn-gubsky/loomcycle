@@ -268,7 +268,7 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 	}
 	desc := rowToBareDescriptor(*match)
 	if stats, err := s.store.ChannelStats(ctx); err == nil {
-		if st, ok := newStatsIndex(stats).forKeyspace(name, store.ChannelScopeTenant(match.TenantID, store.MemoryScope(match.Scope))); ok {
+		if st, ok := newStatsIndex(stats).runtimeStats(*match, all); ok {
 			attachStats(&desc, st)
 		}
 	}
@@ -340,10 +340,30 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 			return connector.ChannelPurgeResult{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
 		}
 	}
-	msgTenant := store.ChannelScopeTenant(tenantFromCtx(ctx), store.MemoryScope(declaredScope))
-	n, err := s.store.ChannelPurge(ctx, msgTenant, name)
-	if err != nil {
-		return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: %w", err)
+	// A purge empties the purger's own keyspace; an admin's purge of a global
+	// channel empties every tenant's layer of it, and the operator's.
+	layers := []string{tenantFromCtx(ctx)}
+	var scope store.MemoryScope // every scope of the purger's own channel
+	if _, all := s.principalTenantScope(ctx, ""); all && store.MemoryScope(declaredScope) == store.MemoryScopeGlobal {
+		scope = store.MemoryScopeGlobal // other tenants' layers, never their own channels
+		layers = []string{store.ChannelOperatorTenant}
+		stats, err := s.store.ChannelStats(ctx)
+		if err != nil {
+			return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: %w", err)
+		}
+		for _, st := range stats {
+			if st.Channel == name && st.TenantID != store.ChannelOperatorTenant {
+				layers = append(layers, st.TenantID)
+			}
+		}
 	}
-	return connector.ChannelPurgeResult{Name: name, Purged: n}, nil
+	total := 0
+	for _, t := range layers {
+		n, err := s.store.ChannelPurge(ctx, t, name, scope)
+		if err != nil {
+			return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: %w", err)
+		}
+		total += n
+	}
+	return connector.ChannelPurgeResult{Name: name, Purged: total}, nil
 }

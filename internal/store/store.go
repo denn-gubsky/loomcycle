@@ -3383,8 +3383,10 @@ type Store interface {
 	// no runtime `channels` row, but their messages live in the same
 	// channel_messages table. Idempotent — purging a channel with no
 	// messages returns (0, nil) rather than ErrNotFound; existence is
-	// the caller's concern. Returns the number of messages deleted.
-	ChannelPurge(ctx context.Context, tenantID, name string) (int, error)
+	// the caller's concern. Returns the number of messages deleted. A
+	// non-empty scope narrows the purge to that scope's messages (one
+	// tenant's layer of a global channel, not its same-named channels).
+	ChannelPurge(ctx context.Context, tenantID, name string, scope MemoryScope) (int, error)
 
 	// Close releases backend resources. Idempotent.
 	Close() error
@@ -3465,23 +3467,23 @@ const (
 	// MemoryScopeUser — keyed by user_id. Per-end-user state shared
 	// across every agent that's allowed to read the `user` scope.
 	MemoryScopeUser MemoryScope = "user"
-	// MemoryScopeGlobal — single shared keyspace (scope_id = "").
-	// v0.8.4 Channel tool only — Memory does not expose this scope
-	// (no per-agent memory_scopes value validates it). Channel
-	// declares `scope: global` in the operator yaml; agents granted
-	// publish/subscribe on a global channel read/write the same
-	// cursor regardless of agent or user. Reserved for cross-tenant
-	// fan-out streams the operator has reviewed.
+	// MemoryScopeGlobal — scope_id = "". Channel tool only — Memory does
+	// not expose this scope (no per-agent memory_scopes value validates
+	// it). A global channel is shared by every agent and user of a
+	// tenant, and split between tenants over a shared operator layer
+	// (see ChannelReadTenants): the operator fans out to every tenant, a
+	// tenant only to itself.
 	MemoryScopeGlobal MemoryScope = "global"
 	// MemoryScopeTenant — one keyspace per TENANT, shared by every user
 	// and agent inside it (scope_id = ""; the tenant_id column already
 	// carries the identity, exactly as for global).
 	//
-	// Distinct from global in the axis it shares along: global is one
-	// keyspace across ALL tenants, this is one per tenant. A row here is
-	// (tenant_id='t1', scope='tenant', scope_id=''), which cannot collide
-	// with a global row (tenant_id='', scope='global') under the
-	// (tenant_id, scope, scope_id, key) primary key.
+	// Distinct from global in the axis it shares along: a global channel
+	// also reaches every tenant through its operator layer, this never
+	// leaves the tenant. A row here is (tenant_id='t1', scope='tenant',
+	// scope_id=''), which cannot collide with a global row
+	// (scope='global') under the (tenant_id, scope, scope_id, key)
+	// primary key.
 	//
 	// It is SHARED-WRITE, which is the poisoning surface: anything an
 	// agent stores here is read by every other agent and user in the
@@ -3495,21 +3497,38 @@ const (
 	MemoryScopeTenant MemoryScope = "tenant"
 )
 
-// ChannelScopeTenant normalizes the tenant for a channel access. The
-// `global` scope is a single keyspace shared across ALL tenants
-// (tenant_id="", per the MemoryScopeGlobal contract above), so a global
-// access always resolves to "" regardless of the caller's tenant; every
-// other scope is partitioned by the caller's tenant. Centralizing the
-// rule here makes "global is cross-tenant" an unbreakable invariant — no
-// caller can accidentally tenant-partition a global channel, which would
-// desync a tenant agent (or a legacy operator whose tenant is "default")
-// from operator/infra publishes such as heartbeats. Channel store methods
-// apply this to the (tenant, scope) they receive before touching a row.
-func ChannelScopeTenant(tenantID string, scope MemoryScope) string {
+// A global channel is split by tenant over a shared operator layer. Each
+// tenant's writes land in its own keyspace (tenant_id = the writer's tenant);
+// the operator's — heartbeats, an operator's schedules and webhooks, an
+// admin's publish, all written as tenant "" — land in the shared one. A
+// tenant reads its own keyspace merged with the operator's, never another
+// tenant's: what one tenant publishes to a global channel cannot reach, or be
+// mistaken for, what another reads, and the operator still reaches every
+// tenant. Every other scope is the caller's tenant alone.
+//
+// Writes are keyed by the writer's tenant as given. Reads go through
+// ChannelReadTenants; the (visible_at, id) cursor orders both keyspaces as
+// one stream. A subscriber's cursor lives in its own tenant; the shared
+// cursor every tenant used before the split is read as a fallback.
+
+// ChannelOperatorTenant is the global channels' shared operator layer.
+const ChannelOperatorTenant = ""
+
+// ChannelReadTenants returns the two keyspaces a channel read by tenantID
+// covers — the same one twice when there is only one — so a query can bind
+// `tenant_id IN (?, ?)` whatever the scope.
+func ChannelReadTenants(tenantID string, scope MemoryScope) (string, string) {
 	if scope == MemoryScopeGlobal {
-		return ""
+		return tenantID, ChannelOperatorTenant
 	}
-	return tenantID
+	return tenantID, tenantID
+}
+
+// ChannelCursorFallback reports whether a subscriber with no cursor of its
+// own falls back to the operator layer's: a tenant's cursor on a global
+// channel, which lived in the shared keyspace before the split.
+func ChannelCursorFallback(tenantID string, scope MemoryScope) bool {
+	return scope == MemoryScopeGlobal && tenantID != ChannelOperatorTenant
 }
 
 // MemorySearchFilter narrows which memory rows a vector or full-text search may

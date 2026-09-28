@@ -21,6 +21,7 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -237,6 +238,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelMaxMessagesTrimsOldest", testChannelMaxMessagesTrimsOldest},
 		{"ChannelScopeIsolation", testChannelScopeIsolation},
 		{"ChannelTenantIsolation", testChannelTenantIsolation},
+		{"ChannelGlobalTenantLayers", testChannelGlobalTenantLayers},
 		{"ChannelPurge", testChannelPurge},
 		{"ChannelPeekDoesNotConsume", testChannelPeekDoesNotConsume},
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
@@ -5877,19 +5879,105 @@ func testChannelTenantIsolation(t *testing.T, s store.Store) {
 	if len(survivors) != 1 {
 		t.Errorf("t2 del messages after t1 delete = %d, want 1 (cascade must be tenant-scoped)", len(survivors))
 	}
+}
 
-	// ---- global scope is a single cross-tenant keyspace (tenant_id forced "")
-	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
-		Channel: "g", TenantID: "t1", Scope: store.MemoryScopeGlobal, ScopeID: "",
-		Payload: json.RawMessage(`{"g":true}`),
-	}, 0); err != nil {
-		t.Fatalf("publish global t1: %v", err)
+// testChannelGlobalTenantLayers pins how a global channel is split: each
+// tenant writes into its own layer, the operator (tenant "") into a shared
+// one, and a tenant reads its own layer merged with the operator's — never
+// another tenant's. Cursors are per tenant, falling back to the shared cursor
+// every tenant used before the split.
+func testChannelGlobalTenantLayers(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	g := store.MemoryScopeGlobal
+	pub := func(tenant, body string) {
+		t.Helper()
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: "g", TenantID: tenant, Scope: g, Payload: json.RawMessage(body)}, 0); err != nil {
+			t.Fatalf("publish %q: %v", tenant, err)
+		}
+		time.Sleep(2 * time.Millisecond) // distinct visible_at, so the merge order is the publish order
 	}
-	// A different tenant reading the SAME global channel must see it — global
-	// is shared across tenants (operator/infra broadcast), unlike agent/user.
-	gmsgs, _, _ := s.ChannelSubscribe(ctx, "t2", "g", store.MemoryScopeGlobal, "", "", 10)
-	if len(gmsgs) != 1 || !jsonEqual(gmsgs[0].Payload, `{"g":true}`) {
-		t.Errorf("t2 global read = %+v, want t1's global message (global is cross-tenant)", gmsgs)
+	bodies := func(msgs []store.ChannelMessage) string {
+		var b []string
+		for _, m := range msgs {
+			var c bytes.Buffer // a JSONB backend re-spaces the payload
+			_ = json.Compact(&c, m.Payload)
+			b = append(b, c.String()+"@"+m.TenantID)
+		}
+		return strings.Join(b, " ")
+	}
+	pub("", `{"n":1}`)
+	pub("t1", `{"n":2}`)
+	pub("t2", `{"n":3}`)
+	pub("", `{"n":4}`)
+
+	for reader, want := range map[string]string{
+		"t1": `{"n":1}@ {"n":2}@t1 {"n":4}@`,
+		"t2": `{"n":1}@ {"n":3}@t2 {"n":4}@`,
+		"":   `{"n":1}@ {"n":4}@`,
+	} {
+		got, err := s.ChannelPeek(ctx, reader, "g", g, "", "", 10)
+		if err != nil || bodies(got) != want {
+			t.Errorf("reader %q sees %s (err %v), want %s", reader, bodies(got), err, want)
+		}
+	}
+
+	// One cursor walks the merged stream.
+	first, next, _ := s.ChannelSubscribe(ctx, "t1", "g", g, "", "", 2)
+	rest, _, _ := s.ChannelSubscribe(ctx, "t1", "g", g, "", next, 10)
+	if bodies(first)+" "+bodies(rest) != `{"n":1}@ {"n":2}@t1 {"n":4}@` {
+		t.Errorf("paged merge = %s | %s", bodies(first), bodies(rest))
+	}
+
+	// Cursors: the shared cursor from before the split is a fallback; an ack
+	// is the tenant's own and moves no one else's.
+	if err := s.ChannelAck(ctx, "", "g", g, "", next); err != nil {
+		t.Fatalf("operator ack: %v", err)
+	}
+	if c, _ := s.ChannelCommittedCursor(ctx, "t2", "g", g, ""); c != next {
+		t.Errorf("t2 with no cursor of its own reads %q, want the shared %q", c, next)
+	}
+	_, last, _ := s.ChannelSubscribe(ctx, "t2", "g", g, "", "", 10)
+	if err := s.ChannelAck(ctx, "t2", "g", g, "", last); err != nil {
+		t.Fatalf("t2 ack: %v", err)
+	}
+	if c, _ := s.ChannelCommittedCursor(ctx, "t2", "g", g, ""); c != last {
+		t.Errorf("t2 cursor = %q, want its own %q", c, last)
+	}
+	if c, _ := s.ChannelCommittedCursor(ctx, "", "g", g, ""); c != next {
+		t.Errorf("t2's ack moved the shared cursor to %q", c)
+	}
+	if cs, _ := s.ChannelListCursorsForScope(ctx, "t2", g, ""); len(cs) != 1 || cs[0].Cursor != last {
+		t.Errorf("t2's cursors = %+v, want its own only", cs)
+	}
+
+	// Purging one tenant's global layer leaves its same-named channel of
+	// another scope.
+	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: "g", TenantID: "t1", Scope: store.MemoryScopeAgent, ScopeID: "a", Payload: json.RawMessage(`{}`)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ChannelPurge(ctx, "t1", "g", g); err != nil || n != 1 {
+		t.Errorf("purge t1's global layer = %d (err %v), want 1", n, err)
+	}
+	if left, _ := s.ChannelPeek(ctx, "t1", "g", store.MemoryScopeAgent, "a", "", 10); len(left) != 1 {
+		t.Errorf("t1's agent-scope g = %d, want it kept", len(left))
+	}
+
+	// Deleting the global channel takes every tenant's layer of it, and no
+	// tenant's own channel of another scope.
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: "g", TenantID: "", Scope: "global", Semantic: "queue"}); err != nil {
+		t.Fatal(err)
+	}
+	pub("t1", `{"n":5}`)
+	if err := s.ChannelsDelete(ctx, "", "g"); err != nil {
+		t.Fatal(err)
+	}
+	for _, reader := range []string{"", "t1", "t2"} {
+		if left, _ := s.ChannelPeek(ctx, reader, "g", g, "", "", 10); len(left) != 0 {
+			t.Errorf("reader %q still sees %s after the delete", reader, bodies(left))
+		}
+	}
+	if left, _ := s.ChannelPeek(ctx, "t1", "g", store.MemoryScopeAgent, "a", "", 10); len(left) != 1 {
+		t.Errorf("deleting the global channel took t1's agent-scope g")
 	}
 }
 
@@ -5909,7 +5997,7 @@ func testChannelPurge(t *testing.T, s store.Store) {
 		}
 	}
 
-	n, err := s.ChannelPurge(ctx, "", "purge-ch")
+	n, err := s.ChannelPurge(ctx, "", "purge-ch", "")
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
@@ -5921,7 +6009,7 @@ func testChannelPurge(t *testing.T, s store.Store) {
 	}
 
 	// Idempotent on an already-empty channel.
-	n2, err := s.ChannelPurge(ctx, "", "purge-ch")
+	n2, err := s.ChannelPurge(ctx, "", "purge-ch", "")
 	if err != nil {
 		t.Fatalf("purge empty: %v", err)
 	}
@@ -5929,7 +6017,7 @@ func testChannelPurge(t *testing.T, s store.Store) {
 		t.Errorf("purge empty returned %d, want 0", n2)
 	}
 	// Idempotent on a never-seen channel (existence is the caller's concern).
-	if n3, err := s.ChannelPurge(ctx, "", "never-existed"); err != nil || n3 != 0 {
+	if n3, err := s.ChannelPurge(ctx, "", "never-existed", ""); err != nil || n3 != 0 {
 		t.Errorf("purge unknown channel = (%d, %v), want (0, nil)", n3, err)
 	}
 

@@ -921,7 +921,7 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 - **`scope: agent`** — cursor is per agent name. Two researcher-agent runs share a cursor on the same channel (work continues across runs). Two DIFFERENT agents subscribing to the same agent-scoped channel each maintain their own queue.
 - **`scope: user`** — cursor is per `user_id`. Two runs for the same user share a cursor — the "user-stream" shape. Cross-agent cursor sharing for the same user (the canonical "researcher → analyst" hand-off pattern).
-- **`scope: global`** — one shared cursor for the whole channel. Cross-tenant fan-out broadcasts. Operator declares the channel explicitly; an unintentional `global` ACL can leak across tenants.
+- **`scope: global`** — one cursor per tenant for the whole channel, shared by every agent and user in it. The channel is split by tenant over a shared operator layer: a tenant's publishes reach only that tenant, while the operator's (heartbeats, yaml schedules and webhooks, an admin's publish on a yaml channel) reach every tenant. Operator declares the channel explicitly.
 
 ### Long-poll subscribe
 

@@ -193,8 +193,9 @@ func (s *Server) sourceHasWork(ctx context.Context, sub teamSubscription) (bool,
 // quietly ignoring most of its work.
 //
 // tenant and global both work: a tenant-scoped source reads under the team's
-// own tenant (the store's tenant column isolates it), and a global one is the
-// single shared queue.
+// own tenant (the store's tenant column isolates it), and a global one reads
+// the team's tenant's layer of it merged with the operator's (heartbeats,
+// an operator's schedules) — see store.ChannelReadTenants.
 func subscriptionScope(declared, channel string) (store.MemoryScope, string, error) {
 	switch declared {
 	case "global":

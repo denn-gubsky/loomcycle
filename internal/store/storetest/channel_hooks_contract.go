@@ -30,7 +30,7 @@ func publishAwaitingHook(t *testing.T, s store.Store, ch string, payload string,
 	if err != nil {
 		t.Fatalf("publish awaiting hook: %v", err)
 	}
-	return store.ChannelMessageKey{TenantID: store.ChannelScopeTenant(m.TenantID, m.Scope), Channel: ch, Scope: m.Scope, ScopeID: m.ScopeID, ID: id}
+	return store.ChannelMessageKey{TenantID: m.TenantID, Channel: ch, Scope: m.Scope, ScopeID: m.ScopeID, ID: id}
 }
 
 // leased takes the lease on every message awaiting hooks for owner "w", as
@@ -406,7 +406,7 @@ func testChannelPurgeCascadesHookState(t *testing.T, s store.Store) {
 	if w, _ := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Minute), 1); len(w) != 1 {
 		t.Fatalf("claim: %d", len(w))
 	}
-	if _, err := s.ChannelPurge(ctx, "", "hk-purge"); err != nil {
+	if _, err := s.ChannelPurge(ctx, "", "hk-purge", ""); err != nil {
 		t.Fatalf("purge: %v", err)
 	}
 	if n, err := s.ChannelHookGC(ctx, 100); err != nil || n != 0 {
