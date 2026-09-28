@@ -2127,16 +2127,17 @@ export class LoomcycleClient {
    *  off switch. A malformed entry is refused whole and leaves the previous
    *  arming exactly as it was.
    *
-   *  Each entry is a starter state id — `"wave"` (or `"wave:before_dispatch"`)
-   *  pauses the state before it dispatches, and `"wave:review"` holds its member
-   *  runs for a verdict ({@link LoomcycleClient.reviewRun}). An arm takes effect
-   *  at the next point the walk reaches; disarming RELEASES whatever is still
-   *  pending rather than stranding it.
+   *  `"wave"` (or `"wave:before_dispatch"`) pauses a starter state before it
+   *  dispatches, and `"<state>:review"` holds the member runs of a starter,
+   *  agent or parallel state for a verdict ({@link LoomcycleClient.reviewRun}).
+   *  An arm takes effect at the next point the walk reaches; disarming
+   *  RELEASES whatever is still pending rather than stranding it.
    *
    *  Each state is checked against the walk's own team, as it is when the run
-   *  starts: an entry naming a state the team does not have, or a pause on a
-   *  state that is not a starter, is refused with 400 `invalid_breakpoint` and
-   *  the previous arming is kept — rather than armed and silently never hit.
+   *  starts: an entry naming a state the team does not have, a pause on a
+   *  state that is not a starter, or review on a consolidator or a state that
+   *  runs no member, is refused with 400 `invalid_breakpoint` and the previous
+   *  arming is kept — rather than armed and silently never hit.
    *
    *  A pause is read and answered through the run's interrupts. */
   async setRunBreakpoints(

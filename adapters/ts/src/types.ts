@@ -2483,11 +2483,15 @@ export interface TeamRunTarget {
    *
    *  `"<state>:review"` arms review instead — see {@link TeamRunTarget.review}. */
   breakpoints?: string[];
-  /** Starter state ids whose member runs are held for an operator's verdict
-   *  when they finish: approve with {@link LoomcycleClient.reviewRun}, reject
-   *  with feedback the member revises from, or reject. A rejected member
-   *  reaches the sink as status `"rejected"` and does not count toward the
-   *  wave's `wait`. Also armable live as the breakpoint `"<state>:review"`. */
+  /** Starter, agent or parallel state ids whose member runs are held for an
+   *  operator's verdict when they finish: approve with
+   *  {@link LoomcycleClient.reviewRun}, reject with feedback the member revises
+   *  from, or reject. A rejected starter member reaches the sink as status
+   *  `"rejected"` and does not count toward the wave's `wait`; a rejected agent
+   *  or parallel member counts as failed. A consolidator state is refused — its
+   *  answer is the walk's verdict on the work, and a parallel state's own
+   *  consolidator is never held. Also armable live as the breakpoint
+   *  `"<state>:review"`. */
   review?: string[];
   /** With `review`: end a member hold nobody rules on within this many
    *  seconds as rejected. Omit for no deadline. */
