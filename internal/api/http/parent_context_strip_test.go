@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -86,6 +87,24 @@ func TestParentContext_RuntimeFieldsDroppedAtEveryIngress(t *testing.T) {
 			}
 			if code, body := do(t, "POST", ts.URL+"/v1/runs/"+c.RunID+"/start", ""); code != http.StatusOK {
 				t.Fatalf("start = %d %s", code, body)
+			}
+			return c.RunID
+		}},
+		// gRPC and MCP create a draft through the connector, not handleRuns.
+		{"configured run via connector (gRPC / MCP)", func(t *testing.T, srv *Server, _ *httptest.Server, st store.Store) string {
+			ctx := context.Background()
+			c, err := srv.CreateConfiguredRun(ctx, connector.ConfiguredRunRequest{SpawnRunRequest: connector.SpawnRunRequest{
+				Agent: "agent", UserID: "u1", ParentContext: forgedParentContext(),
+				Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}}},
+			}})
+			if err != nil {
+				t.Fatalf("CreateConfiguredRun: %v", err)
+			}
+			if strings.Contains(string(c.Draft), "r_victim_walk") || strings.Contains(string(c.Draft), "c_victim") {
+				t.Errorf("the stored draft kept the forged fields: %s", c.Draft)
+			}
+			if _, err := srv.StartConfiguredRun(ctx, c.RunID, connector.RunSecrets{}); err != nil {
+				t.Fatalf("StartConfiguredRun: %v", err)
 			}
 			return c.RunID
 		}},
