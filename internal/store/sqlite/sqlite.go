@@ -5757,7 +5757,6 @@ func (s *Store) MemoryCursorReleaseByOwner(ctx context.Context, owner string) (i
 // scheduler schedules a Bus.Notify(channel) at visible_at so
 // long-poll subscribers wake on time.
 func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, maxMessages int) (string, int, error) {
-	msg.TenantID = store.ChannelScopeTenant(msg.TenantID, msg.Scope) // global => "" (cross-tenant keyspace)
 	now := time.Now()
 	msg.ID = store.MintChannelMessageID(now)
 	msg.PublishedAt = now
@@ -5885,7 +5884,6 @@ func (s *Store) ChannelPeek(ctx context.Context, tenantID, channel string, scope
 // The UPDATE re-states the held predicate so a row another releaser already
 // took can never be released twice, whatever the isolation level does.
 func (s *Store) ChannelRelease(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID string, count int) ([]string, int, error) {
-	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
 	if count <= 0 {
 		count = 1
 	}
@@ -6123,7 +6121,7 @@ func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn 
 // deferred messages that become visible later than other messages
 // published in between.
 func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor string, limit int) ([]store.ChannelMessage, string, error) {
-	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
+	own, shared := store.ChannelReadTenants(tenantID, scope)
 	if limit <= 0 {
 		limit = 10
 	}
@@ -6139,27 +6137,27 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 		query string
 	)
 	if fromOldest {
-		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id
+		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id
 			 FROM channel_messages
-			 WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
+			 WHERE tenant_id IN (?, ?) AND channel = ? AND scope = ? AND scope_id = ?
 			   AND visible_at <= ?
 			   AND (expires_at IS NULL OR expires_at > ?)
 			 ORDER BY visible_at ASC, id ASC
 			 LIMIT ?`
 		rows, qErr = s.db.QueryContext(ctx, query,
-			tenantID, channel, string(scope), scopeID, now, now, limit)
+			own, shared, channel, string(scope), scopeID, now, now, limit)
 	} else {
 		// Strictly-greater-than tuple comparison: (visible_at, id) > (cv, cid).
-		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id
+		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id
 			 FROM channel_messages
-			 WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?
+			 WHERE tenant_id IN (?, ?) AND channel = ? AND scope = ? AND scope_id = ?
 			   AND visible_at <= ?
 			   AND (expires_at IS NULL OR expires_at > ?)
 			   AND (visible_at > ? OR (visible_at = ? AND id > ?))
 			 ORDER BY visible_at ASC, id ASC
 			 LIMIT ?`
 		rows, qErr = s.db.QueryContext(ctx, query,
-			tenantID, channel, string(scope), scopeID, now, now,
+			own, shared, channel, string(scope), scopeID, now, now,
 			cursorVisibleAt.UnixNano(), cursorVisibleAt.UnixNano(), cursorMsgID,
 			limit)
 	}
@@ -6179,14 +6177,15 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 			expiresAt         sql.NullInt64
 			visibleAt         int64
 			publishedByUserID sql.NullString
+			msgTenant         string
 		)
-		if err := rows.Scan(&id, &payload, &publishedAt, &expiresAt, &visibleAt, &publishedByUserID); err != nil {
+		if err := rows.Scan(&id, &payload, &publishedAt, &expiresAt, &visibleAt, &publishedByUserID, &msgTenant); err != nil {
 			return nil, "", err
 		}
 		msg := store.ChannelMessage{
 			ID:          id,
 			Channel:     channel,
-			TenantID:    tenantID,
+			TenantID:    msgTenant,
 			Scope:       scope,
 			ScopeID:     scopeID,
 			Payload:     json.RawMessage(payload),
@@ -6219,7 +6218,6 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 // visible_at as a fixed-width hex prefix). Idempotent re-ack of the
 // SAME cursor is a no-op.
 func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID, cursor string) error {
-	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
 	if cursor == "" || cursor == "cur_0" {
 		return nil // nothing to commit
 	}
@@ -6234,12 +6232,8 @@ func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var existing string
-	err = tx.QueryRowContext(ctx,
-		`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
-		tenantID, channel, string(scope), scopeID,
-	).Scan(&existing)
-	if err != nil && err != sql.ErrNoRows {
+	existing, err := committedCursor(ctx, tx, tenantID, channel, scope, scopeID)
+	if err != nil {
 		return err
 	}
 	if existing != "" && cursor < existing {
@@ -6269,31 +6263,48 @@ func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope 
 // ChannelCommittedCursor returns the last cursor ack'd for a
 // subscriber, or empty string when none.
 func (s *Store) ChannelCommittedCursor(ctx context.Context, tenantID, channel string, scope store.MemoryScope, scopeID string) (string, error) {
-	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
-	var cursor string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
-		tenantID, channel, string(scope), scopeID,
-	).Scan(&cursor)
-	if err == sql.ErrNoRows {
-		return "", nil
+	return committedCursor(ctx, s.db, tenantID, channel, scope, scopeID)
+}
+
+// committedCursor is a subscriber's cursor: its own tenant's, or — on a
+// global channel it has never acked since the split — the operator layer's,
+// the cursor every tenant shared before.
+func committedCursor(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, tenantID, channel string, scope store.MemoryScope, scopeID string) (string, error) {
+	tenants := []string{tenantID}
+	if store.ChannelCursorFallback(tenantID, scope) {
+		tenants = append(tenants, store.ChannelOperatorTenant)
 	}
-	if err != nil {
-		return "", err
+	for _, t := range tenants {
+		var cursor string
+		err := q.QueryRowContext(ctx,
+			`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
+			t, channel, string(scope), scopeID,
+		).Scan(&cursor)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		return cursor, err
 	}
-	return cursor, nil
+	return "", nil
 }
 
 // ChannelListCursorsForScope — see store.Store doc. v0.9.x
 // introspection. Ordered by channel ASC for deterministic UI render.
 func (s *Store) ChannelListCursorsForScope(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) ([]store.ChannelCursorEntry, error) {
-	tenantID = store.ChannelScopeTenant(tenantID, scope) // global => "" (cross-tenant keyspace)
+	fallback := tenantID
+	if store.ChannelCursorFallback(tenantID, scope) {
+		fallback = store.ChannelOperatorTenant
+	}
+	// The subscriber's own cursor sorts first (a tenant id sorts after the
+	// operator's ""), so a channel it has acked since the split shows that.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT channel, scope, scope_id, cursor, updated_at
 		 FROM channel_cursors
-		 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
-		 ORDER BY channel ASC`,
-		tenantID, string(scope), scopeID,
+		 WHERE tenant_id IN (?, ?) AND scope = ? AND scope_id = ?
+		 ORDER BY channel ASC, tenant_id DESC`,
+		tenantID, fallback, string(scope), scopeID,
 	)
 	if err != nil {
 		return nil, err
@@ -6306,6 +6317,9 @@ func (s *Store) ChannelListCursorsForScope(ctx context.Context, tenantID string,
 		var updatedNanos int64
 		if err := rows.Scan(&entry.Channel, &scopeStr, &entry.ScopeID, &entry.Cursor, &updatedNanos); err != nil {
 			return nil, err
+		}
+		if n := len(out); n > 0 && out[n-1].Channel == entry.Channel {
+			continue
 		}
 		entry.Scope = store.MemoryScope(scopeStr)
 		entry.UpdatedAt = time.Unix(0, updatedNanos).UTC()

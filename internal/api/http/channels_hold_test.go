@@ -461,11 +461,15 @@ func TestChannelTool_AHoldSetMidRunApplies(t *testing.T) {
 // covered in their packages, on the same writer.)
 func TestChannelHoldCensus_EverySurfaceIsHeld(t *testing.T) {
 	ctx := context.Background()
+	// tenant is the layer of the global channel the surface writes into: the
+	// operator's for an admin on a yaml channel or a writer with no tenant,
+	// the writer's own otherwise.
 	for _, tc := range []struct {
-		name  string
-		write func(t *testing.T, srv *Server, st store.Store)
+		name   string
+		tenant string
+		write  func(t *testing.T, srv *Server, st store.Store)
 	}{
-		{"agent Channel tool", func(t *testing.T, srv *Server, st store.Store) {
+		{"agent Channel tool", "", func(t *testing.T, srv *Server, st store.Store) {
 			tool := &builtin.Channel{Store: st, Writer: srv.systemPublisher.(channels.Writer)}
 			runCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
 				Publish:  []string{"gate"},
@@ -475,22 +479,22 @@ func TestChannelHoldCensus_EverySurfaceIsHeld(t *testing.T) {
 				t.Fatalf("publish: err=%v result=%s", err, res.Text)
 			}
 		}},
-		{"admin publish", func(t *testing.T, srv *Server, _ store.Store) {
+		{"admin publish", "", func(t *testing.T, srv *Server, _ store.Store) {
 			if rec := postJSON(t, srv, "/v1/_channels/gate/publish", `{"payload":{}}`); rec.Code != http.StatusOK {
 				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 			}
 		}},
-		{"admin broadcast", func(t *testing.T, srv *Server, _ store.Store) {
+		{"admin broadcast", "", func(t *testing.T, srv *Server, _ store.Store) {
 			if rec := postJSON(t, srv, "/v1/_channels/_broadcast", `{"channels":["gate"],"scope":"global","payload":{}}`); rec.Code != http.StatusOK {
 				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 			}
 		}},
-		{"system publisher", func(t *testing.T, srv *Server, _ store.Store) {
+		{"system publisher", "t1", func(t *testing.T, srv *Server, _ store.Store) {
 			if _, err := srv.systemPublisher.PublishNow(ctx, "gate", "t1", store.MemoryScopeGlobal, "", json.RawMessage(`{}`), channels.SystemPublisherUserID, 0, 0); err != nil {
 				t.Fatalf("publish: %v", err)
 			}
 		}},
-		{"team sink", func(t *testing.T, srv *Server, _ store.Store) {
+		{"team sink", "", func(t *testing.T, srv *Server, _ store.Store) {
 			io := &teamChannelIO{srv: srv, acl: &teamgraph.TeamChannels{Publish: []string{"gate"}}}
 			if err := io.Publish(ctx, "gate", json.RawMessage(`{}`)); err != nil {
 				t.Fatalf("publish: %v", err)
@@ -501,10 +505,10 @@ func TestChannelHoldCensus_EverySurfaceIsHeld(t *testing.T) {
 			srv, st, cleanup := channelHoldFixture(t)
 			defer cleanup()
 			tc.write(t, srv, st)
-			if msgs, err := st.ChannelPeek(ctx, "", "gate", store.MemoryScopeGlobal, "", "", 10); err != nil || len(msgs) != 0 {
+			if msgs, err := st.ChannelPeek(ctx, tc.tenant, "gate", store.MemoryScopeGlobal, "", "", 10); err != nil || len(msgs) != 0 {
 				t.Fatalf("delivered %d message(s) past the hold (err %v)", len(msgs), err)
 			}
-			released, _, err := st.ChannelRelease(ctx, "", "gate", store.MemoryScopeGlobal, "", 10)
+			released, _, err := st.ChannelRelease(ctx, tc.tenant, "gate", store.MemoryScopeGlobal, "", 10)
 			if err != nil || len(released) != 1 {
 				t.Fatalf("release returned %d (err %v), want the 1 held message — it was lost, not held", len(released), err)
 			}

@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -149,7 +150,7 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 
 	// RFC N: the owning tenant is derived from the authenticated principal,
 	// never from the request body or scope_id.
-	tenantID := tenantFromCtx(ctx)
+	tenantID := s.channelWriterTenant(ctx, scope, req.Channel)
 	res, err := s.writeChannel(ctx, channels.WriteRequest{
 		Channel: req.Channel, TenantID: tenantID, Scope: scope, ScopeID: scopeID,
 		Payload: req.Payload, DeliverAt: deliverAt, PublishedBy: publishedBy,
@@ -173,6 +174,24 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		out.VisibleAt = msg.VisibleAt.UTC().Format(time.RFC3339Nano)
 	}
 	return out, nil
+}
+
+// channelWriterTenant is the keyspace a caller's write to a channel lands in.
+// A global channel is split by tenant over a shared operator layer (see
+// store.ChannelReadTenants). An admin's write to a channel the operator
+// declared (yaml) goes into that shared layer, which every tenant reads — the
+// operator's broadcast. Anyone else's, and an admin's to a runtime channel
+// (which belongs to the tenant that created it, where its definition
+// resolves), goes into the caller's own tenant's layer.
+func (s *Server) channelWriterTenant(ctx context.Context, scope store.MemoryScope, channel string) string {
+	if scope == store.MemoryScopeGlobal {
+		if _, operators := s.cfg().Channels[channel]; operators {
+			if p, ok := auth.PrincipalFromContext(ctx); ok && auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+				return store.ChannelOperatorTenant
+			}
+		}
+	}
+	return tenantFromCtx(ctx)
 }
 
 // ttlExpiry is a channel's default TTL applied from now; zero = no expiry.
@@ -237,9 +256,25 @@ func (s *Server) ReleaseChannel(ctx context.Context, req connector.ChannelReleas
 	if count <= 0 {
 		count = 1
 	}
-	released, stillHeld, err := s.store.ChannelRelease(ctx, tenantFromCtx(ctx), req.Channel, scope, scopeID, count)
-	if err != nil {
-		return connector.ChannelReleaseResult{}, fmt.Errorf("release: %w", err)
+	// A release decides what the releaser's own layer delivers: an admin's,
+	// on a global channel, is the operator layer — and its own tenant's, which
+	// holds what its runs published.
+	layers := []string{s.channelWriterTenant(ctx, scope, req.Channel)}
+	if own := tenantFromCtx(ctx); own != layers[0] {
+		layers = append(layers, own)
+	}
+	var released []string
+	stillHeld := 0
+	for _, t := range layers {
+		ids, held, err := s.store.ChannelRelease(ctx, t, req.Channel, scope, scopeID, count-len(released))
+		if err != nil {
+			return connector.ChannelReleaseResult{}, fmt.Errorf("release: %w", err)
+		}
+		released = append(released, ids...)
+		stillHeld += held
+		if len(released) >= count {
+			break
+		}
 	}
 	if released == nil {
 		released = []string{}
@@ -484,11 +519,11 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 	if scope == store.MemoryScopeUser {
 		publishedBy = scopeID
 	}
-	tenantID := tenantFromCtx(ctx) // RFC N: authoritative principal tenant
 	out := connector.ChannelBroadcastResult{Results: make([]connector.ChannelBroadcastEntry, 0, len(targets))}
 	for _, t := range targets {
 		res, perr := s.writeChannel(ctx, channels.WriteRequest{
-			Channel: t.name, TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+			// RFC N: the tenant is the authoritative principal's.
+			Channel: t.name, TenantID: s.channelWriterTenant(ctx, scope, t.name), Scope: scope, ScopeID: scopeID,
 			Payload: req.Payload, DeliverAt: deliverAt, PublishedBy: publishedBy,
 			MaxMessages: t.def.MaxMessages, ExpiresAt: ttlExpiry(t.def.DefaultTTL),
 		})

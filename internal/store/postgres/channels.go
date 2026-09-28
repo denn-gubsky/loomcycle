@@ -183,8 +183,8 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Read the def's scope first: the cascade must delete messages/cursors
-	// from the keyspace they actually live in — global => tenant_id="",
-	// every other scope => this tenant (store.ChannelScopeTenant).
+	// from the keyspaces they actually live in — this tenant's, and for a
+	// global channel every tenant's layer of it (see store.ChannelReadTenants).
 	var scope string
 	if err := tx.QueryRow(ctx, `SELECT scope FROM channels WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&scope); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -195,16 +195,23 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	if _, err := tx.Exec(ctx, `DELETE FROM channels WHERE tenant_id = $1 AND name = $2`, tenantID, name); err != nil {
 		return fmt.Errorf("channels delete: %w", err)
 	}
-	// Cascade scoped by the message keyspace's tenant so deleting one
-	// tenant's channel never touches another tenant's same-named channel.
-	msgTenant := store.ChannelScopeTenant(tenantID, store.MemoryScope(scope))
-	if _, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
+	// Cascade scoped by keyspace so deleting one tenant's channel never
+	// touches another tenant's same-named channel: this tenant's rows, plus —
+	// for a global channel — every tenant's global layer of it, which the
+	// channel's deletion orphans. (Global channels are an admin's to create.)
+	where := `tenant_id = $1 AND channel = $2`
+	args := []any{tenantID, name}
+	if store.MemoryScope(scope) == store.MemoryScopeGlobal {
+		where = `channel = $2 AND (tenant_id = $1 OR scope = $3)`
+		args = append(args, string(store.MemoryScopeGlobal))
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE `+where, args...); err != nil {
 		return fmt.Errorf("channels delete messages cascade: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM channel_cursors WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_cursors WHERE `+where, args...); err != nil {
 		return fmt.Errorf("channels delete cursors cascade: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE tenant_id = $1 AND channel = $2`, msgTenant, name); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE `+where, args...); err != nil {
 		return fmt.Errorf("channels delete hook state cascade: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -216,17 +223,19 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 // ChannelPurge deletes every channel_messages row for `name`, with the hook
 // progress of those awaiting hooks, and returns the message count. Leaves the
 // channels row + channel_cursors intact — see store.Store.ChannelPurge.
-func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string) (int, error) {
+func (s *Store) ChannelPurge(ctx context.Context, tenantID, name string, scope store.MemoryScope) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("channel purge begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	tag, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE tenant_id = $1 AND channel = $2`, tenantID, name)
+	// $3 = '' purges every scope.
+	where := `tenant_id = $1 AND channel = $2 AND ($3 = '' OR scope = $3)`
+	tag, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE `+where, tenantID, name, string(scope))
 	if err != nil {
 		return 0, fmt.Errorf("channel purge: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE tenant_id = $1 AND channel = $2`, tenantID, name); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM channel_hook_state WHERE `+where, tenantID, name, string(scope)); err != nil {
 		return 0, fmt.Errorf("channel purge hook state: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

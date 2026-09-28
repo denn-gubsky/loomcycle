@@ -3968,7 +3968,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 
 	// RFC N: the owning tenant is derived from the authenticated principal,
 	// never from the request body.
-	tenantID := tenantFromCtx(r.Context())
+	tenantID := s.channelWriterTenant(r.Context(), scope, fullName)
 	msg, err := s.systemPublisher.Publish(r.Context(), fullName, tenantID, scope, scopeID,
 		body.Payload, deliverAt, publishedBy, def.MaxMessages, def.DefaultTTL)
 	if err != nil {
