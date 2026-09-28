@@ -496,10 +496,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
-	if runCfg.Hooks != nil {
-		// What the run added before it paused, restored as it was: already
-		// checked at its start, so carried like an inheritance.
-		loopCtx = hooks.WithAdditions(loopCtx, *runCfg.Hooks)
+	if added := runCfg.additions(); !added.Empty() {
+		// What the run added before it paused, restored as it was — a
+		// definition's with its source: already checked at its start, so
+		// carried like an inheritance.
+		loopCtx = hooks.WithAdditions(loopCtx, added)
 	}
 	loopCtx = s.withResumedRunHooks(loopCtx, run, agentDef, runCfg.PinnedHooks)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)

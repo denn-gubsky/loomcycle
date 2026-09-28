@@ -1097,7 +1097,8 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// is where the runtime recorded who wrote this team; the body is the thing
 	// the flag gates, so a team that could assert its own authorship would be
 	// asserting its own authority.
-	runnerOpts = append(runnerOpts, teamrun.WithOperatorAuthored(row.OperatorAuthored))
+	runnerOpts = append(runnerOpts, teamrun.WithOperatorAuthored(row.OperatorAuthored),
+		teamrun.WithTeamSource(row.Name, row.TenantID))
 	runner := teamrun.NewAgentRunner(t.Spawn, runnerOpts...)
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
