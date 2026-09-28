@@ -162,6 +162,39 @@ func TestGrpcGetAgent_IsolatedMemberCannotReadAnotherUsersRun(t *testing.T) {
 	}
 }
 
+// An isolated member lists only its own runs: naming a co-tenant's user_id
+// yields an empty list (HTTP handleListUserAgents' isolatedCrossUser rule), its
+// own user_id yields its runs, and a tenant operator keeps the tenant view.
+func TestGrpcListUserAgents_IsolatedMemberSeesOnlyItsOwnRuns(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	seedRun(t, st, "acme", "alice", "a_alice")
+	seedRun(t, st, "acme", "bob", "a_bob")
+
+	list := func(ctx context.Context, user string) []string {
+		t.Helper()
+		resp, err := adapter.ListUserAgents(ctx, &loomcyclepb.ListUserAgentsRequest{UserId: user})
+		if err != nil {
+			t.Fatalf("ListUserAgents(%s): %v", user, err)
+		}
+		var ids []string
+		for _, a := range resp.GetAgents() {
+			ids = append(ids, a.GetAgentId())
+		}
+		return ids
+	}
+
+	bob := scopedCtx("acme", "bob", auth.ScopeUser)
+	if got := list(bob, "alice"); len(got) != 0 {
+		t.Errorf("isolated member listing a co-tenant's runs = %v, want empty", got)
+	}
+	if got := list(bob, "bob"); len(got) != 1 || got[0] != "a_bob" {
+		t.Errorf("isolated member listing its own runs = %v, want [a_bob]", got)
+	}
+	if got := list(scopedCtx("acme", "op", auth.ScopeTenant), "alice"); len(got) != 1 || got[0] != "a_alice" {
+		t.Errorf("tenant operator listing a member's runs = %v, want [a_alice]", got)
+	}
+}
+
 // A transcript is a session's whole history: an isolated member reads only its
 // own, as tenantStore.GetSession confines it on HTTP.
 func TestGrpcGetTranscript_IsolatedMemberCannotReadAnotherUsersSession(t *testing.T) {
