@@ -307,6 +307,7 @@ func Run(t *testing.T, factory Factory) {
 		// Asserts the retired / non-active / keep-last-N exclusions are each
 		// load-bearing, and DeleteDefVersions removes exactly the listed rows.
 		{"RetentionPurgeDefVersions", testRetentionPurgeDefVersions},
+		{"RetentionPurgesRetiredHookDefVersionsKeepsActive", testRetentionPurgesRetiredHookDefVersionsKeepsActive},
 		// v0.8.22 SkillDef substrate — mirror of the AgentDef tests.
 		{"SkillDefCreateAndGet", testSkillDefCreateAndGet},
 		{"SkillDefVersionMonotonicUnderContention", testSkillDefVersionMonotonicUnderContention},
@@ -7314,7 +7315,7 @@ func testBackfillAgentDefSystemPromptBase(t *testing.T, s store.Store) {
 }
 
 // testRetentionPurgeDefVersions exercises the RFC BM retention store surface on
-// the agent def-type (all 9 families share one uniform schema, so agent is
+// the agent def-type (all 10 families share one uniform schema, so agent is
 // representative). Setup: 5 versions under one (tenant, name); retire the 4
 // oldest, then promote a RETIRED version as active. Each exclusion is made
 // load-bearing:
@@ -7442,6 +7443,47 @@ func testRetentionPurgeDefVersions(t *testing.T, s store.Store) {
 		if r.DefID == "pa-1" {
 			t.Errorf("pa-1 (retired parent of surviving pa-2) must NOT be purgeable — would orphan lineage / FK-violate")
 		}
+	}
+}
+
+// testRetentionPurgesRetiredHookDefVersionsKeepsActive: HookDefs were left off
+// the retention allowlist, so a retired version was never purgeable and the
+// def-type was an "unknown def type" error. hook_defs is a clone of teamdefs,
+// so the shared query must apply unchanged on both backends: a retired, old,
+// non-active version is listed and deleted; the active one survives.
+func testRetentionPurgesRetiredHookDefVersionsKeepsActive(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	// Two versions with no lineage link, so only the retired/active rules decide.
+	for _, id := range []string{"rh-1", "rh-2"} {
+		if _, err := s.HookDefCreate(ctx, mkHookDef(id, "tenant-a", "guard", "")); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	if err := s.HookDefSetRetired(ctx, "rh-1", true); err != nil {
+		t.Fatalf("retire rh-1: %v", err)
+	}
+	if err := s.HookDefSetActive(ctx, "tenant-a", "guard", "rh-2", ""); err != nil {
+		t.Fatalf("promote rh-2: %v", err)
+	}
+
+	future := time.Now().Add(time.Hour)
+	got, err := s.ListPurgeableRetiredDefVersions(ctx, "hook", future, 0, 100)
+	if err != nil {
+		t.Fatalf("list purgeable hook: %v", err)
+	}
+	if len(got) != 1 || got[0].DefID != "rh-1" || got[0].DefType != "hook" ||
+		got[0].TenantID != "tenant-a" || len(got[0].Definition) == 0 {
+		t.Fatalf("purgeable hook refs = %+v, want exactly rh-1 (tenant-a, with its definition)", got)
+	}
+	n, err := s.DeleteDefVersions(ctx, "hook", []string{"rh-1"})
+	if err != nil || n != 1 {
+		t.Fatalf("delete hook = (%d, %v), want (1, nil)", n, err)
+	}
+	if _, err := s.HookDefGet(ctx, "rh-1"); err == nil {
+		t.Error("rh-1 still present after delete")
+	}
+	if _, err := s.HookDefGetActive(ctx, "tenant-a", "guard"); err != nil {
+		t.Errorf("active rh-2 lost: %v", err)
 	}
 }
 

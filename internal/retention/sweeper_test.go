@@ -241,6 +241,66 @@ func TestSweeper_DryRunCountsReportsPerType(t *testing.T) {
 	}
 }
 
+// TestSweeper_HookDefsReportedExportedAndPruned: HookDefs were not on the
+// sweeper's def-type list, so retired versions piled up forever and the
+// GET /v1/_retention preview had no "hook" entry. Against a real sqlite store:
+// the preview counts the retired version, export+prune writes it to disk then
+// deletes it, and the active version survives.
+func TestSweeper_HookDefsReportedExportedAndPruned(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	def := json.RawMessage(`{"event":"PreToolUse","match":{"tool":"Bash"},"body":{"code":"return {decision:'allow'}"}}`)
+	for _, id := range []string{"h1", "h2"} {
+		if _, err := st.HookDefCreate(ctx, store.HookDefRow{DefID: id, Name: "guard", Definition: def}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	if err := st.HookDefSetRetired(ctx, "h1", true); err != nil {
+		t.Fatalf("retire h1: %v", err)
+	}
+	if err := st.HookDefSetActive(ctx, "", "guard", "h2", ""); err != nil {
+		t.Fatalf("promote h2: %v", err)
+	}
+
+	dir := t.TempDir()
+	sw := New(st, Config{
+		DefsMode:  "export+prune",
+		ExportDir: dir,
+		Logger:    quietLogger,
+		Now:       func() time.Time { return time.Now().Add(time.Hour) },
+	})
+	counts, err := sw.DryRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("DryRunCounts: %v", err)
+	}
+	if n, ok := counts["hook"]; !ok || n != 1 {
+		t.Errorf("counts[hook] = %d (present=%v), want 1", n, ok)
+	}
+
+	res, err := sw.sweepOnce(ctx)
+	if err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if res.PerType["hook"] != 1 {
+		t.Errorf("res.PerType[hook] = %d, want 1 (res=%+v)", res.PerType["hook"], res)
+	}
+	exports, _ := filepath.Glob(filepath.Join(dir, "*", "hook", "h1.json"))
+	if len(exports) != 1 {
+		t.Errorf("export files for h1 = %v, want one under <dir>/<day>/hook/", exports)
+	}
+	if _, err := st.HookDefGet(ctx, "h1"); err == nil {
+		t.Error("retired h1 still present after sweep")
+	}
+	if _, err := st.HookDefGet(ctx, "h2"); err != nil {
+		t.Errorf("active h2 wrongly deleted: %v", err)
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 // seedCompletedChatSession creates a session with one completed run (with an
