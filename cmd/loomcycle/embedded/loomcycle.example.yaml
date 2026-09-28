@@ -372,6 +372,20 @@ channels:
 #     timeout_ms: 30000                      # a slower rerank keeps search's own order
 #     max_concurrent: 2                      # reranks in flight (default 4)
 #     # base_url / api_key_env override the provider's, as for the embedder.
+#
+#   # The model that writes Document "derived search units" — a description,
+#   # claims and questions per chunk — when an operator runs
+#   # POST /v1/_document/derive_units (dry-run by default). Nothing is generated on
+#   # write. A document opts in with `index_units` in its root chunk's fields
+#   # (true, false, or a list of description/claims/questions); a subtree below
+#   # marks every document under it. /facts and /memory never get units.
+#   unit_generator:
+#     model: local-medium                    # a models: alias, or provider + model
+#     effort: low
+#     max_output_tokens: 2000                # default; a JSON answer cut short does not parse
+#     subtrees:
+#       - { path: /docs/policies }           # all three kinds
+#       - { path: /docs/faq, kinds: [questions] }
 
 # ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
 # Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,

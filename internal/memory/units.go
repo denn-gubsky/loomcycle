@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -67,6 +68,11 @@ type UnitValue struct {
 	// written from, which is how a later pass finds the stale ones.
 	Model        string `json:"model,omitempty"`
 	BodyRevision int    `json:"body_revision,omitempty"`
+	// BodySHA256 is the hash of the body text the unit was written from. It, not
+	// the revision, decides staleness: a chunk's revision also moves when its
+	// status or fields change, and regenerating units for those would spend a
+	// model call on a body nobody edited.
+	BodySHA256 string `json:"body_sha256,omitempty"`
 }
 
 // MatchedUnit is the unit that found a chunk, as a search reports it.
@@ -197,4 +203,27 @@ func unitMatch(v json.RawMessage) *MatchedUnit {
 	var u UnitValue
 	_ = json.Unmarshal(v, &u)
 	return &MatchedUnit{Kind: u.Kind, Text: u.Text}
+}
+
+// UnitRequest is one chunk to write units for. Kinds is the opt-in vocabulary:
+// description, claims, questions.
+type UnitRequest struct {
+	DocumentTitle string
+	SectionPath   string // the chunk's heading path below the document title, " > "-joined
+	Text          string
+	Kinds         []string
+}
+
+// GeneratedUnit is one unit a model wrote: Kind is UnitDescription, UnitClaim or
+// UnitQuestion.
+type GeneratedUnit struct {
+	Kind string
+	Text string
+}
+
+// UnitGenerator writes a chunk's units. The generation pass depends on this, not
+// on a driver, so a test can stand one in.
+type UnitGenerator interface {
+	ModelID() string
+	Generate(ctx context.Context, r UnitRequest) ([]GeneratedUnit, error)
 }

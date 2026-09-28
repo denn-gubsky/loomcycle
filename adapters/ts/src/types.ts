@@ -1979,6 +1979,10 @@ export interface MemorySearchEntry {
   document?: string;
   /** The chunk's own heading. Same conditions as {@link document}. */
   title?: string;
+  /** Present when the chunk was found through one of its Document derived search
+   *  units — a description, claim or question generated for it — rather than its
+   *  own text. The chunk appears once however many of its units matched. */
+  matched_unit?: { kind: "description" | "claim" | "question"; text: string };
 }
 
 export interface MemorySearchResponse {

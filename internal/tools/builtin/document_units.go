@@ -33,14 +33,20 @@ const (
 )
 
 // ReplaceUnits replaces every derived search unit of one chunk with units, each
-// indexed under the chunk's header, and returns how many it wrote. model and
-// bodyRevision are recorded on each unit — the revision of the chunk body the units
-// were written from is how a later pass finds the stale ones. An empty units list
-// removes the chunk's units.
+// indexed under the chunk's header, and returns how many it wrote. src is recorded
+// on each unit — the hash of the body the units were written from is how a later
+// pass finds the stale ones. An empty units list removes the chunk's units.
 //
 // It refuses a chunk that does not exist in the scope: a unit votes for its chunk,
 // and a unit with no chunk is an orphan the moment it is written.
-func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, units []DerivedUnit, model string, bodyRevision int) (int, error) {
+// UnitSource records what a chunk's units were written from.
+type UnitSource struct {
+	Model        string
+	BodyRevision int
+	BodySHA256   string
+}
+
+func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, units []DerivedUnit, src UnitSource) (int, error) {
 	if d.Store == nil || d.SqlMem == nil {
 		return 0, fmt.Errorf("derived units: SQL Memory is not configured")
 	}
@@ -82,7 +88,8 @@ func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, unit
 		n := next[u.Kind]
 		next[u.Kind]++
 		k := memrank.UnitKey(chunkID, u.Kind, n)
-		v, _ := json.Marshal(memrank.UnitValue{ChunkID: chunkID, Kind: u.Kind, Text: text, Model: model, BodyRevision: bodyRevision})
+		v, _ := json.Marshal(memrank.UnitValue{ChunkID: chunkID, Kind: u.Kind, Text: text,
+			Model: src.Model, BodyRevision: src.BodyRevision, BodySHA256: src.BodySHA256})
 		if err := d.Store.MemorySet(ctx, tenant, mscope, key.ScopeID, k, v, 0); err != nil {
 			return written, fmt.Errorf("derived units: write %s: %w", k, err)
 		}

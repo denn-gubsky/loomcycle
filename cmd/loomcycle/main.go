@@ -103,6 +103,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+	"github.com/denn-gubsky/loomcycle/internal/memory/unitgen"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -1756,6 +1757,16 @@ func main() {
 	// have started yet.
 	if rerankModel != nil {
 		rerankModel.OnUsage = srv.RecordRunSideCallUsage
+	}
+	// The Document derived-unit writer (memory.unit_generator): a declared one that
+	// cannot be built fails boot, as the embedder and the reranker do.
+	unitGenerator, ugErr := unitgen.Build(cfg)
+	if ugErr != nil {
+		log.Fatalf("unit generator: %v", ugErr)
+	}
+	if unitGenerator != nil {
+		log.Printf("unit generator: %s", unitGenerator.ModelID())
+		srv.SetUnitGenerator(unitGenerator)
 	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
