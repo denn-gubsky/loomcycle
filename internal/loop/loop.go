@@ -3756,6 +3756,10 @@ type inbandError struct {
 	RetryAfterSeconds *int              `json:"retryAfterSeconds,omitempty"`
 	Description       string            `json:"description,omitempty"`
 	CorrectCallFormat *tools.CallFormat `json:"correctCallFormat,omitempty"`
+	// Hint is the help article for the failed call, for a run that skipped
+	// it (see tools/helphint.go). Last, because it is the long one: the short
+	// fields a model acts on come first.
+	Hint string `json:"hint,omitempty"`
 }
 
 // renderToolResultText renders what the model reads for one tool call. A
@@ -3803,6 +3807,7 @@ func renderToolResultText(res tools.Result) string {
 			out.Description = desc
 		}
 		out.CorrectCallFormat = info.CallFormat
+		out.Hint = info.Hint
 	}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)

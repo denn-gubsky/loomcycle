@@ -1131,6 +1131,33 @@ func (c *Context) HelpArguments(topic string) ([]string, bool) {
 	return t.Arguments()
 }
 
+// HelpContent implements tools.HelpContentIndex: the text Context op=help
+// returns for exactly this topic, so a hint and a help call read the same.
+func (c *Context) HelpContent(topic string) (string, bool) {
+	if !c.Help.Has(topic) {
+		return "", false
+	}
+	t, _ := c.Help.Get(topic)
+	return t.Content, true
+}
+
+// HelpTopicTool implements tools.HelpContentIndex: the tool a help call's
+// topic documents, resolved the way op=help resolves it (spellings such as
+// Memory.recall, and aliases), so a read counts however it was asked for.
+func (c *Context) HelpTopicTool(topic string) string {
+	if c.Help == nil {
+		return ""
+	}
+	t, ok := c.Help.Get(topic)
+	if !ok {
+		t, ok = c.Help.Get(opSpelling.Replace(strings.TrimSpace(topic)))
+	}
+	if !ok {
+		return ""
+	}
+	return t.Tool
+}
+
 // HelpExample implements tools.HelpIndex: the first call example in topic,
 // compacted to one line. Only examples for the topic's own tool count — an
 // article may show a neighbouring tool's call in passing.

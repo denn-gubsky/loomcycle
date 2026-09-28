@@ -135,6 +135,9 @@ type Dispatcher struct {
 	// repeats counts failed calls per exact call, so a run re-sending one that
 	// cannot succeed is refused and then stopped (see repeat.go).
 	repeats repeatTracker
+	// hints is which tools' help this run has read, and which help it has
+	// already been given with a failed call (see helphint.go).
+	hints helpHints
 	// classify maps a Go error a tool returned onto an error category. It is
 	// injected (SetErrorClassifier) because the classifier recognises the
 	// runtime's typed errors and so imports half the tree, this package
@@ -1998,6 +2001,7 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 		return toolNotFound(name), nil
 	}
 	d.noteResult(name, input, res)
+	d.noteHelpRead(name, input, res)
 	return d.withHelpPointer(name, input, res), goErr
 }
 
