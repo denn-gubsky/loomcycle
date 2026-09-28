@@ -357,6 +357,53 @@ func TestRunInterruption_ResumeKeepsTheRunsBlock(t *testing.T) {
 	}
 }
 
+// The report must say what the run HAS. It used to echo the stored block, so a
+// run whose block was inert was reported as allowed to ask.
+func TestEffectiveConfig_ReportsTheInterruptionPolicyTheRunHas(t *testing.T) {
+	srv, ts, _, run := parkedAskerRun(t)
+	ctx := context.Background()
+
+	read := func() effectiveValue {
+		t.Helper()
+		code, body := getEffective(t, ts, run.ID)
+		if code != 200 {
+			t.Fatalf("effective-config: %d %s", code, body)
+		}
+		var resp effResp
+		if err := json.Unmarshal([]byte(body), &resp); err != nil {
+			t.Fatalf("decode: %v (%s)", err, body)
+		}
+		return resp.Fields["interruption"]
+	}
+	acl := func(v effectiveValue) config.AgentInterruptionACL {
+		t.Helper()
+		b, _ := json.Marshal(v.Value)
+		var a config.AgentInterruptionACL
+		if err := json.Unmarshal(b, &a); err != nil {
+			t.Fatalf("interruption value %s: %v", b, err)
+		}
+		return a
+	}
+
+	// The definition holds the tool without an explicit flag: enabled, by the
+	// definition — not "resolved, unknown".
+	got := read()
+	if a := acl(got); got.Source != sourceDefinition || !a.Enabled || a.MaxPending != 3 {
+		t.Errorf("unretuned = %+v (%+v), want enabled max_pending 3 from the definition", got, a)
+	}
+
+	// A block asking for MORE than the definition allows reports the narrowed
+	// policy, not the block.
+	wide := runConfigRecord{Interruption: &config.AgentInterruptionACL{Enabled: true, Kinds: []string{"approval", "wait"}, MaxPending: 10}}
+	if err := srv.store.SetRunConfig(ctx, run.ID, wide.marshal()); err != nil {
+		t.Fatal(err)
+	}
+	got = read()
+	if a := acl(got); got.Source != sourceRun || !reflect.DeepEqual(a.Kinds, []string{"approval"}) || a.MaxPending != 3 {
+		t.Errorf("narrowed = %+v (%+v), want kinds [approval] max_pending 3 from the run", got, a)
+	}
+}
+
 // The rule itself, one row per field — the tests above cross the seams, this
 // pins what each field may and may not do.
 func TestInterruptionPolicyForRun_NarrowsAndNeverGrants(t *testing.T) {
