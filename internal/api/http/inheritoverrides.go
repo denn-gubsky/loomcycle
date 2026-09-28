@@ -47,6 +47,10 @@ func (s *Server) inheritOverridesForChild(
 	if !ok {
 		return def, childCfg
 	}
+	// Interruption only ever NARROWS the definition, so there is nothing to
+	// re-validate and no reason to drop it: a run told not to ask a person must
+	// not ask one through a copy of itself.
+	childCfg.Interruption = rec.Interruption
 	ov := runOverrides{Routing: rec.Routing, Resources: rec.Resources, Tuning: rec.Tuning}
 	if ov.Routing.isZero() && ov.Resources.isZero() && ov.Tuning.isZero() {
 		return def, childCfg

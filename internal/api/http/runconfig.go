@@ -77,7 +77,9 @@ type runConfigRecord struct {
 	ReviewTTLSeconds int `json:"review_ttl_seconds,omitempty"`
 
 	// Interruption is the run's own answer to whether the agent may ASK a human
-	// a question, overriding the definition's block.
+	// a question. It NARROWS the definition's policy (interruptionPolicyForRun)
+	// and never grants the tool. Recorded at start so a resume re-narrows from
+	// it, and by a retune, which a parked run adopts at its next operator turn.
 	//
 	// The definition's classification used to be notOverridable, filed under
 	// "reach". That was wrong: an interruption touches no data and no host — it

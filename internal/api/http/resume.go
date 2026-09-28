@@ -494,7 +494,9 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
 	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
 	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithInterruptionPolicy(loopCtx, s.interruptionPolicyForAgent(agentDef))
+	// From the run's record, which a retune may have changed since it started —
+	// an autonomous run that never parked adopts a retune here.
+	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, runCfg.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	if added := runCfg.additions(); !added.Empty() {
 		// What the run added before it paused, restored as it was — a
@@ -578,7 +580,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		MaxSameProviderRetries: s.retryAttemptsForAgent(agentDef, run.UserTier),
 		// RFC DC P3: a RESTORED parked chat is the case this matters most for —
 		// it is the one an operator comes back to and retunes.
-		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted),
+		ReResolveOnOperatorTurn: s.reResolveOnOperatorTurnFn(run.ID, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, liveInterruption),
 		PauseGate:               gate,
 
 		// The RECORD's tool_choice, not resumedToolChoice: the baseline is what

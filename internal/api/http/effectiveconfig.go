@@ -253,6 +253,10 @@ func (s *Server) effectiveFields(ctx context.Context, run store.Run, def, eff co
 
 	for _, goName := range names {
 		wire := wireNameFor(goName)
+		if goName == "Interruption" {
+			out[wire] = s.effectiveInterruption(ctx, run, eff, rec)
+			continue
+		}
 		if read, ok := runFieldReaders[goName]; ok {
 			if v, set := read(rec); set {
 				out[wire] = effectiveValue{Value: v, Source: sourceRun}
@@ -274,6 +278,30 @@ func (s *Server) effectiveFields(ctx context.Context, run store.Run, def, eff co
 		out[wire] = effectiveValue{Value: nil, Source: sourceResolved}
 	}
 	return out
+}
+
+// effectiveInterruption reports the interruption policy the run has, not the
+// block it was given. The two differ: a run's block narrows the definition field
+// by field and is inert on an agent that does not hold the tool, so echoing the
+// stored block reported "enabled" for runs whose every ask was refused.
+//
+// Whether the run holds the tool is decided the way a resume decides it — from
+// the definition's tools — because a run's own `tools` narrowing is not
+// persisted. A retune not yet adopted (the run has not reached an operator turn
+// or a resume since) is reported as what it will adopt there.
+func (s *Server) effectiveInterruption(ctx context.Context, run store.Run, eff config.AgentDef, rec runConfigRecord) effectiveValue {
+	holds := holdsInterruptionTool(filterTools(s.candidateTools(ctx, run.TenantID, eff.Tools), eff.Tools, nil))
+	p := s.interruptionPolicyForRun(eff, rec.Interruption)
+	v := config.AgentInterruptionACL{Enabled: p.Enabled, Kinds: p.Kinds, MaxPending: p.MaxPending}
+	defSet := eff.Interruption.Enabled || len(eff.Interruption.Kinds) > 0 || eff.Interruption.MaxPending != 0
+	switch {
+	case rec.Interruption != nil && holds:
+		return effectiveValue{Value: v, Source: sourceRun}
+	case holds || defSet:
+		return effectiveValue{Value: v, Source: sourceDefinition}
+	default:
+		return effectiveValue{Value: v, Source: sourceDefault}
+	}
 }
 
 // reflectField reads the definition's value by the Go field name the

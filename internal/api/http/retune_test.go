@@ -409,9 +409,9 @@ func TestRetune_PromotingKeepsTheRestOfTheConfiguration(t *testing.T) {
 	}
 }
 
-// An agent whose definition does not enable interruptions can be granted them
-// for one run — the operator watching it go wrong could not previously let it
-// ask a question, because that was frozen into the definition before the run.
+// A retune records the run's own interruption block. It NARROWS the agent's
+// policy and never grants the Interruption tool; whether it reaches the tool is
+// pinned by TestRunInterruption_* (runinterruption_test.go).
 func TestRetune_InterruptionCanBeEnabledForOneRun(t *testing.T) {
 	srv, ts, _, run := parkedRoutedRun(t)
 

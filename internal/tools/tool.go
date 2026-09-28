@@ -1078,13 +1078,58 @@ func WithInterruptionPolicy(ctx context.Context, p InterruptionPolicyValue) cont
 	return context.WithValue(ctx, ctxKeyInterruptionPolicy{}, p)
 }
 
+// InterruptionPolicyHolder is a run's interruption policy that may change
+// while the run is going: a retune of a parked run takes effect at its next
+// operator turn, long after the loop's ctx was built. The ctx cannot be
+// replaced mid-run — it is threaded by value through the loop and into every
+// tool call — so the ctx carries this holder and the server swaps what it
+// holds. Safe for concurrent use: parallel tool calls read while the server
+// writes.
+type InterruptionPolicyHolder struct {
+	p atomic.Pointer[InterruptionPolicyValue]
+}
+
+// NewInterruptionPolicyHolder returns a holder starting at p.
+func NewInterruptionPolicyHolder(p InterruptionPolicyValue) *InterruptionPolicyHolder {
+	h := &InterruptionPolicyHolder{}
+	h.Store(p)
+	return h
+}
+
+// Load returns the current policy.
+func (h *InterruptionPolicyHolder) Load() InterruptionPolicyValue {
+	if p := h.p.Load(); p != nil {
+		return *p
+	}
+	return InterruptionPolicyValue{}
+}
+
+// Store replaces the policy every later Load sees.
+func (h *InterruptionPolicyHolder) Store(p InterruptionPolicyValue) {
+	h.p.Store(&p)
+}
+
+// WithInterruptionPolicyHolder attaches a live policy to ctx. It shares the
+// key WithInterruptionPolicy uses, so whichever was attached last wins — a
+// sub-agent's own fixed policy shadows its parent's holder.
+func WithInterruptionPolicyHolder(ctx context.Context, h *InterruptionPolicyHolder) context.Context {
+	return context.WithValue(ctx, ctxKeyInterruptionPolicy{}, h)
+}
+
 // InterruptionPolicy returns the agent's Interruption policy from
 // ctx. Zero value (Enabled=false) means "not enabled" — the tool
 // surfaces this as a clear refusal so operators see one explicit
 // failure instead of a stack trace.
 func InterruptionPolicy(ctx context.Context) InterruptionPolicyValue {
-	v, _ := ctx.Value(ctxKeyInterruptionPolicy{}).(InterruptionPolicyValue)
-	return v
+	switch v := ctx.Value(ctxKeyInterruptionPolicy{}).(type) {
+	case InterruptionPolicyValue:
+		return v
+	case *InterruptionPolicyHolder:
+		if v != nil {
+			return v.Load()
+		}
+	}
+	return InterruptionPolicyValue{}
 }
 
 // ctxKeyDispatcher is the context key carrying the run's tool
