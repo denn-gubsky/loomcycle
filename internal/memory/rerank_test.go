@@ -84,10 +84,13 @@ func TestParseRanking_RepairsRatherThanTrusts(t *testing.T) {
 		want  []int
 		ok    bool
 	}{
-		{"[2, 2, 7, 1]", []int{1, 0, 2, 3, 4}, true},                            // repeat + unknown dropped
-		{`Here you go: [4, "5"] — done`, []int{3, 4, 0, 1, 2}, true},            // prose around it; a quoted number
-		{"<think>maybe [1] or [5]</think>\n[5, 4]", []int{4, 3, 0, 1, 2}, true}, // reasoning is not the answer
-		{"[1.5, 2]", []int{1, 0, 2, 3, 4}, true},                                // a non-integer is not a number
+		{"[2, 2, 7, 1]", []int{1, 0, 2, 3, 4}, true},                                      // repeat + unknown dropped
+		{`Here you go: [4, "5"] — done`, []int{3, 4, 0, 1, 2}, true},                      // prose around it; a quoted number
+		{"<think>maybe [1] or [5]</think>\n[5, 4]", []int{4, 3, 0, 1, 2}, true},           // reasoning is not the answer
+		{"[1.5, 2]", []int{1, 0, 2, 3, 4}, true},                                          // a non-integer is not a number
+		{"Passages [1] and [4] cover it. Ranking: [4, 2, 1]", []int{3, 1, 0, 2, 4}, true}, // a citation is not the answer
+		{"[2] fits, but so does [3]", []int{2, 0, 1, 3, 4}, true},                         // a tie goes to the later span
+		{"<think>the best is [2", []int{0, 1, 2, 3, 4}, false},                            // reasoning cut off: no answer
 		{"[]", []int{0, 1, 2, 3, 4}, false},
 		{"[1, 2", []int{0, 1, 2, 3, 4}, false},
 		{"", []int{0, 1, 2, 3, 4}, false},
@@ -124,5 +127,27 @@ func TestRerankOptions_DefaultsAreTheMeasuredValues(t *testing.T) {
 	o = RerankOptions{Candidates: 30, MaxChars: 800}
 	if o.EffectiveCandidates() != 30 || o.EffectiveMaxChars() != 800 {
 		t.Errorf("explicit = %d/%d", o.EffectiveCandidates(), o.EffectiveMaxChars())
+	}
+}
+
+// TestSearchQuery_CanReturnDocumentsHonoursThePrefix — a prefix outside the chunk
+// namespace can match no chunk body, so it is not a document search whatever
+// the source selector says, and must not pay for a rerank.
+func TestSearchQuery_CanReturnDocumentsHonoursThePrefix(t *testing.T) {
+	for _, c := range []struct {
+		q    SearchQuery
+		want bool
+	}{
+		{SearchQuery{}, true},
+		{SearchQuery{Prefix: "doc."}, true},
+		{SearchQuery{Prefix: DocumentChunkKeyPrefix}, true},
+		{SearchQuery{Prefix: DocumentChunkKeyPrefix + "abc"}, true},
+		{SearchQuery{Prefix: "notes/"}, false},
+		{SearchQuery{Sources: []Source{SourceFacts, SourceNotes}}, false},
+		{SearchQuery{Prefix: "doc.", Sources: []Source{SourceDocuments}}, true},
+	} {
+		if got := c.q.CanReturnDocuments(); got != c.want {
+			t.Errorf("%+v: CanReturnDocuments = %v, want %v", c.q, got, c.want)
+		}
 	}
 }

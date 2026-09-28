@@ -54,3 +54,14 @@ func TestMergeMemoryRerank_PerField(t *testing.T) {
 		t.Error("the merge aliased its base")
 	}
 }
+
+// TestMemoryRerank_BoundsAreInclusive — the documented ranges [2,50] and
+// [200,20000] accept their own endpoints; an off-by-one would refuse a value the
+// docs promise.
+func TestMemoryRerank_BoundsAreInclusive(t *testing.T) {
+	for _, m := range []MemoryRerank{{Candidates: 2}, {Candidates: 50}, {MaxChars: 200}, {MaxChars: 20000}} {
+		if err := m.Validate(); err != nil {
+			t.Errorf("%+v: %v", m, err)
+		}
+	}
+}

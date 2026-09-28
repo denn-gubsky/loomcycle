@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -209,5 +210,53 @@ func TestInProcessRerank_RecallCarriesItWhenDocumentsAreAsked(t *testing.T) {
 	}
 	if res.Rerank == nil || res.Rerank.Reason != memory.RerankNotDocumentSearch {
 		t.Errorf("default recall report = %+v, want %q", res.Rerank, memory.RerankNotDocumentSearch)
+	}
+}
+
+// TestInProcessRerank_ASkippedRerankLeavesTheSearchAsItWas — requested but not
+// served (no reranker, or a search that cannot return documents), the rerank is
+// reported and the search is otherwise the one it would have been: same order,
+// same rank_score scale. Forcing the deep fused pool here changed rank_score from
+// cosine to RRF values on a store without full-text, for nothing.
+func TestInProcessRerank_ASkippedRerankLeavesTheSearchAsItWas(t *testing.T) {
+	b, cleanup := rerankFixture(t)
+	defer cleanup()
+	plain := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 3})
+
+	skipped := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 3, Rerank: rerankOn}) // no reranker set
+	if skipped.Rerank == nil || skipped.Rerank.Reason != memory.RerankNotConfigured {
+		t.Fatalf("report = %+v", skipped.Rerank)
+	}
+	if keys(skipped) != keys(plain) {
+		t.Errorf("order %s, want %s", keys(skipped), keys(plain))
+	}
+	for i := range plain.RankScores {
+		if skipped.RankScores[i] != plain.RankScores[i] {
+			t.Errorf("rank_score[%d] = %v, want %v — a skipped rerank changed the scoring", i, skipped.RankScores[i], plain.RankScores[i])
+		}
+	}
+}
+
+// TestInProcessRerank_ThePoolHoldsCandidatesWhateverTopK — at top_k 2 the
+// over-fetch alone is 8 rows; the model must still be shown `candidates` (20).
+func TestInProcessRerank_ThePoolHoldsCandidatesWhateverTopK(t *testing.T) {
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	for i := 0; i < 30; i++ {
+		key := fmt.Sprintf("doc.chunk:c%02d", i)
+		if _, err := b.Set(ctx, store.MemoryScopeUser, "u1", key, json.RawMessage(`{"body":"go"}`),
+			memory.SetOptions{Embed: true, EmbedText: "Guide — Section\ngo"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &scriptedReranker{reply: "[20]"}
+	b.SetReranker(r)
+	res := search(t, b, memory.SearchQuery{QueryText: "go", TopK: 2, Rerank: rerankOn})
+	if res.Rerank == nil || res.Rerank.Candidates != 20 {
+		t.Fatalf("the model was shown %+v candidates, want 20 at top_k 2", res.Rerank)
+	}
+	if !strings.Contains(r.prompt, "[20] ") || strings.Contains(r.prompt, "[21] ") {
+		t.Error("the prompt does not hold exactly 20 candidates")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,4 +117,88 @@ func TestBuild_NoBlockMeansNoReranker(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `"nope" is not declared`) {
 		t.Errorf("undeclared provider: err = %v", err)
 	}
+}
+
+// scriptedStream plays events and then, if hang is set, waits for the call's
+// context to end and closes WITHOUT an error or done event — what a driver's
+// ctx-aware send does when the timeout fires mid-reply.
+type scriptedStream struct {
+	stubProvider
+	events []providers.Event
+	hang   bool
+	calls  atomic.Int64
+}
+
+func (s *scriptedStream) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	s.calls.Add(1)
+	ch := make(chan providers.Event, len(s.events))
+	go func() {
+		defer close(ch)
+		for _, ev := range s.events {
+			ch <- ev
+		}
+		if s.hang {
+			<-ctx.Done()
+		}
+	}()
+	return ch, nil
+}
+
+// TestModel_AReplyCutOffByTheTimeoutIsATimeout — the text so far is not the
+// answer: a stream the timeout closes with no done event must report timeout,
+// not hand "[4" (or an early "passage [4]") to the parser as a ranking.
+func TestModel_AReplyCutOffByTheTimeoutIsATimeout(t *testing.T) {
+	p := &scriptedStream{events: []providers.Event{{Type: providers.EventText, Text: "Passage [4] looks relevant, ranking: [4, 1"}}, hang: true}
+	m := New(p, config.RerankerConfig{Provider: "p", Model: "m", TimeoutMs: 30})
+	reply, err := m.Complete(context.Background(), "prompt")
+	if !errors.Is(err, context.DeadlineExceeded) || reply != "" {
+		t.Fatalf("Complete = %q, %v; want no reply and DeadlineExceeded", reply, err)
+	}
+	if _, rep := memory.RerankTexts(context.Background(), m, "q", []string{"a", "b", "c", "d"}, 100); rep.Applied || rep.Reason != memory.RerankTimeout {
+		t.Errorf("report = %+v, want a timeout, never an applied partial ranking", rep)
+	}
+}
+
+// TestModel_AStreamThatEndsUnfinishedFails — no done event and no deadline is
+// still an unfinished reply.
+func TestModel_AStreamThatEndsUnfinishedFails(t *testing.T) {
+	m := New(&scriptedStream{events: []providers.Event{{Type: providers.EventText, Text: "[2, 1]"}}},
+		config.RerankerConfig{Provider: "p", Model: "m"})
+	if _, err := m.Complete(context.Background(), "prompt"); err == nil {
+		t.Error("a stream that closed without completing must not count as a reply")
+	}
+}
+
+// TestModel_AParentCancellationIsNotATimeout — the caller going away is a failed
+// call; only the reranker's own deadline is reported as a timeout.
+func TestModel_AParentCancellationIsNotATimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := New(&scriptedStream{hang: true}, config.RerankerConfig{Provider: "p", Model: "m", TimeoutMs: 60000})
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	_, rep := memory.RerankTexts(ctx, m, "q", []string{"a", "b"}, 100)
+	if rep.Reason != memory.RerankCallFailed {
+		t.Errorf("reason = %q, want %q for a cancelled caller", rep.Reason, memory.RerankCallFailed)
+	}
+}
+
+// TestModel_ConcurrencyIsBoundedAndAWaitIsATimeout — with max_concurrent 1 a
+// second rerank waits for the first; one that cannot get a slot before its own
+// timeout never reaches the provider and reports a timeout.
+func TestModel_ConcurrencyIsBoundedAndAWaitIsATimeout(t *testing.T) {
+	p := &scriptedStream{hang: true}
+	m := New(p, config.RerankerConfig{Provider: "p", Model: "m", TimeoutMs: 300, MaxConcurrent: 1})
+	first := make(chan struct{})
+	go func() { _, _ = m.Complete(context.Background(), "hold the slot"); close(first) }()
+	for p.calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := m.Complete(ctx, "wait"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a rerank waiting for a slot: err = %v, want DeadlineExceeded", err)
+	}
+	if n := p.calls.Load(); n != 1 {
+		t.Errorf("provider saw %d calls, want 1 — the waiting rerank must not reach it", n)
+	}
+	<-first
 }

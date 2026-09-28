@@ -591,6 +591,12 @@ type RerankerConfig struct {
 	// and Ollama silently truncates a prompt to its 4,096-token default when no
 	// window is sent — the rerank would then rank the candidates it could see.
 	ContextTokens int `yaml:"context_tokens"`
+	// MaxConcurrent bounds reranks in flight across the process. 0 = 4. A rerank
+	// arrives per search, so a fan-out of agents searching in parallel would
+	// otherwise send every prompt at once; one that waits past timeout_ms keeps
+	// search's own order. Lower it for a local model host that serves one or two
+	// requests at a time.
+	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
 // Configured reports whether a reranker is declared at all.
@@ -7759,6 +7765,9 @@ func validate(c *Config) error {
 		}
 		if rr.ContextTokens < 0 {
 			return fmt.Errorf("memory.reranker.context_tokens must be >= 0")
+		}
+		if rr.MaxConcurrent < 0 {
+			return fmt.Errorf("memory.reranker.max_concurrent must be >= 0")
 		}
 		switch rr.Effort {
 		case "", "low", "medium", "high":

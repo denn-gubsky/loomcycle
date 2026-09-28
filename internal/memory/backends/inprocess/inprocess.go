@@ -228,9 +228,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		return memory.SearchResult{}, ferr
 	}
 
-	// A requested rerank needs the deep pool too: the cheap path fetches top_k+1
-	// rows, and a rerank shown only those can promote nothing from below top_k.
-	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled || q.Rerank.Enabled
+	// A rerank that will run needs the deep pool too: the cheap path fetches
+	// top_k+1 rows, and a rerank shown only those can promote nothing from below
+	// top_k. Only one that WILL run — a requested rerank this server cannot serve,
+	// or one on a search that cannot return documents, is reported and skipped, and
+	// must leave the search exactly as it was (the same pool, the same rank_score
+	// scale).
+	willRerank := q.Rerank.Enabled && b.reranker != nil && q.CanReturnDocuments()
+	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled || willRerank
 
 	var pool []store.MemorySearchEntry
 	if hybrid {
@@ -242,7 +247,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// The rerank shows the model its first `candidates` rows, so the pool must
 		// hold that many whatever top_k is — at top_k 5 the over-fetch alone is 20,
 		// at top_k 2 it would be 8.
-		if q.Rerank.Enabled && q.Rerank.EffectiveCandidates() > fetch {
+		if willRerank && q.Rerank.EffectiveCandidates() > fetch {
 			fetch = q.Rerank.EffectiveCandidates()
 		}
 		if fetch > 51 {
