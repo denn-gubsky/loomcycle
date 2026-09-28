@@ -8,6 +8,74 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.100.0
+
+*Documents can carry derived search units, short texts about each chunk that a question can match; they are written by an operator pass and never returned in place of the chunk. A stateful run keeps what Context returned across its steps. Also: a run keeps the hooks it started with across a pause, a cut document id or a malformed path is refused instead of creating a second document, and steering works from any replica.*
+
+Nine PRs, #1429 to #1437:
+- #1432 and #1433 are derived search units (RFC DM C1, C2);
+- #1434, #1436 and #1437 come from the 1.99.0 tool-usage eval;
+- #1435 closes a hooks gap RFC DK recorded;
+- #1429, #1430 and #1431 are fixes.
+
+### Derived search units (#1432, #1433, RFC DM C1–C2)
+
+For a document an operator opts in, a model writes short texts **about** each chunk: a description, atomic claims, and questions the chunk answers. A question can then match a unit's wording when it does not match the chunk's own.
+
+- **A unit votes for its chunk and never takes a result slot.** The measured lesson behind the design: units stored as extra chunks crowded the reader's top five and cost answers.
+  - A search collapses unit hits onto their chunks: the chunk takes its best rank, appears once, and carries `matched_unit: {kind, text}`.
+  - A unit whose chunk is gone is dropped.
+  - The rerank ranks the resolved chunks.
+- **Which documents:**
+  - a document's own `index_units` (on its root chunk) wins;
+  - otherwise, a document named under a Path subtree the operator marks in `memory.unit_generator.subtrees`;
+  - otherwise it is never touched.
+  - The memory trees (`/facts`, `/memory`, entity-bearing documents) are refused whatever is set, and reported in the pass's result.
+- **Generation is an explicit operator pass, `POST /v1/_document/derive_units`:**
+  - `dry_run` is **true** by default;
+  - `limit` counts model calls per request (default 25), and `after` is a resume cursor;
+  - it needs `memory.unit_generator`, shaped like the embedder, with no default model.
+  - Staleness is by the hash of the body a unit was written from, so a pass over an unchanged scope makes no model call, and editing one body rewrites exactly that chunk's units.
+- **Lifecycle:** units go with their chunk (delete, prune, the dead-link sweeper, erasure), are re-indexed with a rename or move, and count toward no quota.
+- **Guard:** the `doc.unit:` key namespace is server-only; Memory writes refuse it.
+- **Per agent:** `memory_units: false` ignores units.
+- `POST /v1/_memory/search` and `@loomcycle/client`'s `MemorySearchEntry` carry `matched_unit`.
+
+### A stateful run keeps what Context returned (#1437)
+
+A stateful run's model reads only its latest observation, so a help article it read two steps ago was gone. In the 1.99.0 eval the stateful models re-read the same articles again and again: ornith read two Document articles 3 times each in one run, and deepseek read `History/recap` 4 times in another.
+
+Every successful Context result is now kept and shown on each later step, in a "what you already read" section, capped at 16,000 characters with the oldest dropped first. A help topic is kept **once** however it was asked for (`Memory/set`, `Memory.set`, an alias, another key order): its identity is the topic Context resolved.
+
+### A run keeps the hooks it started with across a pause (#1435)
+
+A run resumed after a pause used to re-resolve its hooks from the current definitions, so a HookDef promoted, created or edited while it was paused took effect mid-run.
+
+- At start, a run now records `pinned_hooks` in its `run_config`: each HookDef lookup as `tenant/name@version → def_id` (a lookup that found nothing is pinned as `""`), and a fingerprint of the agent's own hooks.
+- These are identities, not content, so no webhook URL or header lands in the run's spec.
+- On resume the pins answer every lookup. The run **stops with an error** if its agent's hooks changed while it was paused, or a pinned version was deleted.
+- A run recorded before this release resolves its hooks as before.
+
+### Fixes
+
+- **A cut document or chunk id is refused as cut (#1436).** Models copied a 32-character id and cut it short (`6fbd5245`, `36d88349ac1730a178...`, `abc26269b??`). They got "not found in this scope" and created a second document.
+  - A bare hex run of 8–31 characters, or a hex prefix followed by `...`, `…` or `?`, is now refused before any lookup: "is cut short — a document or chunk id is 32 hex characters".
+  - The check reads the characters only, so it says nothing about whether an id exists.
+- **A malformed document path is refused before anything is written (#1434).** `create_document` used to create the document, fail to name it, and answer success with a `path_warning`, leaving it outside the Path tree. Two models then created a second document. The refusal suggests a corrected path (`/documents/zz-eval-Trip-plan`); `import_md` and `import_canvas` write nothing on a bad path either.
+- **Model aliases work in `memory.embedder` and `memory.reranker` (#1429).** An alias was sent to Ollama as a model name, so every embedding and every Memory or Document search failed. A `model_pattern` alias there is refused at load.
+- **Steering reaches a run from any replica (#1430).** `POST /v1/runs/{id}/input` (and its gRPC and MCP twins), retune and the run config reads answered 404 unless the call landed on the replica that owns the run. They now route to the owner.
+- **A fan-out child that finishes after a snapshot passes its parent's `subagent_stop` hooks (#1431).** Pausing at the right moment let an awaited child's result reach the parent unchecked.
+
+### Changes to note
+
+- **`create_document` with a malformed `path` now fails**, where it used to create the document with a `path_warning`.
+- **A value that looks like a cut id is refused** in the Document tool's id fields.
+- **A resumed run stops if its hooks changed while it was paused**, where it used to continue under the new ones.
+- **A stateful run's prompt is longer** once it has read help: at most 16,000 characters of kept Context results.
+- **`memory.embedder` / `memory.reranker` with a `model_pattern` alias now fails at load.**
+
+**Adapters:** `@loomcycle/client` 1.100.0 adds `memory_units` on the AgentDef overlay, `matched_unit` on a memory search entry, and `pinned_hooks` on `RunSpec`. The Python adapter's version is 1.100.0.
+
 ## What's in v1.99.0
 
 *Channels can carry hooks that decide every message before a reader sees it, and a hold can ask a person. Document search finds chunks by their document and section, by their words as well as their meaning, and can rerank. Also: global channels are split by tenant, a DeepSeek thinking model runs in stateful mode, and a malformed call carries the help its run skipped.*
