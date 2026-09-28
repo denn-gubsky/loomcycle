@@ -368,6 +368,12 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	// An isolated member sees only its OWN runs: another user id is an empty
+	// list, the same answer HTTP GET /v1/users/{user_id}/agents gives, so the
+	// listing is no cross-user enumeration.
+	if filter.UserID != "" && s.isolatedCrossUser(ctx, filter.UserID) {
+		return []connector.Run{}, nil
+	}
 	// User ids are only unique within a tenant, so the tenant goes into the
 	// query: a tenant session asking about a user id that also exists in
 	// another tenant sees only its own runs, and the other tenant's rows
