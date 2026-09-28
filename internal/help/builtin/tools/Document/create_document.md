@@ -42,13 +42,17 @@ There is no `body`: a new root body is always empty. Write text with
 
 ## Returns
 
-`{document_id, root_chunk_id, title, path}`. If naming failed the document
-still exists and you get `path_warning` instead of `path`; fix it with
-`set_path`.
+`{document_id, root_chunk_id, title, path}`. If the name could not be stored
+the document still exists and you get `path_warning` instead of `path`; fix
+it with `set_path`.
 
 ## Errors
 
 - `create_document: missing required field: title`.
+- `create_document: invalid path segment "zz-eval Trip plan" (allowed:
+  letters, digits, . _ -) … Nothing was created.` — a path segment has a
+  space or another character a path cannot hold. Use `-` for spaces
+  (`/documents/zz-eval-Trip-plan`), or omit `path` for `/documents/<title>`.
 - `chunk <id> already holds the natural key "..."` — that subject already
   exists in this scope. Use the existing one (`list_facts`, `get_chunk`)
   instead of creating a second.
