@@ -1603,6 +1603,19 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if in.Title == "" {
 		return errValidation("create_document: missing required field: title", "Pass `title`, the document's name."), nil
 	}
+	// A malformed `path` is refused BEFORE the document exists. It used to be
+	// checked only when the dirent was registered, after the write: the call
+	// succeeded with a path_warning, the document landed outside the Path tree,
+	// and a model that read the success created a second one. Measured: two
+	// local models passed the title as a segment ("/documents/zz-eval Trip plan")
+	// and each left an orphan behind.
+	if in.Path != "" {
+		if _, perr := normalizePath(in.Path); perr != nil {
+			return errValidation("create_document: "+perr.Error()+". Nothing was created.",
+				fmt.Sprintf("Use a path of letters, digits and . _ - segments, such as %q, or omit `path` for /documents/<title>.",
+					suggestDocPath(in.Path))), nil
+		}
+	}
 	now := time.Now().UnixNano()
 	docID := newDocID()
 	// THE ONTOLOGY GATE APPLIES HERE TOO, now that a root can be an entity. It used
@@ -1708,6 +1721,20 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		resp["path"] = p
 	}
 	return jsonResult(resp)
+}
+
+// suggestDocPath is a valid path close to one that failed validation: each
+// segment slugified the way a default title segment is, so
+// "/documents/zz-eval Trip plan" becomes "/documents/zz-eval-Trip-plan". A
+// segment that slugs to nothing is dropped.
+func suggestDocPath(raw string) string {
+	var segs []string
+	for _, s := range strings.Split(raw, "/") {
+		if seg := docDefaultPathSegment(s, ""); seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	return "/" + strings.Join(segs, "/")
 }
 
 // docDefaultPathSegment slugifies a document title into a single Path-tree name
@@ -2193,6 +2220,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// invisible dead k/v, never reachable once its chunk row is gone).
 	for _, id := range ids {
 		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(id))
+		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, id)
 	}
 	n := len(ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
@@ -2862,6 +2890,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
 		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(cid))
+		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, cid)
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "delete_chunk", in.ID)
 	return jsonResult(map[string]any{"deleted": true, "cascade_deleted_descendants": len(ids) - 1})
@@ -3385,6 +3414,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		Prefix:    chunkBodyKeyPrefix,
 		TopK:      topK,
 		Rerank:    rerank,
+		NoUnits:   noUnits(ctx),
 	}, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
 		return errFrom("search: "+err.Error(), err), nil
@@ -3392,6 +3422,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	ids := make([]string, 0, len(res.Entries))
 	scores := make(map[string]float64, len(res.Entries))
 	rankScores := make(map[string]float64, len(res.Entries))
+	matched := make(map[string]*memrank.MatchedUnit)
 	for i, e := range res.Entries {
 		cid := ChunkIDFromBodyKey(e.Key)
 		if cid == "" {
@@ -3401,6 +3432,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		scores[cid] = e.Score
 		if i < len(res.RankScores) {
 			rankScores[cid] = res.RankScores[i]
+		}
+		if i < len(res.MatchedUnits) && res.MatchedUnits[i] != nil {
+			matched[cid] = res.MatchedUnits[i]
 		}
 	}
 	meta, err := d.chunkMetaByIDs(ctx, key, ids)
@@ -3423,6 +3457,10 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 			if md.documentID != "" {
 				m["document_id"] = md.documentID
 			}
+		}
+		// Found through one of its derived search units: which one, and so why.
+		if mu, ok := matched[cid]; ok {
+			m["matched_unit"] = mu
 		}
 		out = append(out, m)
 	}

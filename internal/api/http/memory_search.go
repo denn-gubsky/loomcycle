@@ -78,6 +78,10 @@ type memorySearchResultEntry struct {
 	// remains the address; these annotate it.
 	Document string `json:"document,omitempty"`
 	Title    string `json:"title,omitempty"`
+	// MatchedUnit is the Document derived search unit that found this chunk, when
+	// one did (the chunk appears once however many of its units matched) — the same
+	// field the in-run Memory and Document searches carry.
+	MatchedUnit *memrank.MatchedUnit `json:"matched_unit,omitempty"`
 }
 
 type memorySearchResponse struct {
@@ -223,6 +227,9 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 			if lb, ok := labels[entry.ChunkID]; ok {
 				entry.Document, entry.Title = lb.Document, lb.Title
 			}
+		}
+		if i < len(res.MatchedUnits) {
+			entry.MatchedUnit = res.MatchedUnits[i]
 		}
 		entries = append(entries, entry)
 	}

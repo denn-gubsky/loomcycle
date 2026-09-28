@@ -1331,6 +1331,11 @@ export interface RunSpec {
   /** Hooks the run added to its agent's own (its request's, and a
    *  sub-agent's inherited ones). */
   hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
+  /** What the run's hooks resolved to when it started, so a resumed run
+   *  fires those and no others: a fingerprint of the agent's own hooks and
+   *  the HookDef version each reference found. Present only on a run that
+   *  carries hooks. */
+  pinned_hooks?: { agent: string; defs?: Record<string, string> };
 }
 
 /** A finished run's answer (RFC DI). */
@@ -1979,6 +1984,10 @@ export interface MemorySearchEntry {
   document?: string;
   /** The chunk's own heading. Same conditions as {@link document}. */
   title?: string;
+  /** Present when the chunk was found through one of its Document derived search
+   *  units — a description, claim or question generated for it — rather than its
+   *  own text. The chunk appears once however many of its units matched. */
+  matched_unit?: { kind: "description" | "claim" | "question"; text: string };
 }
 
 export interface MemorySearchResponse {
@@ -3493,6 +3502,12 @@ export interface AgentDefOverlay {
    *  reports `reranked` (and `rerank_reason` when false); a failed or unavailable
    *  rerank keeps the search's own order. */
   memory_rerank?: MemoryRerank;
+  /** `false` makes this agent's searches ignore Document derived search units — the
+   *  short descriptions, claims and questions an operator may generate for a
+   *  document so a question can match them. Unset uses them wherever they exist
+   *  (only where an operator generated them). A chunk found through a unit carries
+   *  `matched_unit: {kind, text}`. */
+  memory_units?: boolean;
   memory_quota_bytes?: number;
   memory_backend?: string;
   retry_attempts?: number;

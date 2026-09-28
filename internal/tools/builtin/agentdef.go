@@ -997,6 +997,9 @@ type mergedDef struct {
 	// FIELD (a fork that changes only candidates keeps the parent's switch).
 	// Content-identifying (hashed). Kept in sync with lookup.SubstrateAgentDef.
 	MemoryRerank *config.MemoryRerank `json:"memory_rerank,omitempty"`
+	// MemoryUnits: false ignores Document derived search units. An overlay that sets
+	// it wins; one that omits it keeps the parent's. Content-identifying.
+	MemoryUnits *bool `json:"memory_units,omitempty"`
 	// ToolChoice (RFC DI): whether and which tool the model must call.
 	// Content-identifying; an overlay REPLACES it whole (its fields constrain
 	// each other, so a per-field merge could mix two layers' intent).
@@ -1259,6 +1262,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if !ov.MemoryRerank.IsZero() {
 		d.MemoryRerank = config.MergeMemoryRerank(d.MemoryRerank, ov.MemoryRerank)
 	}
+	if ov.MemoryUnits != nil {
+		v := *ov.MemoryUnits
+		d.MemoryUnits = &v
+	}
 	if ov.RecallIncludeTurns {
 		d.RecallIncludeTurns = true
 	}
@@ -1439,6 +1446,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		RecallIncludeTurns:    s.RecallIncludeTurns,
 		RecallAttachTraces:    s.RecallAttachTraces,
 		MemoryRerank:          config.MergeMemoryRerank(nil, s.MemoryRerank),
+		MemoryUnits:           boolPtrCopy(s.MemoryUnits),
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
@@ -1592,6 +1600,8 @@ func signFromMergedDef(name string, def mergedDef) string {
 			Stop:             s.Stop,
 		}
 	}
+	// MemoryUnits is content-identifying for the same reason.
+	c.MemoryUnits = boolPtrCopy(def.MemoryUnits)
 	// MemoryRerank is content-identifying: it changes what every search returns.
 	if mr := def.MemoryRerank; !mr.IsZero() {
 		c.MemoryRerank = &agents.MemoryRerank{Enabled: mr.Enabled, Candidates: mr.Candidates, MaxChars: mr.MaxChars}
@@ -1738,4 +1748,13 @@ func sameHooks(def mergedDef, parent json.RawMessage) bool {
 		return ""
 	}
 	return canon(def.Hooks) == canon(p.Hooks) && canon(def.ToolHooks) == canon(p.ToolHooks)
+}
+
+// boolPtrCopy copies an optional bool so a merged def never aliases its source.
+func boolPtrCopy(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
 }

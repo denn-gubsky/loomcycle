@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
@@ -487,6 +488,9 @@ type Server struct {
 	// SetEmbedder from main.go after the embedder is constructed.
 	// Same wiring shape as the other late-bound deps above.
 	embedder providers.Embedder
+	// unitGenerator writes Document derived search units for
+	// POST /v1/_document/derive_units (memory.unit_generator). nil = dry runs only.
+	unitGenerator memrank.UnitGenerator
 
 	// Build identifiers surfaced via /healthz so the Web UI topbar
 	// can display the running binary's version instead of a stale
@@ -2962,6 +2966,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 		RecallAttachTraces: agentDef.RecallAttachTraces,
 		Rerank:             agentDef.MemoryRerank,
+		Units:              agentDef.MemoryUnits,
 	})
 	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
 	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
@@ -3604,6 +3609,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_memory/home_facts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryHomeFacts))))
 	mux.Handle("POST /v1/_document/describe_images", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDescribeImages))))
 	mux.Handle("POST /v1/_document/reindex", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentReindex))))
+	mux.Handle("POST /v1/_document/derive_units", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeriveUnits))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see
 	// internal/snapshot/snapshot.go for the wire shape.
@@ -4805,6 +4811,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 		RecallAttachTraces: agentDef.RecallAttachTraces,
 		Rerank:             agentDef.MemoryRerank,
+		Units:              agentDef.MemoryUnits,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -5560,6 +5567,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 		RecallAttachTraces: agentDef.RecallAttachTraces,
 		Rerank:             agentDef.MemoryRerank,
+		Units:              agentDef.MemoryUnits,
 	})
 	// RFC BL P1: run's resolved core blocks (Memory-tool enforcement + inherit).
 	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
@@ -7261,6 +7269,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		RecallIncludeTurns: def.RecallIncludeTurns,
 		RecallAttachTraces: def.RecallAttachTraces,
 		Rerank:             def.MemoryRerank,
+		Units:              def.MemoryUnits,
 	})
 	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
 	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory

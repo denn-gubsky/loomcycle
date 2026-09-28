@@ -297,6 +297,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		// takes the /v1/_* operator-admin posture, like /v1/_document/describe_images.
 		// Opening it to tenant operators, as reembed/backfill are, is a deliberate change.
 		{"POST", "/v1/_document/reindex", auth.ScopeAdmin},
+		// Generation spends a model call per chunk on the operator's generator —
+		// operator-admin like the re-index and describe_images.
+		{"POST", "/v1/_document/derive_units", auth.ScopeAdmin},
 		// repair-tenant is a cross-tenant bulk rewrite — STAYS operator-admin even
 		// though it matches the /v1/_memory/ prefix (it is excluded first).
 		{"POST", "/v1/_memory/repair-tenant", auth.ScopeAdmin},

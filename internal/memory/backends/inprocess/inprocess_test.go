@@ -192,6 +192,9 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 		if filter.ExcludeKeyPrefix != "" && strings.HasPrefix(r.key, filter.ExcludeKeyPrefix) {
 			continue
 		}
+		if filter.ExcludeUnitPrefix != "" && strings.HasPrefix(r.key, filter.ExcludeUnitPrefix) {
+			continue // derived search units, as the real stores drop them
+		}
 		// HONOUR THE OBSERVED WINDOW TOO. A double that ignores the filter makes any
 		// assertion about it vacuous — which is exactly how a facts-only recall default
 		// survived here unnoticed. NULL fails every SQL comparison, so a bound alone

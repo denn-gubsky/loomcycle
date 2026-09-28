@@ -158,6 +158,9 @@ type RecallQuery struct {
 	// Rerank is the agent's opt-in listwise rerank, as on SearchQuery. It runs only
 	// when the recall can return documents.
 	Rerank RerankOptions
+
+	// NoUnits ignores Document derived search units, as on SearchQuery.
+	NoUnits bool
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned
@@ -182,6 +185,9 @@ type RecallFact struct {
 	Kind store.MemoryRowClass `json:"kind,omitempty"`
 
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// MatchedUnit is the derived search unit that found this chunk, when one did.
+	MatchedUnit *MatchedUnit `json:"matched_unit,omitempty"`
 }
 
 // RecallResult is the ranked output of Recall, trimmed to the query's TopK by

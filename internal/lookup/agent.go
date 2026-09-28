@@ -198,6 +198,8 @@ type SubstrateAgentDef struct {
 	// MemoryRerank: the agent's opt-in to the listwise search rerank (mirrors
 	// config.AgentDef.MemoryRerank). Kept in sync with builtin.mergedDef.
 	MemoryRerank *config.MemoryRerank `json:"memory_rerank,omitempty"`
+	// MemoryUnits mirrors config.AgentDef.MemoryUnits. Kept in sync with builtin.mergedDef.
+	MemoryUnits *bool `json:"memory_units,omitempty"`
 	// ToolChoice (RFC DI): mirrors config.ToolChoice / mergedDef.
 	ToolChoice *config.ToolChoice `json:"tool_choice,omitempty"`
 	// OutputFormat (RFC DI): mirrors config.OutputFormat / mergedDef.
@@ -358,6 +360,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		RecallIncludeTurns:     def.RecallIncludeTurns,
 		RecallAttachTraces:     def.RecallAttachTraces,
 		MemoryRerank:           config.MergeMemoryRerank(nil, def.MemoryRerank),
+		MemoryUnits:            copyBoolPtr(def.MemoryUnits),
 		MemoryIndexMaxBytes:    def.MemoryIndexMaxBytes,
 		MemoryRoots:            def.MemoryRoots,
 		RetryAttempts:          def.RetryAttempts,
@@ -419,6 +422,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		RecallIncludeTurns:    s.RecallIncludeTurns,
 		RecallAttachTraces:    s.RecallAttachTraces,
 		MemoryRerank:          config.MergeMemoryRerank(nil, s.MemoryRerank),
+		MemoryUnits:           copyBoolPtr(s.MemoryUnits),
 		MemoryIndexMaxBytes:   s.MemoryIndexMaxBytes,
 		MemoryRoots:           s.MemoryRoots,
 		RetryAttempts:         s.RetryAttempts,
@@ -471,4 +475,13 @@ func NormalizeAgentDef(def *config.AgentDef) {
 	//    resolve time, rather than written into the stored definition: the
 	//    stored tools list is the fork ceiling and is content-identifying.
 	config.AddContextToolDefault(def)
+}
+
+// copyBoolPtr copies an optional bool so a converted def never aliases its source.
+func copyBoolPtr(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
 }

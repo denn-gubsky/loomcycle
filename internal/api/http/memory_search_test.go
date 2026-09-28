@@ -348,3 +348,34 @@ func TestMemorySearch_WithoutSqlMemoryTheHitKeepsItsID(t *testing.T) {
 		t.Errorf("labels must be ABSENT, not empty strings on the wire: document=%q title=%q", e.Document, e.Title)
 	}
 }
+
+// TestMemorySearch_AUnitResolvesToItsChunkWithTheUnit — the operator search
+// carries matched_unit like the in-run searches do: a chunk found only through one
+// of its derived search units comes back as the CHUNK (never the unit row), once,
+// saying which unit found it.
+func TestMemorySearch_AUnitResolvesToItsChunkWithTheUnit(t *testing.T) {
+	s, vs := memorySearchServer(t)
+	// The body exists but has no embedding, so only its unit can find it.
+	if err := vs.MemorySet(context.Background(), "A", store.MemoryScopeUser, "alice", "doc.chunk:c9",
+		[]byte(`{"body":"Up to five days carry over."}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	seedSearchRow(t, vs, "A", "alice", "doc.unit:c9:question:0", `{"chunk_id":"c9","kind":"question","text":"What happens to unused vacation?"}`)
+
+	rec := postMemorySearch(s, "A", `{"query":"unused vacation","scope":"user","scope_id":"alice"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp memorySearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 1 {
+		t.Fatalf("entries = %+v, want the one chunk", resp.Entries)
+	}
+	e := resp.Entries[0]
+	if e.Key != "doc.chunk:c9" || e.ChunkID != "c9" || e.MatchedUnit == nil ||
+		e.MatchedUnit.Kind != "question" || e.MatchedUnit.Text != "What happens to unused vacation?" {
+		t.Errorf("entry = %+v (matched %+v)", e, e.MatchedUnit)
+	}
+}

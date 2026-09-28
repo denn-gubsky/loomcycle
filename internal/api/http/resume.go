@@ -442,6 +442,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		RecallIncludeTurns: agentDef.RecallIncludeTurns,
 		RecallAttachTraces: agentDef.RecallAttachTraces,
 		Rerank:             agentDef.MemoryRerank,
+		Units:              agentDef.MemoryUnits,
 	})
 	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
 	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
@@ -500,7 +501,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		// checked at its start, so carried like an inheritance.
 		loopCtx = hooks.WithAdditions(loopCtx, *runCfg.Hooks)
 	}
-	loopCtx = s.withRunHooks(loopCtx, run.ID, run.Agent, agentDef, hooks.Additions{})
+	loopCtx = s.withResumedRunHooks(loopCtx, run, agentDef, runCfg.PinnedHooks)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(run.ID)

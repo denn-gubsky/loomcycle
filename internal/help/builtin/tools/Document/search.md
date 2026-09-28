@@ -51,6 +51,12 @@ when your document searches are reranked by a model, the response carries
 `reranked`, and `rerank_reason` when it is false (see `Memory` `search`). A
 false is never an error — the order is then the search's own.
 
+A hit may carry `matched_unit: {kind, text}`: the chunk was found through a
+short description, claim or question generated for its document (a "derived
+search unit") rather than by its own words, and the unit is why it matched. The
+chunk appears once however many of its units matched; the units themselves are
+never results, and read the chunk for the text.
+
 A chunk with an empty body is never found. An image chunk is found by its
 caption (and its description, once one exists).
 

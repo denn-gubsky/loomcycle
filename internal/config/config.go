@@ -563,6 +563,11 @@ type MemoryConfig struct {
 	// agent that enables the rerank gets `reranked: false` with the reason — never
 	// an error, because a rerank only reorders what search already found.
 	Reranker RerankerConfig `yaml:"reranker"`
+
+	// UnitGenerator is the model that writes Document derived search units, and
+	// the Path subtrees marked for them (see UnitGeneratorConfig). Unset, no units
+	// are ever generated.
+	UnitGenerator UnitGeneratorConfig `yaml:"unit_generator"`
 }
 
 // RerankerConfig is the memory.reranker block. The rerank is one listwise call:
@@ -1454,6 +1459,12 @@ type AgentDef struct {
 	// no tool parameter and no per-run override. Content-identifying — it changes
 	// what every search the agent makes returns.
 	MemoryRerank *MemoryRerank `yaml:"memory_rerank,omitempty"`
+
+	// MemoryUnits: false makes this agent's searches ignore Document derived search
+	// units. nil (unset) uses them wherever an operator generated them — which is
+	// only where an operator chose to. Content-identifying: it changes what every
+	// document search returns. Operator-set only, like memory_rerank.
+	MemoryUnits *bool `yaml:"memory_units,omitempty"`
 
 	// Hooks are the agent's own hooks: the run events (agent_start, agent_stop,
 	// …) and tool events that apply to every tool. Each entry is a HookDef name
@@ -7807,6 +7818,9 @@ func validate(c *Config) error {
 				return err
 			}
 		}
+	}
+	if err := c.Memory.UnitGenerator.validate(c); err != nil {
+		return err
 	}
 	// Consolidation similarity bands. Validated on the EFFECTIVE values so
 	// setting only one of the pair is still checked against the other's

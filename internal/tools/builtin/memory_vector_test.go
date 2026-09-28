@@ -157,6 +157,9 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		if filter.KeyPrefix != "" && !strings.HasPrefix(key, filter.KeyPrefix) {
 			continue
 		}
+		if filter.ExcludeUnitPrefix != "" && strings.HasPrefix(key, filter.ExcludeUnitPrefix) {
+			continue // derived search units, as the real stores drop them
+		}
 		// Filter expired base rows.
 		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, key)
 		if err != nil {

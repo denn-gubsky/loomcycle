@@ -10,9 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -73,49 +70,13 @@ func Build(cfg *config.Config) (*Model, error) {
 	if !rc.Configured() {
 		return nil, nil
 	}
-	// The model may be a models: alias (e.g. local-medium); resolve it, and the
-	// provider it carries when the block names none, as an agent's model resolves.
-	provider, model, err := cfg.ExpandServiceModel("memory.reranker", rc.Provider, rc.Model)
+	p, provider, model, err := providerbuild.ServiceProvider(cfg, "memory.reranker", providerbuild.ServiceEndpoint{
+		Provider: rc.Provider, Model: rc.Model, BaseURL: rc.BaseURL, APIKeyEnv: rc.APIKeyEnv,
+	}, rerankerKeyEnvName)
 	if err != nil {
 		return nil, err
 	}
 	rc.Provider, rc.Model = provider, model
-	pc, ok := cfg.Providers[rc.Provider]
-	if !ok {
-		known := make([]string, 0, len(cfg.Providers))
-		for k := range cfg.Providers {
-			known = append(known, k)
-		}
-		sort.Strings(known)
-		return nil, fmt.Errorf("memory.reranker.provider: %q is not declared in providers (declared: %v)", rc.Provider, known)
-	}
-	opts := providerbuild.DriverOptions(rc.Provider, pc, cfg)
-	// The reranker's own block wins over the provider's endpoint and key, as the
-	// embedder's does — the point of the two knobs is to diverge on purpose.
-	if rc.BaseURL != "" {
-		opts.BaseURL = rc.BaseURL
-	}
-	if rc.APIKeyEnv != "" {
-		opts.APIKey = os.Getenv(rc.APIKeyEnv)
-		opts.KeyEnvName = rc.APIKeyEnv
-		if opts.APIKey == "" {
-			log.Printf("memory.reranker: api_key_env=%s is set but empty — the reranker will call %s unauthenticated",
-				rc.APIKeyEnv, rc.Provider)
-		}
-	} else if rc.BaseURL != "" {
-		// A TENANT'S PROVIDER KEY MUST NOT TRAVEL TO AN ENDPOINT THAT PROVIDER DOES
-		// NOT RUN. The driver resolves a tenant's own stored credential by its key
-		// name (OPENAI_API_KEY for the openai driver) before falling back to the
-		// operator's, so a reranker pointed at an operator's own endpoint would hand
-		// every such tenant's real vendor key to that endpoint — and book the call
-		// as tenant-paid for an account it never touched. A name no provider uses
-		// means only a credential stored FOR the reranker can override.
-		opts.KeyEnvName = rerankerKeyEnvName
-	}
-	p, err := providers.NewDriver(pc.Driver, opts)
-	if err != nil {
-		return nil, fmt.Errorf("memory.reranker: provider %q: %w", rc.Provider, err)
-	}
 	return New(p, rc), nil
 }
 
