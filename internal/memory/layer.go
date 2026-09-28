@@ -182,6 +182,9 @@ type RecallFact struct {
 	Kind store.MemoryRowClass `json:"kind,omitempty"`
 
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// MatchedUnit is the derived search unit that found this chunk, when one did.
+	MatchedUnit *MatchedUnit `json:"matched_unit,omitempty"`
 }
 
 // RecallResult is the ranked output of Recall, trimmed to the query's TopK by

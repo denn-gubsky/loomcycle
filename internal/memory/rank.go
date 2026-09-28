@@ -190,6 +190,14 @@ const RRFDefaultK = 60
 //
 // k <= 0 falls back to RRFDefaultK. The input slices are not mutated.
 func FuseRRF(vector, fulltext []store.MemorySearchEntry, k int) []store.MemorySearchEntry {
+	return FuseRRFMany(k, vector, fulltext)
+}
+
+// FuseRRFMany is FuseRRF over any number of ranked lists — the main vector and
+// full-text legs plus, for a chunk-targeted search, the derived-unit legs. Earlier
+// lists are authoritative for a shared entry's fields; ties resolve by first-seen
+// order. With two lists it is exactly FuseRRF.
+func FuseRRFMany(k int, lists ...[]store.MemorySearchEntry) []store.MemorySearchEntry {
 	if k <= 0 {
 		k = RRFDefaultK
 	}
@@ -198,8 +206,12 @@ func FuseRRF(vector, fulltext []store.MemorySearchEntry, k int) []store.MemorySe
 		rrf   float64
 		order int // first-seen order, for a stable tie-break
 	}
-	idx := make(map[string]int, len(vector)+len(fulltext))
-	accs := make([]acc, 0, len(vector)+len(fulltext))
+	n := 0
+	for _, l := range lists {
+		n += len(l)
+	}
+	idx := make(map[string]int, n)
+	accs := make([]acc, 0, n)
 	add := func(list []store.MemorySearchEntry) {
 		for rank, e := range list {
 			contrib := 1.0 / float64(k+rank)
@@ -211,8 +223,9 @@ func FuseRRF(vector, fulltext []store.MemorySearchEntry, k int) []store.MemorySe
 			accs = append(accs, acc{entry: e, rrf: contrib, order: len(accs)})
 		}
 	}
-	add(vector) // first → authoritative for shared entries' fields
-	add(fulltext)
+	for _, l := range lists { // first → authoritative for shared entries' fields
+		add(l)
+	}
 
 	// Stable by first-seen order on equal fused score: the vector leg is
 	// added first, so ties resolve toward the vector ordering.

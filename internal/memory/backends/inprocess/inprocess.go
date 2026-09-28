@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -227,6 +228,9 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		lcotel.SetSpanError(span, ferr)
 		return memory.SearchResult{}, ferr
 	}
+	// Derived search units: where the main legs cannot reach them (a
+	// chunk-targeted search), a separate unit leg fetches them, fused with the rest.
+	unitFilter, unitLeg := q.UnitLegFilter(filter)
 
 	// A rerank that will run needs the deep pool too: the cheap path fetches
 	// top_k+1 rows, and a rerank shown only those can promote nothing from below
@@ -271,7 +275,21 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// Fuse by RRF: SemanticScore := the fused rank (the ranker's semantic
 		// input); Score stays each row's raw cosine. With an empty full-text
 		// leg the union is the vector list and its order is preserved.
-		pool = memory.FuseRRF(vres, fres, memory.RRFDefaultK)
+		if unitLeg {
+			uv, uerr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, unitFilter, queryVec, fetch)
+			if uerr != nil {
+				lcotel.SetSpanError(span, uerr)
+				return memory.SearchResult{}, uerr
+			}
+			uf, uerr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, unitFilter, q.QueryText, fetch)
+			if uerr != nil {
+				lcotel.SetSpanError(span, uerr)
+				return memory.SearchResult{}, uerr
+			}
+			pool = memory.FuseRRFMany(memory.RRFDefaultK, vres, fres, uv, uf)
+		} else {
+			pool = memory.FuseRRF(vres, fres, memory.RRFDefaultK)
+		}
 	} else {
 		// Cheap pure-vector path: a single cosine call with a +1 truncation
 		// probe, no keyword round-trip. The semantic signal IS the raw cosine,
@@ -285,6 +303,19 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		if verr != nil {
 			lcotel.SetSpanError(span, verr)
 			return memory.SearchResult{}, verr
+		}
+		if unitLeg {
+			uv, uerr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, unitFilter, queryVec, fetch)
+			if uerr != nil {
+				lcotel.SetSpanError(span, uerr)
+				return memory.SearchResult{}, uerr
+			}
+			// Both lists are cosine-ordered, so the merge is by cosine too.
+			vres = append(vres, uv...)
+			sort.SliceStable(vres, func(i, j int) bool { return vres[i].Score > vres[j].Score })
+			if len(vres) > fetch {
+				vres = vres[:fetch]
+			}
 		}
 		for i := range vres {
 			vres[i].SemanticScore = vres[i].Score
@@ -329,6 +360,14 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	ranked := memory.RankCandidates(pool, rank, now)
 	if q.When.Active() && q.When.Missing != memory.MissingRequire {
 		ranked = demoteUndated(ranked, q.When)
+	}
+	// Units resolve to their chunks here — after ranking, so a chunk takes the best
+	// rank of itself and its units; before dedup, the rerank and the trim, so all
+	// three see chunks and a unit never takes a slot of its own.
+	ranked, matched := memory.ResolveUnits(ranked, b.chunkBody(ctx, tenant, scope, scopeID))
+	if matched != nil {
+		// Truncation counts distinct results, and a chunk's units are not results.
+		truncated = len(ranked) > topK
 	}
 	deduped, dropped := memory.DedupResults(ranked, dedup)
 	// The rerank runs on the fused, ranked, deduplicated pool, BEFORE the trim:
@@ -381,6 +420,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		// false rather than let a caller trust a label it did not earn.
 		SourcesApplied: true,
 		Rerank:         rerankReport,
+		MatchedUnits:   alignMatched(deduped, matched),
 	}
 	if rank.SourceReserved() {
 		out.RankNote = "source_weight is reserved and contributes 0 until source-score tracking ships"
@@ -577,7 +617,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 		return memory.RecallResult{}, err
 	}
 	facts := make([]memory.RecallFact, 0, len(res.Entries))
-	for _, e := range res.Entries {
+	for i, e := range res.Entries {
 		if q.Threshold > 0 && e.Score < q.Threshold {
 			continue
 		}
@@ -589,6 +629,9 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 			// rendered kind cannot disagree with what `sources` admitted.
 			Kind: memory.Class(e),
 		})
+		if i < len(res.MatchedUnits) && res.MatchedUnits[i] != nil {
+			facts[len(facts)-1].MatchedUnit = res.MatchedUnits[i]
+		}
 	}
 	if len(facts) > topK {
 		facts = facts[:topK]
@@ -641,7 +684,9 @@ var (
 // backend's keyspace cannot contain them, so its List-based count is already
 // right.
 func (b *Backend) ScopeUsage(ctx context.Context, scope store.MemoryScope, scopeID string) (int, int, error) {
-	return b.store.MemoryScopeUsage(ctx, runTenant(ctx), scope, scopeID, memory.DocumentChunkKeyPrefix)
+	// Derived search units too: they are written by an operator pass, often a
+	// dozen per chunk, and an agent's quota is for what the agent stores.
+	return b.store.MemoryScopeUsage(ctx, runTenant(ctx), scope, scopeID, memory.DocumentChunkKeyPrefix, memory.DocumentUnitKeyPrefix)
 }
 
 // demoteUndated is `prefer` mode: rows the window matched keep their rank order,
@@ -667,4 +712,36 @@ func demoteUndated(rows []store.MemorySearchEntry, w memory.ObservedWindow) []st
 		}
 	}
 	return append(in, rest...)
+}
+
+// chunkBody fetches a chunk's body row, for a unit whose chunk did not rank on its
+// own. A missing body means the chunk is gone, and its unit must not surface.
+func (b *Backend) chunkBody(ctx context.Context, tenant string, scope store.MemoryScope, scopeID string) func(string) (store.MemorySearchEntry, bool) {
+	return func(chunkID string) (store.MemorySearchEntry, bool) {
+		row, err := b.store.MemoryGet(ctx, tenant, scope, scopeID, memory.DocumentChunkKeyPrefix+chunkID)
+		if err != nil {
+			return store.MemorySearchEntry{}, false
+		}
+		return store.MemorySearchEntry{MemoryEntry: row}, true
+	}
+}
+
+// alignMatched lays the matched units out index-aligned with the final entries —
+// after the rerank reordered and the trim cut them. nil when nothing matched
+// through a unit.
+func alignMatched(entries []store.MemorySearchEntry, matched map[string]*memory.MatchedUnit) []*memory.MatchedUnit {
+	if len(matched) == 0 {
+		return nil
+	}
+	out := make([]*memory.MatchedUnit, len(entries))
+	any := false
+	for i, e := range entries {
+		if m, ok := matched[e.Key]; ok {
+			out[i], any = m, true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return out
 }
