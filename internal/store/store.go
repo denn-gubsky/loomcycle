@@ -925,6 +925,13 @@ type RunIdentity struct {
 // Unlike UserBearer/UserCredentials this is NOT a secret: safe to
 // persist, log, and emit in events. All fields optional; an all-empty
 // struct is treated as absent (nil) at wire entry.
+//
+// Two owners share this struct. The CALLER sets RootAgentRunID, FunctionKey
+// and TierAtRun. The RUNTIME alone sets the Board* and Walk/Wave fields, on the
+// runs a team walk spawns — consumers group runs by them, so a caller must not
+// be able to claim them. Every ingress clears the runtime-owned fields through
+// connector.StripRuntimeParentContext; a field added here must be classified
+// there (TestStripRuntimeParentContext_ClassifiesEveryField fails until it is).
 type ParentContext struct {
 	// RootAgentRunID is the consumer's identifier for the user-
 	// initiated run at the root of the spawn tree. Echoed on every
@@ -937,6 +944,8 @@ type ParentContext struct {
 	// Distinct from UserTier (loomcycle's resolver policy) — this is the
 	// consumer's own snapshot, carried verbatim.
 	TierAtRun string `json:"tier_at_run,omitempty"`
+	// RUNTIME-OWNED from here down: cleared from caller input at every ingress.
+	//
 	// Board{Scope,ChunkID,DocumentID} correlate a run to a workflow-board task
 	// (a Document chunk) for loomboard (RFC BT P4). A board-bound `TeamDef
 	// op=run` stamps these onto each handler run it spawns, so a client folding

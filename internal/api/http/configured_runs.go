@@ -148,9 +148,9 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	tenant, user := s.applyPrincipal(ctx, req.TenantID, req.UserID)
 	okr := s.operatorKeyRestrictedForCtx(ctx)
 	isolated := s.isolatedForCtx(ctx)
-	if req.ParentContext.IsZero() {
-		req.ParentContext = nil
-	}
+	// Stripped before it is stored: the draft body and the row both keep it,
+	// and a start replays the row's copy.
+	req.ParentContext = connector.StripRuntimeParentContext(req.ParentContext)
 	if msg, ok := s.validateDraft(ctx, tenant, req); !ok {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "%s", msg)
 	}
