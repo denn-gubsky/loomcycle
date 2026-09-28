@@ -208,8 +208,14 @@ ends or waits for its next message. The payload adds `final_text`,
   verdict, exactly as a run under review is held (`awaiting_review`, now with
   `held_by` naming the hook), and decided with the review verb: approve lets it
   through, reject with feedback sends it back, reject without ends it rejected.
-  Disarming review does not release a hook's hold. A run nothing can deliver a
-  verdict to (a sub-agent spawned by the Agent tool) ends rejected instead.
+  Disarming review does not release a hook's hold. A sub-agent the Agent tool
+  started is held the same way: its parent's call waits on it, and the
+  parent's stream carries a `subagent_hold` event (`state: "held"`, naming the
+  child's `subagent_run_id`, where the verdict goes; then `"released"` with how
+  the child ended). Such a child takes a verdict and nothing else — its parent
+  drives it, so it cannot be steered or retuned. The hold has no deadline of
+  its own: it lasts until someone rules on the child or the parent is
+  cancelled (which cancels the child).
 - nothing, or `{"decision": "allow"}` — the answer stands.
 
 When several agent_stop hooks match, the first `block` wins and stops the

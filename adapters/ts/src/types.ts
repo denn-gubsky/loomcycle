@@ -38,6 +38,9 @@ export type EventType =
   // RFC DJ: a run armed for review finished its answer and is held for an
   // operator's verdict ({@link LoomcycleClient.reviewRun}).
   | "awaiting_review"
+  // On a parent's stream: a sub-agent it started through the Agent tool is
+  // held for a verdict ("held") or has ended ("released").
+  | "subagent_hold"
   | "steer"
   | "context_compaction"
   // RFC AW per-scope token budgets. `limit` = a server-generated token-budget
@@ -155,6 +158,18 @@ export interface HostWidening {
   hook_owner: string;
   hook_name: string;
   hosts_added: string[];
+}
+
+/** A sub-agent's review hold, as its parent's stream reports it. */
+export interface SubagentHoldInfo {
+  subagent: string;
+  subagent_run_id: string;
+  state: "held" | "released";
+  held_by?: string;
+  round?: number;
+  expires_at?: string;
+  /** How the child ended: completed | rejected | failed | cancelled ("released" only). */
+  status?: string;
 }
 
 /** LimitInfo accompanies an `event: limit` frame (RFC AW per-scope token
@@ -640,6 +655,11 @@ export interface AgentEvent {
    *  `held_by` names the agent_stop hook that held it; absent when review
    *  arming did (and only that kind is released by disarming review). */
   awaiting_review?: { since_turn?: number; round?: number; expires_at?: string; held_by?: string };
+  /** Payload on `event: subagent_hold` — on a parent's stream, a sub-agent it
+   *  started through the Agent tool is held for a verdict (`state` "held";
+   *  rule on it with {@link LoomcycleClient.reviewRun} on `subagent_run_id`)
+   *  or has ended (`state` "released", with `status`). */
+  subagent_hold?: SubagentHoldInfo;
   /** Payload on `event: steer` (RFC AI) — the operator's drained turn. On a
    *  re-attach replay, `source` is `"replay"`. Nil on all other event types. */
   user_input?: { text?: string; source?: string; seen_at?: string };

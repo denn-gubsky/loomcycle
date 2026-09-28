@@ -96,6 +96,23 @@ class AwaitingReview:
 
 
 @dataclass(frozen=True)
+class SubagentHold:
+    """Structured payload on ``subagent_hold`` events — on a parent's stream,
+    a sub-agent it started through the Agent tool is held for a verdict
+    (``state`` "held"; rule on it with :meth:`LoomcycleClient.review_run` on
+    ``subagent_run_id``) or has ended (``state`` "released", with ``status``).
+    Mirrors ``providers.SubagentHoldEventInfo``."""
+
+    subagent: str
+    subagent_run_id: str
+    state: str
+    held_by: str = ""
+    round: int = 0
+    expires_at: str = ""
+    status: str = ""
+
+
+@dataclass(frozen=True)
 class UserInput:
     """Structured payload on ``steer`` events (RFC AI) — an operator
     steering message drained into the conversation, or (on a
@@ -282,6 +299,7 @@ class AgentEvent:
     host_widening: Optional[HostWidening] = None
     awaiting_input: Optional[AwaitingInput] = None
     awaiting_review: Optional[AwaitingReview] = None
+    subagent_hold: Optional[SubagentHold] = None
     hook_decision: Optional[HookDecision] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
@@ -341,6 +359,18 @@ class AgentEvent:
                 round=ev.awaiting_review.round,
                 expires_at=ev.awaiting_review.expires_at,
                 held_by=ev.awaiting_review.held_by,
+            )
+        sh: Optional[SubagentHold] = None
+        if ev.HasField("subagent_hold"):
+            s = ev.subagent_hold
+            sh = SubagentHold(
+                subagent=s.subagent,
+                subagent_run_id=s.subagent_run_id,
+                state=s.state,
+                held_by=s.held_by,
+                round=s.round,
+                expires_at=s.expires_at,
+                status=s.status,
             )
         hd: Optional[HookDecision] = None
         if ev.HasField("hook_decision"):
@@ -403,6 +433,7 @@ class AgentEvent:
             host_widening=hw,
             awaiting_input=ai,
             awaiting_review=ar,
+            subagent_hold=sh,
             hook_decision=hd,
             user_input=ui,
             limit=li,

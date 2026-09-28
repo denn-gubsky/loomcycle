@@ -6086,15 +6086,17 @@ func (s *Server) armTurnCancelIf(interactive bool, runID string) func(context.Ca
 // (nil, nil, noop) when steering isn't wired (registry nil / no run_id) so
 // callers pass nil into RunOptions and the loop's steering path stays off.
 func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userID string, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func()) {
+	return s.makeSteerEntry(ctx, steer.Entry{RunID: runID, AgentID: agentID, SessionID: sessionID, UserID: userID}, emit)
+}
+
+// makeSteerEntry is makeSteer for a registry entry the caller shapes (a
+// verdict-only one, for a child the Agent tool started).
+func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func()) {
+	runID, sessionID, userID := entry.RunID, entry.SessionID, entry.UserID
 	if s.steerReg == nil || runID == "" {
 		return nil, nil, func() {}
 	}
-	q, dereg := s.steerReg.Register(steer.Entry{
-		RunID:     runID,
-		AgentID:   agentID,
-		SessionID: sessionID,
-		UserID:    userID,
-	})
+	q, dereg := s.steerReg.Register(entry)
 	onSteer := func(m steer.Message) {
 		// A steer IS a user turn — a person typing mid-run — so it goes through the
 		// same writer as the other four, which is what puts it in the trace index too.
@@ -6535,7 +6537,8 @@ func (s *Server) runAgentToolChild(ctx context.Context, name, prompt, defID stri
 	if err != nil {
 		return "", nil, "", err
 	}
-	out, state, runID, err := s.runSubAgent(ctx, name, "", prompt, defID)
+	hold := &childHold{name: name, parentEmit: tools.EventEmitter(ctx)}
+	out, state, runID, err := s.runSubRun(ctx, name, "", prompt, defID, nil, nil, false, false, hold)
 	status := string(store.RunCompleted)
 	if err != nil {
 		status = string(store.RunFailed)
@@ -6597,14 +6600,39 @@ func (s *Server) subagentStop(ctx context.Context, name, runID, status, out stri
 // the SAME pass as the {{...}} families. Non-nil only for a team state — see
 // teamrun.Prompt.Values for why the map travels instead of finished text.
 func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, prompt, defID string, values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (string, map[string]any, string, error) {
-	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, func(providers.Event) {}, values, dataSlots, systemAuthored, inputAuthored)
+	return s.runSubRun(ctx, name, systemExtra, prompt, defID, values, dataSlots, systemAuthored, inputAuthored, nil)
+}
+
+// runSubRun is runSubAgentWithValues, and for a child the Agent tool starts
+// (hold non-nil) also what lets an agent_stop hook's hold be ruled on: a
+// queue that takes a verdict and nothing else — the parent drives the child,
+// so no operator steers or retunes it — and the child's hold reported on the
+// parent's stream (childHold). Without the queue such a hold could only end
+// the child rejected.
+func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID string, values, dataSlots map[string]string, systemAuthored, inputAuthored bool, hold *childHold) (string, map[string]any, string, error) {
+	observe := func(providers.Event) {}
+	if hold != nil {
+		observe = hold.observe
+	}
+	prep, err := s.prepareSubRunValues(ctx, name, systemExtra, prompt, defID, false, observe, values, dataSlots, systemAuthored, inputAuthored)
 	if err != nil {
 		return "", nil, "", err
 	}
 	defer prep.Slot.releaseCurrent() // registered first → runs LAST (matches original)
 	defer prep.cleanup()             // registered second → runs first
+	if hold != nil {
+		hold.runID = prep.RunID
+		q, onSteer, dereg := s.makeSteerEntry(prep.SteerCtx, steer.Entry{
+			RunID: prep.RunID, AgentID: prep.AgentID, SessionID: prep.SessionID, UserID: prep.UserID, VerdictsOnly: true,
+		}, prep.Emit)
+		defer dereg()
+		prep.Opts.SteerQueue, prep.Opts.OnSteer = q, onSteer
+	}
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 	s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
+	if hold != nil {
+		hold.released(terminalStatusOf(prep.SteerCtx, res, runErr))
+	}
 	if runErr != nil {
 		// Wrap with session/run IDs so a developer reading parent logs
 		// can locate the sub's transcript directly. The parent agent's
@@ -6628,6 +6656,46 @@ func (s *Server) runSubAgentWithValues(ctx context.Context, name, systemExtra, p
 	// L2 stateful runs; nil otherwise) — the parent receives it as the
 	// structured hand-off instead of re-parsing prose (RFC CR D5).
 	return formatSubAgentOutput(prep.AgentID, res.FinalText), res.State, prep.RunID, nil
+}
+
+// childHold reports a child's review hold on its parent's stream: "held" at
+// each awaiting_review the child emits, and "released" with how it ended once
+// it has. A parent waiting in its Agent call on a child that waits on a
+// person otherwise looks merely slow — the pending state a person can act on
+// (by ruling on the child) was invisible.
+type childHold struct {
+	name       string
+	runID      string // set once the child's run exists, before it runs
+	parentEmit func(providers.Event)
+	mu         sync.Mutex
+	held       bool
+}
+
+func (h *childHold) observe(ev providers.Event) {
+	if ev.Type != providers.EventAwaitingReview || ev.AwaitingReview == nil || h.parentEmit == nil {
+		return
+	}
+	h.mu.Lock()
+	h.held = true
+	h.mu.Unlock()
+	h.parentEmit(providers.Event{Type: providers.EventSubagentHold, SubagentHold: &providers.SubagentHoldEventInfo{
+		Subagent: h.name, SubagentRunID: h.runID, State: providers.SubagentHoldHeld,
+		HeldBy: ev.AwaitingReview.HeldBy, Round: ev.AwaitingReview.Round, ExpiresAt: ev.AwaitingReview.ExpiresAt,
+	}})
+}
+
+// released closes a hold the parent was told of; a child never held reports
+// nothing.
+func (h *childHold) released(status store.RunStatus) {
+	h.mu.Lock()
+	held := h.held
+	h.mu.Unlock()
+	if !held || h.parentEmit == nil {
+		return
+	}
+	h.parentEmit(providers.Event{Type: providers.EventSubagentHold, SubagentHold: &providers.SubagentHoldEventInfo{
+		Subagent: h.name, SubagentRunID: h.runID, State: providers.SubagentHoldReleased, Status: string(status),
+	}})
 }
 
 // runTeamMember runs one team member: runSubAgentWithValues, plus what a

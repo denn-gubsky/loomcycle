@@ -1293,6 +1293,12 @@ message Event {
   // hook_decision carries the payload on type=hook_decision frames (RFC DK) —
   // what a tool-use hook did to a call. Nil on every other event type.
   HookDecision hook_decision = 17;
+
+  // subagent_hold carries the payload on type=subagent_hold frames — on a
+  // parent's stream, a sub-agent it started through the Agent tool is held
+  // for a verdict ("held"), or has ended ("released"). Nil on every other
+  // event type.
+  SubagentHold subagent_hold = 18;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1324,6 +1330,18 @@ message AwaitingReview {
   // The agent_stop hook ("<owner>/<name>") that held the answer. Empty when
   // review arming held it; disarming review releases only that kind.
   string held_by = 4;
+}
+
+// SubagentHold is the type=subagent_hold payload. Mirrors
+// providers.SubagentHoldEventInfo.
+message SubagentHold {
+  string subagent = 1;         // the child's agent name
+  string subagent_run_id = 2;  // the child's run — where a verdict is sent
+  string state = 3;            // held | released
+  string held_by = 4;          // the agent_stop hook that held it ("held" only)
+  int32 round = 5;             // the child's hold round ("held" only)
+  string expires_at = 6;       // RFC 3339 UTC; when the child's hold ends as rejected ("held" only)
+  string status = 7;           // how the child ended ("released" only)
 }
 
 // UserInput is the type=steer payload (RFC AI). Mirrors

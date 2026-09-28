@@ -80,7 +80,12 @@ type Entry struct {
 	AgentID   string
 	SessionID string
 	UserID    string
-	ch        chan Message
+	// VerdictsOnly marks a run that takes nothing but a review verdict: a
+	// sub-agent the Agent tool started, which its parent drives. It is given a
+	// queue only so a hold can be ruled on; a steer, a compaction or any other
+	// message is refused as if the run were not live.
+	VerdictsOnly bool
+	ch           chan Message
 	// parked reports whether the run is currently parked at end_turn awaiting
 	// operator input (an interactive run between turns) vs. actively mid-turn.
 	// A pointer so the value-copied Entry returned by Get still observes
@@ -161,6 +166,7 @@ func (r *Registry) Push(ctx context.Context, runID string, m Message) (bool, err
 		if cluster == nil {
 			return false, ErrRunNotFound
 		}
+		// A verdict-only run on another replica refuses there (PushLocal).
 		delivered, found, err := cluster.PushRemote(ctx, runID, m)
 		if err != nil {
 			return false, err
@@ -169,6 +175,9 @@ func (r *Registry) Push(ctx context.Context, runID string, m Message) (bool, err
 			return false, ErrRunNotFound
 		}
 		return delivered, nil
+	}
+	if e.VerdictsOnly && !m.IsVerdict() {
+		return false, ErrRunNotFound
 	}
 	select {
 	case e.ch <- m:
@@ -186,7 +195,7 @@ func (r *Registry) PushLocal(runID string, m Message) (delivered, found bool) {
 	r.mu.RLock()
 	e, ok := r.entries[runID]
 	r.mu.RUnlock()
-	if !ok {
+	if !ok || (e.VerdictsOnly && !m.IsVerdict()) {
 		return false, false
 	}
 	select {

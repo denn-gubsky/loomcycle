@@ -658,6 +658,13 @@ const (
 	// held again.
 	EventAwaitingReview EventType = "awaiting_review"
 
+	// EventSubagentHold is emitted on a PARENT's stream when a sub-agent it
+	// started through the Agent tool is held for review (an agent_stop hook's
+	// hold) — and again, state "released", when that child ends. The child
+	// waits on the verdict; the parent's call waits on the child. Without it
+	// the parent looked merely slow while a person was being waited on.
+	EventSubagentHold EventType = "subagent_hold"
+
 	// EventSpawnChildStarted / EventSpawnChildResult are the RFC X Phase 3
 	// "spawn ledger" — recorded on the PARENT run's transcript so a
 	// snapshotted+restored fan-out parent (blocked in Agent.parallel_spawn)
@@ -888,6 +895,10 @@ type Event struct {
 	// AwaitingReview carries the structured payload on EventAwaitingReview.
 	// Nil otherwise.
 	AwaitingReview *AwaitingReviewEventInfo `json:"awaiting_review,omitempty"`
+
+	// SubagentHold carries the structured payload on EventSubagentHold. Nil
+	// otherwise.
+	SubagentHold *SubagentHoldEventInfo `json:"subagent_hold,omitempty"`
 
 	// TurnCancelled carries the structured payload on EventTurnCancelled (an
 	// operator turn-cancel, RFC BH). Nil on all other event types.
@@ -1129,6 +1140,31 @@ type AwaitingReviewEventInfo struct {
 	// latter.
 	HeldBy string `json:"held_by,omitempty"`
 }
+
+// SubagentHoldEventInfo is the structured payload on EventSubagentHold.
+type SubagentHoldEventInfo struct {
+	// Subagent is the child's agent name; SubagentRunID its run, which is the
+	// one a verdict is sent to (POST /v1/runs/{id}/review).
+	Subagent      string `json:"subagent"`
+	SubagentRunID string `json:"subagent_run_id"`
+	// State is "held" when the child is held for a verdict (each round) and
+	// "released" when the child has ended.
+	State string `json:"state"`
+	// HeldBy, Round and ExpiresAt are the child's hold, as its own
+	// awaiting_review says ("held" only).
+	HeldBy    string `json:"held_by,omitempty"`
+	Round     int    `json:"round,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// Status is how the child ended ("released" only): completed, rejected,
+	// failed or cancelled.
+	Status string `json:"status,omitempty"`
+}
+
+// SubagentHold states.
+const (
+	SubagentHoldHeld     = "held"
+	SubagentHoldReleased = "released"
+)
 
 // TurnCancelledEventInfo is the structured payload on EventTurnCancelled — the
 // operator stopped the current turn of an interactive run (RFC BH). The run then
