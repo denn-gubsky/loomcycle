@@ -205,6 +205,37 @@ func TestRun_Review_RejectWithoutFeedbackEndsRejected(t *testing.T) {
 	}
 }
 
+// OnReviewHold brackets every hold — told when it begins and when it ends,
+// once each, across a revise round — which is what lets a team walk stop a
+// state's timeout clock while a person is deciding.
+func TestRun_Review_OnReviewHoldBracketsEachHold(t *testing.T) {
+	var mu sync.Mutex
+	var calls []bool
+	snapshot := func() []bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]bool(nil), calls...)
+	}
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		o.OnReviewHold = func(held bool) {
+			mu.Lock()
+			calls = append(calls, held)
+			mu.Unlock()
+		}
+	})
+	r.waitFor(t, providers.EventAwaitingReview)
+	if got := snapshot(); len(got) != 1 || !got[0] {
+		t.Errorf("while held: OnReviewHold calls = %v, want [true]", got)
+	}
+	r.q <- verdict(steer.KindReject, "redo it")
+	r.waitFor(t, providers.EventAwaitingReview)
+	r.q <- verdict(steer.KindApprove, "")
+	r.result(t)
+	if got := snapshot(); len(got) != 4 || !got[0] || got[1] || !got[2] || got[3] {
+		t.Errorf("OnReviewHold calls = %v, want [true false true false]", got)
+	}
+}
+
 // A verdict queued before the hold began is a duplicate of one already acted
 // on; acting on it would approve a revision nobody has read.
 func TestRun_Review_VerdictFromBeforeTheHoldIsDiscarded(t *testing.T) {

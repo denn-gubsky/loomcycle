@@ -246,3 +246,48 @@ func TestTeamMember_UnarmedMemberRecordsNoReview(t *testing.T) {
 		t.Errorf("record review = %v, want absent for a member never armed", *rec.Review)
 	}
 }
+
+// A member tells its walk when it is held and when the hold ends, so a state's
+// timeout_ms clock stops while a person is deciding rather than racing them.
+func TestTeamMember_ReportsItsHoldToTheWalksClock(t *testing.T) {
+	h := newReviewHarness(t)
+	holds := make(chan bool, 4)
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
+	ctx = teamrun.WithReviewArming(ctx, func(context.Context) bool { return true })
+	ctx = teamrun.WithHoldObserver(ctx, func(held bool) { holds <- held })
+	done := make(chan teamrun.SpawnResult, 1)
+	go func() {
+		res, _ := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
+		done <- res
+	}()
+	next := func() bool {
+		t.Helper()
+		select {
+		case v := <-holds:
+			return v
+		case <-time.After(3 * time.Second):
+			t.Fatal("the member never reported its hold")
+		}
+		return false
+	}
+	if !next() {
+		t.Fatal("first report was not the hold beginning")
+	}
+	var runID string
+	waitFor(t, "the member to be held", func() bool {
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		for _, r := range runs {
+			if heldForReview(context.Background(), h.st, r.ID) {
+				runID = r.ID
+			}
+		}
+		return runID != ""
+	})
+	if code, _ := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d", code)
+	}
+	if next() {
+		t.Error("second report was not the hold ending")
+	}
+	awaitMember(t, done)
+}

@@ -6656,6 +6656,9 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 		prep.Opts.ReviewNow = s.recordReviewArming(prep.RunID, armed, teamrun.ReviewTTL(ctx))
 	}
 	prep.Opts.ReviewTTL = teamrun.ReviewTTL(ctx)
+	// The state's timeout_ms clock stops while this member is held for a
+	// verdict, so a person reviewing it is never raced by the walk.
+	prep.Opts.OnReviewHold = teamrun.HoldObserver(ctx)
 	res, runErr := loop.Run(prep.LoopCtx, prep.Opts)
 	s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, res, runErr, prep.Meta)
 	out := teamrun.SpawnResult{RunID: prep.RunID, Status: string(terminalStatusOf(prep.SteerCtx, res, runErr))}

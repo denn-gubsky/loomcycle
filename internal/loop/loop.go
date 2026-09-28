@@ -149,6 +149,12 @@ type RunOptions struct {
 	// ReviewTTL, when positive, ends a hold that gets no verdict within it as
 	// rejected (stop reason "review_expired"). Each hold gets the full window.
 	ReviewTTL time.Duration
+	// OnReviewHold, when non-nil, is told when a hold for a verdict begins
+	// (true) and ends (false), whoever took it — review arming or an
+	// agent_stop hook. A team walk bounds its runs by a handler timeout that a
+	// person deciding must not race, so it stops that clock while a run is
+	// held. Called on the run's goroutine; it must not block.
+	OnReviewHold func(held bool)
 
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
