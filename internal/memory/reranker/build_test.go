@@ -84,3 +84,20 @@ func TestModel_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 		t.Error("control: an unrestricted rerank never reached the endpoint — the check above proves nothing")
 	}
 }
+
+// TestBuild_ResolvesAModelsAlias — `memory.reranker.model: local-medium` asks the
+// provider for the model the alias names, not for "local-medium".
+func TestBuild_ResolvesAModelsAlias(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-operator-key")
+	cfg := openAIConfig(config.RerankerConfig{})
+	cfg.Memory.Reranker.Provider = ""
+	cfg.Memory.Reranker.Model = "fast-rerank"
+	cfg.Models = map[string]config.ModelRef{"fast-rerank": {Provider: "openai", Model: "gpt-5.4-mini"}}
+	m, err := Build(cfg)
+	if err != nil || m == nil {
+		t.Fatalf("Build = %v, %v", m, err)
+	}
+	if m.ModelID() != "gpt-5.4-mini" || m.ProviderID() != "openai" {
+		t.Errorf("reranker = %s/%s, want openai/gpt-5.4-mini", m.ProviderID(), m.ModelID())
+	}
+}

@@ -48,7 +48,15 @@ import (
 // defaults when set; the env-var fallback gives operators a single-place
 // override for many embedders without touching yaml.
 func Build(cfg *config.Config) (providers.Embedder, error) {
-	provider := cfg.Memory.Embedder.Provider
+	if cfg.Memory.Embedder.Provider == "" && cfg.Memory.Embedder.Model == "" {
+		return nil, nil
+	}
+	// The model may be a models: alias; resolve it (and the provider it carries,
+	// when the block names none) the way an agent's model resolves.
+	provider, model, err := cfg.ExpandServiceModel("memory.embedder", cfg.Memory.Embedder.Provider, cfg.Memory.Embedder.Model)
+	if err != nil {
+		return nil, err
+	}
 	if provider == "" {
 		return nil, nil
 	}
@@ -132,7 +140,7 @@ func Build(cfg *config.Config) (providers.Embedder, error) {
 	return providers.NewEmbedder(provider, providers.EmbedderOptions{
 		APIKey:     apiKey,
 		BaseURL:    baseURL,
-		Model:      cfg.Memory.Embedder.Model,
+		Model:      model,
 		Dimensions: cfg.Memory.Embedder.Dimensions,
 		Timeout:    time.Duration(timeoutMs) * time.Millisecond,
 		BatchSize:  batchSize,

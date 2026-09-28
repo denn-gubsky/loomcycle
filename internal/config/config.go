@@ -599,8 +599,9 @@ type RerankerConfig struct {
 	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
-// Configured reports whether a reranker is declared at all.
-func (r RerankerConfig) Configured() bool { return r.Provider != "" }
+// Configured reports whether a reranker is declared at all. A block naming only
+// a models: alias is declared too — the alias supplies the provider.
+func (r RerankerConfig) Configured() bool { return r.Provider != "" || r.Model != "" }
 
 // ConsolidationConfig carries the similarity bands the consolidation pass uses
 // to decide whether a candidate fact duplicates an existing memory row. Both
@@ -5619,6 +5620,25 @@ func (c *Config) ResolveAgentModel(agent string) (provider string, model string,
 	return c.ResolveAgentDefModel(agent, def)
 }
 
+// ExpandServiceModel resolves the model of a SERVICE block — memory.embedder,
+// memory.reranker — the way an agent's model resolves: a key in the top-level
+// models: map expands to its concrete model, and fills the provider when the
+// block names none (an explicit provider still wins). So an operator who keeps
+// every model name in one models: map can point the embedder at `local-embedding`
+// instead of repeating the concrete tag — which before this reached the provider
+// as a literal model name ("model local-embedding not found").
+//
+// A model_pattern alias is refused: it resolves against the live model list at
+// run admission, and a service block is built once, at boot, with no such list.
+// field names the block in the error.
+func (c *Config) ExpandServiceModel(field, provider, model string) (string, string, error) {
+	p, m, pattern := ExpandModelAlias(c.Models, provider, model)
+	if pattern != "" {
+		return "", "", fmt.Errorf("%s.model: %q is a model_pattern alias, which resolves only against a live model list at run time — name a concrete model, or an alias with `model:`", field, model)
+	}
+	return p, m, nil
+}
+
 // ExpandModelAlias resolves a model-alias (a key in the top-level models:
 // map) to its concrete provider/model, plus (RFC BG) a model_pattern glob when
 // the alias is a pattern alias. The alias only fills an EMPTY provider — an
@@ -7718,22 +7738,26 @@ func validate(c *Config) error {
 	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" ||
 		c.Memory.Embedder.BaseURL != "" || c.Memory.Embedder.APIKeyEnv != "" ||
 		c.Memory.Embedder.Dimensions != 0 {
-		if c.Memory.Embedder.Provider == "" {
-			return fmt.Errorf("memory.embedder: provider is required when embedder block is set")
+		provider, model, err := c.ExpandServiceModel("memory.embedder", c.Memory.Embedder.Provider, c.Memory.Embedder.Model)
+		if err != nil {
+			return err
 		}
-		if c.Memory.Embedder.Model == "" {
+		if provider == "" {
+			return fmt.Errorf("memory.embedder: provider is required when embedder block is set (or name a models: alias that carries one)")
+		}
+		if model == "" {
 			return fmt.Errorf("memory.embedder: model is required when embedder block is set")
 		}
 		known := providers.RegisteredEmbedders()
 		seen := false
 		for _, p := range known {
-			if p == c.Memory.Embedder.Provider {
+			if p == provider {
 				seen = true
 				break
 			}
 		}
 		if !seen {
-			return fmt.Errorf("memory.embedder.provider: unknown provider %q (known: %v)", c.Memory.Embedder.Provider, known)
+			return fmt.Errorf("memory.embedder.provider: unknown provider %q (known: %v)", provider, known)
 		}
 		if c.Memory.Embedder.TimeoutMs < 0 {
 			return fmt.Errorf("memory.embedder.timeout_ms must be >= 0")
@@ -7754,10 +7778,14 @@ func validate(c *Config) error {
 	// decided when it is built, against the fully-layered providers map, and a
 	// provider that does not exist fails boot there.
 	if rr := c.Memory.Reranker; rr != (RerankerConfig{}) {
-		if rr.Provider == "" {
-			return fmt.Errorf("memory.reranker: provider is required when the reranker block is set")
+		provider, model, err := c.ExpandServiceModel("memory.reranker", rr.Provider, rr.Model)
+		if err != nil {
+			return err
 		}
-		if rr.Model == "" {
+		if provider == "" {
+			return fmt.Errorf("memory.reranker: provider is required when the reranker block is set (or name a models: alias that carries one)")
+		}
+		if model == "" {
 			return fmt.Errorf("memory.reranker: model is required when the reranker block is set")
 		}
 		if rr.TimeoutMs < 0 {
