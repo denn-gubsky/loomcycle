@@ -365,3 +365,117 @@ func TestWorker_AnAnsweredHoldIsNotAskedAgain(t *testing.T) {
 		t.Fatalf("replay: %q %v (%d calls)", got, err, second.calls)
 	}
 }
+
+// A worker whose lease passed to another while a person was answering must
+// not act on the answer: the new owner decides the message. Before, the lost
+// lease surfaced as a failed hook, fail-open let the chain go on, and the
+// message was delivered past the person's "no".
+func TestWorker_ALostLeaseSettlesNothing(t *testing.T) {
+	f, runs, bus := askFixture(t, 5*time.Second)
+	f.hdefs["|review"] = hooks.Def{Event: hooks.PhaseChannelPublish, Body: hooks.DefBody{Kind: hooks.BodyKindCode,
+		Code: `function hook(ev){ var a = Interruption.ask({question: "ship?", options: ["yes","no"]}); return a === "yes" ? {} : {decision: "drop"}; }`}}
+	f.setDef("", "inbox", Def{Hooks: chain(hooks.Entry{Ref: "review"})})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, nil)
+	wait := runAsync(f)
+	row := pendingAsk(t, f.st, runs)
+	// Another worker takes the message over (as after a lease that lapsed).
+	later := time.Now().Add(time.Hour)
+	if w, _ := f.st.ChannelHookClaim(context.Background(), "w2", later, later.Add(time.Hour), 1); len(w) != 1 {
+		t.Fatal("w2 did not take the lease")
+	}
+	resolveAsk(t, f.st, bus, row, "no")
+	wait()
+	if got := len(f.peek("inbox", "", store.MemoryScopeGlobal)); got != 0 {
+		t.Fatalf("delivered %d past the person's no", got)
+	}
+	items, _ := f.st.ChannelHookClaim(context.Background(), "w3", later.Add(2*time.Hour), later.Add(3*time.Hour), 1)
+	if len(items) != 1 {
+		t.Fatal("the message is no longer waiting for its new owner")
+	}
+	if _, finished := runs.snapshot(); len(finished) != 0 {
+		t.Fatalf("the old worker ended the hook run the new owner uses: %v", finished)
+	}
+}
+
+// A worker that lost its lease stops deciding: a hook whose answer could not
+// be kept fails, and even a fail-open one must not let the chain run on — the
+// hooks after it are the new owner's to call, not the old worker's too.
+func TestWorker_ALostLeaseRunsNoFurtherHook(t *testing.T) {
+	f, runs, bus := askFixture(t, 5*time.Second)
+	f.hdefs["|review"] = hooks.Def{Event: hooks.PhaseChannelPublish, FailMode: hooks.FailOpen, Body: hooks.DefBody{Kind: hooks.BodyKindCode,
+		Code: `function hook(ev){ Interruption.ask({question: "ship?", options: ["yes","no"]}); return {}; }`}}
+	after, calls := answer(t, ``)
+	f.setDef("", "inbox", Def{Hooks: chain(hooks.Entry{Ref: "review"}, webhookEntry("after", after.URL))})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, nil)
+	wait := runAsync(f)
+	row := pendingAsk(t, f.st, runs)
+	later := time.Now().Add(time.Hour)
+	if w, _ := f.st.ChannelHookClaim(context.Background(), "w2", later, later.Add(time.Hour), 1); len(w) != 1 {
+		t.Fatal("w2 did not take the lease")
+	}
+	resolveAsk(t, f.st, bus, row, "yes")
+	wait()
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("the old worker called the next hook %d time(s) after losing the lease", n)
+	}
+}
+
+// A body that puts the time or a random number in its question replays that
+// question after a restart: the seed comes from the hook, not from the ids a
+// fresh resolution mints, and the clock from the message's journal. Before,
+// the second worker's body asked a different question, the replay reported a
+// divergence, and the person's earlier answer was lost with the hook failing.
+func TestWorker_AReplayAfterARestartIsDeterministic(t *testing.T) {
+	f, runs, bus := askFixture(t, 5*time.Second)
+	f.hdefs["|review"] = hooks.Def{Event: hooks.PhaseChannelPublish, FailMode: hooks.FailClosed, Body: hooks.DefBody{Kind: hooks.BodyKindCode,
+		Code: `function hook(ev){
+		  var a = Interruption.ask({question: "first " + Date.now() + " " + Math.random(), options: ["yes","no"]});
+		  var b = Interruption.ask({question: "second", options: ["yes","no"]});
+		  return a === "yes" && b === "yes" ? {} : {decision: "drop"};
+		}`}}
+	f.setDef("", "inbox", Def{Hooks: chain(hooks.Entry{Ref: "review"})})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, nil)
+
+	// The first worker gets the first answer, then stops while the second
+	// question is pending.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { f.w.claim(ctx); f.w.wg.Wait(); close(done) }()
+	first := pendingAsk(t, f.st, runs)
+	resolveAsk(t, f.st, bus, first, "yes")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if rows, _ := f.st.InterruptListByRun(context.Background(), first.RunID, store.InterruptStatusPending); len(rows) == 1 && rows[0].InterruptID != first.InterruptID {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	// A fresh worker takes the message over once the lease has run out.
+	w2 := New(f.w.cfg)
+	w2.cfg.Owner = "w2"
+	w2.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	wait := make(chan struct{})
+	go func() { w2.claim(context.Background()); w2.wg.Wait(); close(wait) }()
+	var second store.InterruptRow
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && second.InterruptID == "" {
+		rows, _ := f.st.InterruptListByRun(context.Background(), first.RunID, store.InterruptStatusPending)
+		for _, r := range rows {
+			if r.Question == "second" {
+				second = r
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if second.InterruptID == "" {
+		t.Fatal("the fresh worker did not get to the second question — the first did not replay")
+	}
+	resolveAsk(t, f.st, bus, second, "yes")
+	<-wait
+	if got := len(f.peek("inbox", "", store.MemoryScopeGlobal)); got != 1 {
+		t.Fatalf("delivered %d", got)
+	}
+}

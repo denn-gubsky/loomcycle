@@ -92,15 +92,19 @@ The same shape goes in an AgentDef overlay (`tools` entries as
   silently be missing.
 - **A run may add hooks**, never remove one: `hooks` and `tool_hooks` on the
   run request (`POST /v1/runs`, a continuation, `spawn_run` / `spawn_runs`, the
-  gRPC `hooks_json`, the adapters), in the same shapes. They run after the
-  agent's own, resolve in the run's tenant, and never widen hosts; a
+  gRPC `hooks_json`, the adapters), in the same shapes. They sit outside the
+  agent's own — a `pre` hook added to a run runs before the agent's gates,
+  which decide on what it made of the input; a `post` hook added to a run sees
+  the result after the agent's own post hooks (a redaction) — resolve in the
+  run's tenant, and never widen hosts. An added webhook's headers cannot name
+  a credential (use a HookDef an operator wrote); a
   `tool_hooks` entry must name a tool the agent has, or the run does not start.
   A resumed run keeps what it added.
 - A sub-agent fires its own definition's hooks, not its parent's — plus
   everything its parent run added.
 - **A team adds hooks too.** A TeamDef state's `hooks` / `tool_hooks` are added
   to every run it starts (its agent, each fan-out member, its consolidator),
-  after the agent's own; like a run request's, they never widen hosts. A
+  outside the agent's own as a run request's are; they never widen hosts. A
   TeamDef's top-level `hooks` belong to the walk itself and take only
   `run_end`, fired when the walk ends (`owner: team:<name>`); one that cannot be
   resolved stops the walk before it starts.
@@ -209,7 +213,7 @@ fails holds the answer if it is `fail_mode: closed`, and lets it through if
 state rather than an answer; the run says so.
 
 **`subagent_start`** runs in the parent when it is about to start a child
-through the Agent tool (one-shot or `parallel_spawn`); the hook is the
+through the Agent tool (one-shot, `parallel_spawn` or `open`); the hook is the
 parent's, and the payload names the child in `subagent`. `deny` refuses the child
 — the parent's Agent call gets the reason as an error, and the child is never
 created; `additional_context` is added to the child's prompt.
@@ -221,6 +225,12 @@ the parent gets the reason as an error and may try again. `additional_context`
 is appended to the result. To send a child back to revise, give the child an
 `agent_stop` hook: it fires on the child's own run (its `parent_run_id` names
 the parent).
+
+A resident child (`op=open`) hands its parent an output at every turn, not
+once at the end, so `subagent_stop` runs on each: on what `open`, `send`,
+`poll` and `cancel` return, with the child's state (`awaiting_input`,
+`running`, …) as `status`. A refused output leaves the child open; the parent
+may send again, or close it.
 
 **`pre_compact`** runs before a compaction summarizes the conversation.
 `trigger` says what asked (`manual`, `auto`, `self`); `context_tokens` and
@@ -324,9 +334,10 @@ channels:
 ```
 
 Channel hooks run only when the operator sets `LOOMCYCLE_CHANNEL_HOOKS=1`.
-Without it, a publish to a channel that carries hooks is **refused** (HTTP
-409 `channel_hooks_disabled`, gRPC `FailedPrecondition`) rather than stored
-for a decision nothing would make, and the server logs a warning at boot.
+Without it, a channel's hooks are **skipped**: a publish is delivered as if
+the channel declared none, and the server logs, at boot and at a channel's
+first publish, that its hooks are not enforced. A message stored while hooks
+were on and not yet decided waits until they are on again.
 A `_system/*` channel, a document's `documents/*` feed and a
 `publisher: system` channel cannot carry hooks.
 
@@ -366,7 +377,9 @@ hooks' decisions, and ends when the message is decided.
 
 - `release` lets the message go on to the next hook; `drop` drops it. An ask
   declined, or not answered within the Interruption timeout (and before the
-  message's TTL runs out), drops it: a hold means a person must approve.
+  message's TTL runs out), drops it: a hold means a person must approve. With
+  no Interruption timeout configured and no TTL on the message, a hold waits
+  until someone answers.
 - An answer is kept before it is acted on. A worker that picks the message up
   again — after a restart, or a lost lease — replays it rather than asking
   again; an ask still pending when its worker died is cancelled (resolved by
@@ -374,9 +387,12 @@ hooks' decisions, and ends when the message is decided.
 - While an ask waits, it gives up its concurrency slot: a person's time never
   holds up other messages.
 
-**Order and repeats.** Hooks run in the listed order, one message at a time
-per hook. Messages are decided concurrently (4 per channel, 16 per replica
-by default), so **delivery order may differ from publish order**. A hook may
+**Order and repeats.** Each message goes through the hooks in the listed
+order, one hook at a time. Messages are decided concurrently (4 per channel,
+16 per replica by default), so a hook may be deciding several messages at
+once, and **delivery order may differ from publish order**. If the channel's
+hooks change while a message is part-way through them, it starts over in the
+new chain. A hook may
 be called more than once for the same message (after a failure, a restart or
 a lost lease); `message_id` is the same each time.
 
@@ -388,8 +404,9 @@ HookDef the channel names that no longer exists fails closed whatever its
 `fail_mode` says: a gate must not vanish.
 
 **With a hold.** A channel with hooks and `hold: true` runs its hooks first;
-what they release lands in the hold for an operator to release. A
-`deliver_at` is kept: a released message is delivered no earlier.
+what they release lands in the hold for an operator to release, and the
+operator's release decides when it is delivered. On a channel that does not
+hold, a `deliver_at` is kept: a released message is delivered no earlier.
 
 **Starter results are never lost.** A drop on a Starter's per-run result
 (`origin: starter_sink`) delivers it as a `status: "error"` result instead, and
@@ -409,8 +426,8 @@ tenant-scoped peek (MCP `peek_channel`, gRPC `PeekChannel`). `/metrics` adds
 `hooks` map on create and update; an update with `hooks: {}` removes them. A
 hook is checked when it is attached: a HookDef that does not exist in the
 channel's tenant or the shared one, or answers another event, is refused
-(400 `channel_hooks_invalid`), as is any hook while the server runs none (409
-`channel_hooks_disabled`). A channel's descriptor shows its `hooks`, and
+(400 `channel_hooks_invalid`). Hooks attached while the server runs none are
+checked and kept, and skipped until channel hooks are on. A channel's descriptor shows its `hooks`, and
 `held_count` / `awaiting_hooks_count` beside `message_count`.
 
 **Whose hooks.** A channel's hooks belong to whoever defined the channel: an

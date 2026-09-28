@@ -58,14 +58,15 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	var walkSet *hooks.Set
 	if wh := teamrun.WalkHooksFrom(ctx); len(wh.Hooks) > 0 {
 		walkSet = hooks.NewSet()
-		src := hooks.Source{Owner: agent, Tenant: ident.TenantID, OperatorAuthored: wh.OperatorAuthored}
+		src := hooks.Source{Owner: agent, Tenant: wh.Tenant, OperatorAuthored: wh.OperatorAuthored}
 		if err := hooks.Resolve(ctx, src, wh.Hooks, nil, builtin.HookDefLookup(s.store), s.hookPermits, walkSet); err != nil {
 			return ctx, "", func(string, error) {}, fmt.Errorf("the team's hooks: %w", err)
 		}
 	}
 	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
-		AgentID: agent,
-		UserID:  ident.UserID,
+		AgentID:  agent,
+		UserID:   ident.UserID,
+		TenantID: ident.TenantID,
 	})
 	if err != nil {
 		return ctx, "", func(string, error) {}, err

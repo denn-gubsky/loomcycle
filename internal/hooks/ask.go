@@ -38,6 +38,10 @@ type AskSession interface {
 	// is called when the answer is in. The caller frees what a waiting ask
 	// must not hold (a concurrency slot) and takes it back.
 	Wait() (resume func())
+	// Anchor is the body's clock for this decision (unix millis): now on the
+	// first run, and the same on every later one, in whatever process, so a
+	// body that reads the time replays the question it asked.
+	Anchor(now int64) int64
 }
 
 type askSessionKey struct{}

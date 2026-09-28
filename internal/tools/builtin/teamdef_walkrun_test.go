@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // walkRunRecorder stands in for the server's run opener.
@@ -366,5 +368,40 @@ func TestTeamDefTool_Run_HandsTheWalkItsHooks(t *testing.T) {
 				t.Errorf("operator_authored = %v, want %v", got.OperatorAuthored, tc.want)
 			}
 		})
+	}
+}
+
+// The walk's hooks carry the tenant that owns the team, where their references
+// resolve: an admin running another tenant's team by def_id hands the walk the
+// team's tenant, not its own.
+func TestTeamDefTool_Run_HandsTheWalkTheTeamsTenant(t *testing.T) {
+	tool, base, done := teamDefFixture(t)
+	defer done()
+	owner := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a_test", TenantID: "acme"})
+	created := createTeam(t, tool, owner, "hooked", `{
+	  "entry":"review",
+	  "hooks":{"run_end":["audit"]},
+	  "states":[
+	    {"state":"review","handler":{"kind":"agent","agent":"reviewer"}},
+	    {"state":"done","handler":{"kind":"terminal"}}
+	  ],
+	  "transitions":[{"from":"review","to":"done","on":"success"}]
+	}`)
+	defID, _ := created["def_id"].(string)
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
+	var got teamrun.WalkHooks
+	rec := &walkRunRecorder{}
+	tool.WalkRun = func(c context.Context, name string, detach bool) (context.Context, string, func(string, error), error) {
+		got = teamrun.WalkHooksFrom(c)
+		return rec.open(c, name, detach)
+	}
+	admin := auth.WithPrincipal(tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a_root", TenantID: "globex"}),
+		auth.Principal{TenantID: "globex", Subject: "root", Scopes: []string{auth.ScopeAdmin}})
+	res, _ := tool.Execute(admin, json.RawMessage(`{"op":"run","def_id":"`+defID+`","input":"x"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if got.Tenant != "acme" {
+		t.Fatalf("walk hooks tenant = %q, want the team's (acme)", got.Tenant)
 	}
 }

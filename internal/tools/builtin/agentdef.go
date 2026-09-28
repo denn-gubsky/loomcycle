@@ -222,7 +222,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	if err := a.checkHooks(ctx, in.Name, def); err != nil {
+	if err := a.checkHooks(ctx, in.Name, def, nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// Tools ceiling on `create`: the caller's own effective
@@ -445,7 +445,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	if err := a.checkHooks(ctx, in.Name, def); err != nil {
+	if err := a.checkHooks(ctx, in.Name, def, parent.Definition); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	// Tools ceiling enforcement — fork may narrow, never widen.
@@ -1698,7 +1698,16 @@ func mintDefID() string {
 // a malformed entry, a tool's hooks on a tool the agent does not have, a HookDef
 // that does not exist, or one attached under an event it does not answer. A run
 // resolving them would refuse to start; saying so here is where it can be fixed.
-func (a *AgentDef) checkHooks(ctx context.Context, name string, def mergedDef) error {
+//
+// From inside a run the hooks are not the caller's to change at all: an agent
+// must not write the gates that bind agents (the HookDef tool refuses a run
+// for the same reason). A create carries none, and a fork keeps its parent's
+// exactly — neither adding a webhook that could carry a tool's output or a
+// credential off-host, nor dropping a gate an operator attached.
+func (a *AgentDef) checkHooks(ctx context.Context, name string, def mergedDef, parent json.RawMessage) error {
+	if tools.RunID(ctx) != "" && !sameHooks(def, parent) {
+		return fmt.Errorf("an agent's hooks cannot be changed from inside a run; an operator attaches them through the operator surfaces")
+	}
 	if len(def.Hooks) == 0 && len(def.ToolHooks) == 0 {
 		return nil
 	}
@@ -1707,4 +1716,26 @@ func (a *AgentDef) checkHooks(ctx context.Context, name string, def mergedDef) e
 	}
 	src := hooks.Source{Owner: "agent:" + name, Tenant: tools.RunIdentity(ctx).TenantID}
 	return hooks.Resolve(ctx, src, def.Hooks, def.ToolHooks, HookDefLookup(a.Store), hooks.Permits{}, hooks.NewSet())
+}
+
+// sameHooks reports whether def carries exactly the hooks of parent (a stored
+// definition; nil for none). "None" has one meaning however it is spelled.
+func sameHooks(def mergedDef, parent json.RawMessage) bool {
+	var p struct {
+		Hooks     hooks.EventHooks `json:"hooks"`
+		ToolHooks hooks.ToolHooks  `json:"tool_hooks"`
+	}
+	if len(parent) > 0 {
+		if err := json.Unmarshal(parent, &p); err != nil {
+			return false
+		}
+	}
+	canon := func(v any) string {
+		b, _ := json.Marshal(v)
+		if s := string(b); s != "null" && s != "{}" {
+			return s
+		}
+		return ""
+	}
+	return canon(def.Hooks) == canon(p.Hooks) && canon(def.ToolHooks) == canon(p.ToolHooks)
 }

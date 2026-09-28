@@ -247,9 +247,6 @@ function explainChannelRefusal(msg: string): string {
   if (msg.includes("channel_not_found")) {
     return "Channel not found in the runtime substrate.";
   }
-  if (msg.includes("channel_hooks_disabled")) {
-    return "This server does not run channel hooks (LOOMCYCLE_CHANNEL_HOOKS=1), so a channel cannot carry them.";
-  }
   if (msg.includes("channel_hooks_invalid")) {
     const match = msg.match(/"error":"([^"]+)"/);
     return "A hook cannot be attached: " + (match?.[1] ?? msg);

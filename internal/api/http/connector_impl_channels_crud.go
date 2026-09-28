@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
-	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -78,8 +77,8 @@ func decodeChannelHooks(raw json.RawMessage) hooks.EventHooks {
 }
 
 // checkChannelHooks validates hooks a runtime channel is being given and
-// returns them as stored (nil for none). Channel hooks must be enabled —
-// otherwise every publish to the channel would be refused — and every
+// returns them as stored (nil for none). They are stored whether or not the
+// server runs channel hooks — off, they are skipped until it does — and every
 // reference must resolve, in the channel's tenant or the shared one, to a
 // HookDef that answers channel_publish: a gate named on a channel must exist
 // when it is named.
@@ -90,9 +89,6 @@ func (s *Server) checkChannelHooks(ctx context.Context, name, publisher, tenant 
 	raw, err := json.Marshal(h)
 	if err != nil || store.NoChannelHooks(raw) {
 		return nil, err
-	}
-	if !s.cfg().Env.ChannelHooksEnabled {
-		return nil, channels.ErrChannelHooksDisabled
 	}
 	if err := config.ValidateChannelHooks(name, publisher, h); err != nil {
 		return nil, fmt.Errorf("%w: %v", connector.ErrChannelHooksInvalid, err)
@@ -272,11 +268,8 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 	}
 	desc := rowToBareDescriptor(*match)
 	if stats, err := s.store.ChannelStats(ctx); err == nil {
-		for _, st := range stats {
-			if st.Channel == name {
-				attachStats(&desc, st)
-				break
-			}
+		if st, ok := newStatsIndex(stats).forKeyspace(name, store.ChannelScopeTenant(match.TenantID, store.MemoryScope(match.Scope))); ok {
+			attachStats(&desc, st)
 		}
 	}
 	return desc, nil

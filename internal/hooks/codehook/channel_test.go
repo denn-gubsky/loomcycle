@@ -66,6 +66,7 @@ type fakeSession struct {
 	recorded      []hooks.AskRecord
 	began, waited int
 	resumed       int
+	anchor        int64
 }
 
 func (s *fakeSession) Recorded() []hooks.AskRecord { return s.recorded }
@@ -78,6 +79,12 @@ func (s *fakeSession) Begin(ctx context.Context) (context.Context, error) {
 	return tools.WithRunID(ctx, "run_hook"), nil
 }
 func (s *fakeSession) Wait() func() { s.waited++; return func() { s.resumed++ } }
+func (s *fakeSession) Anchor(now int64) int64 {
+	if s.anchor == 0 {
+		s.anchor = now
+	}
+	return s.anchor
+}
 
 // An answer a person already gave is replayed from the session, not asked
 // again — the body decides on it as if it had just been answered. Without the

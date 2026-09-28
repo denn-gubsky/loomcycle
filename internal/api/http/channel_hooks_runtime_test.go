@@ -10,7 +10,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channelhooks"
-	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
@@ -92,10 +91,27 @@ func TestRuntimeChannel_RefusesHooksThatCannotRun(t *testing.T) {
 			t.Errorf("%s: err = %v, want invalid (%q)", ref, err, want)
 		}
 	}
-	off, st2 := channelHooksFixture(t, false)
-	putHookDef(t, st2, "acme", "screen", codeDef(`function hook(ev){}`))
-	if _, err := off.CreateChannel(tenantCtx("acme"), connector.ChannelCreateRequest{Name: "inbox", Scope: "tenant", Hooks: onChannel("screen")}); !errors.Is(err, channels.ErrChannelHooksDisabled) {
-		t.Fatalf("with hooks off: err = %v", err)
+}
+
+// With channel hooks off, a runtime channel still takes hooks — they are
+// checked and kept, so turning channel hooks on enforces them — but they are
+// skipped meanwhile: a publish is delivered at once.
+func TestRuntimeChannel_HooksAreKeptAndSkippedWhenDisabled(t *testing.T) {
+	off, st := channelHooksFixture(t, false)
+	putHookDef(t, st, "acme", "screen", codeDef(`function hook(ev){}`))
+	if _, err := off.CreateChannel(tenantCtx("acme"), connector.ChannelCreateRequest{Name: "c", Scope: "tenant", Hooks: onChannel("missing")}); !errors.Is(err, connector.ErrChannelHooksInvalid) {
+		t.Fatalf("an unknown HookDef with hooks off: err = %v", err)
+	}
+	desc, err := off.CreateChannel(tenantCtx("acme"), connector.ChannelCreateRequest{Name: "inbox", Scope: "tenant", Hooks: onChannel("screen")})
+	if err != nil || len(desc.Hooks[hooks.PhaseChannelPublish]) != 1 {
+		t.Fatalf("create with hooks off: %+v, %v", desc.Hooks, err)
+	}
+	res, err := off.PublishChannel(tenantCtx("acme"), connector.ChannelPublishRequest{Channel: "inbox", Scope: "tenant", Payload: json.RawMessage(`{}`)})
+	if err != nil || res.AwaitingHooks {
+		t.Fatalf("publish with hooks off: %+v, %v", res, err)
+	}
+	if msgs, _ := st.ChannelPeek(context.Background(), "acme", "inbox", store.MemoryScopeTenant, "", "", 10); len(msgs) != 1 {
+		t.Fatalf("delivered %d, want 1", len(msgs))
 	}
 }
 

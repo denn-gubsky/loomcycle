@@ -47,6 +47,12 @@ type RunMinter interface {
 type journal struct {
 	Pos  int               `json:"pos"`
 	Asks []hooks.AskRecord `json:"asks,omitempty"`
+	// Chain identifies the chain the progress is a place in (see
+	// chainSignature).
+	Chain string `json:"chain,omitempty"`
+	// Anchor is the hook body's clock for this decision (see
+	// hooks.AskSession.Anchor).
+	Anchor int64 `json:"anchor,omitempty"`
 	// HeldBy marks a hold made while nobody can be asked (no Interruption
 	// configured): the message waits out its deadline.
 	HeldBy string `json:"held_by,omitempty"`
@@ -61,7 +67,7 @@ func (j *job) loadJournal() {
 }
 
 func (j *job) journalJSON() json.RawMessage {
-	if j.jrnl.Pos < 0 {
+	if j.jrnl.Pos < 0 && j.jrnl.Chain == "" && j.jrnl.HeldBy == "" {
 		return nil
 	}
 	b, _ := json.Marshal(j.jrnl)
@@ -90,9 +96,19 @@ func (s *askSession) Recorded() []hooks.AskRecord {
 	return s.j.jrnl.Asks
 }
 
+func (s *askSession) Anchor(now int64) int64 {
+	if s.j.jrnl.Pos != s.pos {
+		s.j.jrnl = journal{Pos: s.pos, Chain: s.j.jrnl.Chain}
+	}
+	if s.j.jrnl.Anchor == 0 {
+		s.j.jrnl.Anchor = now // kept with the first answer
+	}
+	return s.j.jrnl.Anchor
+}
+
 func (s *askSession) Record(r hooks.AskRecord) error {
 	if s.j.jrnl.Pos != s.pos {
-		s.j.jrnl = journal{Pos: s.pos}
+		s.j.jrnl = journal{Pos: s.pos, Chain: s.j.jrnl.Chain}
 	}
 	s.j.jrnl.Asks = append(s.j.jrnl.Asks, r)
 	return s.j.saveProgress(s.ctx, s.pos, s.body, 0, time.Time{}, "")

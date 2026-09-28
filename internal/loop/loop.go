@@ -3234,7 +3234,16 @@ outerLoop:
 			if opts.Hooks != nil {
 				out := opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, opts.AgentName, iter),
 					hooks.LifecycleInfo{FinalText: finalText, StopReason: iterStop, StopBlocks: stopBlocks})
-				EmitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
+				decisions := out.Decisions
+				if out.Kind == hooks.StopBlock && (stopBlocks >= MaxStopBlocks || iter+1 >= iterCap) {
+					// The block fails the run below and sends no turn back. A
+					// persisted block is what a transcript replay rebuilds that
+					// turn from, so recording it would give a continuation a
+					// message the model never had; the run's error names the
+					// hook and its reason instead.
+					decisions = withoutBlocks(decisions)
+				}
+				EmitHookDecisions(emit, providers.ToolUse{}, decisions)
 				switch out.Kind {
 				case hooks.StopBlock:
 					if stopBlocks >= MaxStopBlocks {
@@ -3590,6 +3599,17 @@ func HookIdentity(ctx context.Context, agent string, iteration int) hooks.Identi
 		ParentRunID: tools.ParentRunID(ctx),
 		Iteration:   iteration,
 	}
+}
+
+// withoutBlocks is ds less its agent_stop blocks.
+func withoutBlocks(ds []hooks.Decision) []hooks.Decision {
+	out := make([]hooks.Decision, 0, len(ds))
+	for _, d := range ds {
+		if d.Kind != hooks.StopBlock {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // EmitHookDecisions records what the hooks did to one call. A hook that

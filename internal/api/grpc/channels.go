@@ -14,7 +14,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
-	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
@@ -37,8 +36,6 @@ func channelErrCode(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, connector.ErrChannelHooksInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, channels.ErrChannelHooksDisabled):
-		return status.Error(codes.FailedPrecondition, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

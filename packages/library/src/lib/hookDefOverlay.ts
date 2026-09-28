@@ -27,3 +27,18 @@ export function forkOverlay(source: DefValue, edited: DefValue): Record<string, 
   }
   return out;
 }
+
+/** keepHookRemovals is an agent fork's overlay with the hooks the operator
+ *  removed made explicit. On an AgentDef fork an absent (or null) `hooks` /
+ *  `tool_hooks` means "keep the parent's"; only an empty object clears them.
+ *  So a key the source carried and the edit dropped is sent as {}. */
+export function keepHookRemovals(source: unknown, overlay: Record<string, unknown>): Record<string, unknown> {
+  const src = source && typeof source === "object" ? (source as Record<string, unknown>) : {};
+  const out = { ...overlay };
+  for (const k of ["hooks", "tool_hooks"]) {
+    const had = src[k];
+    const hadAny = !!had && typeof had === "object" && Object.keys(had).length > 0;
+    if (hadAny && (out[k] === undefined || out[k] === null)) out[k] = {};
+  }
+  return out;
+}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -39,13 +40,19 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 	if err != nil {
 		return connector.ListChannelsResponse{}, err
 	}
-	statsByName := make(map[string]store.ChannelStats, len(stats))
-	for _, st := range stats {
-		statsByName[st.Channel] = st
-	}
+	ix := newStatsIndex(stats)
 
+	// An operator's yaml hooks are the operator's: a tenant operator sees that
+	// a channel is hooked and by which hooks, never an inline webhook's URL
+	// or headers (a URL may carry a token; a header may hold an expanded
+	// ${LOOMCYCLE_*} secret).
+	tenantID, all := s.principalTenantScope(ctx, "")
 	out := make([]connector.ChannelDescriptor, 0, len(s.cfg().Channels))
 	for name, ch := range s.cfg().Channels {
+		yamlHooks := ch.Hooks
+		if !all {
+			yamlHooks = hooks.WithoutEndpoints(ch.Hooks)
+		}
 		desc := connector.ChannelDescriptor{
 			Name:        name,
 			Description: ch.Description,
@@ -56,10 +63,17 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			DefaultTTL:  ch.DefaultTTL,
 			MaxMessages: ch.MaxMessages,
 			Hold:        ch.Hold,
-			Hooks:       ch.Hooks,
+			Hooks:       yamlHooks,
 			Source:      "yaml",
 		}
-		if st, ok := statsByName[name]; ok {
+		// A yaml channel's messages are keyed by the writer's tenant (or the
+		// shared keyspace, for a global one): a tenant sees its own, an admin
+		// every tenant's summed.
+		st, ok := ix.forKeyspace(name, store.ChannelScopeTenant(tenantID, store.MemoryScope(ch.Scope)))
+		if all {
+			st, ok = ix.acrossTenants(name)
+		}
+		if ok {
 			attachStats(&desc, st)
 		}
 		out = append(out, desc)
@@ -74,7 +88,6 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 	}
 	// ChannelsList returns every tenant's rows; tenant operators see only
 	// their own channels, admin sees all.
-	tenantID, all := s.principalTenantScope(ctx, "")
 	for _, r := range runtimeRows {
 		if !all && r.TenantID != tenantID {
 			continue
@@ -83,7 +96,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			continue
 		}
 		desc := rowToBareDescriptor(r)
-		if st, ok := statsByName[r.Name]; ok {
+		if st, ok := ix.forKeyspace(r.Name, store.ChannelScopeTenant(r.TenantID, store.MemoryScope(r.Scope))); ok {
 			attachStats(&desc, st)
 		}
 		out = append(out, desc)
@@ -95,14 +108,22 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 	for _, r := range runtimeRows {
 		runtimeNames[r.Name] = true
 	}
-	for name, st := range statsByName {
-		if _, declared := s.cfg().Channels[name]; declared {
+	// A tenant sees only its own keyspace's orphans: another tenant's channel
+	// names are not its to read.
+	orphans := map[string]bool{}
+	for _, st := range stats {
+		name := st.Channel
+		if _, declared := s.cfg().Channels[name]; declared || runtimeNames[name] || orphans[name] {
 			continue
 		}
-		if runtimeNames[name] {
+		if !all && st.TenantID != tenantID {
 			continue
 		}
+		orphans[name] = true
 		desc := connector.ChannelDescriptor{Name: name, Source: "orphan"}
+		if all {
+			st, _ = ix.acrossTenants(name)
+		}
 		attachStats(&desc, st)
 		out = append(out, desc)
 	}
@@ -215,4 +236,50 @@ func runStateEventToConnector(e runstate.RunStateEvent) connector.RunStateEvent 
 		TS:            ts,
 		ParentContext: e.ParentContext,
 	}
+}
+
+// statsIndex is ChannelStats by (message keyspace, channel). Stats are
+// aggregated per tenant keyspace; joining them by channel name alone gave
+// one tenant another tenant's counts for a channel of the same name.
+type statsIndex map[string]store.ChannelStats
+
+func newStatsIndex(stats []store.ChannelStats) statsIndex {
+	ix := make(statsIndex, len(stats))
+	for _, st := range stats {
+		ix[st.TenantID+"\x00"+st.Channel] = st
+	}
+	return ix
+}
+
+// forKeyspace is one channel's stats in one keyspace.
+func (ix statsIndex) forKeyspace(name, keyspace string) (store.ChannelStats, bool) {
+	st, ok := ix[keyspace+"\x00"+name]
+	return st, ok
+}
+
+// acrossTenants is one channel's stats summed over every keyspace, for a
+// caller who sees them all.
+func (ix statsIndex) acrossTenants(name string) (store.ChannelStats, bool) {
+	var out store.ChannelStats
+	found := false
+	for _, st := range ix {
+		if st.Channel != name {
+			continue
+		}
+		if !found {
+			out, found = st, true
+			out.TenantID = ""
+			continue
+		}
+		out.MessageCount += st.MessageCount
+		out.Held += st.Held
+		out.AwaitingHooks += st.AwaitingHooks
+		if !st.OldestVisibleAt.IsZero() && (out.OldestVisibleAt.IsZero() || st.OldestVisibleAt.Before(out.OldestVisibleAt)) {
+			out.OldestVisibleAt = st.OldestVisibleAt
+		}
+		if st.NewestVisibleAt.After(out.NewestVisibleAt) {
+			out.NewestVisibleAt = st.NewestVisibleAt
+		}
+	}
+	return out, found
 }

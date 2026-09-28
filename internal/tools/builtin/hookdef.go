@@ -466,9 +466,9 @@ func HookDefLookup(st store.Store) hooks.LookupDef {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
 				if version > 0 {
-					return hooks.Def{}, "", fmt.Errorf("no HookDef %s@%d", name, version)
+					return hooks.Def{}, "", hooks.DefNotFound(fmt.Errorf("no HookDef %s@%d", name, version))
 				}
-				return hooks.Def{}, "", fmt.Errorf("no HookDef %q", name)
+				return hooks.Def{}, "", hooks.DefNotFound(fmt.Errorf("no HookDef %q", name))
 			}
 			return hooks.Def{}, "", err
 		}

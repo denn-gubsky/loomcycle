@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -96,6 +97,27 @@ type EventHooks map[Phase][]Entry
 // ToolHooks maps a tool name to the hooks of that tool — its pre and post hooks
 // in that agent.
 type ToolHooks map[string]EventHooks
+
+// WithoutEndpoints returns e with each inline webhook reduced to its name: the
+// shape of an attachment, for someone allowed to see which hooks run but not
+// where they call or with what headers.
+func WithoutEndpoints(e EventHooks) EventHooks {
+	if len(e) == 0 {
+		return e
+	}
+	out := make(EventHooks, len(e))
+	for phase, entries := range e {
+		list := make([]Entry, len(entries))
+		for i, entry := range entries {
+			if entry.Inline != nil {
+				entry = Entry{Inline: &Inline{Name: entry.Inline.Name}}
+			}
+			list[i] = entry
+		}
+		out[phase] = list
+	}
+	return out
+}
 
 // ParseRef splits a HookDef reference into its name and version (0 = the
 // version active when the run starts).
@@ -314,11 +336,28 @@ func resolveEntry(ctx context.Context, src Source, tool string, phase Phase, ent
 	return h, nil
 }
 
+// DefNotFound marks a LookupDef error as "no such HookDef" — the one answer
+// on which a reference falls back to the shared tenant. The message is kept.
+func DefNotFound(err error) error { return defNotFound{err} }
+
+type defNotFound struct{ error }
+
+func (e defNotFound) Unwrap() error { return e.error }
+
+// IsDefNotFound reports whether a lookup found no such HookDef.
+func IsDefNotFound(err error) bool {
+	var nf defNotFound
+	return errors.As(err, &nf)
+}
+
 // lookupInScope looks a reference up in the definition's tenant, then in the
-// shared tenant, and says where it was found.
+// shared tenant, and says where it was found. It falls back only when the
+// tenant has no such HookDef: a retired version, or a fault reading the
+// store, is the answer — not a reason to run the operator's definition of the
+// same name in its place.
 func lookupInScope(ctx context.Context, lookup LookupDef, tenant, name string, version int) (Def, string, string, error) {
 	def, id, err := lookup(ctx, tenant, name, version)
-	if err == nil || tenant == "" {
+	if err == nil || tenant == "" || !IsDefNotFound(err) {
 		return def, id, tenant, err
 	}
 	if def, id, serr := lookup(ctx, "", name, version); serr == nil {
@@ -459,15 +498,43 @@ func (a Additions) Validate(agentTools []string) error {
 		return err
 	}
 	for tool := range a.ToolHooks {
-		found := false
-		for _, t := range agentTools {
-			if t == tool {
-				found = true
-				break
+		// The agent's tools may be globs (mcp__jobs__*): a tool one names is
+		// a tool the agent has.
+		if len(agentTools) == 0 || !globsMatch(agentTools, tool) {
+			return fmt.Errorf("tool_hooks: %s is not one of the agent's tools", tool)
+		}
+	}
+	return nil
+}
+
+// RefuseCredentials refuses additions a caller named with a webhook whose
+// headers reference a credential. A header value naming one is resolved for
+// the run — the agent's, the user's or the tenant's credential — and sent to
+// the webhook's URL, so a caller who may start a run but not read a credential
+// could name one and aim it at any host. A hook that needs a credential is a
+// HookDef an operator wrote, whose URL is fixed with it.
+func (a Additions) RefuseCredentials() error {
+	check := func(where string, e EventHooks) error {
+		for _, phase := range sortedPhases(e) {
+			for _, entry := range e[phase] {
+				if entry.Inline == nil {
+					continue
+				}
+				for k, v := range entry.Inline.Headers {
+					if strings.Contains(v, "$") {
+						return fmt.Errorf("%s%s: webhook %s: header %s names a credential; a run's own hooks cannot — attach a HookDef an operator wrote", where, phase, entry.Inline.Name, k)
+					}
+				}
 			}
 		}
-		if !found {
-			return fmt.Errorf("tool_hooks: %s is not one of the agent's tools", tool)
+		return nil
+	}
+	if err := check("hooks.", a.Hooks); err != nil {
+		return err
+	}
+	for tool, events := range a.ToolHooks {
+		if err := check("tool_hooks."+tool+".", events); err != nil {
+			return err
 		}
 	}
 	return nil

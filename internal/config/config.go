@@ -2689,8 +2689,8 @@ type Channel struct {
 	// it, or hold it for a person. `channel_publish` is the only event; its
 	// entries are HookDef names or inline webhooks, run in order. A hold on
 	// the same channel applies to what the hooks release. Needs
-	// LOOMCYCLE_CHANNEL_HOOKS=1: without it a publish to a hooked channel is
-	// refused.
+	// LOOMCYCLE_CHANNEL_HOOKS=1: without it the hooks are skipped and the
+	// channel's messages are delivered as if it declared none.
 	Hooks hooks.EventHooks `yaml:"hooks"`
 }
 
@@ -3805,9 +3805,9 @@ type Env struct {
 	CodeHooksEnabled bool
 
 	// ChannelHooksEnabled runs the channel-hook worker, which decides the
-	// messages of channels that carry hooks. Default OFF; off, a publish to a
-	// hooked channel is refused rather than stored for a decision nobody will
-	// make. Env: LOOMCYCLE_CHANNEL_HOOKS=1.
+	// messages of channels that carry hooks. Default OFF; off, a channel's
+	// hooks are skipped (an opt-in feature a deployment has not turned on).
+	// Env: LOOMCYCLE_CHANNEL_HOOKS=1.
 	ChannelHooksEnabled bool
 	// ChannelHooksConcurrency bounds the messages one replica decides at
 	// once (default 16); ChannelHooksPerChannel, those of one channel

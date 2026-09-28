@@ -59,7 +59,7 @@ func newFixture(t *testing.T) *fixture {
 			defer f.mu.Unlock()
 			d, ok := f.hdefs[tenant+"|"+name]
 			if !ok {
-				return hooks.Def{}, "", errors.New("not found")
+				return hooks.Def{}, "", hooks.DefNotFound(errors.New("not found"))
 			}
 			return d, "hdf_" + name, nil
 		},
@@ -570,5 +570,90 @@ func TestWorker_ATenantsWebhookIsGuarded(t *testing.T) {
 	}
 	if msgs := f.peek("inbox", "acme", store.MemoryScopeTenant); len(msgs) != 0 {
 		t.Fatalf("delivered %d past a hook that could not run", len(msgs))
+	}
+}
+
+// fail500 is a webhook that always fails.
+func fail500(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500) }))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// A message part-way through a chain the operator then changes starts over
+// in the new chain: its saved place was an index into the old one, so a gate
+// added in front of it — or a chain shortened past it — let it through with
+// the new gate never run.
+func TestWorker_AChangedChainStartsOver(t *testing.T) {
+	f := newFixture(t)
+	redact, _ := answer(t, `{"updated_body":{"text":"[r]"}}`)
+	f.setDef("", "inbox", Def{Hooks: chain(webhookEntry("redact", redact.URL), webhookEntry("approve", fail500(t)))})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{"text":"secret"}`, nil)
+	f.drain() // redact ran; approve fails closed and waits for a retry
+	gate, calls := answer(t, `{"decision":"drop","reason":"gated"}`)
+	f.setDef("", "inbox", Def{Hooks: chain(webhookEntry("gate", gate.URL))})
+	f.w.now = func() time.Time { return time.Now().Add(time.Minute) } // past the retry's backoff
+	f.drain()
+	if calls.Load() != 1 {
+		t.Fatalf("the new chain's gate ran %d times", calls.Load())
+	}
+	if got := f.peek("inbox", "", store.MemoryScopeGlobal); len(got) != 0 {
+		t.Fatalf("delivered %+v past the new gate", got)
+	}
+}
+
+// Hooks taken off a channel mid-chain: the message is delivered with what the
+// hooks that ran made of it — a redaction is not undone.
+func TestWorker_HooksRemovedKeepTheRewrite(t *testing.T) {
+	f := newFixture(t)
+	redact, _ := answer(t, `{"updated_body":{"text":"[r]"}}`)
+	f.setDef("", "inbox", Def{Hooks: chain(webhookEntry("redact", redact.URL), webhookEntry("approve", fail500(t)))})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{"text":"secret"}`, nil)
+	f.drain()
+	f.setDef("", "inbox", Def{})
+	f.w.now = func() time.Time { return time.Now().Add(time.Minute) }
+	f.drain()
+	got := f.peek("inbox", "", store.MemoryScopeGlobal)
+	if len(got) != 1 || string(got[0].Payload) != `{"text":"[r]"}` {
+		t.Fatalf("delivered %+v, want the redacted body", got)
+	}
+}
+
+// A channel with no definition at all (a restore that did not bring it back)
+// is not a channel whose hooks were lifted: its messages are not delivered.
+func TestWorker_AnUndeclaredChannelFailsClosed(t *testing.T) {
+	f := newFixture(t)
+	rel, _ := answer(t, ``)
+	f.setDef("", "inbox", Def{Hooks: chain(webhookEntry("screen", rel.URL))})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, nil)
+	f.mu.Lock()
+	delete(f.defs, "|inbox")
+	f.mu.Unlock()
+	f.drain()
+	if got := f.peek("inbox", "", store.MemoryScopeGlobal); len(got) != 0 {
+		t.Fatalf("delivered %d from an undeclared channel", len(got))
+	}
+}
+
+// The worker removes progress rows no message needs any more: here, the row
+// of a message the expiry sweep took while its hook kept failing.
+func TestWorker_RunCollectsStaleProgress(t *testing.T) {
+	f := newFixture(t)
+	f.setDef("", "inbox", Def{Hooks: chain(webhookEntry("down", fail500(t)))})
+	f.publish("inbox", "", store.MemoryScopeGlobal, `{}`, func(r *channels.WriteRequest) { r.ExpiresAt = time.Now().Add(3 * time.Second) })
+	f.drain() // the failing hook leaves a progress row, retried before the TTL
+	time.Sleep(3100 * time.Millisecond)
+	if n, err := f.st.ChannelSweepExpired(context.Background()); err != nil || n != 1 {
+		t.Fatalf("sweep: %d %v", n, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { f.w.Run(ctx); close(done) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+	if n, _ := f.st.ChannelHookGC(context.Background(), 100); n != 0 {
+		t.Fatalf("Run left %d stale progress row(s)", n)
 	}
 }
