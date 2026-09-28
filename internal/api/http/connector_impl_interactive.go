@@ -40,17 +40,21 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	}
 	// Tenant-ownership gate: a cross-tenant (or unknown) run is folded into an
 	// opaque ErrRunNotInFlight — run_ids are not secret, so the gate must not
-	// become an existence oracle. Mirrors handleRunInput's gate exactly.
-	entry, ok := s.steerReg.Get(runID)
-	if !ok {
-		return false, connector.ErrRunNotInFlight
-	}
-	if entry.SessionID != "" && s.store != nil {
-		if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
-			if !sessionOwnershipOK(ctx, sess) {
-				return false, connector.ErrRunNotInFlight
+	// become an existence oracle. Mirrors handleRunInput's gate exactly. A run
+	// this replica does not have is gated as retune gates it: live on the
+	// replica that owns it, where the push below routes.
+	if entry, ok := s.steerReg.Get(runID); ok {
+		if entry.SessionID != "" && s.store != nil {
+			if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
+				if !sessionOwnershipOK(ctx, sess) {
+					return false, connector.ErrRunNotInFlight
+				}
 			}
 		}
+	} else if s.store == nil {
+		return false, connector.ErrRunNotInFlight
+	} else if _, err := s.remoteRunForSteer(ctx, runID); err != nil {
+		return false, connector.ErrRunNotInFlight
 	}
 	delivered, err := s.steerReg.Push(ctx, runID, steer.Message{
 		Text: text, Source: source, EnqueuedAt: time.Now(),
