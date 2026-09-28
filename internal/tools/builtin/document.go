@@ -482,6 +482,10 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errValidation("invalid input JSON: "+err.Error(), "Resend the call as one JSON object matching the Document input schema."), nil
 	}
+	// Before any lookup: a cut id is refused on its syntax alone.
+	if r, cut := refuseCutIDs(in); cut {
+		return r, nil
+	}
 	key, mscope, err := d.resolveScope(ctx, in.Scope)
 	if err != nil {
 		return docFail("", err), nil
