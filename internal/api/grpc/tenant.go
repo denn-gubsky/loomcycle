@@ -43,14 +43,6 @@ func grpcPrincipalSubject(ctx context.Context) string {
 	return ""
 }
 
-// grpcTenantVisible reports whether a row owned by rowTenant is in the caller's
-// tenant scope. Callers fold a false result into an opaque NotFound so the gate
-// is not a cross-tenant existence oracle (ids are not secret).
-func grpcTenantVisible(ctx context.Context, rowTenant string) bool {
-	tenantID, all := grpcTenantScope(ctx)
-	return all || rowTenant == tenantID
-}
-
 // principalMayUseChannelScope enforces the same channel-scope authz the HTTP
 // channel routes apply: the operator "global" scope is admin-only (HTTP serves
 // it solely under the substrate:admin /v1/_channels/* routes) and a "user"

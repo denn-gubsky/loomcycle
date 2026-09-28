@@ -322,11 +322,15 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
+	p, ok := auth.PrincipalFromContext(ctx)
 	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs))}
 	for _, r := range runs {
-		// Tenant isolation (RFC L/N): drop cross-tenant rows, mirroring the HTTP
-		// handleListUserAgents post-filter driven by principalTenantScope.
-		if !grpcTenantVisible(ctx, r.TenantID) {
+		// Drop cross-tenant rows, and for an isolated member another user's rows,
+		// mirroring HTTP handleListUserAgents (its isolatedCrossUser short-circuit
+		// plus the principalTenantScope post-filter). Every row here carries the
+		// requested user_id, so a cross-user list from an isolated member comes
+		// back empty exactly as it does over HTTP.
+		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) {
 			continue
 		}
 		_, live := s.cancelReg.Get(r.AgentID)
