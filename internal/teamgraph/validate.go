@@ -290,27 +290,18 @@ func validateStarter(stateID string, h Handler) error {
 	if h.Agent != "" || len(h.Agents) != 0 || h.Consolidator != "" {
 		return fmt.Errorf("team definition: state %q starter handler names its agents in `fanout`, not in agent/agents/consolidator", stateID)
 	}
-	if h.Source == nil || strings.TrimSpace(h.Source.Channel) == "" {
-		return fmt.Errorf("team definition: state %q starter handler requires `source.channel` — a starter reads exactly one channel", stateID)
-	}
-	// `all` counts CHANNELS, not messages (Channel op=await's predicate). Over
-	// the single channel a starter reads it is therefore identical to `any` and
-	// returns after the FIRST message, so "wait for all of them" written as
-	// `all` silently yields one of N. It is never what the author meant.
-	switch h.Source.Wait {
-	case "", WaitAny:
-	case WaitAtLeast:
-		if h.Source.N < 1 {
-			return fmt.Errorf("team definition: state %q starter source wait=at_least requires `n` >= 1", stateID)
+	isDoc := h.Source.IsDocument()
+	switch {
+	case isDoc:
+		if err := validateDocumentSource(stateID, h); err != nil {
+			return err
 		}
-	case WaitAll:
-		return fmt.Errorf("team definition: state %q starter source wait=%q counts CHANNELS, and a starter reads ONE — "+
-			"over one channel it returns after the first message. Use at_least with `n`, or any", stateID, WaitAll)
+	case h.Source != nil && h.Source.Kind != "" && h.Source.Kind != SourceChannel:
+		return fmt.Errorf("team definition: state %q starter source has invalid kind %q (want channel|document)", stateID, h.Source.Kind)
 	default:
-		return fmt.Errorf("team definition: state %q starter source has invalid wait %q (want any|at_least)", stateID, h.Source.Wait)
-	}
-	if h.Source.WaitMS < 0 || h.Source.Batch < 0 || h.Source.N < 0 {
-		return fmt.Errorf("team definition: state %q starter source wait_ms/batch/n must be >= 0", stateID)
+		if err := validateChannelSource(stateID, h); err != nil {
+			return err
+		}
 	}
 
 	if h.Fanout == nil {
@@ -325,6 +316,17 @@ func validateStarter(stateID string, h Handler) error {
 			return fmt.Errorf("team definition: state %q starter fanout has an empty agent name", stateID)
 		}
 	}
+	// per=message and per=chunk each belong to one source kind. The empty
+	// default means message, so a document source must say which it wants
+	// rather than inherit a shape that has no meaning for it.
+	switch per := h.Fanout.Per; {
+	case isDoc && (per == "" || per == FanoutPerMessage):
+		return fmt.Errorf("team definition: state %q starter reads a document, which has sections, not messages — "+
+			"set fanout.per to chunk (one run per section) or once (one run holding every section)", stateID)
+	case !isDoc && per == FanoutPerChunk:
+		return fmt.Errorf("team definition: state %q starter fanout per=chunk needs a document source (source.kind: document); "+
+			"a channel source fans out per=message or per=once", stateID)
+	}
 	switch h.Fanout.Per {
 	case "", FanoutPerMessage:
 		// Dynamic fan-out is a spawn amplifier: one run per message, and the
@@ -334,12 +336,19 @@ func validateStarter(stateID string, h Handler) error {
 			return fmt.Errorf("team definition: state %q starter fanout per=message requires `max` >= 1 — "+
 				"the wave is as wide as the channel is deep, so the ceiling is not optional", stateID)
 		}
+	case FanoutPerChunk:
+		// The same amplifier: the wave is as wide as the document is long, and
+		// whoever can edit the document decides that, not the definition.
+		if h.Fanout.Max < 1 {
+			return fmt.Errorf("team definition: state %q starter fanout per=chunk requires `max` >= 1 — "+
+				"the wave is as wide as the document has sections, so the ceiling is not optional", stateID)
+		}
 	case FanoutPerOnce:
 		if h.Fanout.Max != 0 {
 			return fmt.Errorf("team definition: state %q starter fanout per=once spawns one run, so `max` means nothing", stateID)
 		}
 	default:
-		return fmt.Errorf("team definition: state %q starter fanout has invalid per %q (want message|once)", stateID, h.Fanout.Per)
+		return fmt.Errorf("team definition: state %q starter fanout has invalid per %q (want message|once|chunk)", stateID, h.Fanout.Per)
 	}
 	if err := validateWait(stateID, h.Fanout.Wait); err != nil {
 		return err
@@ -361,6 +370,86 @@ func validateStarter(stateID string, h Handler) error {
 		return fmt.Errorf("team definition: state %q starter has invalid ack %q (want after_results|after_read)", stateID, h.Ack)
 	}
 	return validateCapture(stateID, h.Binds)
+}
+
+// validateChannelSource checks a channel source: the name, and the wait
+// predicate over it.
+func validateChannelSource(stateID string, h Handler) error {
+	if h.Source == nil || strings.TrimSpace(h.Source.Channel) == "" {
+		return fmt.Errorf("team definition: state %q starter handler requires `source.channel` — a starter reads exactly one channel "+
+			"(or, with source.kind: document, one document)", stateID)
+	}
+	// The document fields on a channel source would read as configured and
+	// do nothing.
+	if h.Source.Path != "" || h.Source.Scope != "" || h.Source.Select != "" {
+		return fmt.Errorf("team definition: state %q starter source sets path/scope/select, which only a document source reads — "+
+			"set source.kind: document, or remove them", stateID)
+	}
+	// `all` counts CHANNELS, not messages (Channel op=await's predicate). Over
+	// the single channel a starter reads it is therefore identical to `any` and
+	// returns after the FIRST message, so "wait for all of them" written as
+	// `all` silently yields one of N. It is never what the author meant.
+	switch h.Source.Wait {
+	case "", WaitAny:
+	case WaitAtLeast:
+		if h.Source.N < 1 {
+			return fmt.Errorf("team definition: state %q starter source wait=at_least requires `n` >= 1", stateID)
+		}
+	case WaitAll:
+		return fmt.Errorf("team definition: state %q starter source wait=%q counts CHANNELS, and a starter reads ONE — "+
+			"over one channel it returns after the first message. Use at_least with `n`, or any", stateID, WaitAll)
+	default:
+		return fmt.Errorf("team definition: state %q starter source has invalid wait %q (want any|at_least)", stateID, h.Source.Wait)
+	}
+	if h.Source.WaitMS < 0 || h.Source.Batch < 0 || h.Source.N < 0 {
+		return fmt.Errorf("team definition: state %q starter source wait_ms/batch/n must be >= 0", stateID)
+	}
+	return nil
+}
+
+// validateDocumentSource checks a document source. A document has no cursor
+// and nothing to wait for, so every field that shapes a channel read — the
+// wait predicate, the batch, the ack — is refused rather than ignored: each
+// would read as configured and do nothing.
+func validateDocumentSource(stateID string, h Handler) error {
+	src := h.Source
+	if strings.TrimSpace(src.Channel) != "" {
+		return fmt.Errorf("team definition: state %q starter reads a document, so `source.channel` means nothing — remove it", stateID)
+	}
+	p := src.Path
+	switch {
+	case strings.TrimSpace(p) == "":
+		return fmt.Errorf("team definition: state %q starter document source requires `source.path`", stateID)
+	case !strings.HasPrefix(p, "/") || p == "/":
+		return fmt.Errorf("team definition: state %q starter document source path %q must be an absolute document path, e.g. /specs/acme", stateID, src.Path)
+	case strings.Contains(p, "${") || strings.Contains(p, "{{"):
+		// A fixed literal, so what a definition reads is what it says. A
+		// variable here would make the read depend on the walk's input.
+		return fmt.Errorf("team definition: state %q starter document source path %q must be a fixed path — variables are not supported", stateID, src.Path)
+	}
+	switch src.Scope {
+	case "", "user", "tenant":
+	default:
+		// No `agent`: a walk runs as a person, not as an agent, so there is
+		// no agent tree for it to read.
+		return fmt.Errorf("team definition: state %q starter document source has invalid scope %q (want user|tenant)", stateID, src.Scope)
+	}
+	switch src.Select {
+	case "", SelectChunks:
+	default:
+		return fmt.Errorf("team definition: state %q starter document source has invalid select %q (want chunks)", stateID, src.Select)
+	}
+	switch {
+	case src.Wait != "" || src.N != 0 || src.WaitMS != 0:
+		return fmt.Errorf("team definition: state %q starter reads a document, which is read once when the wave dispatches — "+
+			"there is nothing to wait for, so remove source.wait/n/wait_ms", stateID)
+	case src.Batch != 0:
+		return fmt.Errorf("team definition: state %q starter reads a document, which is read whole — remove source.batch "+
+			"(fanout.max bounds the wave)", stateID)
+	case h.Ack != "":
+		return fmt.Errorf("team definition: state %q starter reads a document, which has no cursor to acknowledge — remove `ack`", stateID)
+	}
+	return nil
 }
 
 func validateWait(stateID, wait string) error {

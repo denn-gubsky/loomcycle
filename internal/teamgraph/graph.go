@@ -51,7 +51,18 @@ const (
 const (
 	FanoutPerMessage = "message" // one run per message read — dynamic N
 	FanoutPerOnce    = "once"    // one run holding the whole batch
+	FanoutPerChunk   = "chunk"   // one run per document section — document sources only
 )
+
+// What a starter reads.
+const (
+	SourceChannel  = "channel"  // the default: one channel, behind a cursor
+	SourceDocument = "document" // one document's top-level sections, read once
+)
+
+// SelectChunks is the only document selection: the root's direct children
+// (the top-level sections), in document order.
+const SelectChunks = "chunks"
 
 // When a starter advances its source cursor.
 const (
@@ -178,6 +189,10 @@ type Handler struct {
 	// cursor is keyed (tenant, channel, scope, scope_id) with NO subscriber
 	// dimension, so N readers of one channel share one position and compete for
 	// messages. One subscriber per Starter is one cursor, by construction.
+	//
+	// Or ONE document (source.kind=document), whose top-level sections become
+	// the wave's items. A document has no cursor, so none of the above applies
+	// to it and validation refuses the cursor-shaped fields.
 	Source *StarterSource `json:"source,omitempty"`
 	// Fanout — kind=starter ONLY: how many runs the wave is, and of what.
 	Fanout *StarterFanout `json:"fanout,omitempty"`
@@ -212,9 +227,12 @@ type Handler struct {
 	Ack string `json:"ack,omitempty"`
 }
 
-// StarterSource is the channel a Starter reads, reusing Channel op=subscribe's
-// vocabulary rather than inventing a second one.
+// StarterSource is what a Starter reads: a channel (the default), reusing
+// Channel op=subscribe's vocabulary rather than inventing a second one, or a
+// document whose top-level sections are the wave's work items.
 type StarterSource struct {
+	// Channel keeps no omitempty: every definition written before document
+	// sources existed hashed `"channel":…`, and dropping it would change them.
 	Channel string `json:"channel"`
 	// Wait — any | at_least. NOT "all": await's `all` counts CHANNELS, so over
 	// a single channel it is identical to `any` and returns after the FIRST
@@ -230,6 +248,26 @@ type StarterSource struct {
 	WaitMS int `json:"wait_ms,omitempty"`
 	// Batch — how many messages to read at once. 0 means the store default.
 	Batch int `json:"batch,omitempty"`
+	// Kind — "channel" (the default when empty) or "document". Every field
+	// below is omitempty so a channel source hashes byte-identically to one
+	// written before they existed.
+	Kind string `json:"kind,omitempty"`
+	// Path — kind=document ONLY: the document's absolute Path-tree path. A
+	// fixed literal: no ${…} variables, so what a definition reads is visible
+	// in the definition.
+	Path string `json:"path,omitempty"`
+	// Scope — kind=document ONLY: "user" (the default — the tree of the person
+	// the walk runs as) or "tenant".
+	Scope string `json:"scope,omitempty"`
+	// Select — kind=document ONLY: "chunks" (the default and only value): the
+	// root's direct children, in document order.
+	Select string `json:"select,omitempty"`
+}
+
+// IsDocument reports whether the source reads a document rather than a
+// channel. Nil-safe, so a caller holding a handler of any kind can ask.
+func (s *StarterSource) IsDocument() bool {
+	return s != nil && s.Kind == SourceDocument
 }
 
 // StarterFanout is the shape of one wave.
@@ -238,9 +276,11 @@ type StarterFanout struct {
 	Agent  string   `json:"agent,omitempty"`
 	Agents []string `json:"agents,omitempty"`
 	// Per — "message" spawns one run per message read (DYNAMIC N); "once"
-	// spawns a single run holding all of them. Default "message".
+	// spawns a single run holding all of them. Default "message". A document
+	// source uses "chunk" (one run per section) or "once" instead.
 	Per string `json:"per,omitempty"`
-	// Max is the hard ceiling on one wave's width, REQUIRED for per=message.
+	// Max is the hard ceiling on one wave's width, REQUIRED for per=message
+	// and per=chunk.
 	// Dynamic fan-out is a spawn amplifier: without a ceiling, a channel that
 	// accumulated a thousand messages becomes a thousand agent runs. The
 	// substrate's own spawn cap still applies above this.
