@@ -47,7 +47,7 @@ func startWalkMember(t *testing.T, h *reviewHarness, walkRunID string, set *brea
 	}
 	var runID string
 	waitFor(t, "the member to be held", func() bool {
-		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "u1", store.RunRunning)
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
 		for _, r := range runs {
 			if !skip[r.ID] && heldForReview(context.Background(), h.st, r.ID) {
 				runID = r.ID

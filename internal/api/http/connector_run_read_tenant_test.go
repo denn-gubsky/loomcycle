@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -66,5 +67,43 @@ func TestConnectorListRuns_ExcludesOtherTenantsRuns(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].AgentID != "a_acme" {
 		t.Errorf("acme listed %+v, want only its own run", runs)
+	}
+}
+
+// Another tenant's newer runs for a colliding user id must not crowd a tenant
+// session's own runs out of the store's row bound before the tenant filter.
+func TestConnectorListRuns_TenantSeesAllOwnRunsPastOtherTenantsNewer(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	for i := 0; i < 5; i++ {
+		seedTenantRun(t, srv.store, "acme", "shared-user", fmt.Sprintf("a_acme_%d", i))
+	}
+	for i := 0; i < 150; i++ {
+		seedTenantRun(t, srv.store, "other", "shared-user", fmt.Sprintf("a_other_%d", i))
+	}
+
+	runs, err := srv.ListRuns(tenantPrincipal("acme"), connector.ListRunsFilter{UserID: "shared-user"})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 5 {
+		t.Errorf("acme listed %d runs, want all 5 of its own", len(runs))
+	}
+}
+
+// The store reads tenant "" as "all tenants", but a non-admin session whose
+// tenant is "" is confined to tenant "". ListRuns' post-filter keeps it there.
+func TestConnectorListRuns_EmptyTenantPrincipalSeesOnlyEmptyTenant(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	seedTenantRun(t, srv.store, "", "shared-user", "a_default")
+	seedTenantRun(t, srv.store, "other", "shared-user", "a_other")
+
+	runs, err := srv.ListRuns(tenantPrincipal(""), connector.ListRunsFilter{UserID: "shared-user"})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].AgentID != "a_default" {
+		t.Errorf("empty-tenant session listed %+v, want only a_default", runs)
 	}
 }

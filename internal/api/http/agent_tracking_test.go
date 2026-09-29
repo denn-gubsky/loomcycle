@@ -303,7 +303,7 @@ func TestRuns_DuplicateActiveAgentID_DoesNotLeakRunningRow(t *testing.T) {
 	// to status=failed.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		runs, _ := srv.store.ListActiveRunsByUser(context.Background(), "alice", "")
+		runs, _ := srv.store.ListActiveRunsByUser(context.Background(), "", "alice", "")
 		failedCount := 0
 		runningCount := 0
 		for _, r := range runs {
@@ -327,7 +327,7 @@ func TestRuns_DuplicateActiveAgentID_DoesNotLeakRunningRow(t *testing.T) {
 
 	// Sanity: there should be at least one failed row with the
 	// "agent_id collision" reason.
-	allRuns, _ := srv.store.ListActiveRunsByUser(context.Background(), "alice", "failed")
+	allRuns, _ := srv.store.ListActiveRunsByUser(context.Background(), "", "alice", "failed")
 	foundCollision := false
 	for _, r := range allRuns {
 		if strings.Contains(r.ErrorMsg, "agent_id collision") {

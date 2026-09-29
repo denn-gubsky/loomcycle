@@ -318,7 +318,13 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	if s.store == nil {
 		return &loomcyclepb.ListUserAgentsResponse{}, nil
 	}
-	runs, err := s.store.ListActiveRunsByUser(ctx, req.GetUserId(), store.RunStatus(req.GetStatus()))
+	// The tenant goes into the query so it applies before the store's row
+	// bound; "" = every tenant (admin / legacy / open).
+	queryTenant, allTenants := grpcTenantScope(ctx)
+	if allTenants {
+		queryTenant = ""
+	}
+	runs, err := s.store.ListActiveRunsByUser(ctx, queryTenant, req.GetUserId(), store.RunStatus(req.GetStatus()))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
@@ -329,7 +335,10 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		// mirroring HTTP handleListUserAgents (its isolatedCrossUser short-circuit
 		// plus the principalTenantScope post-filter). Every row here carries the
 		// requested user_id, so a cross-user list from an isolated member comes
-		// back empty exactly as it does over HTTP.
+		// back empty exactly as it does over HTTP. Still needed after the query's
+		// own tenant filter: the store reads tenant "" as "all tenants", so a
+		// non-admin principal whose tenant is "" gets every tenant's rows back
+		// and must be narrowed here.
 		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) {
 			continue
 		}

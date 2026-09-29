@@ -95,6 +95,7 @@ func Run(t *testing.T, factory Factory) {
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
 		{"GetRunByAgentIDReturnsMostRecent", testGetRunByAgentIDReturnsMostRecent},
 		{"ListActiveRunsByUser", testListActiveRunsByUser},
+		{"ListActiveRunsByUserTenantFilterBeforeLimit", testListActiveRunsByUserTenantFilterBeforeLimit},
 		{"ListSessions", testListSessions},
 		{"ListSessionsTagEscaping", testListSessionsTagEscaping},
 		{"ListSessionsTenantIsolation", testListSessionsTenantIsolation},
@@ -2096,7 +2097,7 @@ func testListActiveRunsByUser(t *testing.T, s store.Store) {
 	_, _ = s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_other", UserID: "bob"})
 	_ = s.FinishRun(ctx, r1.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
 
-	active, err := s.ListActiveRunsByUser(ctx, "alice", store.RunRunning)
+	active, err := s.ListActiveRunsByUser(ctx, "", "alice", store.RunRunning)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2108,7 +2109,7 @@ func testListActiveRunsByUser(t *testing.T, s store.Store) {
 		t.Errorf("running for alice: got %v, want [%s]", ids, r2.ID)
 	}
 
-	all, _ := s.ListActiveRunsByUser(ctx, "alice", "")
+	all, _ := s.ListActiveRunsByUser(ctx, "", "alice", "")
 	if len(all) != 2 {
 		t.Errorf("all for alice: got %d, want 2", len(all))
 	}
@@ -2118,8 +2119,50 @@ func testListActiveRunsByUser(t *testing.T, s store.Store) {
 		}
 	}
 
-	if got, _ := s.ListActiveRunsByUser(ctx, "", store.RunRunning); len(got) != 0 {
+	if got, _ := s.ListActiveRunsByUser(ctx, "", "", store.RunRunning); len(got) != 0 {
 		t.Errorf("empty userID should return no rows, got %d", len(got))
+	}
+}
+
+// User ids are unique only within a tenant. Another tenant's NEWER runs for a
+// colliding user id must not use up the row bound before the tenant filter
+// applies: tenant A's 5 older runs all come back even though tenant B has 150
+// newer ones for the same "alice".
+func testListActiveRunsByUserTenantFilterBeforeLimit(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	seed := func(tenant string, n int) {
+		sess, err := s.CreateSession(ctx, tenant, "a", "alice")
+		if err != nil {
+			t.Fatalf("CreateSession(%s): %v", tenant, err)
+		}
+		for i := 0; i < n; i++ {
+			if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{
+				AgentID: fmt.Sprintf("a_%s_%d", tenant, i), UserID: "alice", TenantID: tenant,
+			}); err != nil {
+				t.Fatalf("CreateRun(%s,%d): %v", tenant, i, err)
+			}
+		}
+	}
+	seed("tenant-a", 5)
+	seed("tenant-b", 150)
+
+	got, err := s.ListActiveRunsByUser(ctx, "tenant-a", "alice", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 {
+		t.Errorf("tenant-a listed %d runs, want all 5", len(got))
+	}
+	for _, r := range got {
+		if r.TenantID != "tenant-a" {
+			t.Errorf("tenant-a listing returned a %q run: %s", r.TenantID, r.AgentID)
+		}
+	}
+	if running, _ := s.ListActiveRunsByUser(ctx, "tenant-a", "alice", store.RunRunning); len(running) != 5 {
+		t.Errorf("tenant-a running listed %d runs, want all 5", len(running))
+	}
+	if all, _ := s.ListActiveRunsByUser(ctx, "", "alice", ""); len(all) != 100 {
+		t.Errorf("all-tenants listed %d runs, want the 100-row bound", len(all))
 	}
 }
 
@@ -12984,7 +13027,7 @@ func testFinishRunPersistsResult(t *testing.T, s store.Store) {
 	// scanner that forgot the column in one SELECT list reads back nil there.
 	byID, _ := s.GetRun(ctx, run.ID)
 	byAgent, _ := s.GetRunByAgentID(ctx, "a_result")
-	listed, _ := s.ListActiveRunsByUser(ctx, "u", store.RunCompleted)
+	listed, _ := s.ListActiveRunsByUser(ctx, "", "u", store.RunCompleted)
 	reads := map[string]store.Run{"GetRun": byID, "GetRunByAgentID": byAgent}
 	for _, r := range listed {
 		if r.ID == run.ID {
