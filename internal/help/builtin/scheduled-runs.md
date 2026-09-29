@@ -124,6 +124,32 @@ different def than one running as tenant B. It is **operator-authored
 only** — the scheduler has no inbound payload, so there is no way for an
 external value to set the tenant. It flows to `RunInput.TenantID`.
 
+## Schedules restored from a snapshot
+
+A snapshot carries every schedule with its run state, so a restored
+schedule comes back **active** and keeps its `fire_count`: a `max_fires: 5`
+schedule that fired 3 times has 2 fires left. A `next_run_at` already in
+the past fires once, on the first sweep after the runtime resumes.
+
+Literal `user_credentials` values never travel in a snapshot (references
+such as `$cred:<name>` and `user_credentials_from_env` names do). A
+schedule that lost a literal comes back with `enabled: false` and a
+server-set marker:
+
+```json
+"capture_disabled": {"stripped_credentials": ["jobs", "slack"]}
+```
+
+To re-enable it, `fork` it with every listed key in `user_credentials` or
+`user_credentials_from_env` and `enabled: true`. A fork that supplies only
+some of the keys stays disabled and keeps the marker with the keys still
+missing. Either way the fork starts from the fire count already spent,
+never from zero. The marker cannot be set or cleared through an overlay.
+
+A snapshot is a copy, not a lease: restoring one into a second instance
+while the first keeps running fires every enabled schedule on both, and
+together they can exceed `max_fires`. Disable the schedules on one side.
+
 ## What ships in the v1.x.0 substrate PR
 
 This is the data-layer foundation. The agent-facing tool +
