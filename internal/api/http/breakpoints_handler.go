@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -188,8 +189,9 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 // run id comes from ctx, never from tool input — a caller must not be able to
 // register its walk under someone else's run. targets is the walk's own check,
 // which a PUT runs before it arms anything: this handler holds no definition.
-func (s *Server) openTeamBreakpoints(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
-	set, release, err := s.breakpointReg.Open(tools.RunID(ctx), seed, targets)
+// reviewTTL is the run argument's review deadline, which a PUT can change too.
+func (s *Server) openTeamBreakpoints(ctx context.Context, seed []string, reviewTTL time.Duration, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
+	set, release, err := s.breakpointReg.Open(tools.RunID(ctx), seed, reviewTTL, targets)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -208,3 +210,9 @@ type liveBreakpoints struct{ set *breakpoints.Set }
 func (l liveBreakpoints) Armed(state string, phase teamrun.BreakpointPhase) bool {
 	return l.set.Armed(state, string(phase))
 }
+
+// ReviewTTL hands the walk's members the deadline the set holds now, so a PUT
+// that changes it applies from each member's next hold.
+func (l liveBreakpoints) ReviewTTL() time.Duration { return l.set.ReviewTTL() }
+
+var _ teamrun.ReviewDeadlineSource = liveBreakpoints{}

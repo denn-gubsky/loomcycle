@@ -6822,7 +6822,9 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 		// is registered under — not the member's own.
 		defer s.reviewMembers.add(tools.RunID(ctx), prep.RunID, prep.Opts.ReviewNow)()
 	}
-	prep.Opts.ReviewTTL = teamrun.ReviewTTL(ctx)
+	// Read at each hold's start rather than once here: the walk's deadline can
+	// change while this member runs, and applies from its next hold.
+	prep.Opts.ReviewTTLNow = func() time.Duration { return teamrun.ReviewTTL(ctx) }
 	// The state's timeout_ms clock stops while this member is held for a
 	// verdict, so a person reviewing it is never raced by the walk.
 	prep.Opts.OnReviewHold = teamrun.HoldObserver(ctx)

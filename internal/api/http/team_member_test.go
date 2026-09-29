@@ -2,13 +2,16 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -146,7 +149,7 @@ func TestTerminalStatusOf_MatchesTheWrittenRow(t *testing.T) {
 func TestTeamMember_WalkDeadlineExpiresTheHold(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := teamrun.WithReviewArming(context.Background(), func(context.Context) bool { return true })
-	ctx = teamrun.WithReviewTTL(ctx, 150*time.Millisecond)
+	ctx = teamrun.WithReviewTTL(ctx, func() time.Duration { return 150 * time.Millisecond })
 	res, err := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -157,6 +160,69 @@ func TestTeamMember_WalkDeadlineExpiresTheHold(t *testing.T) {
 	if run, _ := h.st.GetRun(context.Background(), res.RunID); run.StopReason != "review_expired" {
 		t.Errorf("stop reason = %q, want review_expired", run.StopReason)
 	}
+}
+
+// heldUntil is the expiry the run's latest hold announced, as the time it names
+// less when the hold began: the deadline that hold was given. 0 = none.
+func (h *reviewHarness) heldUntil(runID string) time.Duration {
+	h.t.Helper()
+	ev, err := h.st.GetLastEventForRun(context.Background(), runID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var p providers.Event
+	if err := json.Unmarshal(ev.Payload, &p); err != nil || p.AwaitingReview == nil {
+		h.t.Fatalf("latest event %s is not a hold (%v)", ev.Type, err)
+	}
+	if p.AwaitingReview.ExpiresAt == "" {
+		return 0
+	}
+	due, err := time.Parse(time.RFC3339, p.AwaitingReview.ExpiresAt)
+	if err != nil {
+		h.t.Fatalf("expires_at %q: %v", p.AwaitingReview.ExpiresAt, err)
+	}
+	return due.Sub(ev.Timestamp).Round(time.Minute)
+}
+
+// A member reads the walk's deadline when each hold begins, not once when it
+// starts: a deadline the walk changes while the member runs applies from the
+// member's next hold.
+func TestTeamMember_ReadsTheWalksDeadlineAtEachHold(t *testing.T) {
+	h := newReviewHarness(t)
+	var ttl atomic.Int64 // none when the member starts
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
+	ctx = teamrun.WithReviewArming(ctx, func(context.Context) bool { return true })
+	ctx = teamrun.WithReviewTTL(ctx, func() time.Duration { return time.Duration(ttl.Load()) })
+	done := make(chan teamrun.SpawnResult, 1)
+	go func() {
+		res, _ := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
+		done <- res
+	}()
+	var runID string
+	waitFor(t, "the member to be held", func() bool {
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
+		for _, r := range runs {
+			if heldForReview(context.Background(), h.st, r.ID) {
+				runID = r.ID
+			}
+		}
+		return runID != ""
+	})
+	if got := h.heldUntil(runID); got != 0 {
+		t.Fatalf("round 1 deadline = %v, want none", got)
+	}
+	ttl.Store(int64(2 * time.Hour))
+	if code, _ := h.review(runID, `{"decision":"reject","feedback":"cover the rollback"}`); code != http.StatusOK {
+		t.Fatalf("reject = %d", code)
+	}
+	h.waitHeld(runID, 2)
+	if got := h.heldUntil(runID); got != 2*time.Hour {
+		t.Errorf("round 2 deadline = %v, want the walk's new 2h", got)
+	}
+	if code, _ := h.review(runID, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d", code)
+	}
+	awaitMember(t, done)
 }
 
 // teamrun cannot import the store, so it names the rejected status itself;
@@ -206,7 +272,7 @@ func TestTeamMember_RecordsItsReviewArmingForAResume(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
 	ctx = teamrun.WithReviewArming(ctx, func(context.Context) bool { return true })
-	ctx = teamrun.WithReviewTTL(ctx, time.Hour)
+	ctx = teamrun.WithReviewTTL(ctx, func() time.Duration { return time.Hour })
 	done := make(chan teamrun.SpawnResult, 1)
 	go func() {
 		res, _ := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")

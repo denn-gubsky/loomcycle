@@ -50,7 +50,7 @@ func TestHandleBreakpoints_ArmsAWalkThatIsAlreadyRunning(t *testing.T) {
 	runID := seedRun(t, srv)
 
 	// A walk starts with NOTHING armed — the ordinary case.
-	set, release, err := srv.breakpointReg.Open(runID, nil, nil)
+	set, release, err := srv.breakpointReg.Open(runID, nil, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestHandleBreakpoints_GetReadsBackCanonically(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	_, release, _ := srv.breakpointReg.Open(runID, []string{"wave", "wave:review"}, nil)
+	_, release, _ := srv.breakpointReg.Open(runID, []string{"wave", "wave:review"}, 0, nil)
 	defer release()
 
 	rec := doJSON(t, srv, "GET", "/v1/runs/"+runID+"/breakpoints", "")
@@ -99,7 +99,7 @@ func TestHandleBreakpoints_EmptyListTurnsDebugOff(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave"}, nil)
+	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave"}, 0, nil)
 	defer release()
 
 	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":[]}`)
@@ -117,7 +117,7 @@ func TestHandleBreakpoints_RejectedPutKeepsThePreviousArming(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave:before_dispatch"}, nil)
+	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave:before_dispatch"}, 0, nil)
 	defer release()
 
 	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["review","wave:typo"]}`)
@@ -185,7 +185,7 @@ func TestHandleBreakpoints_TheRemovedPauseIsRefused(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"}, nil)
+	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestHandleBreakpoints_AnIsolatedMemberCannotReachAColleaguesWalk(t *testing
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRunInTenant(t, srv.store, "acme", "alice", "team:triage")
-	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"}, nil)
+	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func openWalkOnTargetsTeam(t *testing.T, srv *Server, runID string, seed []strin
 		t.Fatal(err)
 	}
 	targets := func(spec string) error { return teamrun.CheckBreakpointTargets(def, "triage", []string{spec}) }
-	_, release, err := srv.openTeamBreakpoints(tools.WithRunID(context.Background(), runID), seed, targets)
+	_, release, err := srv.openTeamBreakpoints(tools.WithRunID(context.Background(), runID), seed, 0, targets)
 	if err != nil {
 		t.Fatal(err)
 	}

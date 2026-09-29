@@ -155,9 +155,12 @@ type TeamDef struct {
 	// on every live re-arm, so a typo is refused there as it is at the start
 	// rather than arming a state the walk will never reach.
 	//
+	// reviewTTL is the run argument's review deadline, seeded into the set
+	// beside the specs so it can be changed live too.
+	//
 	// nil = breakpoints are dispatch-time only (the run argument still works,
 	// and nothing can arm a state once the walk has started).
-	LiveBreakpoints func(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error)
+	LiveBreakpoints func(ctx context.Context, seed []string, reviewTTL time.Duration, targets func(spec string) error) (teamrun.BreakpointSource, func(), error)
 
 	// AskHuman, if set, escalates an iteration-cap overflow to a human instead of
 	// aborting: when the caller passes interrupt_on_cap, a capped state raises an
@@ -1048,7 +1051,8 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		targets := func(spec string) error {
 			return teamrun.CheckBreakpointTargets(def, row.Name, []string{spec})
 		}
-		src, release, serr := t.openBreakpoints(walkCtx, seed, targets)
+		reviewTTL := time.Duration(in.ReviewTTL) * time.Second
+		src, release, serr := t.openBreakpoints(walkCtx, seed, reviewTTL, targets)
 		if serr != nil {
 			return errResult(fmt.Sprintf("run: %s", serr)), nil
 		}
@@ -1057,7 +1061,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		// here would unregister the armed set the moment the caller got its run
 		// id back — leaving a running walk nobody could arm.
 		releaseBreakpoints = release
-		runnerOpts = append(runnerOpts, teamrun.WithMemberReview(src, time.Duration(in.ReviewTTL)*time.Second))
+		runnerOpts = append(runnerOpts, teamrun.WithMemberReview(src, reviewTTL))
 	}
 	if armedSet != nil && t.AskHuman != nil {
 		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(armedSet,
@@ -1242,9 +1246,9 @@ func capActionLabel(d teamrun.CapDecision) string {
 // runs; without it the run argument still works exactly as before, fixed at
 // dispatch. Degrading rather than refusing is right here — the dispatch-time
 // behaviour is the feature this replaces, not a broken half of it.
-func (t *TeamDef) openBreakpoints(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
+func (t *TeamDef) openBreakpoints(ctx context.Context, seed []string, reviewTTL time.Duration, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
 	if t.LiveBreakpoints != nil {
-		return t.LiveBreakpoints(ctx, seed, targets)
+		return t.LiveBreakpoints(ctx, seed, reviewTTL, targets)
 	}
 	src, err := teamrun.NewStaticBreakpoints(seed)
 	if err != nil {
