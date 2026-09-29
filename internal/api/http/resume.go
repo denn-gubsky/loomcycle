@@ -357,11 +357,19 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// background-goroutine pattern in handleRuns.
 	runParent := context.WithoutCancel(ctx)
 	runCtx, cancelFn := context.WithCancelCause(runParent)
+	// A resumed sub-run is still its parent's child: it reports the same parent
+	// and belongs to the same spawn tree as it did before the pause. The row
+	// holds the parent; the tree's root is found by walking up from it.
+	rootRunID, rootErr := resumedRootRunID(ctx, s.store.GetRun, run)
+	if rootErr != nil {
+		log.Printf("resume: run %s: %v; it resumes as the root of its own tree", run.ID, rootErr)
+	}
 	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
-		RunID:     run.ID,
-		AgentID:   run.AgentID,
-		AgentName: run.Agent,
-		UserID:    run.UserID,
+		RunID:         run.ID,
+		AgentID:       run.AgentID,
+		AgentName:     run.Agent,
+		UserID:        run.UserID,
+		ParentAgentID: run.ParentAgentID,
 	})
 	meta := runStateMeta{
 		RunID:         run.ID,
@@ -369,12 +377,15 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		Agent:         run.Agent,
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
+		ParentAgentID: run.ParentAgentID,
+		ParentRunID:   run.ParentRunID,
 		ParentContext: run.ParentContext,
 		otelSpan:      runSpan,
-		// RFC AH Phase 2b: a resumed run is top-level (no parent) — it owns the
-		// ephemeral tree purge at completion. RootRunID is its own id.
-		IsTopLevel: true,
-		RootRunID:  run.ID,
+		// Only the tree's root purges the tree's ephemeral volumes and run-scope
+		// SQL database at completion. A resumed child that claimed it would tear
+		// them down under a parent and siblings still using them.
+		IsTopLevel: rootRunID == run.ID,
+		RootRunID:  rootRunID,
 	}
 
 	// Claim the run in the cancel registry. ErrInUse ⇒ already live on this
@@ -385,7 +396,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		RunID:     run.ID,
 		SessionID: run.SessionID,
 		UserID:    run.UserID,
-		StartedAt: time.Now(),
+		// A resumed child runs under its own detached context, not its parent's,
+		// so the registry's cascade is the only way a parent cancel reaches it.
+		ParentAgentID: run.ParentAgentID,
+		StartedAt:     time.Now(),
 	}, cancelFn)
 	if regErr != nil {
 		runSpan.End()
@@ -400,7 +414,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
 		AgentID:       run.AgentID,
-		RootRunID:     run.ID,        // RFC AH Phase 2b: resumed run roots its own tree
+		RootRunID:     rootRunID,     // the tree it was spawned into, not a new one
 		SessionID:     run.SessionID, // restored from the run row, like every other durable field here
 		UserTier:      run.UserTier,
 		ParentContext: run.ParentContext,
@@ -484,7 +498,8 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// dirs survived). Without this a resumed paused run would lose in-memory
 	// resolution of its own ephemeral volumes. Best-effort: a store fault
 	// leaves an empty set (the agent can re-create) rather than failing resume.
-	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.rehydrateEphemeralVolumes(loopCtx, run.ID))
+	// Keyed by the tree's root, which is what a volume is created under.
+	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.rehydrateEphemeralVolumes(loopCtx, rootRunID))
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
 	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
@@ -497,6 +512,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// From the run's record, which a retune may have changed since it started —
 	// an autonomous run that never parked adopts a retune here.
 	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, runCfg.Interruption)
+	loopCtx = tools.WithParentRunID(loopCtx, run.ParentRunID) // "" for a top-level run: stays unset
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	if added := runCfg.additions(); !added.Empty() {
 		// What the run added before it paused, restored as it was — a
@@ -668,6 +684,50 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	return nil
 }
 
+// maxResumeAncestry bounds the walk from a resumed run up to its tree's root.
+// Far deeper than any spawn tree; it exists so a corrupt chain cannot stall a
+// resume.
+const maxResumeAncestry = 64
+
+// resumedRootRunID is the id of the top-level run at the root of run's spawn
+// tree, found by following parent_run_id up the stored rows — the id a live
+// sub-run inherits from its parent's identity, which a resume has no parent to
+// inherit from. A top-level run is its own root.
+//
+// When the chain cannot be followed to a top-level run (a pre-parent_run_id
+// row's parent is unknown, a restored run's parent was not restored, a store
+// fault, a cycle, another tenant's run), it returns run's own id with the
+// reason: the run then keeps its tree state to itself, as every resumed run
+// did before, rather than guessing whose tree it joins.
+func resumedRootRunID(ctx context.Context, getRun func(context.Context, string) (store.Run, error), run store.Run) (string, error) {
+	cur := run
+	seen := map[string]bool{run.ID: true}
+	for hops := 0; cur.ParentRunID != ""; hops++ {
+		id := cur.ParentRunID
+		if hops == maxResumeAncestry {
+			return run.ID, fmt.Errorf("spawn tree deeper than %d runs above it", maxResumeAncestry)
+		}
+		if seen[id] {
+			return run.ID, fmt.Errorf("its ancestry loops back to run %s", id)
+		}
+		seen[id] = true
+		parent, err := getRun(ctx, id)
+		if err != nil {
+			return run.ID, fmt.Errorf("read ancestor run %s: %w", id, err)
+		}
+		if parent.ID != id {
+			return run.ID, fmt.Errorf("ancestor run %s not found", id)
+		}
+		// A sub-run always shares its parent's tenant; a row that does not is
+		// not one this run may share tree state with.
+		if parent.TenantID != run.TenantID {
+			return run.ID, fmt.Errorf("ancestor run %s is in another tenant", id)
+		}
+		cur = parent
+	}
+	return cur.ID, nil
+}
+
 // flagRunUnresumable marks a paused run terminal so a restored-but-unresumable
 // run isn't a permanent "running" zombie (the F42 symptom). Best-effort.
 //
@@ -690,6 +750,8 @@ func (s *Server) flagRunUnresumable(run store.Run, reason string) {
 		Agent:         run.Agent,
 		UserID:        run.UserID,
 		TenantID:      run.TenantID,
+		ParentAgentID: run.ParentAgentID,
+		ParentRunID:   run.ParentRunID,
 		ParentContext: run.ParentContext,
 	}
 	s.appendResumeRefusal(run, reason)
