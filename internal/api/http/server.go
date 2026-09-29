@@ -7683,6 +7683,7 @@ type agentResponse struct {
 	Agent           string             `json:"agent,omitempty"`
 	UserID          string             `json:"user_id,omitempty"`
 	ParentAgentID   string             `json:"parent_agent_id,omitempty"`
+	ParentRunID     string             `json:"parent_run_id,omitempty"` // the run that spawned this one; empty for a top-level run
 	Status          store.RunStatus    `json:"status"`
 	StartedAt       time.Time          `json:"started_at"`
 	CompletedAt     *time.Time         `json:"completed_at,omitempty"`
@@ -7771,6 +7772,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 		Agent:         r.Agent,
 		UserID:        r.UserID,
 		ParentAgentID: r.ParentAgentID,
+		ParentRunID:   r.ParentRunID,
 		Status:        r.Status,
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,

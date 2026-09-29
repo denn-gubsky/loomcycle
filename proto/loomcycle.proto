@@ -1609,6 +1609,11 @@ message Agent {
   // from the serving replica's in-process registry of resident sub-agents,
   // which this transport cannot reach.
   ParentContext parent_context = 22;
+  // parent_run_id is the run that spawned this one (an Agent-tool spawn, a
+  // team-walk member, a walk started by an agent). Empty for a top-level run.
+  // Unlike parent_agent_id it names one run: an agent id is reused by every
+  // run of that agent.
+  string parent_run_id = 23;
 }
 
 // AgentUsage mirrors agentResponseUsage.

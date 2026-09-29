@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -271,5 +272,62 @@ func TestResumePausedRuns_ResumedChildKeepsItsParentRunID(t *testing.T) {
 			t.Fatalf("resumed run did not finish (status=%q)", got.Status)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The HTTP run read and the connector's (MCP get_run) name the parent run, and
+// a top-level run's reads omit it.
+func TestRunReads_CarryTheParentRunID(t *testing.T) {
+	srv, _ := makeServer(t, &scriptedProvider{}, makeBaseConfig())
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "default", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, _ := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_top_read", UserID: "alice"})
+	child, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_child_read", ParentAgentID: "a_top_read", ParentRunID: top.ID, UserID: "alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	read := func(agentID string) map[string]any {
+		req := httptest.NewRequest("GET", "/v1/agents/"+agentID, nil)
+		req.SetPathValue("agent_id", agentID)
+		rec := httptest.NewRecorder()
+		srv.handleGetAgent(rec, req)
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("GET /v1/agents/%s = %d %s", agentID, rec.Code, rec.Body)
+		}
+		return out
+	}
+	if got := read("a_child_read")["parent_run_id"]; got != top.ID {
+		t.Errorf("HTTP read parent_run_id = %v, want %q", got, top.ID)
+	}
+	if _, ok := read("a_top_read")["parent_run_id"]; ok {
+		t.Error("a top-level run's HTTP read carries parent_run_id")
+	}
+
+	got, err := srv.GetRunByRunID(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentRunID != top.ID {
+		t.Errorf("connector read parent run = %q, want %q", got.ParentRunID, top.ID)
+	}
+	list, err := srv.ListRuns(ctx, connector.ListRunsFilter{UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range list {
+		if r.RunID == child.ID {
+			found = r.ParentRunID == top.ID
+		}
+	}
+	if !found {
+		t.Errorf("connector listing does not carry the child's parent run: %+v", list)
 	}
 }

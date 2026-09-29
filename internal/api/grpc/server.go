@@ -592,6 +592,7 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 		Agent:         r.Agent,
 		UserId:        r.UserID,
 		ParentAgentId: r.ParentAgentID,
+		ParentRunId:   r.ParentRunID,
 		Status:        string(r.Status),
 		StartedAt:     timestamppb.New(r.StartedAt),
 		StopReason:    r.StopReason,

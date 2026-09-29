@@ -1285,6 +1285,11 @@ export interface Agent {
   session_id: string;
   agent: string;
   parent_agent_id: string | null;
+  /** The run that spawned this one (an Agent-tool spawn, a team-walk member,
+   *  a walk started by an agent). Absent for a top-level run. Unlike
+   *  parent_agent_id it names one run: an agent id is reused by every run of
+   *  that agent. */
+  parent_run_id?: string;
   user_id: string;
   status: AgentStatus;
   started_at: string;
