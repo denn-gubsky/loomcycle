@@ -336,6 +336,7 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefCreateAndGet", testTeamDefCreateAndGet},
 		{"TeamDefVersionMonotonicUnderContention", testTeamDefVersionMonotonicUnderContention},
 		{"TeamDefActivePointerIdempotent", testTeamDefActivePointerIdempotent},
+		{"TeamDefActivePointerCarriesItsPromoter", testTeamDefActivePointerCarriesItsPromoter},
 		{"TeamDefRetireReversible", testTeamDefRetireReversible},
 		{"TeamDefDelete", testTeamDefDelete},
 		{"TeamDefListNamesLiveCount", testTeamDefListNamesLiveCount},
@@ -8120,7 +8121,7 @@ func testTeamDefListNamesLiveCount(t *testing.T, s store.Store) {
 		t.Errorf("LiveVersionCount = %d, want 1 (retired excluded)", sum.LiveVersionCount)
 	}
 	// Pointing active at the retired v1 surfaces ActiveRetired.
-	if err := s.TeamDefSetActive(ctx, "", "tlc-team", v1.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "", "tlc-team", v1.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatal(err)
 	}
 	if !find().ActiveRetired {
@@ -8205,13 +8206,13 @@ func testTeamDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TeamDefSetActive(ctx, "", "team-promo", a.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "", "team-promo", a.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TeamDefSetActive(ctx, "", "team-promo", b.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "", "team-promo", b.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TeamDefSetActive(ctx, "", "team-promo", a.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "", "team-promo", a.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.TeamDefGetActive(ctx, "", "team-promo")
@@ -8220,6 +8221,101 @@ func testTeamDefActivePointerIdempotent(t *testing.T, s store.Store) {
 	}
 	if got.DefID != a.DefID {
 		t.Errorf("active = %s, want %s", got.DefID, a.DefID)
+	}
+}
+
+// testTeamDefActivePointerCarriesItsPromoter: the promoter's confinement rides
+// the active pointer — on the name listing the subscription sweep reads and on
+// the snapshot read — every promote replaces it, and a pointer restored without
+// one (promoted before the capture existed) reads back as NOT captured rather
+// than as unrestricted. A NULL read as false would arm every pre-existing team
+// unrestricted, which is the defect the capture closes.
+func testTeamDefActivePointerCarriesItsPromoter(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	confined := store.TeamDefPromoter{OperatorKeyRestricted: true, Isolated: true}
+	activePromoter := func(name string) (*store.TeamDefPromoter, *store.TeamDefPromoter) {
+		t.Helper()
+		names, err := s.TeamDefListNames(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var listed *store.TeamDefPromoter
+		found := false
+		for _, n := range names {
+			if n.Name == name {
+				listed, found = n.ActivePromoter, true
+			}
+		}
+		if !found {
+			t.Fatalf("team %q not in the name listing", name)
+		}
+		entries, err := s.SnapshotReadTeamDefActive(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Name == name {
+				return listed, e.Promoter
+			}
+		}
+		t.Fatalf("team %q has no active pointer on the snapshot read", name)
+		return nil, nil
+	}
+	same := func(got *store.TeamDefPromoter, want store.TeamDefPromoter) bool {
+		return got != nil && *got == want
+	}
+
+	row, err := s.TeamDefCreate(ctx, mkTeamDef("td-prom-1", "team-promoter", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TeamDefSetActive(ctx, "", "team-promoter", row.DefID, "a_promoter", confined); err != nil {
+		t.Fatal(err)
+	}
+	if listed, snap := activePromoter("team-promoter"); !same(listed, confined) || !same(snap, confined) {
+		t.Errorf("after a confined promote: listed %+v, snapshot %+v, want %+v on both", listed, snap, confined)
+	}
+	// A re-promote by an unconfined caller replaces the capture — it is the
+	// latest promoter, not the first, who put the team in service.
+	if err := s.TeamDefSetActive(ctx, "", "team-promoter", row.DefID, "a_admin", store.TeamDefPromoter{}); err != nil {
+		t.Fatal(err)
+	}
+	if listed, snap := activePromoter("team-promoter"); !same(listed, store.TeamDefPromoter{}) || !same(snap, store.TeamDefPromoter{}) {
+		t.Errorf("after an unconfined re-promote: listed %+v, snapshot %+v, want a captured zero on both", listed, snap)
+	}
+
+	// A pointer with no capture — the shape of one promoted before it existed.
+	legacy, err := s.TeamDefCreate(ctx, mkTeamDef("td-prom-legacy", "team-legacy-promoter", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SnapshotRestoreTeamDefActive(ctx, store.TeamDefActiveEntry{
+		Name: "team-legacy-promoter", DefID: legacy.DefID, PromotedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if listed, snap := activePromoter("team-legacy-promoter"); listed != nil || snap != nil {
+		t.Errorf("an uncaptured pointer reads as listed %+v, snapshot %+v, want nil on both (not captured)", listed, snap)
+	}
+	// Restoring a captured entry keeps it.
+	restored, err := s.TeamDefCreate(ctx, mkTeamDef("td-prom-restored", "team-restored-promoter", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SnapshotRestoreTeamDefActive(ctx, store.TeamDefActiveEntry{
+		Name: "team-restored-promoter", DefID: restored.DefID, PromotedAt: time.Now(), Promoter: &confined,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if listed, snap := activePromoter("team-restored-promoter"); !same(listed, confined) || !same(snap, confined) {
+		t.Errorf("a restored capture reads as listed %+v, snapshot %+v, want %+v", listed, snap, confined)
+	}
+	// Promoting the uncaptured team again captures it.
+	if err := s.TeamDefSetActive(ctx, "", "team-legacy-promoter", legacy.DefID, "a_admin", confined); err != nil {
+		t.Fatal(err)
+	}
+	if listed, _ := activePromoter("team-legacy-promoter"); !same(listed, confined) {
+		t.Errorf("after re-promoting an uncaptured pointer: listed %+v, want %+v", listed, confined)
 	}
 }
 
@@ -8260,7 +8356,7 @@ func testTeamDefDelete(t *testing.T, s store.Store) {
 	if _, err := s.TeamDefCreate(ctx, mkTeamDef("tdel-2", "team-del", v1.DefID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.TeamDefSetActive(ctx, "", "team-del", v1.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "", "team-del", v1.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.TeamDefCreate(ctx, mkTeamDef("tkeep-1", "team-keep", "")); err != nil {
@@ -8328,10 +8424,10 @@ func testTeamDefTenantIsolation(t *testing.T, s store.Store) {
 		t.Fatalf("create B: %v", err)
 	}
 
-	if err := s.TeamDefSetActive(ctx, "tenant-a", name, aRow.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "tenant-a", name, aRow.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatalf("promote A: %v", err)
 	}
-	if err := s.TeamDefSetActive(ctx, "tenant-b", name, bRow.DefID, ""); err != nil {
+	if err := s.TeamDefSetActive(ctx, "tenant-b", name, bRow.DefID, "", store.TeamDefPromoter{}); err != nil {
 		t.Fatalf("promote B: %v", err)
 	}
 
@@ -8355,7 +8451,7 @@ func testTeamDefTenantIsolation(t *testing.T, s store.Store) {
 
 	// A def can only be promoted within its own tenant — promoting A's
 	// def under tenant-b must be refused.
-	if err := s.TeamDefSetActive(ctx, "tenant-b", name, aRow.DefID, ""); err == nil {
+	if err := s.TeamDefSetActive(ctx, "tenant-b", name, aRow.DefID, "", store.TeamDefPromoter{}); err == nil {
 		t.Error("cross-tenant promote (A's def under tenant-b) unexpectedly succeeded")
 	}
 }

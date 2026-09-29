@@ -346,6 +346,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				DefID:             e.DefID,
 				PromotedAt:        e.PromotedAt,
 				PromotedByAgentID: e.PromotedByAgentID,
+				Promoter:          promoterRow(e.Promoter),
 			})
 			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("team_def_active %s: %v", e.Name, err))

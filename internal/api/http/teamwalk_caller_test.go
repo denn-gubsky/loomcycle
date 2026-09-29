@@ -127,7 +127,7 @@ func seedTenantTeam(t *testing.T, st store.Store, tenant, name, defJSON string) 
 	if err != nil {
 		t.Fatalf("seed %s: %v", name, err)
 	}
-	if err := st.TeamDefSetActive(context.Background(), tenant, name, row.DefID, "a_test"); err != nil {
+	if err := st.TeamDefSetActive(context.Background(), tenant, name, row.DefID, "a_test", store.TeamDefPromoter{}); err != nil {
 		t.Fatalf("promote %s: %v", name, err)
 	}
 }

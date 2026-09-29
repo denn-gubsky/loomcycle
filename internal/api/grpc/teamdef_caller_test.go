@@ -73,7 +73,7 @@ func TestGrpcTeamDef_RunWalksAsTheCaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.TeamDefSetActive(ctx, "acme", "wave", row.DefID, "a_test"); err != nil {
+	if err := st.TeamDefSetActive(ctx, "acme", "wave", row.DefID, "a_test", store.TeamDefPromoter{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pub.PublishNow(ctx, "in", "acme", store.MemoryScopeTenant, "",

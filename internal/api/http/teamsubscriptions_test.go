@@ -35,7 +35,7 @@ func seedTeam(t *testing.T, srv *Server, name, defJSON string, promote, retired 
 		t.Fatalf("seed %s: %v", name, err)
 	}
 	if promote {
-		if err := srv.store.TeamDefSetActive(ctx, "", name, row.DefID, "a_test"); err != nil {
+		if err := srv.store.TeamDefSetActive(ctx, "", name, row.DefID, "a_test", store.TeamDefPromoter{}); err != nil {
 			t.Fatalf("promote %s: %v", name, err)
 		}
 	}

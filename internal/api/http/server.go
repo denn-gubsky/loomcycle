@@ -187,6 +187,9 @@ type Server struct {
 	// subBackoff holds off a subscribed team whose walk just failed, so a
 	// poison message cannot drive the same failure every tick.
 	subBackoff subscriptionBackoff
+	// subUncaptured remembers which subscribed teams it has already warned
+	// about running fully confined for lack of a promoter capture.
+	subUncaptured warnOnce
 
 	// residentReg maps a resident interactive sub-agent's run_id → its live
 	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
@@ -1006,6 +1009,9 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 		}
 		if td.Admit == nil {
 			td.Admit = s.admitTeamRun
+		}
+		if td.OperatorKeyGate == nil {
+			td.OperatorKeyGate = func() bool { return s.cfg().Env.OperatorKeyRestriction }
 		}
 		if td.Channels == nil {
 			td.Channels = func(ctx context.Context, d teamgraph.Definition) teamrun.ChannelIO {

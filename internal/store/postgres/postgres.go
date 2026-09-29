@@ -2291,7 +2291,8 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 // SnapshotReadTeamDefActive implements store.Store.
 func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefActiveEntry, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id,
+		        promoter_operator_key_restricted, promoter_isolated
 		 FROM teamdef_active
 		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
@@ -2301,15 +2302,17 @@ func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefA
 	var out []store.TeamDefActiveEntry
 	for rows.Next() {
 		var (
-			e        store.TeamDefActiveEntry
-			promoter *string
+			e              store.TeamDefActiveEntry
+			promoter       *string
+			opKey, isolate *bool
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID, &opKey, &isolate); err != nil {
 			return nil, fmt.Errorf("scan teamdef_active: %w", err)
 		}
 		if promoter != nil {
 			e.PromotedByAgentID = *promoter
 		}
+		e.Promoter = teamDefPromoterFromColumns(opKey, isolate)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -2919,10 +2922,12 @@ func (s *Store) SnapshotRestoreTeamDefActive(ctx context.Context, e store.TeamDe
 	if promotedAt.IsZero() {
 		promotedAt = time.Now().UTC()
 	}
+	opKey, isolate := teamDefPromoterColumns(e.Promoter)
 	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
+		                            promoter_operator_key_restricted, promoter_isolated) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (tenant_id, name) DO NOTHING`,
-		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
+		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID), opKey, isolate,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
@@ -6316,11 +6321,13 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 			MAX(d.version)                            AS latest_version,
 			MAX(d.created_at)                         AS last_updated,
 			COALESCE(a.def_id, '')                    AS active_def_id,
-			COALESCE(ad.retired, FALSE)               AS active_retired
+			COALESCE(ad.retired, FALSE)               AS active_retired,
+			a.promoter_operator_key_restricted,
+			a.promoter_isolated
 		FROM teamdefs d
 		LEFT JOIN teamdef_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
 		LEFT JOIN teamdefs ad      ON ad.def_id = a.def_id
-		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("team_def list names: %w", err)
@@ -6330,9 +6337,11 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 	var out []store.TeamDefNameSummary
 	for rows.Next() {
 		var ns store.TeamDefNameSummary
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired); err != nil {
+		var opKey, isolate *bool
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired, &opKey, &isolate); err != nil {
 			return nil, err
 		}
+		ns.ActivePromoter = teamDefPromoterFromColumns(opKey, isolate)
 		out = append(out, ns)
 	}
 	return out, rows.Err()
@@ -6343,7 +6352,7 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 // team AND the supplied tenant — a def can only be promoted within its
 // own tenant, so a caller can't point another tenant's active pointer at
 // a def it owns.
-func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string, promoter store.TeamDefPromoter) error {
 	var (
 		rowName   string
 		rowTenant string
@@ -6362,18 +6371,41 @@ func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, pro
 		return fmt.Errorf("teamdef_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
+		                            promoter_operator_key_restricted, promoter_isolated)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (tenant_id, name) DO UPDATE SET
-		    def_id               = EXCLUDED.def_id,
-		    promoted_at          = EXCLUDED.promoted_at,
-		    promoted_by_agent_id = EXCLUDED.promoted_by_agent_id`,
+		    def_id                           = EXCLUDED.def_id,
+		    promoted_at                      = EXCLUDED.promoted_at,
+		    promoted_by_agent_id             = EXCLUDED.promoted_by_agent_id,
+		    promoter_operator_key_restricted = EXCLUDED.promoter_operator_key_restricted,
+		    promoter_isolated                = EXCLUDED.promoter_isolated`,
 		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
+		promoter.OperatorKeyRestricted, promoter.Isolated,
 	)
 	if err != nil {
 		return fmt.Errorf("teamdef_active upsert: %w", err)
 	}
 	return nil
+}
+
+// teamDefPromoterColumns is the column pair for a captured promoter; nil (a
+// pointer promoted before the capture existed) stays NULL in both.
+func teamDefPromoterColumns(p *store.TeamDefPromoter) (opKey, isolated *bool) {
+	if p == nil {
+		return nil, nil
+	}
+	return &p.OperatorKeyRestricted, &p.Isolated
+}
+
+// teamDefPromoterFromColumns reads the pair back. Either column NULL means
+// not captured — never "unrestricted": the two are written together, so a
+// half-written pair is not a state a promote produces.
+func teamDefPromoterFromColumns(opKey, isolated *bool) *store.TeamDefPromoter {
+	if opKey == nil || isolated == nil {
+		return nil
+	}
+	return &store.TeamDefPromoter{OperatorKeyRestricted: *opKey, Isolated: *isolated}
 }
 
 // TeamDefGetActive returns the active row for (tenantID, name).

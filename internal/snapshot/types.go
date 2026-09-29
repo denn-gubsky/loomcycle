@@ -266,6 +266,17 @@ type TeamDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// Promoter is the promoting caller's confinement, which an armed
+	// subscription's walks run under (see store.TeamDefPromoter). Additive: an
+	// older snapshot has none and restores a pointer whose walks run fully
+	// confined until the team is promoted again — never unrestricted.
+	Promoter *TeamDefPromoterEntry `json:"promoter,omitempty"`
+}
+
+// TeamDefPromoterEntry mirrors store.TeamDefPromoter.
+type TeamDefPromoterEntry struct {
+	OperatorKeyRestricted bool `json:"operator_key_restricted"`
+	Isolated              bool `json:"isolated"`
 }
 
 // HookDefsSection mirrors TeamDefsSection. Additive: an older snapshot has no

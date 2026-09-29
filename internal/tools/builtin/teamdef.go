@@ -73,6 +73,12 @@ type TeamDef struct {
 	// nil = no admission (unit tests / authoring-only wiring).
 	Admit func(ctx context.Context) (context.Context, error)
 
+	// OperatorKeyGate reports whether the deployment restricts the operator's
+	// provider key (LOOMCYCLE_OPERATOR_KEY_RESTRICTION), read at each promote
+	// so the promoter's confinement is captured under the live setting. Wired
+	// by SetTeamDefTool; nil = the gate is off.
+	OperatorKeyGate func() bool
+
 	// Channels, when set, is what a `starter` state reads and what a `channel`
 	// state publishes to — the fifth injected collaborator, alongside Spawn,
 	// Admit and Board. It is built PER RUN from the definition, because the
@@ -389,7 +395,7 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 		promote = *in.Promote
 	}
 	if promote {
-		if err := t.Store.TeamDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := t.Store.TeamDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID, t.promoter(ctx)); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
@@ -505,7 +511,7 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		promote = *in.Promote
 	}
 	if promote {
-		if err := t.Store.TeamDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
+		if err := t.Store.TeamDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID, t.promoter(ctx)); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
@@ -652,10 +658,24 @@ func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Resul
 		return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
 	}
 	ident := tools.RunIdentity(ctx)
-	if err := t.Store.TeamDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID); err != nil {
+	if err := t.Store.TeamDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID, t.promoter(ctx)); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	return okJSON(map[string]any{"def_id": row.DefID, "name": row.Name, "promoted": true})
+}
+
+// promoter captures the confinement of whoever is promoting through ctx — the
+// principal and the calling run, most restrictive wins — for the active
+// pointer. A promoted team whose entry is a Starter is driven by the
+// subscription sweep with no caller at all, so this is what its walks are
+// confined by. Every path that sets the pointer (create, fork, promote) goes
+// through here: one that did not would arm a team unrestricted.
+func (t *TeamDef) promoter(ctx context.Context) store.TeamDefPromoter {
+	gateOn := t.OperatorKeyGate != nil && t.OperatorKeyGate()
+	return store.TeamDefPromoter{
+		OperatorKeyRestricted: tools.AuthorOperatorKeyRestricted(ctx, gateOn),
+		Isolated:              tools.AuthorIsolated(ctx),
+	}
 }
 
 // execVerify compares a caller-supplied content_sha256 against the active row's

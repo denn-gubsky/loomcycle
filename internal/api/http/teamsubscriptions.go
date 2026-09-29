@@ -43,6 +43,9 @@ type teamSubscription struct {
 	TenantID string
 	Name     string
 	Source   string // the entry Starter's source channel
+	// Promoter is the confinement captured when the team was promoted, which
+	// its walks run under; nil = promoted before the capture existed.
+	Promoter *store.TeamDefPromoter
 }
 
 // SweepTeamSubscriptions runs one tick: drive every promoted team whose entry
@@ -117,7 +120,8 @@ func (s *Server) listTeamSubscriptions(ctx context.Context) ([]teamSubscription,
 		}
 		out = append(out, teamSubscription{
 			DefID: row.DefID, TenantID: row.TenantID, Name: row.Name,
-			Source: entry.Handler.Source.Channel,
+			Source:   entry.Handler.Source.Channel,
+			Promoter: n.ActivePromoter,
 		})
 	}
 	// Deterministic order so a log reads the same way twice and a test can
@@ -231,12 +235,53 @@ func subscriptionScope(declared, channel string) (store.MemoryScope, string, err
 //
 // The user is `_system`, the same attribution internal publishes carry, so a
 // run started by nobody is not attributed to somebody.
+//
+// AS CONFINED AS ITS PROMOTER. Nobody is on ctx, so nothing else can restrict
+// the walk: without this every subscription walk could spend the operator's
+// provider key and ran outside any isolation, whoever armed it — a restricted
+// run publishing to a subscribed channel set off an unrestricted one. The bits
+// go on the run identity, where admission reads a calling run's bits, so the
+// walk and every member it spawns carry them exactly as a manual walk does.
+//
+// A team promoted before the capture existed has none, and runs RESTRICTED and
+// ISOLATED — fail closed — until it is promoted again. Warned once per team per
+// process, not per walk: a sweep ticks far too often for a per-walk line.
 func (s *Server) subscriptionCtx(ctx context.Context, sub teamSubscription) context.Context {
+	promoter := store.TeamDefPromoter{OperatorKeyRestricted: true, Isolated: true}
+	if sub.Promoter != nil {
+		promoter = *sub.Promoter
+	} else if s.subUncaptured.first(sub.TenantID + "\x00" + sub.Name) {
+		log.Printf("team-subscriptions: %s/%s was promoted before its promoter's confinement was recorded, "+
+			"so its walks run denied the operator's provider key and isolated. "+
+			"Promote the team again (TeamDef op=promote) to run it with its promoter's access.", sub.TenantID, sub.Name)
+	}
 	return tools.WithRunIdentity(ctx, tools.RunIdentityValue{
-		TenantID: sub.TenantID,
-		UserID:   channels.SystemPublisherUserID,
-		AgentID:  "team:" + sub.Name,
+		TenantID:              sub.TenantID,
+		UserID:                channels.SystemPublisherUserID,
+		AgentID:               "team:" + sub.Name,
+		OperatorKeyRestricted: promoter.OperatorKeyRestricted,
+		Isolated:              promoter.Isolated,
 	})
+}
+
+// warnOnce reports true the first time it sees a key. The zero value works,
+// for the same reason subscriptionBackoff's does.
+type warnOnce struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (w *warnOnce) first(key string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen[key] {
+		return false
+	}
+	if w.seen == nil {
+		w.seen = map[string]bool{}
+	}
+	w.seen[key] = true
+	return true
 }
 
 // backoff decides whether a team that FAILED recently may be driven again yet,

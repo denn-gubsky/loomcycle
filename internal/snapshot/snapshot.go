@@ -385,9 +385,27 @@ func captureTeamDefActive(ctx context.Context, s store.Store, out *TeamDefActive
 			DefID:             r.DefID,
 			PromotedAt:        r.PromotedAt,
 			PromotedByAgentID: r.PromotedByAgentID,
+			Promoter:          promoterEntry(r.Promoter),
 		})
 	}
 	return nil
+}
+
+// promoterEntry and promoterRow convert the team promoter capture; nil (not
+// captured) stays nil both ways, so an uncaptured pointer never round-trips
+// into a captured "unrestricted".
+func promoterEntry(p *store.TeamDefPromoter) *TeamDefPromoterEntry {
+	if p == nil {
+		return nil
+	}
+	return &TeamDefPromoterEntry{OperatorKeyRestricted: p.OperatorKeyRestricted, Isolated: p.Isolated}
+}
+
+func promoterRow(e *TeamDefPromoterEntry) *store.TeamDefPromoter {
+	if e == nil {
+		return nil
+	}
+	return &store.TeamDefPromoter{OperatorKeyRestricted: e.OperatorKeyRestricted, Isolated: e.Isolated}
 }
 
 // captureHookDefs mirrors captureTeamDefs against hook_defs.
