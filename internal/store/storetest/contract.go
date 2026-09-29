@@ -163,6 +163,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotMemoryTemporalRoundTrip", testSnapshotMemoryTemporalRoundTrip},
 		{"SnapshotReadChannelMessagesEmpty", testSnapshotReadChannelMessagesEmpty},
 		{"SnapshotReadChannelCursorsEmpty", testSnapshotReadChannelCursorsEmpty},
+		{"SnapshotRestoreChannelCursorKeysOnTenant", testSnapshotRestoreChannelCursorKeysOnTenant},
 		{"SnapshotReadEvaluationsEmpty", testSnapshotReadEvaluationsEmpty},
 		{"SnapshotReadEvaluationsOrderedByCreatedAt", testSnapshotReadEvaluationsOrderedByCreatedAt},
 		{"MemorySetGetRoundTrip", testMemorySetGetRoundTrip},
@@ -3911,6 +3912,52 @@ func testSnapshotReadChannelCursorsEmpty(t *testing.T, s store.Store) {
 	}
 	if len(got) != 0 {
 		t.Errorf("fresh store: got %d rows, want 0", len(got))
+	}
+}
+
+// SnapshotRestoreChannelCursor keys on the tenant: two tenants' cursors on one
+// (channel, scope, scope_id) both land, each read back under its own tenant,
+// and a second restore of either leaves the stored cursor alone.
+func testSnapshotRestoreChannelCursorKeysOnTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	at := time.Unix(1_700_000_000, 0)
+	want := map[string]string{
+		"acme":   store.EncodeChannelCursor(at, "msg_acme"),
+		"globex": store.EncodeChannelCursor(at.Add(time.Second), "msg_globex"),
+	}
+	for _, tenant := range []string{"acme", "globex"} {
+		inserted, err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
+			Channel: "news", TenantID: tenant, Scope: store.MemoryScopeUser, ScopeID: "alice",
+			Cursor: want[tenant], UpdatedAt: at,
+		})
+		if err != nil {
+			t.Fatalf("restore %s cursor: %v", tenant, err)
+		}
+		if !inserted {
+			t.Errorf("restore %s cursor: inserted = false, want true", tenant)
+		}
+	}
+	for tenant, cursor := range want {
+		got, err := s.ChannelCommittedCursor(ctx, tenant, "news", store.MemoryScopeUser, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != cursor {
+			t.Errorf("%s committed cursor = %q, want %q", tenant, got, cursor)
+		}
+	}
+	inserted, err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
+		Channel: "news", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "alice",
+		Cursor: want["globex"], UpdatedAt: at,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted {
+		t.Error("second restore of acme's cursor: inserted = true, want false")
+	}
+	if got, _ := s.ChannelCommittedCursor(ctx, "acme", "news", store.MemoryScopeUser, "alice"); got != want["acme"] {
+		t.Errorf("acme committed cursor after a second restore = %q, want it unchanged %q", got, want["acme"])
 	}
 }
 
