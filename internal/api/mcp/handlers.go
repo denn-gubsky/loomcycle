@@ -591,12 +591,43 @@ func handleCompactRun(ctx context.Context, env *handlerEnv, args json.RawMessage
 	return toolResultJSON(res), nil
 }
 
+// handleListRuns lists either one user's runs or one team walk's — exactly one
+// of user_id / walk_id. The walk listing pages with a cursor; the user listing
+// has none, and a walk has no status filter, so an argument that belongs to the
+// other form is refused rather than silently ignored.
 func handleListRuns(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
-	var f connector.ListRunsFilter
-	if err := json.Unmarshal(args, &f); err != nil {
+	var p struct {
+		connector.ListRunsFilter
+		WalkID string `json:"walk_id"`
+		Cursor string `json:"cursor"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
 		return toolErr("invalid list_runs arguments: " + err.Error()), nil
 	}
-	res, err := env.connector.ListRuns(ctx, f)
+	if (p.UserID == "") == (p.WalkID == "") {
+		return toolErrValidation("list_runs: pass exactly one of user_id or walk_id",
+			"Send user_id to list one user's runs, or walk_id (a team walk's run_id) to list that walk's runs — not both, not neither."), nil
+	}
+	if p.WalkID != "" {
+		if p.Status != "" {
+			return toolErrValidation("list_runs: status filters a user_id listing only",
+				"Drop status: a walk_id listing returns every run of the walk; read each row's status."), nil
+		}
+		res, err := env.connector.ListWalkRuns(ctx, p.WalkID, p.Limit, p.Cursor)
+		if errors.Is(err, store.ErrInvalidRunCursor) {
+			return toolErrValidation("list_runs: "+err.Error(),
+				"Pass the next_cursor from the previous page unchanged, or omit cursor to start from the first page."), nil
+		}
+		if err != nil {
+			return toolErrFrom("list_runs", err), nil
+		}
+		return toolResultJSON(res), nil
+	}
+	if p.Cursor != "" {
+		return toolErrValidation("list_runs: cursor pages a walk_id listing only",
+			"Drop cursor: a user_id listing is one bounded list, newest first."), nil
+	}
+	res, err := env.connector.ListRuns(ctx, p.ListRunsFilter)
 	if err != nil {
 		return toolErrFrom("list_runs", err), nil
 	}
