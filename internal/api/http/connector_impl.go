@@ -231,6 +231,13 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 			return connector.BatchSpawnResult{}, fmt.Errorf(
 				`spawn_runs: spawns[%d].segments is required — a run with no user turn sends the model an empty prompt and completes anyway. Pass segments: [{"role":"user","content":[{"type":"trusted-text","text":"..."}]}]`, i)
 		}
+		// An over-long parent_context field is the same kind of malformed spec,
+		// and the MCP tool already refuses the batch for it with this message.
+		// RunOnce would catch it too, but as one failed child in an otherwise
+		// green envelope — a different answer on runs:batch and gRPC than on MCP.
+		if msg, ok := connector.ValidateParentContext(req.Spawns[i].ParentContext); !ok {
+			return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: spawns[%d]: %s", i, msg)
+		}
 	}
 
 	mode := req.Mode
