@@ -90,7 +90,9 @@ func captureTokenLimits(ctx context.Context, s store.Store, capturedAt time.Time
 			ScopeID:   r.ScopeID,
 			SoftLimit: r.SoftLimit,
 			HardLimit: r.HardLimit,
-			UpdatedAt: r.UpdatedAt,
+			// sqlite reads the instant back in the host's zone; the envelope
+			// is portable, so it carries UTC.
+			UpdatedAt: r.UpdatedAt.UTC(),
 			UpdatedBy: r.UpdatedBy,
 		})
 	}
