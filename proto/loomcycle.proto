@@ -1938,6 +1938,11 @@ message RestoreSnapshotResponse {
   // Memory scopes, MCP server defs made live by the post-restore refresh).
   // The extensible form: a new section adds a key here and no field above.
   map<string, int32> restored = 13;
+  // How many of the restored paused runs were re-dispatched as live loops.
+  // Can be below paused_runs_restored: a run whose agent no longer resolves
+  // is flagged failed and named in warnings instead. Mirrors HTTP's
+  // paused_runs_resumed.
+  int32 paused_runs_resumed = 14;
 }
 
 message DeleteSnapshotRequest {

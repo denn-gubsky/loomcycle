@@ -72,3 +72,26 @@ func TestSnapshotWire_CaptureWarningsOnEverySurface(t *testing.T) {
 		t.Errorf("the Python _snapshot_descriptor_to_dict does not map %q", key)
 	}
 }
+
+// paused_runs_resumed was sent over HTTP only: the TS adapter never declared
+// it, and the connector, the proto and so the Python adapter had no field for
+// it, because only the HTTP restore resumed anything.
+func TestSnapshotWire_PausedRunsResumedOnEverySurface(t *testing.T) {
+	const key = "paused_runs_resumed"
+	if !declares(t, jsonFields(t, snapshotRestoreResponse{}), key) {
+		t.Fatalf("HTTP snapshotRestoreResponse does not send %q", key)
+	}
+	if !declares(t, jsonFields(t, connector.RestoreSnapshotResult{}), key) {
+		t.Errorf("connector.RestoreSnapshotResult (and so MCP) does not carry %q", key)
+	}
+	if !declaredNames(tsFieldRe, sourceBlock(t, "../../../adapters/ts/src/types.ts", "export interface SnapshotRestoreResponse {", "\n}"))[key] {
+		t.Errorf("the TS adapter's SnapshotRestoreResponse does not declare %q", key)
+	}
+	if !declaredNames(protoFieldRe, sourceBlock(t, "../../../proto/loomcycle.proto", "message RestoreSnapshotResponse {", "\n}"))[key] {
+		t.Errorf("proto RestoreSnapshotResponse does not declare %q", key)
+	}
+	py := sourceBlock(t, "../../../adapters/python/loomcycle/client.py", "async def restore_snapshot(", "\n    async def ")
+	if !strings.Contains(py, `"`+key+`":`) {
+		t.Errorf("the Python restore_snapshot does not map %q", key)
+	}
+}

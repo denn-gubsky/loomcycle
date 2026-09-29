@@ -243,6 +243,20 @@ async def test_restore_snapshot_passes_the_restored_map_through():
 
 
 @pytest.mark.asyncio
+async def test_restore_snapshot_reports_the_paused_runs_it_resumed():
+    client = _make_client()
+    fake, _ = _async_returning(pb.RestoreSnapshotResponse(
+        paused_runs_restored=2,
+        paused_runs_resumed=1,
+    ))
+    client._stub.RestoreSnapshot = fake  # type: ignore[attr-defined]
+
+    result = await client.restore_snapshot(snapshot_id="snap_xyz")
+    assert result["paused_runs_restored"] == 2
+    assert result["paused_runs_resumed"] == 1
+
+
+@pytest.mark.asyncio
 async def test_create_snapshot_returns_the_capture_warnings():
     client = _make_client()
     warning = "mcp_server_defs x: headers.Authorization holds a literal value"

@@ -1912,6 +1912,10 @@ export interface SnapshotRestoreResponse {
   channel_cursors_restored?: number;
   evaluations_restored?: number;
   paused_runs_restored?: number;
+  /** How many restored paused runs the server re-dispatched as live loops.
+   *  Can be below `paused_runs_restored`: a run whose agent no longer
+   *  resolves is flagged failed and named in `warnings` instead. */
+  paused_runs_resumed?: number;
   synthesized_sessions?: number;
   transcript_events_restored?: number;
   interaction_history_restored?: number;

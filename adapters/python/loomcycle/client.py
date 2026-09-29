@@ -575,6 +575,8 @@ class LoomcycleClient:
         Returns a dict with per-section counters
         (memory_restored, paused_runs_restored, transcript_events_restored,
         synthesized_sessions, etc.) plus warnings + format_migrations.
+        ``paused_runs_resumed`` counts the restored paused runs the server
+        re-dispatched as live loops.
 
         Raises ``SnapshotNotFoundError`` (NotFound) when ``snapshot_id``
         doesn't exist. Raises ``SnapshotVersionError`` (FailedPrecondition)
@@ -603,6 +605,9 @@ class LoomcycleClient:
             "channel_cursors_restored": resp.channel_cursors_restored,
             "evaluations_restored": resp.evaluations_restored,
             "paused_runs_restored": resp.paused_runs_restored,
+            # Restored paused runs re-dispatched as live loops; one that cannot
+            # resume is named in warnings instead.
+            "paused_runs_resumed": resp.paused_runs_resumed,
             "synthesized_sessions": resp.synthesized_sessions,
             "transcript_events_restored": resp.transcript_events_restored,
             "interaction_history_restored": resp.interaction_history_restored,

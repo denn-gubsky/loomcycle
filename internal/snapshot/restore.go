@@ -46,6 +46,10 @@ type RestoreOptions struct {
 // MCPServerDefsActivated counts the MCP server registrations the caller's
 // post-restore refresh made live: absent from, or different in, the
 // in-process registry before the refresh ran.
+//
+// PausedRunsResumed counts the paused runs the caller re-dispatched as live
+// loops after the refresh. It can be below PausedRunsRestored: a run whose
+// agent no longer resolves is flagged failed and named in Warnings instead.
 type RestoreResult struct {
 	AgentDefsRestored          int      `json:"agent_defs_restored"`
 	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
@@ -68,6 +72,7 @@ type RestoreResult struct {
 	InteractionHistoryRestored int      `json:"interaction_history_restored"`
 	SqlMemScopesRestored       int      `json:"sqlmem_scopes_restored"`
 	MCPServerDefsActivated     int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
+	PausedRunsResumed          int      `json:"paused_runs_resumed"`       // set by the caller's post-restore resume, not by Restore
 	Warnings                   []string `json:"warnings,omitempty"`
 }
 
