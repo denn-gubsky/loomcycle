@@ -8398,9 +8398,14 @@ type RestoreSnapshotResponse struct {
 	// ones they never carried (skill/team/hook/MCP server/channel defs, SQL
 	// Memory scopes, MCP server defs made live by the post-restore refresh).
 	// The extensible form: a new section adds a key here and no field above.
-	Restored      map[string]int32 `protobuf:"bytes,13,rep,name=restored,proto3" json:"restored,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Restored map[string]int32 `protobuf:"bytes,13,rep,name=restored,proto3" json:"restored,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// How many of the restored paused runs were re-dispatched as live loops.
+	// Can be below paused_runs_restored: a run whose agent no longer resolves
+	// is flagged failed and named in warnings instead. Mirrors HTTP's
+	// paused_runs_resumed.
+	PausedRunsResumed int32 `protobuf:"varint,14,opt,name=paused_runs_resumed,json=pausedRunsResumed,proto3" json:"paused_runs_resumed,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *RestoreSnapshotResponse) Reset() {
@@ -8522,6 +8527,13 @@ func (x *RestoreSnapshotResponse) GetRestored() map[string]int32 {
 		return x.Restored
 	}
 	return nil
+}
+
+func (x *RestoreSnapshotResponse) GetPausedRunsResumed() int32 {
+	if x != nil {
+		return x.PausedRunsResumed
+	}
+	return 0
 }
 
 type DeleteSnapshotRequest struct {
@@ -11256,7 +11268,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
 	"snapshotId\x12\x19\n" +
 	"\braw_json\x18\x02 \x01(\fR\arawJson\x12'\n" +
-	"\x0finclude_history\x18\x03 \x01(\bR\x0eincludeHistory\"\x92\x06\n" +
+	"\x0finclude_history\x18\x03 \x01(\bR\x0eincludeHistory\"\xc2\x06\n" +
 	"\x17RestoreSnapshotResponse\x12.\n" +
 	"\x13agent_defs_restored\x18\x01 \x01(\x05R\x11agentDefsRestored\x129\n" +
 	"\x19agent_def_active_restored\x18\x02 \x01(\x05R\x16agentDefActiveRestored\x12'\n" +
@@ -11271,7 +11283,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	" \x01(\x05R\x1ainteractionHistoryRestored\x12\x1a\n" +
 	"\bwarnings\x18\v \x03(\tR\bwarnings\x12+\n" +
 	"\x11format_migrations\x18\f \x03(\tR\x10formatMigrations\x12O\n" +
-	"\brestored\x18\r \x03(\v23.loomcycle.v1.RestoreSnapshotResponse.RestoredEntryR\brestored\x1a;\n" +
+	"\brestored\x18\r \x03(\v23.loomcycle.v1.RestoreSnapshotResponse.RestoredEntryR\brestored\x12.\n" +
+	"\x13paused_runs_resumed\x18\x0e \x01(\x05R\x11pausedRunsResumed\x1a;\n" +
 	"\rRestoredEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"8\n" +

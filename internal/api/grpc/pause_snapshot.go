@@ -172,6 +172,7 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req *loomcyclepb.RestoreSn
 		ChannelCursorsRestored:     int32(res.ChannelCursorsRestored),
 		EvaluationsRestored:        int32(res.EvaluationsRestored),
 		PausedRunsRestored:         int32(res.PausedRunsRestored),
+		PausedRunsResumed:          int32(res.PausedRunsResumed),
 		SynthesizedSessions:        int32(res.SynthesizedSessions),
 		TranscriptEventsRestored:   int32(res.TranscriptEventsRestored),
 		InteractionHistoryRestored: int32(res.InteractionHistoryRestored),
