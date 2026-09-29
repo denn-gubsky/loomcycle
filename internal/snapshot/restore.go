@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
@@ -40,6 +42,10 @@ type RestoreOptions struct {
 // synthesized sessions, dropped expired rows, skipped sections, etc.
 // Operators read warnings to decide whether the restore is "clean
 // enough" to call Resume.
+//
+// MCPServerDefsActivated counts the MCP server registrations the caller's
+// post-restore refresh made live: absent from, or different in, the
+// in-process registry before the refresh ran.
 type RestoreResult struct {
 	AgentDefsRestored          int      `json:"agent_defs_restored"`
 	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
@@ -61,7 +67,29 @@ type RestoreResult struct {
 	TranscriptEventsRestored   int      `json:"transcript_events_restored"`
 	InteractionHistoryRestored int      `json:"interaction_history_restored"`
 	SqlMemScopesRestored       int      `json:"sqlmem_scopes_restored"`
+	MCPServerDefsActivated     int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
 	Warnings                   []string `json:"warnings,omitempty"`
+}
+
+// Counts is every counter on the result, keyed by name: the JSON key with its
+// "_restored" suffix trimmed, so "agent_defs_restored" is "agent_defs". This
+// is the extensible `restored` map every transport sends. It is derived from
+// the struct rather than listed, because a hand-kept list is how five def
+// counters went unreported on every transport: a counter added here reaches
+// the wire with no transport change.
+func (r RestoreResult) Counts() map[string]int {
+	rv := reflect.ValueOf(r)
+	rt := rv.Type()
+	out := make(map[string]int, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if f.Type.Kind() != reflect.Int {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		out[strings.TrimSuffix(name, "_restored")] = int(rv.Field(i).Int())
+	}
+	return out
 }
 
 // Restore reads a canonical JSON envelope (Export's output shape),
