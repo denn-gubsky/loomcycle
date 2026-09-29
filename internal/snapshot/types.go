@@ -416,7 +416,15 @@ type ChannelMessageEntry struct {
 }
 
 type ChannelCursorEntry struct {
-	Channel   string    `json:"channel"`
+	Channel string `json:"channel"`
+	// TenantID is the keyspace the subscriber's cursor lives in, and part of
+	// the cursor's key. Without it every restored cursor landed in the shared
+	// "" tenant: two tenants' cursors on one (channel, scope, scope_id)
+	// collapsed into one, the other silently dropped, and each tenant's
+	// subscriber resumed from a position that was not its own. "" (omitted)
+	// is the operator layer, where a cursor from an older snapshot still
+	// restores.
+	TenantID  string    `json:"tenant_id,omitempty"`
 	Scope     string    `json:"scope"`
 	ScopeID   string    `json:"scope_id"`
 	Cursor    string    `json:"cursor"`

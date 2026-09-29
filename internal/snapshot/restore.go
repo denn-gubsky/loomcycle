@@ -563,6 +563,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		for _, c := range sec.Cursors {
 			inserted, err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
 				Channel:   c.Channel,
+				TenantID:  c.TenantID,
 				Scope:     store.MemoryScope(c.Scope),
 				ScopeID:   c.ScopeID,
 				Cursor:    c.Cursor,

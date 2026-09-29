@@ -839,6 +839,174 @@ func withoutPausedRunTenant(t *testing.T, raw []byte) []byte {
 	return out
 }
 
+// publishChannelBatch publishes n messages on one channel keyspace and returns
+// the cursor positioned just after each (cursors[i] acks message i).
+func publishChannelBatch(t *testing.T, s store.Store, tenantID, channel string, scope store.MemoryScope, scopeID string, n int) []string {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
+			Channel: channel, TenantID: tenantID, Scope: scope, ScopeID: scopeID,
+			Payload: json.RawMessage(`{}`),
+		}, 0); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond) // distinct visible_at, so the cursors order
+	}
+	msgs, _, err := s.ChannelSubscribe(ctx, tenantID, channel, scope, scopeID, "", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("setup: %s read %d messages, want %d", tenantID, len(msgs), n)
+	}
+	cursors := make([]string, n)
+	for i, m := range msgs {
+		cursors[i] = store.EncodeChannelCursor(m.VisibleAt, m.ID)
+	}
+	return cursors
+}
+
+// Two subscribers holding a cursor on the same (channel, scope, scope_id) in
+// different tenants each resume from their own position after a restore. The
+// cursor entry carried no tenant, so both restored into the shared tenant: the
+// second was dropped on the key collision and its subscriber resumed from the
+// wrong place — from the oldest message on a tenant's own channel, from the
+// operator's position on a global one.
+func TestRoundTrip_ChannelCursorsKeepTheirTenant(t *testing.T) {
+	cases := []struct {
+		name    string
+		scope   store.MemoryScope
+		scopeID string
+		// Each subscriber's tenant and the tenant its messages are published
+		// under: a tenant's own keyspace, or the operator layer a global
+		// channel's subscribers all read.
+		tenants   [2]string
+		publishIn [2]string
+	}{
+		{"user scope, two tenants", store.MemoryScopeUser, "alice", [2]string{"acme", "globex"}, [2]string{"acme", "globex"}},
+		{"global scope, operator and tenant", store.MemoryScopeGlobal, "", [2]string{store.ChannelOperatorTenant, "acme"}, [2]string{store.ChannelOperatorTenant, store.ChannelOperatorTenant}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src, srcClose := newTestStore(t)
+			defer srcClose()
+			dst, dstClose := newTestStore(t)
+			defer dstClose()
+			ctx := context.Background()
+
+			const n = 3
+			var cursors [2][]string
+			cursors[0] = publishChannelBatch(t, src, tc.publishIn[0], "news", tc.scope, tc.scopeID, n)
+			if tc.publishIn[1] == tc.publishIn[0] {
+				cursors[1] = cursors[0] // one stream both subscribers read
+			} else {
+				cursors[1] = publishChannelBatch(t, src, tc.publishIn[1], "news", tc.scope, tc.scopeID, n)
+			}
+			// Subscriber i has read i+1 messages: the two positions differ.
+			for i, tenant := range tc.tenants {
+				if err := src.ChannelAck(ctx, tenant, "news", tc.scope, tc.scopeID, cursors[i][i]); err != nil {
+					t.Fatalf("ack as %q: %v", tenant, err)
+				}
+			}
+
+			_, raw, err := Capture(ctx, src, CaptureOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := Restore(ctx, dst, raw, RestoreOptions{})
+			if err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			if res.ChannelCursorsRestored != 2 {
+				t.Errorf("channel cursors restored = %d, want 2 (warnings: %v)", res.ChannelCursorsRestored, res.Warnings)
+			}
+
+			for i, tenant := range tc.tenants {
+				got, err := dst.ChannelCommittedCursor(ctx, tenant, "news", tc.scope, tc.scopeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got != cursors[i][i] {
+					t.Errorf("tenant %q committed cursor = %q, want its own %q", tenant, got, cursors[i][i])
+				}
+				// The subscriber picks up where it left off: only the
+				// messages after its own position.
+				msgs, _, err := dst.ChannelSubscribe(ctx, tenant, "news", tc.scope, tc.scopeID, got, 10)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := n - (i + 1); len(msgs) != want {
+					t.Errorf("tenant %q resumed with %d messages, want %d", tenant, len(msgs), want)
+				}
+			}
+		})
+	}
+}
+
+// A snapshot taken before the cursor entry carried its tenant restores each
+// cursor into the operator layer "", as it always did: the envelope holds
+// nothing else that names the subscriber's tenant.
+func TestRestore_ChannelCursorWithoutTenantRestoresIntoOperatorLayer(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	cursors := publishChannelBatch(t, src, "acme", "news", store.MemoryScopeUser, "alice", 2)
+	if err := src.ChannelAck(ctx, "acme", "news", store.MemoryScopeUser, "alice", cursors[0]); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = withoutChannelCursorTenant(t, raw)
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.SnapshotReadChannelCursors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].TenantID != store.ChannelOperatorTenant || got[0].Cursor != cursors[0] {
+		t.Errorf("restored cursors = %+v, want the one cursor in the operator layer", got)
+	}
+}
+
+// withoutChannelCursorTenant rewrites an envelope as a snapshot taken before
+// the channel cursor entry carried tenant_id, failing if there was nothing to
+// strip.
+func withoutChannelCursorTenant(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	sections := env["sections"].(map[string]any)
+	channels := sections["channels"].(map[string]any)
+	stripped := 0
+	for _, c := range channels["cursors"].([]any) {
+		entry := c.(map[string]any)
+		if _, ok := entry["tenant_id"]; ok {
+			delete(entry, "tenant_id")
+			stripped++
+		}
+	}
+	if stripped == 0 {
+		t.Fatal("the captured envelope has no channel cursor tenant_id to strip; the old-format case would prove nothing")
+	}
+	// The checksum covers the body; drop it as a pre-checksum snapshot would.
+	delete(env, "checksum")
+	out, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // TestRestore_DropsEmbeddingFieldOnPhase1 — restoring a hand-crafted
 // envelope where memory.entries[].embedding is populated (simulating
 // a Phase-2-captured snapshot) on a Phase-1 reader silently drops
