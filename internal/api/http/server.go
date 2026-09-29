@@ -2974,7 +2974,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if detached {
 		fwd, callerGone = forwardWhileAttached(fwd)
 	}
-	emit := s.makeRecordingEmit(runParent, runID, rid, sessionID, fwd)
+	emit := s.makeRecordingEmit(runParent, runID, rid, sessionID, meta, fwd)
 	// RFC AW: emit any soft budget crossings the admission check found, so the
 	// warning lands at run start in the transcript/stream (dedup'd once-per-run
 	// by makeRecordingEmit's seenLimit set).
@@ -4874,7 +4874,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	// Persist under runCtx so events survive a client disconnect on an
 	// interactive run (runCtx tracks the request for a normal run).
-	emit := s.makeRecordingEmit(runCtx, runID, rid, sessionID, streamFwd)
+	emit := s.makeRecordingEmit(runCtx, runID, rid, sessionID, meta, streamFwd)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
 	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
 	for _, info := range limitDec.Soft {
@@ -5630,7 +5630,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// Persist under runCtx so a detached continuation's events survive the
 	// client leaving (runCtx tracks the request otherwise).
-	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, stream.send)
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, id, meta, stream.send)
 	// RFC AW: emit any soft budget crossings found at admission so the warning
 	// lands at run start (dedup'd once-per-run by makeRecordingEmit).
 	for _, info := range limitDec.Soft {
@@ -6223,13 +6223,17 @@ func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit fun
 	return q, onSteer, dereg
 }
 
+// meta is the run's run-state identity: the emit sees every event that starts
+// or ends a wait, so it is where the run-state stream is told of one (see
+// holdAfter).
+//
 // rid + sessionID are passed EXPLICITLY (not read from ctx) because this
 // closure is built BEFORE tools.WithRunIdentity is stamped on the loop ctx —
 // reading tools.RunIdentity(ctx) here returned the zero value, so every
 // directly-invoked run's token_usage rows were attributed to tenant/user/
 // agent "" (and a sub-agent's rows got the parent's identity). recordCallUsage
 // uses these captured values so attribution matches the run's true identity.
-func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, fwd func(providers.Event)) func(providers.Event) {
+func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, meta runStateMeta, fwd func(providers.Event)) func(providers.Event) {
 	if s.store == nil || runID == "" {
 		// Even on the store-less path, multiple concurrent callers
 		// could write to fwd in parallel. fwd itself (stream.send)
@@ -6245,6 +6249,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 	}
 	var mu sync.Mutex
 	var usageCallIdx int // RFC AV: per-call ledger row index within this run
+	var hold runHold     // the wait the run-state stream was last told of; guarded by mu
 	// RFC AW: emit a budget `limit` event at most ONCE per (scope, severity)
 	// this run, so neither the soft-at-admission events nor repeated in-flight
 	// crossings spam the transcript. emitLimitLocked persists (a "limit" row)
@@ -6284,6 +6289,15 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		// Deferred so the transition is published after the event is persisted
+		// and forwarded — a subscriber that reacts by reading the run finds it
+		// in the state announced — and still under mu, so a wait's start and
+		// end reach the stream in the order the run went through them.
+		next := holdAfter(hold, ev)
+		if !next.sameAnnouncement(hold) {
+			defer s.publishHold(meta, next)
+		}
+		hold = next // kept on a repeat too: the same wait may be a new tool call
 		// EventSteer (operator steering, PR 2) is forwarded LIVE only — the
 		// runner's OnSteer persists the operator instruction as a separate
 		// "user_input" transcript row (the shape replayTranscript rebuilds the
@@ -7426,7 +7440,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// stream is fwd=no-op so sub events don't bleed into the parent's
 	// event stream. The parent observes only the wrapping
 	// tool_call/tool_result on its own stream.
-	subEmit := s.makeRecordingEmit(ctx, subRunID, subRID, subSessionID, fwd)
+	subEmit := s.makeRecordingEmit(ctx, subRunID, subRID, subSessionID, subMeta, fwd)
 
 	// Sub-run gets ITS OWN agent tools attached to ctx — the parent's
 	// tool list does not leak to the child (and vice versa). This
@@ -8915,7 +8929,17 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 	if s.runStateBus == nil {
 		return
 	}
-	s.runStateBus.Publish(runstate.RunStateEvent{
+	evt := m.runStateEvent(status)
+	evt.StopReason, evt.Error = stopReason, errMsg
+	s.runStateBus.Publish(evt)
+}
+
+// runStateEvent is the run's identity on a transition to status. Shared by the
+// lifecycle publish and the hold publish so the two cannot disagree about who
+// a run is — a hold event missing the tenant would be dropped by a tenant's
+// stream, and one missing parent_context by a walk's.
+func (m runStateMeta) runStateEvent(status string) runstate.RunStateEvent {
+	return runstate.RunStateEvent{
 		RunID:         m.RunID,
 		AgentID:       m.AgentID,
 		Agent:         m.Agent,
@@ -8923,10 +8947,8 @@ func (s *Server) publishRunState(m runStateMeta, status, stopReason, errMsg stri
 		TenantID:      m.TenantID,
 		ParentAgentID: m.ParentAgentID,
 		Status:        status,
-		StopReason:    stopReason,
-		Error:         errMsg,
 		ParentContext: m.ParentContext,
-	})
+	}
 }
 
 // makeHeartbeat returns a callback the loop fires at each iteration.

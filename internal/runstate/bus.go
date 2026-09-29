@@ -58,6 +58,20 @@ type RunStateEvent struct {
 	// stream learns which root request a finishing sub-agent belongs to
 	// without a follow-up fetch. Nil when the run carried no context.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// AwaitedState is what a "running" run has started waiting on — "review",
+	// "input", "channel" or "interrupted", the values the run reads report (see
+	// internal/awaited). A wait is announced as its own "running" event, and
+	// its end as another "running" event with this empty, so a subscriber
+	// folding the stream always holds the run's current wait. Empty on every
+	// other transition.
+	AwaitedState string `json:"awaited_state,omitempty"`
+	// AwaitedOn names what the run waits on: the channel, the interruption
+	// kind, or the agent_stop hook holding a review (empty when review arming
+	// took the hold).
+	AwaitedOn string `json:"awaited_on,omitempty"`
+	// HoldExpiresAt (RFC 3339, UTC) is when a review hold ends as rejected if
+	// nobody rules on it. Empty when the wait has no deadline.
+	HoldExpiresAt string `json:"hold_expires_at,omitempty"`
 }
 
 // subscription is one active subscriber's state.

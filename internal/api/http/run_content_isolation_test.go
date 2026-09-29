@@ -32,7 +32,7 @@ func TestRunContentReads_IsolatedMemberCannotReadAnotherUsersRun(t *testing.T) {
 	alice := seedTenantRun(t, srv.store, "acme", "alice", "a_alice")
 	own := seedTenantRun(t, srv.store, "acme", "bob", "a_bob")
 	for _, r := range []store.Run{alice, own} {
-		srv.makeRecordingEmit(ctx, r.ID, tools.RunIdentityValue{}, r.SessionID, func(providers.Event) {})(
+		srv.makeRecordingEmit(ctx, r.ID, tools.RunIdentityValue{}, r.SessionID, runStateMeta{}, func(providers.Event) {})(
 			snapshotEvent("system for "+r.UserID, "secret plan of "+r.UserID))
 		if err := srv.store.FinishRun(ctx, r.ID, store.RunCompleted, "end_turn",
 			store.Usage{Result: []byte(`{"final_text":"answer for ` + r.UserID + `"}`)}, ""); err != nil {

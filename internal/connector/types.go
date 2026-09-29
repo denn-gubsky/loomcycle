@@ -898,6 +898,12 @@ type RunStateEvent struct {
 	// ParentContext echoes the run's opaque tracking lineage (v0.12.x).
 	// Nil when the run carried no context.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// AwaitedState / AwaitedOn / HoldExpiresAt: what a "running" run has
+	// started waiting on, as runstate.RunStateEvent documents. The end of a
+	// wait is a "running" event with AwaitedState empty.
+	AwaitedState  string `json:"awaited_state,omitempty"`
+	AwaitedOn     string `json:"awaited_on,omitempty"`
+	HoldExpiresAt string `json:"hold_expires_at,omitempty"`
 }
 
 // RunOverrides is the per-run override set carried by a RETUNE — the shared
