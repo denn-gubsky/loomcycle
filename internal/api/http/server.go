@@ -2554,6 +2554,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// spawns its runs through the sub-run path, never here — so this is the one
 	// seam those transports share for dropping the runtime-owned fields.
 	in.ParentContext = connector.StripRuntimeParentContext(in.ParentContext)
+	// ...and for bounding the caller's own fields. POST /v1/runs, a session
+	// continuation, spawn_run(s) and a draft refuse an over-long field before
+	// they get here; gRPC Run / Continue reach RunOnce with nothing else in
+	// between, so without this their parent_context went unbounded into the
+	// run row. The check reads only caller-owned fields, which the strip above
+	// leaves alone, so the order of the two does not change the outcome.
+	if msg, ok := connector.ValidateParentContext(in.ParentContext); !ok {
+		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
+	}
 
 	// ---- Session resolution (continuation only) ----
 	isContinuation := in.SessionID != ""
