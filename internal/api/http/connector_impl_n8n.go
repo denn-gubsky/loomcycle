@@ -230,6 +230,7 @@ func runStateEventToConnector(e runstate.RunStateEvent) connector.RunStateEvent 
 		Agent:         e.Agent,
 		UserID:        e.UserID,
 		ParentAgentID: e.ParentAgentID,
+		ParentRunID:   e.ParentRunID,
 		Status:        e.Status,
 		StopReason:    e.StopReason,
 		Error:         e.Error,

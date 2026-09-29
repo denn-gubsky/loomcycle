@@ -9071,6 +9071,9 @@ type RunStateEvent struct {
 	// RFC3339 UTC: when a review hold ends as rejected if nobody rules on it.
 	// Empty when the wait has no deadline.
 	HoldExpiresAt string `protobuf:"bytes,13,opt,name=hold_expires_at,json=holdExpiresAt,proto3" json:"hold_expires_at,omitempty"`
+	// The run that spawned this one; empty for a top-level run. Unlike
+	// parent_agent_id, which every run of an agent reuses, it names one run.
+	ParentRunId   string `protobuf:"bytes,14,opt,name=parent_run_id,json=parentRunId,proto3" json:"parent_run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9192,6 +9195,13 @@ func (x *RunStateEvent) GetAwaitedOn() string {
 func (x *RunStateEvent) GetHoldExpiresAt() string {
 	if x != nil {
 		return x.HoldExpiresAt
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetParentRunId() string {
+	if x != nil {
+		return x.ParentRunId
 	}
 	return ""
 }
@@ -11280,7 +11290,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
 	"\bstatuses\x18\x02 \x03(\tR\bstatuses\x12\x14\n" +
 	"\x05agent\x18\x03 \x01(\tR\x05agent\x12\x17\n" +
-	"\awalk_id\x18\x04 \x01(\tR\x06walkId\"\xa7\x03\n" +
+	"\awalk_id\x18\x04 \x01(\tR\x06walkId\"\xcb\x03\n" +
 	"\rRunStateEvent\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x14\n" +
@@ -11297,7 +11307,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\rawaited_state\x18\v \x01(\tR\fawaitedState\x12\x1d\n" +
 	"\n" +
 	"awaited_on\x18\f \x01(\tR\tawaitedOn\x12&\n" +
-	"\x0fhold_expires_at\x18\r \x01(\tR\rholdExpiresAt\"\xf8\x02\n" +
+	"\x0fhold_expires_at\x18\r \x01(\tR\rholdExpiresAt\x12\"\n" +
+	"\rparent_run_id\x18\x0e \x01(\tR\vparentRunId\"\xf8\x02\n" +
 	"\rParentContext\x12)\n" +
 	"\x11root_agent_run_id\x18\x01 \x01(\tR\x0erootAgentRunId\x12!\n" +
 	"\ffunction_key\x18\x02 \x01(\tR\vfunctionKey\x12\x1e\n" +

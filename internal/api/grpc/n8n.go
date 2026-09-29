@@ -99,6 +99,7 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 			Agent:         evt.Agent,
 			UserId:        evt.UserID,
 			ParentAgentId: evt.ParentAgentID,
+			ParentRunId:   evt.ParentRunID,
 			Status:        evt.Status,
 			StopReason:    evt.StopReason,
 			Error:         evt.Error,

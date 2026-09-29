@@ -899,6 +899,7 @@ type RunStateEvent struct {
 	Agent         string `json:"agent"`
 	UserID        string `json:"user_id"`
 	ParentAgentID string `json:"parent_agent_id,omitempty"`
+	ParentRunID   string `json:"parent_run_id,omitempty"` // the run that spawned this one; empty for a top-level run
 	Status        string `json:"status"`
 	StopReason    string `json:"stop_reason,omitempty"`
 	Error         string `json:"error,omitempty"`

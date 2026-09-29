@@ -21,18 +21,33 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
-// buildTree groups agents into parent → children. Top-level entries
-// are agents whose parent_agent_id is null OR whose parent isn't in
-// the current result set (e.g. parent was filtered out by the
-// status query).
+// buildTree groups runs into parent → children. A run hangs under the
+// run named by its parent_run_id when that run is in the result set:
+// an agent id is reused by every run of that agent, so parent_agent_id
+// alone can put a child under the wrong run of its parent. Rows that
+// carry no parent_run_id (written before the server recorded it) fall
+// back to parent_agent_id. A run whose parent is not in the current
+// result set (e.g. filtered out by the status query) is top-level — a
+// named parent run that is absent is not replaced by another run of
+// the same agent.
 export function buildTree(agents: Agent[]): TreeNode[] {
+  const nodes = agents.map((a) => ({ agent: a, children: [] as TreeNode[] }));
+  const byRunId = new Map<string, TreeNode>();
   const byId = new Map<string, TreeNode>();
-  agents.forEach((a) => byId.set(a.agent_id, { agent: a, children: [] }));
+  nodes.forEach((n) => {
+    if (n.agent.run_id) byRunId.set(n.agent.run_id, n);
+    byId.set(n.agent.agent_id, n);
+  });
   const roots: TreeNode[] = [];
-  agents.forEach((a) => {
-    const node = byId.get(a.agent_id)!;
-    if (a.parent_agent_id && byId.has(a.parent_agent_id)) {
-      byId.get(a.parent_agent_id)!.children.push(node);
+  nodes.forEach((node) => {
+    const a = node.agent;
+    const parent = a.parent_run_id
+      ? byRunId.get(a.parent_run_id)
+      : a.parent_agent_id
+        ? byId.get(a.parent_agent_id)
+        : undefined;
+    if (parent && parent !== node) {
+      parent.children.push(node);
     } else {
       roots.push(node);
     }
@@ -104,7 +119,7 @@ export default function AgentsTree({ tree, selectedId, onSelect }: AgentsTreePro
     <ul className="tree">
       {tree.map((node) => (
         <AgentsTreeNode
-          key={node.agent.agent_id}
+          key={node.agent.run_id || node.agent.agent_id}
           node={node}
           depth={0}
           expandedMap={expandedMap}
@@ -214,7 +229,7 @@ function AgentsTreeNode({ node, depth, expandedMap, setExpanded, selectedId, onS
         <ul className="children">
           {node.children.map((c) => (
             <AgentsTreeNode
-              key={c.agent.agent_id}
+              key={c.agent.run_id || c.agent.agent_id}
               node={c}
               depth={depth + 1}
               expandedMap={expandedMap}

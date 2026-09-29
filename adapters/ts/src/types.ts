@@ -3232,6 +3232,9 @@ export interface RunStateEvent {
   agent: string;
   user_id: string;
   parent_agent_id?: string;
+  /** The run that spawned this one; absent for a top-level run. Unlike
+   *  `parent_agent_id`, which every run of an agent reuses, it names one run. */
+  parent_run_id?: string;
   status: string;
   stop_reason?: string;
   error?: string;

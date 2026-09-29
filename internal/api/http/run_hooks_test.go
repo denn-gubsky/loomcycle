@@ -315,6 +315,24 @@ func TestTeamHooks_TheWalksRunEndHookFires(t *testing.T) {
 	}
 }
 
+// A walk an agent's TeamDef call started reports that agent's run to its
+// run_end hook, as the row records it.
+func TestTeamHooks_TheWalksRunEndHookNamesTheCallingRun(t *testing.T) {
+	h := newReviewHarness(t)
+	end := newRecordingHook(t, `{}`)
+	ctx := teamrun.WithWalkHooks(tools.WithRunID(context.Background(), "r_caller"), teamrun.WalkHooks{
+		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "log", URL: end.srv.URL}}}},
+	})
+	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish("the report", nil)
+	if got := end.waitBody(t, `"run_id":"`+runID+`"`); !strings.Contains(got, `"parent_run_id":"r_caller"`) {
+		t.Fatalf("payload = %s, want parent_run_id r_caller", got)
+	}
+}
+
 // A walk whose hooks cannot be resolved never starts, and leaves no run behind.
 func TestTeamHooks_AWalkWhoseHooksCannotResolveDoesNotStart(t *testing.T) {
 	h := newReviewHarness(t)

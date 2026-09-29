@@ -8974,6 +8974,7 @@ func (m runStateMeta) runStateEvent(status string) runstate.RunStateEvent {
 		UserID:        m.UserID,
 		TenantID:      m.TenantID,
 		ParentAgentID: m.ParentAgentID,
+		ParentRunID:   m.ParentRunID,
 		Status:        status,
 		ParentContext: m.ParentContext,
 	}

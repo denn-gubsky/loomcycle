@@ -15,6 +15,7 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
+import { parentRunHref } from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
@@ -262,6 +263,14 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
                 parent:{" "}
                 <Link to={`/agents/${agent.parent_agent_id}`}>
                   <code>{agent.parent_agent_id.slice(0, 12)}…</code>
+                </Link>
+              </span>
+            )}
+            {agent.parent_run_id && (
+              <span>
+                parent run:{" "}
+                <Link to={parentRunHref(agent.parent_run_id)} title="Open the run that spawned this one in the run terminal">
+                  <code>{agent.parent_run_id.slice(0, 12)}…</code>
                 </Link>
               </span>
             )}

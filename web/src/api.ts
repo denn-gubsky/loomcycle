@@ -172,6 +172,9 @@ export interface Agent {
   // rows pre-dating the agent column on the JOIN).
   agent: string;
   parent_agent_id: string | null;
+  // The run that spawned this one; absent for a top-level run. Unlike
+  // parent_agent_id, which every run of an agent reuses, it names one run.
+  parent_run_id?: string;
   user_id: string;
   // "configured" = created but not started (a draft; see createConfiguredRun).
   // "rejected" = a reviewer turned the held answer down without feedback.
@@ -186,6 +189,9 @@ export interface Agent {
     cache_creation_tokens?: number;
     cache_read_tokens?: number;
     model?: string;
+    // The provider that served the run's final successful iteration — differs
+    // from the configured one after a runtime fallback.
+    provider?: string;
   };
   last_heartbeat_at: string | null;
   live: boolean;
@@ -206,6 +212,18 @@ export interface Agent {
   // snake_case wire keys — what updateConfiguredRun edits. Present only while
   // the run is configured; it never holds a secret.
   draft?: Record<string, unknown>;
+  // result is the run's answer and spec its merged configuration record.
+  // Single-run read only (getAgent / GET /v1/runs/{run_id}); list rows omit
+  // both.
+  result?: {
+    final_text?: string;
+    state?: Record<string, unknown>;
+    structured?: Record<string, unknown>;
+  };
+  spec?: Record<string, unknown>;
+  // parent_context is the caller-tracking lineage the run carries (inherited
+  // from its root by sub-agents). Omitted when the run carried none.
+  parent_context?: RunParentContext;
   // v0.12.x cluster mode: the replica owning this run's live cancel
   // handle. Absent in single-replica deployments (the server omits
   // the field when its replica_id is unset).
@@ -215,6 +233,21 @@ export interface Agent {
   // or "awaiting_input" (parked). Absent for ordinary runs.
   resident?: boolean;
   resident_state?: "running" | "awaiting_input" | "completed" | "failed" | "";
+}
+
+// RunParentContext mirrors the server's store.ParentContext.
+export interface RunParentContext {
+  root_agent_run_id?: string;
+  function_key?: string;
+  tier_at_run?: string;
+  board_scope?: string;
+  board_chunk_id?: string;
+  board_document_id?: string;
+  walk_id?: string;
+  wave_id?: string;
+  wave_index?: number;
+  state?: string;
+  state_visit?: number;
 }
 
 export interface ListAgentsResponse {
