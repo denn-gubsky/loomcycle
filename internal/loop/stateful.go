@@ -1139,6 +1139,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				next, resumed := parkForStatefulTurn(ctx, &opts, iter, emit)
 				if resumed {
 					obs, task = next, next
+					memo.clearWork()
 					continue
 				}
 				// Cancelled while parked, or the queue closed: the run ends on
@@ -1207,8 +1208,13 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
 			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text
-			if helpTool != "" && tu.Name == helpTool && !blocks[0].IsError {
-				memo.add(tu.Input, obs)
+			switch {
+			case helpTool != "" && tu.Name == helpTool:
+				if !blocks[0].IsError {
+					memo.add(tu.Input, obs)
+				}
+			default:
+				memo.addWork(tu.Name, tu.Input, obs)
 			}
 			if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
 				msg := "run stopped: " + why + " after being told it cannot succeed as sent"

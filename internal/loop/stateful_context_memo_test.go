@@ -139,3 +139,66 @@ func TestRun_Stateful_AContextResultIsKeptOnLaterSteps(t *testing.T) {
 		t.Errorf("the kept result does not name the call it came from:\n%s", s)
 	}
 }
+
+// docMaker is a stand-in for a tool whose result the next step needs: it
+// returns an id.
+type docMaker struct{}
+
+func (docMaker) Name() string                 { return "Document" }
+func (docMaker) Description() string          { return "documents" }
+func (docMaker) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (docMaker) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: `{"document_id":"DOC-ID-FROM-CREATE"}`}, nil
+}
+
+// Measured in the 1.100.0 eval: a cloud model created a document, read a help
+// article, and at the next step saw only the article, so the id create_document
+// had returned was gone and it created a second document. The result of the
+// last action that was not a Context call must still be shown after a Context
+// call replaces it as the observation.
+func TestRun_Stateful_TheLastActionResultIsKeptBesideAContextResult(t *testing.T) {
+	prov := &statefulScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Document","input":{"op":"create_document","title":"T"}}}`,
+		`{"patch":{},"action":{"tool":"Context","input":{"op":"help","topic":"Document/create_chunk"}}}`,
+		`{"patch":{},"action":{"tool":"Memory","input":{"op":"get","key":"k"}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	order := []tools.Tool{docMaker{}, &countingNoop{}, helpDoc{}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      order,
+		Dispatcher: tools.NewDispatcher(order),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prov.requests) < 4 {
+		t.Fatalf("%d model calls, want 4", len(prov.requests))
+	}
+	step := func(i int) string {
+		msgs := prov.requests[i]
+		var b strings.Builder
+		for _, c := range msgs[len(msgs)-1].Content {
+			b.WriteString(c.Text)
+		}
+		return b.String()
+	}
+	s3 := step(2)
+	if !strings.Contains(s3, "MEMORY SET ARTICLE") {
+		t.Errorf("step 3 does not show the article it just read:\n%s", s3)
+	}
+	if !strings.Contains(s3, `Document {"op":"create_document","title":"T"}, returned:`) || !strings.Contains(s3, "DOC-ID-FROM-CREATE") {
+		t.Errorf("step 3 lost the create_document result the Context call replaced:\n%s", s3)
+	}
+	// Once another action runs, it is the last action: the older one is gone,
+	// and the new one is the observation, so it is not shown twice.
+	s4 := step(3)
+	if strings.Contains(s4, "DOC-ID-FROM-CREATE") {
+		t.Errorf("step 4 still shows an action that is no longer the last:\n%s", s4)
+	}
+	if strings.Contains(s4, "Your last action") {
+		t.Errorf("step 4 repeats the latest observation as the last action:\n%s", s4)
+	}
+}

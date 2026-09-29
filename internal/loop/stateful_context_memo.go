@@ -63,6 +63,31 @@ func memoKey(input json.RawMessage, result string) string {
 
 type contextMemo struct {
 	entries []contextMemoEntry
+	// The latest result of an action that was NOT the Context tool, and the
+	// call that produced it. Measured in the 1.100.0 eval: a cloud model
+	// created a document, read a help article, and on the next step saw only
+	// the article, so the document id create_document had returned was gone
+	// and it created a second document. The kept Context results pushed the
+	// work out; this keeps the latest piece of work beside them.
+	workTool, workCall, workText string
+}
+
+// addWork keeps the latest result of an action that was not a Context call.
+func (m *contextMemo) addWork(tool string, input json.RawMessage, text string) {
+	m.workTool, m.workCall, m.workText = tool, compactCall(input), text
+}
+
+// clearWork forgets the kept action result, for a new operator turn.
+func (m *contextMemo) clearWork() {
+	m.workTool, m.workCall, m.workText = "", "", ""
+}
+
+func compactCall(input json.RawMessage) string {
+	var b bytes.Buffer
+	if json.Compact(&b, input) == nil {
+		return b.String()
+	}
+	return string(input)
 }
 
 // helpToolName is the run's Context tool: the one that serves help. "" when the
@@ -78,11 +103,7 @@ func helpToolName(ts []tools.Tool) string {
 
 // add keeps one successful Context result.
 func (m *contextMemo) add(input json.RawMessage, text string) {
-	var b bytes.Buffer
-	call := string(input)
-	if json.Compact(&b, input) == nil {
-		call = b.String()
-	}
+	call := compactCall(input)
 	key := memoKey(input, text)
 	kept := m.entries[:0]
 	for _, e := range m.entries {
@@ -114,8 +135,12 @@ func (m *contextMemo) render(tool, obs string) string {
 		}
 		fmt.Fprintf(&b, "%s %s returned:\n%s\n\n", tool, e.call, e.text)
 	}
-	if b.Len() == 0 {
-		return ""
+	var out string
+	if b.Len() > 0 {
+		out = fmt.Sprintf("What you already read with %s in this run (kept for you; do not call it again for these):\n\n%s", tool, b.String())
 	}
-	return fmt.Sprintf("What you already read with %s in this run (kept for you; do not call it again for these):\n\n%s", tool, b.String())
+	if m.workText != "" && m.workText != obs {
+		out += fmt.Sprintf("Your last action (it is done; do not repeat it), %s %s, returned:\n%s\n\n", m.workTool, m.workCall, m.workText)
+	}
+	return out
 }
