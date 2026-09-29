@@ -254,7 +254,7 @@ type agentRunner struct {
 	// byte-identical paths to one from before this existed.
 	breakAt BreakpointSource
 	onBreak BreakpointFunc
-	// reviewAt answers whether a starter's members are held for review — the
+	// reviewAt answers whether a state's members are held for review — the
 	// same live armed set the debugger reads, at its review phase. Separate from
 	// breakAt because review needs no human-ask machinery: the verdict comes
 	// through the member run's own review verb, not a walk pause.
@@ -314,7 +314,7 @@ func WithBreakpoints(src BreakpointSource, f BreakpointFunc) RunnerOption {
 	}
 }
 
-// WithMemberReview makes the walk hold a starter's member runs for review when
+// WithMemberReview makes the walk hold a state's member runs for review when
 // the state is armed at the review phase in src — read live, so arming mid-wave
 // holds the members that have not finished yet. ttl, when positive, ends a hold
 // nobody rules on as rejected.
@@ -405,7 +405,9 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		return r.captured(st, task, Outcome{Output: input})
 
 	case teamgraph.HandlerAgent:
-		sp, err := r.spawnWork(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env))
+		// Only the state's own agent may be held for review. Its consolidator,
+		// below, judges that work and is spawned without the arming.
+		sp, err := r.spawnWork(r.withMemberReview(ctx, st), st.Handler.Agent, r.nodePrompt(st.Handler, input, env))
 		out := sp.Output
 		if err != nil {
 			return Outcome{}, err
@@ -598,7 +600,8 @@ func (r *agentRunner) noteRefused(stateID, field string, refused []string) {
 //     the rest.
 //
 // Only the "enough successes" threshold cancels siblings — a failure never does,
-// so wait:all awaits every agent as documented.
+// so wait:all awaits every agent as documented — and not while the state's
+// review is armed, when a sibling still out may be held for a verdict.
 func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input string, env Env) ([]agentResult, error) {
 	agents := st.Handler.Agents
 	// One node, one role: every member of a fan-out shares this state's system
@@ -634,7 +637,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: runCtx.Err().Error()}
 				return
 			}
-			sp, spawnErr := r.spawnWork(runCtx, name, prompt)
+			sp, spawnErr := r.spawnWork(r.withMemberReview(runCtx, st), name, prompt)
 			if spawnErr != nil {
 				results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: false, Error: spawnErr.Error()}
 				return
@@ -642,7 +645,10 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 			results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: true, Output: sp.Output}
 			mu.Lock()
 			successes++
-			if successes >= need {
+			// Never while review is armed: a sibling still out may be held, and
+			// cancelling a run a person is reviewing would throw their review
+			// away. The Starter's wave takes the same rule, for the same reason.
+			if successes >= need && !r.reviewArmed(st) {
 				cancel() // enough succeeded → stop the rest (a no-op for wait:all)
 			}
 			mu.Unlock()

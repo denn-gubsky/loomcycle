@@ -239,13 +239,16 @@ func TestHandleBreakpoints_AnIsolatedMemberCannotReachAColleaguesWalk(t *testing
 	}
 }
 
-// targetsTeam is a starter "wave" feeding an agent "draft": one state a wave
-// breakpoint can arm, and one it cannot.
+// targetsTeam is a starter "wave" feeding an agent "draft", judged by a
+// consolidator "judge": one state a wave breakpoint can arm, one only review
+// can, and one neither can.
 const targetsTeam = `{"entry":"wave","states":[` +
 	`{"state":"wave","handler":{"kind":"starter","source":{"channel":"c1"},"fanout":{"agent":"agent-x","per":"message"},"sink":{"channel":"c2"}}},` +
 	`{"state":"draft","handler":{"kind":"agent","agent":"agent-x"}},` +
+	`{"state":"judge","handler":{"kind":"consolidator","agent":"agent-x"}},` +
 	`{"state":"done","handler":{"kind":"terminal"}}],` +
-	`"transitions":[{"from":"wave","to":"draft","on":"success"},{"from":"draft","to":"done","on":"success"}]}`
+	`"transitions":[{"from":"wave","to":"draft","on":"success"},{"from":"draft","to":"judge","on":"success"},` +
+	`{"from":"judge","to":"done","on":"success"}]}`
 
 // openWalkOnTargetsTeam opens the armed set the way TeamDef op=run does: under
 // the walk's run id, with the walk's own target check.
@@ -322,5 +325,41 @@ func TestHandleBreakpoints_PutAcceptsAStarterTheWalkHas(t *testing.T) {
 	}
 	if !set.Armed("wave", breakpoints.BeforeDispatch) || !set.Armed("wave", breakpoints.Review) {
 		t.Errorf("armed = %v", set.List())
+	}
+}
+
+// TestHandleBreakpoints_PutArmsReviewOnAnAgentState: review reaches an agent
+// state's member, so a live re-arm may name one.
+func TestHandleBreakpoints_PutArmsReviewOnAnAgentState(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release := openWalkOnTargetsTeam(t, srv, runID, nil)
+	defer release()
+
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["draft:review"]}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !set.Armed("draft", breakpoints.Review) {
+		t.Errorf("armed = %v", set.List())
+	}
+}
+
+// TestHandleBreakpoints_PutRefusesReviewOnAConsolidator: its answer is the
+// walk's verdict on the work, not work to review — refused live as at start.
+func TestHandleBreakpoints_PutRefusesReviewOnAConsolidator(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release := openWalkOnTargetsTeam(t, srv, runID, []string{"draft:review"})
+	defer release()
+
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["judge:review"]}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "is a consolidator") {
+		t.Fatalf("status = %d, want 400 naming the consolidator; body=%s", rec.Code, rec.Body.String())
+	}
+	if !set.Armed("draft", breakpoints.Review) || set.Armed("judge", breakpoints.Review) {
+		t.Errorf("a refused PUT changed the arming: %v", set.List())
 	}
 }

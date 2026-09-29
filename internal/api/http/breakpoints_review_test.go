@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -135,5 +136,61 @@ func TestBreakpoints_DisarmingReviewLeavesAHooksHold(t *testing.T) {
 	}
 	if res := awaitMember(t, done); res.Status != string(store.RunCompleted) {
 		t.Errorf("member result = %+v, want completed", res)
+	}
+}
+
+// An agent state armed for review holds its member through the real server: a
+// rejection with feedback revises, the revision is held again, and approving it
+// hands the approved answer on as the state's output.
+func TestBreakpoints_AgentStateReviewHoldsThenHandsOnTheApprovedAnswer(t *testing.T) {
+	h := newReviewHarness(t)
+	walkRunID, set := walkUnderReview(t, h, "draft:review")
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
+	ctx = tools.WithRunID(ctx, walkRunID)
+	runner := teamrun.NewAgentRunner(h.srv.runTeamMember, teamrun.WithMemberReview(liveBreakpoints{set}, 0))
+	st := teamgraph.State{ID: "draft", Handler: teamgraph.Handler{Kind: teamgraph.HandlerAgent, Agent: "writer"}}
+
+	type result struct {
+		oc  teamrun.Outcome
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		oc, err := runner.RunHandler(ctx, st, &teamrun.Task{Input: "write the plan"})
+		done <- result{oc, err}
+	}()
+	var member string
+	waitFor(t, "the agent state's member to be held", func() bool {
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
+		for _, r := range runs {
+			if r.ID != walkRunID && heldForReview(context.Background(), h.st, r.ID) {
+				member = r.ID
+			}
+		}
+		return member != ""
+	})
+	select {
+	case res := <-done:
+		t.Fatalf("the state finished while its member was held: %+v", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if code, body := h.review(member, `{"decision":"reject","feedback":"cover the rollback"}`); code != http.StatusOK {
+		t.Fatalf("reject = %d %s", code, body)
+	}
+	h.waitHeld(member, 2)
+	if code, body := h.review(member, `{"decision":"approve"}`); code != http.StatusOK {
+		t.Fatalf("approve = %d %s", code, body)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("state failed: %v", res.err)
+		}
+		if !strings.Contains(res.oc.Output, "answer 2") {
+			t.Errorf("state output = %q, want the approved revision", res.oc.Output)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("approving the held member did not finish the state")
 	}
 }

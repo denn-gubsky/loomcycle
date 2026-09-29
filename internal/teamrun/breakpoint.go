@@ -249,12 +249,28 @@ func ValidateBreakpoints(bps []string) error {
 // a wave — would arm nothing, and the operator would sit watching a walk that
 // runs to completion without ever pausing. It is shared by the run boundary and
 // the live re-arm, so a typo is refused the same way whichever door it came in.
+//
+// Review reaches further than a pause: any state whose members' work the walk
+// hands on can hold them — a starter, an agent, a parallel fan-out. Not a
+// consolidator: its answer is the walk's own verdict on that work, the thing a
+// review of the work would be second-guessing.
 func CheckBreakpointTargets(def teamgraph.Definition, team string, specs []string) error {
 	for _, bp := range specs {
-		id, _, _ := ParseBreakpoint(bp)
+		id, phase, _ := ParseBreakpoint(bp)
 		st, known := teamgraph.StateByID(def, id)
 		if !known {
 			return fmt.Errorf("breakpoint %q: team %q has no state %q", bp, team, id)
+		}
+		if phase == Review {
+			switch st.Handler.Kind {
+			case teamgraph.HandlerStarter, teamgraph.HandlerAgent, teamgraph.HandlerParallel:
+				continue
+			case teamgraph.HandlerConsolidator:
+				return fmt.Errorf("breakpoint %q: state %q is a consolidator, and its answer is the walk's verdict on "+
+					"the work before it, not work to review — arm review on the states it judges instead", bp, id)
+			}
+			return fmt.Errorf("breakpoint %q: state %q is a %q, which runs no member to hold for review",
+				bp, id, st.Handler.Kind)
 		}
 		if st.Handler.Kind != teamgraph.HandlerStarter {
 			return fmt.Errorf("breakpoint %q: state %q is a %q, and only a starter dispatches a wave to pause on",
@@ -275,9 +291,22 @@ func (r *agentRunner) armed(st teamgraph.State, phase BreakpointPhase) bool {
 
 // reviewArmed reports whether st's member runs are held for review. Asked live,
 // like armed: at a member's finish (through its run's review arming) and when
-// the wave decides whether to short-circuit.
+// a wave or a parallel fan-out decides whether to short-circuit.
 func (r *agentRunner) reviewArmed(st teamgraph.State) bool {
 	return r.reviewAt != nil && r.reviewAt.Armed(st.ID, Review)
+}
+
+// withMemberReview attaches st's review arming and the walk's review deadline
+// to the ctx a member run is spawned from. The arming is read live, when the
+// member finishes an answer, so a state armed part-way through its work holds
+// the members that have not finished yet. A walk with no review source hands
+// its members nothing, the path a walk took before review existed.
+func (r *agentRunner) withMemberReview(ctx context.Context, st teamgraph.State) context.Context {
+	if r.reviewAt == nil {
+		return ctx
+	}
+	ctx = WithReviewArming(ctx, func(context.Context) bool { return r.reviewArmed(st) })
+	return WithReviewTTL(ctx, r.reviewTTL)
 }
 
 // previewPrompts renders the pending runs for the BeforeDispatch pause, in wave

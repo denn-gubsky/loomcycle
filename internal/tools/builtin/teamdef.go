@@ -196,9 +196,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
 	`a runnable flag. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
-	`run may also set review on starter states: ` +
+	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
-	`member reaches the sink as status "rejected". retire soft-retires one version; delete ` +
+	`starter member reaches the sink as status "rejected", and a rejected agent or parallel member fails like any failed member. retire soft-retires one version; delete ` +
 	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
 	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run.`
 
@@ -234,7 +234,7 @@ const teamDefInputSchema = `{
     "interrupt_on_cap": {"type": "boolean", "description": "run (optional): when a state hits its iteration cap, ask a human (Interruption) whether to continue / reroute:<state> / abort instead of returning the iteration_cap outcome. An unanswered/timed-out/declined ask aborts (still terminates). Default false."},
     "mode":             {"type": "string", "enum": ["detach"], "description": "run (optional): omit to wait for the walk and get its trace. \"detach\" returns {run_id, status:\"running\"} immediately and the walk continues in the background — use it when you need a handle WHILE the walk runs, to arm a breakpoint, answer a pause, or watch progress. Either way the response carries run_id."},
     "breakpoints":      {"type": "array", "items": {"type": "string"}, "description": "run (optional): debug mode. Each entry is a starter state id — \"wave\" (or \"wave:before_dispatch\") pauses the state before it dispatches: the wave is composed and nothing has run. Each pause asks a human (Interruption) to reply 'continue' (release all), 'release:<n>' (release n and pause again), or 'abort'. An unanswered/declined ask aborts. A run-time argument, never part of the definition: debugging a team must not change what the team IS. \"<state>:review\" arms review instead (see review), and may be set here or live."},
-    "review":           {"type": "array", "items": {"type": "string"}, "description": "run (optional): starter state ids whose member runs are held for an operator's verdict when they finish. A person approves each one, rejects it with feedback it revises from, or rejects it; a rejected member reaches the sink as status \"rejected\" and does not count toward the wave's wait. Can also be armed while the walk runs, as the breakpoint \"<state>:review\". A run-time argument, never part of the definition."},
+    "review":           {"type": "array", "items": {"type": "string"}, "description": "run (optional): starter, agent or parallel state ids whose member runs are held for an operator's verdict when they finish (a consolidator is not: it judges the work, it is not the work). A person approves each one, rejects it with feedback it revises from, or rejects it. A rejected starter member reaches the sink as status \"rejected\" and does not count toward the wave's wait; a rejected agent or parallel member counts as failed. Can also be armed while the walk runs, as the breakpoint \"<state>:review\". A run-time argument, never part of the definition."},
     "review_ttl_seconds": {"type": "integer", "minimum": 0, "description": "run (optional): with review, end a member hold nobody rules on within this many seconds as rejected. Omit for no deadline."}
   },
   "required": ["op"]
@@ -257,7 +257,7 @@ type teamDefInput struct {
 	BoardScope     string          `json:"board_scope,omitempty"`        // run: board_chunk_id's Document scope (agent|user, default user)
 	InterruptOnCap bool            `json:"interrupt_on_cap,omitempty"`   // run: escalate an iteration cap to a human instead of aborting
 	Breakpoints    []string        `json:"breakpoints,omitempty"`        // run: starter states to pause at (debug mode)
-	Review         []string        `json:"review,omitempty"`             // run: starter states whose member runs are held for a verdict
+	Review         []string        `json:"review,omitempty"`             // run: starter/agent/parallel states whose member runs are held for a verdict
 	ReviewTTL      int             `json:"review_ttl_seconds,omitempty"` // run: end an unreviewed member hold as rejected after this long
 	Mode           string          `json:"mode,omitempty"`               // run: "" (wait for the walk) | "detach" (return the run id now)
 }
