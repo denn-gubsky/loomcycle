@@ -1661,62 +1661,11 @@ func main() {
 	// call (after a tool-not-in-frozen-allTools fallthrough via the
 	// existing v0.8.1 lazy resolver). Errors are logged + non-fatal —
 	// a corrupted row blocks only its own server from being callable.
-	if names, err := storeIface.MCPServerDefListNames(context.Background()); err == nil {
-		for _, ns := range names {
-			if ns.ActiveDefID == "" {
-				continue
-			}
-			// Skip SHARED-tenant names that collide with a static yaml
-			// `mcp_servers:` entry — yaml is ground truth for the "" tenant,
-			// so a shared registry entry of that name would be unreachable
-			// (lookup.MCPServer's "" path is static → shared-dynamic) and
-			// only inflate diagnostics. A per-TENANT row (ns.TenantID != "")
-			// that shares the name is a legitimate RFC N override (the
-			// tenant-dynamic pass shadows the static base), so it is NOT
-			// skipped. Mirrors the execCreate refusal, which only refuses
-			// over yaml within the same tenant scope.
-			if _, ok := cfg.MCPServers[ns.Name]; ok && ns.TenantID == "" {
-				log.Printf("mcp_server_defs: skipping shared %q at boot — name collides with static yaml entry (yaml takes precedence)", ns.Name)
-				continue
-			}
-			active, err := storeIface.MCPServerDefGet(context.Background(), ns.ActiveDefID)
-			if err != nil {
-				log.Printf("mcp_server_defs: load active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
-				continue
-			}
-			// Skip retired active rows. SetRetired leaves the active overlay
-			// pointing at the retired def_id (matches AgentDef/SkillDef
-			// semantics — the substrate doesn't auto-clear the pointer).
-			// Rehydrating a retired spec would silently revive a name the
-			// operator explicitly retired.
-			if active.Retired {
-				log.Printf("mcp_server_defs: skipping %q (tenant=%q) at boot — active row is retired (def_id=%s)", ns.Name, ns.TenantID, active.DefID)
-				continue
-			}
-			var ov struct {
-				Transport string            `json:"transport"`
-				URL       string            `json:"url"`
-				Headers   map[string]string `json:"headers"`
-				Command   string            `json:"command"` // stdio (F31)
-				Args      []string          `json:"args"`
-				Env       map[string]string `json:"env"`
-			}
-			if err := json.Unmarshal(active.Definition, &ov); err != nil {
-				log.Printf("mcp_server_defs: parse active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
-				continue
-			}
-			// RFC N: carry the def's tenant onto the registry entry so it is
-			// keyed by (tenant, name) and only resolved for that tenant's runs.
-			dynamicMCPRegistry.Set(mcp.DynamicMCPServerSpec{
-				TenantID: active.TenantID, Name: active.Name, Transport: ov.Transport, URL: ov.URL, Headers: ov.Headers,
-				Command: ov.Command, Args: ov.Args, Env: ov.Env, // stdio (F31)
-			})
-		}
-		if size := dynamicMCPRegistry.Size(); size > 0 {
-			log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)
-		}
-	} else {
+	// A snapshot restore runs the same function (SetMCPRegistryRefresh below).
+	if _, err := builtin.RehydrateMCPRegistry(context.Background(), storeIface, cfg.MCPServers, dynamicMCPRegistry, log.Printf); err != nil {
 		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
+	} else if size := dynamicMCPRegistry.Size(); size > 0 {
+		log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)
 	}
 
 	// v1.x RFC G — outbound A2A: register one synthetic
