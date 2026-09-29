@@ -361,8 +361,8 @@ type Run struct {
 	// (AwaitedOn = the channel), "interrupted" (AwaitedOn = the ask's kind),
 	// "review" (AwaitedOn = the agent_stop hook holding it, if one did) or
 	// "input" (an interactive run parked for the operator's next turn); empty
-	// while it is making progress. Set by the single-run
-	// reads only, as on HTTP and gRPC, since each costs a store read.
+	// while it is making progress. Set by the single-run reads and the walk
+	// listing, as on HTTP and gRPC, since each costs a store read.
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`
 }
@@ -374,6 +374,13 @@ type ListRunsFilter struct {
 	UserID string `json:"user_id,omitempty"`
 	Status string `json:"status,omitempty"`
 	Limit  int    `json:"limit,omitempty"` // 0 = adapter default
+}
+
+// WalkRuns is one page of a team walk's runs (ListWalkRuns). NextCursor is ""
+// on the last page.
+type WalkRuns struct {
+	Runs       []Run  `json:"runs"`
+	NextCursor string `json:"next_cursor"`
 }
 
 // --- Agent management types ---

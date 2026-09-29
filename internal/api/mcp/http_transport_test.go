@@ -63,6 +63,9 @@ func (m *httpMockConnector) GetRun(context.Context, string) (connector.Run, erro
 func (m *httpMockConnector) GetRunByRunID(context.Context, string) (connector.Run, error) {
 	return connector.Run{}, nil
 }
+func (m *httpMockConnector) ListWalkRuns(context.Context, string, int, string) (connector.WalkRuns, error) {
+	return connector.WalkRuns{}, nil
+}
 func (m *httpMockConnector) CompactRun(context.Context, string) (connector.CompactResult, error) {
 	return connector.CompactResult{}, nil
 }
