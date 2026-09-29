@@ -10696,6 +10696,33 @@ func (s *Store) InterruptSweepExpired(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// SchemaTables lists every table in this database's schema, read from
+// sqlite_master. It exists so a coverage guard (internal/snapshot) can derive
+// the table set from the migrated schema itself rather than from a list kept
+// by hand, which would drift the first time a table is added. SQLite's own
+// bookkeeping tables (sqlite_sequence, sqlite_stat*) are not part of the
+// schema and are left out. Not part of the Store interface.
+func (s *Store) SchemaTables(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("schema tables: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("schema tables: scan: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("schema tables: %w", err)
+	}
+	return names, nil
+}
+
 // Close closes the underlying *sql.DB. Idempotent.
 func (s *Store) Close() error {
 	var err error
