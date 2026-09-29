@@ -1,0 +1,173 @@
+package snapshot
+
+// Snapshot coverage (RFC DP §3.2 a).
+//
+// Every table in the store schema is classified here: carried by a named
+// envelope section, never allowed in an envelope, or deliberately left out for
+// a stated reason. TestSnapshotCoverage_EveryTableIsClassified reads the table
+// set from a freshly migrated store on each backend and fails in both
+// directions — on a table with no entry here, and on an entry naming a table
+// the schema no longer has. So adding a table forces the question "does a
+// restore need this, and is it safe in a portable file?" on whoever adds it,
+// instead of waiting for the next census to find the gap.
+//
+// The map is data for that guard (and for the restore-side cache refresh the
+// later phases add); nothing at run time reads it.
+
+// coverageKind is how a table relates to the snapshot envelope.
+type coverageKind string
+
+const (
+	// coverSection: the table's rows travel in the named envelope section.
+	coverSection coverageKind = "section"
+	// coverNever: the table's rows must never reach an envelope — secret
+	// material, or billing data (§3.1). The planted-value test enforces it.
+	coverNever coverageKind = "never"
+	// coverOmitted: not carried, for a stated non-secret reason (derived,
+	// instance-local, TTL-bound, operational).
+	coverOmitted coverageKind = "omitted"
+	// coverPending: not carried YET; a later phase of RFC DP adds its section.
+	// Phase names the PR that flips it. The last phase deletes this kind.
+	coverPending coverageKind = "pending"
+)
+
+// backendSet says which store backends have a table. Most tables exist on
+// both; a few are postgres-only because only a postgres deployment can run
+// multi-replica or use pgvector.
+type backendSet uint8
+
+const (
+	onSQLite backendSet = 1 << iota
+	onPostgres
+	onBoth = onSQLite | onPostgres
+)
+
+// tableCoverage classifies one table.
+type tableCoverage struct {
+	Kind coverageKind
+	// Section is the envelope section key that carries the rows (coverSection
+	// only). It must be a key of the Sections struct.
+	Section string
+	// Secrets says what secret material the carried rows can hold
+	// (coverSection only), leading with one of: "none", "by-reference",
+	// "stripped:", "reported:".
+	Secrets string
+	// Reason explains a never / omitted / pending classification, or a partial
+	// capture of a section table.
+	Reason string
+	// Phase is the RFC DP phase that adds the section (coverPending only).
+	Phase string
+	// Backends is where the table exists.
+	Backends backendSet
+	// Conditional, when set, says why the table may legitimately be absent
+	// from a migrated schema; the guard then does not require it to exist.
+	Conditional string
+	// Cache names an in-process cache over this table that is filled at boot
+	// and that a restore must refresh, or the restored rows are not live until
+	// a restart (§4.11).
+	Cache string
+}
+
+// tableCoverageMap is the classification of every store table, grouped by
+// kind and alphabetical within a group.
+var tableCoverageMap = map[string]tableCoverage{
+	// ---- carried by an existing section ------------------------------------
+	"agent_def_active": {Kind: coverSection, Section: "agent_def_active", Secrets: "none", Backends: onBoth},
+	"agent_defs": {Kind: coverSection, Section: "agent_defs", Backends: onBoth,
+		Secrets: "by-reference; an inline hook block may hold a literal header value"},
+	"channel_cursors":  {Kind: coverSection, Section: "channels", Secrets: "none", Backends: onBoth},
+	"channel_messages": {Kind: coverSection, Section: "channels", Secrets: "none", Backends: onBoth},
+	// The `channels` table holds the runtime channel DEFINITIONS; the
+	// `channels` envelope section is messages + cursors + the yaml config.
+	"channels": {Kind: coverSection, Section: "channel_defs", Backends: onBoth,
+		Secrets: "by-reference; a channel's hooks may hold a literal header value"},
+	"evaluations": {Kind: coverSection, Section: "evaluations", Secrets: "none", Backends: onBoth},
+	"events": {Kind: coverSection, Section: "paused_runs", Secrets: "none", Backends: onBoth,
+		Reason: "only the transcript events of paused runs travel, inside their run's entry"},
+	"hook_def_active": {Kind: coverSection, Section: "hook_def_active", Secrets: "none", Backends: onBoth},
+	"hook_defs": {Kind: coverSection, Section: "hook_defs", Backends: onBoth,
+		Secrets: "by-reference; an http hook body may hold a literal header value"},
+	"mcp_server_def_active": {Kind: coverSection, Section: "mcp_server_def_active", Secrets: "none", Backends: onBoth,
+		Cache: "mcp.DynamicRegistry (filled from the active defs at boot)"},
+	"mcp_server_defs": {Kind: coverSection, Section: "mcp_server_defs", Backends: onBoth,
+		Secrets: "by-reference; headers may hold a literal value",
+		Cache:   "mcp.DynamicRegistry (filled from the active defs at boot)"},
+	"memory": {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onBoth},
+	"memory_embeddings": {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onPostgres,
+		Reason:      "travels as each memory entry's embedding",
+		Conditional: "created only when the pgvector extension is available"},
+	"runs": {Kind: coverSection, Section: "paused_runs", Secrets: "none", Backends: onBoth,
+		Reason: "only runs with pause_state='paused' travel; per-run secrets are not columns"},
+	"skill_def_active": {Kind: coverSection, Section: "skill_def_active", Secrets: "none", Backends: onBoth},
+	"skill_defs":       {Kind: coverSection, Section: "skill_defs", Secrets: "none", Backends: onBoth},
+	"teamdef_active":   {Kind: coverSection, Section: "team_def_active", Secrets: "none", Backends: onBoth},
+	"teamdefs": {Kind: coverSection, Section: "team_defs", Backends: onBoth,
+		Secrets: "by-reference; an inline hook block may hold a literal header value"},
+
+	// ---- never in an envelope (§3.1) ----------------------------------------
+	"credential_defs": {Kind: coverNever, Backends: onBoth,
+		Reason: "sealed tenant secrets keyed off the source's LOOMCYCLE_SECRET_KEY; even the names are withheld"},
+	"operator_token_defs": {Kind: coverNever, Backends: onBoth,
+		Reason: "bearer-authentication material; restoring one would make a source bearer valid on the target"},
+	"token_usage": {Kind: coverNever, Backends: onBoth,
+		Reason: "the per-call billing ledger; only a month-to-date aggregate may travel, with token_limits"},
+	"usage_archive": {Kind: coverNever, Backends: onBoth,
+		Reason: "rolled-up billing ledger"},
+
+	// ---- deliberately not carried -------------------------------------------
+	"change_subscription_cursors": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "positions of external change subscribers; meaningless on another instance"},
+	"channel_hook_state": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "advisory hook progress owned by the source; the target re-decides held messages"},
+	"dynamic_agents": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "TTL-bound, run-scoped registrations"},
+	"ephemeral_volume_defs": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "run-bound scratch volumes"},
+	// interrupts: a pending ask blocks inside tool dispatch, so it cannot belong
+	// to a run parked for a pause; everything else in the table is audit.
+	"interrupts": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "a pending ask cannot belong to a paused run; the rest is audit"},
+	"memory_changes": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "derived change log"},
+	"memory_cursors": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "consolidation watermarks and a lease owned by a source replica"},
+	"process_samples": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "operational metrics of the source process"},
+	"replicas": {Kind: coverOmitted, Backends: onPostgres,
+		Reason: "the source cluster's replica membership"},
+	"runtime_state": {Kind: coverOmitted, Backends: onPostgres,
+		Reason: "the source cluster's pause/resume state"},
+	"schema_migrations": {Kind: coverOmitted, Backends: onPostgres,
+		Reason: "the target's own migrator stamps its schema version"},
+	"session_embeddings": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "derived from transcripts and rebuildable"},
+	"sessions": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "restore synthesizes a session per paused run from the run entry"},
+	"snapshots": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "the snapshot store itself"},
+	"user_quotas": {Kind: coverOmitted, Backends: onPostgres,
+		Reason: "live concurrency slots of the source cluster"},
+
+	// ---- pending: a later phase adds the section ----------------------------
+	"a2a_agent_def_active":       {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+	"a2a_agent_defs":             {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+	"a2a_server_card_def_active": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+	"a2a_server_card_defs":       {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+	"dirents":                    {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
+	"document_source_def_active": {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
+	"document_source_defs":       {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
+	"memory_backend_def_active":  {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
+	"memory_backend_defs":        {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
+	"memory_pending":             {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
+	"schedule_def_active":        {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
+	// Literal user_credentials values are stripped at capture once P2 lands.
+	"schedule_defs":      {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
+	"schedule_run_state": {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
+	"token_limits": {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth,
+		Cache: "limits.Tracker (ceilings seeded at boot)"},
+	"users":              {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth},
+	"volume_defs":        {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
+	"webhook_def_active": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+	// Literal user_credentials values are stripped at capture once P3 lands.
+	"webhook_defs": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+}
