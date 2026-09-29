@@ -551,6 +551,7 @@ func captureChannels(ctx context.Context, s store.Store, cfg []ChannelConfigEntr
 	for _, c := range cursors {
 		out.Cursors = append(out.Cursors, ChannelCursorEntry{
 			Channel:   c.Channel,
+			TenantID:  c.TenantID,
 			Scope:     string(c.Scope),
 			ScopeID:   c.ScopeID,
 			Cursor:    c.Cursor,
