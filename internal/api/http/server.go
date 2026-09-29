@@ -3748,6 +3748,10 @@ func (s *Server) Mux() http.Handler {
 	// Re-attach to a running (or finished) run's event stream — the operator
 	// leaves the interactive /run terminal and returns to the same live run.
 	mux.Handle("GET /v1/runs/{run_id}/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunStream))))
+	// Read one run by its run id — GET /v1/agents/{agent_id}'s shape. The
+	// agent route cannot address a team walk (`team:<name>`) nor tell one walk
+	// of a team from another.
+	mux.Handle("GET /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRun))))
 	// RFC DI D5: configured (created, not started) runs.
 	mux.Handle("PATCH /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePatchConfiguredRun))))
 	mux.Handle("DELETE /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteConfiguredRun))))
@@ -7802,6 +7806,59 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	_, live := s.cancelReg.Get(agentID)
 	writeJSON(w, http.StatusOK, s.singleRunResponse(r.Context(), run, live))
+}
+
+// handleGetRun serves GET /v1/runs/{run_id}: the same read as GET
+// /v1/agents/{agent_id}, addressed by the run itself. An agent id can name
+// many runs — every walk of a team is filed under `team:<name>`, and the agent
+// route resolves to the latest — so a caller holding a run id needs this to
+// read THAT run.
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run_id")
+	if !validIdent(runID) {
+		http.Error(w, `run_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+		return
+	}
+	notFound := func() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"code":"unknown_run_id","error":"no run found for run_id %q"}`, runID)
+	}
+	if s.store == nil {
+		// The cancel registry is keyed by agent id, so without a store there
+		// is nothing a run id can be looked up in.
+		notFound()
+		return
+	}
+	// Same gates as the agent read: tenantStore folds another tenant's run
+	// into ErrNotFound, and an isolated member reading another user's run
+	// gets that same opaque 404 — run ids are not secret.
+	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
+	if err == nil && !runOwnershipOK(r.Context(), run) {
+		err = &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			notFound()
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.singleRunResponse(r.Context(), run, s.RunLive(run.AgentID, run.ID)))
+}
+
+// RunLive reports whether THIS run is in flight on this replica. Keyed on the
+// run, not the agent id: an agent id's registry entry belongs to whichever of
+// its runs is live, and a team walk is not in the cancel registry at all —
+// its live handle is the walk table. The gRPC run read shares it.
+func (s *Server) RunLive(agentID, runID string) bool {
+	if e, ok := s.cancelReg.Get(agentID); ok && e.RunID == runID {
+		return true
+	}
+	_, ok := s.walks.get(runID)
+	return ok
 }
 
 // singleRunResponse builds the single-run read for a run the caller has
