@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
@@ -137,6 +138,22 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	}
 
 	result := RestoreResult{}
+
+	// A section this reader does not know was written by a newer loomcycle.
+	// Its rows are not restored; say so, rather than let the operator find out
+	// when something the source had is missing here. Sorted for a stable
+	// warning order.
+	var unknown []string
+	for name := range sections {
+		if !migrations.KnownSection(name) {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(unknown)
+	for _, name := range unknown {
+		result.Warnings = append(result.Warnings, fmt.Sprintf(
+			"section %s present but not understood by this reader; upgrade loomcycle to restore it", name))
+	}
 
 	// Stage 2: per-section migration + decode + insert. Order
 	// matters for FK reasons (agent_defs before agent_def_active;

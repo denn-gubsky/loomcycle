@@ -205,6 +205,25 @@ jobs:
         # like an unrelated bug.
         run: go test -count=1 -timeout 3600s ./internal/store/...
 
+      # SNAPSHOT COVERAGE, postgres half. The snapshot guards read the table set
+      # from a freshly migrated schema on EACH backend (every table classified,
+      # no classification naming a missing table) and search a captured envelope
+      # for planted secrets. The `Go` job has no LOOMCYCLE_TEST_PG_DSN, so there
+      # the postgres half skips — a pass that proves nothing about the backend
+      # with postgres-only tables (replicas, runtime_state, user_quotas,
+      # memory_embeddings). This step is what makes it a gate.
+      #
+      # The WHOLE package rather than a -run filter: a filter silently leaves
+      # out the next postgres-parameterised test added here, and the package is
+      # seconds long. Per-test schemas are prefixed snapcov_ with a clock
+      # component, so they cannot collide with the store contract's lct_ ones.
+      # !cancelled() so a red store contract does not skip this gate.
+      - name: Snapshot coverage guard (Postgres)
+        if: ${{ !cancelled() }}
+        env:
+          LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
+        run: go test -count=1 -timeout 600s ./internal/snapshot/...
+
       # COORDINATION TIER (multi-replica): cancel/steer coordinators, the
       # Postgres backplane, the replica store + heartbeat, the replicas sweeper
       # and user quotas. Every test here is PG-gated, and until now nothing ran

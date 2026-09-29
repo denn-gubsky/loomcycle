@@ -3807,6 +3807,34 @@ func (s *Store) Close() error {
 	return nil
 }
 
+// SchemaTables lists every base table in the schema this store's migrations
+// target (current_schema(), the first existing schema on the search_path). It
+// exists so a coverage guard (internal/snapshot) can derive the table set from
+// the migrated schema itself rather than from a list kept by hand. Views are
+// left out: they hold no rows of their own. Not part of the Store interface.
+func (s *Store) SchemaTables(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT table_name FROM information_schema.tables
+		  WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
+		  ORDER BY table_name`)
+	if err != nil {
+		return nil, fmt.Errorf("schema tables: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("schema tables: scan: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("schema tables: %w", err)
+	}
+	return names, nil
+}
+
 // Pool exposes the underlying pgxpool for the migrate subcommands and the
 // future SQLite-to-Postgres data migration tool. Not part of the Store
 // interface — this is package-internal access for the runtime layer.
