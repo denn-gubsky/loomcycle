@@ -228,6 +228,12 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		}
 		rep.Tier2.set("token_limits", n)
 	}
+	// Month-to-date usage a snapshot restore carried in for this subject.
+	if n, err := s.Store.UsageCarryCountSubject(ctx, tenant, subject); err != nil {
+		fail("usage_carry", err)
+	} else {
+		rep.Tier2.set("usage_carry", int64(n))
+	}
 	if ints, err := s.Store.InterruptListByUser(ctx, subject, tenant, ""); err != nil {
 		fail("interrupts", err)
 	} else {
@@ -319,7 +325,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 	for _, plane := range []string{
 		"chats", "memory_rows", "path_entries",
-		"credentials", "token_limits", "interrupts",
+		"credentials", "token_limits", "usage_carry", "interrupts",
 	} {
 		res.Deleted[plane] = 0
 	}
@@ -370,6 +376,20 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 				res.Deleted["token_limits"]++
 			}
 		}
+	}
+	// The subject's carried month-to-date usage: keyed by (tenant, user) like a
+	// user budget, and it must go with the subject rather than keep counting
+	// against a re-created user of the same name.
+	if req.DryRun {
+		if n, err := s.Store.UsageCarryCountSubject(ctx, tenant, subject); err != nil {
+			fail("usage_carry", err)
+		} else {
+			res.Deleted["usage_carry"] = n
+		}
+	} else if n, err := s.Store.UsageCarryDeleteSubject(ctx, tenant, subject); err != nil {
+		fail("usage_carry", err)
+	} else {
+		res.Deleted["usage_carry"] = n
 	}
 	if req.DryRun {
 		if ints, err := s.Store.InterruptListByUser(ctx, subject, tenant, ""); err != nil {

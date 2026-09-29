@@ -101,11 +101,13 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 // person adding it must decide it is safe in a PORTABLE file that leaves this
 // deployment. Do not add a key without that decision.
 var pinnedEntryKeys = map[string][]string{
-	"Sections": {"agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
+	"Sections": {"users", "token_limits", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active",
 		"memory", "channels", "channel_defs", "evaluations", "paused_runs", "interaction_history", "sqlmem",
 		"capture_findings"},
 
+	"UsersSection":              {"version", "entries"},
+	"TokenLimitsSection":        {"version", "entries", "usage_mtd"},
 	"AgentDefsSection":          {"version", "entries"},
 	"AgentDefActiveSection":     {"version", "entries"},
 	"SkillDefsSection":          {"version", "entries"},
@@ -124,6 +126,14 @@ var pinnedEntryKeys = map[string][]string{
 	"InteractionHistorySection": {"version", "since_ts", "events"},
 	"SqlMemSection":             {"version", "tier", "scopes", "skipped_scopes"},
 	"CaptureFindingsSection":    {"version", "entries"},
+
+	"UserEntry": {"tenant_id", "subject", "display_name", "access_mode", "status", "created_at", "created_by"},
+	"TokenLimitEntry": {"tenant_id", "scope", "scope_id", "soft_limit", "hard_limit", "updated_at",
+		"updated_by"},
+	// Budget state only: one total per (tenant, user). It must never gain a
+	// cost, provider, model, key source or per-call time — that is billing data.
+	"UsageMTDBlock": {"month", "entries"},
+	"UsageMTDEntry": {"tenant_id", "user_id", "tokens"},
 
 	"AgentDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
 		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",

@@ -388,10 +388,18 @@ func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.Restor
 		}
 		result.MCPServerDefsActivated = n
 	}
-	// The token-budget tracker belongs here once token_limits travel in a
-	// snapshot (RFC DP P1b): PutLimit for each restored ceiling and AddCarried
-	// for each usage carry, or the restored budgets go unenforced until a
-	// restart.
+	// Restored budgets and carried usage are enforced at once, not at the next
+	// boot's Seed. Only what the restore wrote is pushed: a budget it left
+	// alone is already cached, and a carry is added by how much it GREW, so
+	// the counters stay ledger + stored carry across a re-restore. Both are
+	// in-memory writes that cannot fail — no store re-read that could leave a
+	// persisted budget unenforced.
+	for _, row := range result.Refresh.TokenLimits {
+		s.limits.PutLimit(row)
+	}
+	for _, c := range result.Refresh.UsageCarried {
+		s.limits.AddCarried(c.Month, c.TenantID, c.UserID, c.Tokens)
+	}
 }
 
 func (s *Server) handleExportSnapshot(w http.ResponseWriter, r *http.Request) {

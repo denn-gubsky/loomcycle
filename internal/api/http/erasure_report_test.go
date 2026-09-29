@@ -218,7 +218,7 @@ func TestErasureReport_EveryExaminedPlaneIsCountedEvenAtZero(t *testing.T) {
 				"distinguished from 'never examined'; counts: %v", k, rep.Tier1.Counts)
 		}
 	}
-	for _, k := range []string{"credentials", "token_limits", "interrupts", "usage_ledger_calls"} {
+	for _, k := range []string{"credentials", "token_limits", "usage_carry", "interrupts", "usage_ledger_calls"} {
 		if _, ok := rep.Tier2.Counts[k]; !ok {
 			t.Errorf("tier2 %q absent for an empty subject; counts: %v", k, rep.Tier2.Counts)
 		}

@@ -35,6 +35,10 @@ type RestoreOptions struct {
 	// (SQL Memory disabled on the restoring host) skips the section with a
 	// warning. The call sites pass the runtime's *sqlmem.Manager.
 	SqlMem SqlMemSnapshotter
+
+	// Now is the target's clock, which decides whether carried month-to-date
+	// usage is still in the current budget window. nil = time.Now; tests set it.
+	Now func() time.Time
 }
 
 // RestoreResult is the operator-facing summary of a Restore() call.
@@ -50,7 +54,13 @@ type RestoreOptions struct {
 // PausedRunsResumed counts the paused runs the caller re-dispatched as live
 // loops after the refresh. It can be below PausedRunsRestored: a run whose
 // agent no longer resolves is flagged failed and named in Warnings instead.
+//
+// UsageCarryRestored counts the (tenant, user) usage carries whose stored
+// value grew; a re-restore of the same snapshot grows none.
 type RestoreResult struct {
+	UsersRestored              int      `json:"users_restored"`
+	TokenLimitsRestored        int      `json:"token_limits_restored"`
+	UsageCarryRestored         int      `json:"usage_carry_restored"`
 	AgentDefsRestored          int      `json:"agent_defs_restored"`
 	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
 	SkillDefsRestored          int      `json:"skill_defs_restored"`
@@ -74,6 +84,10 @@ type RestoreResult struct {
 	MCPServerDefsActivated     int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
 	PausedRunsResumed          int      `json:"paused_runs_resumed"`       // set by the caller's post-restore resume, not by Restore
 	Warnings                   []string `json:"warnings,omitempty"`
+
+	// Refresh is what the caller's post-restore refresh pushes into the
+	// in-process caches. Never serialized.
+	Refresh RestoreRefresh `json:"-"`
 }
 
 // Counts is every counter on the result, keyed by name: the JSON key with its
@@ -102,6 +116,7 @@ func (r RestoreResult) Counts() map[string]int {
 // rows back into the store via the SnapshotRestore* methods. The
 // restore order matches the section FK dependency graph:
 //
+//	users, token_limits (first: before any definition or resumed run)
 //	agent_defs        → agent_def_active (FK: name → agent_defs.def_id)
 //	(sessions synth)  → paused_runs       (FK: session_id → sessions.id)
 //	                  → transcript events (FK: run_id    → runs.id)
@@ -191,6 +206,26 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// Stage 2: per-section migration + decode + insert. Order
 	// matters for FK reasons (agent_defs before agent_def_active;
 	// sessions before paused_runs).
+
+	// users, then token_limits: first, before any definition or resumed run.
+	if rawSection, ok := sections[migrations.SectionUsers]; ok {
+		var sec UsersSection
+		if err := decodeWithMigration(migrations.SectionUsers, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreUsers(ctx, s, &sec, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionTokenLimits]; ok {
+		var sec TokenLimitsSection
+		if err := decodeWithMigration(migrations.SectionTokenLimits, rawSection, &sec); err != nil {
+			return result, err
+		}
+		now := time.Now
+		if opts.Now != nil {
+			now = opts.Now
+		}
+		restoreTokenLimits(ctx, s, &sec, now(), &result)
+	}
 
 	// agent_defs
 	if rawSection, ok := sections[migrations.SectionAgentDefs]; ok {
