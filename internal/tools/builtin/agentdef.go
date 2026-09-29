@@ -175,31 +175,17 @@ func defCallerIsAdmin(ctx context.Context) bool {
 }
 
 // operatorKeyRestrictedFromCtx computes the RFC AX operator-key restriction for
-// the principal AUTHORING a trigger def, from the live ctx principal + the
-// deployment gate. It is SERVER authority — a run-triggering def (Schedule /
-// Webhook / A2A) captures it so the scheduler/webhook/A2A executor can stamp the
-// fired run without a token on ctx (anti-bypass: a restricted principal can't
-// launder an unrestricted run through a trigger). The model must NOT be able to
-// set this via the overlay, so write sites stamp it unconditionally after
-// applying the overlay. Fail-open (false) when the gate is off / no principal /
-// legacy / scope-present, matching auth.OperatorKeyRestricted.
+// whoever is AUTHORING a trigger def through ctx, adapting the deployment gate
+// from cfg for tools.AuthorOperatorKeyRestricted (the run's own bit OR the live
+// principal's — see there for why the principal alone failed open on a resumed
+// run). It is SERVER authority — a run-triggering def (Schedule / Webhook)
+// captures it so the scheduler/webhook executor can stamp the fired run without
+// a token on ctx (anti-bypass: a restricted author can't launder an
+// unrestricted run through a trigger). The model must NOT be able to set this
+// via the overlay, so write sites stamp it unconditionally after applying the
+// overlay.
 func operatorKeyRestrictedFromCtx(ctx context.Context, cfg *config.Config) bool {
-	p, ok := auth.PrincipalFromContext(ctx)
-	gate := cfg != nil && cfg.Env.OperatorKeyRestriction
-	return auth.OperatorKeyRestricted(p, ok, gate)
-}
-
-// isolatedFromCtx captures the RFC BX P2b isolation bit from the authoring
-// principal on ctx, mirroring operatorKeyRestrictedFromCtx: a run-triggering def
-// (Schedule / Webhook) captures it so the scheduler/webhook executor stamps the
-// fired run confined without a token on ctx (anti-bypass: an isolated member
-// can't launder an unconfined run through a trigger). SERVER authority — the
-// model must NOT set it via the overlay, so write sites stamp it unconditionally
-// after applying the overlay. Unlike the operator-key bit it has NO deployment
-// gate: substrate:user is always enforced when present. false when no principal /
-// non-isolated (fail-open).
-func isolatedFromCtx(ctx context.Context) bool {
-	return auth.IsIsolated(auth.PrincipalFromContext(ctx))
+	return tools.AuthorOperatorKeyRestricted(ctx, cfg != nil && cfg.Env.OperatorKeyRestriction)
 }
 
 func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
