@@ -139,7 +139,8 @@ var pinnedEntryKeys = map[string][]string{
 		"content_sha256"},
 	"AgentDefActiveEntry":     {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 	"SkillDefActiveEntry":     {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
-	"TeamDefActiveEntry":      {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+	"TeamDefActiveEntry":      {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id", "promoter"},
+	"TeamDefPromoterEntry":    {"operator_key_restricted", "isolated"},
 	"HookDefActiveEntry":      {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 	"MCPServerDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 

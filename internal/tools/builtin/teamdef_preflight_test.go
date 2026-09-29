@@ -189,7 +189,7 @@ func storeBrokenTeam(t *testing.T, tool *TeamDef, ctx context.Context, name, def
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := tool.Store.TeamDefSetActive(ctx, "", name, row.DefID, "a_test"); err != nil {
+	if err := tool.Store.TeamDefSetActive(ctx, "", name, row.DefID, "a_test", store.TeamDefPromoter{}); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 }

@@ -993,6 +993,9 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 		if td.Admit == nil {
 			td.Admit = s.admitTeamRun
 		}
+		if td.OperatorKeyGate == nil {
+			td.OperatorKeyGate = func() bool { return s.cfg().Env.OperatorKeyRestriction }
+		}
 		if td.Channels == nil {
 			td.Channels = func(ctx context.Context, d teamgraph.Definition) teamrun.ChannelIO {
 				// Returning a TYPED nil through an interface would be a non-nil

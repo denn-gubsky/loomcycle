@@ -562,6 +562,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			promoted_at           INTEGER NOT NULL,
 			promoted_by_agent_id  TEXT,
 			tenant_id             TEXT    NOT NULL DEFAULT '',
+			promoter_operator_key_restricted INTEGER,
+			promoter_isolated                INTEGER,
 			PRIMARY KEY(tenant_id, name)
 		)`,
 		// HookDef substrate — mirror of teamdefs minus the two authority
@@ -1165,6 +1167,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// TeamDef, so the widened families inside it are gated on THIS flag
 		// and not on the spawned agent's.
 		`ALTER TABLE teamdefs ADD COLUMN operator_authored INTEGER NOT NULL DEFAULT 0`,
+		// The promoter's confinement on a team's active pointer — what an armed
+		// subscription's walks run under. NULLABLE on purpose, no DEFAULT: a
+		// pointer promoted before these columns existed must read as "not
+		// captured", which the sweep treats as fully confined, never as a 0
+		// that would read as unrestricted. See
+		// internal/store/postgres/migrations/0087_teamdef_active_promoter.
+		`ALTER TABLE teamdef_active ADD COLUMN promoter_operator_key_restricted INTEGER`,
+		`ALTER TABLE teamdef_active ADD COLUMN promoter_isolated INTEGER`,
 		`ALTER TABLE agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dynamic_agents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC N — tenant-scope the skill definition plane (mirror of the
@@ -3644,7 +3654,8 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 // SnapshotReadTeamDefActive implements store.Store.
 func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefActiveEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id,
+		        promoter_operator_key_restricted, promoter_isolated
 		 FROM teamdef_active
 		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
@@ -3654,17 +3665,19 @@ func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefA
 	var out []store.TeamDefActiveEntry
 	for rows.Next() {
 		var (
-			e          store.TeamDefActiveEntry
-			promotedNs int64
-			promoter   sql.NullString
+			e              store.TeamDefActiveEntry
+			promotedNs     int64
+			promoter       sql.NullString
+			opKey, isolate sql.NullBool
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID, &opKey, &isolate); err != nil {
 			return nil, fmt.Errorf("scan teamdef_active: %w", err)
 		}
 		e.PromotedAt = time.Unix(0, promotedNs)
 		if promoter.Valid {
 			e.PromotedByAgentID = promoter.String
 		}
+		e.Promoter = teamDefPromoterFromColumns(opKey, isolate)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -4302,9 +4315,11 @@ func (s *Store) SnapshotRestoreTeamDefActive(ctx context.Context, e store.TeamDe
 	if e.PromotedAt.IsZero() {
 		promotedNs = time.Now().UnixNano()
 	}
+	opKey, isolate := teamDefPromoterColumns(e.Promoter)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)`,
-		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+		`INSERT OR IGNORE INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
+		                                      promoter_operator_key_restricted, promoter_isolated) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID), opKey, isolate,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
@@ -7222,11 +7237,13 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 			MAX(d.version)                        AS latest_version,
 			MAX(d.created_at)                     AS last_updated,
 			COALESCE(a.def_id, '')                AS active_def_id,
-			COALESCE(ad.retired, 0)               AS active_retired
+			COALESCE(ad.retired, 0)               AS active_retired,
+			a.promoter_operator_key_restricted,
+			a.promoter_isolated
 		FROM teamdefs d
 		LEFT JOIN teamdef_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
 		LEFT JOIN teamdefs ad      ON ad.def_id = a.def_id
-		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
@@ -7238,11 +7255,13 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 		var ns store.TeamDefNameSummary
 		var updatedAt int64
 		var activeRetired int
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID, &activeRetired); err != nil {
+		var opKey, isolate sql.NullBool
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID, &activeRetired, &opKey, &isolate); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
 		ns.ActiveRetired = activeRetired != 0
+		ns.ActivePromoter = teamDefPromoterFromColumns(opKey, isolate)
 		out = append(out, ns)
 	}
 	return out, rows.Err()
@@ -7252,7 +7271,7 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 // (tenantID, name). RFC N: validates the def belongs to BOTH the named
 // team AND the supplied tenant — a def can only be promoted within its
 // own tenant.
-func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error {
+func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string, promoter store.TeamDefPromoter) error {
 	var (
 		rowName   string
 		rowTenant string
@@ -7271,15 +7290,38 @@ func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, pro
 		return fmt.Errorf("teamdef_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
+		                            promoter_operator_key_restricted, promoter_isolated)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(tenant_id, name) DO UPDATE SET
-		    def_id               = excluded.def_id,
-		    promoted_at          = excluded.promoted_at,
-		    promoted_by_agent_id = excluded.promoted_by_agent_id`,
+		    def_id                           = excluded.def_id,
+		    promoted_at                      = excluded.promoted_at,
+		    promoted_by_agent_id             = excluded.promoted_by_agent_id,
+		    promoter_operator_key_restricted = excluded.promoter_operator_key_restricted,
+		    promoter_isolated                = excluded.promoter_isolated`,
 		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
+		promoter.OperatorKeyRestricted, promoter.Isolated,
 	)
 	return err
+}
+
+// teamDefPromoterColumns is the column pair for a captured promoter; nil (a
+// pointer promoted before the capture existed) stays NULL in both.
+func teamDefPromoterColumns(p *store.TeamDefPromoter) (opKey, isolated any) {
+	if p == nil {
+		return nil, nil
+	}
+	return p.OperatorKeyRestricted, p.Isolated
+}
+
+// teamDefPromoterFromColumns reads the pair back. Either column NULL means
+// not captured — never "unrestricted": the two are written together, so a
+// half-written pair is not a state a promote produces.
+func teamDefPromoterFromColumns(opKey, isolated sql.NullBool) *store.TeamDefPromoter {
+	if !opKey.Valid || !isolated.Valid {
+		return nil
+	}
+	return &store.TeamDefPromoter{OperatorKeyRestricted: opKey.Bool, Isolated: isolated.Bool}
 }
 
 func (s *Store) TeamDefGetActive(ctx context.Context, tenantID, name string) (store.TeamDefRow, error) {

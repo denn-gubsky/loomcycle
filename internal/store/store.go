@@ -2879,8 +2879,9 @@ type Store interface {
 	// `(tenantID, name)`. RFC N: the active pointer is per-tenant, and a
 	// def can only be promoted within its own tenant — implementations
 	// refuse if the def's tenant_id ≠ tenantID. tenantID "" = the shared/
-	// operator/legacy tenant.
-	TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string) error
+	// operator/legacy tenant. promoter is the promoting caller's confinement,
+	// recorded on the pointer and replaced by every promote.
+	TeamDefSetActive(ctx context.Context, tenantID, name, defID, promotedByAgentID string, promoter TeamDefPromoter) error
 	// TeamDefGetActive returns the currently-active row for
 	// `(tenantID, name)`. Returns *ErrNotFound when no active pointer
 	// exists (the caller falls through to the static fallback). RFC N:
@@ -4696,6 +4697,29 @@ type TeamDefNameSummary struct {
 	// true when the active pointer references a retired row.
 	LiveVersionCount int  `json:"live_version_count"`
 	ActiveRetired    bool `json:"active_retired,omitempty"`
+	// ActivePromoter is the confinement recorded with the active pointer; nil
+	// when there is no pointer or it was promoted before the capture existed.
+	// Read by the subscription sweep, which starts the team's walks itself.
+	// Not served: the name listing is a catalog, not an authority report.
+	ActivePromoter *TeamDefPromoter `json:"-"`
+}
+
+// TeamDefPromoter is the confinement of whoever promoted a team's active
+// version, captured at promote time.
+//
+// An armed subscription starts the team's walks with no caller on ctx, so the
+// walk has nobody to be confined BY except the promoter — the one who put it
+// in service. Without this every subscription walk ran unrestricted: a
+// restricted run publishing to a subscribed channel set off a walk that spent
+// the operator's provider key and read outside any isolation.
+//
+// It lives on the active pointer, not the def row: promoting is the act that
+// arms, and the same version can be promoted by different callers over time.
+// Keeping it off the def also keeps it out of the def's content hash —
+// authority, not content.
+type TeamDefPromoter struct {
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+	Isolated              bool `json:"isolated,omitempty"`
 }
 
 // TeamDefActiveEntry mirrors SkillDefActiveEntry. Pairs a team
@@ -4708,6 +4732,9 @@ type TeamDefActiveEntry struct {
 	// TenantID is the RFC N tenant-isolation axis (part of the
 	// teamdef_active PK). "" = the shared/operator/legacy tenant.
 	TenantID string `json:"tenant_id,omitempty"`
+	// Promoter — see TeamDefPromoter. nil = a pointer promoted before the
+	// capture existed; its subscription walks run fully confined.
+	Promoter *TeamDefPromoter `json:"promoter,omitempty"`
 }
 
 // ---- HookDef substrate types ----
