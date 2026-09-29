@@ -242,6 +242,8 @@ async def test_stream_user_run_states_surfaces_the_wave_correlation():
                 walk_id="run_walk_123",
                 wave_id="wave_1",
                 wave_index=0,
+                state="review",
+                state_visit=3,
             ),
         ),
         # A sub-agent with lineage but NO walk — every sub-agent has carried
@@ -274,6 +276,8 @@ async def test_stream_user_run_states_surfaces_the_wave_correlation():
     assert pc["walk_id"] == "run_walk_123"
     assert pc["wave_id"] == "wave_1"
     assert pc["wave_index"] == 0
+    assert pc["state"] == "review"
+    assert pc["state_visit"] == 3
     # The lineage fields that predate the wave correlation come through too.
     assert pc["root_agent_run_id"] == "root-1"
     assert pc["function_key"] == "triage"

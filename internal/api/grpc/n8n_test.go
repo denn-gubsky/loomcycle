@@ -183,6 +183,8 @@ func TestGrpcStreamUserRunStates_CarriesTheParentContext(t *testing.T) {
 					WalkID:         "run_walk_123",
 					WaveID:         "wave_1",
 					WaveIndex:      0,
+					State:          "review",
+					StateVisit:     3,
 				},
 			},
 			// A run with no lineage at all — the message must be absent, not an
@@ -226,6 +228,9 @@ func TestGrpcStreamUserRunStates_CarriesTheParentContext(t *testing.T) {
 	}
 	if pc.GetWaveIndex() != 0 {
 		t.Errorf("wave_index = %d, want 0", pc.GetWaveIndex())
+	}
+	if pc.GetState() != "review" || pc.GetStateVisit() != 3 {
+		t.Errorf("state/state_visit = %q/%d, want review/3", pc.GetState(), pc.GetStateVisit())
 	}
 	if pc.GetRootAgentRunId() != "root-1" || pc.GetFunctionKey() != "triage" {
 		t.Errorf("the pre-existing lineage fields did not survive: %+v", pc)

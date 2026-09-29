@@ -1041,6 +1041,8 @@ describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => 
           walk_id: "run_walk_123",
           wave_id: "wave_1",
           wave_index: 0,
+          state: "review",
+          state_visit: 3,
         },
       })}\n\n`,
     ];
@@ -1057,6 +1059,8 @@ describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => 
       expect(pc?.walk_id).toBe("run_walk_123");
       expect(pc?.wave_id).toBe("wave_1");
       expect(pc?.wave_index).toBe(0);
+      expect(pc?.state).toBe("review");
+      expect(pc?.state_visit).toBe(3);
     }
   });
 

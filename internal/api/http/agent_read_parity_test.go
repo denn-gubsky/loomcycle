@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // httpOnlyAgentFields are agentResponse fields the gRPC read cannot carry:
@@ -111,6 +113,32 @@ func TestAgentResponse_GRPCAndPythonCarryEveryField(t *testing.T) {
 			if !httpOnlyAgentFields[f] && !strings.Contains(py, `"`+f+`":`) {
 				t.Errorf("%T sends %q but the Python _agent_to_dict does not map it", v, f)
 			}
+		}
+	}
+}
+
+// store.ParentContext rides the run read and the run-state stream on every
+// transport, and has three hand-written mirrors: the proto message, the TS
+// interface and the Python dict. A field the runtime stamps and a mirror does
+// not name is invisible to that client — which is what a consumer reading a
+// walk's members by state would hit first.
+func TestParentContext_EveryMirrorDeclaresEveryField(t *testing.T) {
+	fields := jsonFields(t, store.ParentContext{})
+	if len(fields) < 5 {
+		t.Fatalf("only %d fields read from store.ParentContext — the reflection has stopped matching", len(fields))
+	}
+	proto := declaredNames(protoFieldRe, sourceBlock(t, "../../../proto/loomcycle.proto", "message ParentContext {", "\n}"))
+	ts := declaredNames(tsFieldRe, sourceBlock(t, "../../../adapters/ts/src/types.ts", "export interface ParentContext {", "\n}"))
+	py := sourceBlock(t, "../../../adapters/python/loomcycle/client.py", "def _parent_context_to_dict(", "\ndef ")
+	for _, f := range fields {
+		if !proto[f] {
+			t.Errorf("store.ParentContext has %q but proto ParentContext does not declare it", f)
+		}
+		if !ts[f] {
+			t.Errorf("store.ParentContext has %q but TS ParentContext does not declare it", f)
+		}
+		if !strings.Contains(py, `"`+f+`":`) {
+			t.Errorf("store.ParentContext has %q but the Python _parent_context_to_dict does not map it", f)
 		}
 	}
 }
