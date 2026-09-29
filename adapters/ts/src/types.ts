@@ -1399,6 +1399,17 @@ export interface RunSpec {
    *  the HookDef version each reference found. Present only on a run that
    *  carries hooks. */
   pinned_hooks?: { agent: string; defs?: Record<string, string> };
+  /** What bounded a sub-run at its spawn beyond its own agent: its parent's
+   *  volumes (names and modes; roots are resolved again on resume, never
+   *  stored) and the fan-out width it inherited. Present only on a sub-run.
+   *  Written by the server only. */
+  spawn?: {
+    volumes: {
+      active: boolean;
+      bindings?: Array<{ name: string; read_only: boolean; default?: boolean }>;
+    };
+    fanout_cap?: number;
+  };
 }
 
 /** A finished run's answer (RFC DI). */

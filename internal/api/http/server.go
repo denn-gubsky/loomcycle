@@ -7177,6 +7177,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		MaxContextTokens:  def.MaxContextTokens,
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
 		Hosts:             hostRecordOf(tools.HostPolicy(ctx)),
+		// The parent's volume confinement and inherited fan-out width, both read
+		// off ctx below and never re-derivable once the parent's ctx is gone.
+		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
 	}
 
 	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is

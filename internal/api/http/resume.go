@@ -179,6 +179,17 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 			RunTimeoutSeconds: agentDef.RunTimeoutSeconds,
 		}
 	}
+	// A sub-run's host narrowing was its PARENT's, and only its own record
+	// holds it. A sub-run with no record (written before records existed, or
+	// unreadable) was narrowed by a list nobody can now name, so it resumes on
+	// the narrowest one: an empty caller list, which denies every host in
+	// intersect mode and leaves only the operator's static list in
+	// caller-authoritative mode. Its definition's reach is not a safe guess —
+	// the parent's may have been far narrower.
+	if !haveRunCfg && isSubRun(run) {
+		log.Printf("resume: sub-run %s has no configuration record; its parent's host narrowing is unknown, so it resumes allowed no caller hosts", run.ID)
+		runCfg.Hosts = &runHostRecord{HasList: true}
+	}
 
 	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
 	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:
@@ -476,8 +487,13 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// from the original's children.
 	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
 	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
-	// as the original's were.
-	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
+	// as the original's were. A live sub-run never sets its own: it runs on
+	// the width inherited from its ancestors, which its record kept.
+	fanoutCap := agentDef.MaxConcurrentChildren
+	if runCfg.Spawn != nil && runCfg.Spawn.FanoutCap > 0 {
+		fanoutCap = runCfg.Spawn.FanoutCap
+	}
+	loopCtx = tools.WithFanoutCap(loopCtx, fanoutCap)
 	// RFC DC P5: offer this run's overrides to its children. Only a child of the
 	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
 	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
@@ -487,11 +503,10 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
 	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
 	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
-	// Volume confinement re-derived from the agent def (RFC AH attach-gap fix):
-	// a resumed run is top-level (no parent), so its policy is the agent's own.
-	// Without this a volume-bound agent would resume into the legacy jail — a
-	// silent confinement downgrade across pause / snapshot / cross-instance resume.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
+	// Volume confinement (RFC AH attach-gap fix): without it a volume-bound
+	// agent would resume with no volume policy at all. A top-level run's is its
+	// agent's own; a sub-run's is narrowed to its parent's, as it was live.
+	loopCtx = tools.WithVolumePolicy(loopCtx, s.resumedVolumePolicy(loopCtx, run, runCfg.Spawn, agentDef))
 	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
 	// from any ephemeral_volume_defs rows this run created before it was
 	// paused/snapshotted (the sweeper skips paused runs, so the rows + on-disk
@@ -726,6 +741,68 @@ func resumedRootRunID(ctx context.Context, getRun func(context.Context, string) 
 		cur = parent
 	}
 	return cur.ID, nil
+}
+
+// isSubRun reports whether a row is a spawned child. Every sub-run row carries
+// parent_agent_id; parent_run_id came later, so either one marks it.
+func isSubRun(run store.Run) bool {
+	return run.ParentAgentID != "" || run.ParentRunID != ""
+}
+
+// resumedVolumePolicy is the volume confinement a resumed run gets back: the
+// agent's own for a top-level run, and for a sub-run the same narrowing
+// against its parent's policy it had live (childVolumePolicy), with the
+// parent's policy rebuilt from the sub-run's record.
+//
+// A sub-run with no recorded ceiling (spawned before the record existed) fails
+// CLOSED: confined to no volume at all. Its parent's bindings are unknown, and
+// its definition's are exactly the widening this guards against. The empty
+// policy is Active, not the zero value, so any child it spawns is narrowed to
+// nothing too rather than resolved as if its parent were unconfined.
+func (s *Server) resumedVolumePolicy(ctx context.Context, run store.Run, rec *spawnRecord, def config.AgentDef) tools.VolumePolicyValue {
+	if !isSubRun(run) {
+		return s.volumePolicyForAgent(ctx, def)
+	}
+	if rec == nil {
+		log.Printf("resume: sub-run %s has no recorded volume ceiling; its parent's volumes are unknown, so it resumes with none", run.ID)
+		return tools.VolumePolicyValue{Active: true}
+	}
+	return s.childVolumePolicy(ctx, s.recordedParentVolumes(ctx, rec.Volumes), def)
+}
+
+// recordedParentVolumes rebuilds the parent's volume policy a sub-run was
+// spawned under. Names, modes and defaults come from the record; each root is
+// resolved now, by the same lookup a fresh run uses, so the record can never
+// introduce a path. A name that no longer resolves is dropped (narrower), and a
+// volume that has since become read-only stays read-only.
+func (s *Server) recordedParentVolumes(ctx context.Context, rec volumeCeilingRecord) tools.VolumePolicyValue {
+	if !rec.Active {
+		return tools.VolumePolicyValue{}
+	}
+	out := tools.VolumePolicyValue{Active: true}
+	if len(rec.Bindings) == 0 {
+		// Not handed to volumePolicyForAgent: an empty list there means
+		// "undeclared", which binds the operator's default volume.
+		return out
+	}
+	names := make([]string, 0, len(rec.Bindings))
+	for _, b := range rec.Bindings {
+		names = append(names, b.Name)
+	}
+	now := make(map[string]tools.VolumeBinding, len(names))
+	for _, b := range s.volumePolicyForAgent(ctx, config.AgentDef{Volumes: names}).Bindings {
+		now[b.Name] = b
+	}
+	for _, b := range rec.Bindings {
+		cur, ok := now[b.Name]
+		if !ok {
+			continue
+		}
+		out.Bindings = append(out.Bindings, tools.VolumeBinding{
+			Name: b.Name, Root: cur.Root, ReadOnly: b.ReadOnly || cur.ReadOnly, Default: b.Default,
+		})
+	}
+	return out
 }
 
 // flagRunUnresumable marks a paused run terminal so a restored-but-unresumable
