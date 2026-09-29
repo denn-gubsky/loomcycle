@@ -4065,13 +4065,48 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	title := asStr(dres.Rows[0][0])
 
+	roots, byParent, err := d.loadChunkTree(ctx, key, docID)
+	if err != nil {
+		return errFrom("export_md: "+err.Error(), err), nil
+	}
+	includeMeta := in.IncludeMetadata == nil || *in.IncludeMetadata
+
+	var b strings.Builder
+	if err := d.renderChunkTree(ctx, key, mscope, &b, roots, byParent, 0, includeMeta); err != nil {
+		return errFrom("export_md: body: "+err.Error(), err), nil
+	}
+
+	// Edges trailer — the free-form graph edges originating from this document's
+	// chunks (parent-child is the hierarchy above, not an edge). Metadata-only:
+	// a clean export (include_metadata=false) omits it.
+	if includeMeta {
+		eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID)
+		if err != nil {
+			return errFrom("export_md: edges: "+err.Error(), err), nil
+		}
+		var lines []string
+		for _, r := range eres.Rows {
+			lines = append(lines, asStr(r[0])+" -> "+asStr(r[1])+" ["+asStr(r[2])+"]")
+		}
+		if len(lines) > 0 {
+			b.WriteString("<!-- loom-edges:\n" + strings.Join(lines, "\n") + "\n-->\n")
+		}
+	}
+
+	return jsonResult(map[string]any{"markdown": b.String(), "document_id": docID, "title": title})
+}
+
+// loadChunkTree reads a document's chunks grouped for a depth-first walk:
+// the top-level rows (parent_id "") and every other row under its parent, each
+// slice in position order.
+func (d *Document) loadChunkTree(ctx context.Context, key sqlmem.ScopeKey, docID string) ([]chunkRow, map[string][]chunkRow, error) {
 	// ORDER BY parent_id first so each parent's rows are contiguous, then
 	// position, then id as a stable tiebreaker — makes the byParent grouping
 	// below deterministic even if two siblings somehow share a position
 	// (reachable via an explicit `position` on create_chunk/move_chunk).
 	cres, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE document_id = ? ORDER BY parent_id, position, id`, docID)
 	if err != nil {
-		return errFrom("export_md: "+err.Error(), err), nil
+		return nil, nil, err
 	}
 	// Group children by parent (the global position ORDER BY keeps each parent's
 	// slice in ascending position). parent_id "" = a top-level (root) chunk.
@@ -4085,9 +4120,15 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			byParent[row.ParentID] = append(byParent[row.ParentID], row)
 		}
 	}
-	includeMeta := in.IncludeMetadata == nil || *in.IncludeMetadata
+	return roots, byParent, nil
+}
 
-	var b strings.Builder
+// renderChunkTree writes rows and their descendants to b depth-first in
+// position order: each chunk is a heading (level = depth+1, capped at 6)
+// followed by its Markdown body — the rendering export_md emits. depth is the
+// depth of rows themselves, so a subtree keeps the heading levels it has in the
+// whole document.
+func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *strings.Builder, rows []chunkRow, byParent map[string][]chunkRow, depth int, includeMeta bool) error {
 	// An export that renders headings with silently-empty bodies is
 	// indistinguishable from a document that genuinely has none — precisely the
 	// failure mode that let the v1.33.0 tenant regression pass for a full
@@ -4157,31 +4198,10 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			walk(c, depth+1)
 		}
 	}
-	for _, r := range roots {
-		walk(r, 0)
+	for _, r := range rows {
+		walk(r, depth)
 	}
-	if walkErr != nil {
-		return errFrom("export_md: body: "+walkErr.Error(), walkErr), nil
-	}
-
-	// Edges trailer — the free-form graph edges originating from this document's
-	// chunks (parent-child is the hierarchy above, not an edge). Metadata-only:
-	// a clean export (include_metadata=false) omits it.
-	if includeMeta {
-		eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID)
-		if err != nil {
-			return errFrom("export_md: edges: "+err.Error(), err), nil
-		}
-		var lines []string
-		for _, r := range eres.Rows {
-			lines = append(lines, asStr(r[0])+" -> "+asStr(r[1])+" ["+asStr(r[2])+"]")
-		}
-		if len(lines) > 0 {
-			b.WriteString("<!-- loom-edges:\n" + strings.Join(lines, "\n") + "\n-->\n")
-		}
-	}
-
-	return jsonResult(map[string]any{"markdown": b.String(), "document_id": docID, "title": title})
+	return walkErr
 }
 
 // --- ops: Markdown import ---

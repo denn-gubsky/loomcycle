@@ -81,6 +81,13 @@ type TeamDef struct {
 	// says so at the state rather than skipping it silently.
 	Channels func(ctx context.Context, d teamgraph.Definition) teamrun.ChannelIO
 
+	// Documents, when set, is what a `starter` state with source.kind=document
+	// reads its sections from. A value rather than a per-run factory like
+	// Channels: nothing about the read comes from the definition beyond its
+	// path, and its authority is the walk ctx it is called with. nil means
+	// such a state cannot run, and says so at the state.
+	Documents teamrun.DocumentReader
+
 	// WaveContext, when set, returns a ctx carrying the wave a spawn belongs to,
 	// for the seam that stamps it on the spawned run. nil only means the
 	// correlation is not recorded.
@@ -202,7 +209,13 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`does not grant, or one that is not declared at all, is refused with the exact block to add, rather than ` +
 	`failing later at the state that needed it. verify reports the content hash AND sweeps what the stored ` +
 	`definition references but does not contain (channels deleted, ACL gaps, members retired) as issues[] with ` +
-	`a runnable flag. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
+	`a runnable flag. A starter state dispatches a wave of agent runs, one per work item, and publishes each result to its sink ` +
+	`channel. Its source is a channel (source.channel) or a document (source: {kind:"document", path:"/specs/x", ` +
+	`scope:"user"|"tenant"}), whose top-level sections are the items: read once when the wave dispatches, one run per ` +
+	`section with fanout.per:"chunk" (max required; more sections than max fails the walk) or one run holding them all ` +
+	`with per:"once". Each run gets {document_id, chunk_id, index, title, markdown} in {{starter.message}} ` +
+	`({{starter.messages}} for once), as data that is never expanded. A document source takes no ack, wait, n, wait_ms ` +
+	`or batch, and is never started automatically. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
@@ -223,7 +236,7 @@ const teamDefInputSchema = `{
       "properties": {
         "entry":          {"type": "string", "description": "The entry state id."},
         "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default)."},
-        "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. Replaces the parent's states wholesale."},
+        "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. A starter handler instead carries source ({channel} or {kind:\"document\", path, scope?}), fanout ({agent|agents, per: message|chunk|once, max}), prompt, sink and binds. Replaces the parent's states wholesale."},
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
         "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."}
@@ -1090,6 +1103,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if io := t.Channels(walkCtx, def); io != nil {
 			runnerOpts = append(runnerOpts, teamrun.WithChannels(io))
 		}
+	}
+	if t.Documents != nil {
+		runnerOpts = append(runnerOpts, teamrun.WithDocuments(t.Documents))
 	}
 	if t.WaveContext != nil {
 		runnerOpts = append(runnerOpts, teamrun.WithWaveContext(t.WaveContext))

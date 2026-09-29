@@ -16,7 +16,9 @@ research, …).
   - `parallel` — several agents fan out, then a `consolidator` agent reads their
     outputs and picks the outgoing edge;
   - `consolidator` — a standalone judging step;
-  - `terminal` — an end state (no agent, no outgoing edges).
+  - `terminal` — an end state (no agent, no outgoing edges);
+  - `starter` — dispatches a wave of runs from a channel or a document (see
+    Starters below).
 - **`timeout_ms`** on a handler bounds how long its runs may take (`0` or
   unset = no limit):
   - on `agent`, `parallel` and `consolidator` it bounds ONE execution of the
@@ -35,6 +37,38 @@ research, …).
   `success` (advance), `pushback:<reason>` (loop back for rework), or
   `conditional:<expr>`. A state's outbound labels are unique, and every cycle is
   bounded by a per-state `max_iterations` cap so a workflow always terminates.
+
+## Starters — a wave of runs from a channel or a document
+
+A `starter` state dispatches a **wave**: one agent run per work item, each
+result published to its `sink` channel (one message per run). Its `source`
+says where the items come from:
+
+- **A channel** — `source: {channel: "pr-events"}`. Each message is an item;
+  `fanout.per: "message"` (one run each, `max` required) or `"once"` (one run
+  holding the batch). `ack`, `wait`, `n`, `wait_ms`, `batch` shape the read.
+- **A document** — `source: {kind: "document", path: "/specs/acme"}`. Each
+  **top-level section** (the root's direct children, in order) is an item:
+  - `path` is a fixed absolute path; `scope` is `user` (default — the tree of
+    the person the walk runs as) or `tenant` (needs the tenant memory and SQL
+    Memory grants a Document read needs);
+  - `fanout.per: "chunk"` runs one agent per section and requires `max`;
+    `"once"` runs one agent holding every section;
+  - the document is read once, when the wave dispatches — an edit during the
+    wave does not change the items;
+  - more sections than `max` fails the walk (both numbers are named), and so
+    does a document with no sections;
+  - `ack`, `wait`, `n`, `wait_ms`, `batch` and `per: "message"` are refused —
+    a document has no cursor and nothing to wait for;
+  - a team whose entry state reads a document is never started automatically;
+    run it with `op=run`.
+
+Each run receives its item in `{{starter.message}}` (`{{starter.messages}}`, a
+JSON array, for `per: "once"`); put the placeholder in `prompt.input`. A
+document item is `{document_id, chunk_id, index, title, markdown}`, where
+`markdown` is the section with everything under it. The item is data: a
+`{{…}}` written inside it is never expanded. `binds` project fields of the item
+into variables, e.g. `binds: {title: "$.title"}` → `${var.title}`.
 
 ## The task board
 

@@ -1004,6 +1004,9 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				return nil
 			}
 		}
+		if td.Documents == nil {
+			td.Documents = teamDocumentReader{srv: s}
+		}
 		if td.WalkRun == nil {
 			// A team walk becomes a real run, so every run-scoped surface —
 			// breakpoints, the Interruption ask a pause is answered through,

@@ -96,6 +96,9 @@ const (
 // sink message per run, ack.
 func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
 	h := st.Handler
+	if h.Source.IsDocument() {
+		return r.runDocumentStarter(ctx, st, task)
+	}
 	if r.channels == nil {
 		return Outcome{}, fmt.Errorf("state %q is a starter but no channel executor is wired", st.ID)
 	}
