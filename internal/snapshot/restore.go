@@ -674,6 +674,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				Model:         e.Model,
 				AgentID:       e.AgentID,
 				ParentAgentID: e.ParentAgentID,
+				ParentRunID:   e.ParentRunID,
 				UserID:        e.UserID,
 				UserTier:      e.UserTier,
 				AgentDefID:    e.AgentDefID,

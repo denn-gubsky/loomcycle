@@ -478,6 +478,12 @@ type PausedRunEntry struct {
 	// under the wrong one. Omitted for single-tenant runs and absent from older
 	// snapshots, which restore under the restored session's tenant.
 	TenantID string `json:"tenant_id,omitempty"`
+	// ParentRunID is the run that spawned this one, when the row names it.
+	// Carried as a bare id: the parent need not be in the snapshot (it may
+	// not have been paused) nor on the target, and the column has no foreign
+	// key. Omitted for top-level runs and absent from older snapshots, which
+	// restore with no parent run.
+	ParentRunID string `json:"parent_run_id,omitempty"`
 	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2),
 	// captured so a restored paused run re-dispatches with the correct
 	// park-at-end_turn (vs run-to-completion) semantics. Omitted for batch

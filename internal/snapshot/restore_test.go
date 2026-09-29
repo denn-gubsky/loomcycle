@@ -839,6 +839,123 @@ func withoutPausedRunTenant(t *testing.T, raw []byte) []byte {
 	return out
 }
 
+// A paused sub-agent keeps its link to the run that spawned it across a
+// restore, even when that parent is in neither the snapshot (it was not
+// paused) nor the target: the link is an id, not a reference the restore can
+// resolve. The entry carried no parent run, so the restored row had none.
+func TestRoundTrip_PreservesParentRunID(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "acme", "qa", "alice")
+	child, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_child", ParentAgentID: "a_parent", ParentRunID: "r_parent_not_paused",
+		UserID: "alice", TenantID: "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentRunID != "r_parent_not_paused" {
+		t.Fatalf("setup: source run's parent run = %q, want r_parent_not_paused", child.ParentRunID)
+	}
+	if err := src.SetRunPauseState(ctx, child.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.GetRun(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	if got.ParentRunID != "r_parent_not_paused" {
+		t.Errorf("restored run's parent run = %q, want r_parent_not_paused", got.ParentRunID)
+	}
+	if got.ParentAgentID != "a_parent" {
+		t.Errorf("restored run's parent agent = %q, want a_parent", got.ParentAgentID)
+	}
+}
+
+// A snapshot taken before a paused run carried its parent run still restores,
+// with no parent run on the restored row — what every restore wrote before.
+func TestRestore_RunWithoutParentRunIDRestoresWithNone(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "acme", "qa", "alice")
+	child, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_old_child", ParentRunID: "r_parent", UserID: "alice", TenantID: "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, child.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = withoutPausedRunField(t, raw, "parent_run_id")
+
+	res, err := Restore(ctx, dst, raw, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if res.PausedRunsRestored != 1 {
+		t.Fatalf("paused runs restored = %d, want 1 (warnings: %v)", res.PausedRunsRestored, res.Warnings)
+	}
+	got, err := dst.GetRun(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	if got.ParentRunID != "" {
+		t.Errorf("restored run's parent run = %q, want none", got.ParentRunID)
+	}
+}
+
+// withoutPausedRunField rewrites an envelope as a snapshot taken before the
+// paused-run entry carried key, failing if there was nothing to strip.
+func withoutPausedRunField(t *testing.T, raw []byte, key string) []byte {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	sections := env["sections"].(map[string]any)
+	paused := sections["paused_runs"].(map[string]any)
+	stripped := 0
+	for _, e := range paused["entries"].([]any) {
+		entry := e.(map[string]any)
+		if _, ok := entry[key]; ok {
+			delete(entry, key)
+			stripped++
+		}
+	}
+	if stripped == 0 {
+		t.Fatalf("the captured envelope has no paused-run %s to strip; the old-format case would prove nothing", key)
+	}
+	// The checksum covers the body; drop it as a pre-checksum snapshot would.
+	delete(env, "checksum")
+	out, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // publishChannelBatch publishes n messages on one channel keyspace and returns
 // the cursor positioned just after each (cursors[i] acks message i).
 func publishChannelBatch(t *testing.T, s store.Store, tenantID, channel string, scope store.MemoryScope, scopeID string, n int) []string {
@@ -1695,7 +1812,7 @@ func TestCapture_CarriesNoPerRunSecret(t *testing.T) {
 		"run_id": true, "agent_id": true, "parent_agent_id": true, "user_id": true,
 		"user_tier": true, "agent": true, "agent_def_id": true, "session_id": true,
 		"started_at": true, "model": true, "pause_state": true, "tenant_id": true, "interactive": true,
-		"operator_key_restricted": true, "isolated": true,
+		"operator_key_restricted": true, "isolated": true, "parent_run_id": true,
 		"parent_context": true, "run_config": true, "transcript_events": true,
 		"transcript_error": true,
 	}

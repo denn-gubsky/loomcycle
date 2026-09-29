@@ -146,6 +146,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsExcludesPausingAndRunning", testListPausedRunsExcludesPausingAndRunning},
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
+		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotCreateRoundTrip", testSnapshotCreateRoundTrip},
 		{"SnapshotCreateConflictOnDuplicateID", testSnapshotCreateConflictOnDuplicateID},
 		{"SnapshotCreateRejectsEmptyFields", testSnapshotCreateRejectsEmptyFields},
@@ -3488,6 +3489,32 @@ func testSnapshotRestoreRunKeepsItsTenant(t *testing.T, s store.Store) {
 	}
 	if containsAll(runIDs(other), restored.ID) {
 		t.Errorf("globex's listing %v contains acme's restored run", runIDs(other))
+	}
+}
+
+// A run restored from a snapshot keeps the id of the run that spawned it, and
+// the parent need not exist: parent_run_id is a bare id with no foreign key, so
+// a restored sub-agent whose parent was not captured still inserts.
+func testSnapshotRestoreRunKeepsItsParentRun(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess := store.Session{ID: "sess_restored_child", Agent: "a", UserID: "alice"}
+	if ok, err := s.SnapshotRestoreSession(ctx, sess); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreSession = %v, %v", ok, err)
+	}
+	restored := store.Run{
+		ID: "r_restored_child", SessionID: sess.ID, UserID: "alice",
+		AgentID: "a_restored_child", ParentAgentID: "a_absent_parent", ParentRunID: "r_absent_parent",
+		Status: store.RunRunning, PauseState: store.PauseStatePaused,
+	}
+	if ok, err := s.SnapshotRestoreRun(ctx, restored); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreRun = %v, %v", ok, err)
+	}
+	got, err := s.GetRun(ctx, restored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ParentRunID != "r_absent_parent" {
+		t.Errorf("restored run's parent run = %q, want r_absent_parent", got.ParentRunID)
 	}
 }
 
