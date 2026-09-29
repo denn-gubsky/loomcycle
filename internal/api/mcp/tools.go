@@ -181,11 +181,13 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "get_run",
-			Description: "Return the current status of ONE run, by agent_id \u2014 the handle spawn_run returned. Takes `agent_id` (required). Reports status and the run's latest tracked state. Use it to poll a run you hold a handle for. Do NOT use it to browse or search runs you have no handle for \u2014 that is list_runs, which is filtered by user. It returns a status snapshot, not the conversation: for the transcript or the final text, read the run's own surfaces.",
+			Description: "Return the current status of ONE run. Pass exactly one of `run_id` or `agent_id` \u2014 both, or neither, is refused. `run_id` names one specific run; `agent_id` (the handle spawn_run returned) resolves to that agent's LATEST run, so when several runs share an agent id \u2014 every walk of a team is filed under `team:<name>` \u2014 read by run_id. Reports status, usage, lineage (parent_context) and, for a running run, what it is blocked on (awaited_state). Use it to poll a run you hold a handle for. Do NOT use it to browse or search runs you have no handle for \u2014 that is list_runs, which is filtered by user. It returns a status snapshot, not the conversation: for the transcript, read the run's own surfaces.",
 			InputSchema: rawJSON(`{
 				"type": "object",
-				"required": ["agent_id"],
-				"properties": {"agent_id": {"type": "string"}}
+				"properties": {
+					"run_id":   {"type": "string", "description": "One specific run. Exclusive with agent_id."},
+					"agent_id": {"type": "string", "description": "The agent's latest run. Exclusive with run_id."}
+				}
 			}`),
 		},
 		{

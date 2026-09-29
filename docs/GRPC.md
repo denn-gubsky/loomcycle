@@ -69,6 +69,7 @@ adapter can be trivially ported between the two.
 | `SpawnRunBatch(BatchSpawnRequest) → BatchSpawnResult` | `POST /v1/runs:batch` | unary | **RFC Y external fan-out (v0.33.0).** Spawn up to 32 fresh runs concurrently (mode `"join"`) under the per-user admission gate; returns an index-aligned envelope (`results[]` of `SpawnResult` + `spawned`). A per-child failure rides in its `status`+`error`, never failing the batch; an over-cap / `mode:"detach"` request → `INVALID_ARGUMENT`. |
 | `CompactRun(CompactRunRequest) → CompactRunResult` | `POST /v1/runs/{run_id}/compact` | unary | **v0.33.0.** Summarize a run's context (keyed on `run_id`). A live run must be PARKED — mid-turn → `FAILED_PRECONDITION`. Returns `{compacted, before_tokens, after_tokens, applied}` (`applied` ∈ `live`/`marker`/`noop`). |
 | `GetAgent(GetAgentRequest) → Agent` | `GET /v1/agents/{agent_id}` | unary | Read one agent's status + usage. |
+| `GetRun(GetRunRequest) → Agent` | `GET /v1/runs/{run_id}` | unary | `GetAgent` addressed by the run itself. An agent id can name many runs (every walk of a team is filed under `team:<name>`, which `GetAgent` cannot address) and `GetAgent` answers the latest; a run id names one. Same tenant / isolated-member `NOT_FOUND` fold as `GetAgent`. |
 | `CancelAgent(CancelAgentRequest) → CancelAgentResponse` | `POST /v1/agents/{agent_id}/cancel` | unary | Cascades to children via `parent_agent_id`. |
 | `ListUserAgents(ListUserAgentsRequest) → ListUserAgentsResponse` | `GET /v1/users/{user_id}/agents` | unary | Status filter optional. |
 | `GetTranscript(GetTranscriptRequest) → Transcript` | `GET /v1/sessions/{session_id}/transcript` | unary | Persisted event log; payloads are raw JSON bytes. |
@@ -158,7 +159,7 @@ direct `codes.NotFound` emissions in `GetAgent` / `CancelAgent` /
 |---|---|---|
 | `INVALID_ARGUMENT` | `ErrUnknownAgent`, `ErrInvalidArgument`, `ErrUnknownProvider` / HTTP 400 | Bad request shape, unknown agent name, missing/invalid field. |
 | `FAILED_PRECONDITION` | `ErrSessionRequired`, `ErrSessionBusy` / HTTP 409 / 412 | Operator-state mismatch. Session-busy = another request in flight on the same `session_id`. |
-| `NOT_FOUND` | `ErrSessionNotFound` (Continue/GetTranscript), or unknown `agent_id` (GetAgent/CancelAgent) / HTTP 404 | Discriminate via message text — "session not found" vs. "no run found for agent_id". |
+| `NOT_FOUND` | `ErrSessionNotFound` (Continue/GetTranscript), or unknown `agent_id` (GetAgent/CancelAgent) / `run_id` (GetRun) / HTTP 404 | Discriminate via message text — "session not found" vs. "no run found for agent_id" / "no run found for run_id". |
 | `ALREADY_EXISTS` | `ErrAgentIDInUse` / HTTP 409 | Caller-supplied `agent_id` is already mapped to a live run. |
 | `RESOURCE_EXHAUSTED` | `ErrBackpressure` / HTTP 429 | Concurrency semaphore rejected the run; retry with backoff. |
 | `UNAUTHENTICATED` | (auth middleware) / HTTP 401 | Bad/missing bearer token. |

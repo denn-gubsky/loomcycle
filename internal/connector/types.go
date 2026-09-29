@@ -323,7 +323,7 @@ type ReplaySessionResult struct {
 	Compacted    bool   `json:"compacted"`
 }
 
-// Run is the status snapshot returned by GetRun / ListRuns. Distinct
+// Run is the status snapshot returned by GetRun / GetRunByRunID / ListRuns. Distinct
 // from store.Run — this is the wire shape (no internal-only fields).
 type Run struct {
 	AgentID       string           `json:"agent_id"`
@@ -348,6 +348,21 @@ type Run struct {
 	// as HTTP GET /v1/agents/{id} and gRPC GetAgent return it. Set by GetRun
 	// only, and only while the run is configured.
 	Draft json.RawMessage `json:"draft,omitempty"`
+	// ParentContext is the caller-tracking lineage the run carries (inherited
+	// from its root for a sub-agent), so a child's cost can be attributed to
+	// the request that started it. Omitted when the run carried none.
+	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// Interactive marks a run that parks at end_turn for operator input.
+	Interactive bool `json:"interactive,omitempty"`
+	// ReplicaID is the replica that owns the run's live handles; empty in a
+	// single-replica deployment.
+	ReplicaID string `json:"replica_id,omitempty"`
+	// AwaitedState / AwaitedOn: what a RUNNING run is blocked on — "channel"
+	// (AwaitedOn = the channel), "interrupted" (AwaitedOn = the ask's kind) or
+	// "review"; empty while it is making progress. Set by the single-run
+	// reads only, as on HTTP and gRPC, since each costs a store read.
+	AwaitedState string `json:"awaited_state,omitempty"`
+	AwaitedOn    string `json:"awaited_on,omitempty"`
 }
 
 // ListRunsFilter selects which runs ListRuns returns. Empty fields

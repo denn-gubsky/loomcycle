@@ -68,6 +68,11 @@ type mockConnector struct {
 	compactRunID  atomic.Value  // string: the run_id CompactRun was called with
 	compactResult connector.CompactResult
 	compactErr    error
+
+	// get_run: which read it dispatched to, and with what.
+	getRunAgentID       atomic.Value // string: the agent_id GetRun was called with
+	getRunByRunIDArg    atomic.Value // string: the run_id GetRunByRunID was called with
+	getRunByRunIDResult connector.Run
 }
 
 func (m *mockConnector) SpawnRun(ctx context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
@@ -95,8 +100,13 @@ func (m *mockConnector) SpawnRunBatch(_ context.Context, r connector.BatchSpawnR
 func (m *mockConnector) CancelRun(_ context.Context, _, _ string) (connector.CancelRunResult, error) {
 	return connector.CancelRunResult{Cancelled: true}, nil
 }
-func (m *mockConnector) GetRun(_ context.Context, _ string) (connector.Run, error) {
+func (m *mockConnector) GetRun(_ context.Context, agentID string) (connector.Run, error) {
+	m.getRunAgentID.Store(agentID)
 	return m.getRunResult, nil
+}
+func (m *mockConnector) GetRunByRunID(_ context.Context, runID string) (connector.Run, error) {
+	m.getRunByRunIDArg.Store(runID)
+	return m.getRunByRunIDResult, nil
 }
 func (m *mockConnector) CompactRun(_ context.Context, runID string) (connector.CompactResult, error) {
 	m.compactRunID.Store(runID)

@@ -871,6 +871,15 @@ export class LoomcycleClient {
     return jsonFetch<Agent>(this.ctx, `/v1/agents/${encodeURIComponent(agentId)}`, opts);
   }
 
+  /** Read one run by its run id — the same {@link Agent} shape as
+   *  {@link getAgent}. An agent id can name many runs (every walk of a team
+   *  is filed under `team:<name>`, which getAgent cannot address) and
+   *  getAgent answers the latest; a run id names one. Raises NotFoundError
+   *  for an unknown run, or one the caller may not see. */
+  async getRun(runId: string, opts?: { signal?: AbortSignal }): Promise<Agent> {
+    return jsonFetch<Agent>(this.ctx, `/v1/runs/${encodeURIComponent(runId)}`, opts);
+  }
+
   /** Cancel a live agent (cascades to children via parent_agent_id).
    *  Returns count of agents cancelled. Idempotent — already-terminated
    *  agents return 0. */

@@ -148,6 +148,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.GetAgentRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.Agent.FromString,
                 _registered_method=True)
+        self.GetRun = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/GetRun',
+                request_serializer=loomcycle__pb2.GetRunRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.Agent.FromString,
+                _registered_method=True)
         self.CancelAgent = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/CancelAgent',
                 request_serializer=loomcycle__pb2.CancelAgentRequest.SerializeToString,
@@ -617,6 +622,17 @@ class LoomcycleServicer:
         interrupted (browser tab closed, network blip).
 
         Mirrors GET /v1/agents/{agent_id}.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetRun(self, request, context):
+        """GetRun is GetAgent addressed by the run itself. An agent id can name
+        many runs — every walk of a team is filed under `team:<name>` — and
+        GetAgent answers only the latest; a run id names one.
+
+        Mirrors GET /v1/runs/{run_id}.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1225,6 +1241,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             'GetAgent': grpc.unary_unary_rpc_method_handler(
                     servicer.GetAgent,
                     request_deserializer=loomcycle__pb2.GetAgentRequest.FromString,
+                    response_serializer=loomcycle__pb2.Agent.SerializeToString,
+            ),
+            'GetRun': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetRun,
+                    request_deserializer=loomcycle__pb2.GetRunRequest.FromString,
                     response_serializer=loomcycle__pb2.Agent.SerializeToString,
             ),
             'CancelAgent': grpc.unary_unary_rpc_method_handler(
@@ -2035,6 +2056,33 @@ class Loomcycle:
             target,
             '/loomcycle.v1.Loomcycle/GetAgent',
             loomcycle__pb2.GetAgentRequest.SerializeToString,
+            loomcycle__pb2.Agent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetRun(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/GetRun',
+            loomcycle__pb2.GetRunRequest.SerializeToString,
             loomcycle__pb2.Agent.FromString,
             options,
             channel_credentials,

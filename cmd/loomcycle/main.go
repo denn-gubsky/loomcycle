@@ -3372,6 +3372,9 @@ func main() {
 			AuthConfigured:    srv.AuthConfigured,
 			BuildCommit:       buildCommit,
 			BuildTime:         buildTime,
+			// GetRun's `live` must see a team walk, which only the HTTP
+			// server's walk table knows about.
+			RunLive: srv.RunLive,
 		})
 		grpcSrv = googlegrpc.NewServer(
 			googlegrpc.UnaryInterceptor(grpcAdapter.UnaryAuthInterceptor()),

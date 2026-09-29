@@ -186,6 +186,22 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return _agent_to_dict(resp)
 
+    async def get_run(self, run_id: str) -> Mapping[str, Any]:
+        """Read one run by its run id — the same dict as ``get_agent``.
+        An agent id can name many runs (every walk of a team is filed
+        under ``team:<name>``, which ``get_agent`` cannot address) and
+        ``get_agent`` answers the latest; a run id names one. Raises
+        ``AgentNotFoundError`` (the gRPC NotFound mapping) for an unknown
+        run, or one the caller may not see."""
+        try:
+            resp = await self._stub.GetRun(
+                pb.GetRunRequest(run_id=run_id),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _agent_to_dict(resp)
+
     async def cancel_agent(
         self, agent_id: str, *, reason: str = ""
     ) -> int:

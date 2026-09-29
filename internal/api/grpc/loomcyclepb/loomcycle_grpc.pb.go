@@ -60,6 +60,7 @@ const (
 	Loomcycle_StreamRun_FullMethodName           = "/loomcycle.v1.Loomcycle/StreamRun"
 	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
 	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
+	Loomcycle_GetRun_FullMethodName              = "/loomcycle.v1.Loomcycle/GetRun"
 	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
 	Loomcycle_ListUserAgents_FullMethodName      = "/loomcycle.v1.Loomcycle/ListUserAgents"
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
@@ -253,6 +254,12 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/agents/{agent_id}.
 	GetAgent(ctx context.Context, in *GetAgentRequest, opts ...grpc.CallOption) (*Agent, error)
+	// GetRun is GetAgent addressed by the run itself. An agent id can name
+	// many runs — every walk of a team is filed under `team:<name>` — and
+	// GetAgent answers only the latest; a run id names one.
+	//
+	// Mirrors GET /v1/runs/{run_id}.
+	GetRun(ctx context.Context, in *GetRunRequest, opts ...grpc.CallOption) (*Agent, error)
 	// CancelAgent sets the agent's terminal status to "cancelled" and
 	// cascades the cancellation to every child via parent_agent_id.
 	//
@@ -769,6 +776,16 @@ func (c *loomcycleClient) GetAgent(ctx context.Context, in *GetAgentRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Agent)
 	err := c.cc.Invoke(ctx, Loomcycle_GetAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) GetRun(ctx context.Context, in *GetRunRequest, opts ...grpc.CallOption) (*Agent, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Agent)
+	err := c.cc.Invoke(ctx, Loomcycle_GetRun_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1353,6 +1370,12 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/agents/{agent_id}.
 	GetAgent(context.Context, *GetAgentRequest) (*Agent, error)
+	// GetRun is GetAgent addressed by the run itself. An agent id can name
+	// many runs — every walk of a team is filed under `team:<name>` — and
+	// GetAgent answers only the latest; a run id names one.
+	//
+	// Mirrors GET /v1/runs/{run_id}.
+	GetRun(context.Context, *GetRunRequest) (*Agent, error)
 	// CancelAgent sets the agent's terminal status to "cancelled" and
 	// cascades the cancellation to every child via parent_agent_id.
 	//
@@ -1684,6 +1707,9 @@ func (UnimplementedLoomcycleServer) GetTranscript(context.Context, *GetTranscrip
 }
 func (UnimplementedLoomcycleServer) GetAgent(context.Context, *GetAgentRequest) (*Agent, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetAgent not implemented")
+}
+func (UnimplementedLoomcycleServer) GetRun(context.Context, *GetRunRequest) (*Agent, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRun not implemented")
 }
 func (UnimplementedLoomcycleServer) CancelAgent(context.Context, *CancelAgentRequest) (*CancelAgentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelAgent not implemented")
@@ -2196,6 +2222,24 @@ func _Loomcycle_GetAgent_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).GetAgent(ctx, req.(*GetAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_GetRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).GetRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_GetRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).GetRun(ctx, req.(*GetRunRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3027,6 +3071,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetAgent",
 			Handler:    _Loomcycle_GetAgent_Handler,
+		},
+		{
+			MethodName: "GetRun",
+			Handler:    _Loomcycle_GetRun_Handler,
 		},
 		{
 			MethodName: "CancelAgent",

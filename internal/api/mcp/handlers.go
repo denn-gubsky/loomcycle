@@ -530,14 +530,30 @@ func handleCancelRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 	return toolResultJSON(res), nil
 }
 
+// handleGetRun reads one run by run_id or by agent_id — exactly one. An agent
+// id can name many runs (every walk of a team is filed under `team:<name>`)
+// and resolves to the latest; a run id names one.
 func handleGetRun(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 	var p struct {
+		RunID   string `json:"run_id"`
 		AgentID string `json:"agent_id"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return toolErr("invalid get_run arguments: " + err.Error()), nil
 	}
-	res, err := env.connector.GetRun(ctx, p.AgentID)
+	if (p.RunID == "") == (p.AgentID == "") {
+		return toolErrValidation("get_run: pass exactly one of run_id or agent_id",
+			"Send run_id to read one specific run, or agent_id for that agent's latest run — not both, not neither."), nil
+	}
+	var (
+		res connector.Run
+		err error
+	)
+	if p.RunID != "" {
+		res, err = env.connector.GetRunByRunID(ctx, p.RunID)
+	} else {
+		res, err = env.connector.GetRun(ctx, p.AgentID)
+	}
 	if err != nil {
 		return toolErrFrom("get_run", err), nil
 	}
