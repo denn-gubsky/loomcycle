@@ -9864,6 +9864,185 @@ func (s *Store) ScheduleRunStatePause(ctx context.Context, defID string, until t
 	return nil
 }
 
+// ScheduleRunStateSeedWithFireCount seeds a def's run state with a fire
+// count already spent. See the interface for why it exists.
+func (s *Store) ScheduleRunStateSeedWithFireCount(ctx context.Context, defID string, nextRunAt time.Time, fireCount int) error {
+	if fireCount < 0 {
+		return fmt.Errorf("schedule_run_state seed: negative fire_count %d", fireCount)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO schedule_run_state (def_id, next_run_at, fire_count) VALUES (?, ?, ?)
+		 ON CONFLICT(def_id) DO UPDATE SET
+		     next_run_at = excluded.next_run_at,
+		     fire_count  = MAX(schedule_run_state.fire_count, excluded.fire_count)`,
+		defID, nextRunAt.UnixNano(), fireCount,
+	)
+	return err
+}
+
+// ---- snapshot: schedule_defs, schedule_def_active, schedule_run_state ----
+
+// SnapshotReadScheduleDefs returns every tenant's schedule defs in lineage
+// order (tenant_id, name, version).
+func (s *Store) SnapshotReadScheduleDefs(ctx context.Context) ([]store.ScheduleDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, scheduleDefSelect+` ORDER BY tenant_id ASC, name ASC, version ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_defs: %w", err)
+	}
+	defer rows.Close()
+	return s.scanScheduleDefRows(rows)
+}
+
+// SnapshotReadScheduleDefActive returns every active pointer.
+func (s *Store) SnapshotReadScheduleDefActive(ctx context.Context) ([]store.ScheduleDefActiveEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
+		 FROM schedule_def_active
+		 ORDER BY tenant_id ASC, name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleDefActiveEntry
+	for rows.Next() {
+		var (
+			e          store.ScheduleDefActiveEntry
+			promotedNs int64
+			promoter   sql.NullString
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID); err != nil {
+			return nil, fmt.Errorf("scan schedule_def_active: %w", err)
+		}
+		e.PromotedAt = time.Unix(0, promotedNs)
+		e.PromotedByAgentID = promoter.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadScheduleRunState returns every run-state row.
+func (s *Store) SnapshotReadScheduleRunState(ctx context.Context) ([]store.ScheduleRunStateRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
+		 FROM schedule_run_state
+		 ORDER BY def_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_run_state: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleRunStateRow
+	for rows.Next() {
+		var (
+			r           store.ScheduleRunStateRow
+			lastRunAt   sql.NullInt64
+			lastRunID   sql.NullString
+			lastStatus  sql.NullString
+			lastError   sql.NullString
+			nextRunAt   int64
+			pausedUntil sql.NullInt64
+		)
+		if err := rows.Scan(&r.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &nextRunAt, &pausedUntil, &r.FireCount); err != nil {
+			return nil, fmt.Errorf("scan schedule_run_state: %w", err)
+		}
+		if lastRunAt.Valid {
+			r.LastRunAt = time.Unix(0, lastRunAt.Int64)
+		}
+		r.LastRunID = lastRunID.String
+		r.LastStatus = lastStatus.String
+		r.LastError = lastError.String
+		r.NextRunAt = time.Unix(0, nextRunAt)
+		if pausedUntil.Valid {
+			r.PausedUntil = time.Unix(0, pausedUntil.Int64)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotRestoreScheduleDef inserts one def keeping every column. The
+// conflict target is def_id ONLY — unlike the INSERT OR IGNORE the older def
+// sections use — so a different live row on (tenant_id, name, version), such
+// as the target's own yaml bootstrap, surfaces as an error the restore turns
+// into a warning instead of disappearing into "already here".
+func (s *Store) SnapshotRestoreScheduleDef(ctx context.Context, r store.ScheduleDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore schedule_def: def_id and name required")
+	}
+	createdNs := r.CreatedAt.UnixNano()
+	if r.CreatedAt.IsZero() {
+		createdNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO schedule_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(def_id) DO NOTHING`,
+		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
+		string(r.Definition), nilIfEmpty(r.Description),
+		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
+		boolToInt(r.Retired), boolToInt(r.BootstrappedFromStatic), r.TenantID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_def: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreScheduleDefActive inserts one active pointer; a live pointer
+// on (tenant_id, name) stands.
+func (s *Store) SnapshotRestoreScheduleDefActive(ctx context.Context, e store.ScheduleDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore schedule_def_active: name and def_id required")
+	}
+	promotedNs := e.PromotedAt.UnixNano()
+	if e.PromotedAt.IsZero() {
+		promotedNs = time.Now().UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO schedule_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, name) DO NOTHING`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_def_active: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// SnapshotRestoreScheduleRunState inserts one run-state row, every column; a
+// live row on def_id stands.
+func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.ScheduleRunStateRow) (bool, error) {
+	if r.DefID == "" {
+		return false, fmt.Errorf("snapshot restore schedule_run_state: def_id required")
+	}
+	if r.FireCount < 0 {
+		return false, fmt.Errorf("snapshot restore schedule_run_state: negative fire_count %d", r.FireCount)
+	}
+	var lastRunAt, pausedUntil any
+	if !r.LastRunAt.IsZero() {
+		lastRunAt = r.LastRunAt.UnixNano()
+	}
+	if !r.PausedUntil.IsZero() {
+		pausedUntil = r.PausedUntil.UnixNano()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO schedule_run_state(def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(def_id) DO NOTHING`,
+		r.DefID, lastRunAt, nilIfEmpty(r.LastRunID), nilIfEmpty(r.LastStatus), nilIfEmpty(r.LastError),
+		r.NextRunAt.UnixNano(), pausedUntil, r.FireCount,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // ---- Evaluation (pure-insert, no concurrency lock) ----
 
 // EvaluationSubmit inserts one evaluation row. CreatedAt set by store.

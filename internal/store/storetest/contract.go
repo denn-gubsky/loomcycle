@@ -505,6 +505,11 @@ func Run(t *testing.T, factory Factory) {
 		// The month-to-date usage a snapshot restore carries in: max-not-add,
 		// per month, per subject, and deletable for erasure.
 		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
+		// Snapshot restore of schedules: every column lands, the live rows
+		// stand, and a re-restore never resets a fire count.
+		{"SnapshotScheduleRestoreKeepsLiveRows", testSnapshotScheduleRestoreKeepsLiveRows},
+		// The seed a re-enabling fork uses carries a fire count, never lowered.
+		{"ScheduleRunStateSeedWithFireCount", testScheduleRunStateSeedWithFireCount},
 		{"SessionArchiver", testSessionArchiver},
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
 		// (all automated retention). Fails on the pre-fix query (no exclusion).
@@ -1335,6 +1340,158 @@ func testUsageCarryKeepsTheMaximum(t *testing.T, s store.Store) {
 	}
 	if n, err := s.UsageCarryCountSubject(ctx, "other", "u1"); err != nil || n != 1 {
 		t.Errorf("another tenant's same subject = %d (err %v), want 1 (untouched)", n, err)
+	}
+}
+
+// testSnapshotScheduleRestoreKeepsLiveRows: a restored schedule def, active
+// pointer and run state land with every column as given; a second restore
+// onto the same keys leaves the live rows alone (a re-restore never resets a
+// fire count); a different def on a live (tenant, name, version) is an error,
+// not a silent skip; and run state for a def the target does not have is
+// refused rather than orphaned.
+func testSnapshotScheduleRestoreKeepsLiveRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	created := time.Date(2026, 9, 3, 4, 5, 6, 0, time.UTC)
+	parent := store.ScheduleDefRow{
+		DefID: "sd_parent", TenantID: "acme", Name: "digest", Version: 1, CreatedAt: created,
+		Definition:  json.RawMessage(`{"agent":"a","schedule":"@hourly","max_fires":5}`),
+		Description: "p", CreatedByAgentID: "ag", CreatedByRunID: "run1", BootstrappedFromStatic: true,
+	}
+	child := store.ScheduleDefRow{
+		DefID: "sd_child", TenantID: "acme", Name: "digest", Version: 2, ParentDefID: "sd_parent",
+		CreatedAt: created.Add(time.Minute), Retired: true,
+		Definition: json.RawMessage(`{"agent":"a","schedule":"@daily"}`),
+	}
+	for _, r := range []store.ScheduleDefRow{parent, child} {
+		inserted, err := s.SnapshotRestoreScheduleDef(ctx, r)
+		if err != nil || !inserted {
+			t.Fatalf("restore %s: inserted=%v err=%v, want inserted", r.DefID, inserted, err)
+		}
+	}
+	if inserted, err := s.SnapshotRestoreScheduleDef(ctx, parent); err != nil || inserted {
+		t.Errorf("re-restore of the same def: inserted=%v err=%v, want a silent no-op", inserted, err)
+	}
+	clash := parent
+	clash.DefID = "sd_clash"
+	if inserted, err := s.SnapshotRestoreScheduleDef(ctx, clash); err == nil || inserted {
+		t.Errorf("a different def on a live (tenant, name, version): inserted=%v err=%v, want an error", inserted, err)
+	}
+
+	got, err := s.ScheduleDefGet(ctx, "sd_child")
+	if err != nil {
+		t.Fatalf("ScheduleDefGet: %v", err)
+	}
+	if got.ParentDefID != "sd_parent" || !got.Retired || got.Version != 2 || !got.CreatedAt.Equal(child.CreatedAt) {
+		t.Errorf("restored child = parent %q retired %v version %d created %v; want sd_parent, true, 2, %v",
+			got.ParentDefID, got.Retired, got.Version, got.CreatedAt, child.CreatedAt)
+	}
+	defs, err := s.SnapshotReadScheduleDefs(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadScheduleDefs: %v", err)
+	}
+	if len(defs) != 2 || defs[0].DefID != "sd_parent" || defs[1].DefID != "sd_child" {
+		t.Fatalf("SnapshotReadScheduleDefs = %+v, want parent then child", defs)
+	}
+	p := defs[0]
+	if !p.BootstrappedFromStatic || p.Description != "p" || p.CreatedByAgentID != "ag" || p.CreatedByRunID != "run1" ||
+		p.TenantID != "acme" || !p.CreatedAt.Equal(created) {
+		t.Errorf("read-back parent lost a column: %+v", p)
+	}
+
+	// Active pointer: inserted once; a second pointer on the same name stands down.
+	promoted := created.Add(2 * time.Minute)
+	if inserted, err := s.SnapshotRestoreScheduleDefActive(ctx, store.ScheduleDefActiveEntry{
+		TenantID: "acme", Name: "digest", DefID: "sd_parent", PromotedAt: promoted, PromotedByAgentID: "ag",
+	}); err != nil || !inserted {
+		t.Fatalf("restore active: inserted=%v err=%v", inserted, err)
+	}
+	if inserted, err := s.SnapshotRestoreScheduleDefActive(ctx, store.ScheduleDefActiveEntry{
+		TenantID: "acme", Name: "digest", DefID: "sd_child", PromotedAt: promoted,
+	}); err != nil || inserted {
+		t.Errorf("restore onto a live pointer: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+	actives, err := s.SnapshotReadScheduleDefActive(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadScheduleDefActive: %v", err)
+	}
+	if len(actives) != 1 || actives[0].DefID != "sd_parent" || !actives[0].PromotedAt.Equal(promoted) || actives[0].PromotedByAgentID != "ag" {
+		t.Errorf("active pointers = %+v, want the first one only, promoted_at and promoter kept", actives)
+	}
+
+	// Run state: every column lands; a re-restore with a zero count does not reset it.
+	state := store.ScheduleRunStateRow{
+		DefID: "sd_parent", LastRunAt: created.Add(3 * time.Minute), LastRunID: "run9", LastStatus: "completed",
+		LastError: "e", NextRunAt: created.Add(time.Hour), PausedUntil: created.Add(2 * time.Hour), FireCount: 3,
+	}
+	if inserted, err := s.SnapshotRestoreScheduleRunState(ctx, state); err != nil || !inserted {
+		t.Fatalf("restore run state: inserted=%v err=%v", inserted, err)
+	}
+	reset := store.ScheduleRunStateRow{DefID: "sd_parent", NextRunAt: created}
+	if inserted, err := s.SnapshotRestoreScheduleRunState(ctx, reset); err != nil || inserted {
+		t.Errorf("re-restore of run state: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+	st, err := s.ScheduleRunStateGet(ctx, "sd_parent")
+	if err != nil {
+		t.Fatalf("ScheduleRunStateGet: %v", err)
+	}
+	if st.FireCount != 3 || st.LastRunID != "run9" || st.LastStatus != "completed" || st.LastError != "e" ||
+		!st.LastRunAt.Equal(state.LastRunAt) || !st.NextRunAt.Equal(state.NextRunAt) || !st.PausedUntil.Equal(state.PausedUntil) {
+		t.Errorf("run state = %+v, want %+v", st, state)
+	}
+	all, err := s.SnapshotReadScheduleRunState(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadScheduleRunState: %v", err)
+	}
+	if len(all) != 1 || all[0].FireCount != 3 || !all[0].PausedUntil.Equal(state.PausedUntil) {
+		t.Errorf("SnapshotReadScheduleRunState = %+v, want the one row with its count and pause", all)
+	}
+	if inserted, err := s.SnapshotRestoreScheduleRunState(ctx, store.ScheduleRunStateRow{DefID: "sd_missing", NextRunAt: created}); err == nil || inserted {
+		t.Errorf("run state for a def the target lacks: inserted=%v err=%v, want an error", inserted, err)
+	}
+}
+
+// testScheduleRunStateSeedWithFireCount: a count-carrying seed starts a new
+// def at the given count, and on an existing row raises the count but never
+// lowers it.
+func testScheduleRunStateSeedWithFireCount(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, id := range []string{"sd_a", "sd_b"} {
+		if _, err := s.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: id, Name: id, Definition: json.RawMessage(`{"agent":"a"}`)}); err != nil {
+			t.Fatalf("ScheduleDefCreate(%s): %v", id, err)
+		}
+	}
+	next := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	count := func(id string) int {
+		t.Helper()
+		st, err := s.ScheduleRunStateGet(ctx, id)
+		if err != nil {
+			t.Fatalf("ScheduleRunStateGet(%s): %v", id, err)
+		}
+		return st.FireCount
+	}
+	if err := s.ScheduleRunStateSeedWithFireCount(ctx, "sd_a", next, 3); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if got := count("sd_a"); got != 3 {
+		t.Errorf("new row fire_count = %d, want 3", got)
+	}
+	if err := s.ScheduleRunStateSeedWithFireCount(ctx, "sd_a", next.Add(time.Hour), 1); err != nil {
+		t.Fatalf("reseed lower: %v", err)
+	}
+	if got := count("sd_a"); got != 3 {
+		t.Errorf("a lower reseed left fire_count = %d, want 3 (never lowered)", got)
+	}
+	if err := s.ScheduleRunStateSeed(ctx, "sd_b", next); err != nil {
+		t.Fatalf("plain seed: %v", err)
+	}
+	if err := s.ScheduleRunStateSeedWithFireCount(ctx, "sd_b", next, 4); err != nil {
+		t.Fatalf("reseed higher: %v", err)
+	}
+	if got := count("sd_b"); got != 4 {
+		t.Errorf("a higher reseed left fire_count = %d, want 4", got)
+	}
+	if err := s.ScheduleRunStateSeedWithFireCount(ctx, "sd_a", next, -1); err == nil {
+		t.Error("a negative count was accepted")
 	}
 }
 
