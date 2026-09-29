@@ -577,6 +577,9 @@ type RestoreSnapshotRequest struct {
 // (snapshot.RestoreResult.Counts) — the extensible form a new section adds a
 // key to. The typed counter fields stay frozen at the subset they always
 // carried, for transports that want strongly-typed access.
+//
+// PausedRunsResumed is how many paused runs the restore re-dispatched as live
+// loops; a run that cannot resume is named in Warnings instead.
 type RestoreSnapshotResult struct {
 	Restored                   map[string]int `json:"restored"`
 	AgentDefsRestored          int            `json:"agent_defs_restored"`
@@ -586,6 +589,7 @@ type RestoreSnapshotResult struct {
 	ChannelCursorsRestored     int            `json:"channel_cursors_restored"`
 	EvaluationsRestored        int            `json:"evaluations_restored"`
 	PausedRunsRestored         int            `json:"paused_runs_restored"`
+	PausedRunsResumed          int            `json:"paused_runs_resumed"`
 	SynthesizedSessions        int            `json:"synthesized_sessions"`
 	TranscriptEventsRestored   int            `json:"transcript_events_restored"`
 	InteractionHistoryRestored int            `json:"interaction_history_restored"`

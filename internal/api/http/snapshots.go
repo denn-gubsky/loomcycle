@@ -324,19 +324,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The caches over the restored tables first, so a run resumed below sees
-	// what the restore wrote.
-	s.postRestoreRefresh(r.Context(), &result)
-
-	// F42 / RFC X Phase 2: re-dispatch the just-restored paused runs so a
-	// snapshotted mid-run experiment genuinely continues on this instance
-	// (reconstruct each loop from its transcript). Runs whose agent no longer
-	// resolves — or that aren't auto-resumable — are flagged failed and
-	// surfaced in the warnings. Uses a detached background context so a slow
-	// re-dispatch (or a long-lived resumed loop) doesn't block the response.
-	warnings := result.Warnings
-	resumed, resumeWarnings := s.ResumePausedRuns(context.WithoutCancel(r.Context()))
-	warnings = append(warnings, resumeWarnings...)
+	s.finishRestore(r.Context(), &result)
 
 	writeJSON(w, http.StatusOK, snapshotRestoreResponse{
 		Restored:                   result.Counts(),
@@ -347,12 +335,40 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		ChannelCursorsRestored:     result.ChannelCursorsRestored,
 		EvaluationsRestored:        result.EvaluationsRestored,
 		PausedRunsRestored:         result.PausedRunsRestored,
-		PausedRunsResumed:          resumed,
+		PausedRunsResumed:          result.PausedRunsResumed,
 		SynthesizedSessions:        result.SynthesizedSessions,
 		TranscriptEventsRestored:   result.TranscriptEventsRestored,
 		InteractionHistoryRestored: result.InteractionHistoryRestored,
-		Warnings:                   warnings,
+		Warnings:                   result.Warnings,
 	})
+}
+
+// finishRestore is what every restore call site owes once snapshot.Restore has
+// written the rows: the caches over the restored tables first, so a run
+// resumed next sees what the restore wrote, then the paused runs re-dispatched
+// as live loops (F42 / RFC X Phase 2 — reconstructed from their transcripts),
+// so a snapshotted mid-run genuinely continues on this instance.
+// ResumePausedRuns takes every pause_state='paused' row in the store, the
+// restored ones among them, as the boot-time resume does.
+// The HTTP handler and the connector (gRPC, MCP) both call it, so neither the
+// step nor its order can differ by transport.
+//
+// A run whose agent no longer resolves, or that is not auto-resumable, is
+// flagged failed and named in the warnings; PausedRunsResumed counts the rest.
+// The resume gets a context that outlives the request, so a slow re-dispatch
+// or a long-lived resumed loop does not block the response and is not killed
+// when the caller hangs up.
+//
+// No advisory lock, as the restore endpoint never had one: the lock
+// (coord.LockKeyResumePausedRuns) is for boot, where every replica would
+// otherwise scan the same store at once. A restore runs on the one replica
+// that received it, and a run already live here is skipped by
+// ResumePausedRuns itself.
+func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResult) {
+	s.postRestoreRefresh(ctx, result)
+	resumed, warnings := s.ResumePausedRuns(context.WithoutCancel(ctx))
+	result.PausedRunsResumed = resumed
+	result.Warnings = append(result.Warnings, warnings...)
 }
 
 // postRestoreRefresh brings the in-process caches over restored tables in

@@ -1238,10 +1238,9 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 		}
 		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: %w", err)
 	}
-	// The caches over the restored tables, as the HTTP restore does. This path
-	// does not resume the restored paused runs (the HTTP one does); a later
-	// resume, at boot or through the HTTP restore, finds the caches current.
-	s.postRestoreRefresh(ctx, &result)
+	// Refresh the caches, then resume the restored paused runs — the same step
+	// the HTTP restore takes, so a restore over gRPC or MCP continues them too.
+	s.finishRestore(ctx, &result)
 
 	return connector.RestoreSnapshotResult{
 		Restored:                   result.Counts(),
@@ -1252,6 +1251,7 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 		ChannelCursorsRestored:     result.ChannelCursorsRestored,
 		EvaluationsRestored:        result.EvaluationsRestored,
 		PausedRunsRestored:         result.PausedRunsRestored,
+		PausedRunsResumed:          result.PausedRunsResumed,
 		SynthesizedSessions:        result.SynthesizedSessions,
 		TranscriptEventsRestored:   result.TranscriptEventsRestored,
 		InteractionHistoryRestored: result.InteractionHistoryRestored,
