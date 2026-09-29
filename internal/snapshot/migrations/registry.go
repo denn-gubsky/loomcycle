@@ -31,6 +31,8 @@ const CurrentVersion = "1.0"
 // tags; we redeclare here to avoid an import cycle (migrations
 // imported by snapshot/restore.go, NOT the other way around).
 const (
+	SectionUsers              = "users"
+	SectionTokenLimits        = "token_limits"
 	SectionAgentDefs          = "agent_defs"
 	SectionAgentDefActive     = "agent_def_active"
 	SectionSkillDefs          = "skill_defs"
@@ -100,6 +102,8 @@ func (e *ErrUnknownSectionVersion) Error() string {
 // CurrentVersion; intermediate versions need their own migrators
 // in the chain.
 var registry = map[string]map[string]Migrator{
+	SectionUsers:              {"1.0": identityMigrator},
+	SectionTokenLimits:        {"1.0": identityMigrator},
 	SectionAgentDefs:          {"1.0": identityMigrator},
 	SectionAgentDefActive:     {"1.0": identityMigrator},
 	SectionSkillDefs:          {"1.0": identityMigrator},

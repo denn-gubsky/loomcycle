@@ -135,6 +135,12 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	// into the snapshot-level JSON shape. Order matches the RFC's
 	// section dependency walk so a future restore-in-the-same-call
 	// path could write in this order naturally.
+	if err := captureUsers(ctx, s, &envelope.Sections.Users); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := captureTokenLimits(ctx, s, envelope.CreatedAt, &envelope.Sections.TokenLimits); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureAgentDefs(ctx, s, &envelope.Sections.AgentDefs); err != nil {
 		return nil, nil, nil, err
 	}

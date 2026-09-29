@@ -65,6 +65,11 @@ type Envelope struct {
 // declared shape; the per-section version field is the migration
 // anchor (PR 3 reads it to dispatch into the registry).
 type Sections struct {
+	// Users and TokenLimits restore first: nothing references them by foreign
+	// key, but the users must be in place before a token is re-minted, and the
+	// budgets before a resumed run makes its next call.
+	Users          UsersSection          `json:"users"`
+	TokenLimits    TokenLimitsSection    `json:"token_limits"`
 	AgentDefs      AgentDefsSection      `json:"agent_defs"`
 	AgentDefActive AgentDefActiveSection `json:"agent_def_active"`
 	SkillDefs      SkillDefsSection      `json:"skill_defs"`
@@ -120,6 +125,68 @@ type CaptureFindingEntry struct {
 	// Detector says which rule matched: "secret-pattern" or
 	// "credential-header-name".
 	Detector string `json:"detector"`
+}
+
+// UsersSection carries every tenant's user identity rows.
+type UsersSection struct {
+	Version string      `json:"version"`
+	Entries []UserEntry `json:"entries"`
+}
+
+// UserEntry mirrors a users row. It holds no secret. AccessMode and Status
+// travel because a re-minted token's grantable scopes are derived from the
+// row: a user lost on restore would be re-created with the default
+// access_mode, which widens an isolated user.
+type UserEntry struct {
+	TenantID    string    `json:"tenant_id,omitempty"`
+	Subject     string    `json:"subject"`
+	DisplayName string    `json:"display_name,omitempty"`
+	AccessMode  string    `json:"access_mode"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by,omitempty"`
+}
+
+// TokenLimitsSection carries every per-scope token budget and, optionally, the
+// month-to-date usage those budgets are enforced against.
+type TokenLimitsSection struct {
+	Version string            `json:"version"`
+	Entries []TokenLimitEntry `json:"entries"`
+	// UsageMTD is present when the source had any usage this month. Without it
+	// a tenant at 90% of its budget on the source would start near 0% on the
+	// target.
+	UsageMTD *UsageMTDBlock `json:"usage_mtd,omitempty"`
+}
+
+// TokenLimitEntry mirrors a token_limits row. The tiers stay pointers: an
+// unset tier (no ceiling) is not the same as a ceiling of 0, and omitempty on
+// a pointer drops only nil.
+type TokenLimitEntry struct {
+	TenantID  string    `json:"tenant_id,omitempty"`
+	Scope     string    `json:"scope"`
+	ScopeID   string    `json:"scope_id,omitempty"`
+	SoftLimit *int64    `json:"soft_limit,omitempty"`
+	HardLimit *int64    `json:"hard_limit,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by,omitempty"`
+}
+
+// UsageMTDBlock is the minimum the budget tracker needs from the source: one
+// token total per (tenant, user) for one UTC month. There are deliberately no
+// costs, providers, models, key sources or timestamps — this is budget state,
+// not billing data, and the per-call ledger never travels.
+type UsageMTDBlock struct {
+	// Month is the UTC month start the totals cover.
+	Month   time.Time       `json:"month"`
+	Entries []UsageMTDEntry `json:"entries"`
+}
+
+// UsageMTDEntry is one (tenant, user) month-to-date total. UserID is "" for
+// runs with no user. Only non-zero totals are carried.
+type UsageMTDEntry struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	Tokens   int64  `json:"tokens"`
 }
 
 // AgentDefsSection wraps the list of every agent_defs row.

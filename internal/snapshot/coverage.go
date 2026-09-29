@@ -104,6 +104,15 @@ var tableCoverageMap = map[string]tableCoverage{
 	"teamdef_active":   {Kind: coverSection, Section: "team_def_active", Secrets: "none", Backends: onBoth},
 	"teamdefs": {Kind: coverSection, Section: "team_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value in an inline hook block (capture_findings)"},
+	"token_limits": {Kind: coverSection, Section: "token_limits", Secrets: "none", Backends: onBoth,
+		Cache: "limits.Tracker (ceilings seeded at boot)"},
+	// usage_carry is written FROM the token_limits section's usage_mtd block,
+	// and read back into it by the next capture (limits.MonthToDate), so a
+	// second hop keeps the first source's usage.
+	"usage_carry": {Kind: coverSection, Section: "token_limits", Secrets: "none", Backends: onBoth,
+		Reason: "travels as the aggregate month-to-date total, not as rows",
+		Cache:  "limits.Tracker (month-to-date counters seeded at boot)"},
+	"users": {Kind: coverSection, Section: "users", Secrets: "none", Backends: onBoth},
 
 	// ---- never in an envelope (§3.1) ----------------------------------------
 	"credential_defs": {Kind: coverNever, Backends: onBoth,
@@ -164,11 +173,6 @@ var tableCoverageMap = map[string]tableCoverage{
 	// Literal user_credentials values are stripped at capture once P2 lands.
 	"schedule_defs":      {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
 	"schedule_run_state": {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
-	"token_limits": {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth,
-		Cache: "limits.Tracker (ceilings seeded at boot)"},
-	"usage_carry": {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth,
-		Cache: "limits.Tracker (month-to-date counters seeded at boot)"},
-	"users":              {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth},
 	"volume_defs":        {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
 	"webhook_def_active": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
 	// Literal user_credentials values are stripped at capture once P3 lands.

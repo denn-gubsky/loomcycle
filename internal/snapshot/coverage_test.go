@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/postgres"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -263,6 +264,11 @@ const (
 	markEnvResolved = "dp0mark-resolved-env-value"
 	markProvider    = "dp0mark-usage-provider"
 	markModel       = "dp0mark-usage-model"
+	markUsageRun    = "dp0mark-usage-run"
+	markUsageTenant = "dp0mark-usage-tenant"
+	markUser        = "dp0mark-user-subject"
+	markLimitUser   = "dp0mark-limit-subject"
+	markCarryTenant = "dp0mark-carry-tenant"
 	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
@@ -316,11 +322,18 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	must("mcp_server_defs", err)
 
 	// A billing-ledger row. Only a month-to-date aggregate may ever travel,
-	// so none of the row's own fields may.
+	// so none of the row's own fields may — but its tenant does, as the key
+	// of that aggregate. The check for it is in the test, since the ledger
+	// table itself is classified never.
 	must("token_usage", s.RecordCallUsage(ctx, store.TokenUsageRow{
-		RunID: "run_dp0mark", TenantID: "acme", UserID: "u1", Provider: markProvider, Model: markModel,
+		RunID: markUsageRun, TenantID: markUsageTenant, UserID: "u1", Provider: markProvider, Model: markModel,
 		CredentialSource: "operator", InputTokens: 10, OutputTokens: 5, TS: now,
 	}))
+
+	must("users", s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: markUser, AccessMode: "isolated", Status: "active", CreatedAt: now}))
+	must("token_limits", s.TokenLimitPut(ctx, store.TokenLimitRow{TenantID: "acme", Scope: "user", ScopeID: markLimitUser, HardLimit: i64p(10), UpdatedAt: now}))
+	_, err = s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: markCarryTenant, Month: limits.MonthStart(now), Tokens: 42})
+	must("usage_carry", err)
 
 	return []plantedRow{
 		{table: "credential_defs", absent: []string{markCredName, markCredCipher}},
@@ -328,7 +341,10 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		{table: "schedule_defs", present: []string{"dp0mark-schedule"}, absent: []string{markSchedCred}},
 		{table: "webhook_defs", present: []string{"dp0mark-webhook"}, absent: []string{markHookCred}},
 		{table: "mcp_server_defs", present: []string{"dp0mark-mcp", ref}, absent: []string{markEnvResolved}},
-		{table: "token_usage", absent: []string{markProvider, markModel}},
+		{table: "token_usage", absent: []string{markProvider, markModel, markUsageRun}},
+		{table: "users", present: []string{markUser}},
+		{table: "token_limits", present: []string{markLimitUser}},
+		{table: "usage_carry", present: []string{markCarryTenant}},
 	}
 }
 
@@ -377,6 +393,11 @@ func TestSnapshotCapture_NeverSnapshotValuesAreAbsent(t *testing.T) {
 			// a section today, so the envelope provably holds planted content.
 			if carried == 0 {
 				t.Fatal("no planted row is carried by a section; the search could be over an empty envelope")
+			}
+			// The ledger row's absences above prove something only if the
+			// ledger was read: its aggregate must be in the month-to-date block.
+			if !strings.Contains(env, `{"tenant_id":"`+markUsageTenant+`","user_id":"u1","tokens":15}`) {
+				t.Error("the ledger row's month-to-date aggregate is not in the envelope; the ledger absences prove nothing")
 			}
 		})
 	}
