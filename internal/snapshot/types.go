@@ -464,6 +464,12 @@ type PausedRunEntry struct {
 	StartedAt     time.Time `json:"started_at"`
 	Model         string    `json:"model,omitempty"`
 	PauseState    string    `json:"pause_state"`
+	// TenantID is the run's owning tenant. Without it a restored run landed in
+	// the shared "" tenant: every tenant-filtered read hid it from its own
+	// tenant, and the resumed run resolved its agent, credentials and budget
+	// under the wrong one. Omitted for single-tenant runs and absent from older
+	// snapshots, which restore under the restored session's tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2),
 	// captured so a restored paused run re-dispatches with the correct
 	// park-at-end_turn (vs run-to-completion) semantics. Omitted for batch

@@ -4120,8 +4120,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated,
-			run_config, walk_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			run_config, walk_id, tenant_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
@@ -4130,6 +4130,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
 		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted), boolToInt(r.Isolated),
 		nilIfEmptyRaw(r.RunConfig), nilIfEmpty(store.RunWalkID(r.ParentContext)),
+		nilIfEmpty(r.TenantID),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

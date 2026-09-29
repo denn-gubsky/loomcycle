@@ -145,6 +145,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsEmpty", testListPausedRunsEmpty},
 		{"ListPausedRunsExcludesPausingAndRunning", testListPausedRunsExcludesPausingAndRunning},
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
+		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotCreateRoundTrip", testSnapshotCreateRoundTrip},
 		{"SnapshotCreateConflictOnDuplicateID", testSnapshotCreateConflictOnDuplicateID},
 		{"SnapshotCreateRejectsEmptyFields", testSnapshotCreateRejectsEmptyFields},
@@ -3445,6 +3446,47 @@ func testListPausedRunsOrderedByStartedAtAsc(t *testing.T, s store.Store) {
 			t.Errorf("ListPausedRuns[%d] = %q, want %q (oldest-first ordering)",
 				i, r.ID, want[i])
 		}
+	}
+}
+
+// A run restored from a snapshot lands under the tenant it carries, so that
+// tenant's filtered reads find it and another tenant's do not. The restore
+// insert used to omit the column, putting every restored run in the shared ""
+// tenant — hidden from its own tenant's callers.
+func testSnapshotRestoreRunKeepsItsTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess := store.Session{ID: "sess_restored_acme", TenantID: "acme", Agent: "a", UserID: "alice"}
+	if ok, err := s.SnapshotRestoreSession(ctx, sess); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreSession = %v, %v", ok, err)
+	}
+	restored := store.Run{
+		ID: "r_restored_acme", SessionID: sess.ID, TenantID: "acme", UserID: "alice",
+		AgentID: "a_restored", Status: store.RunRunning, PauseState: store.PauseStatePaused,
+	}
+	if ok, err := s.SnapshotRestoreRun(ctx, restored); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreRun = %v, %v", ok, err)
+	}
+
+	got, err := s.GetRun(ctx, restored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TenantID != "acme" {
+		t.Errorf("restored run's tenant = %q, want acme", got.TenantID)
+	}
+	own, err := s.ListActiveRunsByUser(ctx, "acme", "alice", store.RunRunning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAll(runIDs(own), restored.ID) {
+		t.Errorf("acme's listing %v does not contain the restored run", runIDs(own))
+	}
+	other, err := s.ListActiveRunsByUser(ctx, "globex", "alice", store.RunRunning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsAll(runIDs(other), restored.ID) {
+		t.Errorf("globex's listing %v contains acme's restored run", runIDs(other))
 	}
 }
 
