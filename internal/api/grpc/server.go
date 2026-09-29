@@ -244,9 +244,16 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 		return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
 	}
 	_, live := s.cancelReg.Get(agentID)
+	return s.singleRunProto(ctx, run, live), nil
+}
+
+// singleRunProto builds the single-run read for a run the caller has already
+// been cleared to see: the awaited state, and the answer, spec and draft a
+// listing leaves out (RFC DI). Shared by every RPC that reads one run, like
+// HTTP's singleRunResponse.
+func (s *Server) singleRunProto(ctx context.Context, run store.Run, live bool) *loomcyclepb.Agent {
 	out := runToProto(run, live)
 	s.fillAwaitedState(ctx, out)
-	// Single-run read only, like HTTP GET /v1/agents/{id} (RFC DI).
 	out.Result = run.Result
 	out.Spec = run.RunConfig
 	if run.Status == store.RunConfigured {
@@ -254,7 +261,7 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 			out.Draft = d
 		}
 	}
-	return out, nil
+	return out
 }
 
 // CancelAgent mirrors HTTP's POST /v1/agents/{agent_id}/cancel.
