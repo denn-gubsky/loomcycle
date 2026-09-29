@@ -42,9 +42,6 @@ type RestoreOptions struct {
 }
 
 // RestoreResult is the operator-facing summary of a Restore() call.
-//
-// UsageCarryRestored counts the (tenant, user) usage carries whose stored
-// value grew; a re-restore of the same snapshot grows none.
 // Warnings carry every non-fatal anomaly the restore encountered:
 // synthesized sessions, dropped expired rows, skipped sections, etc.
 // Operators read warnings to decide whether the restore is "clean
@@ -57,6 +54,9 @@ type RestoreOptions struct {
 // PausedRunsResumed counts the paused runs the caller re-dispatched as live
 // loops after the refresh. It can be below PausedRunsRestored: a run whose
 // agent no longer resolves is flagged failed and named in Warnings instead.
+//
+// UsageCarryRestored counts the (tenant, user) usage carries whose stored
+// value grew; a re-restore of the same snapshot grows none.
 type RestoreResult struct {
 	UsersRestored              int      `json:"users_restored"`
 	TokenLimitsRestored        int      `json:"token_limits_restored"`
