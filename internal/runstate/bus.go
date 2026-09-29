@@ -49,6 +49,7 @@ type RunStateEvent struct {
 	// re-publishes locally). "" = the shared/default tenant.
 	TenantID      string    `json:"tenant_id,omitempty"`
 	ParentAgentID string    `json:"parent_agent_id,omitempty"`
+	ParentRunID   string    `json:"parent_run_id,omitempty"` // the spawning run; unlike parent_agent_id (reused by every run of an agent) it names one run. Empty for a top-level run.
 	Status        string    `json:"status"`
 	StopReason    string    `json:"stop_reason,omitempty"`
 	Error         string    `json:"error,omitempty"`

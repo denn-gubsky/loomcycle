@@ -985,6 +985,30 @@ describe("v0.9.x n8n RFC Phase 0 — listChannels + streamUserRunStates", () => 
     );
   });
 
+  it("streamUserRunStates surfaces a sub-run's parent_run_id", async () => {
+    const frames = [
+      `event: run_state\ndata: ${JSON.stringify({
+        run_id: "r_child",
+        agent_id: "ag_child",
+        agent: "helper",
+        user_id: "user-a",
+        parent_agent_id: "ag_parent",
+        parent_run_id: "r_parent",
+        status: "running",
+        ts: "2026-09-29T00:00:00Z",
+      })}\n\n`,
+    ];
+    const { client } = makeClient([sseResponse(frames)]);
+    const items = [];
+    for await (const item of client.streamUserRunStates("user-a")) {
+      items.push(item);
+    }
+    expect(items[0]?.kind).toBe("event");
+    if (items[0]?.kind === "event") {
+      expect(items[0].payload.parent_run_id).toBe("r_parent");
+    }
+  });
+
   it("streamUserRunStates encodes status + agent filters as query params", async () => {
     const { client, fetchMock } = makeClient([sseResponse([])]);
     const iter = client.streamUserRunStates("user-a", {

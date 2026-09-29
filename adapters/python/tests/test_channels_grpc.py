@@ -329,3 +329,30 @@ async def test_stream_user_run_states_surfaces_a_runs_wait():
     assert got[0]["hold_expires_at"] == "2026-09-29T12:00:00Z"
     assert got[1]["status"] == "running"
     assert got[1]["awaited_state"] == ""
+
+
+@pytest.mark.asyncio
+async def test_stream_user_run_states_names_a_sub_runs_parent_run():
+    """A sub-run's event names the run that spawned it; a top-level run's
+    names none. parent_agent_id cannot stand in: every run of an agent
+    reuses its agent id."""
+    client = _make_client()
+    events = [
+        pb.RunStateEvent(
+            run_id="r_child", agent="helper", user_id="u1", status="running",
+            parent_agent_id="ag_parent", parent_run_id="r_parent",
+        ),
+        pb.RunStateEvent(run_id="r_parent", agent="lead", user_id="u1", status="running"),
+    ]
+
+    def fake(req, metadata=None):
+        return _ItemStream(events)
+
+    client._stub.StreamUserRunStates = fake  # type: ignore[attr-defined]
+
+    got = []
+    async for e in client.stream_user_run_states("u1"):
+        got.append(e)
+
+    assert got[0]["parent_run_id"] == "r_parent"
+    assert got[1]["parent_run_id"] == ""

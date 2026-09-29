@@ -2461,6 +2461,7 @@ def _run_state_event_to_dict(e: "pb.RunStateEvent") -> Mapping[str, Any]:
         "agent": e.agent,
         "user_id": e.user_id,
         "parent_agent_id": e.parent_agent_id,
+        "parent_run_id": e.parent_run_id,
         "status": e.status,
         "stop_reason": e.stop_reason,
         "error": e.error,

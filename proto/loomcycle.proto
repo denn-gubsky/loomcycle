@@ -2047,6 +2047,9 @@ message RunStateEvent {
   // RFC3339 UTC: when a review hold ends as rejected if nobody rules on it.
   // Empty when the wait has no deadline.
   string hold_expires_at = 13;
+  // The run that spawned this one; empty for a top-level run. Unlike
+  // parent_agent_id, which every run of an agent reuses, it names one run.
+  string parent_run_id = 14;
 }
 
 // ParentContext mirrors the lineage the HTTP transport emits as the SSE
