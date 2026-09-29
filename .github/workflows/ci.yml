@@ -60,9 +60,9 @@ jobs:
         # IT IS NOT ONE SLOW TEST. Measured locally under -race: the package is
         # 496s across 1010 test functions, the slowest single test is 4.1s, and
         # the top twenty account for 29s — 6% of the total. It is a thousand
-        # tests that each provision a real store, so there is nothing to
-        # optimise short of restructuring the package, and a deadline is the
-        # wrong tool for that conversation.
+        # tests that each provision a real store, and a deadline is the wrong
+        # tool for that conversation. (The store provisioning turned out to be
+        # the whole cost; see the -gcflags note at the end.)
         #
         # A timeout here is also WORSE than an ordinary failure, which is the
         # real argument for headroom: the deadline kills tests mid-flight, so
@@ -78,8 +78,26 @@ jobs:
         # it, while internal/tools/builtin finished at 1744s / 1755s / 1795s
         # (99.7% of budget). Locally under -race each takes ~900-1150s; the CI
         # runner is roughly 1.6x slower with the packages contending for cores.
-        # The next real fix is splitting those two packages, not another bump.
-        run: go test -race -timeout 3600s ./...
+        #
+        # WHAT THE THOUSAND TESTS WERE ACTUALLY PAYING FOR: the SQLite engine.
+        # modernc.org/sqlite is C transpiled to Go, and -race instruments every
+        # memory access in it, so opening a fresh store (the schema migration,
+        # a few hundred statements) costs ~1.0s under -race against ~0.09s with
+        # the engine left uninstrumented. The median test in both packages took
+        # 0.95s: almost all of it was that one Open. The -gcflags below compile
+        # modernc.org/... WITHOUT race instrumentation while every package of
+        # ours keeps it. Measured locally, same tests, same pass/skip counts:
+        # internal/api/http 1008s -> 130s, internal/tools/builtin 1111s -> 112s.
+        #
+        # What this gives up: a race whose BOTH sides are inside the SQLite
+        # engine's own code, or one where our code mutates a buffer while the
+        # engine reads it. database/sql hands a connection to one goroutine at
+        # a time, so the first is the driver's bug to find, not ours. A race
+        # between two of our goroutines is still reported (checked with a
+        # deliberate race under these exact flags: `WARNING: DATA RACE`, test
+        # FAILs). Drop the -gcflags to get the old coverage back;
+        # it costs ~8x in wall-clock, nothing else.
+        run: go test -race -gcflags='modernc.org/...=-race=false' -timeout 3600s ./...
 
       - name: gofmt check
         run: |
