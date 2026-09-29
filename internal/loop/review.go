@@ -176,7 +176,7 @@ const (
 // fresh one, sent before the restored hold got here.
 //
 // heldSince is when the hold began, which the review deadline runs from
-// (opts.ReviewTTL; none when zero). A deadline that passes while the runtime is
+// (opts.reviewTTLAtHold, read once here; none when zero). A deadline that passes while the runtime is
 // paused waits for the pause to lift: a paused runtime does not end runs. For
 // the same reason a verdict that arrives while paused waits for the lift too,
 // and one that waited out the pause wins over a deadline that passed in it.
@@ -192,8 +192,8 @@ func parkForReview(ctx context.Context, opts *RunOptions, messages []providers.M
 	heldAt := acceptFrom
 	var deadline <-chan time.Time
 	expiresAt := ""
-	if opts.ReviewTTL > 0 {
-		due := heldSince.Add(opts.ReviewTTL)
+	if ttl := opts.reviewTTLAtHold(); ttl > 0 {
+		due := heldSince.Add(ttl)
 		expiresAt = due.UTC().Format(time.RFC3339)
 		timer := time.NewTimer(time.Until(due))
 		defer timer.Stop()

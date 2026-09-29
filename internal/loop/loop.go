@@ -148,7 +148,13 @@ type RunOptions struct {
 	ReviewNow func(ctx context.Context) bool
 	// ReviewTTL, when positive, ends a hold that gets no verdict within it as
 	// rejected (stop reason "review_expired"). Each hold gets the full window.
-	ReviewTTL time.Duration
+	// ReviewTTLNow, when non-nil, is read instead at the START of each hold, so
+	// a deadline changed while the run is going applies from its next hold. A
+	// hold already in progress keeps the deadline it announced: its expires_at
+	// was published and recorded when it began, and a person may be working to
+	// it.
+	ReviewTTL    time.Duration
+	ReviewTTLNow func() time.Duration
 	// OnReviewHold, when non-nil, is told when a hold for a verdict begins
 	// (true) and ends (false), whoever took it — review arming or an
 	// agent_stop hook. A team walk bounds its runs by a handler timeout that a
@@ -4072,6 +4078,14 @@ func (o *RunOptions) reviewAtBoundary(ctx context.Context) bool {
 		return o.ReviewNow(ctx)
 	}
 	return o.Review
+}
+
+// reviewTTLAtHold is the deadline a hold beginning now gets (0 = none).
+func (o *RunOptions) reviewTTLAtHold() time.Duration {
+	if o.ReviewTTLNow != nil {
+		return o.ReviewTTLNow()
+	}
+	return o.ReviewTTL
 }
 
 // interactiveAtBoundary reports whether this run should PARK at a turn boundary
