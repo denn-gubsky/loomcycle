@@ -1080,6 +1080,41 @@ func TestContextTool_OwnTenantAndAdminReadTheDef(t *testing.T) {
 	}
 }
 
+// A shared def is run, and scored, from every tenant: its aggregate counts only
+// the caller's tenant's runs, and every tenant's for a substrate:admin.
+func TestContextTool_EvaluationsOfSharedDefCountOnlyTheCallersTenant(t *testing.T) {
+	tool, s, _, agentName, _, v2ID := substrateFixture(t)
+	ctx := context.Background()
+	// substrateFixture scored v2 once from a "" tenant run; add tenant-a's score.
+	sess, _ := s.CreateSession(ctx, "tenant-a", agentName, "alice")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_a", TenantID: "tenant-a", AgentDefID: v2ID})
+	if _, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+		EvalID: "eval_a_" + v2ID, RunID: run.ID, DefID: v2ID, Score: 0.1, EmitterRole: "self",
+	}); err != nil {
+		t.Fatalf("EvaluationSubmit: %v", err)
+	}
+	in := func(tenant string) context.Context {
+		return tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x", UserID: "u", TenantID: tenant})
+	}
+	admin := auth.WithPrincipal(in("ops"), auth.Principal{TenantID: "ops", Subject: "op", Scopes: []string{auth.ScopeAdmin}})
+	for name, tc := range map[string]struct {
+		ctx   context.Context
+		count float64
+	}{
+		"tenant-a": {in("tenant-a"), 1},
+		"tenant-b": {in("tenant-b"), 0},
+		"admin":    {admin, 2},
+	} {
+		res, _ := tool.Execute(tc.ctx, json.RawMessage(`{"op":"evaluations","def_id":"`+v2ID+`"}`))
+		if res.IsError {
+			t.Fatalf("%s: evaluations: %s", name, res.Text)
+		}
+		if got := decodeResult(t, res.Text)["count"]; got != tc.count {
+			t.Errorf("%s: count = %v, want %v", name, got, tc.count)
+		}
+	}
+}
+
 // ---- channels (PR 3) ----
 
 func TestContextTool_ChannelsListsAccessible(t *testing.T) {
