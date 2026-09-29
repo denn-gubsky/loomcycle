@@ -629,7 +629,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			synthSession := store.Session{
 				ID:        sessionID,
-				TenantID:  "",
+				TenantID:  e.TenantID,
 				Agent:     e.Agent,
 				CreatedAt: e.StartedAt,
 				UserID:    e.UserID,
@@ -649,9 +649,25 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				result.SynthesizedSessions++
 			}
 
+			// An entry from a snapshot older than the run's tenant field
+			// restores under its session's tenant — the rule the runs
+			// tenant column was backfilled with. That session is the one
+			// already in the target store when there is one (the insert
+			// above is a no-op on a conflict), else the synthesized "".
+			tenantID := e.TenantID
+			if tenantID == "" {
+				sess, err := s.GetSession(ctx, sessionID)
+				if err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("paused_run %s: read session %s for its tenant: %v", e.RunID, sessionID, err))
+					continue
+				}
+				tenantID = sess.TenantID
+			}
+
 			runRow := store.Run{
 				ID:            e.RunID,
 				SessionID:     sessionID,
+				TenantID:      tenantID,
 				Status:        store.RunRunning, // resume sets terminal status on completion
 				StartedAt:     e.StartedAt,
 				Model:         e.Model,
@@ -664,6 +680,10 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				Interactive:   e.Interactive,   // F42: park-vs-complete semantics on re-dispatch
 				ParentContext: e.ParentContext, // v0.12.x: restore the run's tracking lineage
 				RunConfig:     e.RunConfig,     // resume on the run's own settings, not the def's current ones
+
+				// Resume reads the confinement bits from this row.
+				OperatorKeyRestricted: e.OperatorKeyRestricted,
+				Isolated:              e.Isolated,
 			}
 			runInserted, err := s.SnapshotRestoreRun(ctx, runRow)
 			if err != nil {

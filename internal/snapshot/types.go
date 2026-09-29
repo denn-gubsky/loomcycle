@@ -464,11 +464,24 @@ type PausedRunEntry struct {
 	StartedAt     time.Time `json:"started_at"`
 	Model         string    `json:"model,omitempty"`
 	PauseState    string    `json:"pause_state"`
+	// TenantID is the run's owning tenant. Without it a restored run landed in
+	// the shared "" tenant: every tenant-filtered read hid it from its own
+	// tenant, and the resumed run resolved its agent, credentials and budget
+	// under the wrong one. Omitted for single-tenant runs and absent from older
+	// snapshots, which restore under the restored session's tenant.
+	TenantID string `json:"tenant_id,omitempty"`
 	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2),
 	// captured so a restored paused run re-dispatches with the correct
 	// park-at-end_turn (vs run-to-completion) semantics. Omitted for batch
 	// runs + snapshots taken before this field existed (decode to false).
 	Interactive bool `json:"interactive,omitempty"`
+	// OperatorKeyRestricted and Isolated are the run's confinement bits. A
+	// resumed run has no principal on its context, so resume reads both from
+	// the restored row; left out of the entry, a restored run resumed free to
+	// spend the operator's provider key and outside its data-scope
+	// confinement. Omitted when false, and false for older snapshots.
+	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
+	Isolated              bool `json:"isolated,omitempty"`
 	// ParentContext is the run's opaque caller-tracking lineage (v0.12.x),
 	// carried through the snapshot so a paused run's parent_context
 	// survives pause→snapshot→restore. Omitted when the run had none.

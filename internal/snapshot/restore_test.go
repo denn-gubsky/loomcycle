@@ -664,6 +664,181 @@ func TestRoundTrip_PreservesInteractiveFlag(t *testing.T) {
 	}
 }
 
+// A paused run and its synthesized session restore under the run's own
+// tenant, so the restored run is not hidden from that tenant's filtered reads
+// nor resumed under the shared one. The entry carried no tenant, so both
+// landed in "".
+func TestRoundTrip_PreservesRunTenant(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "acme", "qa", "alice")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_acme", UserID: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	if got.TenantID != "acme" {
+		t.Errorf("restored run's tenant = %q, want acme", got.TenantID)
+	}
+	gotSess, err := dst.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession on dst: %v", err)
+	}
+	if gotSess.TenantID != "acme" {
+		t.Errorf("restored session's tenant = %q, want acme", gotSess.TenantID)
+	}
+}
+
+// A paused run's operator-key restriction and isolation survive a restore.
+// Resume has no principal to re-derive them from and reads them off the row,
+// so a restored run that lost them resumed able to spend the operator's key
+// and outside its data-scope confinement.
+func TestRoundTrip_PreservesRunConfinement(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "acme", "qa", "alice")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_confined", UserID: "alice", TenantID: "acme",
+		OperatorKeyRestricted: true, Isolated: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.OperatorKeyRestricted || !run.Isolated {
+		t.Fatalf("setup: source run restricted=%v isolated=%v, want both", run.OperatorKeyRestricted, run.Isolated)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := dst.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun on dst: %v", err)
+	}
+	if !got.OperatorKeyRestricted {
+		t.Error("operator-key restriction lost across pause→snapshot→restore")
+	}
+	if !got.Isolated {
+		t.Error("isolation lost across pause→snapshot→restore")
+	}
+}
+
+// A snapshot taken before a paused run carried its tenant still restores: the
+// run takes the tenant of the session it restores into — the target store's
+// own row when it has one, else the synthesized session's shared "".
+func TestRestore_RunWithoutTenantTakesItsSessionsTenant(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "acme", "qa", "alice")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_old", UserID: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = withoutPausedRunTenant(t, raw)
+
+	t.Run("session already in the target", func(t *testing.T) {
+		dst, dstClose := newTestStore(t)
+		defer dstClose()
+		if _, err := dst.SnapshotRestoreSession(ctx, store.Session{ID: sess.ID, TenantID: "acme", Agent: "qa", UserID: "alice"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		got, err := dst.GetRun(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("GetRun on dst: %v", err)
+		}
+		if got.TenantID != "acme" {
+			t.Errorf("restored run's tenant = %q, want its session's acme", got.TenantID)
+		}
+	})
+	t.Run("session synthesized", func(t *testing.T) {
+		dst, dstClose := newTestStore(t)
+		defer dstClose()
+		if _, err := Restore(ctx, dst, raw, RestoreOptions{}); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+		got, err := dst.GetRun(ctx, run.ID)
+		if err != nil {
+			t.Fatalf("GetRun on dst: %v", err)
+		}
+		if got.TenantID != "" {
+			t.Errorf("restored run's tenant = %q, want the shared tenant", got.TenantID)
+		}
+	})
+}
+
+// withoutPausedRunTenant rewrites an envelope as a snapshot taken before the
+// paused-run entry carried tenant_id, failing if there was nothing to strip.
+func withoutPausedRunTenant(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	sections := env["sections"].(map[string]any)
+	paused := sections["paused_runs"].(map[string]any)
+	stripped := 0
+	for _, e := range paused["entries"].([]any) {
+		entry := e.(map[string]any)
+		if _, ok := entry["tenant_id"]; ok {
+			delete(entry, "tenant_id")
+			stripped++
+		}
+	}
+	if stripped == 0 {
+		t.Fatal("the captured envelope has no paused-run tenant_id to strip; the old-format case would prove nothing")
+	}
+	// The checksum covers the body; drop it as a pre-checksum snapshot would.
+	delete(env, "checksum")
+	out, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // TestRestore_DropsEmbeddingFieldOnPhase1 — restoring a hand-crafted
 // envelope where memory.entries[].embedding is populated (simulating
 // a Phase-2-captured snapshot) on a Phase-1 reader silently drops
@@ -1351,7 +1526,8 @@ func TestCapture_CarriesNoPerRunSecret(t *testing.T) {
 	allowed := map[string]bool{
 		"run_id": true, "agent_id": true, "parent_agent_id": true, "user_id": true,
 		"user_tier": true, "agent": true, "agent_def_id": true, "session_id": true,
-		"started_at": true, "model": true, "pause_state": true, "interactive": true,
+		"started_at": true, "model": true, "pause_state": true, "tenant_id": true, "interactive": true,
+		"operator_key_restricted": true, "isolated": true,
 		"parent_context": true, "run_config": true, "transcript_events": true,
 		"transcript_error": true,
 	}
