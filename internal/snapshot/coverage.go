@@ -99,6 +99,14 @@ var tableCoverageMap = map[string]tableCoverage{
 	"runs": {Kind: coverSection, Section: "paused_runs", Backends: onBoth,
 		Secrets: "reported: a literal header value in the run_config's recorded hooks (capture_findings)",
 		Reason:  "only runs with pause_state='paused' travel; per-run secrets are not columns"},
+	// A restored schedule's run state rides inside its def's entry, so a fire
+	// count never travels without its def. The scheduler re-queries the store
+	// every tick; it caches nothing a restore must refresh.
+	"schedule_def_active": {Kind: coverSection, Section: "schedule_def_active", Secrets: "none", Backends: onBoth},
+	"schedule_defs": {Kind: coverSection, Section: "schedule_defs", Backends: onBoth,
+		Secrets: "stripped: literal user_credentials values (keys kept as stripped_credentials; the def travels with enabled:false)"},
+	"schedule_run_state": {Kind: coverSection, Section: "schedule_defs", Secrets: "none", Backends: onBoth,
+		Reason: "travels as the run_state of its def's entry"},
 	"skill_def_active": {Kind: coverSection, Section: "skill_def_active", Secrets: "none", Backends: onBoth},
 	"skill_defs":       {Kind: coverSection, Section: "skill_defs", Secrets: "none", Backends: onBoth},
 	"teamdef_active":   {Kind: coverSection, Section: "team_def_active", Secrets: "none", Backends: onBoth},
@@ -169,12 +177,8 @@ var tableCoverageMap = map[string]tableCoverage{
 	"memory_backend_def_active":  {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
 	"memory_backend_defs":        {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
 	"memory_pending":             {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
-	"schedule_def_active":        {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
-	// Literal user_credentials values are stripped at capture once P2 lands.
-	"schedule_defs":      {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
-	"schedule_run_state": {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
-	"volume_defs":        {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
-	"webhook_def_active": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
+	"volume_defs":                {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
+	"webhook_def_active":         {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
 	// Literal user_credentials values are stripped at capture once P3 lands.
 	"webhook_defs": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
 }

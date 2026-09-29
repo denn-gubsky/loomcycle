@@ -78,13 +78,18 @@ type Sections struct {
 	TeamDefActive  TeamDefActiveSection  `json:"team_def_active"`
 	// HookDefs travel with the definitions that name them, so a restored
 	// agent or team is gated the way it was.
-	HookDefs           HookDefsSection            `json:"hook_defs"`
-	HookDefActive      HookDefActiveSection       `json:"hook_def_active"`
-	MCPServerDefs      MCPServerDefsSection       `json:"mcp_server_defs"`
-	MCPServerDefActive MCPServerDefActiveSection  `json:"mcp_server_def_active"`
-	Memory             MemorySection              `json:"memory"`
-	Channels           ChannelsSection            `json:"channels"`
-	ChannelDefs        ChannelDefsSection         `json:"channel_defs"`
+	HookDefs           HookDefsSection           `json:"hook_defs"`
+	HookDefActive      HookDefActiveSection      `json:"hook_def_active"`
+	MCPServerDefs      MCPServerDefsSection      `json:"mcp_server_defs"`
+	MCPServerDefActive MCPServerDefActiveSection `json:"mcp_server_def_active"`
+	Memory             MemorySection             `json:"memory"`
+	Channels           ChannelsSection           `json:"channels"`
+	ChannelDefs        ChannelDefsSection        `json:"channel_defs"`
+	// ScheduleDefs carry each def's run state inside its entry, so a fire
+	// count can never travel without its def or a def without its count.
+	// Literal user_credentials values are stripped at capture.
+	ScheduleDefs       ScheduleDefsSection        `json:"schedule_defs"`
+	ScheduleDefActive  ScheduleDefActiveSection   `json:"schedule_def_active"`
 	Evaluations        EvaluationsSection         `json:"evaluations"`
 	PausedRuns         PausedRunsSection          `json:"paused_runs"`
 	InteractionHistory *InteractionHistorySection `json:"interaction_history,omitempty"`
@@ -422,6 +427,64 @@ type MCPServerDefActiveSection struct {
 type MCPServerDefActiveEntry struct {
 	Name              string    `json:"name"`
 	TenantID          string    `json:"tenant_id,omitempty"` // RFC N — see AgentDefEntry.TenantID
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// ScheduleDefsSection carries every tenant's schedule defs, each with its run
+// state.
+type ScheduleDefsSection struct {
+	Version string             `json:"version"`
+	Entries []ScheduleDefEntry `json:"entries"`
+}
+
+// ScheduleDefEntry mirrors a schedule_defs row. Definition is the stored body
+// with its literal user_credentials values removed (a value that is a
+// reference, like $cred:<name> or ${...}, stays); StrippedCredentials names
+// the keys that were removed, and a def that lost any is carried with
+// enabled:false. The owning tenant and the body's execution tenant_id and
+// confinement bits (operator_key_restricted, isolated) travel verbatim.
+type ScheduleDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// StrippedCredentials is a list of KEYS, never values.
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
+	// RunState is absent for a def that never had one (never promoted).
+	RunState *ScheduleRunStateEntry `json:"run_state,omitempty"`
+}
+
+// ScheduleRunStateEntry mirrors a schedule_run_state row. FireCount is always
+// written: it is what keeps a max_fires budget spent across the move.
+type ScheduleRunStateEntry struct {
+	NextRunAt   time.Time  `json:"next_run_at"`
+	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
+	LastRunID   string     `json:"last_run_id,omitempty"`
+	LastStatus  string     `json:"last_status,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
+	FireCount   int        `json:"fire_count"`
+}
+
+// ScheduleDefActiveSection mirrors the other active-pointer sections.
+type ScheduleDefActiveSection struct {
+	Version string                   `json:"version"`
+	Entries []ScheduleDefActiveEntry `json:"entries"`
+}
+
+type ScheduleDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`

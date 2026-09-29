@@ -3,11 +3,14 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
 // A schedule restored from a snapshot without its literal credentials comes
@@ -203,6 +206,52 @@ func TestScheduleDefTool_HookEditOfCaptureDisabledDefKeepsCountAndMarker(t *test
 	}
 	if count != 4 {
 		t.Errorf("hook edit fire_count = %d, want 4", count)
+	}
+}
+
+// V2b end to end: a schedule with a literal credential is captured, restored
+// onto another store, and re-enabled there by a fork that re-supplies the key.
+// The fork starts at the source's count, fires, and is disabled no more.
+func TestScheduleDefTool_SnapshotRestoredDefReEnabledByForkKeepsCount(t *testing.T) {
+	src, err := sqlite.Open(filepath.Join(t.TempDir(), "src.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	bg := context.Background()
+	body := json.RawMessage(`{"agent":"job-search-batch","schedule":"0 6 * * *","max_fires":5,"enabled":true,"user_credentials":{"jobs":"literal-jobs-token"}}`)
+	if _, err := src.ScheduleDefCreate(bg, store.ScheduleDefRow{DefID: "sd_src", Name: "digest", Definition: body}); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.ScheduleDefSetActive(bg, "", "digest", "sd_src", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.ScheduleRunStateSeed(bg, "sd_src", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := src.ScheduleRunStateRecordResult(bg, store.ScheduleRunResult{
+			DefID: "sd_src", LastStatus: "completed", LastRunAt: time.Now(), NextRunAt: time.Now().Add(time.Hour), CountAsFire: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, raw, err := snapshot.Capture(bg, src, snapshot.CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	if _, err := snapshot.Restore(bg, tool.Store, raw, snapshot.RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, def, count := forkResult(t, tool, ctx, `{"op":"fork","name":"digest","overlay":{"enabled":true,"user_credentials":{"jobs":"new-jobs-token"}}}`)
+	if def.CaptureDisabled != nil || !enabledOf(def) {
+		t.Errorf("re-enabling fork: marker %+v enabled %v, want cleared and enabled", def.CaptureDisabled, enabledOf(def))
+	}
+	if count != 3 {
+		t.Errorf("re-enabling fork fire_count = %d, want 3 — 2 of max_fires 5 left", count)
 	}
 }
 
