@@ -1869,6 +1869,11 @@ export interface SnapshotCreateResponse {
   label?: string;
   schema_version: number;
   byte_size: number;
+  /** What the capture carried that you should act on — a header value that
+   *  looks like a literal credential — named by location, never by value.
+   *  The value travels in the snapshot as written; replace it with a
+   *  `$cred:` or `${LOOMCYCLE_*}` reference. Omitted when there are none. */
+  warnings?: string[];
 }
 
 /** Full envelope returned by GET /v1/_snapshots/{id}. json_content
@@ -1906,6 +1911,10 @@ export interface SnapshotRestoreResponse {
   transcript_events_restored?: number;
   interaction_history_restored?: number;
   warnings?: string[];
+  /** Every restore counter keyed by name (`agent_defs`, `hook_defs`,
+   *  `mcp_server_defs_activated`, ...) — including the ones the typed fields
+   *  above never carried. A new snapshot section adds a key here. */
+  restored?: Record<string, number>;
 }
 
 // ---- Memory admin ----

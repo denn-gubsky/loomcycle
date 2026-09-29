@@ -785,6 +785,33 @@ describe("snapshot lifecycle", () => {
     expect(body).toEqual({});
   });
 
+  it("restoreSnapshot returns the restored map with counters no typed field carries", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        memory_restored: 3,
+        restored: { memory: 3, hook_defs: 2, mcp_server_defs_activated: 1 },
+      }),
+    ]);
+    const r = await client.restoreSnapshot({ snapshotId: "snap_xyz" });
+    expect(r.restored?.hook_defs).toBe(2);
+    expect(r.restored?.mcp_server_defs_activated).toBe(1);
+  });
+
+  it("createSnapshot returns the capture warnings", async () => {
+    const warning = "mcp_server_defs x: headers.Authorization holds a literal value";
+    const { client } = makeClient([
+      jsonResponse({
+        id: "snap_w",
+        created_at: "2026-09-29T00:00:00Z",
+        schema_version: 1,
+        byte_size: 10,
+        warnings: [warning],
+      }),
+    ]);
+    const r = await client.createSnapshot();
+    expect(r.warnings).toEqual([warning]);
+  });
+
   it("restoreSnapshot with inline json uses 'inline' path segment + json body", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ memory_restored: 0 }),

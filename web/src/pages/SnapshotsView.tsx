@@ -75,7 +75,13 @@ export default function SnapshotsView() {
         ...prev,
       ]);
       setCaptureLabel("");
-      setRestoreFlash({ ok: true, message: `captured ${created.id} (${formatBytes(created.byte_size)})` });
+      // The capture's warnings (a literal credential in a captured header)
+      // render in the same list a restore's warnings do.
+      setRestoreFlash({
+        ok: true,
+        message: `captured ${created.id} (${formatBytes(created.byte_size)})`,
+        details: created.warnings?.length ? { warnings: created.warnings } : undefined,
+      });
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -246,6 +252,14 @@ function summarizeRestore(r: SnapshotRestoreResponse): string {
   const add = (label: string, n?: number) => {
     if (n && n > 0) parts.push(`${label}=${n}`);
   };
+  // The map carries every counter, including the ones the typed fields
+  // never did; a server predating it falls back to the typed subset.
+  if (r.restored) {
+    for (const k of Object.keys(r.restored).sort()) add(k, r.restored[k]);
+    return parts.length === 0
+      ? "restored (0 new rows — every section was already in the store)"
+      : `restored: ${parts.join(", ")}`;
+  }
   add("agent_defs", r.agent_defs_restored);
   add("agent_def_active", r.agent_def_active_restored);
   add("memory", r.memory_restored);

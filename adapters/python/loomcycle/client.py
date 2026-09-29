@@ -608,6 +608,9 @@ class LoomcycleClient:
             "interaction_history_restored": resp.interaction_history_restored,
             "warnings": list(resp.warnings),
             "format_migrations": list(resp.format_migrations),
+            # Every restore counter keyed by name, including the ones the
+            # typed keys above never carried (hook_defs, channel_defs, ...).
+            "restored": dict(resp.restored),
         }
 
     async def delete_snapshot(self, snapshot_id: str) -> bool:
@@ -2093,6 +2096,9 @@ def _snapshot_descriptor_to_dict(d: pb.SnapshotDescriptor) -> Mapping[str, Any]:
         "since_ts": _ts_to_iso(d.since_ts) if d.HasField("since_ts") else "",
         "description": d.description,
         "format_version": d.format_version,
+        # Set by create_snapshot only: header values in captured definitions
+        # that look like literal credentials, named by location, never value.
+        "warnings": list(d.warnings),
     }
 
 

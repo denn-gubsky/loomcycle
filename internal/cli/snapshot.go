@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -38,6 +39,9 @@ type snapshotCreateResp struct {
 	Label         string `json:"label,omitempty"`
 	SchemaVersion int    `json:"schema_version"`
 	ByteSize      int64  `json:"byte_size"`
+	// Warnings names literal-looking credentials the capture carried, by
+	// location; printed to stderr like a restore's warnings.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type snapshotListEntry struct {
@@ -69,6 +73,10 @@ type snapshotRestoreResp struct {
 	TranscriptEventsRestored   int      `json:"transcript_events_restored,omitempty"`
 	InteractionHistoryRestored int      `json:"interaction_history_restored,omitempty"`
 	Warnings                   []string `json:"warnings,omitempty"`
+
+	// Restored is every counter by name; absent from a server that predates
+	// it, which then prints the typed subset as before.
+	Restored map[string]int `json:"restored,omitempty"`
 }
 
 // RunSnapshot — POST /v1/_snapshots. Captures a new snapshot and
@@ -111,6 +119,9 @@ func RunSnapshot(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, " label=%q", out.Label)
 	}
 	fmt.Fprintln(stdout)
+	for _, w := range out.Warnings {
+		fmt.Fprintf(stderr, "warning: %s\n", w)
+	}
 	return 0
 }
 
@@ -270,10 +281,25 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 	if err := json.Unmarshal(resp, &out); err != nil {
 		return failOp(stderr, "decode response: %v (body: %s)", err, truncate(resp, 200))
 	}
-	fmt.Fprintf(stdout, "restored agent_defs=%d agent_def_active=%d memory=%d channel_messages=%d channel_cursors=%d evaluations=%d paused_runs=%d transcript_events=%d synthesized_sessions=%d\n",
-		out.AgentDefsRestored, out.AgentDefActiveRestored, out.MemoryRestored,
-		out.ChannelMessagesRestored, out.ChannelCursorsRestored, out.EvaluationsRestored,
-		out.PausedRunsRestored, out.TranscriptEventsRestored, out.SynthesizedSessions)
+	if len(out.Restored) > 0 {
+		// Same key=value form and the same names as the typed line below, so
+		// a script reading memory=N still does; the map adds the rest.
+		keys := make([]string, 0, len(out.Restored))
+		for k := range out.Restored {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Fprint(stdout, "restored")
+		for _, k := range keys {
+			fmt.Fprintf(stdout, " %s=%d", k, out.Restored[k])
+		}
+		fmt.Fprintln(stdout)
+	} else {
+		fmt.Fprintf(stdout, "restored agent_defs=%d agent_def_active=%d memory=%d channel_messages=%d channel_cursors=%d evaluations=%d paused_runs=%d transcript_events=%d synthesized_sessions=%d\n",
+			out.AgentDefsRestored, out.AgentDefActiveRestored, out.MemoryRestored,
+			out.ChannelMessagesRestored, out.ChannelCursorsRestored, out.EvaluationsRestored,
+			out.PausedRunsRestored, out.TranscriptEventsRestored, out.SynthesizedSessions)
+	}
 	for _, w := range out.Warnings {
 		fmt.Fprintf(stderr, "warning: %s\n", w)
 	}
