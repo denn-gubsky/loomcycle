@@ -21,8 +21,15 @@ import (
 // given, the way TeamDef op=run opens it.
 func walkUnderReview(t *testing.T, h *reviewHarness, armed ...string) (string, *breakpoints.Set) {
 	t.Helper()
+	return walkUnderReviewWithTTL(t, h, 0, armed...)
+}
+
+// walkUnderReviewWithTTL is walkUnderReview for a walk started with a review
+// deadline.
+func walkUnderReviewWithTTL(t *testing.T, h *reviewHarness, ttl time.Duration, armed ...string) (string, *breakpoints.Set) {
+	t.Helper()
 	walkRunID := seedRunInTenant(t, h.st, "", "u1", "team:plan")
-	set, release, err := h.srv.breakpointReg.Open(walkRunID, armed, 0, nil)
+	set, release, err := h.srv.breakpointReg.Open(walkRunID, armed, ttl, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +45,8 @@ func startWalkMember(t *testing.T, h *reviewHarness, walkRunID string, set *brea
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
 	ctx = tools.WithRunID(ctx, walkRunID)
 	ctx = teamrun.WithReviewArming(ctx, func(context.Context) bool { return set.Armed(state, breakpoints.Review) })
+	// The deadline too is read from the set, as the walk's runner hands it.
+	ctx = teamrun.WithReviewTTL(ctx, liveBreakpoints{set}.ReviewTTL)
 	done := make(chan teamrun.SpawnResult, 1)
 	go func() {
 		res, _ := h.srv.runTeamMember(ctx, "writer", teamrun.Prompt{Input: "write the plan"}, "")
