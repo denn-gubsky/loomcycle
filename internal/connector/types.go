@@ -358,8 +358,10 @@ type Run struct {
 	// single-replica deployment.
 	ReplicaID string `json:"replica_id,omitempty"`
 	// AwaitedState / AwaitedOn: what a RUNNING run is blocked on — "channel"
-	// (AwaitedOn = the channel), "interrupted" (AwaitedOn = the ask's kind) or
-	// "review"; empty while it is making progress. Set by the single-run
+	// (AwaitedOn = the channel), "interrupted" (AwaitedOn = the ask's kind),
+	// "review" (AwaitedOn = the agent_stop hook holding it, if one did) or
+	// "input" (an interactive run parked for the operator's next turn); empty
+	// while it is making progress. Set by the single-run
 	// reads only, as on HTTP and gRPC, since each costs a store read.
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`
@@ -896,6 +898,12 @@ type RunStateEvent struct {
 	// ParentContext echoes the run's opaque tracking lineage (v0.12.x).
 	// Nil when the run carried no context.
 	ParentContext *store.ParentContext `json:"parent_context,omitempty"`
+	// AwaitedState / AwaitedOn / HoldExpiresAt: what a "running" run has
+	// started waiting on, as runstate.RunStateEvent documents. The end of a
+	// wait is a "running" event with AwaitedState empty.
+	AwaitedState  string `json:"awaited_state,omitempty"`
+	AwaitedOn     string `json:"awaited_on,omitempty"`
+	HoldExpiresAt string `json:"hold_expires_at,omitempty"`
 }
 
 // RunOverrides is the per-run override set carried by a RETUNE — the shared

@@ -196,10 +196,11 @@ export interface Agent {
   // v0.8.21 awaited-state surface. Empty/absent for non-running
   // runs AND for running runs making normal progress. When set,
   // `awaited_state` is "channel" (open Channel.subscribe),
-  // "interrupted" (open Interruption.ask) or "review" (held for an
-  // operator's verdict), and `awaited_on` carries the channel name or
-  // interruption kind respectively (empty for "review").
-  awaited_state?: "channel" | "interrupted" | "review" | "";
+  // "interrupted" (open Interruption.ask), "review" (held for an
+  // operator's verdict) or "input" (an interactive run parked for the
+  // operator's next turn), and `awaited_on` carries the channel name,
+  // interruption kind or the agent_stop hook holding a review.
+  awaited_state?: "channel" | "interrupted" | "review" | "input" | "";
   awaited_on?: string;
   // draft is a CONFIGURED run's request as it will start, in the server's
   // snake_case wire keys — what updateConfiguredRun edits. Present only while

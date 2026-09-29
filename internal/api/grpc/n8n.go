@@ -104,6 +104,9 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 			Error:         evt.Error,
 			Ts:            evt.TS,
 			ParentContext: parentContextToProto(evt.ParentContext),
+			AwaitedState:  evt.AwaitedState,
+			AwaitedOn:     evt.AwaitedOn,
+			HoldExpiresAt: evt.HoldExpiresAt,
 		})
 	}
 

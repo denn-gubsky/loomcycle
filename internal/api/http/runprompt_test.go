@@ -26,7 +26,7 @@ func TestRecordingEmit_PersistsThePromptSnapshotButNeverForwardsIt(t *testing.T)
 	run := seedTenantRun(t, srv.store, "acme", "u1", "a_snap")
 
 	var forwarded []providers.EventType
-	emit := srv.makeRecordingEmit(context.Background(), run.ID, tools.RunIdentityValue{}, run.SessionID,
+	emit := srv.makeRecordingEmit(context.Background(), run.ID, tools.RunIdentityValue{}, run.SessionID, runStateMeta{},
 		func(ev providers.Event) { forwarded = append(forwarded, ev.Type) })
 	emit(snapshotEvent("sys", "go"))
 	if len(forwarded) != 0 {
@@ -48,7 +48,7 @@ func TestRecordingEmit_PersistsThePromptSnapshotButNeverForwardsIt(t *testing.T)
 
 	storeless := &Server{}
 	var leaked int
-	storeless.makeRecordingEmit(context.Background(), "", tools.RunIdentityValue{}, "",
+	storeless.makeRecordingEmit(context.Background(), "", tools.RunIdentityValue{}, "", runStateMeta{},
 		func(providers.Event) { leaked++ })(snapshotEvent("sys", "go"))
 	if leaked != 0 {
 		t.Error("without a store the snapshot was forwarded to the live stream")
@@ -71,7 +71,7 @@ func TestHandleGetRunPrompt(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	run := seedTenantRun(t, srv.store, "acme", "u1", "a_prompt")
-	emit := srv.makeRecordingEmit(context.Background(), run.ID, tools.RunIdentityValue{}, run.SessionID, func(providers.Event) {})
+	emit := srv.makeRecordingEmit(context.Background(), run.ID, tools.RunIdentityValue{}, run.SessionID, runStateMeta{}, func(providers.Event) {})
 
 	code, body := getPrompt(t, srv, tenantOperatorCtx("acme"), run.ID)
 	if code != 404 || !strings.Contains(body, "no_prompt_snapshot") {

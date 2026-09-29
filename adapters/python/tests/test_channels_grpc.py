@@ -293,3 +293,35 @@ async def test_stream_user_run_states_surfaces_the_wave_correlation():
     # than a KeyError to guard.
     assert "parent_context" in got[2]
     assert got[2]["parent_context"] is None
+
+
+@pytest.mark.asyncio
+async def test_stream_user_run_states_surfaces_a_runs_wait():
+    """A run held for review (or parked, or blocked on a channel) announces
+    the wait as a "running" event naming it, and the end of the wait as a
+    "running" event naming none. A client that cannot read the wait sees two
+    identical "running" events and a run that merely looks slow."""
+    client = _make_client()
+    events = [
+        pb.RunStateEvent(
+            run_id="r1", agent="writer", user_id="u1", status="running",
+            awaited_state="review", awaited_on="ops/gate",
+            hold_expires_at="2026-09-29T12:00:00Z",
+        ),
+        pb.RunStateEvent(run_id="r1", agent="writer", user_id="u1", status="running"),
+    ]
+
+    def fake(req, metadata=None):
+        return _ItemStream(events)
+
+    client._stub.StreamUserRunStates = fake  # type: ignore[attr-defined]
+
+    got = []
+    async for e in client.stream_user_run_states("u1"):
+        got.append(e)
+
+    assert got[0]["awaited_state"] == "review"
+    assert got[0]["awaited_on"] == "ops/gate"
+    assert got[0]["hold_expires_at"] == "2026-09-29T12:00:00Z"
+    assert got[1]["status"] == "running"
+    assert got[1]["awaited_state"] == ""

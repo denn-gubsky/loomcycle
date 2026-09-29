@@ -8931,6 +8931,18 @@ type RunStateEvent struct {
 	// Unset for a run that carried none — a message field, so "absent" is
 	// distinguishable from "present and empty".
 	ParentContext *ParentContext `protobuf:"bytes,10,opt,name=parent_context,json=parentContext,proto3" json:"parent_context,omitempty"`
+	// What a "running" run has started waiting on: "review", "input",
+	// "channel" or "interrupted" — the values Agent.awaited_state reports. A
+	// wait is announced as its own "running" event and its end as another
+	// "running" event with this empty, so a subscriber folding the stream holds
+	// the run's current wait. Empty on every other transition.
+	AwaitedState string `protobuf:"bytes,11,opt,name=awaited_state,json=awaitedState,proto3" json:"awaited_state,omitempty"`
+	// The channel, the interruption kind, or the agent_stop hook holding a
+	// review.
+	AwaitedOn string `protobuf:"bytes,12,opt,name=awaited_on,json=awaitedOn,proto3" json:"awaited_on,omitempty"`
+	// RFC3339 UTC: when a review hold ends as rejected if nobody rules on it.
+	// Empty when the wait has no deadline.
+	HoldExpiresAt string `protobuf:"bytes,13,opt,name=hold_expires_at,json=holdExpiresAt,proto3" json:"hold_expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9033,6 +9045,27 @@ func (x *RunStateEvent) GetParentContext() *ParentContext {
 		return x.ParentContext
 	}
 	return nil
+}
+
+func (x *RunStateEvent) GetAwaitedState() string {
+	if x != nil {
+		return x.AwaitedState
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetAwaitedOn() string {
+	if x != nil {
+		return x.AwaitedOn
+	}
+	return ""
+}
+
+func (x *RunStateEvent) GetHoldExpiresAt() string {
+	if x != nil {
+		return x.HoldExpiresAt
+	}
+	return ""
 }
 
 // ParentContext mirrors the lineage the HTTP transport emits as the SSE
@@ -11090,7 +11123,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1a\n" +
 	"\bstatuses\x18\x02 \x03(\tR\bstatuses\x12\x14\n" +
 	"\x05agent\x18\x03 \x01(\tR\x05agent\x12\x17\n" +
-	"\awalk_id\x18\x04 \x01(\tR\x06walkId\"\xbb\x02\n" +
+	"\awalk_id\x18\x04 \x01(\tR\x06walkId\"\xa7\x03\n" +
 	"\rRunStateEvent\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x19\n" +
 	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x14\n" +
@@ -11103,7 +11136,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x05error\x18\b \x01(\tR\x05error\x12\x0e\n" +
 	"\x02ts\x18\t \x01(\tR\x02ts\x12B\n" +
 	"\x0eparent_context\x18\n" +
-	" \x01(\v2\x1b.loomcycle.v1.ParentContextR\rparentContext\"\xc1\x02\n" +
+	" \x01(\v2\x1b.loomcycle.v1.ParentContextR\rparentContext\x12#\n" +
+	"\rawaited_state\x18\v \x01(\tR\fawaitedState\x12\x1d\n" +
+	"\n" +
+	"awaited_on\x18\f \x01(\tR\tawaitedOn\x12&\n" +
+	"\x0fhold_expires_at\x18\r \x01(\tR\rholdExpiresAt\"\xc1\x02\n" +
 	"\rParentContext\x12)\n" +
 	"\x11root_agent_run_id\x18\x01 \x01(\tR\x0erootAgentRunId\x12!\n" +
 	"\ffunction_key\x18\x02 \x01(\tR\vfunctionKey\x12\x1e\n" +

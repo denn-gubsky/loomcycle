@@ -418,7 +418,7 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	}
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
-	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, func(providers.Event) {})
+	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, func(providers.Event) {})
 	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, run.AgentID, run.SessionID, run.UserID, emit)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))

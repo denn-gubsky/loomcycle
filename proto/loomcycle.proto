@@ -2008,6 +2008,18 @@ message RunStateEvent {
   // Unset for a run that carried none — a message field, so "absent" is
   // distinguishable from "present and empty".
   ParentContext parent_context = 10;
+  // What a "running" run has started waiting on: "review", "input",
+  // "channel" or "interrupted" — the values Agent.awaited_state reports. A
+  // wait is announced as its own "running" event and its end as another
+  // "running" event with this empty, so a subscriber folding the stream holds
+  // the run's current wait. Empty on every other transition.
+  string awaited_state = 11;
+  // The channel, the interruption kind, or the agent_stop hook holding a
+  // review.
+  string awaited_on = 12;
+  // RFC3339 UTC: when a review hold ends as rejected if nobody rules on it.
+  // Empty when the wait has no deadline.
+  string hold_expires_at = 13;
 }
 
 // ParentContext mirrors the lineage the HTTP transport emits as the SSE

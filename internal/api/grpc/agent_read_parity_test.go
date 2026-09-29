@@ -70,9 +70,9 @@ func TestGetAgent_RunWithoutLineageHasNoParentContext(t *testing.T) {
 	}
 }
 
-// A running run parked on a channel, an interruption or a review hold reads
-// with awaited_state saying so — on the single read AND the listing, the same
-// answer the HTTP read gives for the same run.
+// A running run parked on a channel, an interruption, a review hold or for the
+// operator's next turn reads with awaited_state saying so — on the single read
+// AND the listing, the same answer the HTTP read gives for the same run.
 func TestAgentReads_ReportWhatARunningRunIsBlockedOn(t *testing.T) {
 	cases := []struct {
 		name, evType, payload string
@@ -87,6 +87,12 @@ func TestAgentReads_ReportWhatARunningRunIsBlockedOn(t *testing.T) {
 		{"review", "awaiting_review",
 			`{"type":"awaiting_review","awaiting_review":{"round":1}}`,
 			"review", ""},
+		{"review_by_hook", "awaiting_review",
+			`{"type":"awaiting_review","awaiting_review":{"round":1,"held_by":"ops/gate"}}`,
+			"review", "ops/gate"},
+		{"input", "awaiting_input",
+			`{"type":"awaiting_input","awaiting_input":{"since_turn":1}}`,
+			"input", ""},
 		{"progressing", "text", `{"type":"text","text":"working"}`, "", ""},
 	}
 	for _, tc := range cases {

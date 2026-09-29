@@ -64,7 +64,7 @@ func TestRecordingEmit_RedactsSecretInToolResult(t *testing.T) {
 	defer cleanup()
 
 	var forwarded providers.Event
-	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", func(ev providers.Event) { forwarded = ev })
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(ev providers.Event) { forwarded = ev })
 
 	input := json.RawMessage(`{"command":"curl -H \"Authorization: token ` + emitSecret + `\" https://gitea"}`)
 	emit(providers.Event{
@@ -100,7 +100,7 @@ func TestRecordingEmit_NoRedactorWhenDisabled(t *testing.T) {
 	srv, st, runID, ctx, cleanup := emitFixture(t, nil) // redaction disabled
 	defer cleanup()
 
-	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", func(providers.Event) {})
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(providers.Event) {})
 	emit(providers.Event{
 		Type:    providers.EventToolResult,
 		ToolUse: &providers.ToolUse{ID: "t1", Name: "Bash", Input: json.RawMessage(`{"x":"y"}`)},
@@ -124,7 +124,7 @@ func TestRecordingEmit_SpawnLedgerStoredNotForwarded(t *testing.T) {
 	defer cleanup()
 
 	forwarded := 0
-	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", func(providers.Event) { forwarded++ })
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(providers.Event) { forwarded++ })
 
 	for _, typ := range []providers.EventType{providers.EventSpawnChildStarted, providers.EventSpawnChildResult} {
 		emit(providers.Event{
@@ -167,7 +167,7 @@ func TestRecordingEmit_RedactsSecretInContextState(t *testing.T) {
 	defer cleanup()
 
 	var forwarded providers.Event
-	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", func(ev providers.Event) { forwarded = ev })
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(ev providers.Event) { forwarded = ev })
 	emit(providers.Event{Type: providers.EventContextState, ContextState: &providers.ContextStateEventInfo{
 		State:     map[string]any{"creds": map[string]any{"token": emitSecret}, "topic": "gitea"},
 		Patch:     map[string]any{"creds": map[string]any{"token": emitSecret}},

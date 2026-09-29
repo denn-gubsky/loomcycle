@@ -386,11 +386,18 @@ type busRunner struct {
 	bus     *runstate.Bus
 	runID   string
 	agentID string
+	// before are published ahead of the terminal event: what a run announces
+	// while it is still running.
+	before []runstate.RunStateEvent
 }
 
 func (r *busRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	if cb.OnRegistered != nil {
 		cb.OnRegistered(r.agentID, r.runID, "sess-1", "")
+	}
+	for _, evt := range r.before {
+		evt.RunID, evt.AgentID, evt.UserID = r.runID, r.agentID, in.UserID
+		r.bus.Publish(evt)
 	}
 	// Simulate the loop reaching a terminal state.
 	r.bus.Publish(runstate.RunStateEvent{
@@ -403,6 +410,23 @@ func (r *busRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.R
 }
 
 func TestReceiver_SyncMode_BlocksUntilTerminal_200(t *testing.T) {
+	syncModeReturnsTerminal(t, nil)
+}
+
+// A run that waits — held for review, parked, blocked on a channel — announces
+// the wait as a "running" transition. The sync response waits for the END of
+// the run, so none of those may answer it.
+func TestReceiver_SyncMode_HoldTransitionsDoNotAnswerEarly(t *testing.T) {
+	syncModeReturnsTerminal(t, []runstate.RunStateEvent{
+		{Status: string(store.RunRunning)},
+		{Status: string(store.RunRunning), AwaitedState: "review", HoldExpiresAt: "2026-09-29T12:00:00Z"},
+		{Status: string(store.RunRunning)},
+		{Status: string(store.RunRunning), AwaitedState: "channel", AwaitedOn: "findings"},
+	})
+}
+
+func syncModeReturnsTerminal(t *testing.T, before []runstate.RunStateEvent) {
+	t.Helper()
 	secret := "shhh"
 	now := time.Unix(1_700_000_000, 0)
 	body := []byte(`{"goal":"g","user":"u-7"}`)
@@ -414,7 +438,7 @@ func TestReceiver_SyncMode_BlocksUntilTerminal_200(t *testing.T) {
 			"user_id": "$.user",
 		}}
 	bus := runstate.NewBus()
-	br := &busRunner{bus: bus, runID: "run-9", agentID: "agent-9"}
+	br := &busRunner{bus: bus, runID: "run-9", agentID: "agent-9", before: before}
 	cfg := &config.Config{Webhooks: map[string]config.Webhook{"gh": wh}}
 	rec := New(Deps{
 		Cfg:          cfg,

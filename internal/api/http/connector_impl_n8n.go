@@ -235,6 +235,9 @@ func runStateEventToConnector(e runstate.RunStateEvent) connector.RunStateEvent 
 		Error:         e.Error,
 		TS:            ts,
 		ParentContext: e.ParentContext,
+		AwaitedState:  e.AwaitedState,
+		AwaitedOn:     e.AwaitedOn,
+		HoldExpiresAt: e.HoldExpiresAt,
 	}
 }
 
