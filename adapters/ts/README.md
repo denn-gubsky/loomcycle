@@ -139,6 +139,7 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 | Method | Returns | Notes |
 |---|---|---|
 | `getAgent(agentId)` | `Promise<Agent>` | One agent's status + usage. Raises `AgentNotFoundError` if unknown. |
+| `getRun(runId)` | `Promise<Agent>` | One run by its run id — `getAgent`'s shape. Use it when an agent id names several runs (every walk of a team is `team:<name>`). Raises `NotFoundError` if unknown. |
 | `cancelAgent(agentId, opts?)` | `Promise<{ cancelledCount: number }>` | Cascades to children via `parent_agent_id`. Idempotent. |
 | `listUserAgents(userId, opts?)` | `Promise<Agent[]>` | Optional filter by status (`running` / `completed` / `failed` / `cancelled`). |
 | `getTranscript(sessionId)` | `Promise<TranscriptResponse>` | Persisted event log; one row per event with seq/run_id/ts_ns/type/event. |

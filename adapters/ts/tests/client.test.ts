@@ -426,6 +426,42 @@ describe("getAgent / cancelAgent / listUserAgents", () => {
     );
   });
 
+  it("getRun GETs /v1/runs/{run_id} and returns the parsed body", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        agent_id: "team:triage",
+        run_id: "r_walk_1",
+        session_id: "s1",
+        agent: "team:triage",
+        user_id: "u1",
+        status: "running",
+        started_at: "2026-09-29T00:00:00Z",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        live: true,
+        awaited_state: "review",
+      }),
+    ]);
+
+    const run = await client.getRun("r_walk_1");
+    expect(run.run_id).toBe("r_walk_1");
+    expect(run.agent_id).toBe("team:triage");
+    expect(run.awaited_state).toBe("review");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/runs/r_walk_1",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("getRun throws NotFoundError on 404", async () => {
+    const { NotFoundError } = await import("../src/errors.js");
+    const { client } = makeClient([
+      errorResponse(404, "no run found for run_id"),
+    ]);
+    await expect(client.getRun("r_missing")).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+
   it("cancelAgent POSTs reason + returns cancelledCount", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ cancelled_count: 3 }),

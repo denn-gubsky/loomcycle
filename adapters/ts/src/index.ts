@@ -12,6 +12,7 @@
  *
  *     // Agent metadata
  *     getAgent(agentId): Promise<Agent>
+ *     getRun(runId): Promise<Agent>
  *     cancelAgent(agentId, opts?): Promise<CancelAgentResult>
  *     listUserAgents(userId, opts?): Promise<Agent[]>
  *     getTranscript(sessionId): Promise<TranscriptResponse>

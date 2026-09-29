@@ -1310,11 +1310,11 @@ export interface Agent {
   parent_context?: ParentContext;
   /** The run's answer (RFC DI) — what the row had no field for; `stop_reason`,
    *  `error` and `usage` are above. Present on {@link LoomcycleClient.getAgent}
-   *  only (listings omit it), and only once the run has finished with
+   *  and {@link LoomcycleClient.getRun} only (listings omit it), and only once the run has finished with
    *  something to report. */
   result?: RunResult;
   /** The run's own configuration (RFC DI): the overrides it ran with, merged
-   *  over its definition. {@link LoomcycleClient.getAgent} only, like
+   *  over its definition. {@link LoomcycleClient.getAgent} / getRun only, like
    *  `result`; absent when the run overrode nothing. */
   spec?: RunSpec;
   /** A CONFIGURED run's request as it will start (RFC DI) — what
