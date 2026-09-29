@@ -144,6 +144,9 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureMemory(ctx, s, &envelope.Sections.Memory); err != nil {
 		return nil, nil, err
 	}
+	if err := captureChannelDefs(ctx, s, &envelope.Sections.ChannelDefs); err != nil {
+		return nil, nil, err
+	}
 	if err := captureChannels(ctx, s, opts.Channels, &envelope.Sections.Channels); err != nil {
 		return nil, nil, err
 	}
@@ -498,6 +501,37 @@ func captureMemory(ctx context.Context, s store.Store, out *MemorySection) error
 		if !r.InvalidAt.IsZero() {
 			t := r.InvalidAt
 			entry.InvalidAt = &t
+		}
+		out.Entries = append(out.Entries, entry)
+	}
+	return nil
+}
+
+// captureChannelDefs reads every runtime channel definition, every tenant's.
+// ChannelsList is the unfiltered read of the `channels` table.
+func captureChannelDefs(ctx context.Context, s store.Store, out *ChannelDefsSection) error {
+	out.Version = SectionVersion
+	rows, err := s.ChannelsList(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot channel_defs: %w", err)
+	}
+	out.Entries = make([]ChannelDefEntry, 0, len(rows))
+	for _, r := range rows {
+		entry := ChannelDefEntry{
+			Name:        r.Name,
+			TenantID:    r.TenantID,
+			Description: r.Description,
+			Scope:       r.Scope,
+			Semantic:    r.Semantic,
+			DefaultTTL:  r.DefaultTTL,
+			MaxMessages: r.MaxMessages,
+			Publisher:   r.Publisher,
+			Period:      r.Period,
+			Hold:        r.Hold,
+			CreatedAt:   r.CreatedAt,
+		}
+		if !store.NoChannelHooks(r.Hooks) {
+			entry.Hooks = r.Hooks
 		}
 		out.Entries = append(out.Entries, entry)
 	}

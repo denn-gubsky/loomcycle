@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -50,6 +51,7 @@ type RestoreResult struct {
 	MCPServerDefsRestored      int      `json:"mcp_server_defs_restored"`
 	MCPServerDefActiveRestored int      `json:"mcp_server_def_active_restored"`
 	MemoryRestored             int      `json:"memory_restored"`
+	ChannelDefsRestored        int      `json:"channel_defs_restored"`
 	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
 	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
 	EvaluationsRestored        int      `json:"evaluations_restored"`
@@ -69,7 +71,7 @@ type RestoreResult struct {
 //	agent_defs        → agent_def_active (FK: name → agent_defs.def_id)
 //	(sessions synth)  → paused_runs       (FK: session_id → sessions.id)
 //	                  → transcript events (FK: run_id    → runs.id)
-//	channels.messages, .cursors
+//	channel_defs      → channels.messages, .cursors
 //	evaluations       (no FKs)
 //	interaction_history (optional)
 //
@@ -509,6 +511,43 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 					result.Warnings = append(result.Warnings,
 						fmt.Sprintf("memory %s/%s/%s embedding write: %v", e.Scope, e.ScopeID, e.Key, err))
 				}
+			}
+		}
+	}
+
+	// channel_defs, before the messages they govern: the hook worker claims a
+	// restored message awaiting hooks as soon as it lands, and resolves its
+	// channel then. ChannelsCreate is a plain insert that keeps created_at;
+	// a live definition already on (tenant_id, name) is left alone, as the
+	// other def sections leave a live row alone.
+	if rawSection, ok := sections[migrations.SectionChannelDefs]; ok {
+		var sec ChannelDefsSection
+		if err := decodeWithMigration(migrations.SectionChannelDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, e := range sec.Entries {
+			err := s.ChannelsCreate(ctx, store.ChannelRow{
+				Name:        e.Name,
+				TenantID:    e.TenantID,
+				Description: e.Description,
+				Scope:       e.Scope,
+				Semantic:    e.Semantic,
+				DefaultTTL:  e.DefaultTTL,
+				MaxMessages: e.MaxMessages,
+				Publisher:   e.Publisher,
+				Period:      e.Period,
+				Hold:        e.Hold,
+				Hooks:       e.Hooks,
+				CreatedAt:   e.CreatedAt,
+			})
+			var conflict *store.ErrConflict
+			switch {
+			case err == nil:
+				result.ChannelDefsRestored++
+			case errors.As(err, &conflict):
+				// Already defined here: the live definition stands.
+			default:
+				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_def %s/%s: %v", e.TenantID, e.Name, err))
 			}
 		}
 	}

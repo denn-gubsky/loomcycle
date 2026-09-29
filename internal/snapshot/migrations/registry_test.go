@@ -17,7 +17,7 @@ func TestMigrate_SameVersionIdentity(t *testing.T) {
 		SectionTeamDefs, SectionTeamDefActive,
 		SectionHookDefs, SectionHookDefActive,
 		SectionMemory,
-		SectionChannels, SectionEvaluations, SectionPausedRuns,
+		SectionChannels, SectionChannelDefs, SectionEvaluations, SectionPausedRuns,
 		SectionInteractionHistory,
 	} {
 		t.Run(section, func(t *testing.T) {

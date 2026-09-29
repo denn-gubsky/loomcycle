@@ -254,6 +254,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
 		{"ChannelStatsEmptyOnNoMessages", testChannelStatsEmptyOnNoMessages},
 		{"ChannelGetPointLookup", testChannelGetPointLookup},
+		{"ChannelsCreateConflictsOnTenantAndName", testChannelsCreateConflictsOnTenantAndName},
 		// RFC CY hold breakpoint
 		{"ChannelHoldRoundTripsOnTheDefinition", testChannelHoldRoundTripsOnTheDefinition},
 		{"ChannelReleaseHandsOverOldestFirst", testChannelReleaseHandsOverOldestFirst},
@@ -6236,6 +6237,43 @@ func testChannelStatsEmptyOnNoMessages(t *testing.T, s store.Store) {
 	}
 	if len(stats) != 0 {
 		t.Errorf("expected empty stats, got %d rows: %+v", len(stats), stats)
+	}
+}
+
+// testChannelsCreateConflictsOnTenantAndName pins what a snapshot restore of
+// channel definitions relies on: a create keeps the created_at it is given,
+// and a create on a (tenant_id, name) already defined returns *ErrConflict
+// and leaves the stored definition as it was — a restore never overwrites a
+// live channel.
+func testChannelsCreateConflictsOnTenantAndName(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	created := time.Unix(1_700_000_000, 123_456_000).UTC() // microseconds: Postgres precision
+	if err := s.ChannelsCreate(ctx, store.ChannelRow{
+		Name: "cc-live", TenantID: "t1", Scope: "user", Semantic: "queue", MaxMessages: 99, CreatedAt: created,
+	}); err != nil {
+		t.Fatalf("ChannelsCreate: %v", err)
+	}
+	got, err := s.ChannelGet(ctx, "t1", "cc-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Errorf("created_at = %v, want the given %v", got.CreatedAt, created)
+	}
+
+	err = s.ChannelsCreate(ctx, store.ChannelRow{
+		Name: "cc-live", TenantID: "t1", Scope: "user", Semantic: "queue", MaxMessages: 7, Hold: true,
+	})
+	var conflict *store.ErrConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("second create on (t1, cc-live): err = %v (%T), want *store.ErrConflict", err, err)
+	}
+	got, err = s.ChannelGet(ctx, "t1", "cc-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MaxMessages != 99 || got.Hold || !got.CreatedAt.Equal(created) {
+		t.Errorf("stored definition after a conflicting create = %+v, want it unchanged", got)
 	}
 }
 
