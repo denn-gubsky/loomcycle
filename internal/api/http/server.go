@@ -1070,9 +1070,10 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 //     walk counts as one nesting level — its agents + any nested op=run are
 //     bounded like sub-agents);
 //   - the RFC AW token-budget hard ceiling (refuse before spawning anything);
-//   - the RFC AX operator-key restriction (derived from the caller's principal,
+//   - the RFC AX operator-key restriction and the isolation bit (the caller's
+//     principal and the calling run's own bits, most restrictive wins),
 //     stamped on the RunIdentity + provider ctx so restricted callers can't fall
-//     back to the operator's keys through the spawned agents).
+//     back to the operator's keys through the spawned agents.
 func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	if builtin.AgentDepth(ctx) >= builtin.MaxAgentDepth {
 		return nil, fmt.Errorf("team run exceeds max agent depth %d (nested too deep)", builtin.MaxAgentDepth)
@@ -1081,11 +1082,13 @@ func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	if dec := s.limits.Check(id.TenantID, id.UserID); !dec.Allowed {
 		return nil, fmt.Errorf("%w: %s", runner.ErrTokenLimitExceeded, dec.Refusal.Message)
 	}
-	restricted := s.operatorKeyRestrictedOrCaptured(ctx, id.OperatorKeyRestricted)
+	// The more restrictive of the caller's principal and the run it walks from
+	// (op=run is also an agent tool): a run's bits outlive a looser principal on
+	// its ctx — a draft started by another user keeps its creator's — so the
+	// principal must not win over them, or the walk's agents escape the run.
+	restricted := tools.AuthorOperatorKeyRestricted(ctx, s.cfg().Env.OperatorKeyRestriction)
 	id.OperatorKeyRestricted = restricted
-	// RFC BX P2b: re-derive the isolation bit (live principal wins; else the bit
-	// inherited on the ctx RunIdentity) so a team run's tools stay confined.
-	id.Isolated = s.isolatedOrCaptured(ctx, id.Isolated)
+	id.Isolated = tools.AuthorIsolated(ctx)
 	ctx = tools.WithRunIdentity(ctx, id)
 	ctx = providers.WithOperatorKeyAllowed(ctx, !restricted)
 	ctx = builtin.IncrementAgentDepth(ctx)
