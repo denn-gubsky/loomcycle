@@ -1,6 +1,7 @@
 package breakpoints
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -105,7 +106,7 @@ func TestSet_NilIsNotArmed(t *testing.T) {
 
 func TestRegistry_OpenGetRelease(t *testing.T) {
 	r := NewRegistry()
-	set, release, err := r.Open("run_1", []string{"wave"})
+	set, release, err := r.Open("run_1", []string{"wave"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +125,8 @@ func TestRegistry_OpenGetRelease(t *testing.T) {
 // not silently drop an operator's arming.
 func TestRegistry_TwoWalksShareOneRunsSet(t *testing.T) {
 	r := NewRegistry()
-	first, releaseFirst, _ := r.Open("run_1", []string{"wave"})
-	second, releaseSecond, _ := r.Open("run_1", nil)
+	first, releaseFirst, _ := r.Open("run_1", []string{"wave"}, nil)
+	second, releaseSecond, _ := r.Open("run_1", nil, nil)
 	if first != second {
 		t.Fatal("two walks under one run must share the set")
 	}
@@ -146,7 +147,7 @@ func TestRegistry_TwoWalksShareOneRunsSet(t *testing.T) {
 // address, so it gets a working-but-unreachable set rather than a refusal.
 func TestRegistry_NoRunIDIsDetached(t *testing.T) {
 	r := NewRegistry()
-	set, release, err := r.Open("", []string{"wave"})
+	set, release, err := r.Open("", []string{"wave"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +164,7 @@ func TestRegistry_NoRunIDIsDetached(t *testing.T) {
 // parser as a mid-run arm, so a typo cannot enter by the other door.
 func TestRegistry_OpenRefusesABadSeed(t *testing.T) {
 	r := NewRegistry()
-	if _, _, err := r.Open("run_1", []string{"wave:typo"}); err == nil {
+	if _, _, err := r.Open("run_1", []string{"wave:typo"}, nil); err == nil {
 		t.Fatal("a malformed seed was accepted")
 	}
 	if _, ok := r.Get("run_1"); ok {
@@ -222,5 +223,64 @@ func TestParseSpec_TheRemovedPauseNamesItsReplacement(t *testing.T) {
 	_, _, err := ParseSpec("wave:after_collection")
 	if err == nil || !strings.Contains(err.Error(), "was removed") || !strings.Contains(err.Error(), `"wave:review"`) {
 		t.Errorf("err = %v, want a refusal naming \"wave:review\"", err)
+	}
+}
+
+// only accepts specs on the listed states — a walk's target check, reduced to
+// what the registry needs from it.
+func only(states ...string) Validator {
+	return func(spec string) error {
+		state, _, _ := ParseSpec(spec)
+		for _, s := range states {
+			if s == state {
+				return nil
+			}
+		}
+		return fmt.Errorf("no state %q", state)
+	}
+}
+
+// TestRegistry_ReplaceRefusesAStateTheWalkDoesNotHave: a spec that parses but
+// names a state the walk lacks would arm nothing, and the operator would watch
+// a walk that never pauses. It is refused, and the previous arming stays.
+func TestRegistry_ReplaceRefusesAStateTheWalkDoesNotHave(t *testing.T) {
+	r := NewRegistry()
+	set, release, err := r.Open("run_1", []string{"wave"}, only("wave"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := set.Replace([]string{"wave:review", "nope"}); err == nil || !strings.Contains(err.Error(), `"nope"`) {
+		t.Fatalf("Replace naming an unknown state = %v, want refused naming it", err)
+	}
+	if !set.Armed("wave", BeforeDispatch) || set.Armed("wave", Review) {
+		t.Errorf("a refused Replace changed the arming: %v", set.List())
+	}
+	if err := set.Replace([]string{"wave:review"}); err != nil {
+		t.Fatalf("a state the walk has was refused: %v", err)
+	}
+}
+
+// TestRegistry_SharedSetAcceptsAStateInEitherWalk: two walks under one run come
+// from different definitions, so a state in either is a real target — and one
+// only the finished walk had stops being one when it leaves.
+func TestRegistry_SharedSetAcceptsAStateInEitherWalk(t *testing.T) {
+	r := NewRegistry()
+	set, releaseFirst, _ := r.Open("run_1", nil, only("wave"))
+	_, releaseSecond, _ := r.Open("run_1", nil, only("fanout"))
+	defer releaseSecond()
+
+	if err := set.Replace([]string{"wave", "fanout:review"}); err != nil {
+		t.Fatalf("a state from each walk was refused: %v", err)
+	}
+	if err := set.Replace([]string{"elsewhere"}); err == nil {
+		t.Fatal("a state in neither walk was accepted")
+	}
+	releaseFirst()
+	if err := set.Replace([]string{"wave"}); err == nil {
+		t.Error("a state only the finished walk had is still accepted")
+	}
+	if err := set.Replace([]string{"fanout"}); err != nil {
+		t.Errorf("the remaining walk's state was refused: %v", err)
 	}
 }

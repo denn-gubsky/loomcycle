@@ -66,9 +66,10 @@ func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid JSON body")
 		return
 	}
-	// Replace validates before it mutates, so a rejected call leaves the
-	// previous arming exactly as it was — an operator fixing a typo must not
-	// discover they have also disarmed everything that was working.
+	// Replace validates before it mutates — the syntax, and that each state is
+	// one the walk has and of a kind that phase can arm — so a rejected call
+	// leaves the previous arming exactly as it was: an operator fixing a typo
+	// must not discover they have also disarmed everything that was working.
 	if err := set.Replace(req.Breakpoints); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_breakpoint", err.Error())
 		return
@@ -185,9 +186,10 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 
 // openTeamBreakpoints is what TeamDef op=run calls to get its armed set. The
 // run id comes from ctx, never from tool input — a caller must not be able to
-// register its walk under someone else's run.
-func (s *Server) openTeamBreakpoints(ctx context.Context, seed []string) (teamrun.BreakpointSource, func(), error) {
-	set, release, err := s.breakpointReg.Open(tools.RunID(ctx), seed)
+// register its walk under someone else's run. targets is the walk's own check,
+// which a PUT runs before it arms anything: this handler holds no definition.
+func (s *Server) openTeamBreakpoints(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
+	set, release, err := s.breakpointReg.Open(tools.RunID(ctx), seed, targets)
 	if err != nil {
 		return nil, nil, err
 	}

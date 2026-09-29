@@ -242,6 +242,28 @@ func ValidateBreakpoints(bps []string) error {
 	return nil
 }
 
+// CheckBreakpointTargets reports the first spec whose state is not in def, or is
+// not a kind that phase can arm. specs must already parse (ValidateBreakpoints).
+//
+// A breakpoint on a state that does not exist — or on one that never dispatches
+// a wave — would arm nothing, and the operator would sit watching a walk that
+// runs to completion without ever pausing. It is shared by the run boundary and
+// the live re-arm, so a typo is refused the same way whichever door it came in.
+func CheckBreakpointTargets(def teamgraph.Definition, team string, specs []string) error {
+	for _, bp := range specs {
+		id, _, _ := ParseBreakpoint(bp)
+		st, known := teamgraph.StateByID(def, id)
+		if !known {
+			return fmt.Errorf("breakpoint %q: team %q has no state %q", bp, team, id)
+		}
+		if st.Handler.Kind != teamgraph.HandlerStarter {
+			return fmt.Errorf("breakpoint %q: state %q is a %q, and only a starter dispatches a wave to pause on",
+				bp, id, st.Handler.Kind)
+		}
+	}
+	return nil
+}
+
 // armed asks the SOURCE, every time — never a value captured when the walk
 // started. That is what lets an operator arm a state while the walk is running.
 //

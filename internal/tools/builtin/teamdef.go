@@ -151,9 +151,13 @@ type TeamDef struct {
 	// pass at that moment, so the walk has to read an armed set something else
 	// can still write to.
 	//
+	// targets refuses a spec this walk's definition cannot arm; the set runs it
+	// on every live re-arm, so a typo is refused there as it is at the start
+	// rather than arming a state the walk will never reach.
+	//
 	// nil = breakpoints are dispatch-time only (the run argument still works,
 	// and nothing can arm a state once the walk has started).
-	LiveBreakpoints func(ctx context.Context, seed []string) (teamrun.BreakpointSource, func(), error)
+	LiveBreakpoints func(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error)
 
 	// AskHuman, if set, escalates an iteration-cap overflow to a human instead of
 	// aborting: when the caller passes interrupt_on_cap, a capped state raises an
@@ -1014,20 +1018,8 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if err := teamrun.ValidateBreakpoints(seed); err != nil {
 			return errResult(fmt.Sprintf("run: %s", err)), nil
 		}
-		// A breakpoint on a state that does not exist — or on one that never
-		// dispatches a wave — would arm nothing, and the operator would sit
-		// watching a walk that runs to completion without ever pausing. Refuse
-		// the typo instead.
-		for _, bp := range seed {
-			id, _, _ := teamrun.ParseBreakpoint(bp)
-			bst, known := teamgraph.StateByID(def, id)
-			if !known {
-				return errResult(fmt.Sprintf("run: breakpoint %q: team %q has no state %q", bp, row.Name, id)), nil
-			}
-			if bst.Handler.Kind != teamgraph.HandlerStarter {
-				return errResult(fmt.Sprintf("run: breakpoint %q: state %q is a %q, and only a starter dispatches a wave to pause on",
-					bp, id, bst.Handler.Kind)), nil
-			}
+		if err := teamrun.CheckBreakpointTargets(def, row.Name, seed); err != nil {
+			return errResult(fmt.Sprintf("run: %s", err)), nil
 		}
 		// REFUSED rather than degraded. interrupt_on_cap may silently fall back
 		// to aborting because the fallback is still safe; a breakpoint's whole
@@ -1053,7 +1045,10 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		// Opened on the WALK ctx, which now carries the run id — that is the key
 		// the arming endpoint addresses. Opening it on the caller's ctx would
 		// register the set under whatever run the CALLER is in, or under none.
-		src, release, serr := t.openBreakpoints(walkCtx, seed)
+		targets := func(spec string) error {
+			return teamrun.CheckBreakpointTargets(def, row.Name, []string{spec})
+		}
+		src, release, serr := t.openBreakpoints(walkCtx, seed, targets)
 		if serr != nil {
 			return errResult(fmt.Sprintf("run: %s", serr)), nil
 		}
@@ -1247,9 +1242,9 @@ func capActionLabel(d teamrun.CapDecision) string {
 // runs; without it the run argument still works exactly as before, fixed at
 // dispatch. Degrading rather than refusing is right here — the dispatch-time
 // behaviour is the feature this replaces, not a broken half of it.
-func (t *TeamDef) openBreakpoints(ctx context.Context, seed []string) (teamrun.BreakpointSource, func(), error) {
+func (t *TeamDef) openBreakpoints(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
 	if t.LiveBreakpoints != nil {
-		return t.LiveBreakpoints(ctx, seed)
+		return t.LiveBreakpoints(ctx, seed, targets)
 	}
 	src, err := teamrun.NewStaticBreakpoints(seed)
 	if err != nil {

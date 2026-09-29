@@ -10,7 +10,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // seedRun creates a session + run the tenant gate will accept.
@@ -48,7 +50,7 @@ func TestHandleBreakpoints_ArmsAWalkThatIsAlreadyRunning(t *testing.T) {
 	runID := seedRun(t, srv)
 
 	// A walk starts with NOTHING armed — the ordinary case.
-	set, release, err := srv.breakpointReg.Open(runID, nil)
+	set, release, err := srv.breakpointReg.Open(runID, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +81,7 @@ func TestHandleBreakpoints_GetReadsBackCanonically(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	_, release, _ := srv.breakpointReg.Open(runID, []string{"wave", "wave:review"})
+	_, release, _ := srv.breakpointReg.Open(runID, []string{"wave", "wave:review"}, nil)
 	defer release()
 
 	rec := doJSON(t, srv, "GET", "/v1/runs/"+runID+"/breakpoints", "")
@@ -97,7 +99,7 @@ func TestHandleBreakpoints_EmptyListTurnsDebugOff(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave"})
+	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave"}, nil)
 	defer release()
 
 	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":[]}`)
@@ -115,7 +117,7 @@ func TestHandleBreakpoints_RejectedPutKeepsThePreviousArming(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave:before_dispatch"})
+	set, release, _ := srv.breakpointReg.Open(runID, []string{"wave:before_dispatch"}, nil)
 	defer release()
 
 	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["review","wave:typo"]}`)
@@ -183,7 +185,7 @@ func TestHandleBreakpoints_TheRemovedPauseIsRefused(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRun(t, srv)
-	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"})
+	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +206,7 @@ func TestHandleBreakpoints_AnIsolatedMemberCannotReachAColleaguesWalk(t *testing
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	runID := seedRunInTenant(t, srv.store, "acme", "alice", "team:triage")
-	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"})
+	set, release, err := srv.breakpointReg.Open(runID, []string{"wave:review"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,5 +236,91 @@ func TestHandleBreakpoints_AnIsolatedMemberCannotReachAColleaguesWalk(t *testing
 	alice := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeUser}}
 	if code := call(alice, "PUT", `{"breakpoints":[]}`); code != 200 || set.Armed("wave", breakpoints.Review) {
 		t.Errorf("owner PUT = %d, armed after = %v; want 200 and disarmed", code, set.Armed("wave", breakpoints.Review))
+	}
+}
+
+// targetsTeam is a starter "wave" feeding an agent "draft": one state a wave
+// breakpoint can arm, and one it cannot.
+const targetsTeam = `{"entry":"wave","states":[` +
+	`{"state":"wave","handler":{"kind":"starter","source":{"channel":"c1"},"fanout":{"agent":"agent-x","per":"message"},"sink":{"channel":"c2"}}},` +
+	`{"state":"draft","handler":{"kind":"agent","agent":"agent-x"}},` +
+	`{"state":"done","handler":{"kind":"terminal"}}],` +
+	`"transitions":[{"from":"wave","to":"draft","on":"success"},{"from":"draft","to":"done","on":"success"}]}`
+
+// openWalkOnTargetsTeam opens the armed set the way TeamDef op=run does: under
+// the walk's run id, with the walk's own target check.
+func openWalkOnTargetsTeam(t *testing.T, srv *Server, runID string, seed []string) (*breakpoints.Set, func()) {
+	t.Helper()
+	def, err := teamgraph.Parse([]byte(targetsTeam))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := func(spec string) error { return teamrun.CheckBreakpointTargets(def, "triage", []string{spec}) }
+	_, release, err := srv.openTeamBreakpoints(tools.WithRunID(context.Background(), runID), seed, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, ok := srv.breakpointReg.Get(runID)
+	if !ok {
+		t.Fatal("the walk's set is not registered under its run id")
+	}
+	return set, release
+}
+
+// TestHandleBreakpoints_PutRefusesAnUnknownStateAndKeepsTheArming: the start of
+// a walk refuses a breakpoint on a state its team does not have; the live
+// re-arm used to accept it, and it was silently never hit.
+func TestHandleBreakpoints_PutRefusesAnUnknownStateAndKeepsTheArming(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release := openWalkOnTargetsTeam(t, srv, runID, []string{"wave"})
+	defer release()
+
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["wave:review","wvae"]}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "invalid_breakpoint") ||
+		!strings.Contains(rec.Body.String(), `has no state \"wvae\"`) {
+		t.Fatalf("status = %d, want 400 invalid_breakpoint naming the state; body=%s", rec.Code, rec.Body.String())
+	}
+	if !set.Armed("wave", breakpoints.BeforeDispatch) || set.Armed("wave", breakpoints.Review) {
+		t.Errorf("a refused PUT changed the arming: %v", set.List())
+	}
+}
+
+// TestHandleBreakpoints_PutRefusesAWaveBreakpointOnAnAgentState: an agent state
+// dispatches no wave, so a pause armed on it would never be reached.
+func TestHandleBreakpoints_PutRefusesAWaveBreakpointOnAnAgentState(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release := openWalkOnTargetsTeam(t, srv, runID, nil)
+	defer release()
+
+	for _, spec := range []string{"draft", "draft:before_dispatch"} {
+		rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["`+spec+`"]}`)
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "only a starter") {
+			t.Errorf("%s: status = %d, want 400 naming the kind; body=%s", spec, rec.Code, rec.Body.String())
+		}
+	}
+	if len(set.List()) != 0 {
+		t.Errorf("a refused PUT armed %v", set.List())
+	}
+}
+
+// TestHandleBreakpoints_PutAcceptsAStarterTheWalkHas — the check refuses only
+// what could never be hit.
+func TestHandleBreakpoints_PutAcceptsAStarterTheWalkHas(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release := openWalkOnTargetsTeam(t, srv, runID, nil)
+	defer release()
+
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":["wave","wave:review"]}`)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !set.Armed("wave", breakpoints.BeforeDispatch) || !set.Armed("wave", breakpoints.Review) {
+		t.Errorf("armed = %v", set.List())
 	}
 }
