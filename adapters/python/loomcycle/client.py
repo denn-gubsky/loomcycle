@@ -2439,6 +2439,11 @@ def _run_state_event_to_dict(e: "pb.RunStateEvent") -> Mapping[str, Any]:
         "error": e.error,
         "ts": e.ts,
         "parent_context": _parent_context_to_dict(e),
+        # What a "running" run has started waiting on ("" when it is not):
+        # the end of a wait is a "running" event with awaited_state "".
+        "awaited_state": e.awaited_state,
+        "awaited_on": e.awaited_on,
+        "hold_expires_at": e.hold_expires_at,
     }
 
 

@@ -3220,6 +3220,16 @@ export interface RunStateEvent {
    *  so a subscriber learns which root request a finishing sub-agent
    *  belongs to. Omitted when the run carried no context. */
   parent_context?: ParentContext;
+  /** What a `running` run has started waiting on. A wait is announced as its
+   *  own `running` event and its end as another `running` event without this
+   *  field, so a client folding the stream holds the run's current wait. */
+  awaited_state?: AwaitedState;
+  /** The channel, the interruption kind, or the agent_stop hook holding a
+   *  review. */
+  awaited_on?: string;
+  /** RFC3339: when a review hold ends as rejected if nobody rules on it.
+   *  Absent when the wait has no deadline. */
+  hold_expires_at?: string;
 }
 
 /** Initial stream_open frame emitted before the first run_state. */

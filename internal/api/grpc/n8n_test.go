@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
+	"strings"
 	"testing"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -230,5 +234,53 @@ func TestGrpcStreamUserRunStates_CarriesTheParentContext(t *testing.T) {
 	if got[1].GetParentContext() != nil {
 		t.Errorf("a run with no lineage got an EMPTY parent_context; absence must stay "+
 			"distinguishable from a blank walk_id: %+v", got[1].GetParentContext())
+	}
+}
+
+// Every field of the connector event reaches the proto message under the same
+// name. Filled by reflection so a field added to the connector event is
+// exercised here without anyone listing it; one the mapping forgets arrives
+// empty and fails. The hold fields are the reason it exists: a gRPC subscriber
+// that cannot read awaited_state sees a held run as two identical "running"
+// events.
+func TestGrpcStreamUserRunStates_CarriesEveryConnectorField(t *testing.T) {
+	var in connector.RunStateEvent
+	rv := reflect.ValueOf(&in).Elem()
+	for i := 0; i < rv.NumField(); i++ {
+		switch v := rv.Field(i).Addr().Interface().(type) {
+		case *string:
+			*v = "v_" + rv.Type().Field(i).Name
+		case **store.ParentContext:
+			*v = &store.ParentContext{WalkID: "r_walk"}
+		default:
+			t.Fatalf("field %s is a %s this test does not know how to fill", rv.Type().Field(i).Name, rv.Field(i).Type())
+		}
+	}
+	client, cleanup := startTestServerWithConnector(t, &n8nMock{streamEvents: []connector.RunStateEvent{in}})
+	defer cleanup()
+	stream, err := client.StreamUserRunStates(context.Background(), &loomcyclepb.StreamUserRunStatesRequest{UserId: "u1"})
+	if err != nil {
+		t.Fatalf("StreamUserRunStates: %v", err)
+	}
+	got, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	msg := got.ProtoReflect()
+	fields := msg.Descriptor().Fields()
+	for i := 0; i < rv.NumField(); i++ {
+		name, _, _ := strings.Cut(rv.Type().Field(i).Tag.Get("json"), ",")
+		fd := fields.ByName(protoreflect.Name(name))
+		if fd == nil {
+			t.Errorf("proto RunStateEvent has no %q", name)
+			continue
+		}
+		if s, ok := rv.Field(i).Interface().(string); ok {
+			if g := msg.Get(fd).String(); g != s {
+				t.Errorf("%s = %q, want %q", name, g, s)
+			}
+		} else if !msg.Has(fd) {
+			t.Errorf("%s was dropped", name)
+		}
 	}
 }
