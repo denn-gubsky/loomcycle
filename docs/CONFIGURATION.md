@@ -1436,6 +1436,42 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   `LOOMCYCLE_SKILLS_ROOT`. A bundle may also ship pure *declarations* rather
   than agents — `system-channels` is one.
 
+### A Starter that fans out over a document
+
+A `starter` state reads its work from its `source`. By default that is one
+channel; with `kind: document` it is one document, and its **top-level
+sections** — the root's direct children, in document order — are the wave's
+items:
+
+```json
+{"state": "review", "handler": {"kind": "starter",
+  "source": {"kind": "document", "path": "/specs/acme", "scope": "user"},
+  "fanout": {"agent": "reviewer", "per": "chunk", "max": 20},
+  "prompt": {"input": "Review this section:\n{{starter.message}}"},
+  "sink": {"channel": "verdicts"}}}
+```
+
+- **`path`** is a fixed absolute Path-tree path; variables are not supported.
+- **`scope`** is `user` (default — the tree of the person the walk runs as, so a
+  path in another user's tree reads as not found) or `tenant` (needs the same
+  `memory_scopes` and `sql_scopes` tenant grants a Document read does).
+- **`fanout.per`** is `chunk` (one run per section; `max` required) or `once`
+  (one run holding every section).
+- The document is **read once, when the wave dispatches**: an edit during the
+  wave does not change the items, and a later visit to the state reads it again.
+- Each run gets `{document_id, chunk_id, index, title, markdown}` in
+  `{{starter.message}}` (`{{starter.messages}}`, an array, for `per: once`). The
+  markdown is the section's whole subtree, rendered like `export_md` without
+  metadata. It is data: a `{{…}}` written inside a section is never expanded.
+  `binds` project from it (`title: $.title`).
+- **More sections than `max` fails the walk**, naming both numbers — a document
+  has no cursor, so dispatching the first `max` would drop the rest silently.
+  Zero sections fails it too.
+- `ack`, `source.wait` / `n` / `wait_ms` / `batch` and `per: message` are refused
+  at create/fork: a document has no cursor and nothing to wait for.
+- Sink, review, hooks, `timeout_ms` and walk stamping behave as for a channel
+  Starter.
+
 ### Watching a team walk live
 
 A team walk is a run, and its **`run_id` is also its walk id** — the correlation
@@ -1497,6 +1533,9 @@ on a subscribed source becomes a wave of agent runs. Arrive at it deliberately.
   simply not in the answer — nothing to leak, nothing to reconcile after a
   crash. `TeamDef op=retire` reports `sources_released` so you can see which
   wires the workflow was reading.
+- **A Starter that reads a document is never armed.** It has no channel to wake
+  on and no cursor to say what is new; promoting it only selects the version
+  `op=run` resolves by name.
 - **The source must be `scope: tenant` or `scope: global`.** A sweep has no user
   and no agent, so an `agent`- or `user`-scoped source is refused rather than
   guessed at — picking one of its per-user queues would silently drive one and
