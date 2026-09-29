@@ -107,3 +107,37 @@ func TestConnectorListRuns_EmptyTenantPrincipalSeesOnlyEmptyTenant(t *testing.T)
 		t.Errorf("empty-tenant session listed %+v, want only a_default", runs)
 	}
 }
+
+// An isolated member sees only its OWN runs: listing a co-tenant's user id
+// through the connector (the MCP list_runs path) is an empty list, exactly as
+// HTTP GET /v1/users/{user_id}/agents answers it. A tenant principal and an
+// admin keep their view of that user's runs.
+func TestConnectorListRuns_IsolatedMemberSeesNoOtherUsersRuns(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	seedTenantRun(t, srv.store, "acme", "alice", "a_alice")
+	seedTenantRun(t, srv.store, "acme", "bob", "a_bob")
+
+	bob := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeUser},
+	})
+	runs, err := srv.ListRuns(bob, connector.ListRunsFilter{UserID: "alice"})
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("an isolated member listed another user's runs: %+v", runs)
+	}
+	if runs, err := srv.ListRuns(bob, connector.ListRunsFilter{UserID: "bob"}); err != nil || len(runs) != 1 || runs[0].AgentID != "a_bob" {
+		t.Errorf("isolated member's own list = (%+v, %v), want its one run", runs, err)
+	}
+
+	admin := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "ops", Subject: "root", Scopes: []string{auth.ScopeAdmin},
+	})
+	for name, ctx := range map[string]context.Context{"tenant": tenantPrincipal("acme"), "admin": admin} {
+		if runs, err := srv.ListRuns(ctx, connector.ListRunsFilter{UserID: "alice"}); err != nil || len(runs) != 1 || runs[0].AgentID != "a_alice" {
+			t.Errorf("%s list of alice = (%+v, %v), want alice's run", name, runs, err)
+		}
+	}
+}
