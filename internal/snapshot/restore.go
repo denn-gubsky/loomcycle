@@ -814,6 +814,19 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		}
 	}
 
+	// capture_findings: nothing is written. Each finding is re-emitted as a
+	// warning, so the operator restoring — who may never have seen the capture
+	// response — learns which restored definitions carry a literal credential.
+	if rawSection, ok := sections[migrations.SectionCaptureFindings]; ok {
+		var sec CaptureFindingsSection
+		if err := decodeWithMigration(migrations.SectionCaptureFindings, rawSection, &sec); err != nil {
+			return result, err
+		}
+		for _, f := range sec.Entries {
+			result.Warnings = append(result.Warnings, "capture finding: "+f.Warning())
+		}
+	}
+
 	// Stage 3: trigger an immediate resolver probe so the matrix is
 	// populated before the operator calls Resume. Done last so any
 	// errors above are returned before the resolver work.
