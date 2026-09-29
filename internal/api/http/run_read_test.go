@@ -175,6 +175,13 @@ func TestGetRun_UnknownIDIs404AndAMalformedOneIs400(t *testing.T) {
 	if code, _ := getRun(t, mux, nil, "r_nope"); code != http.StatusNotFound {
 		t.Errorf("unknown run id = %d, want 404", code)
 	}
+	// The 404 body is JSON a client can decode for its code.
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/runs/r_nope", nil))
+	var body struct{ Code, Error string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Code != "unknown_run_id" {
+		t.Errorf("404 body %s = (%+v, %v), want JSON with code unknown_run_id", rec.Body, body, err)
+	}
 	if code, _ := getRun(t, mux, nil, "team:triage"); code != http.StatusBadRequest {
 		t.Errorf("malformed run id = %d, want 400", code)
 	}

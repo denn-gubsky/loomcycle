@@ -7820,9 +7820,8 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notFound := func() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `{"code":"unknown_run_id","error":"no run found for run_id %q"}`, runID)
+		// runID passed validIdent, so it needs no quoting inside the message.
+		writeJSONError(w, http.StatusNotFound, "unknown_run_id", "no run found for run_id "+runID)
 	}
 	if s.store == nil {
 		// The cancel registry is keyed by agent id, so without a store there
