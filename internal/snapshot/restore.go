@@ -680,6 +680,10 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				Interactive:   e.Interactive,   // F42: park-vs-complete semantics on re-dispatch
 				ParentContext: e.ParentContext, // v0.12.x: restore the run's tracking lineage
 				RunConfig:     e.RunConfig,     // resume on the run's own settings, not the def's current ones
+
+				// Resume reads the confinement bits from this row.
+				OperatorKeyRestricted: e.OperatorKeyRestricted,
+				Isolated:              e.Isolated,
 			}
 			runInserted, err := s.SnapshotRestoreRun(ctx, runRow)
 			if err != nil {

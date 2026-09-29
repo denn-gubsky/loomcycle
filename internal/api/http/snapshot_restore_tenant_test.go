@@ -107,10 +107,11 @@ func (p *identityRecordingProvider) Call(ctx context.Context, req providers.Requ
 	return p.scriptedProvider.Call(ctx, req)
 }
 
-// A run restored from a snapshot on another instance resumes under its own
-// tenant: the resumed turn's calls carry that tenant, so its credentials,
-// budget and memory resolve in it rather than in the shared tenant.
-func TestResumePausedRuns_RestoredRunResumesUnderItsOwnTenant(t *testing.T) {
+// resumeRestoredRun restores a one-run snapshot into a fresh server, resumes it
+// to completion and returns the identities its provider calls ran under, plus
+// whether the last call was allowed the operator's key.
+func resumeRestoredRun(t *testing.T, identity store.RunIdentity) ([]tools.RunIdentityValue, bool) {
+	t.Helper()
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
 		Agents: map[string]config.AgentDef{
@@ -128,17 +129,14 @@ func TestResumePausedRuns_RestoredRunResumesUnderItsOwnTenant(t *testing.T) {
 	srv, _ := makeServer(t, prov, cfg)
 	ctx := context.Background()
 
-	runID, raw := capturePausedRun(t,
-		store.RunIdentity{AgentID: "a_resume_acme", UserID: "alice", TenantID: "acme", Model: "stub-model"},
-		"resumer",
-		func(st store.Store, runID string) {
-			b, _ := json.Marshal([]loop.PromptSegment{
-				{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "do the thing"}}},
-			})
-			if err := st.AppendEvent(ctx, runID, "user_input", b); err != nil {
-				t.Fatal(err)
-			}
+	runID, raw := capturePausedRun(t, identity, "resumer", func(st store.Store, runID string) {
+		b, _ := json.Marshal([]loop.PromptSegment{
+			{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "do the thing"}}},
 		})
+		if err := st.AppendEvent(ctx, runID, "user_input", b); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if _, err := snapshot.Restore(ctx, srv.store, raw, snapshot.RestoreOptions{}); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -169,9 +167,34 @@ func TestResumePausedRuns_RestoredRunResumesUnderItsOwnTenant(t *testing.T) {
 	if len(prov.seen) == 0 {
 		t.Fatal("the provider was never called — the run was not resumed")
 	}
-	for i, id := range prov.seen {
+	return append([]tools.RunIdentityValue(nil), prov.seen...), prov.lastOpKeyAllowed.Load()
+}
+
+// A run restored from a snapshot on another instance resumes under its own
+// tenant: the resumed turn's calls carry that tenant, so its credentials,
+// budget and memory resolve in it rather than in the shared tenant.
+func TestResumePausedRuns_RestoredRunResumesUnderItsOwnTenant(t *testing.T) {
+	seen, _ := resumeRestoredRun(t, store.RunIdentity{AgentID: "a_resume_acme", UserID: "alice", TenantID: "acme", Model: "stub-model"})
+	for i, id := range seen {
 		if id.TenantID != "acme" {
 			t.Errorf("resumed call %d ran under tenant %q, want acme", i, id.TenantID)
+		}
+	}
+}
+
+// A restored run resumes as confined as it was paused: still denied the
+// operator's provider key and still isolated.
+func TestResumePausedRuns_RestoredRunKeepsItsConfinement(t *testing.T) {
+	seen, opKeyAllowed := resumeRestoredRun(t, store.RunIdentity{
+		AgentID: "a_resume_confined", UserID: "alice", TenantID: "acme", Model: "stub-model",
+		OperatorKeyRestricted: true, Isolated: true,
+	})
+	if opKeyAllowed {
+		t.Error("the resumed run's provider call was allowed the operator's key")
+	}
+	for i, id := range seen {
+		if !id.OperatorKeyRestricted || !id.Isolated {
+			t.Errorf("resumed call %d ran with restricted=%v isolated=%v, want both", i, id.OperatorKeyRestricted, id.Isolated)
 		}
 	}
 }
