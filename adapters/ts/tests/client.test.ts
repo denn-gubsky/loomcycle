@@ -797,6 +797,15 @@ describe("snapshot lifecycle", () => {
     expect(r.restored?.mcp_server_defs_activated).toBe(1);
   });
 
+  it("restoreSnapshot reports the paused runs the server resumed", async () => {
+    const { client } = makeClient([
+      jsonResponse({ paused_runs_restored: 2, paused_runs_resumed: 1 }),
+    ]);
+    const r = await client.restoreSnapshot({ snapshotId: "snap_xyz" });
+    expect(r.paused_runs_restored).toBe(2);
+    expect(r.paused_runs_resumed).toBe(1);
+  });
+
   it("createSnapshot returns the capture warnings", async () => {
     const warning = "mcp_server_defs x: headers.Authorization holds a literal value";
     const { client } = makeClient([
