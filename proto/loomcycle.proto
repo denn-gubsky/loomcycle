@@ -191,6 +191,13 @@ service Loomcycle {
   // Mirrors GET /v1/agents/{agent_id}.
   rpc GetAgent(GetAgentRequest) returns (Agent);
 
+  // GetRun is GetAgent addressed by the run itself. An agent id can name
+  // many runs — every walk of a team is filed under `team:<name>` — and
+  // GetAgent answers only the latest; a run id names one.
+  //
+  // Mirrors GET /v1/runs/{run_id}.
+  rpc GetRun(GetRunRequest) returns (Agent);
+
   // CancelAgent sets the agent's terminal status to "cancelled" and
   // cascades the cancellation to every child via parent_agent_id.
   //
@@ -1529,6 +1536,10 @@ message TranscriptEvent {
 
 message GetAgentRequest {
   string agent_id = 1;
+}
+
+message GetRunRequest {
+  string run_id = 1;
 }
 
 // Agent mirrors HTTP's agentResponse. Status is a string (running |

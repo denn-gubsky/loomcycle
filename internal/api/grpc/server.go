@@ -76,6 +76,10 @@ type Server struct {
 	// field stays alongside connector.
 	runner runner.Runner
 
+	// liveRun reports whether a run is in flight on this replica, keyed on the
+	// run — see Config.RunLive. Nil → the cancel registry alone.
+	liveRun func(agentID, runID string) bool
+
 	// limits is the RFC AW token-budget tracker the TokenLimit RPC reads for
 	// live month-to-date usage + reloads after a CRUD change. Shared with the
 	// HTTP /v1/_limits handler (main.go wires it to srv.LimitsTracker()) so both
@@ -140,6 +144,10 @@ type Config struct {
 	AuthConfigured func(context.Context) bool
 	BuildCommit    string
 	BuildTime      string
+	// RunLive reports whether a run is in flight on this replica — HTTP's
+	// RunLive, which also sees team walks (they are not in the cancel
+	// registry). Used by GetRun. Nil → the cancel registry alone.
+	RunLive func(agentID, runID string) bool
 }
 
 // New constructs a Server. Caller registers it with a *grpc.Server
@@ -151,6 +159,7 @@ func New(cfg Config) *Server {
 		connector:         cfg.Connector,
 		runner:            cfg.Runner,
 		limits:            cfg.Limits,
+		liveRun:           cfg.RunLive,
 		authToken:         cfg.AuthToken,
 		principalResolver: cfg.PrincipalResolver,
 		authConfigured:    cfg.AuthConfigured,
@@ -245,6 +254,46 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 	}
 	_, live := s.cancelReg.Get(agentID)
 	return s.singleRunProto(ctx, run, live), nil
+}
+
+// GetRun mirrors HTTP's GET /v1/runs/{run_id}: GetAgent addressed by the run
+// itself. An agent id can name many runs — every walk of a team is filed
+// under `team:<name>` — and GetAgent answers only the latest.
+func (s *Server) GetRun(ctx context.Context, req *loomcyclepb.GetRunRequest) (*loomcyclepb.Agent, error) {
+	runID := req.GetRunId()
+	if !validIdent(runID) {
+		return nil, status.Error(codes.InvalidArgument, "run_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	if s.store == nil {
+		// The cancel registry is keyed by agent id: without a store a run id
+		// cannot be looked up.
+		return nil, status.Errorf(codes.NotFound, "no run found for run_id %q (no store configured)", runID)
+	}
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return nil, status.Errorf(codes.NotFound, "no run found for run_id %q", runID)
+		}
+		return nil, status.Errorf(codes.Internal, "store: %v", err)
+	}
+	// The same fold as GetAgent: another tenant's run, or for an isolated
+	// member another user's, is the NotFound a missing run gets.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) {
+		return nil, status.Errorf(codes.NotFound, "no run found for run_id %q", runID)
+	}
+	return s.singleRunProto(ctx, run, s.runLive(run)), nil
+}
+
+// runLive reports whether THIS run is in flight. The injected check (HTTP's
+// RunLive) also sees team walks, which are not in the cancel registry; without
+// it only an ordinary run's registry entry — for this run id — counts.
+func (s *Server) runLive(run store.Run) bool {
+	if s.liveRun != nil {
+		return s.liveRun(run.AgentID, run.ID)
+	}
+	e, ok := s.cancelReg.Get(run.AgentID)
+	return ok && e.RunID == run.ID
 }
 
 // singleRunProto builds the single-run read for a run the caller has already
@@ -661,6 +710,7 @@ var grpcConsumerScopes = map[string]string{
 	"CancelAgent":         auth.ScopeRunsCreate,
 	"GetTranscript":       auth.ScopeRunsRead,
 	"GetAgent":            auth.ScopeRunsRead,
+	"GetRun":              auth.ScopeRunsRead,
 	"ListUserAgents":      auth.ScopeRunsRead,
 	"StreamUserRunStates": auth.ScopeRunsRead,
 	"PublishChannel":      auth.ScopeChannelPublish,
