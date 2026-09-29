@@ -118,7 +118,7 @@ func TestGrpcTeamDef_RunWalksAsTheCaller(t *testing.T) {
 	if walk.UserID != "alice" || walk.TenantID != "acme" {
 		t.Errorf("walk run filed under (tenant %q, user %q), want (acme, alice)", walk.TenantID, walk.UserID)
 	}
-	runs, err := st.ListActiveRunsByUser(ctx, "alice", "")
+	runs, err := st.ListActiveRunsByUser(ctx, "", "alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
