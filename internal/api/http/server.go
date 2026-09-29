@@ -3766,6 +3766,9 @@ func (s *Server) Mux() http.Handler {
 	// agent route cannot address a team walk (`team:<name>`) nor tell one walk
 	// of a team from another.
 	mux.Handle("GET /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetRun))))
+	// List one team walk's runs (?walk_id=, paged by ?cursor=) — the walk's own
+	// run and every member it spawned, which a user listing caps at 100 rows.
+	mux.Handle("GET /v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListRuns))))
 	// RFC DI D5: configured (created, not started) runs.
 	mux.Handle("PATCH /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePatchConfiguredRun))))
 	mux.Handle("DELETE /v1/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteConfiguredRun))))

@@ -918,6 +918,10 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeRunsCreate
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
 		return auth.ScopeRunsRead
+	// Listing a team walk's runs. Exact match: without it the bare path falls
+	// to the any-authenticated GET default.
+	case method == http.MethodGet && path == "/v1/runs":
+		return auth.ScopeRunsRead
 	// Run / agent / session / user reads.
 	case method == http.MethodGet && (strings.HasPrefix(path, "/v1/agents/") ||
 		strings.HasPrefix(path, "/v1/users/") ||
