@@ -79,6 +79,7 @@ type Sections struct {
 	MCPServerDefActive MCPServerDefActiveSection  `json:"mcp_server_def_active"`
 	Memory             MemorySection              `json:"memory"`
 	Channels           ChannelsSection            `json:"channels"`
+	ChannelDefs        ChannelDefsSection         `json:"channel_defs"`
 	Evaluations        EvaluationsSection         `json:"evaluations"`
 	PausedRuns         PausedRunsSection          `json:"paused_runs"`
 	InteractionHistory *InteractionHistorySection `json:"interaction_history,omitempty"`
@@ -429,6 +430,40 @@ type ChannelCursorEntry struct {
 	ScopeID   string    `json:"scope_id"`
 	Cursor    string    `json:"cursor"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ChannelDefsSection carries the runtime-created channel definitions (the
+// `channels` table; yaml-declared channels travel in ChannelsSection.Config
+// and are never written back). Without it a restore brought back a runtime
+// channel's messages and cursors but not the channel: a held channel stopped
+// holding, a hooked channel's messages awaiting its hooks were dropped at
+// their deadline as undeclared, and its limits reverted to defaults.
+// Additive: an older snapshot has no such section and restores no
+// definitions, as before.
+type ChannelDefsSection struct {
+	Version string            `json:"version"`
+	Entries []ChannelDefEntry `json:"entries"`
+}
+
+// ChannelDefEntry mirrors store.ChannelRow. A channel definition is mutable
+// and unversioned, so (tenant_id, name) is its whole identity.
+type ChannelDefEntry struct {
+	Name string `json:"name"`
+	// TenantID is the owning tenant; "" (omitted) is the operator layer, the
+	// owner of a global channel every tenant reads.
+	TenantID    string `json:"tenant_id,omitempty"`
+	Description string `json:"description,omitempty"`
+	Scope       string `json:"scope"`
+	Semantic    string `json:"semantic"`
+	DefaultTTL  int    `json:"default_ttl,omitempty"`
+	MaxMessages int    `json:"max_messages,omitempty"`
+	Publisher   string `json:"publisher,omitempty"`
+	Period      string `json:"period,omitempty"`
+	Hold        bool   `json:"hold,omitempty"`
+	// Hooks is the channel's hooks as stored ({"channel_publish": [...]});
+	// omitted for none. The HookDefs they name travel in hook_defs.
+	Hooks     json.RawMessage `json:"hooks,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // EvaluationsSection wraps evaluation rows.
