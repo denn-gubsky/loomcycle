@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -84,21 +85,14 @@ func (s *Server) ResumePausedRuns(ctx context.Context) (int, []string) {
 // resumePausedRun re-dispatches ONE paused run under its EXISTING run_id (no
 // CreateRun — the row already exists). It mirrors handleRuns' dispatch but
 // seeds the conversation from the transcript (PriorMessages) instead of a fresh
-// prompt, re-derives provider/model/tools/system-prompt from the agent def, and
-// runs the loop in a detached background goroutine (no HTTP request backs it).
+// prompt, re-derives provider/model/tools/system-prompt from the agent def it
+// started on (resumedAgentDef), and runs the loop in a detached background
+// goroutine (no HTTP request backs it).
 func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	if run.ID == "" || run.AgentID == "" || run.SessionID == "" {
 		return fmt.Errorf("missing id/agent_id/session_id")
 	}
 
-	// Resolve the agent at the run's authoritative tenant. If it no longer
-	// exists (def deleted, or the static yaml changed across instances), flag
-	// the run failed so it isn't a permanent "running" zombie.
-	agentDef, ok := s.lookupAgent(ctx, run.TenantID, run.Agent)
-	if !ok {
-		s.flagRunUnresumable(run, fmt.Sprintf("agent %q no longer exists", run.Agent))
-		return fmt.Errorf("agent %q not found", run.Agent)
-	}
 	// RFC AX: restore the operator-key restriction from the runs row so a resumed
 	// run's credential-aware routing matches the original admission.
 	//
@@ -108,6 +102,17 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 	// the definition and says so, rather than failing a run that is otherwise
 	// fine: refusing to resume is a heavier answer than resolving normally.
 	runCfg, haveRunCfg := decodeRunConfig(run.RunConfig)
+
+	// The definition the run started on, at its authoritative tenant. One that
+	// no longer exists fails the run so it isn't a permanent "running" zombie;
+	// it never falls back to the version active now.
+	agentDef, gone, derr := s.resumedAgentDef(ctx, run, runCfg.AgentVersion)
+	if derr != nil {
+		if gone {
+			s.flagRunUnresumable(run, derr.Error())
+		}
+		return derr
+	}
 	// ONE effective definition, restored from the run's own record. A record the
 	// definition no longer permits — a model withdrawn, a fan-out ceiling
 	// lowered since the run started — falls back to the definition and says so
@@ -697,6 +702,82 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
 	}()
 	return nil
+}
+
+// resumedAgentDef is the definition a paused run continues on: the one it
+// started on, not the one its agent name resolves to now. A version promoted,
+// forked or retired while the run was paused does not change it — a newer
+// version may offer wider tools, a different prompt or different policies, and
+// a pause is not a moment at which a run's capabilities may change.
+//
+//   - A recorded version is read by its id, retired or not (the rule a pinned
+//     HookDef follows, see pinnedLookup).
+//   - A record naming no version started on a definition that has none: the
+//     operator's yaml, which only the operator changes and every run of it
+//     follows, or a registered agent. It resolves by name — unless the name now
+//     resolves to an AgentDef version, which is not the definition it started
+//     on but one that has shadowed it since.
+//   - A run recorded before versions were resolves by name, as it always did.
+//
+// A child its parent pinned by def_id (runs.agent_def_id) ran on that version
+// laid over its base, as the live spawn builds it; resume lays it over the same
+// base.
+//
+// gone reports that the definition is not there to resume on — the run should
+// be marked failed. A store fault is not that: the run stays paused, to be
+// tried again.
+func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentVersionRecord) (config.AgentDef, bool, error) {
+	var def config.AgentDef
+	if ver != nil && ver.DefID != "" {
+		row, gone, err := s.agentVersionRow(ctx, run, ver.DefID)
+		if err != nil {
+			return config.AgentDef{}, gone, err
+		}
+		d, ok := lookup.AgentFromDefRow(row)
+		if !ok {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q: the version it started on (%s) is unreadable", run.Agent, ver.DefID)
+		}
+		def = d
+	} else {
+		d, ok := s.lookupAgent(ctx, run.TenantID, run.Agent)
+		if !ok {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q no longer exists", run.Agent)
+		}
+		if ver != nil && d.DefID != "" {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q now resolves to AgentDef version %s, not the definition the run started on", run.Agent, d.DefID)
+		}
+		def = d
+	}
+	if run.AgentDefID != "" {
+		row, gone, err := s.agentVersionRow(ctx, run, run.AgentDefID)
+		if err != nil {
+			return config.AgentDef{}, gone, err
+		}
+		def = pinnedSubAgentDef(def, row.Definition)
+	}
+	return def, false, nil
+}
+
+// agentVersionRow reads one AgentDef version of the run's agent by id, retired
+// or not. It must be a version of the run's agent in the run's tenant or the
+// shared one: the only rows its name can have resolved to. The bool is
+// resumedAgentDef's gone.
+func (s *Server) agentVersionRow(ctx context.Context, run store.Run, defID string) (store.AgentDefRow, bool, error) {
+	if s.store == nil {
+		return store.AgentDefRow{}, false, fmt.Errorf("agent %q: no store to read the version it started on", run.Agent)
+	}
+	row, err := s.store.AgentDefGet(ctx, defID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return store.AgentDefRow{}, true, fmt.Errorf("agent %q: the version it started on (%s) no longer exists", run.Agent, defID)
+		}
+		return store.AgentDefRow{}, false, fmt.Errorf("agent %q: read the version it started on (%s): %w", run.Agent, defID, err)
+	}
+	if row.Name != run.Agent || (row.TenantID != run.TenantID && row.TenantID != "") {
+		return store.AgentDefRow{}, true, fmt.Errorf("agent %q: the version it recorded (%s) is not one of this agent's in the run's tenant", run.Agent, defID)
+	}
+	return row, false, nil
 }
 
 // maxResumeAncestry bounds the walk from a resumed run up to its tree's root.
