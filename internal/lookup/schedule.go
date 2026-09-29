@@ -130,6 +130,16 @@ type SubstrateScheduleDef struct {
 	// via a config projection — present here only to keep the JSON mirrors
 	// drift-parity-clean.
 	Isolated bool `json:"isolated,omitempty"`
+	// CaptureDisabled mirrors mergedScheduleDef's marker for a def restored
+	// from a snapshot without its literal credentials, so the def round-trips
+	// losslessly. The def body's `enabled: false` is what keeps it from
+	// firing; config.ScheduledRun carries no such field.
+	CaptureDisabled *SubstrateScheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+}
+
+// SubstrateScheduleCaptureDisabled mirrors mergedScheduleCaptureDisabled.
+type SubstrateScheduleCaptureDisabled struct {
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
 }
 
 // SubstratePromptSegment mirrors config.ScheduledRunSegment with

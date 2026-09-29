@@ -212,6 +212,10 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		// operator_key_restricted, deliberately NOT on config.ScheduledRun — the
 		// scheduler fire path reads it via scheduler.scheduleDef, not ToConfigDef.
 		"isolated": true,
+		// Server-set marker on a def restored from a snapshot without its
+		// literal credentials. Deliberately NOT on config.ScheduledRun: the
+		// body's enabled:false is what stops it firing on every read path.
+		"capture_disabled": true,
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {

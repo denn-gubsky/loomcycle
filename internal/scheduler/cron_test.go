@@ -53,6 +53,10 @@ func TestScheduleDef_DriftDetection_VsLookupSubstrateScheduleDef(t *testing.T) {
 				tag)
 		}
 	}
+	// The capture_disabled marker is an object; its keys must match too.
+	if got, want := jsonTagsOf(reflect.TypeOf(scheduleCaptureDisabled{})), jsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleCaptureDisabled{})); !reflect.DeepEqual(got, want) {
+		t.Errorf("capture_disabled keys: scheduler %v, lookup %v — mirror them", got, want)
+	}
 }
 
 func jsonTagsOf(t reflect.Type) map[string]bool {

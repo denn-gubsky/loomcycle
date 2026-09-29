@@ -179,6 +179,29 @@ func TestScheduler_DisabledDefSkipped(t *testing.T) {
 	}
 }
 
+// A def restored from a snapshot without its literal credentials carries a
+// capture_disabled marker. Even a body that says enabled:true — hand-edited,
+// or written by some future path that forgets to flip it — must not fire:
+// the run would go out without the credentials the schedule was authored
+// with. It advances like any disabled schedule and keeps its fire count.
+func TestScheduler_CaptureDisabledDefNeverFiresEvenIfEnabled(t *testing.T) {
+	enabled := true
+	def := scheduleDef{
+		Agent: "researcher", Schedule: "0 * * * *", Enabled: &enabled, MaxFires: 5,
+		CaptureDisabled: &scheduleCaptureDisabled{StrippedCredentials: []string{"jobs"}},
+	}
+	sched, fr, _, defID, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+
+	fireT(t, sched)
+	if got := len(fr.Calls()); got != 0 {
+		t.Fatalf("RunOnce calls = %d, want 0 (a capture-disabled def must not fire)", got)
+	}
+	got, _ := st.ScheduleRunStateGet(context.Background(), defID)
+	if got.LastStatus != "skipped_disabled" || got.FireCount != 0 || got.NextRunAt.Before(time.Now()) {
+		t.Errorf("state = status %q fire_count %d next %v; want skipped_disabled, 0, advanced", got.LastStatus, got.FireCount, got.NextRunAt)
+	}
+}
+
 // RFC S / F36 — a MaxFires:1 schedule fires once, then auto-retires so it
 // never fires again even when forced due. Fails on the pre-RFC-S sweeper
 // (no retire-after-N) — the def stays active and re-fires on re-seed.

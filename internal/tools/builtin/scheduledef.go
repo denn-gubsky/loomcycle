@@ -73,7 +73,10 @@ type ScheduleDef struct {
 const scheduleDefDescription = `Author, fork, retire, and inspect schedule definitions at runtime. ` +
 	`Static scheduled_runs.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored per-user forks. ` +
-	`Operations: create, fork, get, list, retire, add_hook, remove_hook.`
+	`Operations: create, fork, get, list, retire, add_hook, remove_hook. ` +
+	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
+	`it stays disabled until a fork re-supplies EVERY key listed there (in user_credentials or ` +
+	`user_credentials_from_env) and sets enabled: true. The fork keeps the fire count already spent.`
 
 const scheduleDefInputSchema = `{
   "type": "object",
@@ -346,6 +349,19 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// A parent restored without its literal credentials carries a marker;
+	// this fork clears it only by re-supplying every stripped key, and
+	// inherits the parent's fire count either way.
+	parentMarked, err := resolveCaptureDisabled(&def, in.Overlay)
+	if err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	fireCount := 0
+	if parentMarked {
+		if fireCount, err = s.parentFireCount(ctx, parentDefID); err != nil {
+			return errResult(fmt.Sprintf("fork: read the parent's fire count: %s", err)), nil
+		}
+	}
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
@@ -392,6 +408,15 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		if err := s.Store.ScheduleDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
+	}
+	if parentMarked {
+		// Seeded even when not promoted: a later seed of this def (a run-now,
+		// say) keeps an existing row's count, so writing it now is what stops
+		// any later path from starting this def at zero.
+		if err := s.Store.ScheduleRunStateSeedWithFireCount(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()), fireCount); err != nil {
+			return errResult(fmt.Sprintf("fork: created def %s but could not carry its parent's fire count: %s", created.DefID, err)), nil
+		}
+	} else if promote {
 		// Seed schedule_run_state — see commentary in execCreate.
 		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	}
@@ -575,6 +600,17 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	if err := assertRequiredCredentials(def); err != nil {
 		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
 	}
+	// A hook edit supplies no credentials, so a marker on the parent carries
+	// over unchanged (it is in the decoded body) — and so must the parent's
+	// fire count, or a hook edit would be a way to reset a max_fires budget.
+	parentMarked := def.CaptureDisabled != nil
+	fireCount := 0
+	if parentMarked {
+		var err error
+		if fireCount, err = s.parentFireCount(ctx, parent.DefID); err != nil {
+			return errResult(fmt.Sprintf("%s: read the parent's fire count: %s", opLabel, err)), nil
+		}
+	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("%s: marshal: %s", opLabel, err)), nil
@@ -605,7 +641,13 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	if err := s.Store.ScheduleDefSetActive(ctx, parent.TenantID, parent.Name, created.DefID, ident.AgentID); err != nil {
 		return errResult(fmt.Sprintf("%s: promote: %s", opLabel, err)), nil
 	}
-	_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
+	if parentMarked {
+		if err := s.Store.ScheduleRunStateSeedWithFireCount(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()), fireCount); err != nil {
+			return errResult(fmt.Sprintf("%s: created def %s but could not carry its parent's fire count: %s", opLabel, created.DefID, err)), nil
+		}
+	} else {
+		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
+	}
 	return okJSON(scheduleRowResponse(created, true))
 }
 
@@ -972,6 +1014,59 @@ func assertRequiredCredentials(def mergedScheduleDef) error {
 	return nil
 }
 
+// resolveCaptureDisabled applies a fork's overlay to the capture_disabled
+// marker the def inherited from its parent. A key counts as re-supplied when
+// the OVERLAY gives it a non-empty value in user_credentials or
+// user_credentials_from_env — not when the parent happens to hold an env
+// source for it already, since the parent's literal was what it was authored
+// to fire with. Every key re-supplied: the marker is dropped and the overlay's
+// `enabled` stands. Otherwise the marker keeps the keys still missing and the
+// def stays disabled whatever the overlay says. Reports whether the parent was
+// marked — which is what makes the fork inherit the parent's fire count.
+func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage) (bool, error) {
+	if def.CaptureDisabled == nil {
+		return false, nil
+	}
+	var ov struct {
+		UserCredentials        map[string]string `json:"user_credentials"`
+		UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
+	}
+	if len(overlay) > 0 {
+		if err := json.Unmarshal(overlay, &ov); err != nil {
+			return true, fmt.Errorf("parse overlay: %w", err)
+		}
+	}
+	var missing []string
+	for _, k := range def.CaptureDisabled.StrippedCredentials {
+		if ov.UserCredentials[k] != "" || ov.UserCredentialsFromEnv[k] != "" {
+			continue
+		}
+		missing = append(missing, k)
+	}
+	if len(missing) == 0 {
+		def.CaptureDisabled = nil
+		return true, nil
+	}
+	def.CaptureDisabled = &mergedScheduleCaptureDisabled{StrippedCredentials: missing}
+	off := false
+	def.Enabled = &off
+	return true, nil
+}
+
+// parentFireCount reads the fire count a new version of a marked def must
+// start from. A parent with no run state has never fired: 0.
+func (s *ScheduleDef) parentFireCount(ctx context.Context, parentDefID string) (int, error) {
+	st, err := s.Store.ScheduleRunStateGet(ctx, parentDefID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return st.FireCount, nil
+}
+
 // ---- response shape ----
 
 func scheduleRowResponse(row store.ScheduleDefRow, promoted bool) map[string]any {
@@ -1068,6 +1163,21 @@ type mergedScheduleDef struct {
 	// bodies byte-identical. Drift-tested against scheduler.scheduleDef /
 	// SubstrateScheduleDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// CaptureDisabled is the marker a snapshot restore writes on a def whose
+	// literal user_credentials values were stripped from the snapshot (they
+	// never travel). Server authority: only restore sets it, and applyOverlay
+	// never copies it, so an overlay can neither set nor clear it. A fork of
+	// a marked def inherits its fire_count, and the marker clears only when
+	// the fork re-supplies EVERY listed key — until then the def stays
+	// disabled, so no trigger fires without the credentials it was authored
+	// with, and re-enabling never hands a max_fires budget back.
+	CaptureDisabled *mergedScheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+}
+
+// mergedScheduleCaptureDisabled lists the credential keys a snapshot stripped
+// and a fork has not yet re-supplied.
+type mergedScheduleCaptureDisabled struct {
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
 }
 
 // mergedSchedulePromptSeg mirrors config.ScheduledRunSegment with JSON tags.
