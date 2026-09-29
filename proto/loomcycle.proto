@@ -1567,6 +1567,30 @@ message Agent {
   // wire's snake_case keys — what UpdateConfiguredRun edits. GetAgent only,
   // and only while the run is configured; it never holds a secret.
   bytes draft = 16;
+  // agent is the agent's name (e.g. "qa-agent"), from the run's session. Empty
+  // when the session row is missing.
+  string agent = 17;
+  // interactive marks a persistent interactive run (parks at end_turn waiting
+  // for operator input).
+  bool interactive = 18;
+  // awaited_state is what a RUNNING run is currently blocked on: "channel" (an
+  // open Channel subscribe), "interrupted" (an open Interruption ask) or
+  // "review" (held for an operator's verdict). Empty for a run making progress
+  // and for every run that is not running. awaited_on names the channel
+  // (state "channel") or the interruption kind (state "interrupted").
+  string awaited_state = 19;
+  string awaited_on = 20;
+  // replica_id is the replica owning the run's live cancel handle. Empty in a
+  // single-replica deployment.
+  string replica_id = 21;
+  // parent_context is the caller-tracking lineage the run carries (inherited
+  // from its root for sub-agents), so a sub-agent's cost can be attributed to
+  // the request that started it in one read. Unset when the run carried none.
+  //
+  // The HTTP read's resident / resident_state have no field here: they come
+  // from the serving replica's in-process registry of resident sub-agents,
+  // which this transport cannot reach.
+  ParentContext parent_context = 22;
 }
 
 // AgentUsage mirrors agentResponseUsage.
@@ -1576,6 +1600,9 @@ message AgentUsage {
   int64 cache_creation_tokens = 3;
   int64 cache_read_tokens = 4;
   string model = 5;
+  // provider is the provider that served the run's final successful
+  // iteration — distinct from model, so a fallback-routed run is visible.
+  string provider = 6;
 }
 
 message CancelAgentRequest {

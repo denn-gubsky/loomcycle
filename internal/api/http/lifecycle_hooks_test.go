@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -76,7 +77,7 @@ func TestLifecycleHooks_AHooksHoldWaitsForAVerdictNotADisarm(t *testing.T) {
 	defer stop()
 	h.waitFrame(frames, "awaiting_review")
 	h.waitHeld(runID, 1)
-	if held, by := heldBy(t.Context(), h.st, runID); !held || by != "ops/hold" {
+	if held, by := awaited.HeldBy(t.Context(), h.st, runID); !held || by != "ops/hold" {
 		t.Fatalf("held = %v by %q", held, by)
 	}
 

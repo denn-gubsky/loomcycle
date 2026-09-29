@@ -33,6 +33,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -244,6 +245,7 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 	}
 	_, live := s.cancelReg.Get(agentID)
 	out := runToProto(run, live)
+	s.fillAwaitedState(ctx, out)
 	// Single-run read only, like HTTP GET /v1/agents/{id} (RFC DI).
 	out.Result = run.Result
 	out.Spec = run.RunConfig
@@ -343,7 +345,9 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 			continue
 		}
 		_, live := s.cancelReg.Get(r.AgentID)
-		out.Agents = append(out.Agents, runToProto(r, live))
+		a := runToProto(r, live)
+		s.fillAwaitedState(ctx, a)
+		out.Agents = append(out.Agents, a)
 	}
 	return out, nil
 }
@@ -475,6 +479,7 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 		AgentId:       r.AgentID,
 		RunId:         r.ID,
 		SessionId:     r.SessionID,
+		Agent:         r.Agent,
 		UserId:        r.UserID,
 		ParentAgentId: r.ParentAgentID,
 		Status:        string(r.Status),
@@ -487,8 +492,12 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 			CacheCreationTokens: int64(r.CacheCreationTokens),
 			CacheReadTokens:     int64(r.CacheReadTokens),
 			Model:               r.Model,
+			Provider:            r.Provider,
 		},
-		Live: live,
+		Live:          live,
+		Interactive:   r.Interactive,
+		ReplicaId:     r.ReplicaID,
+		ParentContext: parentContextToProto(r.ParentContext),
 	}
 	if !r.CompletedAt.IsZero() {
 		out.CompletedAt = timestamppb.New(r.CompletedAt)
@@ -497,6 +506,16 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 		out.LastHeartbeatAt = timestamppb.New(r.LastHeartbeatAt)
 	}
 	return out
+}
+
+// fillAwaitedState sets what a running run is blocked on — the rule the HTTP
+// run read applies, so the two transports answer alike for the same run. It
+// needs the run's events, which runToProto does not have.
+func (s *Server) fillAwaitedState(ctx context.Context, a *loomcyclepb.Agent) {
+	if s.store == nil || a.GetStatus() != string(store.RunRunning) {
+		return
+	}
+	a.AwaitedState, a.AwaitedOn = awaited.ForRun(ctx, s.store, a.GetRunId())
 }
 
 // validIdent matches [A-Za-z0-9_-]{1,128} — same charset the HTTP

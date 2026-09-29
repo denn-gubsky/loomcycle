@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -118,7 +119,7 @@ func TestBreakpoints_DisarmingReviewLeavesAHooksHold(t *testing.T) {
 	}
 	walkRunID, set := walkUnderReview(t, h, "draft:review")
 	member, done := startWalkMember(t, h, walkRunID, set, "draft")
-	if held, by := heldBy(t.Context(), h.st, member); !held || by != "ops/hold" {
+	if held, by := awaited.HeldBy(t.Context(), h.st, member); !held || by != "ops/hold" {
 		t.Fatalf("held = %v by %q, want the hook's hold", held, by)
 	}
 
