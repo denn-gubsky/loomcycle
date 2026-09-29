@@ -43,7 +43,7 @@ func TestStoreContract(t *testing.T) {
 // tenant "b" would read tenant "a"'s row; the test cannot compile against
 // that signature at all. Runs on a FRESH SQLite DB, where the
 // (tenant_id, scope, scope_id, key) PRIMARY KEY enforces the isolation
-// (an upgraded DB keeps the old 3-tuple PK — see the migrate() note).
+// (an upgraded DB gets the same PK from the rebuild in tenant_key_rebuild.go).
 func TestStore_MemoryTenantIsolation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -343,8 +343,8 @@ func TestMigrate_UpgradeFromV084ChannelMessages(t *testing.T) {
 // UNIQUE(name, version), agent_def_active with PRIMARY KEY(name),
 // dynamic_agents with PRIMARY KEY(name), none carrying tenant_id. Then
 // reopen via the store path (re-runs migrate(), which ALTERs in tenant_id
-// but CANNOT rewrite the PK/UNIQUE in place) and assert the three runtime
-// upserts SUCCEED.
+// and then rebuilds each table on its tenant-leading key) and assert the
+// three runtime upserts SUCCEED.
 //
 // Pre-fix, this FAILS: the upserts' ON CONFLICT(tenant_id, name) /
 // version-bump UNIQUE(tenant_id, name, version) have no matching index on
@@ -487,8 +487,8 @@ func TestMigrate_UpgradeFromLegacyAgentDefPlaneTenantUpserts(t *testing.T) {
 // schema — skill_defs with UNIQUE(name, version) and skill_def_active
 // with PRIMARY KEY(name), neither carrying tenant_id. (Skills have NO
 // dynamic_skills table.) Then reopen via the store path (re-runs
-// migrate(), which ALTERs in tenant_id but CANNOT rewrite the PK/UNIQUE
-// in place) and assert SkillDefCreate + SkillDefSetActive SUCCEED.
+// migrate(), which ALTERs in tenant_id and then rebuilds each table on its
+// tenant-leading key) and assert SkillDefCreate + SkillDefSetActive SUCCEED.
 //
 // Pre-fix, this FAILS: SkillDefSetActive's ON CONFLICT(tenant_id, name)
 // and the version-bump UNIQUE(tenant_id, name, version) have no matching
@@ -603,8 +603,9 @@ func TestMigrate_UpgradeFromLegacySkillDefPlaneTenantUpserts(t *testing.T) {
 // the LEGACY (pre-RFC-N) mcp-server-def-plane schema — mcp_server_defs with
 // UNIQUE(name, version) and mcp_server_def_active with PRIMARY KEY(name),
 // neither carrying tenant_id. Then reopen via the store path (re-runs
-// migrate(), which ALTERs in tenant_id but CANNOT rewrite the PK/UNIQUE in
-// place) and assert MCPServerDefCreate + MCPServerDefSetActive SUCCEED.
+// migrate(), which ALTERs in tenant_id and then rebuilds each table on its
+// tenant-leading key) and assert MCPServerDefCreate + MCPServerDefSetActive
+// SUCCEED.
 //
 // Pre-fix, this FAILS: the version-bump UNIQUE(tenant_id, name, version) and
 // MCPServerDefSetActive's ON CONFLICT(tenant_id, name) have no matching index
@@ -718,10 +719,9 @@ func TestMigrate_UpgradeFromLegacyMCPServerDefPlaneTenantUpserts(t *testing.T) {
 // webhook). Same in-place-upgrade gap the agent/skill/mcp tests above pin:
 // stand up the LEGACY (pre-tenant) schema for each — *_defs with
 // UNIQUE(name, version), *_def_active with PRIMARY KEY(name), no tenant_id —
-// reopen (migrate ALTERs in tenant_id but CANNOT rewrite the PK/UNIQUE in
-// place), and assert the runtime create/version-bump/promote upserts SUCCEED
-// against the idempotent (tenant_id, name[, version]) indexes addIndexes
-// supplies. Pre-fix (or with a typo'd index name) these FAIL on the FIRST
+// reopen (migrate ALTERs in tenant_id, then rebuilds each table on its
+// tenant-leading key), and assert the runtime create/version-bump/promote
+// upserts SUCCEED against the (tenant_id, name[, version]) keys. Pre-fix (or with a typo'd index name) these FAIL on the FIRST
 // create/promote even single-tenant.
 func TestMigrate_UpgradeFromLegacyRemainingDefPlanesTenantUpserts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy_remaining.db")

@@ -265,14 +265,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// scope_id, key) isolates same-named agents across tenants; the
 		// partial expires_at index keeps the sweeper's DELETE cheap (no
 		// full-table scan). On an UPGRADED DB the addColumns ALTER adds
-		// tenant_id + the RFC BL columns but SQLite cannot rewrite the PK
-		// in place, so the PK stays (scope, scope_id, key) — byte-equivalent
-		// for single-tenant (everything tenant_id=''), but multi-tenant
-		// memory isolation requires Postgres or a FRESH sqlite DB (mirrors
-		// the agent_def_active precedent above). The runtime upserts'
-		// ON CONFLICT(tenant_id, scope, scope_id, key) target the
-		// uniq_memory_tenant_scope_scope_id_key index in addIndexes below,
-		// which exists on both fresh and upgraded DBs.
+		// tenant_id + the RFC BL columns, and since SQLite cannot rewrite a
+		// PK in place, rebuildTenantBlindKeys (tenant_key_rebuild.go) then
+		// replaces the table carrying the old (scope, scope_id, key) PK with
+		// this CREATE. The runtime upserts' ON CONFLICT(tenant_id, scope,
+		// scope_id, key) target the uniq_memory_tenant_scope_scope_id_key
+		// index in addIndexes below, which exists on every DB.
 		`CREATE TABLE IF NOT EXISTS memory (
 			scope             TEXT NOT NULL,
 			scope_id          TEXT NOT NULL,
@@ -346,11 +344,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// land via the addColumns block below (idempotent ALTER pattern,
 		// works against both fresh + existing v0.8.4 schemas).
 		// tenant_id (leading the PK) isolates same-named agents/users
-		// across tenants — same rationale + SQLite upgrade caveat as the
-		// memory table above (fresh DB gets the tenant-leading PK; an
-		// UPGRADED DB keeps the old PK because SQLite can't rewrite it in
-		// place — byte-equivalent for single-tenant, Postgres for real
-		// multi-tenant isolation).
+		// across tenants — same rationale + SQLite upgrade path as the
+		// memory table above (an UPGRADED DB's old tenant-blind PK is
+		// replaced by rebuildTenantBlindKeys).
 		`CREATE TABLE IF NOT EXISTS channel_messages (
 			id                   TEXT    NOT NULL,
 			channel              TEXT    NOT NULL,
@@ -482,11 +478,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// CREATE applies the composite PK directly. On an UPGRADED v0.8.x
 		// DB this CREATE is a no-op (table exists) and the tenant_id column
 		// is added by the addColumns ALTER below; SQLite cannot rewrite a
-		// PRIMARY KEY in place, so an upgraded DB keeps PK(name). That is
-		// byte-equivalent for single-tenant (everything tenant_id=''); true
-		// per-tenant isolation on SQLite requires a fresh DB (Postgres
-		// upgrades in place via migration 0037). The contract tests run on
-		// a fresh DB, so the isolation guarantee is verified here.
+		// PRIMARY KEY in place, so rebuildTenantBlindKeys
+		// (tenant_key_rebuild.go) then replaces a table still carrying
+		// PK(name) with this CREATE (Postgres upgrades in place via
+		// migration 0037). The other def-plane tables that predate the
+		// tenant axis follow the same upgrade path.
 		`CREATE TABLE IF NOT EXISTS agent_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
@@ -521,11 +517,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		// skill_defs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
 		// — two tenants own the same name independently. On a FRESH DB this
-		// CREATE applies the composite PK; on an UPGRADED v0.8.x DB the
-		// tenant_id column is added by the addColumns ALTER below and the PK
-		// stays (name) (SQLite can't rewrite a PK in place — byte-equivalent
-		// for single-tenant tenant_id=''). See the agent_def_active note for
-		// the full SQLite upgrade caveat.
+		// CREATE applies the composite PK. See the agent_def_active note for
+		// the SQLite upgrade path.
 		`CREATE TABLE IF NOT EXISTS skill_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES skill_defs(def_id),
@@ -561,9 +554,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		// teamdefs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
 		// — two tenants own the same name independently. On a FRESH DB this
-		// CREATE applies the composite PK. See the skill_def_active note for
-		// the full SQLite upgrade caveat (teamdefs is a fresh table, so no
-		// upgrade path applies, but the pattern is identical).
+		// CREATE applies the composite PK (teamdefs was born tenant-scoped,
+		// so no SQLite upgrade path applies).
 		`CREATE TABLE IF NOT EXISTS teamdef_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES teamdefs(def_id),
@@ -632,10 +624,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS mcp_server_defs_by_run    ON mcp_server_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// mcp_server_defs_by_content_sha256 — see agent_defs_by_content_sha256 note above.
 		// RFC N: tenant-scoped active pointer, PRIMARY KEY(tenant_id, name)
-		// — two tenants own the same name independently. Fresh-DB-only PK
-		// shape; an upgraded v0.9.x DB keeps PK(name) (SQLite can't rewrite
-		// a PK in place) which is byte-equivalent for single-tenant. See the
-		// agent_def_active note earlier for the full upgrade caveat.
+		// — two tenants own the same name independently. See the
+		// agent_def_active note earlier for the SQLite upgrade path.
 		`CREATE TABLE IF NOT EXISTS mcp_server_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES mcp_server_defs(def_id),
@@ -670,9 +660,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS schedule_defs_by_parent ON schedule_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS schedule_defs_by_run    ON schedule_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
-		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
-		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
-		// target. See the agent_def_active note for the SQLite upgrade caveat.
+		// on a FRESH DB. See the agent_def_active note for the SQLite
+		// upgrade path.
 		`CREATE TABLE IF NOT EXISTS schedule_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES schedule_defs(def_id),
@@ -721,9 +710,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_parent ON a2a_server_card_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_run    ON a2a_server_card_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
-		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
-		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
-		// target. See the agent_def_active note for the SQLite upgrade caveat.
+		// on a FRESH DB. See the agent_def_active note for the SQLite
+		// upgrade path.
 		`CREATE TABLE IF NOT EXISTS a2a_server_card_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES a2a_server_card_defs(def_id),
@@ -751,9 +739,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_parent ON a2a_agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_run    ON a2a_agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
-		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
-		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
-		// target. See the agent_def_active note for the SQLite upgrade caveat.
+		// on a FRESH DB. See the agent_def_active note for the SQLite
+		// upgrade path.
 		`CREATE TABLE IF NOT EXISTS a2a_agent_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES a2a_agent_defs(def_id),
@@ -788,9 +775,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS webhook_defs_by_parent ON webhook_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS webhook_defs_by_run    ON webhook_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
-		// on a FRESH DB; an UPGRADED DB keeps PK(name) and gets the
-		// (tenant_id, name) UNIQUE INDEX in addIndexes as the ON CONFLICT
-		// target. See the agent_def_active note for the SQLite upgrade caveat.
+		// on a FRESH DB. See the agent_def_active note for the SQLite
+		// upgrade path.
 		`CREATE TABLE IF NOT EXISTS webhook_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES webhook_defs(def_id),
@@ -825,10 +811,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_parent ON memory_backend_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_backend_defs_by_run    ON memory_backend_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
-		// on a FRESH DB; an UPGRADED DB keeps PK(name) (SQLite can't rewrite a
-		// PK in place) and gets the (tenant_id, name) UNIQUE INDEX in
-		// addIndexes below as the ON CONFLICT target. See the agent_def_active
-		// note above for the full SQLite upgrade caveat.
+		// on a FRESH DB. See the agent_def_active note for the SQLite
+		// upgrade path.
 		`CREATE TABLE IF NOT EXISTS memory_backend_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES memory_backend_defs(def_id),
@@ -863,10 +847,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS document_source_defs_by_parent ON document_source_defs(parent_def_id) WHERE parent_def_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS document_source_defs_by_run    ON document_source_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL`,
 		// RFC N: tenant-scoped active pointer. PRIMARY KEY(tenant_id, name)
-		// on a FRESH DB; an UPGRADED DB keeps PK(name) (SQLite can't rewrite a
-		// PK in place) and gets the (tenant_id, name) UNIQUE INDEX in
-		// addIndexes below as the ON CONFLICT target. See the agent_def_active
-		// note above for the full SQLite upgrade caveat.
+		// on a FRESH DB. See the agent_def_active note for the SQLite
+		// upgrade path.
 		`CREATE TABLE IF NOT EXISTS document_source_def_active (
 			name                  TEXT    NOT NULL,
 			def_id                TEXT    NOT NULL REFERENCES document_source_defs(def_id),
@@ -1023,9 +1005,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		// the JSON-encoded config.AgentDef body verbatim (the store
 		// doesn't depend on internal/config; same pattern as v0.8.5
 		// agent_defs). expires_at = 0 means "no expiry".
-		// RFC N: tenant-scoped — PRIMARY KEY(tenant_id, name). Fresh-DB-only
-		// PK shape; see the agent_def_active note above for the SQLite
-		// upgrade caveat.
+		// RFC N: tenant-scoped — PRIMARY KEY(tenant_id, name); see the
+		// agent_def_active note above for the SQLite upgrade path.
 		`CREATE TABLE IF NOT EXISTS dynamic_agents (
 			name        TEXT    NOT NULL,
 			definition  BLOB    NOT NULL,
@@ -1121,10 +1102,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Channel tenant axis. Idempotent ALTER for existing DBs; the
 		// fresh CREATE TABLE above already declares the column (the
 		// duplicate-column guard short-circuits these on fresh deploys).
-		// SQLite can't rewrite the PK in place, so an upgraded DB keeps
-		// its old (channel, scope, scope_id[, id]) / (name) PK — the
-		// ON CONFLICT upsert targets a dedicated uniq index (added in
-		// addIndexes) that exists on both fresh + upgraded DBs.
+		// SQLite can't rewrite the PK in place, so rebuildTenantBlindKeys
+		// replaces an upgraded table's old (channel, scope, scope_id[, id]) /
+		// (name) PK once these columns exist.
 		`ALTER TABLE channel_messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE channel_cursors ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE channels ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
@@ -1172,11 +1152,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE runs ADD COLUMN tenant_id TEXT`,
 		// RFC N — tenant-scope the agent definition plane. On an upgraded
 		// v0.8.x DB the CREATE TABLE statements above were no-ops, so these
-		// ALTERs add the tenant_id column to the existing tables. The
-		// PRIMARY KEY stays (name) on the upgraded table (SQLite can't
-		// rewrite a PK in place) — functionally identical for single-tenant
-		// (tenant_id=''); see the CREATE TABLE notes for the isolation
-		// caveat. DEFAULT '' backfills existing rows to the shared tenant.
+		// ALTERs add the tenant_id column to the existing tables; the old
+		// PRIMARY KEY(name) / UNIQUE(name, version) is then replaced by
+		// rebuildTenantBlindKeys (SQLite can't rewrite a key in place).
+		// DEFAULT '' backfills existing rows to the shared tenant.
 		`ALTER TABLE agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC CY item 8. Default 0 so a legacy row reads as NOT
 		// operator-authored — the safe direction: nothing gains authority by
@@ -1189,25 +1168,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE dynamic_agents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC N — tenant-scope the skill definition plane (mirror of the
-		// agent ALTERs above). Same SQLite upgrade caveat: the PK stays
-		// (name) on the upgraded skill_def_active table; functionally
-		// identical for single-tenant (tenant_id=''). DEFAULT '' backfills
-		// existing rows to the shared tenant.
+		// agent ALTERs above), same SQLite upgrade path. DEFAULT ''
+		// backfills existing rows to the shared tenant.
 		`ALTER TABLE skill_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE skill_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC N — tenant-scope the MCP server definition plane (mirror of the
-		// agent + skill ALTERs above). Same SQLite upgrade caveat: the PK
-		// stays (name) on the upgraded mcp_server_def_active table;
-		// functionally identical for single-tenant (tenant_id=''). DEFAULT ''
+		// agent + skill ALTERs above), same SQLite upgrade path. DEFAULT ''
 		// backfills existing rows to the shared tenant.
 		`ALTER TABLE mcp_server_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mcp_server_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		// RFC N (completion) — tenant-scope the remaining definition planes:
 		// memory backend / schedule / A2A (server card + agent) / webhook
-		// (mirror of the agent + skill + MCP ALTERs above). Same SQLite
-		// upgrade caveat: the *_active PK stays (name) on the upgraded table;
-		// functionally identical for single-tenant (tenant_id=''). DEFAULT ''
-		// backfills existing rows to the shared tenant.
+		// (mirror of the agent + skill + MCP ALTERs above), same SQLite
+		// upgrade path. DEFAULT '' backfills existing rows to the shared
+		// tenant.
 		`ALTER TABLE memory_backend_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE memory_backend_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE a2a_agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
@@ -1273,10 +1247,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE sessions ADD COLUMN summary_updated_at INTEGER`,
 		// RFC BL — tenant-scope the Memory store + provenance/access columns.
 		// On an UPGRADED DB these ALTERs add the columns to the existing
-		// memory table; the PK stays (scope, scope_id, key) (SQLite can't
-		// rewrite it in place — see the CREATE TABLE note + the agent_def_active
-		// caveat: multi-tenant memory isolation requires Postgres or a fresh
-		// sqlite DB). DEFAULT '' backfills existing rows to the legacy tenant.
+		// memory table; its old (scope, scope_id, key) PK is then replaced by
+		// rebuildTenantBlindKeys (see the CREATE TABLE note). DEFAULT ''
+		// backfills existing rows to the legacy tenant.
 		`ALTER TABLE memory ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE memory ADD COLUMN origin TEXT`,
 		`ALTER TABLE memory ADD COLUMN class TEXT`,
@@ -1356,6 +1329,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate re-home tenant dirents: %w", err)
 	}
 
+	// After the ALTERs (every current column exists to copy) and before
+	// addIndexes (whose indexes then land on the rebuilt tables).
+	if err := s.rebuildTenantBlindKeys(ctx, stmts); err != nil {
+		return fmt.Errorf("migrate rebuild tenant keys: %w", err)
+	}
+
 	addIndexes := []string{
 		// Drives the hot lookup paths for the cancel/get endpoints.
 		// Partial indexes (WHERE ... IS NOT NULL) keep the index small —
@@ -1398,11 +1377,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS channel_messages_awaiting_hook ON channel_messages(id) WHERE visible_at = %d`,
 			store.ChannelHookHeldVisibleAt().UnixNano()),
 		// The channel_cursors upsert (ChannelAck) targets this uniq index
-		// via ON CONFLICT(tenant_id, channel, scope, scope_id). It exists
-		// on BOTH a fresh DB (where it duplicates the PK) and an upgraded
-		// DB (where the PK stays the old tenant-blind tuple), so the ack
-		// path works regardless of when the DB was created — mirrors
-		// uniq_memory_tenant_scope_scope_id_key.
+		// via ON CONFLICT(tenant_id, channel, scope, scope_id). It
+		// duplicates the PK — on an upgraded DB too, once
+		// rebuildTenantBlindKeys has replaced the old tenant-blind one — and
+		// is kept so the ON CONFLICT target never depends on a DB's history.
+		// Mirrors uniq_memory_tenant_scope_scope_id_key.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_channel_cursors_tenant ON channel_cursors(tenant_id, channel, scope, scope_id)`,
 		// v0.8.x process_samples_by_sampled_at. Drives the read
 		// path for /v1/_metrics/samples (window scan) and the
@@ -1450,13 +1429,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Lives in addIndexes (not the CREATE TABLE block) so the tenant_id
 		// column added by addColumns above is guaranteed present first.
 		//
-		// Residual caveat (unchanged): the upgraded agent_def_active /
-		// dynamic_agents / skill_def_active / mcp_server_def_active tables
-		// still carry PRIMARY KEY(name), so two tenants cannot share a name on
-		// a PRE-EXISTING SQLite DB — a fresh DB is required for full
-		// multi-tenant on SQLite. These indexes restore single-tenant upgrade
-		// functionality only; they do not retrofit the per-tenant isolation a
-		// fresh DB's composite PK provides. The skill + mcp planes have NO
+		// These indexes alone did not give per-tenant isolation: the old
+		// PRIMARY KEY(name) / UNIQUE(name, version) still fired first, so two
+		// tenants could not share a name on a pre-existing SQLite DB.
+		// rebuildTenantBlindKeys now replaces those keys before this block
+		// runs, which leaves these redundant with the key on every DB; they
+		// are kept as the stable ON CONFLICT target. The skill + mcp planes have NO
 		// dynamic_* tier (skills = static skills.Set + the
 		// skill_defs/skill_def_active substrate; mcp = static cfg.MCPServers +
 		// the mcp_server_defs/mcp_server_def_active substrate), so each needs
@@ -1515,11 +1493,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_defs_tenant_name_version ON webhook_defs(tenant_id, name, version)`,
 		// RFC BL — the ON CONFLICT(tenant_id, scope, scope_id, key) target for
 		// the Memory upserts (MemorySet / MemoryIncrement / MemoryAtomicUpdate).
-		// On a FRESH DB it's redundant with the composite PRIMARY KEY; on an
-		// UPGRADED DB the PK stays (scope, scope_id, key) (SQLite can't rewrite
-		// it in place), so this index supplies the ON CONFLICT target — without
-		// it the upserts fail "ON CONFLICT clause does not match ..." even
-		// single-tenant. Mirrors the def-plane indexes above.
+		// Redundant with the composite PRIMARY KEY (on an upgraded DB too,
+		// once rebuildTenantBlindKeys has replaced the old (scope, scope_id,
+		// key) PK), and kept as the stable ON CONFLICT target — without a
+		// matching key the upserts fail "ON CONFLICT clause does not match
+		// ...". Mirrors the def-plane indexes above.
 		`CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_tenant_scope_scope_id_key ON memory(tenant_id, scope, scope_id, key)`,
 		// MOVED HERE FROM THE CREATE-TABLE BLOCK, and the move is the fix for an
 		// upgrade that could not start at all.
@@ -4510,9 +4488,7 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 // SnapshotRestoreChannelCursor implements store.Store. INSERT OR
 // IGNORE on (tenant_id, channel, scope, scope_id) — first restore writes the
 // snapshot's cursor; subsequent restores leave an evolved live cursor
-// alone so the (bool, error) return reads as "not inserted." A DB created
-// before the channel tenant axis keeps its tenant-blind PK, which the
-// IGNORE also honours there.
+// alone so the (bool, error) return reads as "not inserted."
 func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.ChannelCursorEntry) (bool, error) {
 	if c.Channel == "" || c.Cursor == "" {
 		return false, fmt.Errorf("snapshot restore channel_cursor: channel and cursor required")
@@ -6326,9 +6302,8 @@ func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope 
 	}
 
 	now := time.Now().UnixNano()
-	// ON CONFLICT targets uniq_channel_cursors_tenant (added in addIndexes)
-	// so the upsert works on both a fresh DB (new PK) and an upgraded DB
-	// (old PK) — see the memory upsert precedent.
+	// ON CONFLICT targets uniq_channel_cursors_tenant (added in addIndexes;
+	// the same columns as the PK) — see the memory upsert precedent.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO channel_cursors(channel, scope, scope_id, cursor, updated_at, tenant_id)
 		 VALUES (?, ?, ?, ?, ?, ?)
