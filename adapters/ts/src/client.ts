@@ -2109,7 +2109,8 @@ export class LoomcycleClient {
   }
 
   /** Read the debug breakpoints armed on a live team walk
-   *  (`GET /v1/runs/{run_id}/breakpoints`).
+   *  (`GET /v1/runs/{run_id}/breakpoints`), and the review deadline its
+   *  member holds get (`review_ttl_seconds`, 0 = none).
    *
    *  404 when no walk is in flight under that run on this replica — loudly,
    *  because an arming that appeared to succeed and then never paused anything
@@ -2139,17 +2140,28 @@ export class LoomcycleClient {
    *  runs no member, is refused with 400 `invalid_breakpoint` and the previous
    *  arming is kept — rather than armed and silently never hit.
    *
-   *  A pause is read and answered through the run's interrupts. */
+   *  A pause is read and answered through the run's interrupts.
+   *
+   *  `opts.reviewTtlSeconds` also replaces the walk's review deadline — a
+   *  member hold nobody rules on within it ends rejected; `0` is no deadline.
+   *  Omit it to leave the deadline as it is. It applies from each member's
+   *  NEXT hold: a hold already in progress keeps the `expires_at` it
+   *  announced. A negative or out-of-range value is refused with 400
+   *  `invalid_review_ttl`, and so is the set sent with it. Like the
+   *  breakpoints, it lives only as long as the walk; a member restored after
+   *  a restart keeps the deadline it started with. */
   async setRunBreakpoints(
     runId: string,
     breakpoints: string[],
-    opts?: { signal?: AbortSignal },
+    opts?: { signal?: AbortSignal; reviewTtlSeconds?: number },
   ): Promise<TeamBreakpoints> {
+    const body: Record<string, unknown> = { breakpoints };
+    if (opts?.reviewTtlSeconds !== undefined) body.review_ttl_seconds = opts.reviewTtlSeconds;
     return putJSON<TeamBreakpoints>(
       this.ctx,
       `/v1/runs/${encodeURIComponent(runId)}/breakpoints`,
-      { breakpoints },
-      opts,
+      body,
+      { signal: opts?.signal },
     );
   }
 

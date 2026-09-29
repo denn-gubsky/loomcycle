@@ -2494,7 +2494,8 @@ export interface TeamRunTarget {
    *  `"<state>:review"`. */
   review?: string[];
   /** With `review`: end a member hold nobody rules on within this many
-   *  seconds as rejected. Omit for no deadline. */
+   *  seconds as rejected. Omit for no deadline. Changeable while the walk
+   *  runs — see {@link LoomcycleClient.setRunBreakpoints}. */
   reviewTtlSeconds?: number;
 }
 
@@ -2524,6 +2525,10 @@ export interface TeamBreakpoints {
    *  sorted, so what you read back is what the walk will actually do rather
    *  than an echo of the shorthand you sent. */
   armed: string[];
+  /** The review deadline, in seconds, a member hold beginning now gets —
+   *  0 = none. Starts as the run's {@link TeamRunTarget.reviewTtlSeconds};
+   *  changeable with {@link LoomcycleClient.setRunBreakpoints}. */
+  review_ttl_seconds: number;
 }
 
 /** Input for {@link LoomcycleClient.path} — the RFC AL Unix-like VFS tool

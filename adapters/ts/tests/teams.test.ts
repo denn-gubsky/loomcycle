@@ -363,6 +363,39 @@ describe("getRunBreakpoints / setRunBreakpoints", () => {
     });
   });
 
+  it("sends review_ttl_seconds with the set when asked, and reads it back", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_1", armed: ["wave:review"], review_ttl_seconds: 600 }),
+    ]);
+    const res = await client.setRunBreakpoints("r_1", ["wave:review"], { reviewTtlSeconds: 600 });
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
+      breakpoints: ["wave:review"],
+      review_ttl_seconds: 600,
+    });
+    expect(res.review_ttl_seconds).toBe(600);
+  });
+
+  it("sends 0 as no deadline rather than dropping it", async () => {
+    // Omitting it would read as "leave the deadline as it is".
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_1", armed: [], review_ttl_seconds: 0 }),
+    ]);
+    await client.setRunBreakpoints("r_1", [], { reviewTtlSeconds: 0 });
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
+      breakpoints: [],
+      review_ttl_seconds: 0,
+    });
+  });
+
+  it("leaves the deadline out when not asked to change it", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ run_id: "r_1", armed: ["wave:before_dispatch"], review_ttl_seconds: 90 }),
+    ]);
+    await client.setRunBreakpoints("r_1", ["wave"], { signal: new AbortController().signal });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty("review_ttl_seconds");
+  });
+
   it("percent-encodes the run id into the path", async () => {
     const { client, fetchMock } = makeClient([jsonResponse({ run_id: "a/b", armed: [] })]);
     await client.getRunBreakpoints("a/b");
