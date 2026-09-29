@@ -23,13 +23,26 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// Store is the minimal store surface the tracker needs (RFC AW): the RFC AV
-// usage aggregation to seed the month-to-date counters, and the token_limits
+// Store is the minimal store surface the tracker needs (RFC AW): what
+// MonthToDate reads to seed the month-to-date counters, and the token_limits
 // rows for the cached ceilings. Declared locally so the package depends only on
 // what it uses.
 type Store interface {
-	UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error)
+	MonthToDateStore
 	TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, error)
+}
+
+// MonthToDateStore is what MonthToDate reads: the usage ledger, and the usage
+// a snapshot restore carried in from another instance.
+type MonthToDateStore interface {
+	UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error)
+	UsageCarryForMonth(ctx context.Context, month time.Time) ([]store.UsageCarryRow, error)
+}
+
+// UsageKey is one (tenant, user) pair; UserID is "" for runs with no user.
+type UsageKey struct {
+	TenantID string
+	UserID   string
 }
 
 // tierPair is a scope's cached soft/hard ceilings; a nil pointer = that tier
@@ -77,40 +90,72 @@ func New(st Store) *Tracker {
 	}
 }
 
-// monthStartUTC returns the first instant (00:00 UTC) of now's calendar month.
-func monthStartUTC(now time.Time) time.Time {
+// MonthStart returns the first instant (00:00 UTC) of now's calendar month —
+// the budget window every counter covers.
+func MonthStart(now time.Time) time.Time {
 	y, m, _ := now.UTC().Date()
 	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
 }
 
 // tokensOf sums the four token buckets — the total the budget counts (RFC AW #5).
-func (t *Tracker) tokensOf(a store.UsageAggregate) int64 {
+func tokensOf(a store.UsageAggregate) int64 {
 	return a.InputTokens + a.OutputTokens + a.CacheCreationTokens + a.CacheReadTokens
 }
 
-// Seed loads the current month-to-date counters from the RFC AV ledger and the
-// ceilings from token_limits. Called once at boot; safe to call again. A no-op
-// (nil) for a store-less tracker.
+// MonthToDate is the token total per (tenant, user) for the UTC month starting
+// at month: the ledger's usage since then, plus any usage a snapshot restore
+// carried in for that month. It is the ONE computation behind both the
+// tracker's Seed and a snapshot capture's month-to-date block, so what a
+// capture carries is exactly what the source enforces — including usage it was
+// itself carried, which a second hop (A→B→C) would otherwise lose.
+//
+// Only non-zero totals are returned.
+func MonthToDate(ctx context.Context, st MonthToDateStore, month time.Time) (map[UsageKey]int64, error) {
+	aggs, err := st.UsageReport(ctx, store.UsageQuery{
+		From:    month,
+		GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageByUser},
+	})
+	if err != nil {
+		return nil, err
+	}
+	carried, err := st.UsageCarryForMonth(ctx, month)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[UsageKey]int64, len(aggs)+len(carried))
+	for _, a := range aggs {
+		out[UsageKey{a.TenantID, a.UserID}] += tokensOf(a)
+	}
+	for _, c := range carried {
+		out[UsageKey{c.TenantID, c.UserID}] += c.Tokens
+	}
+	for k, v := range out {
+		if v == 0 {
+			delete(out, k)
+		}
+	}
+	return out, nil
+}
+
+// Seed loads the current month-to-date counters (MonthToDate) and the ceilings
+// from token_limits. Called once at boot; safe to call again. A no-op (nil) for
+// a store-less tracker.
 func (t *Tracker) Seed(ctx context.Context) error {
 	if t == nil || t.store == nil {
 		return nil
 	}
-	month := monthStartUTC(t.now())
-	aggs, err := t.store.UsageReport(ctx, store.UsageQuery{
-		From:    month,
-		GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageByUser},
-	})
+	month := MonthStart(t.now())
+	mtd, err := MonthToDate(ctx, t.store, month)
 	if err != nil {
 		return err
 	}
 	tenant := make(map[string]int64)
 	user := make(map[string]int64)
 	var operator int64
-	for _, a := range aggs {
-		tok := t.tokensOf(a)
+	for k, tok := range mtd {
 		operator += tok
-		tenant[a.TenantID] += tok
-		user[userKey(a.TenantID, a.UserID)] += tok
+		tenant[k.TenantID] += tok
+		user[userKey(k.TenantID, k.UserID)] += tok
 	}
 	lm, err := t.loadLimits(ctx)
 	if err != nil {
@@ -212,7 +257,7 @@ func (t *Tracker) Check(tenantID, userID string) Decision {
 	// After a month boundary but before the next Add resets the counters, treat
 	// usage as 0 so admission doesn't refuse against last month's total (Add
 	// performs the actual reset on the next write).
-	rolled := !monthStartUTC(t.now()).Equal(t.month)
+	rolled := !MonthStart(t.now()).Equal(t.month)
 	usedOf := func(cur int64) int64 {
 		if rolled {
 			return 0
@@ -254,7 +299,7 @@ func (t *Tracker) UsedFor(scope, tenantID, scopeID string) int64 {
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if !monthStartUTC(t.now()).Equal(t.month) {
+	if !MonthStart(t.now()).Equal(t.month) {
 		return 0 // a new month with no writes yet reads as zero spend
 	}
 	switch scope {
@@ -268,10 +313,32 @@ func (t *Tracker) UsedFor(scope, tenantID, scopeID string) int64 {
 	return 0
 }
 
+// AddCarried adds usage a snapshot restore just carried in for (tenant, user)
+// to the three counters, so a restored month-to-date is enforced at once rather
+// than at the next Seed. tokens is how much the stored carry GREW, which keeps
+// the counters equal to ledger + stored carry. Unlike Add it reports no
+// crossings: nothing ran, so there is no run to warn. Usage for a month other
+// than the current one is ignored — the counters cover this month only. An
+// in-memory write that cannot fail, the same reason PutLimit exists. Nil-safe.
+func (t *Tracker) AddCarried(month time.Time, tenantID, userID string, tokens int64) {
+	if t == nil || t.store == nil || tokens <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rolloverLocked()
+	if !month.Equal(t.month) {
+		return
+	}
+	t.operator += tokens
+	t.tenant[tenantID] += tokens
+	t.user[userKey(tenantID, userID)] += tokens
+}
+
 // rolloverLocked resets the counters when the wall clock has crossed into a new
 // calendar month. Caller must hold the write lock.
 func (t *Tracker) rolloverLocked() {
-	if cur := monthStartUTC(t.now()); !cur.Equal(t.month) {
+	if cur := MonthStart(t.now()); !cur.Equal(t.month) {
 		t.month = cur
 		t.operator = 0
 		t.tenant = map[string]int64{}

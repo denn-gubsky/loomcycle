@@ -12,12 +12,25 @@ import (
 // aggregates for Seed + a settable limit-row set.
 type fakeStore struct {
 	aggs   []store.UsageAggregate
+	carry  []store.UsageCarryRow
 	limits []store.TokenLimitRow
 	err    error
 }
 
 func (f *fakeStore) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
 	return f.aggs, f.err
+}
+
+// UsageCarryForMonth filters on the month like the real stores, so a caller
+// asking for the wrong month sees nothing.
+func (f *fakeStore) UsageCarryForMonth(ctx context.Context, month time.Time) ([]store.UsageCarryRow, error) {
+	var out []store.UsageCarryRow
+	for _, c := range f.carry {
+		if c.Month.Equal(month) {
+			out = append(out, c)
+		}
+	}
+	return out, f.err
 }
 func (f *fakeStore) TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, error) {
 	return f.limits, f.err
@@ -262,5 +275,90 @@ func TestTracker_OperatorCrossingRedactsFigures(t *testing.T) {
 	}
 	if d2.Refusal.Used != 900 || d2.Refusal.Limit != 800 {
 		t.Fatalf("tenant figures wrongly redacted: used=%d limit=%d (want 900/800)", d2.Refusal.Used, d2.Refusal.Limit)
+	}
+}
+
+// TestMonthToDate_SumsLedgerAndCurrentMonthCarry: the per-(tenant, user) total
+// is the four ledger buckets plus the carry for the SAME month; another
+// month's carry is not counted, and a pair that nets to zero is dropped.
+func TestMonthToDate_SumsLedgerAndCurrentMonthCarry(t *testing.T) {
+	sep := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	aug := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	st := &fakeStore{
+		aggs: []store.UsageAggregate{
+			{TenantID: "acme", UserID: "u1", InputTokens: 100, OutputTokens: 50, CacheCreationTokens: 5, CacheReadTokens: 2},
+			{TenantID: "acme", UserID: "", InputTokens: 3},
+			{TenantID: "zero", UserID: "u9"},
+		},
+		carry: []store.UsageCarryRow{
+			{TenantID: "acme", UserID: "u1", Month: sep, Tokens: 1000},
+			{TenantID: "beta", UserID: "u2", Month: sep, Tokens: 40},
+			{TenantID: "acme", UserID: "u1", Month: aug, Tokens: 99999},
+		},
+	}
+	got, err := MonthToDate(context.Background(), st, sep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[UsageKey]int64{
+		{"acme", "u1"}: 1157,
+		{"acme", ""}:   3,
+		{"beta", "u2"}: 40,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("MonthToDate = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("MonthToDate[%v] = %d, want %d", k, got[k], v)
+		}
+	}
+}
+
+// TestTracker_SeedCountsCarriedUsage: a budget is enforced against usage a
+// restore carried in, from the first Seed — which is what a restart after a
+// restore runs.
+func TestTracker_SeedCountsCarriedUsage(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	st := &fakeStore{
+		aggs:   []store.UsageAggregate{agg("acme", "u1", 100, 0)},
+		carry:  []store.UsageCarryRow{{TenantID: "acme", UserID: "u1", Month: MonthStart(now), Tokens: 900}},
+		limits: []store.TokenLimitRow{{TenantID: "acme", Scope: "tenant", HardLimit: i64(1000)}},
+	}
+	tr := New(st)
+	tr.now = func() time.Time { return now }
+	if err := tr.Seed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if dec := tr.Check("acme", "u1"); dec.Allowed {
+		t.Fatalf("ledger 100 + carried 900 reaches the 1000 hard limit, but the run was allowed: %+v", dec)
+	}
+	if got := tr.UsedFor("user", "acme", "u1"); got != 1000 {
+		t.Errorf("UsedFor(user acme/u1) = %d, want 1000", got)
+	}
+}
+
+// TestTracker_AddCarriedIsEnforcedAtOnce: carried usage raises all three
+// counters immediately; usage for another month is ignored.
+func TestTracker_AddCarriedIsEnforcedAtOnce(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	st := &fakeStore{limits: []store.TokenLimitRow{{TenantID: "acme", Scope: "user", ScopeID: "u1", HardLimit: i64(500)}}}
+	tr := New(st)
+	tr.now = func() time.Time { return now }
+	if err := tr.Seed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tr.AddCarried(MonthStart(now).AddDate(0, -1, 0), "acme", "u1", 10_000)
+	if dec := tr.Check("acme", "u1"); !dec.Allowed {
+		t.Fatalf("last month's carry must not count: %+v", dec)
+	}
+	tr.AddCarried(MonthStart(now), "acme", "u1", 500)
+	if dec := tr.Check("acme", "u1"); dec.Allowed {
+		t.Fatalf("a carry reaching the hard limit must refuse at once: %+v", dec)
+	}
+	for _, sc := range []struct{ scope, id string }{{"operator", ""}, {"tenant", "acme"}, {"user", "u1"}} {
+		if got := tr.UsedFor(sc.scope, "acme", sc.id); got != 500 {
+			t.Errorf("UsedFor(%s) = %d, want 500", sc.scope, got)
+		}
 	}
 }
