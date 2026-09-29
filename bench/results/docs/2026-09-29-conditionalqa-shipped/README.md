@@ -11,8 +11,9 @@ before any score was computed. Harness: `bench/docs/measure/`.
 
 ## Verdict
 
-**The header and the rerank both hold on a third corpus, through the shipped code, and
-answers improve rather than drop.**
+**The header and the rerank both hold again, on a new corpus and through the shipped
+code, and answers improve rather than drop.** Before this, the header had been measured on
+QASPER and NQ, and the rerank on QASPER, NQ and PolicyQA, all as probe stand-ins.
 
 | hypothesis | result |
 |---|---|
