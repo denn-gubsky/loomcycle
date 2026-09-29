@@ -1116,6 +1116,13 @@ type AgentDef struct {
 	// HookDef the same.
 	OwnerTenant string `json:"-" yaml:"-"`
 
+	// DefID is the agent_defs row (the AgentDef version) this definition was
+	// read from, or "" for the operator's yaml and a registered agent, which
+	// have no versions. Resolved like OwnerTenant, never authored. A run records
+	// it at start so a resume continues on this version, not on whatever
+	// version the name resolves to by then.
+	DefID string `json:"-" yaml:"-"`
+
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
 	// Code is the inline code-js orchestrator source (RFC J). When set

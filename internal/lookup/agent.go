@@ -157,8 +157,22 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	if activeRow.Retired {
 		return config.AgentDef{}, false
 	}
+	def, ok := AgentFromDefRow(activeRow)
+	if !ok {
+		return config.AgentDef{}, false
+	}
+	def.OwnerTenant = tenantID
+	return def, true
+}
+
+// AgentFromDefRow is the definition one agent_defs row holds, exactly as Agent
+// serves it when that row is the active version. It does not look at Retired:
+// Agent never serves a retired version to a new run, but a run that started on
+// a version keeps it when it resumes (resumePausedRun), retired or not.
+// Malformed persistence JSON returns (zero, false).
+func AgentFromDefRow(row store.AgentDefRow) (config.AgentDef, bool) {
 	var sd SubstrateAgentDef
-	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
+	if err := json.Unmarshal(row.Definition, &sd); err != nil {
 		return config.AgentDef{}, false
 	}
 	def := sd.ToConfigDef()
@@ -166,8 +180,9 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	// From the ROW, not the definition body: authorship is authority and is
 	// deliberately not part of the persisted def (nor of its content hash), so
 	// a def cannot claim it by containing it.
-	def.OperatorAuthored = activeRow.OperatorAuthored
-	def.OwnerTenant = tenantID
+	def.OperatorAuthored = row.OperatorAuthored
+	def.OwnerTenant = row.TenantID
+	def.DefID = row.DefID
 	return def, true
 }
 
