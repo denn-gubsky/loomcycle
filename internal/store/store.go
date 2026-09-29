@@ -927,7 +927,7 @@ type RunIdentity struct {
 // struct is treated as absent (nil) at wire entry.
 //
 // Two owners share this struct. The CALLER sets RootAgentRunID, FunctionKey
-// and TierAtRun. The RUNTIME alone sets the Board* and Walk/Wave fields, on the
+// and TierAtRun. The RUNTIME alone sets the Board*, Walk/Wave and State fields, on the
 // runs a team walk spawns — consumers group runs by them, so a caller must not
 // be able to claim them. Every ingress clears the runtime-owned fields through
 // connector.StripRuntimeParentContext; a field added here must be classified
@@ -972,6 +972,19 @@ type ParentContext struct {
 	// adds a field to an object that was already being stored rather than
 	// creating new rows.
 	WaveIndex int `json:"wave_index"`
+	// State and StateVisit say which state of the walk ran this member, and
+	// which time: every member a walk spawns carries them (agent, parallel,
+	// consolidator and Starter alike), where the wave fields are a Starter's
+	// alone. State is the state id.
+	//
+	// StateVisit is the walk's own count of state visits — 1 for the first
+	// state it ran, +1 for every one after — so the members of ONE visit share
+	// it and a revisit of the same state gets a new one. It is deliberately not
+	// the per-state iteration count: an operator's `continue` on a cap resets
+	// that to 1, and a reroute to 0, so two different visits could carry the
+	// same number. 0 = not a walk member.
+	State      string `json:"state,omitempty"`
+	StateVisit int    `json:"state_visit,omitempty"`
 }
 
 // WaveTask is the Starter wave a spawned run belongs to, carried on ctx from
@@ -1002,6 +1015,34 @@ func WaveTaskFromContext(ctx context.Context) (WaveTask, bool) {
 	return w, true
 }
 
+// WalkTask is the walk state a spawned run belongs to, carried on ctx from the
+// walk to the run-creation seam — the sibling of WaveTask, set for EVERY
+// member a state spawns rather than only for a Starter's.
+type WalkTask struct {
+	WalkID string
+	State  string
+	Visit  int
+}
+
+type walkTaskCtxKey struct{}
+
+// WithWalkTask attaches the walk state a spawn belongs to. The walk sets it per
+// state visit; internal/api/http stamps it onto each member run's
+// ParentContext. A zero task CLEARS it.
+func WithWalkTask(ctx context.Context, w WalkTask) context.Context {
+	return context.WithValue(ctx, walkTaskCtxKey{}, w)
+}
+
+// WalkTaskFromContext returns the walk state on ctx. ok=false for a missing or
+// cleared task, so a plain agent run is untouched.
+func WalkTaskFromContext(ctx context.Context) (WalkTask, bool) {
+	w, _ := ctx.Value(walkTaskCtxKey{}).(WalkTask)
+	if w.WalkID == "" {
+		return WalkTask{}, false
+	}
+	return w, true
+}
+
 // IsZero reports whether every field is empty (no meaningful tracking
 // context). Wire entry points normalise a zero struct to nil so
 // back-compat decode paths stay clean.
@@ -1017,7 +1058,8 @@ func WaveTaskFromContext(ctx context.Context) (WaveTask, bool) {
 func (p *ParentContext) IsZero() bool {
 	return p == nil || (p.RootAgentRunID == "" && p.FunctionKey == "" && p.TierAtRun == "" &&
 		p.BoardScope == "" && p.BoardChunkID == "" && p.BoardDocumentID == "" &&
-		p.WalkID == "" && p.WaveID == "" && p.WaveIndex == 0)
+		p.WalkID == "" && p.WaveID == "" && p.WaveIndex == 0 &&
+		p.State == "" && p.StateVisit == 0)
 }
 
 // Clone returns a deep copy (nil-safe) so a parent's ParentContext can

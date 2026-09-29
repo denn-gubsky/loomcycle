@@ -36,7 +36,7 @@ func ValidateParentContext(pc *store.ParentContext) (errMsg string, ok bool) {
 // with every runtime-owned field cleared, or nil when nothing the caller may set
 // remains. Call it wherever a parent_context enters from outside.
 //
-// The board and walk/wave fields are stamped by the runtime onto the runs a
+// The board and walk/wave/state fields are stamped by the runtime onto the runs a
 // team walk spawns, and consumers group runs by them — a canvas drawing a walk,
 // a board pinning an agent to its card, a run-state stream filtered by walk_id.
 // Accepted from a caller, they let any run claim a place inside a walk or on a
@@ -53,6 +53,7 @@ func StripRuntimeParentContext(pc *store.ParentContext) *store.ParentContext {
 	out := *pc
 	out.BoardScope, out.BoardChunkID, out.BoardDocumentID = "", "", ""
 	out.WalkID, out.WaveID, out.WaveIndex = "", "", 0
+	out.State, out.StateVisit = "", 0
 	if out.IsZero() {
 		return nil
 	}
