@@ -15,6 +15,10 @@ func TestLooksCut(t *testing.T) {
 		"abc26269b??":             true,
 		"36d88349ac1730a178…":     true,
 		"1bda3bb9d37086dd0fedd12": true,
+		// Measured in the 1.100.0 eval: a cut that split a character, which a
+		// decoder turns into U+FFFD.
+		"0f8d63d96264c\uFFFD":       true,
+		"0f8d63d96264c\uFFFD\uFFFD": true,
 		// Whole ids and things that are not an id at all.
 		"1bda3bb9d37086dd0fedd120c3e550bc":  false,
 		"":                                  false,
@@ -48,6 +52,7 @@ func TestDocument_ACutIDIsRefusedAsCut(t *testing.T) {
 		"id, with an ellipsis":     `{"op":"get_document","scope":"user","id":"` + docID[:18] + `..."}`,
 		"parent_id, with ??":       `{"op":"create_chunk","scope":"user","document_id":"` + docID + `","parent_id":"` + docID[:9] + `??","title":"Hotels"}`,
 		"seed_ids element":         `{"op":"graph_recall","scope":"user","seed_ids":["` + docID[:12] + `"]}`,
+		"parent_id, with U+FFFD":   `{"op":"create_chunk","scope":"user","document_id":"` + docID + `","parent_id":"` + docID[:13] + "\uFFFD" + `","title":"Hotels"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, r := docExec(t, d, ctx, call)

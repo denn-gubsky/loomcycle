@@ -26,8 +26,11 @@ import (
 // a made-up name, which the lookup refuses as not found anyway.
 const minCutIDPrefix = 8
 
-// cutIDTail is what a model writes where it stopped copying.
-const cutIDTail = ".…?"
+// cutIDTail is what a model writes where it stopped copying: dots, an
+// ellipsis, question marks, or U+FFFD, the replacement character a decoder
+// emits for the broken bytes of a character the model cut in half. Measured in
+// the 1.100.0 eval: gpt-oss sent parent_id "0f8d63d96264c\uFFFD".
+const cutIDTail = ".…?\uFFFD"
 
 // looksCut reports whether id is a document or chunk id cut short.
 func looksCut(id string) bool {
