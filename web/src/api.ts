@@ -910,6 +910,9 @@ export interface SnapshotCreateResponse {
   label?: string;
   schema_version: number;
   byte_size: number;
+  // Header values in captured definitions that look like literal credentials,
+  // named by location only.
+  warnings?: string[];
 }
 
 export interface SnapshotRestoreResponse {
@@ -924,6 +927,9 @@ export interface SnapshotRestoreResponse {
   transcript_events_restored?: number;
   interaction_history_restored?: number;
   warnings?: string[];
+  // Every restore counter keyed by name, including the ones the typed fields
+  // above never carried.
+  restored?: Record<string, number>;
 }
 
 export function listSnapshots(limit = 200, labelContains = ""): Promise<SnapshotListResponse> {

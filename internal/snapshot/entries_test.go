@@ -103,7 +103,8 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 var pinnedEntryKeys = map[string][]string{
 	"Sections": {"agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active",
-		"memory", "channels", "channel_defs", "evaluations", "paused_runs", "interaction_history", "sqlmem"},
+		"memory", "channels", "channel_defs", "evaluations", "paused_runs", "interaction_history", "sqlmem",
+		"capture_findings"},
 
 	"AgentDefsSection":          {"version", "entries"},
 	"AgentDefActiveSection":     {"version", "entries"},
@@ -122,6 +123,7 @@ var pinnedEntryKeys = map[string][]string{
 	"PausedRunsSection":         {"version", "entries"},
 	"InteractionHistorySection": {"version", "since_ts", "events"},
 	"SqlMemSection":             {"version", "tier", "scopes", "skipped_scopes"},
+	"CaptureFindingsSection":    {"version", "entries"},
 
 	"AgentDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
 		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",
@@ -168,6 +170,10 @@ var pinnedEntryKeys = map[string][]string{
 	"SqlMemScope":        {"tenant", "scope", "scope_id", "ddl", "post_ddl", "tables"},
 	"SqlMemSkippedScope": {"tenant", "scope", "scope_id", "bytes"},
 	"SqlMemTable":        {"name", "columns", "column_types", "rows"},
+
+	// A finding names a location. It must never gain a key for the value, a
+	// prefix, a length or a hash of it.
+	"CaptureFindingEntry": {"section", "tenant_id", "name", "def_id", "field", "detector"},
 }
 
 // TestSnapshotEntries_KeySetsArePinned: every envelope type's JSON key set is

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -94,8 +95,31 @@ type CaptureOptions struct {
 // Returns *ErrSnapshotTooLarge when the serialised envelope exceeds
 // opts.MaxBytes.
 func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.SnapshotRow, []byte, error) {
+	c, err := CaptureReport(ctx, s, opts)
+	return c.Row, c.JSON, err
+}
+
+// Captured is what a capture produced: the row to persist, its envelope bytes,
+// and the warnings the operator who captured should see at once.
+type Captured struct {
+	Row  *store.SnapshotRow
+	JSON []byte
+	// Warnings renders each capture finding by location, never by value. The
+	// findings themselves travel in the envelope's capture_findings section.
+	Warnings []string
+}
+
+// CaptureReport is Capture plus the capture's warnings. The transports call it
+// so the capture response can carry them; Capture keeps its shape for the
+// callers that need only the envelope.
+func CaptureReport(ctx context.Context, s store.Store, opts CaptureOptions) (Captured, error) {
+	row, jsonBytes, warnings, err := capture(ctx, s, opts)
+	return Captured{Row: row, JSON: jsonBytes, Warnings: warnings}, err
+}
+
+func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.SnapshotRow, []byte, []string, error) {
 	if s == nil {
-		return nil, nil, errors.New("snapshot capture: nil store")
+		return nil, nil, nil, errors.New("snapshot capture: nil store")
 	}
 	maxBytes := opts.MaxBytes
 	if maxBytes <= 0 {
@@ -112,49 +136,49 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	// section dependency walk so a future restore-in-the-same-call
 	// path could write in this order naturally.
 	if err := captureAgentDefs(ctx, s, &envelope.Sections.AgentDefs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureAgentDefActive(ctx, s, &envelope.Sections.AgentDefActive); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureSkillDefs(ctx, s, &envelope.Sections.SkillDefs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureSkillDefActive(ctx, s, &envelope.Sections.SkillDefActive); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureTeamDefs(ctx, s, &envelope.Sections.TeamDefs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureTeamDefActive(ctx, s, &envelope.Sections.TeamDefActive); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureHookDefs(ctx, s, &envelope.Sections.HookDefs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureHookDefActive(ctx, s, &envelope.Sections.HookDefActive); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureMCPServerDefs(ctx, s, &envelope.Sections.MCPServerDefs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureMCPServerDefActive(ctx, s, &envelope.Sections.MCPServerDefActive); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureMemory(ctx, s, &envelope.Sections.Memory); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureChannelDefs(ctx, s, &envelope.Sections.ChannelDefs); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureChannels(ctx, s, opts.Channels, &envelope.Sections.Channels); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := captureEvaluations(ctx, s, &envelope.Sections.Evaluations); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := capturePausedRuns(ctx, s, &envelope.Sections.PausedRuns); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if opts.IncludeHistory {
 		hist := &InteractionHistorySection{
@@ -162,16 +186,28 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 			SinceTs: opts.IncludeHistorySince,
 		}
 		if err := captureInteractionHistory(ctx, s, opts.IncludeHistorySince, hist); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		envelope.Sections.InteractionHistory = hist
 	}
 	if opts.SqlMem != nil {
 		sec, err := captureSqlMem(ctx, opts.SqlMem, opts.SqlMemMaxScopeBytes)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		envelope.Sections.SqlMem = sec
+	}
+
+	// Findings are collected over what the envelope holds, after every
+	// header-bearing section is read. One log line each, by location only.
+	var warnings []string
+	if findings := collectCaptureFindings(&envelope.Sections); len(findings) > 0 {
+		envelope.Sections.CaptureFindings = &CaptureFindingsSection{Version: SectionVersion, Entries: findings}
+		for _, f := range findings {
+			w := f.Warning()
+			warnings = append(warnings, w)
+			log.Printf("snapshot capture: %s", w)
+		}
 	}
 
 	// Route through Export so the produced snapshot carries the additive
@@ -180,10 +216,10 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	// real snapshots unprotected.
 	jsonBytes, err := Export(envelope)
 	if err != nil {
-		return nil, nil, fmt.Errorf("snapshot capture: %w", err)
+		return nil, nil, nil, fmt.Errorf("snapshot capture: %w", err)
 	}
 	if int64(len(jsonBytes)) > maxBytes {
-		return nil, nil, &ErrSnapshotTooLarge{
+		return nil, nil, nil, &ErrSnapshotTooLarge{
 			SizeBytes: int64(len(jsonBytes)),
 			MaxBytes:  maxBytes,
 		}
@@ -197,7 +233,7 @@ func Capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		ByteSize:      int64(len(jsonBytes)),
 		JSONContent:   jsonBytes,
 	}
-	return row, jsonBytes, nil
+	return row, jsonBytes, warnings, nil
 }
 
 // mintID returns a snapshot id in the form "snap_<unix_ms>_<8hex>".

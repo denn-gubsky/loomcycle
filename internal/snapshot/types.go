@@ -89,6 +89,37 @@ type Sections struct {
 	// taken without it, or restored into a reader that predates it, sees the
 	// section absent (back-compat, like interaction_history).
 	SqlMem *SqlMemSection `json:"sqlmem,omitempty"`
+	// CaptureFindings reports what the capture carried that an operator should
+	// act on — today, header values that look like literal credentials. Inside
+	// Sections so the integrity checksum covers it. Present only when there is
+	// at least one finding (omitempty), so a capture with none is byte-identical
+	// to one taken before the section existed; an older reader ignores it.
+	CaptureFindings *CaptureFindingsSection `json:"capture_findings,omitempty"`
+}
+
+// CaptureFindingsSection lists the capture's findings. Restore writes nothing
+// from it; it re-emits each entry as a warning, so the operator on the target
+// learns which definitions still carry a literal.
+type CaptureFindingsSection struct {
+	Version string                `json:"version"`
+	Entries []CaptureFindingEntry `json:"entries"`
+}
+
+// CaptureFindingEntry names WHERE a finding is — never the value, a prefix of
+// it, its length or a hash of it.
+type CaptureFindingEntry struct {
+	// Section is the envelope section holding the row ("mcp_server_defs").
+	Section  string `json:"section"`
+	TenantID string `json:"tenant_id,omitempty"`
+	// Name is the row's name (a def's or channel's name, a paused run's id).
+	Name  string `json:"name"`
+	DefID string `json:"def_id,omitempty"`
+	// Field is the path to the value inside the row, e.g.
+	// "body.headers.Authorization".
+	Field string `json:"field"`
+	// Detector says which rule matched: "secret-pattern" or
+	// "credential-header-name".
+	Detector string `json:"detector"`
 }
 
 // AgentDefsSection wraps the list of every agent_defs row.

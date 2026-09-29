@@ -278,6 +278,7 @@ func TestGrpcCreateSnapshot_HappyPath(t *testing.T) {
 			SizeBytes:     1024,
 			Description:   "test",
 			FormatVersion: "1",
+			Warnings:      []string{"mcp_server_defs x: headers.Authorization holds a literal value"},
 		},
 	}
 	client, cleanup := startTestServerWithConnector(t, mc)
@@ -291,6 +292,9 @@ func TestGrpcCreateSnapshot_HappyPath(t *testing.T) {
 	}
 	if resp.GetSnapshotId() != "snap_xyz" {
 		t.Errorf("snapshot_id = %q, want snap_xyz", resp.GetSnapshotId())
+	}
+	if w := resp.GetWarnings(); len(w) != 1 || w[0] != mc.createSnapshotResp.Warnings[0] {
+		t.Errorf("warnings = %q, want the capture's warnings %q", w, mc.createSnapshotResp.Warnings)
 	}
 	if mc.lastCreateReq.Description != "test" {
 		t.Errorf("Connector saw Description = %q, want test", mc.lastCreateReq.Description)
@@ -422,6 +426,8 @@ func TestGrpcRestoreSnapshot_HappyPath(t *testing.T) {
 		restoreSnapshotResp: connector.RestoreSnapshotResult{
 			MemoryRestored:     3,
 			PausedRunsRestored: 1,
+			// Counters no typed field carries reach the wire through the map.
+			Restored: map[string]int{"memory": 3, "paused_runs": 1, "hook_defs": 4, "mcp_server_defs_activated": 2},
 		},
 	}
 	client, cleanup := startTestServerWithConnector(t, mc)
@@ -438,6 +444,9 @@ func TestGrpcRestoreSnapshot_HappyPath(t *testing.T) {
 	}
 	if resp.GetPausedRunsRestored() != 1 {
 		t.Errorf("paused_runs_restored = %d, want 1", resp.GetPausedRunsRestored())
+	}
+	if got := resp.GetRestored(); len(got) != 4 || got["hook_defs"] != 4 || got["mcp_server_defs_activated"] != 2 {
+		t.Errorf("restored = %v, want the connector's map", got)
 	}
 	if mc.lastRestoreReq.SnapshotID != "snap_xyz" {
 		t.Errorf("Connector saw SnapshotID = %q, want snap_xyz", mc.lastRestoreReq.SnapshotID)

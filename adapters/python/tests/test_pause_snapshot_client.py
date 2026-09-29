@@ -228,6 +228,32 @@ async def test_restore_snapshot_by_id():
 
 
 @pytest.mark.asyncio
+async def test_restore_snapshot_passes_the_restored_map_through():
+    """Counters no typed key carries (hook_defs, mcp_server_defs_activated,
+    ...) reach the caller through the ``restored`` dict."""
+    client = _make_client()
+    fake, _ = _async_returning(pb.RestoreSnapshotResponse(
+        memory_restored=3,
+        restored={"memory": 3, "hook_defs": 2, "mcp_server_defs_activated": 1},
+    ))
+    client._stub.RestoreSnapshot = fake  # type: ignore[attr-defined]
+
+    result = await client.restore_snapshot(snapshot_id="snap_xyz")
+    assert result["restored"] == {"memory": 3, "hook_defs": 2, "mcp_server_defs_activated": 1}
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_returns_the_capture_warnings():
+    client = _make_client()
+    warning = "mcp_server_defs x: headers.Authorization holds a literal value"
+    fake, _ = _async_returning(pb.SnapshotDescriptor(snapshot_id="snap_w", warnings=[warning]))
+    client._stub.CreateSnapshot = fake  # type: ignore[attr-defined]
+
+    result = await client.create_snapshot()
+    assert result["warnings"] == [warning]
+
+
+@pytest.mark.asyncio
 async def test_restore_snapshot_by_raw_json():
     client = _make_client()
     fake, captured = _async_returning(pb.RestoreSnapshotResponse())

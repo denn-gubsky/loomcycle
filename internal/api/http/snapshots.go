@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -55,6 +56,10 @@ type snapshotCreateResponse struct {
 	Label         string `json:"label,omitempty"`
 	SchemaVersion int    `json:"schema_version"`
 	ByteSize      int64  `json:"byte_size"`
+	// Warnings names what the capture carried that the operator should act on
+	// — a header value that looks like a literal credential — by location,
+	// never by value. The findings also travel in the envelope.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // snapshotListResponse wraps the metadata listing.
@@ -111,7 +116,7 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		opts.SqlMem = s.sqlMem
 		opts.SqlMemMaxScopeBytes = s.cfg().Storage.SqlMemSnapshotMaxScopeBytes // 3f.2 per-scope cap
 	}
-	row, _, err := snapshot.Capture(r.Context(), s.store, opts)
+	captured, err := snapshot.CaptureReport(r.Context(), s.store, opts)
 	if err != nil {
 		var tooLarge *snapshot.ErrSnapshotTooLarge
 		if errors.As(err, &tooLarge) {
@@ -121,6 +126,7 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "capture_failed", err.Error())
 		return
 	}
+	row := captured.Row
 	if err := s.store.SnapshotCreate(r.Context(), *row); err != nil {
 		// Defensive: SnapshotCreate's id collision is rare (8 hex
 		// bytes + ms timestamp) but possible under scripted bulk
@@ -141,6 +147,7 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		Label:         row.Label,
 		SchemaVersion: row.SchemaVersion,
 		ByteSize:      row.ByteSize,
+		Warnings:      captured.Warnings,
 	})
 }
 
@@ -244,6 +251,12 @@ type snapshotRestoreResponse struct {
 	TranscriptEventsRestored   int      `json:"transcript_events_restored"`
 	InteractionHistoryRestored int      `json:"interaction_history_restored"`
 	Warnings                   []string `json:"warnings,omitempty"`
+
+	// Restored is every restore counter keyed by name
+	// (snapshot.RestoreResult.Counts), the extensible form. The typed counters
+	// above stay frozen at the subset they always carried; a new section adds
+	// a key here and touches no transport.
+	Restored map[string]int `json:"restored"`
 }
 
 func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -311,6 +324,10 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The caches over the restored tables first, so a run resumed below sees
+	// what the restore wrote.
+	s.postRestoreRefresh(r.Context(), &result)
+
 	// F42 / RFC X Phase 2: re-dispatch the just-restored paused runs so a
 	// snapshotted mid-run experiment genuinely continues on this instance
 	// (reconstruct each loop from its transcript). Runs whose agent no longer
@@ -322,6 +339,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	warnings = append(warnings, resumeWarnings...)
 
 	writeJSON(w, http.StatusOK, snapshotRestoreResponse{
+		Restored:                   result.Counts(),
 		AgentDefsRestored:          result.AgentDefsRestored,
 		AgentDefActiveRestored:     result.AgentDefActiveRestored,
 		MemoryRestored:             result.MemoryRestored,
@@ -335,6 +353,29 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		InteractionHistoryRestored: result.InteractionHistoryRestored,
 		Warnings:                   warnings,
 	})
+}
+
+// postRestoreRefresh brings the in-process caches over restored tables in
+// line with what Restore just wrote (RFC DP §4.11). Both restore call sites
+// run it after Restore returns and before any paused run is resumed, so a
+// resumed run sees the restored state rather than what the caches held.
+//
+// It refreshes only THIS replica. Another replica's caches catch up at its
+// next boot — the limit every boot-filled cache here has.
+func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.RestoreResult) {
+	// Restored MCP server defs go live without a restart.
+	if s.mcpRegistryRefresh != nil {
+		n, err := s.mcpRegistryRefresh(ctx)
+		if err != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"mcp_server_defs: reloading the MCP server registry failed, so restored definitions are not live until a restart: %v", err))
+		}
+		result.MCPServerDefsActivated = n
+	}
+	// The token-budget tracker belongs here once token_limits travel in a
+	// snapshot (RFC DP P1b): PutLimit for each restored ceiling and AddCarried
+	// for each usage carry, or the restored budgets go unenforced until a
+	// restart.
 }
 
 func (s *Server) handleExportSnapshot(w http.ResponseWriter, r *http.Request) {

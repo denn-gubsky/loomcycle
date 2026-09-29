@@ -513,6 +513,11 @@ type SnapshotDescriptor struct {
 	Description     string     `json:"description,omitempty"`
 	FormatVersion   string     `json:"format_version"`
 	FeatureStatus   string     `json:"feature_status,omitempty"`
+	// Warnings names what the capture carried that the operator should act on
+	// (a header value that looks like a literal credential), by location,
+	// never by value. Set on the CreateSnapshot response only; a listing
+	// leaves it empty — the envelope's capture_findings section keeps them.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SnapshotEnvelope is the response shape for GetSnapshot — the full
@@ -568,9 +573,10 @@ type RestoreSnapshotRequest struct {
 }
 
 // RestoreSnapshotResult is the response shape for RestoreSnapshot.
-// The Restored map is preserved for backwards-compat — populated
-// from the per-section counters. Individual counter fields are also
-// surfaced for transports that want strongly-typed access.
+// Restored carries EVERY restore counter, keyed by name
+// (snapshot.RestoreResult.Counts) — the extensible form a new section adds a
+// key to. The typed counter fields stay frozen at the subset they always
+// carried, for transports that want strongly-typed access.
 type RestoreSnapshotResult struct {
 	Restored                   map[string]int `json:"restored"`
 	AgentDefsRestored          int            `json:"agent_defs_restored"`

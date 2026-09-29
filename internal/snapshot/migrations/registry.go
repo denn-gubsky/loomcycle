@@ -48,6 +48,7 @@ const (
 	SectionPausedRuns         = "paused_runs"
 	SectionInteractionHistory = "interaction_history"
 	SectionSqlMem             = "sqlmem"
+	SectionCaptureFindings    = "capture_findings"
 )
 
 // Migrator transforms a section's raw JSON bytes from one version
@@ -116,6 +117,7 @@ var registry = map[string]map[string]Migrator{
 	SectionPausedRuns:         {"1.0": identityMigrator},
 	SectionInteractionHistory: {"1.0": identityMigrator},
 	SectionSqlMem:             {"1.0": identityMigrator},
+	SectionCaptureFindings:    {"1.0": identityMigrator},
 }
 
 // KnownSection reports whether this reader understands the named envelope

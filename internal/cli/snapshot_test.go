@@ -175,6 +175,38 @@ func TestRunRestore_ReadsFileAndSendsInline(t *testing.T) {
 	}
 }
 
+func TestRunRestore_PrintsEveryCounterFromTheRestoredMap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snap.json")
+	_ = os.WriteFile(path, []byte(`{"schema_version":1,"sections":{}}`), 0o644)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"memory_restored":3,"restored":{"memory":3,"hook_defs":2,"mcp_server_defs_activated":1}}`)
+	}))
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	if rc := RunRestore([]string{"--target", srv.URL, path}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc = %d, stderr = %q", rc, stderr.String())
+	}
+	if got, want := stdout.String(), "restored hook_defs=2 mcp_server_defs_activated=1 memory=3\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunSnapshot_PrintsCaptureWarnings(t *testing.T) {
+	srv := stubServer(t, "POST", "/v1/_snapshots", 201,
+		`{"id":"snap_w","created_at":"2026-09-29T00:00:00Z","schema_version":1,"byte_size":10,"warnings":["mcp_server_defs x: headers.Authorization holds a literal value"]}`,
+		nil)
+	defer srv.Close()
+
+	var stdout, stderr bytes.Buffer
+	if rc := RunSnapshot([]string{"--target", srv.URL}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc = %d, stderr = %q", rc, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "warning: mcp_server_defs x: headers.Authorization") {
+		t.Errorf("stderr = %q, want the capture warning", stderr.String())
+	}
+}
+
 func TestRunRestore_MissingFileReturnsUserError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	rc := RunRestore([]string{"--target", "http://nowhere"}, &stdout, &stderr)
