@@ -499,6 +499,12 @@ func Run(t *testing.T, factory Factory) {
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},
+		// Snapshot restore of a budget row: insert-or-ignore, so a live budget
+		// on the same key stands.
+		{"SnapshotRestoreTokenLimitKeepsLiveRow", testSnapshotRestoreTokenLimitKeepsLiveRow},
+		// The month-to-date usage a snapshot restore carries in: max-not-add,
+		// per month, per subject, and deletable for erasure.
+		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
 		{"SessionArchiver", testSessionArchiver},
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
 		// (all automated retention). Fails on the pre-fix query (no exclusion).
@@ -1208,6 +1214,127 @@ func testTokenLimits(t *testing.T, s store.Store) {
 	}
 	if len(m) != 2 {
 		t.Fatalf("after delete got %d rows, want 2", len(m))
+	}
+}
+
+// testSnapshotRestoreTokenLimitKeepsLiveRow: a restored budget lands with its
+// own updated_at and nullable tiers intact, and a second restore onto a key
+// that already holds a (newer) budget leaves that budget alone.
+func testSnapshotRestoreTokenLimitKeepsLiveRow(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	i64 := func(v int64) *int64 { return &v }
+	at := time.Date(2026, 9, 3, 4, 5, 6, 0, time.UTC)
+
+	inserted, err := s.SnapshotRestoreTokenLimit(ctx, store.TokenLimitRow{
+		TenantID: "acme", Scope: "user", ScopeID: "u1", SoftLimit: i64(0), UpdatedAt: at, UpdatedBy: "src-admin",
+	})
+	if err != nil || !inserted {
+		t.Fatalf("first restore: inserted=%v err=%v, want inserted", inserted, err)
+	}
+	if err := s.TokenLimitPut(ctx, store.TokenLimitRow{
+		TenantID: "acme", Scope: "tenant", HardLimit: i64(900), UpdatedBy: "live-admin",
+	}); err != nil {
+		t.Fatalf("TokenLimitPut: %v", err)
+	}
+	inserted, err = s.SnapshotRestoreTokenLimit(ctx, store.TokenLimitRow{
+		TenantID: "acme", Scope: "tenant", HardLimit: i64(5), UpdatedAt: at, UpdatedBy: "src-admin",
+	})
+	if err != nil || inserted {
+		t.Fatalf("restore onto a live budget: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+
+	all, err := s.TokenLimitsAll(ctx)
+	if err != nil {
+		t.Fatalf("TokenLimitsAll: %v", err)
+	}
+	got := map[string]store.TokenLimitRow{}
+	for _, r := range all {
+		got[r.TenantID+"|"+r.Scope+"|"+r.ScopeID] = r
+	}
+	u := got["acme|user|u1"]
+	if u.SoftLimit == nil || *u.SoftLimit != 0 || u.HardLimit != nil {
+		t.Errorf("restored user tiers = soft %v hard %v, want a real 0 and unset", u.SoftLimit, u.HardLimit)
+	}
+	if !u.UpdatedAt.Equal(at) || u.UpdatedBy != "src-admin" {
+		t.Errorf("restored user row updated %v by %q, want %v by src-admin", u.UpdatedAt, u.UpdatedBy, at)
+	}
+	tn := got["acme|tenant|"]
+	if tn.HardLimit == nil || *tn.HardLimit != 900 || tn.UpdatedBy != "live-admin" {
+		t.Errorf("live tenant budget = hard %v by %q, want 900 by live-admin (the live row stands)", tn.HardLimit, tn.UpdatedBy)
+	}
+}
+
+// testUsageCarryKeepsTheMaximum: a carry raise stores max(stored, incoming)
+// and reports the growth, so a re-restore adds nothing and a later, larger
+// snapshot raises the value by the difference; rows are per month; the
+// subject delete removes every month of one subject and nobody else's.
+func testUsageCarryKeepsTheMaximum(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sep := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	aug := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	raise := func(tenant, user string, month time.Time, tokens int64) int64 {
+		t.Helper()
+		grew, err := s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: tenant, UserID: user, Month: month, Tokens: tokens})
+		if err != nil {
+			t.Fatalf("UsageCarryRaise(%s/%s %s %d): %v", tenant, user, month.Format("2006-01"), tokens, err)
+		}
+		return grew
+	}
+
+	if grew := raise("acme", "u1", sep, 900); grew != 900 {
+		t.Errorf("first raise grew %d, want 900", grew)
+	}
+	if grew := raise("acme", "u1", sep, 900); grew != 0 {
+		t.Errorf("the same raise again grew %d, want 0 (idempotent)", grew)
+	}
+	if grew := raise("acme", "u1", sep, 400); grew != 0 {
+		t.Errorf("a smaller raise grew %d, want 0 (the maximum stands)", grew)
+	}
+	if grew := raise("acme", "u1", sep, 1000); grew != 100 {
+		t.Errorf("a larger raise grew %d, want 100 (raised to, not added)", grew)
+	}
+	raise("acme", "", sep, 7) // a run with no user
+	raise("acme", "u1", aug, 50)
+	raise("other", "u1", sep, 3)
+	if grew, err := s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: "acme", UserID: "u2", Month: sep}); err != nil || grew != 0 {
+		t.Errorf("a zero raise: grew=%d err=%v, want a no-op", grew, err)
+	}
+	if _, err := s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: "acme", UserID: "u2", Month: sep, Tokens: -1}); err == nil {
+		t.Error("a negative raise was accepted")
+	}
+
+	rows, err := s.UsageCarryForMonth(ctx, sep)
+	if err != nil {
+		t.Fatalf("UsageCarryForMonth: %v", err)
+	}
+	got := map[string]int64{}
+	for _, r := range rows {
+		if !r.Month.Equal(sep) {
+			t.Errorf("row %s/%s month %v, want %v", r.TenantID, r.UserID, r.Month, sep)
+		}
+		got[r.TenantID+"|"+r.UserID] = r.Tokens
+	}
+	want := map[string]int64{"acme|u1": 1000, "acme|": 7, "other|u1": 3}
+	if len(got) != len(want) {
+		t.Errorf("September rows = %v, want %v (August must not appear, a zero raise must not insert)", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("September %s = %d, want %d", k, got[k], v)
+		}
+	}
+
+	if n, err := s.UsageCarryCountSubject(ctx, "acme", "u1"); err != nil || n != 2 {
+		t.Errorf("count acme/u1 = %d (err %v), want 2 (both months)", n, err)
+	}
+	if n, err := s.UsageCarryDeleteSubject(ctx, "acme", "u1"); err != nil || n != 2 {
+		t.Errorf("delete acme/u1 removed %d (err %v), want 2", n, err)
+	}
+	if n, err := s.UsageCarryCountSubject(ctx, "acme", "u1"); err != nil || n != 0 {
+		t.Errorf("count acme/u1 after delete = %d (err %v), want 0", n, err)
+	}
+	if n, err := s.UsageCarryCountSubject(ctx, "other", "u1"); err != nil || n != 1 {
+		t.Errorf("another tenant's same subject = %d (err %v), want 1 (untouched)", n, err)
 	}
 }
 

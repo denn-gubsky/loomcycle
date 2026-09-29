@@ -677,6 +677,117 @@ func (s *Store) TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, erro
 	return out, rows.Err()
 }
 
+// SnapshotRestoreTokenLimit inserts one budget row keeping its updated_at; a
+// row already on (tenant_id, scope, scope_id) is left alone.
+func (s *Store) SnapshotRestoreTokenLimit(ctx context.Context, row store.TokenLimitRow) (bool, error) {
+	updatedAt := row.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO token_limits (tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		 ON CONFLICT (tenant_id, scope, scope_id) DO NOTHING`,
+		row.TenantID, row.Scope, row.ScopeID, row.SoftLimit, row.HardLimit, updatedAt, row.UpdatedBy,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore token limit: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// UsageCarryRaise keeps max(stored, incoming) for one (tenant, user, month)
+// and returns the growth. The placeholder insert guarantees a row exists for
+// the FOR UPDATE read to lock, so the growth reported is exact under
+// concurrent raises.
+func (s *Store) UsageCarryRaise(ctx context.Context, row store.UsageCarryRow) (int64, error) {
+	if row.Tokens < 0 {
+		return 0, fmt.Errorf("usage carry raise: negative tokens %d", row.Tokens)
+	}
+	if row.Tokens == 0 {
+		return 0, nil
+	}
+	if row.Month.IsZero() {
+		return 0, fmt.Errorf("usage carry raise: month is required")
+	}
+	updatedAt := row.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("usage carry raise begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO usage_carry (tenant_id, user_id, month, tokens, updated_at) VALUES ($1,$2,$3,0,$4)
+		 ON CONFLICT (tenant_id, user_id, month) DO NOTHING`,
+		row.TenantID, row.UserID, row.Month, updatedAt); err != nil {
+		return 0, fmt.Errorf("usage carry raise: %w", err)
+	}
+	var stored int64
+	if err := tx.QueryRow(ctx,
+		`SELECT tokens FROM usage_carry WHERE tenant_id = $1 AND user_id = $2 AND month = $3 FOR UPDATE`,
+		row.TenantID, row.UserID, row.Month).Scan(&stored); err != nil {
+		return 0, fmt.Errorf("usage carry raise read: %w", err)
+	}
+	if row.Tokens <= stored {
+		return 0, nil // a placeholder this call inserted rolls back with the tx
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE usage_carry SET tokens = $1, updated_at = $2 WHERE tenant_id = $3 AND user_id = $4 AND month = $5`,
+		row.Tokens, updatedAt, row.TenantID, row.UserID, row.Month); err != nil {
+		return 0, fmt.Errorf("usage carry raise write: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("usage carry raise commit: %w", err)
+	}
+	return row.Tokens - stored, nil
+}
+
+// UsageCarryForMonth returns every carry row for one UTC month start.
+func (s *Store) UsageCarryForMonth(ctx context.Context, month time.Time) ([]store.UsageCarryRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT tenant_id, user_id, month, tokens, updated_at FROM usage_carry
+		 WHERE month = $1 ORDER BY tenant_id, user_id`, month)
+	if err != nil {
+		return nil, fmt.Errorf("usage carry for month: %w", err)
+	}
+	defer rows.Close()
+	var out []store.UsageCarryRow
+	for rows.Next() {
+		var r store.UsageCarryRow
+		if err := rows.Scan(&r.TenantID, &r.UserID, &r.Month, &r.Tokens, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("usage carry for month scan: %w", err)
+		}
+		r.Month = r.Month.UTC()
+		r.UpdatedAt = r.UpdatedAt.UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UsageCarryCountSubject counts one subject's carry rows across every month.
+func (s *Store) UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM usage_carry WHERE tenant_id = $1 AND user_id = $2`,
+		tenantID, userID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("usage carry count: %w", err)
+	}
+	return n, nil
+}
+
+// UsageCarryDeleteSubject deletes one subject's carry rows across every month.
+func (s *Store) UsageCarryDeleteSubject(ctx context.Context, tenantID, userID string) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM usage_carry WHERE tenant_id = $1 AND user_id = $2`, tenantID, userID)
+	if err != nil {
+		return 0, fmt.Errorf("usage carry delete: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // UsageReport aggregates recent per-call token_usage UNION the compact
 // usage_archive rollup (RFC AV Phase 2b), so a pruned window still reports.
 // Mirrors the sqlite implementation: five dimension columns in

@@ -708,6 +708,20 @@ type TokenLimitRow struct {
 	UpdatedBy string
 }
 
+// UsageCarryRow is month-to-date token usage a snapshot restore carried in
+// from another instance, one row per (tenant, user, month). Month is the UTC
+// month start the tokens belong to; UserID is "" for runs with no user.
+//
+// It seeds the budget counters (limits.MonthToDate) and nothing else: it is not
+// a ledger row, never appears in a usage report, and is never billed.
+type UsageCarryRow struct {
+	TenantID  string
+	UserID    string
+	Month     time.Time
+	Tokens    int64
+	UpdatedAt time.Time
+}
+
 // UsageDimension is a whitelisted grouping axis for a usage report (RFC AV
 // Phase 2). The string value maps to a token_usage column; the whitelist is the
 // injection guard — a caller-supplied group_by is validated against these.
@@ -1504,6 +1518,25 @@ type Store interface {
 	// happens at the HTTP layer, so this returns all rows unscoped.
 	TokenLimitsAll(ctx context.Context) ([]TokenLimitRow, error)
 
+	// UsageCarryRaise stores the month-to-date usage a snapshot restore carried
+	// in for (TenantID, UserID, Month), keeping the LARGER of the stored and the
+	// incoming Tokens, and returns how much the stored value grew (0 when it
+	// already held at least as much). Taking the maximum makes a re-restore of
+	// the same snapshot a no-op, and a later snapshot of the same month raise
+	// the carry rather than add to it. A zero Tokens is a no-op; a negative one
+	// is refused.
+	UsageCarryRaise(ctx context.Context, row UsageCarryRow) (grew int64, err error)
+
+	// UsageCarryForMonth returns every carry row for one UTC month start.
+	// limits.MonthToDate adds them to the ledger aggregate. They are never part
+	// of UsageReport: the carry is budget state, not billing data.
+	UsageCarryForMonth(ctx context.Context, month time.Time) ([]UsageCarryRow, error)
+
+	// UsageCarryCountSubject / UsageCarryDeleteSubject count and delete one
+	// subject's carry rows across every month, for subject erasure.
+	UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error)
+	UsageCarryDeleteSubject(ctx context.Context, tenantID, userID string) (int, error)
+
 	// RollupAndPruneUsage folds every token_usage row older than olderThan into
 	// usage_archive (day-bucketed, summed per dimension tuple) and deletes the
 	// rolled-up raw rows, in one transaction. Idempotent — re-running a window
@@ -2090,6 +2123,13 @@ type Store interface {
 	// preserving EvalID + CreatedAt + emitter fields. Idempotent
 	// on eval_id.
 	SnapshotRestoreEvaluation(ctx context.Context, r EvaluationRow) (bool, error)
+
+	// SnapshotRestoreTokenLimit inserts one token_limits row, keeping its
+	// updated_at. A budget already set on (tenant_id, scope, scope_id) is left
+	// alone — TokenLimitPut is an upsert and would overwrite it — so a restore
+	// never rolls back a newer target budget; `inserted` is true only on the
+	// first write.
+	SnapshotRestoreTokenLimit(ctx context.Context, row TokenLimitRow) (bool, error)
 
 	// tenantID is the leading isolation axis on every Memory* method
 	// below (RFC BL). It is server-supplied (from RunIdentity / the def

@@ -166,6 +166,8 @@ var tableCoverageMap = map[string]tableCoverage{
 	"schedule_run_state": {Kind: coverPending, Phase: "DP-P2", Backends: onBoth},
 	"token_limits": {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth,
 		Cache: "limits.Tracker (ceilings seeded at boot)"},
+	"usage_carry": {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth,
+		Cache: "limits.Tracker (month-to-date counters seeded at boot)"},
 	"users":              {Kind: coverPending, Phase: "DP-P1b", Backends: onBoth},
 	"volume_defs":        {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
 	"webhook_def_active": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
