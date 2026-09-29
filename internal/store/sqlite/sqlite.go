@@ -4508,9 +4508,11 @@ func (s *Store) SnapshotRestoreChannelMessage(ctx context.Context, m store.Chann
 }
 
 // SnapshotRestoreChannelCursor implements store.Store. INSERT OR
-// IGNORE on (channel, scope, scope_id) — first restore writes the
+// IGNORE on (tenant_id, channel, scope, scope_id) — first restore writes the
 // snapshot's cursor; subsequent restores leave an evolved live cursor
-// alone so the (bool, error) return reads as "not inserted."
+// alone so the (bool, error) return reads as "not inserted." A DB created
+// before the channel tenant axis keeps its tenant-blind PK, which the
+// IGNORE also honours there.
 func (s *Store) SnapshotRestoreChannelCursor(ctx context.Context, c store.ChannelCursorEntry) (bool, error) {
 	if c.Channel == "" || c.Cursor == "" {
 		return false, fmt.Errorf("snapshot restore channel_cursor: channel and cursor required")

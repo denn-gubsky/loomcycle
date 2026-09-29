@@ -2079,9 +2079,10 @@ type Store interface {
 	// preserving the ID + timestamps. Idempotent on id (PK).
 	SnapshotRestoreChannelMessage(ctx context.Context, msg ChannelMessage) (bool, error)
 
-	// SnapshotRestoreChannelCursor UPSERTs one channel_cursors row.
-	// ON CONFLICT (channel, scope, scope_id) DO UPDATE — preserves
-	// the snapshot's cursor + updated_at. `inserted` is true only on
+	// SnapshotRestoreChannelCursor inserts one channel_cursors row under
+	// entry.TenantID, preserving the snapshot's cursor + updated_at. A row
+	// already on (tenant_id, channel, scope, scope_id) is left alone, so a
+	// re-restore never rewinds a live cursor; `inserted` is true only on
 	// the first write.
 	SnapshotRestoreChannelCursor(ctx context.Context, entry ChannelCursorEntry) (bool, error)
 
