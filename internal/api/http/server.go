@@ -2549,6 +2549,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if startingDraft && in.SessionID != "" {
 		return fmt.Errorf("%w: a configured run starts in its own session; session_id must be empty", runner.ErrInvalidArgument)
 	}
+	// Every RunOnce caller hands in a CALLER's parent_context (gRPC Run and
+	// Continue, the spawn_run(s) tools, runs:batch, a started draft) — the walk
+	// spawns its runs through the sub-run path, never here — so this is the one
+	// seam those transports share for dropping the runtime-owned fields.
+	in.ParentContext = connector.StripRuntimeParentContext(in.ParentContext)
 
 	// ---- Session resolution (continuation only) ----
 	isContinuation := in.SessionID != ""
@@ -4461,15 +4466,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Bound the opaque tracking fields so a consumer can't push unbounded
-	// strings into the run table / event stream. An all-empty struct is
-	// normalised to nil so back-compat decode paths see "no context".
+	// strings into the run table / event stream. The runtime-owned fields are
+	// dropped, and an all-empty struct is normalised to nil so back-compat
+	// decode paths see "no context".
 	if errMsg, ok := validateParentContext(req.ParentContext); !ok {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
-	if req.ParentContext.IsZero() {
-		req.ParentContext = nil
-	}
+	req.ParentContext = connector.StripRuntimeParentContext(req.ParentContext)
 
 	// (req.TenantID / req.UserID were made authoritative above via
 	// applyPrincipal — fairness key, session tenant, run-row attribution,
@@ -5317,9 +5321,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errMsg, http.StatusBadRequest)
 		return
 	}
-	if body.ParentContext.IsZero() {
-		body.ParentContext = nil
-	}
+	body.ParentContext = connector.StripRuntimeParentContext(body.ParentContext)
 	// RFC AX: recompute the operator-key restriction from the PRESENTING
 	// principal (the current token is authority on a continuation — a documented
 	// decision, not the original run's bit). Computed here so credential-aware

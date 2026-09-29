@@ -97,6 +97,9 @@ func spawnRequestToRunInput(req connector.SpawnRunRequest) runner.RunInput {
 // transports that want streaming (MCP notifications, gRPC stream) hold a
 // runner.Runner field separately and use it directly for that path.
 func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
+	// RunOnce strips the run's copy; this strips the ECHO, so a runs:batch
+	// caller is not told its run carries a walk it was never placed in.
+	req.ParentContext = connector.StripRuntimeParentContext(req.ParentContext)
 	return s.runBlocking(ctx, spawnRequestToRunInput(req), req.ParentContext)
 }
 

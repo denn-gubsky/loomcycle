@@ -32,6 +32,33 @@ func ValidateParentContext(pc *store.ParentContext) (errMsg string, ok bool) {
 	return "", true
 }
 
+// StripRuntimeParentContext returns a copy of a CALLER-supplied parent_context
+// with every runtime-owned field cleared, or nil when nothing the caller may set
+// remains. Call it wherever a parent_context enters from outside.
+//
+// The board and walk/wave fields are stamped by the runtime onto the runs a
+// team walk spawns, and consumers group runs by them — a canvas drawing a walk,
+// a board pinning an agent to its card, a run-state stream filtered by walk_id.
+// Accepted from a caller, they let any run claim a place inside a walk or on a
+// board it was never part of. They are dropped, not refused: a caller echoing a
+// parent_context it read off a walk run back into a new run is not an error,
+// and the fields it may set still apply.
+//
+// The runtime's own stamping (the sub-run path) writes these fields onto the
+// child's identity directly and never passes through here.
+func StripRuntimeParentContext(pc *store.ParentContext) *store.ParentContext {
+	if pc == nil {
+		return nil
+	}
+	out := *pc
+	out.BoardScope, out.BoardChunkID, out.BoardDocumentID = "", "", ""
+	out.WalkID, out.WaveID, out.WaveIndex = "", "", 0
+	if out.IsZero() {
+		return nil
+	}
+	return &out
+}
+
 // ValidateUserCredentialsMap validates each key in the v1.x RFC F
 // per-run credentials map against the wire-locked charset. Lives in
 // the connector package so all four transports (HTTP, gRPC, MCP,

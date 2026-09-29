@@ -263,11 +263,10 @@ func handleSpawnRun(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 	if errMsg, ok := connector.ValidateParentContext(req.ParentContext); !ok {
 		return toolErr("spawn_run: " + errMsg), nil
 	}
-	// Normalise an all-empty struct to nil so the echo surfaces omit it,
-	// matching the HTTP handlers (handleRuns / handleMessages).
-	if req.ParentContext.IsZero() {
-		req.ParentContext = nil
-	}
+	// Drop the runtime-owned fields and normalise an all-empty struct to nil so
+	// the echo surfaces omit it, matching the HTTP handlers (handleRuns /
+	// handleMessages).
+	req.ParentContext = connector.StripRuntimeParentContext(req.ParentContext)
 
 	// RFC AG §3.2: the authenticated principal is authoritative over the wire
 	// tenant_id/user_id (a tenant can't forge another tenant's id in the body).
@@ -353,11 +352,9 @@ func handleSpawnRuns(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		if errMsg, ok := connector.ValidateParentContext(sp.ParentContext); !ok {
 			return toolErr(fmt.Sprintf("spawn_runs: spawns[%d]: %s", i, errMsg)), nil
 		}
-		// Normalise an all-empty struct to nil so the echo omits it (matches
-		// handleSpawnRun / the HTTP handlers).
-		if sp.ParentContext.IsZero() {
-			sp.ParentContext = nil
-		}
+		// Drop the runtime-owned fields and normalise an all-empty struct to
+		// nil so the echo omits it (matches handleSpawnRun / the HTTP handlers).
+		sp.ParentContext = connector.StripRuntimeParentContext(sp.ParentContext)
 		// RFC AG §3.2: stamp the caller's authoritative identity on every child
 		// (batch children are fresh runs — Agent required above, no session_id),
 		// so a forged tenant_id in any child spec can't cross the tenant boundary.
