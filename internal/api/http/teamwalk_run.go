@@ -63,10 +63,15 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 			return ctx, "", func(string, error) {}, fmt.Errorf("the team's hooks: %w", err)
 		}
 	}
+	// The walk's parent is the run whose TeamDef call started it — none when
+	// it arrives on the substrate plane, which carries no run id. Its members
+	// record the walk itself: they spawn under walkCtx, whose run id is the
+	// walk's.
 	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
-		AgentID:  agent,
-		UserID:   ident.UserID,
-		TenantID: ident.TenantID,
+		AgentID:     agent,
+		ParentRunID: tools.RunID(ctx),
+		UserID:      ident.UserID,
+		TenantID:    ident.TenantID,
 	})
 	if err != nil {
 		return ctx, "", func(string, error) {}, err

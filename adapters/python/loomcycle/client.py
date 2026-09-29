@@ -2031,6 +2031,8 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         "agent": a.agent,
         "user_id": a.user_id,
         "parent_agent_id": a.parent_agent_id,
+        # The run that spawned this one; "" for a top-level run.
+        "parent_run_id": a.parent_run_id,
         "status": a.status,
         "started_at": _ts_to_iso(a.started_at),
         "completed_at": _ts_to_iso(a.completed_at) if a.HasField("completed_at") else None,

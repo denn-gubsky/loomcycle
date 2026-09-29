@@ -5944,6 +5944,11 @@ type Agent struct {
 	// from the serving replica's in-process registry of resident sub-agents,
 	// which this transport cannot reach.
 	ParentContext *ParentContext `protobuf:"bytes,22,opt,name=parent_context,json=parentContext,proto3" json:"parent_context,omitempty"`
+	// parent_run_id is the run that spawned this one (an Agent-tool spawn, a
+	// team-walk member, a walk started by an agent). Empty for a top-level run.
+	// Unlike parent_agent_id it names one run: an agent id is reused by every
+	// run of that agent.
+	ParentRunId   string `protobuf:"bytes,23,opt,name=parent_run_id,json=parentRunId,proto3" json:"parent_run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6130,6 +6135,13 @@ func (x *Agent) GetParentContext() *ParentContext {
 		return x.ParentContext
 	}
 	return nil
+}
+
+func (x *Agent) GetParentRunId() string {
+	if x != nil {
+		return x.ParentRunId
+	}
+	return ""
 }
 
 // AgentUsage mirrors agentResponseUsage.
@@ -11001,7 +11013,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x0fGetAgentRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\"&\n" +
 	"\rGetRunRequest\x12\x15\n" +
-	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\x8f\x06\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\xb3\x06\n" +
 	"\x05Agent\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
@@ -11030,7 +11042,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"awaited_on\x18\x14 \x01(\tR\tawaitedOn\x12\x1d\n" +
 	"\n" +
 	"replica_id\x18\x15 \x01(\tR\treplicaId\x12B\n" +
-	"\x0eparent_context\x18\x16 \x01(\v2\x1b.loomcycle.v1.ParentContextR\rparentContext\"\xe6\x01\n" +
+	"\x0eparent_context\x18\x16 \x01(\v2\x1b.loomcycle.v1.ParentContextR\rparentContext\x12\"\n" +
+	"\rparent_run_id\x18\x17 \x01(\tR\vparentRunId\"\xe6\x01\n" +
 	"\n" +
 	"AgentUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +

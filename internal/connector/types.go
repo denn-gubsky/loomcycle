@@ -332,6 +332,7 @@ type Run struct {
 	UserID        string           `json:"user_id,omitempty"`
 	Agent         string           `json:"agent"`
 	ParentAgentID string           `json:"parent_agent_id,omitempty"`
+	ParentRunID   string           `json:"parent_run_id,omitempty"`
 	Status        string           `json:"status"` // "running" | "completed" | "failed" | "cancelled"
 	StartedAt     time.Time        `json:"started_at"`
 	CompletedAt   *time.Time       `json:"completed_at,omitempty"`

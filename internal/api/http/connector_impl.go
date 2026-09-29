@@ -489,6 +489,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 		UserID:        r.UserID,
 		Agent:         r.Agent,
 		ParentAgentID: r.ParentAgentID,
+		ParentRunID:   r.ParentRunID,
 		Status:        string(r.Status),
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,

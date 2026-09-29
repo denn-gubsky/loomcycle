@@ -7197,11 +7197,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		AgentID:       subAgentID,
 		ParentAgentID: parentIdentity.AgentID,
 		ReplicaID:     s.replicaID,
-		// ParentRunID is left empty here — we don't have the parent's
-		// run.ID handy without an extra registry lookup. Cascade
-		// works via parent_agent_id alone; ParentRunID is informational
-		// for transcript stitching and can be filled in by a future
-		// refactor that threads parent run.ID through ctx.
+		ParentRunID:   tools.RunID(ctx),
+		// ctx is still the PARENT's here (the child's id replaces it on subCtx
+		// below), so ParentRunID is the spawning run. It is the only
+		// unambiguous edge of the run tree: an agent id is reused by every run
+		// of that agent. Cancel still cascades through parent_agent_id.
 		UserID:     parentIdentity.UserID,
 		TenantID:   parentIdentity.TenantID, // RFC L: sub-runs inherit the parent's authoritative tenant
 		UserTier:   parentIdentity.UserTier, // v0.8.2: same user_tier across the sub-run tree
@@ -7683,6 +7683,7 @@ type agentResponse struct {
 	Agent           string             `json:"agent,omitempty"`
 	UserID          string             `json:"user_id,omitempty"`
 	ParentAgentID   string             `json:"parent_agent_id,omitempty"`
+	ParentRunID     string             `json:"parent_run_id,omitempty"` // the run that spawned this one; empty for a top-level run
 	Status          store.RunStatus    `json:"status"`
 	StartedAt       time.Time          `json:"started_at"`
 	CompletedAt     *time.Time         `json:"completed_at,omitempty"`
@@ -7771,6 +7772,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 		Agent:         r.Agent,
 		UserID:        r.UserID,
 		ParentAgentID: r.ParentAgentID,
+		ParentRunID:   r.ParentRunID,
 		Status:        r.Status,
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,

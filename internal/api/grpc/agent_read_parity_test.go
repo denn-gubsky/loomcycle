@@ -150,3 +150,34 @@ func TestGetAgent_EndedRunHasNoAwaitedState(t *testing.T) {
 		t.Errorf("awaited_state = %q on a cancelled run, want empty", got.GetAwaitedState())
 	}
 }
+
+// A gRPC run read names the run that spawned it; a top-level run's is empty.
+func TestGetAgent_CarriesTheParentRunID(t *testing.T) {
+	client, _, st, cleanup := startTestServer(t, "")
+	defer cleanup()
+	ctx := context.Background()
+	sess, _ := st.CreateSession(ctx, "t", "qa-agent", "alice")
+	top, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_top", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "a_child", ParentAgentID: "a_top", ParentRunID: top.ID, UserID: "alice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child, err := client.GetAgent(ctx, &loomcyclepb.GetAgentRequest{AgentId: "a_child"})
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if child.GetParentRunId() != top.ID {
+		t.Errorf("parent_run_id = %q, want %q", child.GetParentRunId(), top.ID)
+	}
+	parent, err := client.GetAgent(ctx, &loomcyclepb.GetAgentRequest{AgentId: "a_top"})
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if parent.GetParentRunId() != "" {
+		t.Errorf("top-level run's parent_run_id = %q, want empty", parent.GetParentRunId())
+	}
+}

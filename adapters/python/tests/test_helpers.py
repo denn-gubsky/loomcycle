@@ -188,3 +188,9 @@ def test_agent_to_dict_run_without_lineage_has_parent_context_none():
     assert "parent_context" in out
     assert out["parent_context"] is None
     assert out["awaited_state"] == ""
+
+
+def test_agent_to_dict_carries_the_parent_run_id():
+    a = pb.Agent(agent_id="ag-5", run_id="rn-5", status="completed", parent_run_id="rn-parent")
+    assert _agent_to_dict(a)["parent_run_id"] == "rn-parent"
+    assert _agent_to_dict(pb.Agent(agent_id="ag-6", status="completed"))["parent_run_id"] == ""
