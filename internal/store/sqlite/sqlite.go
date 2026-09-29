@@ -1356,6 +1356,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate re-home tenant dirents: %w", err)
 	}
 
+	// After the ALTERs (every current column exists to copy) and before
+	// addIndexes (whose indexes then land on the rebuilt tables).
+	if err := s.rebuildTenantBlindKeys(ctx, stmts); err != nil {
+		return fmt.Errorf("migrate rebuild tenant keys: %w", err)
+	}
+
 	addIndexes := []string{
 		// Drives the hot lookup paths for the cancel/get endpoints.
 		// Partial indexes (WHERE ... IS NOT NULL) keep the index small —
