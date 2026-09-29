@@ -408,6 +408,60 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	return out, nil
 }
 
+// ListWalkRuns mirrors HTTP's GET /v1/runs?walk_id=: one team walk's runs, the
+// walk's own run and every member, oldest first, a page at a time.
+//
+// The gate is GetRun's: the caller must be allowed to read the walk's own run,
+// so another tenant's walk — or, for an isolated member, another user's — is
+// the NotFound an unknown walk gets. Each member is held to the same row rule.
+func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRunsRequest) (*loomcyclepb.ListWalkRunsResponse, error) {
+	walkID := req.GetWalkId()
+	if !validIdent(walkID) {
+		return nil, status.Error(codes.InvalidArgument, "walk_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	if l := req.GetLimit(); l < 0 || l > 1000 {
+		return nil, status.Error(codes.InvalidArgument, "limit must be 0 (the default, 100) or 1..1000")
+	}
+	if c := req.GetCursor(); c != "" {
+		if _, _, err := store.DecodeRunCursor(c); err != nil {
+			return nil, status.Error(codes.InvalidArgument, "cursor must be a next_cursor this RPC returned")
+		}
+	}
+	if s.store == nil {
+		return nil, status.Errorf(codes.NotFound, "no walk found for walk_id %q (no store configured)", walkID)
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	walk, err := s.store.GetRun(ctx, walkID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return nil, status.Errorf(codes.NotFound, "no walk found for walk_id %q", walkID)
+		}
+		return nil, status.Errorf(codes.Internal, "store: %v", err)
+	}
+	if !auth.OwnedRowVisible(p, ok, walk.TenantID, walk.UserID) {
+		return nil, status.Errorf(codes.NotFound, "no walk found for walk_id %q", walkID)
+	}
+	queryTenant, allTenants := grpcTenantScope(ctx)
+	if allTenants {
+		queryTenant = ""
+	}
+	runs, next, err := s.store.ListRunsByWalk(ctx, queryTenant, walkID, int(req.GetLimit()), req.GetCursor())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "store: %v", err)
+	}
+	out := &loomcyclepb.ListWalkRunsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), NextCursor: next}
+	for _, r := range runs {
+		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) {
+			continue
+		}
+		a := runToProto(r, s.runLive(r))
+		s.fillAwaitedState(ctx, a)
+		out.Agents = append(out.Agents, a)
+	}
+	return out, nil
+}
+
 // UsageReport is the gRPC twin of GET /v1/_usage (RFC AV): grouped token-usage +
 // cost aggregation over the ledger ∪ archive. group_by is whitelist-validated;
 // tenant scope mirrors principalTenantScope — an admin/legacy caller honors the
@@ -712,6 +766,7 @@ var grpcConsumerScopes = map[string]string{
 	"GetAgent":            auth.ScopeRunsRead,
 	"GetRun":              auth.ScopeRunsRead,
 	"ListUserAgents":      auth.ScopeRunsRead,
+	"ListWalkRuns":        auth.ScopeRunsRead,
 	"StreamUserRunStates": auth.ScopeRunsRead,
 	"PublishChannel":      auth.ScopeChannelPublish,
 	"AckChannel":          auth.ScopeChannelPublish,
