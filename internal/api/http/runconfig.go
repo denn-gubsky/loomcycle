@@ -108,6 +108,56 @@ type runConfigRecord struct {
 	// PinnedHooks is what the run's hooks resolved to when it started, so a
 	// resumed run fires those and no others (see pinnedHooks).
 	PinnedHooks *pinnedHooks `json:"pinned_hooks,omitempty"`
+
+	// Spawn is what bounded a SUB-run at its spawn beyond its own definition:
+	// the parent's volume confinement and the fan-out width it inherited. A
+	// live child reads both off its parent's context; a resumed child has no
+	// parent context, so without this record it came back on its definition's
+	// own volumes and width — wider than it ran live. Absent on a top-level
+	// run, and on a sub-run recorded before it existed (see resumedVolumePolicy).
+	Spawn *spawnRecord `json:"spawn,omitempty"`
+}
+
+// spawnRecord is a sub-run's inherited ceiling, captured from the parent's
+// context at spawn.
+type spawnRecord struct {
+	Volumes volumeCeilingRecord `json:"volumes"`
+	// FanoutCap is the parallel_spawn width the child inherited on ctx; 0 when
+	// its ancestors set none and its definition decides.
+	FanoutCap int `json:"fanout_cap,omitempty"`
+}
+
+// volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's
+// Root. The root is deliberately NOT recorded: a record travels in snapshots
+// to other instances, and a path carried from one host's config must never
+// become a binding on another's. Resume resolves each name again, now, the
+// way a fresh run would (see recordedParentVolumes).
+type volumeCeilingRecord struct {
+	Active   bool                   `json:"active"`
+	Bindings []volumeCeilingBinding `json:"bindings,omitempty"`
+}
+
+type volumeCeilingBinding struct {
+	Name     string `json:"name"`
+	ReadOnly bool   `json:"read_only"`
+	Default  bool   `json:"default,omitempty"`
+}
+
+// spawnRecordOf captures a child's ceiling from its parent's volume policy and
+// the fan-out cap on the parent's ctx. Always non-nil: its presence is what
+// tells resume the child's ceiling is known, including "the parent was not
+// confined by volumes" (Active false), which a nil record cannot say.
+func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int) *spawnRecord {
+	rec := &spawnRecord{
+		Volumes:   volumeCeilingRecord{Active: parentVol.Active},
+		FanoutCap: fanoutCap,
+	}
+	for _, b := range parentVol.Bindings {
+		rec.Volumes.Bindings = append(rec.Volumes.Bindings, volumeCeilingBinding{
+			Name: b.Name, ReadOnly: b.ReadOnly, Default: b.Default,
+		})
+	}
+	return rec
 }
 
 // additions is what the run added to its agent's hooks, as the record keeps
