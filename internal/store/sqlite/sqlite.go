@@ -9790,11 +9790,17 @@ func (s *Store) EvaluationListForRun(ctx context.Context, runID string, limit in
 }
 
 // EvaluationListForDef returns evals targeting one def.
-func (s *Store) EvaluationListForDef(ctx context.Context, defID string, limit int) ([]store.EvaluationRow, error) {
+func (s *Store) EvaluationListForDef(ctx context.Context, defID string, limit int, tenant store.EvaluationTenantFilter) ([]store.EvaluationRow, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx, evaluationSelect+` WHERE def_id = ? ORDER BY created_at DESC LIMIT ?`, defID, limit)
+	q := evaluationSelect + ` WHERE def_id = ?`
+	args := []any{defID}
+	if tenant.Confined {
+		q += evaluationRunTenantClause
+		args = append(args, tenant.TenantID)
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY created_at DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -9827,8 +9833,12 @@ func (s *Store) EvaluationAggregate(ctx context.Context, defID string, opts stor
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	q := evaluationSelect + ` WHERE def_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY created_at ASC`
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	q := evaluationSelect + ` WHERE def_id IN (` + strings.Join(placeholders, ",") + `)`
+	if opts.Tenant.Confined {
+		q += evaluationRunTenantClause
+		args = append(args, opts.Tenant.TenantID)
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY created_at ASC`, args...)
 	if err != nil {
 		return store.AggregateResult{}, err
 	}
@@ -9866,6 +9876,11 @@ func (s *Store) walkAncestors(ctx context.Context, defID string) ([]string, erro
 	}
 	return ancestors, nil
 }
+
+// evaluationRunTenantClause keeps an evaluation only when its run is in the
+// tenant bound to the trailing parameter (see store.EvaluationTenantFilter).
+// A pre-tenant run row has NULL tenant_id, which is the "" tenant.
+const evaluationRunTenantClause = ` AND EXISTS (SELECT 1 FROM runs r WHERE r.id = evaluations.run_id AND COALESCE(r.tenant_id, '') = ?)`
 
 const evaluationSelect = `SELECT
 	eval_id, run_id,

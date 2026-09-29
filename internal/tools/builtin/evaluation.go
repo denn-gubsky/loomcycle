@@ -253,7 +253,7 @@ func (e *Evaluation) execListForDef(ctx context.Context, policy tools.Evaluation
 	if in.DefID == "" {
 		return errResult("list_for_def: missing required field: def_id"), nil
 	}
-	rows, err := e.Store.EvaluationListForDef(ctx, in.DefID, in.Limit)
+	rows, err := e.Store.EvaluationListForDef(ctx, in.DefID, in.Limit, store.EvaluationTenantFilter{})
 	if err != nil {
 		return errResult(fmt.Sprintf("list_for_def: %s", err)), nil
 	}
