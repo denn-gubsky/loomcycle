@@ -187,13 +187,13 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
 	}
-	// RFC AX: capture the authoring principal's operator-key restriction (server
+	// RFC AX: capture the author's operator-key restriction (server
 	// authority — unconditional so the overlay can't set it) so the scheduler
 	// stamps the fired run with the creator's grant.
 	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
-	// RFC BX P2b: capture the authoring principal's isolation status (server
+	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
-	def.Isolated = isolatedFromCtx(ctx)
+	def.Isolated = tools.AuthorIsolated(ctx)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -340,12 +340,12 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
 	}
-	// RFC AX: re-capture the forking principal's operator-key restriction (server
+	// RFC AX: re-capture the forker's operator-key restriction (server
 	// authority) — a fork is a new version, its authority is the forker's grant.
 	def.OperatorKeyRestricted = operatorKeyRestrictedFromCtx(ctx, s.Cfg)
-	// RFC BX P2b: capture the authoring principal's isolation status (server
+	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
-	def.Isolated = isolatedFromCtx(ctx)
+	def.Isolated = tools.AuthorIsolated(ctx)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
