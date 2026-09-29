@@ -1115,6 +1115,59 @@ func EncodeParentContext(p *ParentContext) (encoded string, ok bool, err error) 
 	return string(b), true, nil
 }
 
+// RunWalkID is the value both backends write to runs.walk_id: the walk a run
+// is a member of, read from the same ParentContext that becomes
+// runs.parent_context in the same INSERT, so the column cannot say something
+// the lineage does not. "" (written NULL) for every run that is not a walk
+// member — including the walk's own run.
+func RunWalkID(p *ParentContext) string {
+	if p == nil {
+		return ""
+	}
+	return p.WalkID
+}
+
+// ErrInvalidRunCursor is returned for a ListRunsByWalk cursor this build did
+// not issue. Transports map it to a 400 / InvalidArgument.
+var ErrInvalidRunCursor = errors.New("invalid run cursor")
+
+// EncodeRunCursor renders the position of the last run on a page as the opaque
+// token the next page starts after. Format:
+//
+//	run_<16hex-started_at-unixNanos>_<run_id>
+//
+// The channel cursor's shape, keyed on (started_at, id) — the listing's order
+// — rather than on a message id, whose format that decoder enforces. Both
+// halves are needed: runs that start in the same instant are told apart by id.
+func EncodeRunCursor(startedAt time.Time, runID string) string {
+	return fmt.Sprintf("run_%016x_%s", uint64(startedAt.UnixNano()), runID)
+}
+
+// DecodeRunCursor parses a token from EncodeRunCursor. Anything else wraps
+// ErrInvalidRunCursor, so garbage is refused rather than read as "from the
+// start".
+func DecodeRunCursor(token string) (startedAt time.Time, runID string, err error) {
+	const prefix = "run_"
+	if len(token) < len(prefix)+16+2 || token[:len(prefix)] != prefix || token[len(prefix)+16] != '_' {
+		return time.Time{}, "", fmt.Errorf("%w %q", ErrInvalidRunCursor, token)
+	}
+	nanos, perr := strconv.ParseUint(token[len(prefix):len(prefix)+16], 16, 64)
+	if perr != nil {
+		return time.Time{}, "", fmt.Errorf("%w %q", ErrInvalidRunCursor, token)
+	}
+	runID = token[len(prefix)+16+1:]
+	if len(runID) > 128 {
+		return time.Time{}, "", fmt.Errorf("%w %q", ErrInvalidRunCursor, token)
+	}
+	for i := 0; i < len(runID); i++ {
+		c := runID[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return time.Time{}, "", fmt.Errorf("%w %q", ErrInvalidRunCursor, token)
+		}
+	}
+	return time.Unix(0, int64(nanos)), runID, nil
+}
+
 // DecodeParentContext parses a stored runs.parent_context value. An empty
 // string (NULL column / old row) decodes to nil.
 func DecodeParentContext(s string) (*ParentContext, error) {
@@ -1682,6 +1735,17 @@ type Store interface {
 	// another tenant's newer runs for a colliding user id crowd a
 	// tenant's own runs out of the 100.
 	ListActiveRunsByUser(ctx context.Context, tenantID, userID string, status RunStatus) ([]Run, error)
+
+	// ListRunsByWalk returns one team walk's runs: the walk's own run (id ==
+	// walkID) and every member it spawned (runs.walk_id == walkID), ordered by
+	// started_at then id, at most limit per page (<= 0 → 100, capped at 1000).
+	// cursor is "" for the first page, else a previous call's nextCursor;
+	// nextCursor is "" on the last page. A cursor this store did not issue
+	// wraps ErrInvalidRunCursor.
+	//
+	// tenantID scopes the result to one tenant; "" returns all tenants — the
+	// ListActiveRunsByUser convention. The caller authorizes the walk itself.
+	ListRunsByWalk(ctx context.Context, tenantID, walkID string, limit int, cursor string) (runs []Run, nextCursor string, err error)
 
 	// ListRunsByParentAgentID returns the runs whose parent_agent_id
 	// matches the given value. Drives cascade-cancel discovery.

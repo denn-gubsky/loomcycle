@@ -1255,6 +1255,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// RFC DI D5: a configured run's draft — the raw request that will start
 		// it, minus secrets. See internal/store/postgres/migrations/0080_runs_draft.
 		`ALTER TABLE runs ADD COLUMN draft TEXT`,
+		// The team walk a run is a member of — parent_context's walk_id as an
+		// indexable column, backfilled below. See
+		// internal/store/postgres/migrations/0086_runs_walk_id.
+		`ALTER TABLE runs ADD COLUMN walk_id TEXT`,
 		// RFC BE — human/organizational chat metadata on the session row (the
 		// History tool's browse/search/annotate surface). All additive + nullable
 		// so legacy rows read the zero value. tags is a JSON array (NULL = never
@@ -1319,6 +1323,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate backfill runs.tenant_id: %w", err)
 	}
 
+	// Backfill runs.walk_id for members written before the column existed.
+	// Idempotent like the tenant_id backfill: a row whose parent_context names
+	// no walk never matches the LIKE, and one that does is filled on the first
+	// pass. json_valid skips a value that is not JSON — json_extract would fail
+	// the whole statement on it — leaving that row NULL.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE runs SET walk_id = NULLIF(json_extract(parent_context, '$.walk_id'), '')
+		 WHERE walk_id IS NULL AND parent_context LIKE '%"walk_id"%' AND json_valid(parent_context)`); err != nil {
+		return fmt.Errorf("migrate backfill runs.walk_id: %w", err)
+	}
+
 	// Re-home tenant-scope dirents onto the dirent plane's own scope-id convention.
 	// Mirrors postgres migration 0064.
 	//
@@ -1353,6 +1368,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// RFC DI D5: the draft expiry sweep reads configured runs by age; the
 		// partial index stays as small as the set of live drafts.
 		`CREATE INDEX IF NOT EXISTS runs_configured_by_age  ON runs(started_at)       WHERE status = 'configured'`,
+		// ListRunsByWalk: a walk's members in (started_at, id) order. Here, after
+		// addColumns, so an upgraded DB has the column before its index.
+		`CREATE INDEX IF NOT EXISTS runs_by_walk            ON runs(walk_id, started_at, id) WHERE walk_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
 		// v0.8.5: facets cost retros + experiment audits by which
 		// agent_def_id the run actually ran against. Partial index
@@ -1648,8 +1666,8 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, string(status), now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1666,6 +1684,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		boolToInt(identity.Isolated),
 		nilIfEmptyRaw(identity.RunConfig),
 		nilIfEmptyRaw(draft),
+		nilIfEmpty(store.RunWalkID(identity.ParentContext)),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -3043,6 +3062,62 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID strin
 	return out, rows.Err()
 }
 
+// ListRunsByWalk returns a walk's own run and its members in (started_at, id)
+// order, one keyset page at a time. See store.Store.
+func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, limit int, cursor string) ([]store.Run, string, error) {
+	if walkID == "" {
+		return nil, "", nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	where := `(r.id = ? OR r.walk_id = ?)`
+	args := []any{walkID, walkID}
+	if tenantID != "" {
+		where += ` AND r.tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	if cursor != "" {
+		after, afterID, err := store.DecodeRunCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		where += ` AND (r.started_at, r.id) > (?, ?)`
+		args = append(args, after.UnixNano(), afterID)
+	}
+	// One extra row says whether another page follows.
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE `+where+` ORDER BY r.started_at ASC, r.id ASC LIMIT ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, "", fmt.Errorf("list runs by walk: %w", err)
+	}
+	defer rows.Close()
+	var out []store.Run
+	for rows.Next() {
+		r, err := scanRun(rows)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeRunCursor(last.StartedAt, last.ID)
+	}
+	return out, next, nil
+}
+
 // ListRunsByParentAgentID returns the runs whose parent_agent_id
 // matches. Drives cascade-cancel discovery (every direct child of a
 // parent agent_id). Recursion (grandchildren) is the caller's job —
@@ -4045,8 +4120,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
 			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated,
-			run_config
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			run_config, walk_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.SessionID, status, startedNs, completedNs, nilIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
 		nilIfEmpty(r.Model), nilIfEmpty(r.Provider), nilIfEmpty(r.ErrorMsg),
@@ -4054,7 +4129,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nilIfEmpty(r.UserID), lastHbNs,
 		nilIfEmpty(r.UserTier), nilIfEmpty(r.AgentDefID), pauseState, pcVal,
 		boolToInt(r.Interactive), boolToInt(r.OperatorKeyRestricted), boolToInt(r.Isolated),
-		nilIfEmptyRaw(r.RunConfig),
+		nilIfEmptyRaw(r.RunConfig), nilIfEmpty(store.RunWalkID(r.ParentContext)),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

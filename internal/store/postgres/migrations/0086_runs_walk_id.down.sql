@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS runs_by_walk;
+ALTER TABLE runs DROP COLUMN IF EXISTS walk_id;
