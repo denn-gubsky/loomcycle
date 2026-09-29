@@ -7085,7 +7085,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
 	// the lookup is tenant-scoped, so a parent cannot spawn another
 	// tenant's private agent by name.
-	def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenantFromCtx(ctx), name)
+	tenant := tenantFromCtx(ctx)
+	def, ok := lookup.Agent(ctx, s.store, s.cfg(), tenant, name)
 	if !ok {
 		return nil, fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
 	}
@@ -7101,6 +7102,13 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 			return nil, fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
 		}
 		row, err := s.store.AgentDefGet(ctx, defID)
+		// A def_id is a global handle, so the version must be one the name
+		// could resolve to: the run's tenant's or the shared one's. Another
+		// tenant's is refused as if it did not exist, and before the name
+		// check, whose message would name that tenant's agent.
+		if err == nil && row.TenantID != tenant && row.TenantID != "" {
+			err = &store.ErrNotFound{Kind: "agent_def", ID: defID}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
 		}
