@@ -73,6 +73,7 @@ import type {
   InterruptListResponse,
   InterruptStatus,
   ListAgentsResponse,
+  WalkRunsPage,
   AckChannelOptions,
   AwaitChannelsOptions,
   BroadcastChannelsOptions,
@@ -928,6 +929,23 @@ export class LoomcycleClient {
       return all.filter((a) => a.parent_agent_id === opts.parentAgentId);
     }
     return all;
+  }
+
+  /** One page of a team walk's runs — the walk's own run (its run id IS the
+   *  walk id) and every member it spawned, oldest first. Pass the page's
+   *  `next_cursor` back as `cursor` for the next one; it is "" on the last.
+   *  `limit` defaults to 100, at most 1000. Mirrors
+   *  `GET /v1/runs?walk_id=`. Raises NotFoundError for an unknown walk, or
+   *  one the caller may not see. */
+  async listWalkRuns(
+    walkId: string,
+    opts?: { limit?: number; cursor?: string; signal?: AbortSignal },
+  ): Promise<WalkRunsPage> {
+    const params = new URLSearchParams({ walk_id: walkId });
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.cursor) params.set("cursor", opts.cursor);
+    const resp = await jsonFetch<WalkRunsPage>(this.ctx, `/v1/runs?${params.toString()}`, opts);
+    return { agents: resp.agents ?? [], next_cursor: resp.next_cursor ?? "" };
   }
 
   /** Aggregated token-usage + cost report (RFC AV). Group by any of

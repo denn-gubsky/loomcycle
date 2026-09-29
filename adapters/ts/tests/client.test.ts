@@ -462,6 +462,38 @@ describe("getAgent / cancelAgent / listUserAgents", () => {
     );
   });
 
+  it("listWalkRuns GETs /v1/runs with walk_id, limit and cursor and returns the page", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        agents: [
+          { agent_id: "team:triage", run_id: "r_walk", session_id: "s1", agent: "team:triage", status: "running", started_at: "2026-09-29T00:00:00Z", live: true },
+          { agent_id: "writer", run_id: "r_member", session_id: "s2", agent: "writer", status: "running", started_at: "2026-09-29T00:00:01Z", awaited_state: "channel", awaited_on: "findings" },
+        ],
+        next_cursor: "run_0000000000000001_r_member",
+      }),
+    ]);
+
+    const page = await client.listWalkRuns("r_walk", { limit: 2, cursor: "run_0000000000000000_r_a" });
+    expect(page.agents.map((a) => a.run_id)).toEqual(["r_walk", "r_member"]);
+    expect(page.agents[1]!.awaited_state).toBe("channel");
+    expect(page.next_cursor).toBe("run_0000000000000001_r_member");
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/runs?walk_id=r_walk&limit=2&cursor=run_0000000000000000_r_a",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+  });
+
+  it("listWalkRuns sends only walk_id by default and throws NotFoundError on 404", async () => {
+    const { NotFoundError } = await import("../src/errors.js");
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ agents: [], next_cursor: "" }),
+      errorResponse(404, "no walk found for walk_id r_missing"),
+    ]);
+    expect(await client.listWalkRuns("r_walk")).toEqual({ agents: [], next_cursor: "" });
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/runs?walk_id=r_walk");
+    await expect(client.listWalkRuns("r_missing")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it("cancelAgent POSTs reason + returns cancelledCount", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ cancelled_count: 3 }),
