@@ -1,0 +1,42 @@
+# RFC DM phase M — an isolated loomcycle measuring the shipped index header and rerank on
+# ConditionalQA. Two pooled stores, each one user scope holding all 652 pages:
+#   cqa-header  real titles and headings -> chunks indexed under "<title> — <path>"
+#   cqa-plain   numbered titles and headings -> no header (letterless parts are dropped)
+# Embedder, reranker and reader all run on the Spark's Ollama (OLLAMA_BASE_URL).
+models:
+  local-reader:    { provider: ollama-local, model: qwen3.8:latest }
+  local-embedding: { provider: ollama-local, model: bge-m3:latest }
+memory:
+  embedder: { model: local-embedding }
+  # 16384 matches the reader's num_ctx: Ollama reloads a model whose context changes,
+  # so a mismatch would reload qwen3.8 between every rerank and every answer.
+  reranker: { model: local-reader, effort: low, context_tokens: 16384 }   # 20 candidates x 1,200 chars
+
+x-search: &search
+  provider: code-js
+  tools: [Document]
+  skills: ["-*"]
+  memory_scopes: [user]
+  sql_scopes: [user]
+  code: |
+    function run(input) {
+      var r = JSON.parse(Document({ op: "search", scope: "user", query: input.prompt, limit: 10 }));
+      return { final_text: JSON.stringify(r) };
+    }
+
+agents:
+  cqa/writer:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    code: |
+      function run(input) {
+        return { final_text: Document(JSON.parse(input.prompt)) };
+      }
+  cqa/search:
+    <<: *search
+  cqa/search-rr:
+    <<: *search
+    memory_rerank: { enabled: true }
