@@ -243,16 +243,19 @@ func subscriptionScope(declared, channel string) (store.MemoryScope, string, err
 // go on the run identity, where admission reads a calling run's bits, so the
 // walk and every member it spawns carry them exactly as a manual walk does.
 //
-// A team promoted before the capture existed has none, and runs RESTRICTED and
-// ISOLATED — fail closed — until it is promoted again. Warned once per team per
-// process, not per walk: a sweep ticks far too often for a per-walk line.
+// A team promoted before the capture existed has none, and runs ISOLATED — fail
+// closed — until it is promoted again. Its operator-key restriction follows the
+// deployment gate, as every run's does: with the gate off nobody is denied the
+// key, and a re-promote would capture exactly that, so gate-off stays
+// byte-identical. Warned once per team per process, not per walk: a sweep ticks
+// far too often for a per-walk line.
 func (s *Server) subscriptionCtx(ctx context.Context, sub teamSubscription) context.Context {
-	promoter := store.TeamDefPromoter{OperatorKeyRestricted: true, Isolated: true}
+	promoter := store.TeamDefPromoter{OperatorKeyRestricted: s.cfg().Env.OperatorKeyRestriction, Isolated: true}
 	if sub.Promoter != nil {
 		promoter = *sub.Promoter
 	} else if s.subUncaptured.first(sub.TenantID + "\x00" + sub.Name) {
 		log.Printf("team-subscriptions: %s/%s was promoted before its promoter's confinement was recorded, "+
-			"so its walks run denied the operator's provider key and isolated. "+
+			"so its walks run isolated (and denied the operator's provider key while LOOMCYCLE_OPERATOR_KEY_RESTRICTION is on). "+
 			"Promote the team again (TeamDef op=promote) to run it with its promoter's access.", sub.TenantID, sub.Name)
 	}
 	return tools.WithRunIdentity(ctx, tools.RunIdentityValue{

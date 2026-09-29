@@ -28,7 +28,8 @@ import (
 
 // promoterHarness is a server whose one team, "armed", is a Starter over the
 // tenant channel "in" fanning out to "writer", over a provider that records the
-// identity and operator-key permission of every call.
+// identity and operator-key permission of every call. The operator-key gate is
+// on unless a test turns it off.
 type promoterHarness struct {
 	t    *testing.T
 	srv  *Server
@@ -38,6 +39,11 @@ type promoterHarness struct {
 }
 
 func newPromoterHarness(t *testing.T) *promoterHarness {
+	t.Helper()
+	return newPromoterHarnessGate(t, true)
+}
+
+func newPromoterHarnessGate(t *testing.T, gateOn bool) *promoterHarness {
 	t.Helper()
 	cfg := &config.Config{
 		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
@@ -51,7 +57,7 @@ func newPromoterHarness(t *testing.T) *promoterHarness {
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4, QueueTimeoutMS: 1000},
 	}
 	cfg.Env.AuthToken = ""
-	cfg.Env.OperatorKeyRestriction = true
+	cfg.Env.OperatorKeyRestriction = gateOn
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "promoter.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +202,19 @@ func TestTeamSubscription_WalkOfAnAdminPromotedTeamIsUnrestricted(t *testing.T) 
 	assertWalkUnconfined(t, "admin-promoted", seen, allowed)
 }
 
+// armUncaptured arms the team the way a pre-upgrade deployment has it: an
+// active pointer with no promoter capture.
+func (h *promoterHarness) armUncaptured() string {
+	h.t.Helper()
+	defID := h.authorUnpromoted()
+	if _, err := h.st.SnapshotRestoreTeamDefActive(context.Background(), store.TeamDefActiveEntry{
+		Name: "armed", TenantID: "acme", DefID: defID, PromotedAt: time.Now(),
+	}); err != nil {
+		h.t.Fatal(err)
+	}
+	return defID
+}
+
 // A team promoted before the capture existed has none. Its walks run
 // restricted and isolated — fail closed — and say so ONCE, however many walks
 // follow; promoting it again records a capture and the walk runs with it.
@@ -203,14 +222,7 @@ func TestTeamSubscription_UncapturedPromoterWalksConfinedAndWarnsOnce(t *testing
 	h := newPromoterHarness(t)
 	logged, restore := captureLog(t)
 	defer restore()
-
-	// The pointer as a pre-upgrade deployment has it: no capture.
-	defID := h.authorUnpromoted()
-	if _, err := h.st.SnapshotRestoreTeamDefActive(context.Background(), store.TeamDefActiveEntry{
-		Name: "armed", TenantID: "acme", DefID: defID, PromotedAt: time.Now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	defID := h.armUncaptured()
 
 	for i := 1; i <= 2; i++ {
 		seen, allowed := h.walkOnce()
@@ -224,4 +236,30 @@ func TestTeamSubscription_UncapturedPromoterWalksConfinedAndWarnsOnce(t *testing
 	h.promote(tools.RunIdentityValue{AgentID: "a_root", TenantID: "acme"}, &admin, defID)
 	seen, allowed := h.walkOnce()
 	assertWalkUnconfined(t, "re-promoted walk", seen, allowed)
+}
+
+// With the operator-key gate off nobody is denied the operator's key, so an
+// uncaptured team's walk keeps it too — gate-off stays byte-identical — while
+// still running isolated and still warning once.
+func TestTeamSubscription_UncapturedPromoterUnderGateOffKeepsTheKeyButIsIsolated(t *testing.T) {
+	h := newPromoterHarnessGate(t, false)
+	logged, restore := captureLog(t)
+	defer restore()
+	h.armUncaptured()
+
+	for i := 1; i <= 2; i++ {
+		seen, allowed := h.walkOnce()
+		if !allowed {
+			t.Errorf("walk %d: the member's provider call was denied the operator's key with the gate off", i)
+		}
+		for j, id := range seen {
+			if id.OperatorKeyRestricted || !id.Isolated {
+				t.Errorf("walk %d: member call %d ran with restricted=%v isolated=%v, want unrestricted and isolated",
+					i, j, id.OperatorKeyRestricted, id.Isolated)
+			}
+		}
+		if n := strings.Count(logged(), "Promote the team again"); n != 1 {
+			t.Errorf("after walk %d the re-promote warning was logged %d times, want once", i, n)
+		}
+	}
 }
