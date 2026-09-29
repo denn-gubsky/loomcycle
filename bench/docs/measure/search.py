@@ -22,7 +22,17 @@ def main():
     qs = [json.loads(l) for l in open(os.path.join(a.probe, "questions.jsonl"))]
     os.makedirs(os.path.join(a.probe, "results"), exist_ok=True)
     path = os.path.join(a.probe, "results", a.arm + ".jsonl")
-    done = {json.loads(l)["qid"] for l in open(path)} if os.path.exists(path) else set()
+    rows = [json.loads(l) for l in open(path)] if os.path.exists(path) else []
+    if a.arm.endswith("_rr"):
+        # A rerank that timed out measured the shared GPU's load, not the rerank: drop the
+        # row so the question is searched again (PREREG amendment 1).
+        kept = [r for r in rows if r.get("rerank_reason") != "timeout"]
+        if len(kept) != len(rows):
+            print("re-running %d searches whose rerank timed out" % (len(rows) - len(kept)), flush=True)
+            with open(path, "w") as f:
+                f.writelines(json.dumps(r) + "\n" for r in kept)
+        rows = kept
+    done = {r["qid"] for r in rows}
     t0, n = time.time(), 0
     with open(path, "a") as f:
         for q in qs:

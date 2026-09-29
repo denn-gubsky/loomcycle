@@ -10,7 +10,9 @@ memory:
   embedder: { model: local-embedding }
   # 16384 matches the reader's num_ctx: Ollama reloads a model whose context changes,
   # so a mismatch would reload qwen3.8 between every rerank and every answer.
-  reranker: { model: local-reader, effort: low, context_tokens: 16384 }   # 20 candidates x 1,200 chars
+  # timeout_ms 120000 (default 30000): the Spark is shared, and another workload's model
+  # swaps evict qwen3.8, so a reload (~13 s) plus the queue exceeded 30 s (PREREG amendment 1).
+  reranker: { model: local-reader, effort: low, context_tokens: 16384, timeout_ms: 120000 }   # 20 candidates x 1,200 chars
 
 x-search: &search
   provider: code-js

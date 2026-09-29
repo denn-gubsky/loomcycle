@@ -103,3 +103,26 @@ oracle ceiling.
   fails:** documented as corpus-dependent.
 - **H3 fails:** the header's effect on answers is investigated before it is recommended
   further.
+
+## Amendment 1 — 2026-09-29 16:30, before any score was computed
+
+**What happened.** The `header_rr` arm's first 1,200 searches reported `reranked: true`
+with no exception. From about question 1,200 on, **every** rerank reported `timeout`: 242
+of 1,453 searches. The pattern is a clean break, and it coincides with another workload
+on the shared Spark alternating `qwen3.6` and `gpt-oss`. That evicts `qwen3.8`: a
+reload costs about 13 s, and with the queue the call exceeded the reranker's 30 s
+default timeout. The feature then failed open as designed, returning the unreranked
+order.
+
+Left as is, instrument check 4 (≥ 95% reranked) fails and voids H2 and H4 over load on
+a GPU this probe does not own. The only numbers looked at are the counts of
+`reranked` / `rerank_reason`. No hit, recall or answer has been computed for any arm.
+
+**Change.**
+- The reranker's `timeout_ms` is raised to 120000.
+- Every `header_rr` row whose rerank reported `timeout` is dropped and its question
+  searched again (`search.py`). A row that timed out measured the GPU's load, not the
+  rerank.
+- A longer timeout only changes the outcome of a call that would otherwise have timed
+  out, so the 1,211 rows already reranked stand unchanged.
+- Nothing else changes: arms, hypotheses, α, checks, reader.
