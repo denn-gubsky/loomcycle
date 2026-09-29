@@ -224,6 +224,10 @@ type agentRunner struct {
 	// server supplies it (it owns the run-creation seam that stamps it); nil
 	// simply means the correlation is not recorded.
 	wave func(ctx context.Context, walkID, waveID string, index int) context.Context
+	// walk, when set, returns a ctx carrying the walk state a spawn belongs
+	// to — for every member of every state, where wave is a Starter's alone.
+	// Supplied by the server for the same reason; nil = not recorded.
+	walk func(ctx context.Context, walkID, state string, visit int) context.Context
 	// logf reports what a Starter could not do but must not fail for — a sink
 	// publish that errored, an ack that did not land. nil = log.Printf.
 	logf func(format string, args ...any)
@@ -285,6 +289,12 @@ func WithChannels(io ChannelIO) RunnerOption {
 // WithWaveContext wires the seam that carries a wave identity to run creation.
 func WithWaveContext(f func(ctx context.Context, walkID, waveID string, index int) context.Context) RunnerOption {
 	return func(r *agentRunner) { r.wave = f }
+}
+
+// WithWalkContext wires the seam that carries a member's walk state (walk id,
+// state id, state visit) to run creation.
+func WithWalkContext(f func(ctx context.Context, walkID, state string, visit int) context.Context) RunnerOption {
+	return func(r *agentRunner) { r.walk = f }
 }
 
 // WithOperatorAuthored records whether an OPERATOR wrote the definition this
@@ -366,6 +376,12 @@ func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *
 }
 
 func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {
+	// Every run below — an agent, a fan-out member, a consolidator, a Starter's
+	// wave — is made from this ctx, so each one records which state of the walk
+	// it ran in without any handler kind having to remember to.
+	if r.walk != nil {
+		ctx = r.walk(ctx, task.WalkID, st.ID, task.StateVisit)
+	}
 	// The state's hooks are added to every run it starts, on top of that
 	// agent's own, and ride down to their sub-agents: they go on the ctx every
 	// spawn below is made from. They are the definition's, not a caller's, so
