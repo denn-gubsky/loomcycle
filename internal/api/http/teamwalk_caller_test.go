@@ -162,7 +162,7 @@ func (h *walkHarness) postTeamDef(withPrincipal func(context.Context) context.Co
 // memberOf returns the run the walk spawned, looked up under userID.
 func memberOf(t *testing.T, st store.Store, userID, walkID string) (store.Run, bool) {
 	t.Helper()
-	runs, err := st.ListActiveRunsByUser(context.Background(), userID, "")
+	runs, err := st.ListActiveRunsByUser(context.Background(), "", userID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
