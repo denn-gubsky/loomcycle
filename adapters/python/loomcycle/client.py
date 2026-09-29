@@ -236,6 +236,31 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return [_agent_to_dict(a) for a in resp.agents]
 
+    async def list_walk_runs(
+        self,
+        walk_id: str,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> Mapping[str, Any]:
+        """One page of a team walk's runs — the walk's own run (its run id
+        IS the walk id) and every member it spawned, oldest first. Returns
+        ``{"agents": [...], "next_cursor": str}``; each agent is
+        ``get_agent``'s dict. Pass ``next_cursor`` back as ``cursor`` for the
+        next page; it is ``""`` on the last. ``limit`` defaults to 100, at
+        most 1000. A walk the caller may not see raises
+        ``AgentNotFoundError``, as an unknown one does."""
+        try:
+            resp = await self._stub.ListWalkRuns(
+                pb.ListWalkRunsRequest(walk_id=walk_id, limit=limit or 0, cursor=cursor or ""),
+                metadata=self._auth_metadata(),
+            )
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "agents": [_agent_to_dict(a) for a in resp.agents],
+            "next_cursor": resp.next_cursor,
+        }
+
     async def usage_report(
         self,
         *,
