@@ -118,6 +118,15 @@ var registry = map[string]map[string]Migrator{
 	SectionSqlMem:             {"1.0": identityMigrator},
 }
 
+// KnownSection reports whether this reader understands the named envelope
+// section. Restore uses it to warn about a section a NEWER writer added: an
+// older reader silently dropped such a section, so the operator never learned
+// the restore was partial.
+func KnownSection(section string) bool {
+	_, ok := registry[section]
+	return ok
+}
+
 // identityMigrator is the no-op migrator. Used when fromVersion ==
 // CurrentVersion (the common case in v0.8.17).
 func identityMigrator(raw json.RawMessage) (json.RawMessage, error) {
