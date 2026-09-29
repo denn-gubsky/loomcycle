@@ -187,6 +187,9 @@ type Server struct {
 	// subBackoff holds off a subscribed team whose walk just failed, so a
 	// poison message cannot drive the same failure every tick.
 	subBackoff subscriptionBackoff
+	// subUncaptured remembers which subscribed teams it has already warned
+	// about running fully confined for lack of a promoter capture.
+	subUncaptured warnOnce
 
 	// residentReg maps a resident interactive sub-agent's run_id → its live
 	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
