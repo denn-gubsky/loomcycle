@@ -101,6 +101,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `run_streaming(agent, segments, ...)` | `AsyncIterator[AgentEvent]` | Server-streams provider events for a fresh run. |
 | `continue_session(session_id, segments, ...)` | `AsyncIterator[AgentEvent]` | Continues an existing session. |
 | `get_agent(agent_id)` | `dict` | One agent's status + usage. |
+| `get_run(run_id)` | `dict` | One run by its run id — `get_agent`'s shape; use it when an agent id names several runs (every walk of a team is `team:<name>`). |
 | `cancel_agent(agent_id, reason="")` | `int` | Returns count of agents cancelled (cascades to children). |
 | `list_user_agents(user_id, status="")` | `list[dict]` | Filters: `running`, `completed`, `failed`, `cancelled`. |
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
