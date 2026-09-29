@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -247,6 +248,15 @@ func TestTeamDefTool_Run_WalkIDIsTheRunID(t *testing.T) {
 		mu.Unlock()
 		return c
 	}
+	// The walk state is handed out per state visit, for every handler kind —
+	// the same id has to reach it too.
+	var seenStates []string
+	tool.WalkContext = func(c context.Context, walkID, state string, visit int) context.Context {
+		mu.Lock()
+		seenStates = append(seenStates, walkID+"/"+state+"/"+strconv.Itoa(visit))
+		mu.Unlock()
+		return c
+	}
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x"}`))
 	if res.IsError {
@@ -266,6 +276,9 @@ func TestTeamDefTool_Run_WalkIDIsTheRunID(t *testing.T) {
 			t.Errorf("spawn %d carried walk_id %q, but the caller was given run_id %q — "+
 				"a caller cannot filter the stream by an id it was never told", i, got, runID)
 		}
+	}
+	if want := runID + "/wave/1"; len(seenStates) != 1 || seenStates[0] != want {
+		t.Errorf("walk state handed out = %v, want [%s]", seenStates, want)
 	}
 }
 

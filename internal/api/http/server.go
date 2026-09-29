@@ -1049,6 +1049,11 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 				return store.WithWaveTask(ctx, store.WaveTask{WalkID: walkID, WaveID: waveID, Index: index})
 			}
 		}
+		if td.WalkContext == nil {
+			td.WalkContext = func(ctx context.Context, walkID, state string, visit int) context.Context {
+				return store.WithWalkTask(ctx, store.WalkTask{WalkID: walkID, State: state, Visit: visit})
+			}
+		}
 	}
 	s.teamDefTool = t
 }
@@ -7221,6 +7226,18 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		subIdentity.ParentContext.BoardChunkID = bt.ChunkID
 		subIdentity.ParentContext.BoardDocumentID = bt.DocumentID
 	}
+	// Every member a walk state spawns carries the walk, the state and the
+	// visit, so a walk-filtered stream shows a walk with no starter too. The
+	// wave stamp below then adds a Starter member's wave fields on top; both
+	// carry the same walk id. Cleared from subRunCtx below like the rest.
+	if wk, ok := store.WalkTaskFromContext(ctx); ok {
+		if subIdentity.ParentContext == nil {
+			subIdentity.ParentContext = &store.ParentContext{}
+		}
+		subIdentity.ParentContext.WalkID = wk.WalkID
+		subIdentity.ParentContext.State = wk.State
+		subIdentity.ParentContext.StateVisit = wk.Visit
+	}
 	// RFC CY L4: a Starter puts its wave on ctx per spawned run; stamp it the
 	// same way, so a wave's runs can be recovered by a join instead of being
 	// copied anywhere. Cleared from subRunCtx below with the board task, so
@@ -7276,6 +7293,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// everything they went on to spawn. Leaving it set would make a wave's
 	// apparent width depend on how chatty its agents were.
 	subRunCtx = store.WithWaveTask(subRunCtx, store.WaveTask{})
+	// And the walk state: a member's own sub-agents are not the walk's members,
+	// and a walk nested inside a member stamps its own.
+	subRunCtx = store.WithWalkTask(subRunCtx, store.WalkTask{})
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)

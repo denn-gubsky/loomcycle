@@ -86,6 +86,11 @@ type TeamDef struct {
 	// correlation is not recorded.
 	WaveContext func(ctx context.Context, walkID, waveID string, index int) context.Context
 
+	// WalkContext, when set, returns a ctx carrying the walk state (walk id,
+	// state id, state visit) every member a state spawns belongs to, for the
+	// same seam. nil only means the correlation is not recorded.
+	WalkContext func(ctx context.Context, walkID, state string, visit int) context.Context
+
 	// MaxWave is the DEPLOYMENT's ceiling on one Starter wave's width — the
 	// operator's bound on a spawn amplifier whose definition anyone with def
 	// authority can author. 0 disables the check.
@@ -1088,6 +1093,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 	if t.WaveContext != nil {
 		runnerOpts = append(runnerOpts, teamrun.WithWaveContext(t.WaveContext))
+	}
+	if t.WalkContext != nil {
+		runnerOpts = append(runnerOpts, teamrun.WithWalkContext(t.WalkContext))
 	}
 	if t.MaxWave > 0 {
 		runnerOpts = append(runnerOpts, teamrun.WithMaxWave(t.MaxWave))

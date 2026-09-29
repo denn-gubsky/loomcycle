@@ -147,6 +147,8 @@ func parentContextToProto(pc *store.ParentContext) *loomcyclepb.ParentContext {
 		WalkId:          pc.WalkID,
 		WaveId:          pc.WaveID,
 		WaveIndex:       int32(pc.WaveIndex),
+		State:           pc.State,
+		StateVisit:      int32(pc.StateVisit),
 	}
 }
 

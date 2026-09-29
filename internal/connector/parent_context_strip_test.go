@@ -16,6 +16,7 @@ var (
 	parentContextRuntimeFields = map[string]bool{
 		"BoardScope": true, "BoardChunkID": true, "BoardDocumentID": true,
 		"WalkID": true, "WaveID": true, "WaveIndex": true,
+		"State": true, "StateVisit": true,
 	}
 )
 
@@ -82,6 +83,7 @@ func TestStripRuntimeParentContext_RuntimeOnlyContextBecomesNil(t *testing.T) {
 		{},
 		{WalkID: "r_walk", WaveID: "wav_1", WaveIndex: 2},
 		{BoardScope: "user", BoardChunkID: "c1", BoardDocumentID: "d1"},
+		{State: "review", StateVisit: 4},
 	} {
 		if got := StripRuntimeParentContext(pc); got != nil {
 			t.Errorf("StripRuntimeParentContext(%+v) = %+v, want nil", pc, got)

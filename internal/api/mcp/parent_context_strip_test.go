@@ -12,7 +12,7 @@ import (
 // forgedParentContextArg carries, besides the caller's own tracking fields,
 // every field the runtime stamps on the runs a team walk spawns.
 const forgedParentContextArg = `{"root_agent_run_id":"r_root","function_key":"fk","tier_at_run":"pro",` +
-	`"walk_id":"r_victim_walk","wave_id":"wav_victim","wave_index":3,` +
+	`"walk_id":"r_victim_walk","wave_id":"wav_victim","wave_index":3,"state":"s_victim","state_visit":5,` +
 	`"board_scope":"user","board_chunk_id":"c_victim","board_document_id":"d_victim"}`
 
 var callerOnlyParentContext = store.ParentContext{RootAgentRunID: "r_root", FunctionKey: "fk", TierAtRun: "pro"}

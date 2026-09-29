@@ -2466,6 +2466,8 @@ def _parent_context_to_dict(e: "pb.RunStateEvent | pb.Agent") -> Optional[Mappin
         "walk_id": pc.walk_id,
         "wave_id": pc.wave_id,
         "wave_index": pc.wave_index,
+        "state": pc.state,
+        "state_visit": pc.state_visit,
     }
 
 

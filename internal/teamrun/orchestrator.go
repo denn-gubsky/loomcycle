@@ -61,6 +61,15 @@ type Task struct {
 	// empty one only means the runs cannot be grouped, never that the walk
 	// behaves differently.
 	WalkID string
+	// StateVisit is the walk's ordinal of state visits: Walk bumps it each
+	// time it dispatches a state's handler, so while a handler runs it names
+	// THAT visit (1 for the first, never reused). Every run the handler starts
+	// is stamped with it.
+	//
+	// It is not IterationCounts: a cap `continue` resets a state's count to 1
+	// and a reroute to 0, so the count cannot tell two visits of one state
+	// apart. A rerouted entry dispatches nothing and consumes no visit.
+	StateVisit int
 	// Vars carries the workflow's ${var.*} values across states. A flat string
 	// map on purpose — see Expand for why this is not a typed variable bus.
 	// Nil until a state assigns or captures one; use SetVar rather than writing
@@ -236,6 +245,7 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 			}
 		}
 
+		task.StateVisit++
 		out, err := r.RunHandler(ctx, st, task)
 		if err != nil {
 			return trace, fmt.Errorf("teamrun: state %q handler: %w", st.ID, err)

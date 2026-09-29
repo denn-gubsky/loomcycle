@@ -1156,6 +1156,14 @@ export interface ParentContext {
    *  fields, which are omitted when empty), so an index of 0 is a real first
    *  position and not an absent one. */
   wave_index?: number;
+  /** Which state of the walk ran this run — set on EVERY run a team walk
+   *  spawns (agent, parallel, consolidator and starter members alike), where
+   *  the wave fields are a starter's alone. */
+  state?: string;
+  /** The walk's own ordinal of state visits (1, 2, …): the runs of one visit
+   *  share it, and a revisit of the same state gets a new one. Absent outside
+   *  a walk. */
+  state_visit?: number;
 }
 
 export interface ContinueOptions extends RunOverrideOptions {

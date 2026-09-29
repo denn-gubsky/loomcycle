@@ -2052,6 +2052,12 @@ message ParentContext {
   // apart on a scalar, which is exactly why parent_context itself is a MESSAGE:
   // a caller checks whether the lineage is present, then reads the index.
   int32 wave_index = 9;
+  // Which state of the walk ran this run, and which visit of it. Every run a
+  // walk spawns carries these, not only a starter's wave. state_visit is the
+  // walk's own ordinal of state visits (1, 2, …): the runs of one visit share
+  // it and a revisit of the same state gets a new one. 0 = not a walk member.
+  string state = 10;
+  int32 state_visit = 11;
 }
 
 // ========================

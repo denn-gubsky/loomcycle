@@ -9098,7 +9098,13 @@ type ParentContext struct {
 	// 0 is a REAL first position, not an absent one. proto3 cannot tell the two
 	// apart on a scalar, which is exactly why parent_context itself is a MESSAGE:
 	// a caller checks whether the lineage is present, then reads the index.
-	WaveIndex     int32 `protobuf:"varint,9,opt,name=wave_index,json=waveIndex,proto3" json:"wave_index,omitempty"`
+	WaveIndex int32 `protobuf:"varint,9,opt,name=wave_index,json=waveIndex,proto3" json:"wave_index,omitempty"`
+	// Which state of the walk ran this run, and which visit of it. Every run a
+	// walk spawns carries these, not only a starter's wave. state_visit is the
+	// walk's own ordinal of state visits (1, 2, …): the runs of one visit share
+	// it and a revisit of the same state gets a new one. 0 = not a walk member.
+	State         string `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	StateVisit    int32  `protobuf:"varint,11,opt,name=state_visit,json=stateVisit,proto3" json:"state_visit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -9192,6 +9198,20 @@ func (x *ParentContext) GetWaveId() string {
 func (x *ParentContext) GetWaveIndex() int32 {
 	if x != nil {
 		return x.WaveIndex
+	}
+	return 0
+}
+
+func (x *ParentContext) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ParentContext) GetStateVisit() int32 {
+	if x != nil {
+		return x.StateVisit
 	}
 	return 0
 }
@@ -11140,7 +11160,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\rawaited_state\x18\v \x01(\tR\fawaitedState\x12\x1d\n" +
 	"\n" +
 	"awaited_on\x18\f \x01(\tR\tawaitedOn\x12&\n" +
-	"\x0fhold_expires_at\x18\r \x01(\tR\rholdExpiresAt\"\xc1\x02\n" +
+	"\x0fhold_expires_at\x18\r \x01(\tR\rholdExpiresAt\"\xf8\x02\n" +
 	"\rParentContext\x12)\n" +
 	"\x11root_agent_run_id\x18\x01 \x01(\tR\x0erootAgentRunId\x12!\n" +
 	"\ffunction_key\x18\x02 \x01(\tR\vfunctionKey\x12\x1e\n" +
@@ -11152,7 +11172,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\awalk_id\x18\a \x01(\tR\x06walkId\x12\x17\n" +
 	"\awave_id\x18\b \x01(\tR\x06waveId\x12\x1d\n" +
 	"\n" +
-	"wave_index\x18\t \x01(\x05R\twaveIndex\"\x9b\x01\n" +
+	"wave_index\x18\t \x01(\x05R\twaveIndex\x12\x14\n" +
+	"\x05state\x18\n" +
+	" \x01(\tR\x05state\x12\x1f\n" +
+	"\vstate_visit\x18\v \x01(\x05R\n" +
+	"stateVisit\"\x9b\x01\n" +
 	"\x15PublishChannelRequest\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
 	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +

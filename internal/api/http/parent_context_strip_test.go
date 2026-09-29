@@ -18,7 +18,7 @@ import (
 // spawns — an attempt to place this run inside someone else's walk and on
 // someone else's board card.
 const forgedParentContextJSON = `{"root_agent_run_id":"r_root","function_key":"fk","tier_at_run":"pro",` +
-	`"walk_id":"r_victim_walk","wave_id":"wav_victim","wave_index":3,` +
+	`"walk_id":"r_victim_walk","wave_id":"wav_victim","wave_index":3,"state":"s_victim","state_visit":5,` +
 	`"board_scope":"user","board_chunk_id":"c_victim","board_document_id":"d_victim"}`
 
 var callerOnlyParentContext = store.ParentContext{RootAgentRunID: "r_root", FunctionKey: "fk", TierAtRun: "pro"}
@@ -26,12 +26,13 @@ var callerOnlyParentContext = store.ParentContext{RootAgentRunID: "r_root", Func
 func forgedParentContext() *store.ParentContext {
 	pc := callerOnlyParentContext
 	pc.WalkID, pc.WaveID, pc.WaveIndex = "r_victim_walk", "wav_victim", 3
+	pc.State, pc.StateVisit = "s_victim", 5
 	pc.BoardScope, pc.BoardChunkID, pc.BoardDocumentID = "user", "c_victim", "d_victim"
 	return &pc
 }
 
 // TestParentContext_RuntimeFieldsDroppedAtEveryIngress: a caller that sends
-// walk_id / wave_id / wave_index (or the board fields) gets a run whose stored
+// walk_id / wave_id / wave_index / state / state_visit (or the board fields) gets a run whose stored
 // parent_context carries none of them, while its own tracking fields survive —
 // on every surface that creates a run from caller input. The stored row is what
 // the run-state stream and a walk's canvas group by, so it is what is asserted.
