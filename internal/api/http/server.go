@@ -2818,7 +2818,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Review:            reviewRecord(in.Review),
 		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks}),
-		Interruption:      in.Interruption, // the run's own block, so a resume re-narrows from it
+		Interruption:      in.Interruption,          // the run's own block, so a resume re-narrows from it
+		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
 	}
 
 	// ---- Session+run creation ----
@@ -4705,7 +4706,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Review:            reviewRecord(req.Review),
 		ReviewTTLSeconds:  positiveOrZero(req.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: req.Hooks, ToolHooks: req.ToolHooks}),
-		Interruption:      req.Interruption, // the run's own block, so a resume re-narrows from it
+		Interruption:      req.Interruption,         // the run's own block, so a resume re-narrows from it
+		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
 	}
 
 	// Persistence: resolve or create a session, create a run, route every
@@ -5511,7 +5513,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Review:            reviewRecord(body.Review),
 		ReviewTTLSeconds:  positiveOrZero(body.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: body.Hooks, ToolHooks: body.ToolHooks}),
-		Interruption:      body.Interruption, // the run's own block, so a resume re-narrows from it
+		Interruption:      body.Interruption,        // the run's own block, so a resume re-narrows from it
+		AgentVersion:      agentVersionOf(agentDef), // the version it resumes on
 	}
 
 	// Create a new run inside the existing session. user_id is
@@ -7183,6 +7186,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		// The parent's volume confinement and inherited fan-out width, both read
 		// off ctx below and never re-derivable once the parent's ctx is gone.
 		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
+		// The version the child's NAME resolved to — under a def_id pin, the
+		// base the pinned version was laid over — so a resume rebuilds the same
+		// definition; the pin itself is AgentDefID on the row.
+		AgentVersion: agentVersionOf(def),
 	}
 
 	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is

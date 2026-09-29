@@ -1410,6 +1410,11 @@ export interface RunSpec {
     };
     fanout_cap?: number;
   };
+  /** The agent version the run started on, which a resumed run continues on:
+   *  the AgentDef version its agent name resolved to (`def_id` absent for an
+   *  agent with no versions — the operator's yaml or a registered agent).
+   *  Written by the server only. */
+  agent_version?: { def_id?: string };
 }
 
 /** A finished run's answer (RFC DI). */

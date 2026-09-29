@@ -161,6 +161,9 @@ var agentDefOverridability = map[string]overridability{
 	// it would hand an attacker the guard's key.
 	"OperatorAuthored": notOverridable,
 	"OwnerTenant":      notOverridable,
+	// Which version the run is on: resolved by lookup and recorded at start
+	// so a resume continues on it. A run naming its own would pick its version.
+	"DefID": notOverridable,
 
 	// --- operator configuration (D6): the declarations themselves are the
 	// operator's; an override selects WITHIN them and may not change them. ---

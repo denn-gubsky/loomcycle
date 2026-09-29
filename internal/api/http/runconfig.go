@@ -116,6 +116,31 @@ type runConfigRecord struct {
 	// own volumes and width — wider than it ran live. Absent on a top-level
 	// run, and on a sub-run recorded before it existed (see resumedVolumePolicy).
 	Spawn *spawnRecord `json:"spawn,omitempty"`
+
+	// AgentVersion is the definition the run's agent NAME resolved to when it
+	// started, so a resume continues on that version rather than on whatever
+	// the name resolves to by then — a newer version may offer wider tools or a
+	// different prompt. Absent on a run recorded before it existed, which
+	// resumes by name as every run did before (see resumedAgentDef).
+	//
+	// Not runs.agent_def_id: that column is the version a parent PINNED when
+	// it spawned the run by def_id, which the Evaluation tool attributes scores
+	// to. A pinned sub-run's definition is this version with the pinned one laid
+	// over it, so resume needs both.
+	AgentVersion *agentVersionRecord `json:"agent_version,omitempty"`
+}
+
+// agentVersionRecord names the version a run started on. DefID "" means the
+// name resolved to a definition with no versions: the operator's yaml, or a
+// registered agent. Present-but-empty is how resume tells that apart from a
+// run recorded before versions were.
+type agentVersionRecord struct {
+	DefID string `json:"def_id,omitempty"`
+}
+
+// agentVersionOf records the version def was read from.
+func agentVersionOf(def config.AgentDef) *agentVersionRecord {
+	return &agentVersionRecord{DefID: def.DefID}
 }
 
 // spawnRecord is a sub-run's inherited ceiling, captured from the parent's
