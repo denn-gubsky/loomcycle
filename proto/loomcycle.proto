@@ -1859,6 +1859,11 @@ message SnapshotDescriptor {
   google.protobuf.Timestamp since_ts = 5;
   string description = 6;
   string format_version = 7;
+  // What the capture carried that the operator should act on — a header
+  // value that looks like a literal credential — named by location, never
+  // by value. Set on the CreateSnapshot response only; ListSnapshots leaves
+  // it empty (the envelope's capture_findings section keeps the findings).
+  repeated string warnings = 8;
 }
 
 message ListSnapshotsRequest {}
@@ -1928,6 +1933,11 @@ message RestoreSnapshotResponse {
   int32 interaction_history_restored = 10;
   repeated string warnings = 11;
   repeated string format_migrations = 12;
+  // Every restore counter keyed by name — the typed counters above plus the
+  // ones they never carried (skill/team/hook/MCP server/channel defs, SQL
+  // Memory scopes, MCP server defs made live by the post-restore refresh).
+  // The extensible form: a new section adds a key here and no field above.
+  map<string, int32> restored = 13;
 }
 
 message DeleteSnapshotRequest {

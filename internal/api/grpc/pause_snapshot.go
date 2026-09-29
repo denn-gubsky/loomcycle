@@ -177,7 +177,22 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req *loomcyclepb.RestoreSn
 		InteractionHistoryRestored: int32(res.InteractionHistoryRestored),
 		Warnings:                   res.Warnings,
 		FormatMigrations:           res.FormatMigrations,
+		Restored:                   restoredToProto(res.Restored),
 	}, nil
+}
+
+// restoredToProto narrows the connector's counter map to the proto's int32
+// values. A restore count fits: it is bounded by the rows in one envelope,
+// which the snapshot size cap keeps far below 2^31.
+func restoredToProto(in map[string]int) map[string]int32 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int32, len(in))
+	for k, v := range in {
+		out[k] = int32(v)
+	}
+	return out
 }
 
 // DeleteSnapshot — mirrors DELETE /v1/_snapshots/{id}. Idempotent.
@@ -204,6 +219,7 @@ func descriptorToProto(d connector.SnapshotDescriptor) *loomcyclepb.SnapshotDesc
 		IncludesHistory: d.IncludesHistory,
 		Description:     d.Description,
 		FormatVersion:   d.FormatVersion,
+		Warnings:        d.Warnings,
 	}
 	if d.SinceTS != nil {
 		out.SinceTs = timestamppb.New(*d.SinceTS)
