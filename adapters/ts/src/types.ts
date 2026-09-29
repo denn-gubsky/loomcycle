@@ -1253,8 +1253,9 @@ export interface ClientOptions {
 export type AgentStatus = "configured" | "running" | "completed" | "failed" | "cancelled" | "rejected";
 
 /** What a running run is blocked on: an open Channel subscribe, an open
- *  Interruption ask, or a hold for an operator's review verdict. */
-export type AwaitedState = "channel" | "interrupted" | "review";
+ *  Interruption ask, a hold for an operator's review verdict, or an
+ *  interactive run parked for the operator's next turn (`input`). */
+export type AwaitedState = "channel" | "interrupted" | "review" | "input";
 
 export interface AgentUsage {
   input_tokens?: number;
@@ -1291,8 +1292,9 @@ export interface Agent {
   /** What a RUNNING run is currently blocked on; absent while it makes
    *  progress and for every run that is not running. See {@link AwaitedState}. */
   awaited_state?: AwaitedState;
-  /** The channel name (`awaited_state: "channel"`) or interruption kind
-   *  (`awaited_state: "interrupted"`) the run waits on. */
+  /** The channel name (`awaited_state: "channel"`), interruption kind
+   *  (`awaited_state: "interrupted"`) or the agent_stop hook holding a review
+   *  (`awaited_state: "review"`) the run waits on. */
   awaited_on?: string;
   /** The replica owning the run's live cancel handle. Absent in a
    *  single-replica deployment. */

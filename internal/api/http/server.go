@@ -7661,9 +7661,10 @@ type agentResponse struct {
 	// running rows where the agent is making progress (no
 	// unresolved Channel.subscribe / Interruption.ask). Two-field
 	// shape avoids encoding a parser into the wire:
-	//   AwaitedState = "" | "channel" | "interrupted" | "review"
-	//   AwaitedOn    = channel name (when state=channel) or
-	//                  interruption kind (when state=interrupted)
+	//   AwaitedState = "" | "channel" | "interrupted" | "review" | "input"
+	//   AwaitedOn    = channel name (when state=channel),
+	//                  interruption kind (when state=interrupted) or
+	//                  the agent_stop hook holding a review (state=review)
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`
 	// v0.12.x cluster-mode surface — which replica owns the run's live

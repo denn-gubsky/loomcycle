@@ -358,8 +358,10 @@ type Run struct {
 	// single-replica deployment.
 	ReplicaID string `json:"replica_id,omitempty"`
 	// AwaitedState / AwaitedOn: what a RUNNING run is blocked on — "channel"
-	// (AwaitedOn = the channel), "interrupted" (AwaitedOn = the ask's kind) or
-	// "review"; empty while it is making progress. Set by the single-run
+	// (AwaitedOn = the channel), "interrupted" (AwaitedOn = the ask's kind),
+	// "review" (AwaitedOn = the agent_stop hook holding it, if one did) or
+	// "input" (an interactive run parked for the operator's next turn); empty
+	// while it is making progress. Set by the single-run
 	// reads only, as on HTTP and gRPC, since each costs a store read.
 	AwaitedState string `json:"awaited_state,omitempty"`
 	AwaitedOn    string `json:"awaited_on,omitempty"`

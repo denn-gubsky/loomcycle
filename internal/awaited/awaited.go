@@ -1,6 +1,7 @@
 // Package awaited derives what a running agent is currently blocked on — an
-// open Channel.subscribe, an open Interruption.ask, or a hold for an
-// operator's review verdict — from the run's persisted events.
+// open Channel.subscribe, an open Interruption.ask, a hold for an operator's
+// review verdict, or an interactive run parked for the operator's next turn —
+// from the run's persisted events.
 //
 // It lives outside any one transport because every transport's run read model
 // reports it (the HTTP agent response and the gRPC Agent message); deriving it
@@ -24,6 +25,9 @@ const (
 	Interrupted = "interrupted"
 	// Review: held for an operator's verdict on a finished answer.
 	Review = "review"
+	// Input: an interactive run parked at the end of a turn, waiting for the
+	// operator's next message.
+	Input = "input"
 )
 
 // EventReader is the slice of store.Store the derivation reads.
@@ -61,6 +65,7 @@ type interruptionInput struct {
 //
 //	state="channel"     on=<channel name>   — open Channel.subscribe
 //	state="interrupted" on=<kind|op>        — open Interruption.ask
+//	state="input"       on=""               — parked for the operator's turn
 //	state=""            on=""               — agent is making progress
 //
 // A review hold is not read from the latest event; see ForRun.
@@ -72,6 +77,9 @@ type interruptionInput struct {
 // This collapses what the client-side derivation needs (walking
 // unresolved tool_uses) into a single row lookup.
 func FromEvent(ev store.Event) (state, on string) {
+	if ev.Type == string(providers.EventAwaitingInput) {
+		return Input, ""
+	}
 	if ev.Type != "tool_call" {
 		return "", ""
 	}
@@ -79,10 +87,18 @@ func FromEvent(ev store.Event) (state, on string) {
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		return "", ""
 	}
-	switch p.ToolUse.Name {
+	return FromToolUse(p.ToolUse.Name, p.ToolUse.Input)
+}
+
+// FromToolUse is what a tool call blocks its run on while it executes: the
+// FromEvent rule for one call, for a caller holding the live event rather than
+// its persisted row (the run-state stream announces the hold as the call
+// starts). Any other tool, and a non-blocking op of these two, is "".
+func FromToolUse(name string, input json.RawMessage) (state, on string) {
+	switch name {
 	case "Channel":
 		var ci channelInput
-		if err := json.Unmarshal(p.ToolUse.Input, &ci); err != nil {
+		if err := json.Unmarshal(input, &ci); err != nil {
 			return "", ""
 		}
 		if ci.Op == "subscribe" {
@@ -90,7 +106,7 @@ func FromEvent(ev store.Event) (state, on string) {
 		}
 	case "Interruption":
 		var ii interruptionInput
-		if err := json.Unmarshal(p.ToolUse.Input, &ii); err != nil {
+		if err := json.Unmarshal(input, &ii); err != nil {
 			return "", ""
 		}
 		// v0.8.16 always emits kind="question" for "ask"; future
@@ -110,7 +126,9 @@ func FromEvent(ev store.Event) (state, on string) {
 // HoldEndingEvents are what a run writes when it leaves a hold, whatever the
 // verdict: the feedback turn (user_input), the park an approved interactive run
 // moves to (awaiting_input), or the end (done). The run is held while its
-// latest awaiting_review is newer than all of them.
+// latest awaiting_review is newer than all of them. awaiting_input is itself a
+// wait: an interactive run is parked while its latest awaiting_input is newer
+// than the rest, until the operator's turn lands as user_input.
 //
 // Keyed on what ENDS a hold rather than on the run's latest event, because
 // other writers append to a held run without ending it — a retune's override
@@ -142,6 +160,9 @@ func HeldBy(ctx context.Context, st EventReader, runID string) (bool, string) {
 // "no awaited state" — common immediately after a CreateRun. Other store
 // errors are logged and read as "no awaited state" too: the field is a
 // read-model nicety, not a correctness signal, so it must not fail the read.
+//
+// A review hold reports the agent_stop hook that took it as `on` (empty when
+// review arming took it), which is what the run-state stream announces too.
 func ForRun(ctx context.Context, st EventReader, runID string) (state, on string) {
 	ev, err := st.GetLastEventForRun(ctx, runID)
 	if err != nil {
@@ -152,12 +173,25 @@ func ForRun(ctx context.Context, st EventReader, runID string) (state, on string
 		return "", ""
 	}
 	state, on = FromEvent(ev)
-	if state == "" {
-		if held, _ := HeldBy(ctx, st, runID); held {
-			// Not from the latest event: other writers append to a held run
-			// without ending the hold (see HoldEndingEvents).
-			return Review, ""
-		}
+	if state != "" {
+		return state, on
 	}
-	return state, on
+	// Not from the latest event: other writers append to a held or parked run
+	// without ending the wait (see HoldEndingEvents) — a compaction marker on a
+	// parked interactive run is the common one.
+	last, err := st.GetLastEventOfTypes(ctx, runID, HoldEndingEvents)
+	if err != nil {
+		return "", ""
+	}
+	switch last.Type {
+	case string(providers.EventAwaitingReview):
+		var p providers.Event
+		if json.Unmarshal(last.Payload, &p) == nil && p.AwaitingReview != nil {
+			return Review, p.AwaitingReview.HeldBy
+		}
+		return Review, ""
+	case string(providers.EventAwaitingInput):
+		return Input, ""
+	}
+	return "", ""
 }
