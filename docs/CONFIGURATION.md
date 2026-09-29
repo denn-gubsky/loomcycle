@@ -1455,8 +1455,15 @@ The same filter is on the `stream_user_run_states` MCP tool (`walk_id`). The
 `stream_open` event echoes `filter_walk_id`, so a mistyped id shows up as a
 wrong echo rather than as a workflow that quietly produced nothing.
 
-Each event's `parent_context` carries `walk_id`, `wave_id` and `wave_index`, so
-a client can group a fan-out by wave and order it by position.
+Every run a walk state starts — an agent and its consolidator, each parallel
+member, a standalone consolidator, a starter's wave — carries `walk_id` plus
+`state` (the state id it ran in) and `state_visit` on its `parent_context`.
+`state_visit` is the walk's own ordinal of state visits (1, 2, …): the runs of
+one visit share it, and a revisit of the same state — a pushback loop, or a
+`continue` on an iteration cap — gets a new one. A starter's wave members also
+carry `wave_id` and `wave_index`, so a client can group a fan-out by wave and
+order it by position. A member's own sub-agents carry none of these, and the
+walk's own run is the one whose `run_id` equals the `walk_id`.
 
 ### Armed subscriptions — a promoted team that runs itself
 
