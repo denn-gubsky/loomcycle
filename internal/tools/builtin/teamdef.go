@@ -81,6 +81,13 @@ type TeamDef struct {
 	// says so at the state rather than skipping it silently.
 	Channels func(ctx context.Context, d teamgraph.Definition) teamrun.ChannelIO
 
+	// Documents, when set, is what a `starter` state with source.kind=document
+	// reads its sections from. A value rather than a per-run factory like
+	// Channels: nothing about the read comes from the definition beyond its
+	// path, and its authority is the walk ctx it is called with. nil means
+	// such a state cannot run, and says so at the state.
+	Documents teamrun.DocumentReader
+
 	// WaveContext, when set, returns a ctx carrying the wave a spawn belongs to,
 	// for the seam that stamps it on the spawned run. nil only means the
 	// correlation is not recorded.
@@ -1090,6 +1097,9 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if io := t.Channels(walkCtx, def); io != nil {
 			runnerOpts = append(runnerOpts, teamrun.WithChannels(io))
 		}
+	}
+	if t.Documents != nil {
+		runnerOpts = append(runnerOpts, teamrun.WithDocuments(t.Documents))
 	}
 	if t.WaveContext != nil {
 		runnerOpts = append(runnerOpts, teamrun.WithWaveContext(t.WaveContext))

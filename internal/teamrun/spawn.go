@@ -220,6 +220,9 @@ type agentRunner struct {
 	// skipped, because a workflow whose source never fires looks identical to
 	// one whose source is empty.
 	channels ChannelIO
+	// documents is a document-source Starter's reader. nil means such a state
+	// cannot run, refused at the state for the reason channels is.
+	documents DocumentReader
 	// wave, when set, returns a ctx carrying the wave a spawn belongs to. The
 	// server supplies it (it owns the run-creation seam that stamps it); nil
 	// simply means the correlation is not recorded.

@@ -109,6 +109,12 @@ func (s *Server) listTeamSubscriptions(ctx context.Context) ([]teamSubscription,
 		if !ok || entry.Handler.Kind != teamgraph.HandlerStarter || entry.Handler.Source == nil {
 			continue // not a subscriber — an ordinary team runs when asked
 		}
+		// A Starter that reads a DOCUMENT cannot be armed: there is no
+		// channel to wake on and no cursor to say what is new, so driving it
+		// would re-walk the same document every tick. It runs when asked.
+		if entry.Handler.Source.IsDocument() {
+			continue
+		}
 		out = append(out, teamSubscription{
 			DefID: row.DefID, TenantID: row.TenantID, Name: row.Name,
 			Source: entry.Handler.Source.Channel,
