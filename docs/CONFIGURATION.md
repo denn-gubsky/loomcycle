@@ -1455,6 +1455,23 @@ The same filter is on the `stream_user_run_states` MCP tool (`walk_id`). The
 `stream_open` event echoes `filter_walk_id`, so a mistyped id shows up as a
 wrong echo rather than as a workflow that quietly produced nothing.
 
+The stream shows what happens from the moment you subscribe. To read the walk
+as it stands — every run it has started so far, finished or not — list it:
+
+```sh
+curl "…/v1/runs?walk_id=r_4325…&limit=100"
+# → {"agents":[{"run_id":"r_4325…",…}, …], "next_cursor":"run_…"}
+curl "…/v1/runs?walk_id=r_4325…&limit=100&cursor=run_…"   # the next page
+```
+
+It returns the walk's own run and every member, oldest first, in pages of up to
+1000 (default 100); `next_cursor` is empty on the last page. Unlike the user
+listing (`/v1/users/{user_id}/agents`, 100 rows) it is not capped, and it needs
+no client-side filtering. You may list a walk if you may read the walk's own run
+(`GET /v1/runs/{run_id}`); otherwise it is the same 404 an unknown walk gets. The
+same listing is `list_runs` with `walk_id` over MCP, the `ListWalkRuns` RPC over
+gRPC, `listWalkRuns` in the TypeScript client and `list_walk_runs` in Python.
+
 Every run a walk state starts — an agent and its consolidator, each parallel
 member, a standalone consolidator, a starter's wave — carries `walk_id` plus
 `state` (the state id it ran in) and `state_visit` on its `parent_context`.

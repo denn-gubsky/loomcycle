@@ -104,6 +104,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `get_run(run_id)` | `dict` | One run by its run id — `get_agent`'s shape; use it when an agent id names several runs (every walk of a team is `team:<name>`). |
 | `cancel_agent(agent_id, reason="")` | `int` | Returns count of agents cancelled (cascades to children). |
 | `list_user_agents(user_id, status="")` | `list[dict]` | Filters: `running`, `completed`, `failed`, `cancelled`. |
+| `list_walk_runs(walk_id, limit=None, cursor=None)` | `dict` | One page of a team walk's runs — its own run and every member, oldest first: `{"agents": [...], "next_cursor": str}`. Pass `next_cursor` back as `cursor`; `""` on the last page. `limit` defaults to 100, at most 1000. |
 | `get_transcript(session_id)` | `list[dict]` | Persisted event log; `payload` is raw JSON bytes. |
 | `health()` | `dict` | Liveness + build info. Unauthenticated. |
 | `get_config()` | `dict` | v1.38.0 — instance configuration: build identity, the feature matrix, and the live provider/model/search cascade with `active`/`selected`. `view` names the disclosure level (`authenticated` or `admin`; the HTTP surface's narrower `public` level does not exist over gRPC, which authenticates before dispatch). |
