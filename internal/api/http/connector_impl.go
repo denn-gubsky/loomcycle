@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -345,6 +346,32 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	if !runOwnershipOK(ctx, r) {
 		return connector.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
+	return s.singleRunToConnector(ctx, r), nil
+}
+
+// GetRunByRunID is GetRun addressed by run id — the connector side of GET
+// /v1/runs/{run_id}, with the same tenant and isolated-member gates.
+func (s *Server) GetRunByRunID(ctx context.Context, runID string) (connector.Run, error) {
+	if s.store == nil {
+		return connector.Run{}, fmt.Errorf("get_run requires persistence (no Store configured)")
+	}
+	if !validIdent(runID) {
+		return connector.Run{}, fmt.Errorf("run_id must match [A-Za-z0-9_-]{1,128}")
+	}
+	r, err := s.tenantStore(ctx).GetRun(ctx, runID)
+	if err != nil {
+		return connector.Run{}, err
+	}
+	if !runOwnershipOK(ctx, r) {
+		return connector.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return s.singleRunToConnector(ctx, r), nil
+}
+
+// singleRunToConnector adds what only a single-run read reports — the answer,
+// the spec, a configured run's draft and a running run's awaited state — so
+// both GetRun paths answer alike, and like singleRunResponse on HTTP.
+func (s *Server) singleRunToConnector(ctx context.Context, r store.Run) connector.Run {
 	out := storeRunToConnector(r)
 	out.Result = r.Result
 	out.Spec = r.RunConfig
@@ -353,7 +380,10 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 			out.Draft = d
 		}
 	}
-	return out, nil
+	if r.Status == store.RunRunning {
+		out.AwaitedState, out.AwaitedOn = awaited.ForRun(ctx, s.store, r.ID)
+	}
+	return out
 }
 
 // ListRuns enumerates runs. Today only the UserID filter has an
@@ -436,6 +466,9 @@ func storeRunToConnector(r store.Run) connector.Run {
 		StopReason:    r.StopReason,
 		Usage:         usage,
 		Error:         r.ErrorMsg,
+		ParentContext: r.ParentContext,
+		Interactive:   r.Interactive,
+		ReplicaID:     r.ReplicaID,
 	}
 	if !r.CompletedAt.IsZero() {
 		ct := r.CompletedAt

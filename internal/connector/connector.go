@@ -73,6 +73,11 @@ type Connector interface {
 	// agent_id. Mirrors GET /v1/agents/{agent_id}.
 	GetRun(ctx context.Context, agentID string) (Run, error)
 
+	// GetRunByRunID is GetRun addressed by the run itself — mirrors GET
+	// /v1/runs/{run_id}. An agent id can name many runs (every walk of a team
+	// is filed under `team:<name>`), and GetRun answers only the latest.
+	GetRunByRunID(ctx context.Context, runID string) (Run, error)
+
 	// CompactRun summarizes a run's conversation to free context and continue
 	// from the summary — mirrors POST /v1/runs/{run_id}/compact. Keyed by
 	// run_id (transports holding an agent_id resolve it via GetRun first). A
