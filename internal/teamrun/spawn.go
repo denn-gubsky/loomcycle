@@ -158,18 +158,24 @@ func ReviewArming(ctx context.Context) func(context.Context) bool {
 type reviewTTLKey struct{}
 
 // WithReviewTTL attaches the walk's review deadline for its members: a hold
-// nobody rules on within it ends the member rejected.
-func WithReviewTTL(ctx context.Context, ttl time.Duration) context.Context {
-	if ttl <= 0 {
+// nobody rules on within it ends the member rejected. A callback for the same
+// reason the arming is one: the deadline can change while the member runs, and
+// each hold reads it when it begins.
+func WithReviewTTL(ctx context.Context, ttl func() time.Duration) context.Context {
+	if ttl == nil {
 		return ctx
 	}
 	return context.WithValue(ctx, reviewTTLKey{}, ttl)
 }
 
-// ReviewTTL returns the member's review deadline, or 0 for none.
+// ReviewTTL returns the member's review deadline as the walk says it NOW, or 0
+// for none.
 func ReviewTTL(ctx context.Context) time.Duration {
-	ttl, _ := ctx.Value(reviewTTLKey{}).(time.Duration)
-	return ttl
+	ttl, _ := ctx.Value(reviewTTLKey{}).(func() time.Duration)
+	if ttl == nil {
+		return 0
+	}
+	return max(ttl(), 0)
 }
 
 // maxParallelConcurrency bounds how many of a parallel state's agents run at
@@ -258,8 +264,11 @@ type agentRunner struct {
 	// same live armed set the debugger reads, at its review phase. Separate from
 	// breakAt because review needs no human-ask machinery: the verdict comes
 	// through the member run's own review verb, not a walk pause.
-	reviewAt  BreakpointSource
-	reviewTTL time.Duration
+	reviewAt BreakpointSource
+	// reviewTTL is the walk's review deadline, read at each member's hold:
+	// the source's live one when it carries a deadline (ReviewDeadlineSource),
+	// else the one the walk started with.
+	reviewTTL func() time.Duration
 }
 
 // RunnerOption configures the production runner. Options rather than more
@@ -323,7 +332,12 @@ func WithMemberReview(src BreakpointSource, ttl time.Duration) RunnerOption {
 		if src == nil {
 			return
 		}
-		r.reviewAt, r.reviewTTL = src, ttl
+		r.reviewAt, r.reviewTTL = src, func() time.Duration { return ttl }
+		// A live source's deadline wins, so an operator can change it while
+		// the walk runs; ttl was seeded into it when it opened.
+		if live, ok := src.(ReviewDeadlineSource); ok {
+			r.reviewTTL = live.ReviewTTL
+		}
 	}
 }
 

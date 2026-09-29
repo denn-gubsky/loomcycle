@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
@@ -114,6 +115,15 @@ type BreakpointFunc func(ctx context.Context, bp Breakpoint) (BreakDecision, err
 // walk, and must be safe for concurrent use.
 type BreakpointSource interface {
 	Armed(state string, phase BreakpointPhase) bool
+}
+
+// ReviewDeadlineSource is a BreakpointSource that also carries the walk's
+// review deadline, which can change while the walk runs. It is asked when each
+// member's hold begins, never during one: a hold keeps the deadline it
+// announced. 0 is no deadline.
+type ReviewDeadlineSource interface {
+	BreakpointSource
+	ReviewTTL() time.Duration
 }
 
 // StaticBreakpoints is a fixed armed set — the dispatch-time argument, and the

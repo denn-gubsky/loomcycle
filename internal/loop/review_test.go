@@ -526,6 +526,50 @@ func TestRun_Review_EachHoldGetsTheFullWindow(t *testing.T) {
 	}
 }
 
+// A deadline changed while the run is going applies from its next hold: the
+// revision is held on the new deadline, not the one the run started with.
+func TestRun_Review_AChangedDeadlineAppliesFromTheNextHold(t *testing.T) {
+	var ttl atomic.Int64 // none at the start
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		o.ReviewTTLNow = func() time.Duration { return time.Duration(ttl.Load()) }
+	})
+	if ev := r.waitFor(t, providers.EventAwaitingReview); ev.AwaitingReview.ExpiresAt != "" {
+		t.Fatalf("round 1 expires_at = %q, want none", ev.AwaitingReview.ExpiresAt)
+	}
+	ttl.Store(int64(time.Hour))
+	r.q <- verdict(steer.KindReject, "again")
+	ev := r.waitFor(t, providers.EventAwaitingReview)
+	due, err := time.Parse(time.RFC3339, ev.AwaitingReview.ExpiresAt)
+	if err != nil {
+		t.Fatalf("round 2 expires_at = %q, want the new deadline", ev.AwaitingReview.ExpiresAt)
+	}
+	if left := time.Until(due); left < 59*time.Minute || left > time.Hour+time.Second {
+		t.Errorf("round 2 expires in %v, want about an hour", left)
+	}
+	r.q <- verdict(steer.KindApprove, "")
+	r.result(t)
+}
+
+// A hold in progress keeps the deadline it announced, however the deadline is
+// changed while it waits: a person may be working to it.
+func TestRun_Review_AHoldInProgressKeepsItsDeadline(t *testing.T) {
+	var ttl atomic.Int64
+	ttl.Store(int64(150 * time.Millisecond))
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+		o.ReviewTTLNow = func() time.Duration { return time.Duration(ttl.Load()) }
+	})
+	r.waitFor(t, providers.EventAwaitingReview)
+	ttl.Store(int64(time.Hour)) // extended while held
+	select {
+	case out := <-r.done:
+		if out.res.StopReason != StopReasonReviewExpired {
+			t.Errorf("stop reason = %q, want %q on the deadline the hold began with", out.res.StopReason, StopReasonReviewExpired)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hold did not expire on the deadline it announced")
+	}
+}
+
 // A restored hold's deadline runs from when the hold began, so a restart does
 // not hand an unreviewed answer a fresh window.
 func TestRun_ResumeHeld_DeadlineRunsFromWhenTheHoldBegan(t *testing.T) {

@@ -56,6 +56,42 @@ func TestStarterReview_MembersCarryTheLiveArmingAndDeadline(t *testing.T) {
 	}
 }
 
+// liveDeadlineArming is a live arming whose review deadline an operator changes
+// while the walk runs.
+type liveDeadlineArming struct {
+	liveArming
+	ttl atomic.Int64
+}
+
+func (l *liveDeadlineArming) ReviewTTL() time.Duration { return time.Duration(l.ttl.Load()) }
+
+// A source that carries its own deadline is read for it when each member's
+// hold begins — so a deadline changed mid-wave reaches the members still to be
+// held — and it wins over the start-time value it was seeded from.
+func TestStarterReview_MembersReadALiveSourcesDeadline(t *testing.T) {
+	ch := &fakeChannels{inbox: inbox(2)}
+	arming := &liveDeadlineArming{}
+	arming.on.Store(true)
+	arming.ttl.Store(int64(time.Minute))
+	var mu sync.Mutex
+	var ttls []time.Duration
+	r := starterRunner(ch, func(ctx context.Context, _ string, _ Prompt, _ string) (SpawnResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		ttls = append(ttls, ReviewTTL(ctx))
+		arming.ttl.Store(int64(time.Hour)) // changed mid-wave
+		return SpawnResult{Output: "ok", Status: "completed"}, nil
+	})
+	WithMemberReview(arming, 90*time.Second)(r)
+
+	if _, err := r.RunHandler(context.Background(), starterState(), &Task{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ttls) != 2 || ttls[0] != time.Minute || ttls[1] != time.Hour {
+		t.Errorf("members read deadlines %v, want [1m 1h] — read live from the source", ttls)
+	}
+}
+
 // A walk with no review never hands its members an arming — the path a walk
 // took before review existed.
 func TestStarterReview_UnarmedWalkHandsNoArming(t *testing.T) {

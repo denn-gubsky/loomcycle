@@ -17,13 +17,21 @@
 // problem than it solves — a breakpoint surviving into a later run of the same
 // team, pausing a workflow nobody is watching, with the ask timing out and
 // aborting the walk. The set dies with the walk, deliberately.
+//
+// The set also carries the walk's review deadline, for the same reason: a
+// walk started with no deadline, or the wrong one, is exactly the walk an
+// operator is watching when they decide it needs one. Like the specs it is
+// not persisted — a member restored after a restart holds on the deadline
+// recorded in its own run, which is the one in force when that member started.
 package breakpoints
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Phase mirrors teamrun.BreakpointPhase. It is duplicated as a string constant
@@ -58,6 +66,10 @@ type Set struct {
 	// would be silently never hit.
 	checks    []check
 	nextCheck int
+	// reviewTTL is the deadline a member's hold for review gets when it
+	// begins; 0 is none. Read at each hold's start, never re-applied to a hold
+	// in progress: that hold announced its expires_at when it began.
+	reviewTTL time.Duration
 }
 
 // Validator refuses a spec whose target its walk's definition cannot arm. It
@@ -92,7 +104,33 @@ func (s *Set) Armed(state, phase string) bool {
 	return s.at[state][phase]
 }
 
-// Replace swaps the whole armed set atomically.
+// ReviewTTL is the review deadline a hold beginning now gets (0 = none).
+func (s *Set) ReviewTTL() time.Duration {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.reviewTTL
+}
+
+// maxReviewTTLSeconds is the largest deadline a time.Duration can hold.
+// Past it the conversion wraps negative, which every reader takes as "no
+// deadline" — the opposite of what was asked for.
+const maxReviewTTLSeconds = math.MaxInt64 / int64(time.Second)
+
+// ReviewTTLFromSeconds converts a review_ttl_seconds value into a deadline,
+// refusing one the walk could not honour. 0 is no deadline, as it is when the
+// walk starts.
+func ReviewTTLFromSeconds(n int) (time.Duration, error) {
+	if n < 0 || int64(n) > maxReviewTTLSeconds {
+		return 0, fmt.Errorf("review_ttl_seconds %d: want 0 (no deadline) or a positive number of seconds up to %d",
+			n, maxReviewTTLSeconds)
+	}
+	return time.Duration(n) * time.Second, nil
+}
+
+// Replace swaps the whole armed set atomically, keeping the review deadline.
 //
 // A whole-set replace rather than arm/disarm deltas: the caller holds the
 // desired configuration and pushes it, so there is no read-modify-write race
@@ -105,6 +143,14 @@ func (s *Set) Armed(state, phase string) bool {
 // also disarmed everything that was working. That covers the targets too: a
 // spec naming a state no walk on this set has is refused, not armed on nothing.
 func (s *Set) Replace(specs []string) error {
+	return s.Apply(specs, nil)
+}
+
+// Apply replaces the armed set and, when reviewTTL is non-nil, the review
+// deadline — together, under one lock, so a hold beginning during the call
+// sees either the old arming or the new one, never half of each. A refused
+// spec changes neither. reviewTTL must be non-negative (ReviewTTLFromSeconds).
+func (s *Set) Apply(specs []string, reviewTTL *time.Duration) error {
 	next := make(map[string]map[string]bool, len(specs))
 	for _, spec := range specs {
 		state, phase, err := ParseSpec(spec)
@@ -125,6 +171,9 @@ func (s *Set) Replace(specs []string) error {
 	}
 	s.mu.Lock()
 	s.at = next
+	if reviewTTL != nil {
+		s.reviewTTL = *reviewTTL
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -258,20 +307,23 @@ func NewRegistry() *Registry {
 	return &Registry{sets: map[string]*entry{}}
 }
 
-// Open registers a walk's armed set under runID, seeded with the run argument,
-// and returns it plus the release to call when the walk ends. targets is the
-// walk's check that a later Replace names states it can actually arm; the seed
-// is not re-checked here, because the run boundary already did.
+// Open registers a walk's armed set under runID, seeded with the run argument
+// and the walk's review deadline (0, or less, is none — as at the run
+// boundary), and returns it plus the release to call when the walk ends.
+// targets is the walk's check that a later Replace names states it can
+// actually arm; the seed is not re-checked here, because the run boundary
+// already did.
 //
 // An empty runID gets a detached Set: the arming still works for whatever was
 // passed at dispatch, but nothing can reach it to change it. That is the honest
 // outcome for a walk started outside a run (there is no handle to address), and
 // it fails by being un-armable rather than by refusing to run.
-func (r *Registry) Open(runID string, seed []string, targets Validator) (*Set, func(), error) {
+func (r *Registry) Open(runID string, seed []string, reviewTTL time.Duration, targets Validator) (*Set, func(), error) {
 	set, err := NewSet(seed)
 	if err != nil {
 		return nil, nil, err
 	}
+	set.reviewTTL = max(reviewTTL, 0)
 	// A nil registry (a Server assembled without one) degrades to a detached
 	// set: the dispatch-time arming still works and nothing can reach it. That
 	// is the documented fallback, and it must not be a panic inside a live walk.
@@ -284,7 +336,8 @@ func (r *Registry) Open(runID string, seed []string, targets Validator) (*Set, f
 		// A second walk under the same run joins the existing set rather than
 		// replacing it, so an operator's arming is not silently dropped by a
 		// walk that started later. Its check joins too, and leaves with it: a
-		// state only the finished walk had is no longer a target.
+		// state only the finished walk had is no longer a target. The review
+		// deadline is part of that arming, so the joiner adopts it too.
 		e.refs++
 		withdraw := e.set.addCheck(targets)
 		return e.set, func() { withdraw(); r.release(runID) }, nil

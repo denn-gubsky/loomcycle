@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -28,6 +29,11 @@ type breakpointsRequest struct {
 	// read-modify-write, and "turn Debug off" is the empty list rather than a
 	// second verb.
 	Breakpoints []string `json:"breakpoints"`
+	// ReviewTTLSeconds, when present, replaces the walk's review deadline: a
+	// member hold nobody rules on within it ends rejected. 0 is no deadline,
+	// as it is when the walk starts; omitted leaves the deadline as it is.
+	// A pointer because those two must not read the same.
+	ReviewTTLSeconds *int `json:"review_ttl_seconds,omitempty"`
 }
 
 type breakpointsResponse struct {
@@ -36,6 +42,14 @@ type breakpointsResponse struct {
 	// reading back its own arming sees what the walk will actually do rather
 	// than an echo of its own shorthand.
 	Armed []string `json:"armed"`
+	// ReviewTTLSeconds is the deadline a member's hold beginning now gets;
+	// 0 = none. Always present: 0 is an answer, not an absence.
+	ReviewTTLSeconds int `json:"review_ttl_seconds"`
+}
+
+// breakpointsView renders a live set as the endpoint reports it.
+func breakpointsView(runID string, set *breakpoints.Set) breakpointsResponse {
+	return breakpointsResponse{RunID: runID, Armed: set.List(), ReviewTTLSeconds: int(set.ReviewTTL() / time.Second)}
 }
 
 // handleGetRunBreakpoints serves GET /v1/runs/{run_id}/breakpoints.
@@ -44,7 +58,7 @@ func (s *Server) handleGetRunBreakpoints(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, breakpointsResponse{RunID: runID, Armed: set.List()})
+	writeJSON(w, http.StatusOK, breakpointsView(runID, set))
 }
 
 // handlePutRunBreakpoints serves PUT /v1/runs/{run_id}/breakpoints — replace
@@ -56,6 +70,12 @@ func (s *Server) handleGetRunBreakpoints(w http.ResponseWriter, r *http.Request)
 // Disarming "<state>:review" releases that state's held members at once, as
 // approved. It cannot un-publish a result the next stage has already seen, and
 // does not pretend to.
+//
+// A review_ttl_seconds sent with the set applies from each member's NEXT hold.
+// A hold already in progress keeps its deadline: it announced its expires_at
+// when it began, and the person reviewing it may be working to that. Like the
+// specs it lives only in memory — a member restored after a restart holds on
+// the deadline its own run recorded, the one in force when it started.
 func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request) {
 	set, runID, ok := s.liveBreakpointSet(w, r)
 	if !ok {
@@ -66,16 +86,26 @@ func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid JSON body")
 		return
 	}
-	// Replace validates before it mutates — the syntax, and that each state is
+	var reviewTTL *time.Duration
+	if req.ReviewTTLSeconds != nil {
+		ttl, err := breakpoints.ReviewTTLFromSeconds(*req.ReviewTTLSeconds)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_review_ttl", err.Error())
+			return
+		}
+		reviewTTL = &ttl
+	}
+	// Apply validates before it mutates — the syntax, and that each state is
 	// one the walk has and of a kind that phase can arm — so a rejected call
-	// leaves the previous arming exactly as it was: an operator fixing a typo
-	// must not discover they have also disarmed everything that was working.
-	if err := set.Replace(req.Breakpoints); err != nil {
+	// leaves the previous arming exactly as it was, deadline included: an
+	// operator fixing a typo must not discover they have also disarmed
+	// everything that was working.
+	if err := set.Apply(req.Breakpoints, reviewTTL); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_breakpoint", err.Error())
 		return
 	}
 	s.releaseDisarmedMembers(r.Context(), runID)
-	writeJSON(w, http.StatusOK, breakpointsResponse{RunID: runID, Armed: set.List()})
+	writeJSON(w, http.StatusOK, breakpointsView(runID, set))
 }
 
 // releaseDisarmedMembers releases the walk's members held for review whose
@@ -188,8 +218,9 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 // run id comes from ctx, never from tool input — a caller must not be able to
 // register its walk under someone else's run. targets is the walk's own check,
 // which a PUT runs before it arms anything: this handler holds no definition.
-func (s *Server) openTeamBreakpoints(ctx context.Context, seed []string, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
-	set, release, err := s.breakpointReg.Open(tools.RunID(ctx), seed, targets)
+// reviewTTL is the run argument's review deadline, which a PUT can change too.
+func (s *Server) openTeamBreakpoints(ctx context.Context, seed []string, reviewTTL time.Duration, targets func(spec string) error) (teamrun.BreakpointSource, func(), error) {
+	set, release, err := s.breakpointReg.Open(tools.RunID(ctx), seed, reviewTTL, targets)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -208,3 +239,9 @@ type liveBreakpoints struct{ set *breakpoints.Set }
 func (l liveBreakpoints) Armed(state string, phase teamrun.BreakpointPhase) bool {
 	return l.set.Armed(state, string(phase))
 }
+
+// ReviewTTL hands the walk's members the deadline the set holds now, so a PUT
+// that changes it applies from each member's next hold.
+func (l liveBreakpoints) ReviewTTL() time.Duration { return l.set.ReviewTTL() }
+
+var _ teamrun.ReviewDeadlineSource = liveBreakpoints{}

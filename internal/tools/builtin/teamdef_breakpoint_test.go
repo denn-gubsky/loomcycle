@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
@@ -169,7 +170,7 @@ func TestTeamDefTool_Run_LiveSetGetsTheWalksTargetCheck(t *testing.T) {
 	tool.AskHuman = func(context.Context, string) (string, error) { return "continue", nil }
 
 	var targets func(string) error
-	tool.LiveBreakpoints = func(_ context.Context, seed []string, check func(string) error) (teamrun.BreakpointSource, func(), error) {
+	tool.LiveBreakpoints = func(_ context.Context, seed []string, _ time.Duration, check func(string) error) (teamrun.BreakpointSource, func(), error) {
 		targets = check
 		src, err := teamrun.NewStaticBreakpoints(seed)
 		return src, func() {}, err
@@ -292,7 +293,7 @@ func TestTeamDefTool_Run_OpensALiveSetEvenWithNoBreakpoints(t *testing.T) {
 
 	opened, released := 0, 0
 	var seenSeed []string
-	tool.LiveBreakpoints = func(_ context.Context, seed []string, _ func(string) error) (teamrun.BreakpointSource, func(), error) {
+	tool.LiveBreakpoints = func(_ context.Context, seed []string, _ time.Duration, _ func(string) error) (teamrun.BreakpointSource, func(), error) {
 		opened++
 		seenSeed = seed
 		src, err := teamrun.NewStaticBreakpoints(seed)

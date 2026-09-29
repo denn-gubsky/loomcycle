@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestParseSpec(t *testing.T) {
@@ -106,7 +107,7 @@ func TestSet_NilIsNotArmed(t *testing.T) {
 
 func TestRegistry_OpenGetRelease(t *testing.T) {
 	r := NewRegistry()
-	set, release, err := r.Open("run_1", []string{"wave"}, nil)
+	set, release, err := r.Open("run_1", []string{"wave"}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +126,8 @@ func TestRegistry_OpenGetRelease(t *testing.T) {
 // not silently drop an operator's arming.
 func TestRegistry_TwoWalksShareOneRunsSet(t *testing.T) {
 	r := NewRegistry()
-	first, releaseFirst, _ := r.Open("run_1", []string{"wave"}, nil)
-	second, releaseSecond, _ := r.Open("run_1", nil, nil)
+	first, releaseFirst, _ := r.Open("run_1", []string{"wave"}, 0, nil)
+	second, releaseSecond, _ := r.Open("run_1", nil, 0, nil)
 	if first != second {
 		t.Fatal("two walks under one run must share the set")
 	}
@@ -147,7 +148,7 @@ func TestRegistry_TwoWalksShareOneRunsSet(t *testing.T) {
 // address, so it gets a working-but-unreachable set rather than a refusal.
 func TestRegistry_NoRunIDIsDetached(t *testing.T) {
 	r := NewRegistry()
-	set, release, err := r.Open("", []string{"wave"}, nil)
+	set, release, err := r.Open("", []string{"wave"}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestRegistry_NoRunIDIsDetached(t *testing.T) {
 // parser as a mid-run arm, so a typo cannot enter by the other door.
 func TestRegistry_OpenRefusesABadSeed(t *testing.T) {
 	r := NewRegistry()
-	if _, _, err := r.Open("run_1", []string{"wave:typo"}, nil); err == nil {
+	if _, _, err := r.Open("run_1", []string{"wave:typo"}, 0, nil); err == nil {
 		t.Fatal("a malformed seed was accepted")
 	}
 	if _, ok := r.Get("run_1"); ok {
@@ -245,7 +246,7 @@ func only(states ...string) Validator {
 // a walk that never pauses. It is refused, and the previous arming stays.
 func TestRegistry_ReplaceRefusesAStateTheWalkDoesNotHave(t *testing.T) {
 	r := NewRegistry()
-	set, release, err := r.Open("run_1", []string{"wave"}, only("wave"))
+	set, release, err := r.Open("run_1", []string{"wave"}, 0, only("wave"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,8 +267,8 @@ func TestRegistry_ReplaceRefusesAStateTheWalkDoesNotHave(t *testing.T) {
 // only the finished walk had stops being one when it leaves.
 func TestRegistry_SharedSetAcceptsAStateInEitherWalk(t *testing.T) {
 	r := NewRegistry()
-	set, releaseFirst, _ := r.Open("run_1", nil, only("wave"))
-	_, releaseSecond, _ := r.Open("run_1", nil, only("fanout"))
+	set, releaseFirst, _ := r.Open("run_1", nil, 0, only("wave"))
+	_, releaseSecond, _ := r.Open("run_1", nil, 0, only("fanout"))
 	defer releaseSecond()
 
 	if err := set.Replace([]string{"wave", "fanout:review"}); err != nil {
@@ -282,5 +283,76 @@ func TestRegistry_SharedSetAcceptsAStateInEitherWalk(t *testing.T) {
 	}
 	if err := set.Replace([]string{"fanout"}); err != nil {
 		t.Errorf("the remaining walk's state was refused: %v", err)
+	}
+}
+
+// TestRegistry_OpenSeedsTheReviewDeadline: the walk's start-time deadline is
+// what a hold gets until an operator changes it. A negative one is none, as at
+// the run boundary; a second walk joining the run's set adopts its deadline
+// along with the rest of the arming.
+func TestRegistry_OpenSeedsTheReviewDeadline(t *testing.T) {
+	r := NewRegistry()
+	set, release, _ := r.Open("run_1", nil, time.Minute, nil)
+	defer release()
+	if got := set.ReviewTTL(); got != time.Minute {
+		t.Errorf("seeded deadline = %v, want 1m", got)
+	}
+	joined, releaseJoined, _ := r.Open("run_1", nil, time.Hour, nil)
+	defer releaseJoined()
+	if got := joined.ReviewTTL(); got != time.Minute {
+		t.Errorf("joining walk's deadline = %v, want the shared 1m", got)
+	}
+	neg, releaseNeg, _ := r.Open("run_2", nil, -time.Second, nil)
+	defer releaseNeg()
+	if got := neg.ReviewTTL(); got != 0 {
+		t.Errorf("negative seed = %v, want none", got)
+	}
+}
+
+// TestSet_ApplyChangesTheDeadlineWithTheSpecsOrNeither: a nil deadline leaves
+// it as it was, and a refused spec keeps the previous deadline as well as the
+// previous arming — an operator fixing a typo must not lose either.
+func TestSet_ApplyChangesTheDeadlineWithTheSpecsOrNeither(t *testing.T) {
+	r := NewRegistry()
+	set, release, _ := r.Open("run_1", []string{"wave:review"}, time.Minute, only("wave"))
+	defer release()
+	hour := time.Hour
+	if err := set.Apply([]string{"wave", "nope"}, &hour); err == nil {
+		t.Fatal("a spec naming an unknown state was accepted")
+	}
+	if set.ReviewTTL() != time.Minute || !set.Armed("wave", Review) || set.Armed("wave", BeforeDispatch) {
+		t.Errorf("a refused Apply changed the arming: ttl=%v armed=%v", set.ReviewTTL(), set.List())
+	}
+	if err := set.Apply([]string{"wave"}, &hour); err != nil {
+		t.Fatal(err)
+	}
+	if set.ReviewTTL() != time.Hour || !set.Armed("wave", BeforeDispatch) {
+		t.Errorf("after Apply ttl=%v armed=%v, want 1h and wave", set.ReviewTTL(), set.List())
+	}
+	if err := set.Replace([]string{"wave:review"}); err != nil {
+		t.Fatal(err)
+	}
+	if set.ReviewTTL() != time.Hour {
+		t.Errorf("a specs-only Replace changed the deadline to %v", set.ReviewTTL())
+	}
+}
+
+func TestReviewTTLFromSeconds_RefusesWhatTheWalkCannotHonour(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want time.Duration
+		ok   bool
+	}{
+		{0, 0, true},
+		{90, 90 * time.Second, true},
+		{-1, 0, false},
+		// Past time.Duration's range the conversion wraps negative, which
+		// every reader takes as no deadline at all.
+		{int(maxReviewTTLSeconds) + 1, 0, false},
+	} {
+		got, err := ReviewTTLFromSeconds(tc.in)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("ReviewTTLFromSeconds(%d) = (%v, err=%v), want (%v, ok=%v)", tc.in, got, err, tc.want, tc.ok)
+		}
 	}
 }

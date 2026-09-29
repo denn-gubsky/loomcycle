@@ -55,6 +55,47 @@ func TestTeamDefTool_Run_ReviewArmsTheStartersMembers(t *testing.T) {
 	}
 }
 
+// liveDeadline is a live set whose review deadline an operator has changed.
+type liveDeadline struct {
+	teamrun.BreakpointSource
+	ttl time.Duration
+}
+
+func (l liveDeadline) ReviewTTL() time.Duration { return l.ttl }
+
+// op=run seeds its review_ttl_seconds into the live set, beside the specs, and
+// the members read the deadline that set holds — so changing it there, while
+// the walk runs, reaches the members still to be held.
+func TestTeamDefTool_Run_ReviewDeadlineIsReadFromTheLiveSet(t *testing.T) {
+	tool, ctx, _, _, done := breakFixture(t)
+	defer done()
+	tool.AskHuman = nil
+	spy := &reviewSpy{}
+	tool.Spawn = spy.spawn
+	var seeded time.Duration
+	tool.LiveBreakpoints = func(_ context.Context, seed []string, reviewTTL time.Duration, _ func(string) error) (teamrun.BreakpointSource, func(), error) {
+		seeded = reviewTTL
+		src, err := teamrun.NewStaticBreakpoints(seed)
+		return liveDeadline{src, 5 * time.Minute}, func() {}, err
+	}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"triage","input":"x","review":["wave"],"review_ttl_seconds":30}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if seeded != 30*time.Second {
+		t.Errorf("live set seeded with %v, want the run's 30s", seeded)
+	}
+	if len(spy.ttls) != 2 {
+		t.Fatalf("members = %d, want 2", len(spy.ttls))
+	}
+	for _, ttl := range spy.ttls {
+		if ttl != 5*time.Minute {
+			t.Errorf("member deadline = %v, want the live set's 5m", ttl)
+		}
+	}
+}
+
 // The breakpoint form arms review the same way, also without a human-ask.
 func TestTeamDefTool_Run_ReviewPhaseBreakpointArmsReview(t *testing.T) {
 	tool, ctx, _, _, done := breakFixture(t)
