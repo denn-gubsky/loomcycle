@@ -7801,20 +7801,29 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, live := s.cancelReg.Get(agentID)
+	writeJSON(w, http.StatusOK, s.singleRunResponse(r.Context(), run, live))
+}
+
+// singleRunResponse builds the single-run read for a run the caller has
+// already been cleared to see. Shared by every route that reads ONE run, so
+// they cannot drift in what they report: the awaited state of a running run,
+// the answer, the spec, and a configured run's draft — the fields a listing
+// leaves out.
+func (s *Server) singleRunResponse(ctx context.Context, run store.Run, live bool) agentResponse {
 	resp := runToAgentResponse(run, live)
 	if resp.Status == store.RunRunning {
 		single := []agentResponse{resp}
-		fillAwaitedStateForRunning(r.Context(), s.store, single)
+		fillAwaitedStateForRunning(ctx, s.store, single)
 		resp = single[0]
 	}
 	resp.Result = run.Result
 	resp.Spec = run.RunConfig
 	if run.Status == store.RunConfigured {
-		if d, err := s.store.GetRunDraft(r.Context(), run.ID); err == nil {
+		if d, err := s.store.GetRunDraft(ctx, run.ID); err == nil {
 			resp.Draft = d
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // cancelRequest is the (optional) JSON body for POST /v1/agents/{id}/cancel.
