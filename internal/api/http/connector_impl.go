@@ -1089,7 +1089,7 @@ func (s *Server) CreateSnapshot(ctx context.Context, req connector.CreateSnapsho
 		opts.SqlMem = s.sqlMem                                                 // RFC AA Phase 3e
 		opts.SqlMemMaxScopeBytes = s.cfg().Storage.SqlMemSnapshotMaxScopeBytes // 3f.2 per-scope cap
 	}
-	row, _, err := snapshot.Capture(ctx, s.store, opts)
+	captured, err := snapshot.CaptureReport(ctx, s.store, opts)
 	if err != nil {
 		var tooLarge *snapshot.ErrSnapshotTooLarge
 		if errors.As(err, &tooLarge) {
@@ -1097,10 +1097,12 @@ func (s *Server) CreateSnapshot(ctx context.Context, req connector.CreateSnapsho
 		}
 		return connector.SnapshotDescriptor{}, fmt.Errorf("create_snapshot: %w", err)
 	}
-	if err := s.store.SnapshotCreate(ctx, *row); err != nil {
+	if err := s.store.SnapshotCreate(ctx, *captured.Row); err != nil {
 		return connector.SnapshotDescriptor{}, fmt.Errorf("create_snapshot persist: %w", err)
 	}
-	return snapshotRowToDescriptor(*row, req.IncludeHistory, req.SinceTS), nil
+	desc := snapshotRowToDescriptor(*captured.Row, req.IncludeHistory, req.SinceTS)
+	desc.Warnings = captured.Warnings // the create response only; a listing cannot recompute them
+	return desc, nil
 }
 
 // ListSnapshots delegates to Store.SnapshotList. Returns up to 200
@@ -1236,19 +1238,13 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 		}
 		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: %w", err)
 	}
+	// The caches over the restored tables, as the HTTP restore does. This path
+	// does not resume the restored paused runs (the HTTP one does); a later
+	// resume, at boot or through the HTTP restore, finds the caches current.
+	s.postRestoreRefresh(ctx, &result)
 
 	return connector.RestoreSnapshotResult{
-		Restored: map[string]int{
-			"agent_defs":          result.AgentDefsRestored,
-			"agent_def_active":    result.AgentDefActiveRestored,
-			"memory":              result.MemoryRestored,
-			"channel_messages":    result.ChannelMessagesRestored,
-			"channel_cursors":     result.ChannelCursorsRestored,
-			"evaluations":         result.EvaluationsRestored,
-			"paused_runs":         result.PausedRunsRestored,
-			"transcript_events":   result.TranscriptEventsRestored,
-			"interaction_history": result.InteractionHistoryRestored,
-		},
+		Restored:                   result.Counts(),
 		AgentDefsRestored:          result.AgentDefsRestored,
 		AgentDefActiveRestored:     result.AgentDefActiveRestored,
 		MemoryRestored:             result.MemoryRestored,

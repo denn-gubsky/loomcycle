@@ -286,6 +286,13 @@ type Server struct {
 	// that don't exercise MCP at all. See internal/tools/mcp/lazy.go.
 	mcpFallback tools.FallbackFunc
 
+	// mcpRegistryRefresh reloads the active MCP server defs from the store
+	// into the in-process registry the MCP pool dials through, returning how
+	// many entries it made live. The post-restore refresh calls it so restored
+	// defs go live without a restart. Wired from main.go (the same function
+	// boot runs); nil in harnesses without an MCP pool.
+	mcpRegistryRefresh func(ctx context.Context) (int, error)
+
 	// dynamicTools, when set, returns the substrate-registered tools
 	// (dynamic MCP servers' discovered tools + A2A peer skills) that were
 	// NOT in the boot-time s.tools set. Folded into the per-run candidate
@@ -685,6 +692,13 @@ func (s *Server) SetBuildInfo(version, commit, builtAt string) {
 // cmd/loomcycle/main.go after the MCP pool is built.
 func (s *Server) SetMCPFallback(fn tools.FallbackFunc) {
 	s.mcpFallback = fn
+}
+
+// SetMCPRegistryRefresh installs the reload the post-restore refresh runs over
+// the MCP server registry. Nil leaves restored MCP server defs dormant until
+// the next boot, as they were before the refresh existed.
+func (s *Server) SetMCPRegistryRefresh(fn func(ctx context.Context) (int, error)) {
+	s.mcpRegistryRefresh = fn
 }
 
 // SetDynamicToolEnumerator installs the optional post-boot tool advertiser.
