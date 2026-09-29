@@ -450,6 +450,27 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 	return out, nil
 }
 
+// ListWalkRuns is the connector side of GET /v1/runs?walk_id=, through the
+// same walkRuns gate. Running rows carry their awaited state, as on HTTP.
+func (s *Server) ListWalkRuns(ctx context.Context, walkID string, limit int, cursor string) (connector.WalkRuns, error) {
+	if s.store == nil {
+		return connector.WalkRuns{}, fmt.Errorf("list_runs requires persistence (no Store configured)")
+	}
+	runs, next, err := s.walkRuns(ctx, walkID, limit, cursor)
+	if err != nil {
+		return connector.WalkRuns{}, err
+	}
+	out := make([]connector.Run, 0, len(runs))
+	for _, r := range runs {
+		c := storeRunToConnector(r)
+		if r.Status == store.RunRunning {
+			c.AwaitedState, c.AwaitedOn = awaited.ForRun(ctx, s.store, r.ID)
+		}
+		out = append(out, c)
+	}
+	return connector.WalkRuns{Runs: out, NextCursor: next}, nil
+}
+
 func storeRunToConnector(r store.Run) connector.Run {
 	usage := &providers.Usage{
 		InputTokens:         r.InputTokens,

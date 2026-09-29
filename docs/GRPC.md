@@ -72,6 +72,7 @@ adapter can be trivially ported between the two.
 | `GetRun(GetRunRequest) → Agent` | `GET /v1/runs/{run_id}` | unary | `GetAgent` addressed by the run itself. An agent id can name many runs (every walk of a team is filed under `team:<name>`, which `GetAgent` cannot address) and `GetAgent` answers the latest; a run id names one. Same tenant / isolated-member `NOT_FOUND` fold as `GetAgent`. |
 | `CancelAgent(CancelAgentRequest) → CancelAgentResponse` | `POST /v1/agents/{agent_id}/cancel` | unary | Cascades to children via `parent_agent_id`. |
 | `ListUserAgents(ListUserAgentsRequest) → ListUserAgentsResponse` | `GET /v1/users/{user_id}/agents` | unary | Status filter optional. |
+| `ListWalkRuns(ListWalkRunsRequest) → ListWalkRunsResponse` | `GET /v1/runs?walk_id=` | unary | One team walk's runs — the walk's own run (its `run_id` is the walk id) and every member it spawned, ordered by `started_at` then `run_id`, `limit` per page (0 = 100, at most 1000) with an opaque `next_cursor` (`""` on the last page). Not capped like `ListUserAgents`. Same tenant / isolated-member `NOT_FOUND` fold as `GetRun`, applied to the walk's own run; a foreign `cursor` is `INVALID_ARGUMENT`. |
 | `GetTranscript(GetTranscriptRequest) → Transcript` | `GET /v1/sessions/{session_id}/transcript` | unary | Persisted event log; payloads are raw JSON bytes. |
 | `Health(HealthRequest) → HealthResponse` | `GET /healthz` | unary | Unauthenticated. Returns build commit + uptime. |
 
@@ -159,7 +160,7 @@ direct `codes.NotFound` emissions in `GetAgent` / `CancelAgent` /
 |---|---|---|
 | `INVALID_ARGUMENT` | `ErrUnknownAgent`, `ErrInvalidArgument`, `ErrUnknownProvider` / HTTP 400 | Bad request shape, unknown agent name, missing/invalid field. |
 | `FAILED_PRECONDITION` | `ErrSessionRequired`, `ErrSessionBusy` / HTTP 409 / 412 | Operator-state mismatch. Session-busy = another request in flight on the same `session_id`. |
-| `NOT_FOUND` | `ErrSessionNotFound` (Continue/GetTranscript), or unknown `agent_id` (GetAgent/CancelAgent) / `run_id` (GetRun) / HTTP 404 | Discriminate via message text — "session not found" vs. "no run found for agent_id" / "no run found for run_id". |
+| `NOT_FOUND` | `ErrSessionNotFound` (Continue/GetTranscript), or unknown `agent_id` (GetAgent/CancelAgent) / `run_id` (GetRun) / `walk_id` (ListWalkRuns) / HTTP 404 | Discriminate via message text — "session not found" vs. "no run found for agent_id" / "no run found for run_id" / "no walk found for walk_id". |
 | `ALREADY_EXISTS` | `ErrAgentIDInUse` / HTTP 409 | Caller-supplied `agent_id` is already mapped to a live run. |
 | `RESOURCE_EXHAUSTED` | `ErrBackpressure` / HTTP 429 | Concurrency semaphore rejected the run; retry with backoff. |
 | `UNAUTHENTICATED` | (auth middleware) / HTTP 401 | Bad/missing bearer token. |

@@ -32,6 +32,7 @@ The client surface mirrors the gRPC service in proto/loomcycle.proto:
     get_run(...)              — read one run by its run id
     cancel_agent(...)         — cancel a live agent (cascades to children)
     list_user_agents(...)     — list a user's recent runs
+    list_walk_runs(...)       — page through one team walk's runs
     stream_user_run_states(...) — stream a user's run-state transitions
                                  (walk_id= narrows to one team walk)
     get_transcript(...)       — read the persisted event log for a session

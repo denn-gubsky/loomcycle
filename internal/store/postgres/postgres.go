@@ -382,8 +382,8 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		_, err := s.pool.Exec(ctx,
 			`INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21)`,
 			id, sessionID, string(status), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -401,6 +401,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 			identity.Isolated,
 			nullableJSONArg(identity.RunConfig),
 			nullableJSONArg(draft),
+			nullableText(store.RunWalkID(identity.ParentContext)),
 		)
 		return err
 	}); err != nil {
@@ -1725,6 +1726,65 @@ func (s *Store) ListActiveRunsByUser(ctx context.Context, tenantID, userID strin
 	return scanRunRows(rows)
 }
 
+// ListRunsByWalk returns a walk's own run and its members in (started_at, id)
+// order, one keyset page at a time. See store.Store.
+func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, limit int, cursor string) ([]store.Run, string, error) {
+	if walkID == "" {
+		return nil, "", nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	// Two index lookups OR-ed: the walk's own run by primary key, its members
+	// by runs_by_walk.
+	where := `(r.id = $1 OR r.walk_id = $1)`
+	args := []any{walkID}
+	if tenantID != "" {
+		args = append(args, tenantID)
+		where += fmt.Sprintf(` AND r.tenant_id = $%d`, len(args))
+	}
+	if cursor != "" {
+		after, afterID, err := store.DecodeRunCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, after, afterID)
+		where += fmt.Sprintf(` AND (r.started_at, r.id) > ($%d, $%d)`, len(args)-1, len(args))
+	}
+	// One extra row says whether another page follows.
+	args = append(args, limit+1)
+	rows, err := s.pool.Query(ctx,
+		`SELECT r.id, r.session_id, r.status, r.started_at, r.completed_at, r.stop_reason,
+		        r.input_tokens, r.output_tokens, r.cache_creation_tokens, r.cache_read_tokens,
+		        r.model, r.provider, r.error,
+		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
+		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.run_config::text, r.result::text,
+		        s.agent
+		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
+		 WHERE `+where+`
+		 ORDER BY r.started_at ASC, r.id ASC LIMIT $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("list runs by walk: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanRunRows(rows)
+	if err != nil {
+		return nil, "", fmt.Errorf("list runs by walk: %w", err)
+	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = store.EncodeRunCursor(last.StartedAt, last.ID)
+	}
+	return out, next, nil
+}
+
 // ListRunsByParentAgentID returns the direct children of the given
 // parent. Recursion to grandchildren is the caller's responsibility —
 // keeping the SQL flat keeps the indexes simple.
@@ -2669,8 +2729,8 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			model, provider, error,
 			agent_id, parent_agent_id, parent_run_id, user_id, last_heartbeat_at,
-			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb)
+			user_tier, agent_def_id, pause_state, parent_context, interactive, operator_key_restricted, isolated, run_config, walk_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26::jsonb, $27)
 		 ON CONFLICT (id) DO NOTHING`,
 		r.ID, r.SessionID, status, startedAt, completedAt, nullIfEmpty(r.StopReason),
 		r.InputTokens, r.OutputTokens, r.CacheCreationTokens, r.CacheReadTokens,
@@ -2678,7 +2738,7 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 		nullIfEmpty(r.AgentID), nullIfEmpty(r.ParentAgentID), nullIfEmpty(r.ParentRunID),
 		nullIfEmpty(r.UserID), lastHbAt,
 		nullIfEmpty(r.UserTier), nullIfEmpty(r.AgentDefID), pauseState, pcVal, r.Interactive, r.OperatorKeyRestricted, r.Isolated,
-		nullableJSONArg(r.RunConfig),
+		nullableJSONArg(r.RunConfig), nullIfEmpty(store.RunWalkID(r.ParentContext)),
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore run: %w", err)

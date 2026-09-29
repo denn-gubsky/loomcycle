@@ -142,6 +142,7 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 | `getRun(runId)` | `Promise<Agent>` | One run by its run id — `getAgent`'s shape. Use it when an agent id names several runs (every walk of a team is `team:<name>`). Raises `NotFoundError` if unknown. |
 | `cancelAgent(agentId, opts?)` | `Promise<{ cancelledCount: number }>` | Cascades to children via `parent_agent_id`. Idempotent. |
 | `listUserAgents(userId, opts?)` | `Promise<Agent[]>` | Optional filter by status (`running` / `completed` / `failed` / `cancelled`). |
+| `listWalkRuns(walkId, { limit?, cursor? })` | `Promise<WalkRunsPage>` | One page of a team walk's runs — its own run and every member, oldest first: `{ agents, next_cursor }`. Pass `next_cursor` back as `cursor`; `""` on the last page. `limit` defaults to 100, at most 1000. Raises `NotFoundError` for a walk you cannot read. |
 | `getTranscript(sessionId)` | `Promise<TranscriptResponse>` | Persisted event log; one row per event with seq/run_id/ts_ns/type/event. |
 | `health()` | `Promise<HealthResponse>` | Liveness probe. Hits `/healthz` (no `/v1` prefix). Unauthenticated. |
 | `getConfig(opts?)` | `Promise<ConfigResponse>` | v1.38.0 — instance configuration: build identity, the feature matrix, and the live provider/model/search cascade with `active`/`selected`. `view` names the disclosure level (`public` / `authenticated` / `admin`). Also readable with **no bearer** against a deployment running `LOOMCYCLE_PUBLIC_CONFIG=1`, which serves the narrower `public` view — the landing-page case. |

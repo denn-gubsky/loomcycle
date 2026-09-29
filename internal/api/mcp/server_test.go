@@ -73,6 +73,10 @@ type mockConnector struct {
 	getRunAgentID       atomic.Value // string: the agent_id GetRun was called with
 	getRunByRunIDArg    atomic.Value // string: the run_id GetRunByRunID was called with
 	getRunByRunIDResult connector.Run
+
+	listWalkArgs   atomic.Value // listWalkCall: what ListWalkRuns was called with
+	listWalkResult connector.WalkRuns
+	listWalkErr    error
 }
 
 func (m *mockConnector) SpawnRun(ctx context.Context, r connector.SpawnRunRequest) (connector.SpawnRunResult, error) {
@@ -135,6 +139,18 @@ func (m *mockConnector) ListRuns(_ context.Context, _ connector.ListRunsFilter) 
 		m.listCallback()
 	}
 	return nil, nil
+}
+
+// listWalkCall records one ListWalkRuns call.
+type listWalkCall struct {
+	walkID string
+	limit  int
+	cursor string
+}
+
+func (m *mockConnector) ListWalkRuns(_ context.Context, walkID string, limit int, cursor string) (connector.WalkRuns, error) {
+	m.listWalkArgs.Store(listWalkCall{walkID, limit, cursor})
+	return m.listWalkResult, m.listWalkErr
 }
 func (m *mockConnector) RegisterAgent(_ context.Context, _ connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
 	m.regCalls.Add(1)

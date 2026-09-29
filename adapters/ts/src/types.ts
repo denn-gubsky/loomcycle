@@ -1411,6 +1411,13 @@ export interface ListAgentsResponse {
   agents: Agent[];
 }
 
+/** One page of a team walk's runs ({@link LoomcycleClient.listWalkRuns}),
+ *  ordered by started_at then run id. `next_cursor` is "" on the last page. */
+export interface WalkRunsPage {
+  agents: Agent[];
+  next_cursor: string;
+}
+
 export interface CancelAgentResult {
   /** Number of agents marked cancelled (root + descendants reached
    *  via parent_agent_id cascade). 0 when the agent had already

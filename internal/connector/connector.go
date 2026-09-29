@@ -153,6 +153,12 @@ type Connector interface {
 	// GET /v1/runs (with optional user_id / status filters).
 	ListRuns(ctx context.Context, filter ListRunsFilter) ([]Run, error)
 
+	// ListWalkRuns lists one team walk's runs — its own run and every member
+	// it spawned, oldest first, a page at a time — mirroring GET
+	// /v1/runs?walk_id=. cursor is "" or a previous page's NextCursor. A walk
+	// the caller cannot read is the same not-found an unknown one is.
+	ListWalkRuns(ctx context.Context, walkID string, limit int, cursor string) (WalkRuns, error)
+
 	// --- Agent management ---
 
 	// RegisterAgent adds a dynamic agent that survives until its TTL

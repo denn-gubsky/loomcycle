@@ -163,6 +163,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.ListUserAgentsRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.ListUserAgentsResponse.FromString,
                 _registered_method=True)
+        self.ListWalkRuns = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListWalkRuns',
+                request_serializer=loomcycle__pb2.ListWalkRunsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListWalkRunsResponse.FromString,
+                _registered_method=True)
         self.UsageReport = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/UsageReport',
                 request_serializer=loomcycle__pb2.UsageReportRequest.SerializeToString,
@@ -653,6 +658,17 @@ class LoomcycleServicer:
         filtered by status.
 
         Mirrors GET /v1/users/{user_id}/agents.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListWalkRuns(self, request, context):
+        """ListWalkRuns lists one team walk's runs — the walk's own run and every
+        member it spawned — oldest first, a page at a time. A walk the caller
+        cannot read is the NotFound an unknown walk gets.
+
+        Mirrors GET /v1/runs?walk_id=.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1257,6 +1273,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.ListUserAgents,
                     request_deserializer=loomcycle__pb2.ListUserAgentsRequest.FromString,
                     response_serializer=loomcycle__pb2.ListUserAgentsResponse.SerializeToString,
+            ),
+            'ListWalkRuns': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListWalkRuns,
+                    request_deserializer=loomcycle__pb2.ListWalkRunsRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListWalkRunsResponse.SerializeToString,
             ),
             'UsageReport': grpc.unary_unary_rpc_method_handler(
                     servicer.UsageReport,
@@ -2138,6 +2159,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/ListUserAgents',
             loomcycle__pb2.ListUserAgentsRequest.SerializeToString,
             loomcycle__pb2.ListUserAgentsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListWalkRuns(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListWalkRuns',
+            loomcycle__pb2.ListWalkRunsRequest.SerializeToString,
+            loomcycle__pb2.ListWalkRunsResponse.FromString,
             options,
             channel_credentials,
             insecure,

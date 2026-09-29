@@ -301,14 +301,15 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 		},
 		{
 			Name:        "list_runs",
-			Description: "Enumerate a USER's runs, newest first. `user_id` is REQUIRED \u2014 there is no unfiltered listing of everything in the deployment. Optional `status` filters to running / completed / failed / cancelled, and `limit` (1\u2013200) caps the page. Use it to find runs when you do not already hold an agent_id. Do NOT use it to poll one run you already have a handle for \u2014 get_run answers that directly and more cheaply. It returns run metadata, never transcripts or final text.",
+			Description: "Enumerate runs in one of two ways \u2014 pass exactly one of `user_id` or `walk_id`; there is no unfiltered listing of everything in the deployment. With `user_id`: that user's runs, newest first; optional `status` filters to running / completed / failed / cancelled and `limit` (1\u2013200) caps the list. With `walk_id` \u2014 the run_id a team walk returned: the walk's own run and every run it spawned, oldest first, one page at a time; `limit` (1\u20131000, default 100) sizes the page and `cursor` continues from the previous page's `next_cursor`, which is empty on the last page (`status` does not apply). Use it to find runs when you do not already hold an agent_id, or to see every agent one walk ran. Do NOT use it to poll one run you already have a handle for \u2014 get_run answers that directly and more cheaply. It returns run metadata, never transcripts or final text.",
 			InputSchema: rawJSON(`{
 				"type": "object",
-				"required": ["user_id"],
 				"properties": {
-					"user_id": {"type": "string"},
-					"status":  {"type": "string", "enum": ["running", "completed", "failed", "cancelled"]},
-					"limit":   {"type": "integer", "minimum": 1, "maximum": 200}
+					"user_id": {"type": "string", "description": "List this user's runs. Exactly one of user_id or walk_id."},
+					"walk_id": {"type": "string", "description": "List this team walk's runs: its own run_id. Exactly one of user_id or walk_id."},
+					"status":  {"type": "string", "enum": ["running", "completed", "failed", "cancelled"], "description": "user_id only."},
+					"limit":   {"type": "integer", "minimum": 1, "maximum": 1000, "description": "user_id: 1-200. walk_id: 1-1000, default 100."},
+					"cursor":  {"type": "string", "description": "walk_id only: the next_cursor of the previous page."}
 				}
 			}`),
 		},

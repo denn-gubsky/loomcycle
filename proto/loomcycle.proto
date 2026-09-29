@@ -210,6 +210,13 @@ service Loomcycle {
   // Mirrors GET /v1/users/{user_id}/agents.
   rpc ListUserAgents(ListUserAgentsRequest) returns (ListUserAgentsResponse);
 
+  // ListWalkRuns lists one team walk's runs — the walk's own run and every
+  // member it spawned — oldest first, a page at a time. A walk the caller
+  // cannot read is the NotFound an unknown walk gets.
+  //
+  // Mirrors GET /v1/runs?walk_id=.
+  rpc ListWalkRuns(ListWalkRunsRequest) returns (ListWalkRunsResponse);
+
   // UsageReport aggregates the token-usage + cost ledger (RFC AV): summed
   // tokens + cost grouped by the requested dimensions over an optional tenant +
   // time window. Tenant-scoped like the HTTP twin (a substrate:tenant caller is
@@ -1636,6 +1643,21 @@ message ListUserAgentsRequest {
 
 message ListUserAgentsResponse {
   repeated Agent agents = 1;
+}
+
+// ListWalkRunsRequest names a walk by its own run id. limit 0 = 100, at most
+// 1000; cursor is "" for the first page, else the previous page's next_cursor.
+message ListWalkRunsRequest {
+  string walk_id = 1;
+  int32 limit = 2;
+  string cursor = 3;
+}
+
+// ListWalkRunsResponse is one page, ordered by (started_at, run_id).
+// next_cursor is "" on the last page.
+message ListWalkRunsResponse {
+  repeated Agent agents = 1;
+  string next_cursor = 2;
 }
 
 // UsageReportRequest mirrors GET /v1/_usage query params. group_by is a subset

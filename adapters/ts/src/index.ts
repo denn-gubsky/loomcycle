@@ -15,6 +15,7 @@
  *     getRun(runId): Promise<Agent>
  *     cancelAgent(agentId, opts?): Promise<CancelAgentResult>
  *     listUserAgents(userId, opts?): Promise<Agent[]>
+ *     listWalkRuns(walkId, opts?): Promise<WalkRunsPage>
  *     getTranscript(sessionId): Promise<TranscriptResponse>
  *     health(): Promise<HealthResponse>
  *     listUsers(opts?): Promise<ListUsersResponse>   // tenant-scoped (RFC L)
@@ -168,6 +169,7 @@ export type {
   OutputFormatOptions,
   CancelAgentResult,
   ListAgentsResponse,
+  WalkRunsPage,
   // Fan-out (RFC Y) + compaction
   RunBatchOptions,
   RunBatchResult,
