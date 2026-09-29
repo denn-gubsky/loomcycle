@@ -254,7 +254,7 @@ func TestErasureExecute_ReportsEveryPlaneItConsidered(t *testing.T) {
 
 	for _, plane := range []string{
 		"chats", "memory_rows", "path_entries",
-		"credentials", "token_limits", "interrupts",
+		"credentials", "token_limits", "usage_carry", "interrupts",
 	} {
 		if _, ok := res.Deleted[plane]; !ok {
 			t.Errorf("plane %q missing from deleted for an empty subject — "+

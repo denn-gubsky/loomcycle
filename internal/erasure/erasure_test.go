@@ -416,3 +416,59 @@ func TestService_DryRunCountsWhatTheErasureDeletes(t *testing.T) {
 		t.Errorf("the erasure deleted %d rows but its dry run promised %d", got, dry.Deleted["memory_rows"])
 	}
 }
+
+// TestService_ErasureDeletesTheSubjectsCarriedUsage: month-to-date usage a
+// snapshot restore carried in for a subject is subject data. The report counts
+// it, a dry run previews it without touching it, and the erasure deletes every
+// month of it — and nobody else's, including the same subject name in
+// another tenant.
+func TestService_ErasureDeletesTheSubjectsCarriedUsage(t *testing.T) {
+	s := newSvc(t)
+	ctx := context.Background()
+	sep := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for _, c := range []store.UsageCarryRow{
+		{TenantID: "acme", UserID: "alice", Month: sep, Tokens: 900},
+		{TenantID: "acme", UserID: "alice", Month: sep.AddDate(0, -1, 0), Tokens: 50},
+		{TenantID: "acme", UserID: "bob", Month: sep, Tokens: 7},
+		{TenantID: "other", UserID: "alice", Month: sep, Tokens: 3},
+	} {
+		if _, err := s.Store.UsageCarryRaise(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rep, err := s.Report(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rep.Tier2.Counts["usage_carry"]; got != 2 {
+		t.Errorf("report usage_carry = %d, want 2", got)
+	}
+
+	dry, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Deleted["usage_carry"] != 2 {
+		t.Errorf("dry run usage_carry = %d, want 2", dry.Deleted["usage_carry"])
+	}
+	if n, _ := s.Store.UsageCarryCountSubject(ctx, "acme", "alice"); n != 2 {
+		t.Fatalf("a dry run deleted carried usage (left %d of 2)", n)
+	}
+
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", Confirm: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["usage_carry"] != 2 {
+		t.Errorf("erasure usage_carry = %d, want 2", res.Deleted["usage_carry"])
+	}
+	for _, c := range []struct {
+		tenant, user string
+		want         int
+	}{{"acme", "alice", 0}, {"acme", "bob", 1}, {"other", "alice", 1}} {
+		if n, err := s.Store.UsageCarryCountSubject(ctx, c.tenant, c.user); err != nil || n != c.want {
+			t.Errorf("carry rows for %s/%s after the erasure = %d (err %v), want %d", c.tenant, c.user, n, err, c.want)
+		}
+	}
+}
