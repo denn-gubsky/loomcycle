@@ -185,8 +185,9 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	defer func() { _ = tx.Rollback() }()
 
 	// Read the def's scope first: the cascade must delete messages/cursors
-	// from the keyspaces they actually live in — this tenant's, and for a
-	// the operator's global channel the tenants' layers of it (see store.ChannelReadTenants).
+	// from the keyspaces they actually live in — this tenant's, and for the
+	// operator's global channel the tenants' layers of it (see
+	// store.ChannelReadTenants).
 	var scope string
 	if err := tx.QueryRowContext(ctx, `SELECT scope FROM channels WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&scope); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
