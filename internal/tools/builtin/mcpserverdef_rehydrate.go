@@ -13,7 +13,7 @@ import (
 // MCPServerDefStore is the store reads RehydrateMCPRegistry needs.
 type MCPServerDefStore interface {
 	MCPServerDefListNames(ctx context.Context) ([]store.MCPServerDefNameSummary, error)
-	MCPServerDefGet(ctx context.Context, defID string) (store.MCPServerDefRow, error)
+	MCPServerDefGetActive(ctx context.Context, tenantID, name string) (store.MCPServerDefRow, error)
 }
 
 // RehydrateMCPRegistry loads every active, non-retired MCP server def from the
@@ -21,6 +21,12 @@ type MCPServerDefStore interface {
 // calls it to bring previous registrations back after a restart; a snapshot
 // restore calls it so the defs it just wrote go live without one. One function
 // for both, so the two paths cannot drift.
+//
+// Each def is read and Set inside reg.Serialize, the lock MCPServerDef's
+// retire and promote hold across their store write and registry change. The
+// read is by (tenant, name), not by the def_id the list returned: a promote
+// or retire that lands between the list and the lock is then seen, where a
+// read of the listed def_id would Set a version the store has moved off.
 //
 // It only Sets: an entry already present is re-Set to the store's active spec,
 // which for a live def the restore left alone is the spec it already had, so
@@ -52,30 +58,45 @@ func RehydrateMCPRegistry(ctx context.Context, st MCPServerDefStore, static map[
 			logf("mcp_server_defs: skipping shared %q — name collides with static yaml entry (yaml takes precedence)", ns.Name)
 			continue
 		}
-		active, err := st.MCPServerDefGet(ctx, ns.ActiveDefID)
-		if err != nil {
-			logf("mcp_server_defs: load active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
-			continue
-		}
-		// SetRetired leaves the active pointer on the retired def_id (the
-		// AgentDef/SkillDef semantics). Loading a retired spec would silently
-		// revive a name the operator explicitly retired.
-		if active.Retired {
-			logf("mcp_server_defs: skipping %q (tenant=%q) — active row is retired (def_id=%s)", ns.Name, ns.TenantID, active.DefID)
-			continue
-		}
-		var ov mcpServerOverlay
-		if err := json.Unmarshal(active.Definition, &ov); err != nil {
-			logf("mcp_server_defs: parse active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
-			continue
-		}
-		// RFC N: keyed by the def's own (tenant, name), so only that tenant's
-		// runs resolve it.
-		spec := specFromOverlay(active.TenantID, active.Name, ov)
-		if prev, ok := reg.Get(spec.TenantID, spec.Name); !ok || !reflect.DeepEqual(prev, spec) {
-			activated++
-		}
-		reg.Set(spec)
+		reg.Serialize(func() {
+			if rehydrateOne(ctx, st, ns, reg, logf) {
+				activated++
+			}
+		})
 	}
 	return activated, nil
+}
+
+// rehydrateOne loads the active def for one listed name and Sets it. The
+// caller holds reg.Serialize. Reports whether the entry was absent or
+// different before.
+func rehydrateOne(ctx context.Context, st MCPServerDefStore, ns store.MCPServerDefNameSummary,
+	reg *loommcp.DynamicRegistry, logf func(format string, args ...any)) bool {
+	active, err := st.MCPServerDefGetActive(ctx, ns.TenantID, ns.Name)
+	if err != nil {
+		// Not-found here means the pointer went away after the list.
+		logf("mcp_server_defs: load active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
+		return false
+	}
+	// SetRetired leaves the active pointer on the retired def_id (the
+	// AgentDef/SkillDef semantics). Loading a retired spec would silently
+	// revive a name the operator explicitly retired.
+	if active.Retired {
+		logf("mcp_server_defs: skipping %q (tenant=%q) — active row is retired (def_id=%s)", ns.Name, ns.TenantID, active.DefID)
+		return false
+	}
+	var ov mcpServerOverlay
+	if err := json.Unmarshal(active.Definition, &ov); err != nil {
+		logf("mcp_server_defs: parse active %q (tenant=%q): %v", ns.Name, ns.TenantID, err)
+		return false
+	}
+	// RFC N: keyed by the def's own (tenant, name), so only that tenant's
+	// runs resolve it.
+	spec := specFromOverlay(active.TenantID, active.Name, ov)
+	changed := false
+	if prev, ok := reg.Get(spec.TenantID, spec.Name); !ok || !reflect.DeepEqual(prev, spec) {
+		changed = true
+	}
+	reg.Set(spec)
+	return changed
 }
