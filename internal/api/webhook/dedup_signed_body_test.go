@@ -167,6 +167,29 @@ func TestReceiver_BodyOnlySignedDistinctBodies_StartTwoRuns(t *testing.T) {
 	}
 }
 
+// Either identity makes a duplicate: a seen delivery id is one even under a
+// new body. Only Layer 1 can see this — runs.idempotency_key holds the body
+// key alone — so the check runs on the receiver that accepted the first one.
+func TestReceiver_BodyOnlySignedSeenDeliveryIDNewBody_DedupedInLayer1(t *testing.T) {
+	for _, m := range bodyOnlyModes {
+		t.Run(m.name, func(t *testing.T) {
+			st := openScopeStore(t)
+			fr := &storeRunner{st: st}
+			rec := newScopeReceiver(st, fr, map[string]config.Webhook{"gh": modeWebhook(m, "X-Delivery-Id")})
+
+			code, got := postMode(t, rec, m, []byte(`{"goal":"a"}`), "evt-1")
+			assertFreshRun(t, "evt-1", code, got)
+			code, got = postMode(t, rec, m, []byte(`{"goal":"b"}`), "evt-1")
+			if code != http.StatusOK || got["deduped"] != "true" {
+				t.Errorf("seen evt-1 under a new body = %d %v, want 200 deduped", code, got)
+			}
+			if n := fr.callCount(); n != 1 {
+				t.Errorf("runner invoked %d times, want 1", n)
+			}
+		})
+	}
+}
+
 // A replay answered as a duplicate must not record its unsigned header value:
 // that would let whoever holds a captured delivery burn an id the sender has
 // yet to use, and the genuine delivery carrying it would be dropped.
