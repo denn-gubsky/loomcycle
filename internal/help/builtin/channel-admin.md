@@ -48,7 +48,12 @@ underlying store + Bus helpers. The split is about scope:
 shared operator layer. A tenant operator's publish reaches only its own
 tenant; an admin's publish to a channel declared in the operator's yaml
 goes into the operator layer, which every tenant reads. A reader sees its
-own tenant's messages merged with the operator's, and keeps its own cursor:
+own tenant's messages merged with the operator's, and keeps its own cursor.
+Until a tenant acks for the first time it has no cursor of its own, so its
+first read starts from the operator's position for operator messages and
+from the beginning for its own. That first read can deliver one of the
+tenant's own messages twice; delivery is at-least-once, so consumers must
+already tolerate a repeat. The admin routes:
 
 ```
 POST /v1/_channels/{name}/publish
