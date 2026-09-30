@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // countingGenerator writes one claim and one question per chunk, recording which
@@ -266,5 +269,134 @@ func TestDeriveUnits_EveryNameOfADocumentCounts(t *testing.T) {
 	}
 	if !refused {
 		t.Errorf("a document also named under /facts must be refused: %+v", rep.SkippedByRule)
+	}
+}
+
+// fixedGenerator writes the same units for every chunk.
+type fixedGenerator struct{ units []memrank.GeneratedUnit }
+
+func (g fixedGenerator) ModelID() string { return "test-writer" }
+func (g fixedGenerator) Generate(context.Context, memrank.UnitRequest) ([]memrank.GeneratedUnit, error) {
+	return g.units, nil
+}
+
+// thirteenUnits is a full set in the generator's order: a description, six claims,
+// six questions — so a write cut short inside the questions leaves every kind.
+func thirteenUnits(tag string) []memrank.GeneratedUnit {
+	out := []memrank.GeneratedUnit{{Kind: memrank.UnitDescription, Text: tag + " description"}}
+	for i := 0; i < 6; i++ {
+		out = append(out, memrank.GeneratedUnit{Kind: memrank.UnitClaim, Text: fmt.Sprintf("%s claim %d", tag, i)})
+	}
+	for i := 0; i < 6; i++ {
+		out = append(out, memrank.GeneratedUnit{Kind: memrank.UnitQuestion, Text: fmt.Sprintf("%s question %d", tag, i)})
+	}
+	return out
+}
+
+// unitWriteCutter fails every unit write after the first `after` while armed — a
+// client that disconnects part-way through a chunk's writes.
+type unitWriteCutter struct {
+	store.Store
+	mu     sync.Mutex
+	armed  bool
+	after  int
+	writes int
+}
+
+func (c *unitWriteCutter) MemorySet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, key string, value json.RawMessage, ttl time.Duration) error {
+	if strings.HasPrefix(key, memrank.DocumentUnitKeyPrefix) {
+		c.mu.Lock()
+		cut := c.armed && c.writes >= c.after
+		c.writes++
+		c.mu.Unlock()
+		if cut {
+			return context.Canceled
+		}
+	}
+	return c.Store.MemorySet(ctx, tenantID, scope, scopeID, key, value, ttl)
+}
+
+func (c *unitWriteCutter) arm(after int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed, c.after, c.writes = true, after, 0
+}
+
+func (c *unitWriteCutter) disarm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = false
+}
+
+// TestDeriveUnits_AWriteCutShortIsRewrittenNotCountedCurrent — a chunk whose unit
+// writes fail part-way (8 of 13 written) must not read as up to date: the next pass
+// rewrites it to the full set, and only then is it current. Both the first write of
+// a chunk and the rewrite of a stale one. (Units used to be deleted first and judged
+// by hash and kinds alone, so the 8 left read as current forever.)
+func TestDeriveUnits_AWriteCutShortIsRewrittenNotCountedCurrent(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		name := map[bool]string{false: "first write", true: "rewrite"}[stale]
+		t.Run(name, func(t *testing.T) {
+			d, _, ctx, _ := unitsDocFixture(t)
+			_, ids := deriveDoc(t, d, ctx, "/docs/leave", true, "carry over five days")
+			id := ids["carry over five days"]
+			cutter := &unitWriteCutter{Store: d.Store}
+			d.Store = cutter
+			if stale {
+				// A whole set under the old body, then the body changes.
+				if rep := derive(t, d, ctx, fixedGenerator{thirteenUnits("old")}, DeriveUnitsOptions{}); rep.UnitsWritten != 13 {
+					t.Fatalf("the first pass: %+v", rep)
+				}
+				docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": id, "revision": chunkRevision(t, d, ctx, id), "body": "carry over ten days"})
+			}
+			cutter.arm(8)
+			rep := derive(t, d, ctx, fixedGenerator{thirteenUnits("new")}, DeriveUnitsOptions{})
+			cutter.disarm()
+			if rep.Failed != 1 {
+				t.Fatalf("the cut pass reported %+v, want one failed chunk", rep)
+			}
+			rep = derive(t, d, ctx, fixedGenerator{thirteenUnits("new")}, DeriveUnitsOptions{})
+			if rep.UpToDate != 0 || rep.Rewritten != 1 || rep.UnitsWritten != 13 {
+				t.Fatalf("after a write cut short the next pass reported %+v, want the chunk rewritten with 13 units", rep)
+			}
+			us, _ := d.UnitsForChunk(ctx, "user", id)
+			for _, u := range us {
+				if !strings.HasPrefix(u.Text, "new ") || u.UnitCount != 13 {
+					t.Errorf("a unit of another write survived: %+v", u)
+				}
+			}
+			if len(us) != 13 {
+				t.Errorf("the chunk holds %d units, want 13", len(us))
+			}
+			if rep = derive(t, d, ctx, fixedGenerator{thirteenUnits("new")}, DeriveUnitsOptions{}); rep.UpToDate != 1 {
+				t.Errorf("the full set does not read as current: %+v", rep)
+			}
+		})
+	}
+}
+
+// TestUnitsCurrent_OnlyAWholeSetFromOneWriteIsCurrent — the hash and the kinds
+// are not enough: the units must agree on their set's size and all be there. A set
+// written before units recorded a size is judged as it was then, by hash and kinds.
+func TestUnitsCurrent_OnlyAWholeSetFromOneWriteIsCurrent(t *testing.T) {
+	kinds := []string{"description", "claims"}
+	row := func(kind string, n, count int) store.MemoryEntry {
+		v, _ := json.Marshal(memrank.UnitValue{ChunkID: "c", Kind: kind, Text: "t", BodySHA256: "s", UnitCount: count})
+		return store.MemoryEntry{Key: memrank.UnitKey("c", kind, n), Value: v}
+	}
+	for name, c := range map[string]struct {
+		rows []store.MemoryEntry
+		want bool
+	}{
+		"a whole set":                 {[]store.MemoryEntry{row(memrank.UnitDescription, 0, 3), row(memrank.UnitClaim, 0, 3), row(memrank.UnitClaim, 1, 3)}, true},
+		"a set missing a unit":        {[]store.MemoryEntry{row(memrank.UnitDescription, 0, 3), row(memrank.UnitClaim, 0, 3)}, false},
+		"units of two writes":         {[]store.MemoryEntry{row(memrank.UnitDescription, 0, 2), row(memrank.UnitClaim, 0, 3), row(memrank.UnitClaim, 1, 3)}, false},
+		"a set with a unit too many":  {[]store.MemoryEntry{row(memrank.UnitDescription, 0, 2), row(memrank.UnitClaim, 0, 2), row(memrank.UnitClaim, 1, 2)}, false},
+		"a set from before the count": {[]store.MemoryEntry{row(memrank.UnitDescription, 0, 0), row(memrank.UnitClaim, 0, 0)}, true},
+		"an old unit beside new ones": {[]store.MemoryEntry{row(memrank.UnitDescription, 0, 0), row(memrank.UnitClaim, 0, 2), row(memrank.UnitClaim, 1, 2)}, false},
+	} {
+		if got := unitsCurrent(c.rows, "s", kinds); got != c.want {
+			t.Errorf("%s: unitsCurrent = %v, want %v", name, got, c.want)
+		}
 	}
 }

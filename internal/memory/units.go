@@ -73,6 +73,12 @@ type UnitValue struct {
 	// status or fields change, and regenerating units for those would spend a
 	// model call on a body nobody edited.
 	BodySHA256 string `json:"body_sha256,omitempty"`
+	// UnitCount is how many units the write that produced this one wrote for its
+	// chunk. The hash says a unit is from the current body; only the count says the
+	// chunk still holds ALL of them — a write cut short part-way leaves a smaller
+	// set whose every unit has the current hash. 0 on a unit written before the
+	// field existed.
+	UnitCount int `json:"unit_count,omitempty"`
 }
 
 // MatchedUnit is the unit that found a chunk, as a search reports it.

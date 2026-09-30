@@ -32,13 +32,6 @@ const (
 	maxUnitChars     = 1000
 )
 
-// ReplaceUnits replaces every derived search unit of one chunk with units, each
-// indexed under the chunk's header, and returns how many it wrote. src is recorded
-// on each unit — the hash of the body the units were written from is how a later
-// pass finds the stale ones. An empty units list removes the chunk's units.
-//
-// It refuses a chunk that does not exist in the scope: a unit votes for its chunk,
-// and a unit with no chunk is an orphan the moment it is written.
 // UnitSource records what a chunk's units were written from.
 type UnitSource struct {
 	Model        string
@@ -46,6 +39,19 @@ type UnitSource struct {
 	BodySHA256   string
 }
 
+// ReplaceUnits replaces every derived search unit of one chunk with units, each
+// indexed under the chunk's header, and returns how many it wrote. src is recorded
+// on each unit — the hash of the body the units were written from is how a later
+// pass finds the stale ones. An empty units list removes the chunk's units.
+//
+// The new units are written FIRST and the chunk's other units deleted only once
+// every write succeeded, and each unit records the size of its set. A write that
+// fails part-way therefore leaves the old units beside some new ones — a mix the
+// generation pass reads as stale and rewrites — never a smaller set that reads as
+// current because every unit in it has the current hash.
+//
+// It refuses a chunk that does not exist in the scope: a unit votes for its chunk,
+// and a unit with no chunk is an orphan the moment it is written.
 func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, units []DerivedUnit, src UnitSource) (int, error) {
 	if d.Store == nil || d.SqlMem == nil {
 		return 0, fmt.Errorf("derived units: SQL Memory is not configured")
@@ -79,26 +85,37 @@ func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, unit
 		return 0, fmt.Errorf("derived units: no chunk %s in this scope", chunkID)
 	}
 	tenant := direntTenant(ctx)
-	d.deleteUnitsOf(ctx, tenant, mscope, key.ScopeID, chunkID)
 
 	written := 0
 	next := map[string]int{}
+	keep := make(map[string]bool, len(units))
 	for _, u := range units {
 		text := truncateRunes(strings.TrimSpace(u.Text), maxUnitChars)
 		n := next[u.Kind]
 		next[u.Kind]++
 		k := memrank.UnitKey(chunkID, u.Kind, n)
+		keep[k] = true
 		v, _ := json.Marshal(memrank.UnitValue{ChunkID: chunkID, Kind: u.Kind, Text: text,
-			Model: src.Model, BodyRevision: src.BodyRevision, BodySHA256: src.BodySHA256})
+			Model: src.Model, BodyRevision: src.BodyRevision, BodySHA256: src.BodySHA256, UnitCount: len(units)})
 		if err := d.Store.MemorySet(ctx, tenant, mscope, key.ScopeID, k, v, 0); err != nil {
 			return written, fmt.Errorf("derived units: write %s: %w", k, err)
 		}
 		if idx := d.unitIndexText(ctx, key, chunkID, text); idx != "" && !d.embedText(ctx, tenant, mscope, key.ScopeID, k, idx) {
 			// Best-effort like every document embed: the row stands, unindexed, and
-			// the re-index pass picks it up.
+			// the re-index pass picks it up. The key may have held an older unit, and
+			// its vector must not stand for this one's text.
+			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, k)
 			log.Printf("document: unit %s written but not embedded", k)
 		}
 		written++
+	}
+	// Only now that the whole set is written: the units it did not overwrite. A
+	// delete that fails leaves a unit of another set behind, which the next pass
+	// reads as stale.
+	for _, u := range d.unitsOf(ctx, tenant, mscope, key.ScopeID, chunkID) {
+		if !keep[u.Key] {
+			_, _ = d.Store.MemoryDelete(ctx, tenant, mscope, key.ScopeID, u.Key)
+		}
 	}
 	return written, nil
 }
