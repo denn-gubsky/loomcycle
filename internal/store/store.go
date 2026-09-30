@@ -1740,6 +1740,12 @@ type Store interface {
 	// *ErrNotFound{Kind:"event"} when the run has none of them.
 	GetLastEventOfTypes(ctx context.Context, runID string, types []string) (Event, error)
 
+	// GetLastEventOfTypesBefore is GetLastEventOfTypes over the run's events
+	// with seq < beforeSeq: the latest of these older than a given event. The
+	// run read uses it to find where the latest turn's tool calls begin (see
+	// awaited.ForRun). Returns *ErrNotFound{Kind:"event"} when there is none.
+	GetLastEventOfTypesBefore(ctx context.Context, runID string, types []string, beforeSeq int64) (Event, error)
+
 	// GetRunByAgentID returns the most recently started run carrying
 	// the given agent_id. Returns *ErrNotFound when no such row.
 	// Used by the GET /v1/agents/{agent_id} and cancel endpoints to

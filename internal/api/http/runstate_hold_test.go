@@ -82,6 +82,38 @@ func TestRecordingEmit_AnnouncesEachWaitOnceAndItsEnd(t *testing.T) {
 				text,
 			},
 			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 3}}},
+		// Two waits in one turn run in parallel. The later one answering first
+		// leaves the run held on the other, and the stream says so; only the
+		// last open wait ending ends the hold.
+		{"parallel_waits_a_later_calls_result_leaves_the_run_held_on_the_other",
+			[]providers.Event{
+				holdToolCall("tu_sub", "Channel", `{"op":"subscribe","channel":"findings"}`),
+				holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`),
+				holdToolResult("tu_ask", "Interruption"),
+				text,
+				holdToolResult("tu_sub", "Channel"),
+			},
+			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 1, state: awaited.Interrupted, on: "approval"},
+				{at: 2, state: awaited.Channel, on: "findings"}, {at: 4}}},
+		{"parallel_waits_an_earlier_calls_result_changes_nothing_announced",
+			[]providers.Event{
+				holdToolCall("tu_sub", "Channel", `{"op":"subscribe","channel":"findings"}`),
+				holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`),
+				holdToolResult("tu_sub", "Channel"),
+				holdToolResult("tu_ask", "Interruption"),
+			},
+			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 1, state: awaited.Interrupted, on: "approval"}, {at: 3}}},
+		// A model call that fails mid-stream is sent again, and the retry
+		// streams its calls under new ids; the first attempt's call never runs
+		// and never returns, so it must not keep the run held.
+		{"a_retried_turns_streamed_call_does_not_outlive_the_retry",
+			[]providers.Event{
+				holdToolCall("tu_sub_1", "Channel", `{"op":"subscribe","channel":"findings"}`),
+				{Type: providers.EventRetry, Retry: &providers.RetryInfo{Attempt: 1}},
+				holdToolCall("tu_sub_2", "Channel", `{"op":"subscribe","channel":"findings"}`),
+				holdToolResult("tu_sub_2", "Channel"),
+			},
+			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 1}, {at: 2, state: awaited.Channel, on: "findings"}, {at: 3}}},
 		{"interruption_ask_waits_until_answered",
 			[]providers.Event{holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`), holdToolResult("tu_ask", "Interruption")},
 			[]holdSeen{{at: 0, state: awaited.Interrupted, on: "approval"}, {at: 1}}},

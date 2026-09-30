@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -2774,11 +2775,16 @@ func (s *Store) GetLastEventForRun(ctx context.Context, runID string) (store.Eve
 
 // GetLastEventOfTypes is GetLastEventForRun restricted to the given types.
 func (s *Store) GetLastEventOfTypes(ctx context.Context, runID string, types []string) (store.Event, error) {
+	return s.GetLastEventOfTypesBefore(ctx, runID, types, math.MaxInt64)
+}
+
+// GetLastEventOfTypesBefore is GetLastEventOfTypes over events with seq < beforeSeq.
+func (s *Store) GetLastEventOfTypesBefore(ctx context.Context, runID string, types []string, beforeSeq int64) (store.Event, error) {
 	if len(types) == 0 {
 		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: runID}
 	}
-	args := make([]any, 0, len(types)+1)
-	args = append(args, runID)
+	args := make([]any, 0, len(types)+2)
+	args = append(args, runID, beforeSeq)
 	for _, t := range types {
 		args = append(args, t)
 	}
@@ -2788,7 +2794,7 @@ func (s *Store) GetLastEventOfTypes(ctx context.Context, runID string, types []s
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT seq, session_id, run_id, ts, type, payload
-		 FROM events WHERE run_id = ? AND type IN (`+sqlitePlaceholders(len(types))+`)
+		 FROM events WHERE run_id = ? AND seq < ? AND type IN (`+sqlitePlaceholders(len(types))+`)
 		 ORDER BY seq DESC LIMIT 1`,
 		args...,
 	).Scan(&ev.Seq, &ev.SessionID, &ev.RunID, &ts, &ev.Type, &ev.Payload)

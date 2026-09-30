@@ -1,6 +1,8 @@
 package http
 
 import (
+	"slices"
+
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -14,10 +16,25 @@ import (
 // wait was visible only on the run's own event stream.
 type runHold struct {
 	state, on, expiresAt string
-	// toolUseID is the open tool call a channel or interruption wait ends
-	// with. Empty for a park (review, input), which the model working again
-	// ends instead.
-	toolUseID string
+	// calls are the channel and interruption waits still open, oldest first;
+	// state and on name the newest. A turn's tool calls run in parallel, so
+	// one call's result ends that wait only — the run is still held while any
+	// other is open. Empty for a park (review, input), which the model working
+	// again ends instead.
+	calls []openWait
+}
+
+// openWait is one blocking tool call that has not returned yet.
+type openWait struct{ toolUseID, state, on string }
+
+// waitingOn is the hold for the open calls: the newest one's wait, or no wait
+// once none is open.
+func waitingOn(calls []openWait) runHold {
+	if len(calls) == 0 {
+		return runHold{}
+	}
+	top := calls[len(calls)-1]
+	return runHold{state: top.state, on: top.on, calls: calls}
 }
 
 // sameAnnouncement reports whether two holds read the same on the stream. A
@@ -35,7 +52,9 @@ func (h runHold) sameAnnouncement(o runHold) bool {
 // (steer) or the model producing output again, which is also how the steer
 // registry decides a run is no longer parked; a tool wait ends on ITS
 // tool_result, not any, because tools run in parallel and a sibling call's
-// result says nothing about this one; and done ends everything.
+// result says nothing about this one — and when another wait is still open the
+// hold becomes that one; a retried or cancelled turn ends its calls' waits,
+// since they will not run; and done ends everything.
 //
 // An interactive run's approval moves a review hold straight to input, and an
 // abandoned or rejected hold ends in a terminal status, which the finishRun
@@ -53,18 +72,30 @@ func holdAfter(cur runHold, ev providers.Event) runHold {
 	case providers.EventToolCall:
 		if ev.ToolUse != nil {
 			if state, on := awaited.FromToolUse(ev.ToolUse.Name, ev.ToolUse.Input); state != "" {
-				return runHold{state: state, on: on, toolUseID: ev.ToolUse.ID}
+				// A fresh slice: cur's is the stream's last-told hold and must not
+				// change under it.
+				calls := append(slices.Clone(cur.calls), openWait{ev.ToolUse.ID, state, on})
+				return waitingOn(calls)
 			}
 		}
-		if cur.toolUseID == "" {
+		if len(cur.calls) == 0 {
 			return runHold{}
 		}
 	case providers.EventToolResult:
-		if cur.toolUseID != "" && ev.ToolUse != nil && ev.ToolUse.ID == cur.toolUseID {
-			return runHold{}
+		if ev.ToolUse != nil {
+			if i := slices.IndexFunc(cur.calls, func(w openWait) bool { return w.toolUseID == ev.ToolUse.ID }); i >= 0 {
+				return waitingOn(slices.Delete(slices.Clone(cur.calls), i, i+1))
+			}
 		}
 	case providers.EventSteer, providers.EventText:
-		if cur.toolUseID == "" {
+		if len(cur.calls) == 0 {
+			return runHold{}
+		}
+	case providers.EventRetry, providers.EventProviderFallback, providers.EventTurnCancelled:
+		// The model call is sent again, or the turn is abandoned: the calls it
+		// streamed will never run, so they get no result to end them. A retry
+		// that streams the same call again opens it under a new id.
+		if len(cur.calls) > 0 {
 			return runHold{}
 		}
 	case providers.EventDone:
