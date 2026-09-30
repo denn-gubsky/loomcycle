@@ -1305,7 +1305,8 @@ export interface Agent {
   /** What a RUNNING run is currently blocked on; absent while it makes
    *  progress and for every run that is not running. See {@link AwaitedState}. */
   awaited_state?: AwaitedState;
-  /** The channel name (`awaited_state: "channel"`), interruption kind
+  /** The channel name (`awaited_state: "channel"`; a fan-in `Channel` await
+   *  lists its channels comma-separated, bounded), interruption kind
    *  (`awaited_state: "interrupted"`) or the agent_stop hook holding a review
    *  (`awaited_state: "review"`) the run waits on. */
   awaited_on?: string;
@@ -3276,8 +3277,8 @@ export interface RunStateEvent {
    *  own `running` event and its end as another `running` event without this
    *  field, so a client folding the stream holds the run's current wait. */
   awaited_state?: AwaitedState;
-  /** The channel, the interruption kind, or the agent_stop hook holding a
-   *  review. */
+  /** The channel (a fan-in `Channel` await: its channels, comma-separated),
+   *  the interruption kind, or the agent_stop hook holding a review. */
   awaited_on?: string;
   /** RFC3339: when a review hold ends as rejected if nobody rules on it.
    *  Absent when the wait has no deadline. */
