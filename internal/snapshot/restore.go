@@ -141,6 +141,7 @@ type RestoreResult struct {
 	SqlMemScopesRestored           int      `json:"sqlmem_scopes_restored"`
 	MCPServerDefsActivated         int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
 	PausedRunsResumed              int      `json:"paused_runs_resumed"`       // set by the caller's post-restore resume, not by Restore
+	PausedRunsAlreadyLive          int      `json:"paused_runs_already_live"`  // likewise: paused rows a live loop still owns, left untouched
 	Warnings                       []string `json:"warnings,omitempty"`
 
 	// Refresh is what the caller's post-restore refresh pushes into the

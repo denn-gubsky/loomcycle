@@ -841,10 +841,13 @@ func (s *Server) SetPauseManager(m *pause.Manager) {
 }
 
 // replicaLister is the minimum read surface of *coord.ReplicaStore
-// the healthz handler needs. Declared here (not in coord) so tests
-// can stub it without importing the live Postgres-backed type.
+// the server needs: the healthz cluster view lists the replicas, and the
+// paused-run resume asks whether a run's owning replica is still alive.
+// Declared here (not in coord) so tests can stub it without importing the
+// live Postgres-backed type.
 type replicaLister interface {
 	ListReplicas(ctx context.Context) ([]coord.Replica, error)
+	coord.ReplicaLiveness
 }
 
 // SetCoord installs the v0.12.0 multi-replica HA bus + replicas table

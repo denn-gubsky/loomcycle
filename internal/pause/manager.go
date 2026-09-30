@@ -364,6 +364,18 @@ func (m *Manager) DeregisterRun(runID string) {
 	m.activeRuns.Delete(runID)
 }
 
+// HoldsRun reports whether a run's loop is registered with this manager, i.e.
+// its goroutine is alive in this process (running or parked). The paused-run
+// resume uses it to leave a live parked run alone: its store row says
+// 'paused' exactly as restored data does. False on a nil manager.
+func (m *Manager) HoldsRun(runID string) bool {
+	if m == nil || runID == "" {
+		return false
+	}
+	_, ok := m.activeRuns.Load(runID)
+	return ok
+}
+
 // BeginPark is called by a run's PauseGate at an iteration boundary when a
 // pause is in effect. Under the manager lock it RE-CHECKS state (so a run that
 // raced a concurrent Resume does not park) and returns the resume channel to
