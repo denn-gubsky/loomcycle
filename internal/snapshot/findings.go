@@ -54,11 +54,6 @@ var referenceRe = regexp.MustCompile(`\$\{[^}]*\}|\$(?:cred|ghapp):[A-Za-z0-9_-]
 // ("Bearer ${LOOMCYCLE_X}") holds no literal.
 var authSchemes = map[string]bool{"bearer": true, "basic": true, "token": true, "digest": true, "apikey": true}
 
-// secretPatterns is the redact package's Tier-B heuristics alone: no env
-// values are loaded, so a match is about the value's shape, never about what
-// this process happens to hold.
-var secretPatterns = redact.New(nil, true)
-
 // credentialHeaderName reports whether a header's name says it carries a
 // credential.
 func credentialHeaderName(name string) bool {
@@ -81,8 +76,9 @@ func literalDetector(name, value string, credentialName func(string) bool, nameD
 	if literal == "" {
 		return ""
 	}
-	line := name + ": " + literal
-	if secretPatterns.String(line) != line {
+	// The redact package's Tier-B heuristics alone: a match is about the
+	// value's shape, never about what this process happens to hold.
+	if redact.MatchesPattern(name + ": " + literal) {
 		return detectorSecretPattern
 	}
 	if !credentialName(name) {

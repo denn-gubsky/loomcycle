@@ -96,6 +96,19 @@ var patternRules = []patternRule{
 	{regexp.MustCompile(`(?i)\b(api[_-]?key|secret|token|password)\b(\s*["']?\s*[:=]\s*["']?)[^\s"',}\[\]\\]+`), "${1}${2}[redacted]"},
 }
 
+// MatchesPattern reports whether any Tier-B heuristic matches s. It is the
+// stateless question a scanner asks about a value's SHAPE ("does this look
+// like a credential?") without building a Redactor, which carries the
+// runtime-registered set and its lock.
+func MatchesPattern(s string) bool {
+	for _, p := range patternRules {
+		if p.re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
 // New builds a Redactor. secrets maps an env-var NAME to its secret VALUE; each
 // value is masked as [redacted:NAME] on an exact match (values shorter than
 // minSecretLen are skipped). withPatterns enables the Tier-B heuristics.
