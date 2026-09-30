@@ -650,7 +650,7 @@ func testChannelHookReclaimBySameOwnerSupersedesTheLease(t *testing.T, s store.S
 	}
 	old, cur := first[0].Lease, second[0].Lease
 	if old == cur || old == "r1" || cur == "r1" {
-		t.Fatalf("lease tokens %q then %q: want two distinct tokens, neither the bare owner", old, cur)
+		t.Errorf("lease tokens %q then %q: want two distinct tokens, neither the bare owner", old, cur)
 	}
 	for _, stale := range []string{old, "r1"} {
 		if ok, err := s.ChannelHookRenew(ctx, key, stale, later.Add(2*time.Hour)); err != nil || ok {
