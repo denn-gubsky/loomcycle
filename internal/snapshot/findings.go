@@ -68,9 +68,11 @@ func credentialHeaderName(name string) bool {
 		strings.HasSuffix(n, "_token") || strings.HasSuffix(n, "_key")
 }
 
-// headerDetector returns the detector a header trips, or "" when the value is
-// a reference (or a scheme around one) or looks like no credential.
-func headerDetector(name, value string) string {
+// literalDetector returns the detector a name/value entry trips, or "" when
+// the value is a reference (or a scheme around one) or looks like no
+// credential. credentialName says whether the entry's name marks it as a
+// credential; nameDetector is the detector that rule reports.
+func literalDetector(name, value string, credentialName func(string) bool, nameDetector string) string {
 	literal := strings.TrimSpace(referenceRe.ReplaceAllString(value, ""))
 	if literal == "" {
 		return ""
@@ -79,15 +81,26 @@ func headerDetector(name, value string) string {
 	if secretPatterns.String(line) != line {
 		return detectorSecretPattern
 	}
-	if !credentialHeaderName(name) {
+	if !credentialName(name) {
 		return ""
 	}
 	for _, w := range strings.Fields(literal) {
 		if !authSchemes[strings.ToLower(w)] {
-			return detectorCredentialHeader
+			return nameDetector
 		}
 	}
 	return ""
+}
+
+// headerDetector returns the detector a header trips.
+func headerDetector(name, value string) string {
+	return literalDetector(name, value, credentialHeaderName, detectorCredentialHeader)
+}
+
+// literalMaps maps the key of a string map a body may hold to the detector
+// its entries are judged by.
+var literalMaps = map[string]func(name, value string) string{
+	"headers": headerDetector,
 }
 
 // findingSubject says which row a body belongs to.
@@ -98,9 +111,9 @@ type findingSubject struct {
 	defID    string
 }
 
-// scanHeaders walks a JSON body and returns a finding for every header value
-// that looks like a literal credential. A header map is any object under a
-// "headers" key whose values are all strings — the shape of an MCP server
+// scanLiterals walks a JSON body and returns a finding for every entry of a
+// literalMaps map that looks like a literal credential. A header map is any
+// object under a "headers" key whose values are all strings — the shape of an MCP server
 // def's headers, an http hook body's headers and an inline hook's headers,
 // wherever they are nested (an agent's hooks and tool_hooks, a team state's
 // handler, a channel's hooks, a run's recorded hooks). Walking the shape
@@ -109,7 +122,7 @@ type findingSubject struct {
 //
 // prefix is the path of the body itself ("" for a whole definition, "hooks"
 // for a channel's hooks column). The walk is deterministic: keys sorted.
-func scanHeaders(sub findingSubject, prefix string, body json.RawMessage) []CaptureFindingEntry {
+func scanLiterals(sub findingSubject, prefix string, body json.RawMessage) []CaptureFindingEntry {
 	if len(body) == 0 {
 		return nil
 	}
@@ -129,15 +142,15 @@ func scanHeaders(sub findingSubject, prefix string, body json.RawMessage) []Capt
 			sort.Strings(keys)
 			for _, k := range keys {
 				p := joinPath(path, k)
-				if k == "headers" {
-					if hdrs, ok := stringMap(t[k]); ok {
-						names := make([]string, 0, len(hdrs))
-						for n := range hdrs {
+				if detect, ok := literalMaps[k]; ok {
+					if entries, ok := stringMap(t[k]); ok {
+						names := make([]string, 0, len(entries))
+						for n := range entries {
 							names = append(names, n)
 						}
 						sort.Strings(names)
 						for _, n := range names {
-							if d := headerDetector(n, hdrs[n]); d != "" {
+							if d := detect(n, entries[n]); d != "" {
 								out = append(out, CaptureFindingEntry{
 									Section: sub.section, TenantID: sub.tenantID, Name: sub.name,
 									DefID: sub.defID, Field: p + "." + n, Detector: d,
@@ -190,33 +203,33 @@ func stringMap(v any) (map[string]string, bool) {
 func collectCaptureFindings(sec *Sections) []CaptureFindingEntry {
 	var out []CaptureFindingEntry
 	for _, e := range sec.AgentDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"agent_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"agent_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.TeamDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"team_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"team_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.HookDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"hook_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"hook_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.MCPServerDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"mcp_server_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"mcp_server_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	// Memory-backend and document-source bodies hold no header map today;
 	// they are walked so one added later is scanned without anyone
 	// remembering to add it here.
 	for _, e := range sec.MemoryBackendDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"memory_backend_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"memory_backend_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.DocSourceDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"document_source_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"document_source_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.ChannelDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"channel_defs", e.TenantID, e.Name, ""}, "hooks", e.Hooks)...)
+		out = append(out, scanLiterals(findingSubject{"channel_defs", e.TenantID, e.Name, ""}, "hooks", e.Hooks)...)
 	}
 	// A paused run's recorded configuration carries the hooks its caller added
 	// and the hooks it resolved at start, inline webhook headers included.
 	for _, e := range sec.PausedRuns.Entries {
-		out = append(out, scanHeaders(findingSubject{"paused_runs", e.TenantID, e.RunID, ""}, "run_config", e.RunConfig)...)
+		out = append(out, scanLiterals(findingSubject{"paused_runs", e.TenantID, e.RunID, ""}, "run_config", e.RunConfig)...)
 	}
 	return out
 }
