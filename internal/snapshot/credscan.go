@@ -17,6 +17,11 @@ import (
 // the warnings itself, from the reference text already in the bodies it just
 // restored, through two injected yes/no checks. Neither check returns a
 // value, and a warning names only the definition, the field and the reference.
+//
+// An A2A peer's auth.bearer_credential_ref is deliberately not scanned: the
+// A2A tool resolves it from the RUN's per-run credentials, which each caller
+// supplies with its run — not from the credential store or the environment —
+// so nothing on this host could say whether it will resolve.
 
 // credRefRe matches $cred:<name> and $ghapp:<name> (both resolved from the
 // credential store); envRefRe matches ${NAME} for an env-var-shaped NAME, so
