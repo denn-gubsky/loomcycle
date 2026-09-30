@@ -2490,20 +2490,26 @@ func main() {
 
 	// Channel hooks: the worker that decides the messages of channels that
 	// carry hooks. Every replica runs one; per-message leases share the work.
+	// With hooks off it still runs, to deliver unhooked the messages written
+	// while they were on (by this replica before a restart, or by another):
+	// nothing else would ever deliver them.
+	hookOwner := cfg.Env.ReplicaID
+	if hookOwner == "" {
+		host, _ := os.Hostname()
+		hookOwner = fmt.Sprintf("%s-%d", host, os.Getpid())
+	}
 	if cfg.Env.ChannelHooksEnabled && srv != nil && storeIface != nil {
-		owner := cfg.Env.ReplicaID
-		if owner == "" {
-			host, _ := os.Hostname()
-			owner = fmt.Sprintf("%s-%d", host, os.Getpid())
-		}
 		log.Printf("channel hooks: worker started (owner %s, concurrency %d, per channel %d, max wait %s)",
-			owner, cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel, cfg.Env.ChannelHooksMaxWait)
-		go srv.NewChannelHookWorker(owner, channelScheduler, interruptionTool).Run(bgCtx)
+			hookOwner, cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel, cfg.Env.ChannelHooksMaxWait)
+		go srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run(bgCtx)
 	} else {
 		for name, ch := range cfg.Channels {
 			if ch.HasHooks() {
 				log.Printf("channel hooks: %q declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1 turns them on); they are skipped and its messages are delivered unhooked", name)
 			}
+		}
+		if srv != nil && storeIface != nil {
+			go srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).RunUnhooked(bgCtx)
 		}
 	}
 

@@ -354,7 +354,10 @@ Channel hooks run only when the operator sets `LOOMCYCLE_CHANNEL_HOOKS=1`.
 Without it, a channel's hooks are **skipped**: a publish is delivered as if
 the channel declared none, and the server logs, at boot and at a channel's
 first publish, that its hooks are not enforced. A message stored while hooks
-were on and not yet decided waits until they are on again.
+were on and not yet decided is delivered the same way once the server runs
+with them off: into the channel's hold if it has one, else no earlier than
+its `deliver_at`, with any rewrite an earlier hook made. A message that a
+server with hooks on is still deciding is left to that server.
 A `_system/*` channel, a document's `documents/*` feed and a
 `publisher: system` channel cannot carry hooks.
 
