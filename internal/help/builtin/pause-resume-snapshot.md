@@ -333,6 +333,15 @@ A restore warning that quotes a URL has the URL's user/password, query
 and fragment replaced by `REDACTED`, so a refused endpoint's embedded
 credential is never printed.
 
+**Literal credentials.** A capture reports every header value, and every
+value in an MCP server's stdio `env`, that looks like a literal
+credential instead of a reference (`$cred:<name>`, `$ghapp:<name>`,
+`${...}`). The value travels in the snapshot as written. The capture
+response and every restore warn with its location — the definition and
+the field, such as `headers.Authorization` or `env.GITHUB_TOKEN` — never
+the value. Replace it with a reference; in a stdio `env`, only a
+`${LOOMCYCLE_*}` one resolves.
+
 **Missing credentials.** A snapshot never lists the source's
 credentials. After the definitions land, the restore reads the
 references in each restored webhook, schedule and server card —

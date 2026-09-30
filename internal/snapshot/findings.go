@@ -12,8 +12,9 @@ import (
 
 // Capture findings (RFC DP §3.2 e).
 //
-// A header map in a definition body may hold a literal credential where a
-// reference ($cred:<name>, ${LOOMCYCLE_*}) was meant. The owner decided such a
+// A header map — or an MCP server def's stdio env map — in a definition body
+// may hold a literal credential where a reference ($cred:<name>,
+// ${LOOMCYCLE_*}) was meant. The owner decided such a
 // value travels AS AUTHORED — stripping it would break the definition, and the
 // capture is not refused — but it is REPORTED, so the operator can find it and
 // replace it with a reference. It is the one place a secret value can knowingly
@@ -32,6 +33,9 @@ const (
 	// credential (Authorization, *-Token, *-Key, ...) and its value holds a
 	// literal beyond an auth scheme word.
 	detectorCredentialHeader = "credential-header-name"
+	// detectorCredentialEnv: an env entry's NAME says it carries a
+	// credential (*_KEY, *_TOKEN, ...) and its value holds a literal.
+	detectorCredentialEnv = "credential-env-name"
 	// detectorPendingInterrupt: a paused run the envelope carries has a
 	// pending interrupt, which no section carries (see
 	// pausedRunInterruptFindings). Not a header finding: Field is
@@ -68,9 +72,11 @@ func credentialHeaderName(name string) bool {
 		strings.HasSuffix(n, "_token") || strings.HasSuffix(n, "_key")
 }
 
-// headerDetector returns the detector a header trips, or "" when the value is
-// a reference (or a scheme around one) or looks like no credential.
-func headerDetector(name, value string) string {
+// literalDetector returns the detector a name/value entry trips, or "" when
+// the value is a reference (or a scheme around one) or looks like no
+// credential. credentialName says whether the entry's name marks it as a
+// credential; nameDetector is the detector that rule reports.
+func literalDetector(name, value string, credentialName func(string) bool, nameDetector string) string {
 	literal := strings.TrimSpace(referenceRe.ReplaceAllString(value, ""))
 	if literal == "" {
 		return ""
@@ -79,15 +85,51 @@ func headerDetector(name, value string) string {
 	if secretPatterns.String(line) != line {
 		return detectorSecretPattern
 	}
-	if !credentialHeaderName(name) {
+	if !credentialName(name) {
 		return ""
 	}
 	for _, w := range strings.Fields(literal) {
 		if !authSchemes[strings.ToLower(w)] {
-			return detectorCredentialHeader
+			return nameDetector
 		}
 	}
 	return ""
+}
+
+// headerDetector returns the detector a header trips.
+func headerDetector(name, value string) string {
+	return literalDetector(name, value, credentialHeaderName, detectorCredentialHeader)
+}
+
+// credentialEnvName reports whether an env var's name says it carries a
+// credential, by the repo's secret-name convention.
+func credentialEnvName(name string) bool {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	for _, suffix := range []string{"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_AUTH", "_CREDENTIAL"} {
+		if strings.HasSuffix(n, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// envDetector returns the detector an env entry (an MCP server def's stdio
+// env) trips.
+func envDetector(name, value string) string {
+	return literalDetector(name, value, credentialEnvName, detectorCredentialEnv)
+}
+
+// literalMaps maps the key of a string map a body may hold to the detector
+// its entries are judged by.
+var literalMaps = map[string]func(name, value string) string{
+	"headers": headerDetector,
+	"env":     envDetector,
+}
+
+// isEnvField reports whether a finding's field is an env entry. Assumes no
+// header name contains ".env." — a misread only changes the advice wording.
+func isEnvField(field string) bool {
+	return strings.HasPrefix(field, "env.") || strings.Contains(field, ".env.")
 }
 
 // findingSubject says which row a body belongs to.
@@ -98,18 +140,20 @@ type findingSubject struct {
 	defID    string
 }
 
-// scanHeaders walks a JSON body and returns a finding for every header value
-// that looks like a literal credential. A header map is any object under a
-// "headers" key whose values are all strings — the shape of an MCP server
+// scanLiterals walks a JSON body and returns a finding for every entry of a
+// literalMaps map that looks like a literal credential. A header map is any
+// object under a "headers" key whose values are all strings — the shape of an MCP server
 // def's headers, an http hook body's headers and an inline hook's headers,
 // wherever they are nested (an agent's hooks and tool_hooks, a team state's
 // handler, a channel's hooks, a run's recorded hooks). Walking the shape
 // rather than decoding each definition type means a hook block added to a
 // definition later is scanned without anyone remembering to add it here.
+// An env map is any object under an "env" key whose values are all strings —
+// in def bodies today, only an MCP server def's stdio env.
 //
 // prefix is the path of the body itself ("" for a whole definition, "hooks"
 // for a channel's hooks column). The walk is deterministic: keys sorted.
-func scanHeaders(sub findingSubject, prefix string, body json.RawMessage) []CaptureFindingEntry {
+func scanLiterals(sub findingSubject, prefix string, body json.RawMessage) []CaptureFindingEntry {
 	if len(body) == 0 {
 		return nil
 	}
@@ -129,15 +173,15 @@ func scanHeaders(sub findingSubject, prefix string, body json.RawMessage) []Capt
 			sort.Strings(keys)
 			for _, k := range keys {
 				p := joinPath(path, k)
-				if k == "headers" {
-					if hdrs, ok := stringMap(t[k]); ok {
-						names := make([]string, 0, len(hdrs))
-						for n := range hdrs {
+				if detect, ok := literalMaps[k]; ok {
+					if entries, ok := stringMap(t[k]); ok {
+						names := make([]string, 0, len(entries))
+						for n := range entries {
 							names = append(names, n)
 						}
 						sort.Strings(names)
 						for _, n := range names {
-							if d := headerDetector(n, hdrs[n]); d != "" {
+							if d := detect(n, entries[n]); d != "" {
 								out = append(out, CaptureFindingEntry{
 									Section: sub.section, TenantID: sub.tenantID, Name: sub.name,
 									DefID: sub.defID, Field: p + "." + n, Detector: d,
@@ -190,33 +234,33 @@ func stringMap(v any) (map[string]string, bool) {
 func collectCaptureFindings(sec *Sections) []CaptureFindingEntry {
 	var out []CaptureFindingEntry
 	for _, e := range sec.AgentDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"agent_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"agent_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.TeamDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"team_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"team_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.HookDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"hook_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"hook_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.MCPServerDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"mcp_server_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"mcp_server_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	// Memory-backend and document-source bodies hold no header map today;
 	// they are walked so one added later is scanned without anyone
 	// remembering to add it here.
 	for _, e := range sec.MemoryBackendDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"memory_backend_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"memory_backend_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.DocSourceDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"document_source_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+		out = append(out, scanLiterals(findingSubject{"document_source_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
 	for _, e := range sec.ChannelDefs.Entries {
-		out = append(out, scanHeaders(findingSubject{"channel_defs", e.TenantID, e.Name, ""}, "hooks", e.Hooks)...)
+		out = append(out, scanLiterals(findingSubject{"channel_defs", e.TenantID, e.Name, ""}, "hooks", e.Hooks)...)
 	}
 	// A paused run's recorded configuration carries the hooks its caller added
 	// and the hooks it resolved at start, inline webhook headers included.
 	for _, e := range sec.PausedRuns.Entries {
-		out = append(out, scanHeaders(findingSubject{"paused_runs", e.TenantID, e.RunID, ""}, "run_config", e.RunConfig)...)
+		out = append(out, scanLiterals(findingSubject{"paused_runs", e.TenantID, e.RunID, ""}, "run_config", e.RunConfig)...)
 	}
 	return out
 }
@@ -235,6 +279,12 @@ func (f CaptureFindingEntry) Warning() string {
 		return fmt.Sprintf("%s: the paused run has a pending interrupt, which a snapshot does not carry — "+
 			"on a restored copy nothing can answer it; resolve or cancel the interrupt and capture again", where)
 	}
-	return fmt.Sprintf("%s: %s holds a literal value that looks like a credential (%s); it travels in the snapshot as written — replace it with a $cred: or ${LOOMCYCLE_*} reference",
-		where, f.Field, f.Detector)
+	// A stdio env is expanded at spawn by the allowlisted env expander only;
+	// nothing resolves a $cred: there, so advising one would break the server.
+	fix := "a $cred: or ${LOOMCYCLE_*} reference"
+	if isEnvField(f.Field) {
+		fix = "a ${LOOMCYCLE_*} reference"
+	}
+	return fmt.Sprintf("%s: %s holds a literal value that looks like a credential (%s); it travels in the snapshot as written — replace it with %s",
+		where, f.Field, f.Detector, fix)
 }
