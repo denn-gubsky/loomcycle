@@ -515,6 +515,9 @@ func Run(t *testing.T, factory Factory) {
 		// are read, a restored row lands un-drained with its identity intact and
 		// is drainable, and a row already on the id stands (drained or not).
 		{"SnapshotMemoryPendingRestoreKeepsLiveRow", testSnapshotMemoryPendingRestoreKeepsLiveRow},
+		// The targets holding queued work: exact tenant + scope, undrained
+		// only, one id per target, longest-waiting first, bounded.
+		{"MemoryPendingTargets", testMemoryPendingTargets},
 		// The month-to-date usage a snapshot restore carries in: max-not-add,
 		// per month, per subject, and deletable for erasure.
 		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
@@ -1388,6 +1391,47 @@ func testSnapshotMemoryPendingRestoreKeepsLiveRow(t *testing.T, s store.Store) {
 	}
 	if len(drained) != 2 || drained[0].ID != "mp_acme_user_1" || drained[1].ID != "mp_acme_user_2" {
 		t.Errorf("drain of acme/alice = %+v, want the two restored rows oldest-first", drained)
+	}
+}
+
+// testMemoryPendingTargets: the scope ids with undrained work under one exact
+// (tenant, scope) — another tenant's, another scope's and a drained row's
+// targets are not listed — each once, longest-waiting first, capped.
+func testMemoryPendingTargets(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	enqueue := func(id, tenant string, scope store.MemoryScope, scopeID string, at time.Time) {
+		t.Helper()
+		if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{ID: id, TenantID: tenant, Scope: scope, ScopeID: scopeID,
+			Payload: json.RawMessage(`{}`), CreatedAt: at}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	enqueue("t_bob_new", "acme", store.MemoryScopeUser, "bob", base.Add(3*time.Minute))
+	enqueue("t_carol", "acme", store.MemoryScopeUser, "carol", base.Add(2*time.Minute))
+	enqueue("t_bob_old", "acme", store.MemoryScopeUser, "bob", base.Add(time.Minute))
+	enqueue("t_dave_drained", "acme", store.MemoryScopeUser, "dave", base)
+	enqueue("t_other_tenant", "beta", store.MemoryScopeUser, "erin", base)
+	enqueue("t_operator", "", store.MemoryScopeUser, "frank", base)
+	enqueue("t_agent_scope", "acme", store.MemoryScopeAgent, "helper", base)
+	if err := s.MemoryPendingAck(ctx, "acme", store.MemoryScopeUser, "dave", []string{"t_dave_drained"}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	got, err := s.MemoryPendingTargets(ctx, "acme", store.MemoryScopeUser, 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingTargets: %v", err)
+	}
+	if strings.Join(got, ",") != "bob,carol" {
+		t.Errorf("acme/user targets = %v, want [bob carol] (bob waiting since his oldest row)", got)
+	}
+	got, err = s.MemoryPendingTargets(ctx, "", store.MemoryScopeUser, 10)
+	if err != nil || strings.Join(got, ",") != "frank" {
+		t.Errorf("operator-layer targets = %v (err %v), want [frank] only: the tenant match is exact", got, err)
+	}
+	got, err = s.MemoryPendingTargets(ctx, "acme", store.MemoryScopeUser, 1)
+	if err != nil || strings.Join(got, ",") != "bob" {
+		t.Errorf("capped targets = %v (err %v), want [bob]", got, err)
 	}
 }
 

@@ -779,6 +779,35 @@ func TestFanout_ConfinesTargetsToTheDefsTenant(t *testing.T) {
 	}
 }
 
+// TestFanout_FindsATargetWhoseOnlyWorkIsQueued: a user with undrained queue
+// rows and no session in the store is still a consolidation target. Their
+// queue arrives without a session when it is restored from a snapshot
+// (sessions do not travel), and when their chats have aged out of the session
+// scan. Another tenant's queue stays out of a shared-tenant schedule.
+//
+// Fails-before when candidates come from sessions alone: carol has none, so
+// no run is dispatched and her queue is never drained.
+func TestFanout_FindsATargetWhoseOnlyWorkIsQueued(t *testing.T) {
+	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	ctx := context.Background()
+	for _, r := range []store.MemoryPendingRow{
+		{ID: "p_carol", TenantID: "", Scope: store.MemoryScopeUser, ScopeID: "carol"},
+		{ID: "p_acme", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "acme-user"},
+	} {
+		if err := st.MemoryPendingEnqueue(ctx, r); err != nil {
+			t.Fatalf("enqueue %s: %v", r.ID, err)
+		}
+	}
+
+	fireT(t, sched)
+
+	calls := fr.Calls()
+	if len(calls) != 1 || calls[0].UserID != "carol" {
+		t.Fatalf("RunOnce calls = %+v, want exactly one, for carol (her queue, no session); logs:\n%s", calls, logs.all())
+	}
+}
+
 // TestFanout_ChildMetadataIsNotSharedAcrossTargets: every child is built from
 // the SAME def, so a dispatcher that adds per-target context to def.Metadata
 // in place would leak one target's context into the next (and race while doing

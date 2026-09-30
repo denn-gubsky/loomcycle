@@ -2541,6 +2541,18 @@ type Store interface {
 	// Returns *ErrNotFound when no such row is visible to the caller.
 	MemoryPendingGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, id string) (MemoryPendingRow, error)
 
+	// MemoryPendingTargets returns the scope ids under (tenantID, scope) that
+	// hold at least one UN-DRAINED queue row, the target waiting longest first
+	// (oldest undrained created_at, then scope_id), at most limit of them
+	// (limit <= 0 is a small default). The tenant match is exact: "" is the
+	// operator layer, not "every tenant".
+	//
+	// It is how the consolidation fan-out finds queued work whose target has
+	// no recent session — a queue restored from a snapshot (sessions do not
+	// travel), or a row banked for a user whose chats have aged out of the
+	// session scan. Without it such a queue is never drained.
+	MemoryPendingTargets(ctx context.Context, tenantID string, scope MemoryScope, limit int) ([]string, error)
+
 	// MemoryScopeUsage sums a scope's live key count and byte footprint
 	// (len(key)+len(value)) server-side, EXCLUDING keys under excludeKeyPrefix.
 	//

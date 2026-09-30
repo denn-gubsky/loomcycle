@@ -4962,6 +4962,38 @@ func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope sto
 	return nil
 }
 
+// MemoryPendingTargets returns the scope ids under (tenant, scope) with queued
+// undrained work, the longest-waiting first.
+func (s *Store) MemoryPendingTargets(ctx context.Context, tenantID string, scope store.MemoryScope, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT scope_id FROM memory_pending
+		 WHERE tenant_id = $1 AND scope = $2 AND drained_at IS NULL
+		 GROUP BY scope_id
+		 ORDER BY MIN(created_at) ASC, scope_id ASC
+		 LIMIT $3`,
+		tenantID, string(scope), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("memory pending targets: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("memory pending targets: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory pending targets: %w", err)
+	}
+	return out, nil
+}
+
 // SnapshotReadMemoryPending returns every un-drained queue row, every tenant's
 // and target's, each target's rows in drain order.
 func (s *Store) SnapshotReadMemoryPending(ctx context.Context) ([]store.MemoryPendingRow, error) {
