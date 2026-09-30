@@ -748,34 +748,46 @@ func TestFanout_RefusesUnsupportedScope(t *testing.T) {
 	}
 }
 
-// TestFanout_ConfinesTargetsToTheDefsTenant: the def's tenant is the authority
-// for which tenant a fired run executes as, and an EMPTY tenant filter means
-// "all tenants" at the store layer — so a shared-tenant schedule must not
-// dispatch runs for another tenant's users. This asserts the OUTCOME, which two
-// layers enforce independently (the candidate scan's per-session tenant check
-// and the tenant-filtered has-new-work reads); removing either one alone leaves
-// this green, which is the point of having both.
-func TestFanout_ConfinesTargetsToTheDefsTenant(t *testing.T) {
+// TestFanout_TenantScheduleConsolidatesOnlyItsOwnTenant: a TENANT's def is the
+// authority for which tenant its runs execute as, so it must not dispatch runs
+// for another tenant's users — nor for the operator layer's, nor for the legacy
+// bearer's "default" tenant — whether the work was found through a session or
+// through the queue. Only a def in the operator layer reaches every tenant.
+//
+// It passes on the code before the operator-layer sweep existed, by design:
+// what it guards is that the sweep did not widen a tenant's schedule. It fails
+// if operatorLayerFanout answers true for a def with a tenant.
+func TestFanout_TenantScheduleConsolidatesOnlyItsOwnTenant(t *testing.T) {
 	def := fanoutDef(nil)
-	def.TenantID = "" // the shared/legacy tenant
-	sched, fr, st, _ := fanoutFixture(t, def, nil)
+	def.TenantID = "acme"
+	sched, fr, st, logs := fanoutFixture(t, def, nil)
 	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 
-	seedSettledSession(t, st, "", "shared-user")
 	seedSettledSession(t, st, "acme", "acme-user")
+	seedSettledSession(t, st, "", "operator-user")
+	seedSettledSession(t, st, "default", "legacy-user")
+	seedSettledSession(t, st, "beta", "beta-user")
+	for _, r := range []store.MemoryPendingRow{
+		{ID: "p_acme", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "acme-queued"},
+		{ID: "p_default", TenantID: "default", Scope: store.MemoryScopeUser, ScopeID: "legacy-queued"},
+		{ID: "p_beta", TenantID: "beta", Scope: store.MemoryScopeUser, ScopeID: "beta-queued"},
+	} {
+		if err := st.MemoryPendingEnqueue(context.Background(), r); err != nil {
+			t.Fatalf("enqueue %s: %v", r.ID, err)
+		}
+	}
 
 	fireT(t, sched)
 
+	got := map[string]bool{}
 	for _, c := range fr.Calls() {
-		if c.UserID == "acme-user" {
-			t.Errorf("dispatched a run for tenant acme's user from a shared-tenant schedule — the tenant filter leaked")
-		}
-		if c.TenantID != "" {
-			t.Errorf("child TenantID = %q, want the def's tenant \"\"", c.TenantID)
+		got[c.UserID] = true
+		if c.TenantID != "acme" {
+			t.Errorf("child %s TenantID = %q, want the def's tenant acme", c.UserID, c.TenantID)
 		}
 	}
-	if got := len(fr.Calls()); got != 1 {
-		t.Errorf("RunOnce calls = %d, want 1 (only the shared-tenant user)", got)
+	if len(got) != 2 || !got["acme-user"] || !got["acme-queued"] {
+		t.Errorf("dispatched users = %v, want exactly acme-user and acme-queued; logs:\n%s", got, logs.all())
 	}
 }
 
@@ -783,17 +795,19 @@ func TestFanout_ConfinesTargetsToTheDefsTenant(t *testing.T) {
 // rows and no session in the store is still a consolidation target. Their
 // queue arrives without a session when it is restored from a snapshot
 // (sessions do not travel), and when their chats have aged out of the session
-// scan. Another tenant's queue stays out of a shared-tenant schedule.
+// scan. Another tenant's queue stays out of a tenant's schedule.
 //
 // Fails-before when candidates come from sessions alone: carol has none, so
 // no run is dispatched and her queue is never drained.
 func TestFanout_FindsATargetWhoseOnlyWorkIsQueued(t *testing.T) {
-	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
+	def := fanoutDef(nil)
+	def.TenantID = "acme"
+	sched, fr, st, logs := fanoutFixture(t, def, nil)
 	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 	ctx := context.Background()
 	for _, r := range []store.MemoryPendingRow{
-		{ID: "p_carol", TenantID: "", Scope: store.MemoryScopeUser, ScopeID: "carol"},
-		{ID: "p_acme", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "acme-user"},
+		{ID: "p_carol", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "carol"},
+		{ID: "p_beta", TenantID: "beta", Scope: store.MemoryScopeUser, ScopeID: "beta-user"},
 	} {
 		if err := st.MemoryPendingEnqueue(ctx, r); err != nil {
 			t.Fatalf("enqueue %s: %v", r.ID, err)

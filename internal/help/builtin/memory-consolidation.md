@@ -514,6 +514,23 @@ are enforced by the server rather than left to you:
   is deliberately not lease-checked — deterministic keys make a concurrent
   write overwrite the same row rather than duplicate it.
 
+## Which users a schedule reaches
+
+A consolidation schedule's reach follows its tenant:
+
+- **A schedule with no tenant** — a yaml `scheduled_runs:` entry without
+  `tenant_id`, like the bundled one — belongs to the operator and consolidates
+  users in **every tenant**, including `default`, where the legacy
+  `LOOMCYCLE_AUTH_TOKEN` writes. Each pass runs in its user's own tenant, so it
+  reads and writes that tenant's memory and no other. The per-tick target cap
+  covers the whole sweep, not each tenant.
+- **A schedule in a tenant** — a yaml entry with `tenant_id`, or a
+  `ScheduleDef` a tenant created — consolidates only that tenant's users.
+
+A pass dispatched into a tenant other than its schedule's own carries none of
+the schedule's credentials: it resolves its agent in that tenant, where the
+tenant's own version of the consolidator would run.
+
 ## Operator knobs
 
 | Setting | Effect |

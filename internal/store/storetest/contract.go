@@ -1486,6 +1486,29 @@ func testMemoryPendingTargets(t *testing.T, s store.Store) {
 	if err != nil || strings.Join(got, ",") != "bob" {
 		t.Errorf("capped targets = %v (err %v), want [bob]", got, err)
 	}
+
+	// Across tenants: every tenant's targets (the operator layer's included),
+	// each (tenant, scope_id) once, longest-waiting first with ties broken by
+	// tenant then scope_id; still no drained row and no other scope.
+	enqueue("t_beta_bob", "beta", store.MemoryScopeUser, "bob", base.Add(4*time.Minute))
+	all, err := s.MemoryPendingTargetsAllTenants(ctx, store.MemoryScopeUser, 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingTargetsAllTenants: %v", err)
+	}
+	render := func(ts []store.MemoryPendingTarget) string {
+		parts := make([]string, 0, len(ts))
+		for _, tgt := range ts {
+			parts = append(parts, tgt.TenantID+"/"+tgt.ScopeID)
+		}
+		return strings.Join(parts, ",")
+	}
+	if want := "/frank,beta/erin,acme/bob,acme/carol,beta/bob"; render(all) != want {
+		t.Errorf("all-tenant targets = %s, want %s", render(all), want)
+	}
+	all, err = s.MemoryPendingTargetsAllTenants(ctx, store.MemoryScopeUser, 2)
+	if err != nil || render(all) != "/frank,beta/erin" {
+		t.Errorf("capped all-tenant targets = %s (err %v), want /frank,beta/erin", render(all), err)
+	}
 }
 
 // testSnapshotRestoreTokenLimitKeepsLiveRow: a restored budget lands with its

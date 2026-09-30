@@ -52,6 +52,12 @@ const (
 	// so a def nobody meant to author is visible in the log rather than only in
 	// the bill. Closing the gap properly needs a provenance column on
 	// schedule_defs — deferred, tracked as the follow-up to this note.
+	//
+	// Reach follows the def's tenant: a tenant's def fans out within that
+	// tenant; a def in the operator layer (tenant "") fans out across every
+	// tenant — see operatorLayerFanout. Only the operator can author the
+	// latter: the yaml, a principal the operator's config declares without a
+	// tenant, or open mode. Minted tokens and the legacy bearer carry a tenant.
 	fanoutMetadataKey = "memory_consolidation_fanout"
 	// fanoutScopeKey optionally names the target scope. Only "user" is
 	// supported (see the scope note above); an empty value defaults to it.
@@ -183,8 +189,13 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	// expensive metadata key in the system. An operator must be able to find out
 	// from the log that a def is fanning out, and how wide, without waiting for
 	// the bill. At an hourly cadence this is one line per hour per def.
-	s.logf("scheduler: schedule %q (def %s) carries the consolidation fan-out marker — dispatching up to %d run(s) per tick, each under a discovered user's identity; retire the def if you did not author this",
-		row.Name, row.DefID, s.cfg.MaxConsolidationTargets)
+	allTenants := s.operatorLayerFanout(ctx, row.DefID, def)
+	reach := fmt.Sprintf("in tenant %q", def.TenantID)
+	if allTenants {
+		reach = "across every tenant, each run in its target's own tenant"
+	}
+	s.logf("scheduler: schedule %q (def %s) carries the consolidation fan-out marker — dispatching up to %d run(s) per tick %s, each under a discovered user's identity; retire the def if you did not author this",
+		row.Name, row.DefID, s.cfg.MaxConsolidationTargets, reach)
 
 	batchCtx, cancel := context.WithTimeout(ctx, s.cfg.FireTimeout)
 	defer cancel()
@@ -195,7 +206,7 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	// swallows its own failures), so a lock fault skips this tick rather than
 	// marking the schedule failed.
 	dispatch := func(ctx context.Context) {
-		s.dispatchConsolidationTargets(ctx, row, def, scope, now)
+		s.dispatchConsolidationTargets(ctx, row, def, scope, allTenants, now)
 	}
 	if s.fanoutLock != nil && s.fanoutLockKeyFn != nil {
 		acquired, lockErr := s.fanoutLock.TryRun(batchCtx, s.fanoutLockKeyFn(row.DefID), func(ctx context.Context) error {
@@ -223,11 +234,41 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	dispatch(batchCtx)
 }
 
+// operatorLayerFanout reports whether this fan-out belongs to the operator
+// layer, and so reaches every tenant.
+//
+// Tenant "" is the operator layer, not a tenant users sign in to: minted
+// tokens carry a tenant, and so does the legacy LOOMCYCLE_AUTH_TOKEN
+// ("default"), so their runs, sessions and memory never land in "". A
+// yaml `scheduled_runs:` entry without `tenant_id` materializes there, and
+// confining its fan-out to "" meant it consolidated nobody who signs in — the
+// bundled memory-consolidation schedule never reached a legacy-bearer user.
+// Reaching every tenant is what an operator-level sweep means, and it grants
+// nothing new: the operator can already point one yaml schedule at each tenant
+// with `tenant_id`. Each target's run still executes in that target's tenant.
+//
+// BOTH tenants must be "": the def body's (where its runs execute) and the
+// owning row's. A row a tenant wrote before create stamped the author's tenant
+// into the body has an empty body tenant but a real owner, and must not become
+// a cross-tenant sweep. The owner is read per fire (one point read per tick);
+// a read fault fails closed to the def's own tenant.
+func (s *Scheduler) operatorLayerFanout(ctx context.Context, defID string, def scheduleDef) bool {
+	if def.TenantID != "" {
+		return false
+	}
+	owner, err := s.store.ScheduleDefGet(ctx, defID)
+	if err != nil {
+		s.logf("scheduler: consolidation fan-out def %s: read owning tenant: %v — confining this tick to tenant \"\"", defID, err)
+		return false
+	}
+	return owner.TenantID == ""
+}
+
 // dispatchConsolidationTargets is the fan-out body, run at most once per tick
 // per cluster. It records the schedule's result itself so the advisory-lock
 // wrapper stays a thin gate.
-func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, scope store.MemoryScope, now time.Time) {
-	targets, dropped, err := s.consolidationTargets(ctx, def, scope)
+func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, scope store.MemoryScope, allTenants bool, now time.Time) {
+	targets, dropped, err := s.consolidationTargets(ctx, def, scope, allTenants)
 	if err != nil {
 		s.recordFireFailure(ctx, row.DefID, "", "failed", fmt.Errorf("consolidation fan-out: enumerate targets: %w", err), now)
 		return
@@ -244,6 +285,16 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		// fire counted, no hooks.
 		s.advanceOnly(ctx, row.DefID, def, "skipped_no_targets", now)
 		return
+	}
+
+	if len(def.UserCredentials)+len(def.UserCredentialsFromEnv) > 0 {
+		for _, target := range targets {
+			if target.TenantID != def.TenantID {
+				s.logf("scheduler: consolidation fan-out %q: runs dispatched outside tenant %q carry none of this schedule's credentials — see runConsolidationTarget",
+					row.Name, def.TenantID)
+				break
+			}
+		}
 	}
 
 	serial, reason := s.dispatchSerially(ctx, def, targets)
@@ -312,8 +363,12 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		// started. That is one config error repeating, not N fires — counting it
 		// would burn max_fires and retire the schedule, hiding the misconfig
 		// behind a retired def. Log it as loudly as fireOne does.
-		s.logf("scheduler: consolidation fan-out %q could not resolve agent %q in tenant %q for any of %d target(s) — not counting toward max_fires; check the agent exists in this tenant (F38)",
-			row.Name, def.Agent, def.TenantID, tally.dispatched)
+		where := fmt.Sprintf("tenant %q", def.TenantID)
+		if allTenants {
+			where = "any target's tenant"
+		}
+		s.logf("scheduler: consolidation fan-out %q could not resolve agent %q in %s for any of %d target(s) — not counting toward max_fires; check the agent exists in this tenant (F38)",
+			row.Name, def.Agent, where, tally.dispatched)
 	}
 	s.recordFanoutResult(ctx, row, def, now, status, errStr, lastRunID, countAsFire)
 	if status == "completed" {
@@ -395,7 +450,12 @@ func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire b
 // window and permanently starve newly-active targets. Targets with queued
 // work follow, longest-waiting first. Each candidate is then confirmed against
 // its OWN watermark and queue before it earns a dispatch.
-func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope) ([]consolidationTarget, int, error) {
+//
+// allTenants (see operatorLayerFanout) widens the candidate set to every
+// tenant; otherwise it is confined to the def's tenant. Either way a target
+// carries the tenant its session or queue row lives in, and every read and the
+// dispatched run use that tenant — never the def's.
+func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope, allTenants bool) ([]consolidationTarget, int, error) {
 	// The exclusion is pushed into the QUERY rather than applied to the result:
 	// the scan window is a fixed 500 rows ordered most-recently-active first, and
 	// a pass's own children are by construction the most recent sessions there
@@ -410,29 +470,31 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		return nil, 0, fmt.Errorf("list sessions: %w", err)
 	}
 
-	// Distinct candidate scope ids, in first-seen (most-recently-active) order
-	// so the cap below trims the least-recently-active candidates.
-	seen := map[string]bool{}
-	var candidates []string
+	// Distinct candidates, in first-seen (most-recently-active) order so the cap
+	// below trims the least-recently-active candidates. Keyed by tenant AND user:
+	// the same user id in two tenants is two targets.
+	seen := map[consolidationTarget]bool{}
+	var candidates []consolidationTarget
+	add := func(tenantID, userID string) {
+		c := consolidationTarget{TenantID: tenantID, Scope: scope, UserID: userID}
+		if userID == "" || seen[c] {
+			return // no user id ⇒ no user-scope memory target
+		}
+		seen[c] = true
+		candidates = append(candidates, c)
+	}
 	for _, sess := range sessions {
 		// An empty TenantID filter means "all tenants" at the store layer, so
-		// re-assert the def's authoritative tenant here: a fan-out must never
-		// dispatch a run for a session outside the tenant the def declares.
-		// This is the FIRST of two layers — targetHasNewWork's reads are also
-		// tenant-filtered, so a cross-tenant candidate would report no work
-		// anyway. Filtering here saves the pointless round-trip and keeps the
-		// confinement visible at the place the target list is built.
-		if sess.TenantID != def.TenantID {
+		// unless this is the operator-layer sweep, re-assert the def's
+		// authoritative tenant here: a tenant's fan-out must never dispatch a run
+		// for a session outside the tenant the def declares. This is the FIRST of
+		// two layers — targetHasNewWork reads on the candidate's own tenant, so a
+		// candidate from another tenant would find no work there anyway.
+		// Filtering here keeps the confinement visible where the list is built.
+		if !allTenants && sess.TenantID != def.TenantID {
 			continue
 		}
-		if sess.UserID == "" {
-			continue // no user id ⇒ no user-scope memory target
-		}
-		if seen[sess.UserID] {
-			continue
-		}
-		seen[sess.UserID] = true
-		candidates = append(candidates, sess.UserID)
+		add(sess.TenantID, sess.UserID)
 	}
 
 	// Targets whose queue holds work, after the session-derived ones. A queue
@@ -440,28 +502,35 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 	// queue but not the sessions, and a user whose chats have aged out of the
 	// scan window can still have rows banked by a compaction. Sessions alone
 	// would leave such a queue undrained forever. The read is exact on the
-	// def's tenant, and the candidates still go through targetHasNewWork.
-	queued, err := s.store.MemoryPendingTargets(ctx, def.TenantID, scope, candidateScanLimit)
-	if err != nil {
-		return nil, 0, fmt.Errorf("list queued targets: %w", err)
-	}
-	for _, userID := range queued {
-		if userID == "" || seen[userID] {
-			continue
+	// def's tenant unless this is the operator-layer sweep, and the candidates
+	// still go through targetHasNewWork.
+	if allTenants {
+		queued, err := s.store.MemoryPendingTargetsAllTenants(ctx, scope, candidateScanLimit)
+		if err != nil {
+			return nil, 0, fmt.Errorf("list queued targets: %w", err)
 		}
-		seen[userID] = true
-		candidates = append(candidates, userID)
+		for _, q := range queued {
+			add(q.TenantID, q.ScopeID)
+		}
+	} else {
+		queued, err := s.store.MemoryPendingTargets(ctx, def.TenantID, scope, candidateScanLimit)
+		if err != nil {
+			return nil, 0, fmt.Errorf("list queued targets: %w", err)
+		}
+		for _, userID := range queued {
+			add(def.TenantID, userID)
+		}
 	}
 
 	maxTargets := s.cfg.MaxConsolidationTargets
 	var targets []consolidationTarget
 	dropped := 0
-	for _, userID := range candidates {
-		hasWork, err := s.targetHasNewWork(ctx, def.TenantID, scope, userID, def.Agent)
+	for _, c := range candidates {
+		hasWork, err := s.targetHasNewWork(ctx, c.TenantID, scope, c.UserID, def.Agent)
 		if err != nil {
 			// A per-candidate read fault must not abort the whole fan-out;
 			// log it and let the next tick retry that candidate.
-			s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q): %v", def.TenantID, userID, err)
+			s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q): %v", c.TenantID, c.UserID, err)
 			continue
 		}
 		if !hasWork {
@@ -471,10 +540,15 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 			dropped++
 			continue
 		}
-		targets = append(targets, consolidationTarget{TenantID: def.TenantID, Scope: scope, UserID: userID})
+		targets = append(targets, c)
 	}
 	// Stable order so a capped fan-out is reproducible and testable.
-	sort.Slice(targets, func(i, j int) bool { return targets[i].UserID < targets[j].UserID })
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].TenantID != targets[j].TenantID {
+			return targets[i].TenantID < targets[j].TenantID
+		}
+		return targets[i].UserID < targets[j].UserID
+	})
 	return targets, dropped, nil
 }
 
@@ -645,6 +719,15 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
 	in.UserID = target.UserID
 	in.TenantID = target.TenantID
+	if target.TenantID != def.TenantID {
+		// The operator-layer sweep dispatching into another tenant. That run
+		// resolves its agent in the target's tenant, where a tenant fork of the
+		// consolidator wins, so the schedule's literal credentials would be handed
+		// to code the operator did not author. The schedule's other captured bits
+		// (user tier, operator-key restriction, isolation) still apply, exactly as
+		// they would to a yaml schedule naming this tenant with `tenant_id`.
+		in.UserCredentials = nil
+	}
 	// Copy the metadata before adding to it: def.Metadata is shared across
 	// every child of this fan-out, and mutating it would leak one target's
 	// context into the next.
