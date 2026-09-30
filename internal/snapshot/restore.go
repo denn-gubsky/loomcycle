@@ -181,7 +181,11 @@ func (r RestoreResult) Counts() map[string]int {
 // *migrations.ErrUnknownSectionVersion for corrupted / unsupported
 // snapshots. Both errors carry the section + version strings for
 // operator-actionable messaging.
-func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions) (RestoreResult, error) {
+func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions) (out RestoreResult, err error) {
+	// Every warning, on every return path, leaves without a URL credential:
+	// the ones that quote a refused body (a validator's error repeats the
+	// value it refused) and any a future section adds.
+	defer func() { out.Warnings = redactWarnings(out.Warnings) }()
 	if s == nil {
 		return RestoreResult{}, fmt.Errorf("snapshot restore: nil store")
 	}
