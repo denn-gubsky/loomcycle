@@ -5765,6 +5765,76 @@ func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope sto
 	return err
 }
 
+// SnapshotReadMemoryPending returns every un-drained queue row, every tenant's
+// and target's, each target's rows in drain order.
+func (s *Store) SnapshotReadMemoryPending(ctx context.Context) ([]store.MemoryPendingRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, tenant_id, scope, scope_id, payload, origin, source_session_id, source_run_id, created_at
+		 FROM memory_pending
+		 WHERE drained_at IS NULL
+		 ORDER BY tenant_id, scope, scope_id, created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read memory_pending: %w", err)
+	}
+	defer rows.Close()
+	var out []store.MemoryPendingRow
+	for rows.Next() {
+		var (
+			r          store.MemoryPendingRow
+			scopeStr   string
+			payload    string
+			origin     sql.NullString
+			srcSession sql.NullString
+			srcRun     sql.NullString
+			createdNs  int64
+		)
+		if err := rows.Scan(&r.ID, &r.TenantID, &scopeStr, &r.ScopeID, &payload, &origin, &srcSession, &srcRun, &createdNs); err != nil {
+			return nil, fmt.Errorf("snapshot read memory_pending: %w", err)
+		}
+		r.Scope = store.MemoryScope(scopeStr)
+		r.Payload = json.RawMessage(payload)
+		r.Origin = origin.String
+		r.SourceSessionID = srcSession.String
+		r.SourceRunID = srcRun.String
+		r.CreatedAt = time.Unix(0, createdNs)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotRestoreMemoryPending inserts one queue row un-drained; a row already
+// on the id stands, drained or not. The conflict target is the key, not INSERT
+// OR IGNORE, which would also swallow a NOT NULL failure as "already here".
+func (s *Store) SnapshotRestoreMemoryPending(ctx context.Context, row store.MemoryPendingRow) (bool, error) {
+	if row.ID == "" {
+		return false, fmt.Errorf("snapshot restore memory_pending: id required")
+	}
+	createdAt := row.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	payload := row.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage("null")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO memory_pending
+		   (id, tenant_id, scope, scope_id, payload, origin, source_session_id, source_run_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO NOTHING`,
+		row.ID, row.TenantID, string(row.Scope), row.ScopeID, string(payload),
+		row.Origin, row.SourceSessionID, row.SourceRunID, createdAt.UnixNano(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore memory_pending: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore memory_pending: %w", err)
+	}
+	return n > 0, nil
+}
+
 // MemoryCursorGet is a get-or-default: a target with no row returns a
 // zero-watermark, unleased row rather than ErrNotFound.
 func (s *Store) MemoryCursorGet(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string) (store.MemoryCursorRow, error) {
