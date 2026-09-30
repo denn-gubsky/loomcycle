@@ -72,9 +72,13 @@ def main():
     def load(path, key, idmap):
         return {r["qid"]: [idmap[c] for c in r[key] if c in idmap]
                 for r in map(json.loads, open(path))}
+    # Amendment 2: the baseline is the shipped rerank run over THESE pools (qwen_list.jsonl);
+    # phase M's rankings stay only as the (failed) reproduction checks.
     rank = {"none": load(os.path.join(P, "results", "pool.jsonl"), "ranked", new_id),
-            "qwen_list": load(os.path.join(M, "results", "header_rr.jsonl"), "ranked", m_id)}
+            "qwen_list": load(os.path.join(P, "results", "qwen_list.jsonl"), "ranked", new_id)}
     m_header = load(os.path.join(M, "results", "header.jsonl"), "ranked", m_id)
+    m_rr = load(os.path.join(M, "results", "header_rr.jsonl"), "ranked", m_id)
+    qwen_raw = {r["qid"]: r for r in map(json.loads, open(os.path.join(P, "results", "qwen_list.jsonl")))}
     raw = {}
     for arm in JEV_ARMS:
         path = os.path.join(P, "results", arm + ".jsonl")
@@ -155,12 +159,31 @@ def main():
     if complete.get("nimble_choice"):
         summary["latency"]["nimble_choice"]["cut_below_1200"] = sum(1 for q in subset if raw["nimble_choice"][q]["max_chars"] < 1200)
 
-    # Instrument checks.
-    summary["checks"]["pool_top10_equals_M_header_top10"] = round(
+    # Instrument checks. 1 and 2 (the pools equal phase M's) are reported as they failed;
+    # amendment 2 replaces them with 1b and 2b, on the baseline run over these pools.
+    summary["checks"]["1_pool_top10_equals_M_header_top10"] = round(
         sum(1 for q in subset if rank["none"][q][:10] == m_header[q][:10]) / len(subset), 4)
-    summary["checks"]["M_rerank_top10_within_pool"] = round(
-        sum(1 for q in subset if set(rank["qwen_list"][q][:10]) <= set(rank["none"][q])) / len(subset), 4)
-    summary["checks"]["pools_of_20"] = round(sum(1 for q in subset if len(rank["none"][q]) == 20) / len(subset), 4)
+    summary["checks"]["2_M_rerank_top10_within_pool"] = round(
+        sum(1 for q in subset if set(m_rr[q][:10]) <= set(rank["none"][q])) / len(subset), 4)
+    summary["checks"]["1b_baseline_reranked_the_same_pool"] = round(
+        sum(1 for q in subset if q in rank["qwen_list"] and set(rank["qwen_list"][q]) == set(rank["none"][q])) / len(subset), 4)
+    summary["checks"]["2b_baseline_reranked_rate"] = round(
+        sum(1 for q in subset if qwen_raw.get(q, {}).get("reranked")) / len(subset), 4)
+    summary["checks"]["3_pools_of_20"] = round(sum(1 for q in subset if len(rank["none"][q]) == 20) / len(subset), 4)
+    ms = sorted(qwen_raw[q]["ms"] for q in subset if q in qwen_raw)
+    if ms:
+        summary["latency"]["qwen_list"] = {"p50_ms": ms[len(ms) // 2], "p95_ms": ms[int(0.95 * len(ms))],
+                                           "note": "search + rerank wall time via loomcycle, on the Spark"}
+    # Cross-host agreement: the arm's partial TrueNAS run against its Spark run, same pools.
+    for arm in POINT_ARMS + ("nimble_choice",):
+        other = os.path.join(P, "results", arm + "-truenas.jsonl")
+        if arm in raw and os.path.exists(other):
+            o = {r["qid"]: r for r in map(json.loads, open(other))}
+            common = [q for q in o if q in raw[arm]]
+            dmax = max((abs(x - y) for q in common for x, y in zip(o[q]["scores"], raw[arm][q]["scores"])), default=None)
+            top1 = sum(1 for q in common if o[q]["order"][0] == raw[arm][q]["order"][0]) / len(common) if common else None
+            summary["checks"]["host_agreement_" + arm] = {"questions": len(common), "max_abs_diff": dmax,
+                                                          "same_top1": top1}
     print(json.dumps(summary, indent=2))
     json.dump(summary, open(os.path.join(P, "summary.json"), "w"), indent=2)
 

@@ -65,7 +65,8 @@ def main():
     cmap = json.load(open(os.path.join(P, "chunks-header.json")))
     where = {cid: (did, i) for did, ids in cmap.items() for i, cid in enumerate(ids)}
     pools = [json.loads(l) for l in open(os.path.join(P, "results", "pool.jsonl"))]
-    path = os.path.join(P, "results", a.arm + ".jsonl")
+    ap_out = os.environ.get("JEV_OUT", a.arm)  # a second host's run of an arm writes beside the first
+    path = os.path.join(P, "results", ap_out + ".jsonl")
     done = {json.loads(l)["qid"] for l in open(path)} if os.path.exists(path) else set()
     t_all, n = time.time(), 0
     with open(path, "a") as f, ThreadPoolExecutor(4) as ex:
@@ -99,7 +100,7 @@ def main():
                 tokens = sum(x["usage"]["input_tokens"] for x in rs)
             ms = int((time.time() - t0) * 1000)
             order = [ids[j] for j in sorted(range(len(ids)), key=lambda j: (-scores[j], j))]
-            f.write(json.dumps({"qid": p["qid"], "order": order, "scores": scores, "ms": ms,
+            f.write(json.dumps({"qid": p["qid"], "host": HOST, "order": order, "scores": scores, "ms": ms,
                                 "input_tokens": tokens, "max_chars": max_chars}) + "\n")
             f.flush()
             n += 1

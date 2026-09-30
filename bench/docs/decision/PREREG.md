@@ -113,3 +113,40 @@ request. Both hosts serve the identical model: digest `7907646426070047…` on b
 - **Queries:** pool queries are embedded on TrueNAS.
 - **The check that matters:** instrument check 1 (the rebuilt pools equal phase M's) tests
   whether the swap changed anything. Nothing else changes.
+
+## Amendment 2 — 2026-09-30 16:55, before any rerank was scored
+
+**Instrument checks 1 and 2 failed.**
+- The rebuilt pools' top 10 equal phase M's `header` top 10 for **0.6875** of the
+  questions (0.9237 as sets). Phase M's `header_rr` top 10 lies within the rebuilt pool of
+  20 for **0.975**. Both are below the 98% thresholds, so phase M's `header_rr` cannot be
+  the baseline, as the rule says.
+- The likely cause is the approximate vector index built anew. The embedding model is the
+  same digest on both hosts.
+- The only numbers looked at are these two check values. No rerank ranking had been
+  scored.
+
+**Changes:**
+
+1. **The baseline `qwen_list` is run over THESE pools** through the shipped rerank:
+   `Document op=search` with limit 20 and `memory_rerank` on (agent `cqa/pool-rr`), with
+   phase M's reranker settings (`qwen3.8`, effort low, 16K context, 120 s timeout).
+   - It runs on the Spark, where phase M's rerank ran.
+   - Checks 1 and 2 are replaced by:
+     - **1b:** the baseline returns the same 20 candidates as the pool (same set) for
+       ≥ 98% of the questions;
+     - **2b:** the baseline reports `reranked: true` on ≥ 95%.
+   - Failing either voids H1, H2 and every comparison with `qwen_list`.
+2. **Every decision arm runs on the Spark** (Ollama 0.35.0; `nimble` and `tev1:4b`, the
+   same digests as on TrueNAS). TrueNAS ran `nimble_point` at 31 s per question, and all
+   arms would not finish before its nightly stop. An arm runs on ONE host from start to
+   finish.
+   - The 205 questions of `nimble_point` already run on TrueNAS are kept apart
+     (`nimble_point-truenas.jsonl`) and used only for a cross-host agreement report: the
+     largest probability difference and the top-1 agreement on the same pools.
+   - Only the Spark run is scored.
+3. **Latency** is now measured for every arm on the same host (the Spark), and the
+   baseline's is search plus rerank wall time. The Spark is shared with another workload,
+   so latency is still reported, not tested.
+
+Nothing else changes: hypotheses, margin, α, calibration and gate thresholds.
