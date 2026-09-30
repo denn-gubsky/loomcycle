@@ -274,6 +274,7 @@ const (
 	markPending     = "dp0mark-pending-undrained-content"
 	markDrained     = "dp0mark-pending-drained-content"
 	markLeaseOwner  = "dp0mark-consolidation-lease-owner"
+	markDirent      = "dp0mark-dirent-name"
 	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
@@ -359,6 +360,11 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	_, _, err = s.MemoryCursorLease(ctx, "acme", store.MemoryScopeUser, "u1", markLeaseOwner, now, time.Hour)
 	must("memory_cursors", err)
 
+	// A Path-tree name: a pointer, not content, and it travels.
+	_, err = s.DirentCreate(ctx, store.DirentRow{TenantID: "acme", Scope: "user", ScopeID: "u1", ParentPath: "/docs/",
+		Name: markDirent, Kind: "document", ResourceRef: json.RawMessage(`{"document_id":"d1"}`)})
+	must("dirents", err)
+
 	// A billing-ledger row. Only a month-to-date aggregate may ever travel,
 	// so none of the row's own fields may — but its tenant does, as the key
 	// of that aggregate. The check for it is in the test, since the ledger
@@ -388,6 +394,7 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		{table: "volume_defs", present: []string{"dp0mark-volume", `"mode":"ro"`}, absent: []string{markVolumePath, `"path"`}},
 		{table: "memory_pending", present: []string{markPending}, absent: []string{markDrained, "drained_at"}},
 		{table: "memory_cursors", absent: []string{markLeaseOwner}},
+		{table: "dirents", present: []string{markDirent}},
 		{table: "token_usage", absent: []string{markProvider, markModel, markUsageRun}},
 		{table: "users", present: []string{markUser}},
 		{table: "token_limits", present: []string{markLimitUser}},

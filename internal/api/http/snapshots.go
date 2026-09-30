@@ -352,6 +352,9 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 //   - VolumeRoot / StaticVolumeNames: this host's dynamic volume root, under
 //     which every restored dynamic volume's path is derived, and its static
 //     volumes, whose names a restored one may not take.
+//   - DocumentExists: whether a document a restored Path name points at is on
+//     this host, asked without provisioning a SQL Memory scope. nil when SQL
+//     Memory is off here: no document can be, so no document name restores.
 func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOptions {
 	opts := snapshot.RestoreOptions{
 		IncludeHistory: includeHistory,
@@ -366,6 +369,9 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 			// A dynamic volume is re-checked as create checks it; its path
 			// is derived under VolumeRoot below, never read from the file.
 			migrations.SectionVolumeDefs: builtin.ValidateVolumeDefBody,
+			// A Path name is re-checked as the tools write one: canonical
+			// path, known scope and kind, a ref of that kind's shape.
+			migrations.SectionDirents: builtin.ValidateDirentEntry,
 		},
 		CredentialExists: s.credKeyable,
 		EnvSet:           func(name string) bool { return os.Getenv(name) != "" },
@@ -386,6 +392,7 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 	}
 	if s.sqlMem != nil {
 		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
+		opts.DocumentExists = builtin.SnapshotDocumentExists(s.sqlMem)
 	}
 	return opts
 }

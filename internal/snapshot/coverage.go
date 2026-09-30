@@ -90,6 +90,11 @@ var tableCoverageMap = map[string]tableCoverage{
 	// `channels` envelope section is messages + cursors + the yaml config.
 	"channels": {Kind: coverSection, Section: "channel_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value in the channel's hooks (capture_findings)"},
+	// A Path name is a pointer (a document id, a memory key, a volume name),
+	// never content. Restored last, and only when what it names is here; the
+	// Path tool reads the store per call, so nothing is cached.
+	"dirents": {Kind: coverSection, Section: "dirents", Secrets: "none", Backends: onBoth,
+		Reason: "restored last, and a name is skipped when what it names is not on the target"},
 	// Memory-backend and document-source defs name env vars, never values:
 	// config.api_key_env and tenancy_strategy.env_pattern. Every body is
 	// re-validated on restore, since base_url + api_key_env is an
@@ -200,7 +205,4 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "the snapshot store itself"},
 	"user_quotas": {Kind: coverOmitted, Backends: onPostgres,
 		Reason: "live concurrency slots of the source cluster"},
-
-	// ---- pending: a later phase adds the section ----------------------------
-	"dirents": {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
 }

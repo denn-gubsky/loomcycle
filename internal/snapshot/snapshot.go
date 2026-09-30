@@ -225,6 +225,11 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		}
 		envelope.Sections.SqlMem = sec
 	}
+	// dirents last, as they restore: a name read after the things it names is
+	// at worst a name whose target the envelope lacks, which restore skips.
+	if err := captureDirents(ctx, s, &envelope.Sections.Dirents); err != nil {
+		return nil, nil, nil, err
+	}
 
 	// Findings are collected over what the envelope holds, after every
 	// header-bearing section is read. One log line each, by location only.
