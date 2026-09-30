@@ -103,6 +103,7 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 var pinnedEntryKeys = map[string][]string{
 	"Sections": {"users", "token_limits", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active",
+		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
 		"memory", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
 		"schedule_def_active", "evaluations", "paused_runs", "interaction_history", "sqlmem", "capture_findings"},
@@ -166,6 +167,19 @@ var pinnedEntryKeys = map[string][]string{
 		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",
 		"stripped_credentials"},
 	"WebhookDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+
+	// Memory-backend and document-source defs carry env var NAMES only. The
+	// definition is the stored body; it must never gain a resolved value.
+	"MemoryBackendDefsSection":      {"version", "entries"},
+	"MemoryBackendDefActiveSection": {"version", "entries"},
+	"MemoryBackendDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
+		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static"},
+	"MemoryBackendDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+	"DocSourceDefsSection":        {"version", "entries"},
+	"DocSourceDefActiveSection":   {"version", "entries"},
+	"DocSourceDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
+		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static"},
+	"DocSourceDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 
 	// A2A defs carry references only (a per-run credential key, an env name).
 	"A2AAgentDefsSection":      {"version", "entries"},

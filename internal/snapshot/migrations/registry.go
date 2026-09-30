@@ -50,6 +50,10 @@ const (
 	SectionScheduleDefActive      = "schedule_def_active"
 	SectionWebhookDefs            = "webhook_defs"
 	SectionWebhookDefActive       = "webhook_def_active"
+	SectionMemoryBackendDefs      = "memory_backend_defs"
+	SectionMemoryBackendDefActive = "memory_backend_def_active"
+	SectionDocSourceDefs          = "document_source_defs"
+	SectionDocSourceDefActive     = "document_source_def_active"
 	SectionA2AAgentDefs           = "a2a_agent_defs"
 	SectionA2AAgentDefActive      = "a2a_agent_def_active"
 	SectionA2AServerCardDefs      = "a2a_server_card_defs"
@@ -129,6 +133,10 @@ var registry = map[string]map[string]Migrator{
 	SectionScheduleDefActive:      {"1.0": identityMigrator},
 	SectionWebhookDefs:            {"1.0": identityMigrator},
 	SectionWebhookDefActive:       {"1.0": identityMigrator},
+	SectionMemoryBackendDefs:      {"1.0": identityMigrator},
+	SectionMemoryBackendDefActive: {"1.0": identityMigrator},
+	SectionDocSourceDefs:          {"1.0": identityMigrator},
+	SectionDocSourceDefActive:     {"1.0": identityMigrator},
 	SectionA2AAgentDefs:           {"1.0": identityMigrator},
 	SectionA2AAgentDefActive:      {"1.0": identityMigrator},
 	SectionA2AServerCardDefs:      {"1.0": identityMigrator},

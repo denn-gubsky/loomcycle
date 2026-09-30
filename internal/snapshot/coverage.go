@@ -90,6 +90,14 @@ var tableCoverageMap = map[string]tableCoverage{
 	// `channels` envelope section is messages + cursors + the yaml config.
 	"channels": {Kind: coverSection, Section: "channel_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value in the channel's hooks (capture_findings)"},
+	// Memory-backend and document-source defs name env vars, never values:
+	// config.api_key_env and tenancy_strategy.env_pattern. Every body is
+	// re-validated on restore, since base_url + api_key_env is an
+	// exfiltration pair. Both lookups read the active def from the store per
+	// call, so no cache needs a refresh.
+	"document_source_def_active": {Kind: coverSection, Section: "document_source_def_active", Secrets: "none", Backends: onBoth},
+	"document_source_defs": {Kind: coverSection, Section: "document_source_defs", Backends: onBoth,
+		Secrets: "by-reference: config.api_key_env, tenancy_strategy.env_pattern (env var names)"},
 	"evaluations": {Kind: coverSection, Section: "evaluations", Secrets: "none", Backends: onBoth},
 	"events": {Kind: coverSection, Section: "paused_runs", Secrets: "none", Backends: onBoth,
 		Reason: "only the transcript events of paused runs travel, inside their run's entry"},
@@ -101,7 +109,10 @@ var tableCoverageMap = map[string]tableCoverage{
 	"mcp_server_defs": {Kind: coverSection, Section: "mcp_server_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value (capture_findings)",
 		Cache:   "mcp.DynamicRegistry (filled from the active defs at boot)"},
-	"memory": {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onBoth},
+	"memory":                    {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onBoth},
+	"memory_backend_def_active": {Kind: coverSection, Section: "memory_backend_def_active", Secrets: "none", Backends: onBoth},
+	"memory_backend_defs": {Kind: coverSection, Section: "memory_backend_defs", Backends: onBoth,
+		Secrets: "by-reference: config.api_key_env, tenancy_strategy.env_pattern (env var names)"},
 	"memory_embeddings": {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onPostgres,
 		Reason:      "travels as each memory entry's embedding",
 		Conditional: "created only when the pgvector extension is available"},
@@ -180,11 +191,7 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "live concurrency slots of the source cluster"},
 
 	// ---- pending: a later phase adds the section ----------------------------
-	"dirents":                    {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
-	"document_source_def_active": {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
-	"document_source_defs":       {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
-	"memory_backend_def_active":  {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
-	"memory_backend_defs":        {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
-	"memory_pending":             {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
-	"volume_defs":                {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
+	"dirents":        {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
+	"memory_pending": {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
+	"volume_defs":    {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
 }

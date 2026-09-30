@@ -196,6 +196,15 @@ func collectCaptureFindings(sec *Sections) []CaptureFindingEntry {
 	for _, e := range sec.MCPServerDefs.Entries {
 		out = append(out, scanHeaders(findingSubject{"mcp_server_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
 	}
+	// Memory-backend and document-source bodies hold no header map today;
+	// they are walked so one added later is scanned without anyone
+	// remembering to add it here.
+	for _, e := range sec.MemoryBackendDefs.Entries {
+		out = append(out, scanHeaders(findingSubject{"memory_backend_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+	}
+	for _, e := range sec.DocSourceDefs.Entries {
+		out = append(out, scanHeaders(findingSubject{"document_source_defs", e.TenantID, e.Name, e.DefID}, "", e.Definition)...)
+	}
 	for _, e := range sec.ChannelDefs.Entries {
 		out = append(out, scanHeaders(findingSubject{"channel_defs", e.TenantID, e.Name, ""}, "hooks", e.Hooks)...)
 	}

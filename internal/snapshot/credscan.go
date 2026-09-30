@@ -42,6 +42,9 @@ type credScanTarget struct {
 	where    string // "webhook_def acme/gh" — no version, so a lineage warns once
 	tenantID string // the row's owning tenant; the body's tenant_id wins
 	body     json.RawMessage
+	// refs, when set, are the references the section already derived from
+	// the body; the body is then not decoded as a trigger.
+	refs []credRef
 }
 
 func (c *credScan) add(where, tenantID string, body json.RawMessage) {
@@ -49,6 +52,15 @@ func (c *credScan) add(where, tenantID string, body json.RawMessage) {
 		return
 	}
 	c.targets = append(c.targets, credScanTarget{where: where, tenantID: tenantID, body: body})
+}
+
+// addRefs queues references a section derived itself: a body whose
+// credential fields are not a trigger's (a memory backend's api_key_env).
+func (c *credScan) addRefs(where, tenantID string, refs []credRef) {
+	if c == nil || len(refs) == 0 {
+		return
+	}
+	c.targets = append(c.targets, credScanTarget{where: where, tenantID: tenantID, refs: refs})
 }
 
 // credScanBody is the subset of a schedule, webhook or server-card body that
@@ -119,14 +131,18 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 	uncheckedEnv, uncheckedCred := 0, 0
 	for _, t := range c.targets {
 		var b credScanBody
-		if err := json.Unmarshal(t.body, &b); err != nil {
-			continue // the section validator already accepted it; nothing to name
+		refs := t.refs
+		if refs == nil {
+			if err := json.Unmarshal(t.body, &b); err != nil {
+				continue // the section validator already accepted it; nothing to name
+			}
+			refs = refsOf(b)
 		}
 		tenant := b.TenantID
 		if tenant == "" {
 			tenant = t.tenantID
 		}
-		for _, r := range refsOf(b) {
+		for _, r := range refs {
 			key := t.where + "|" + r.field + "|" + r.env + r.cred
 			if seen[key] {
 				continue
