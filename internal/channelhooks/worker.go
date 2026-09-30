@@ -209,6 +209,82 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
+// RunUnhooked is Run for a replica with channel hooks off. Such a replica
+// writes a hooked channel's messages as if it declared no hooks, but the
+// messages written while hooks were on — before a restart that turned them
+// off, or by a replica that still has them on — wait at the hook instant, and
+// nothing else ever moves them. RunUnhooked delivers each as a write with
+// hooks off would have been: into the channel's hold when it has one, else no
+// earlier than its deliver_at. No hook runs; what hooks already made of the
+// body is kept.
+//
+// It takes each message by the same claim Run does, so one that a live lease
+// holds (a replica with hooks on deciding it) is left to that lease's worker;
+// only a message nobody holds, or whose lease ran out, is delivered here — and
+// one a failing hook scheduled a retry for, once that retry is due. It polls
+// rather than wake on a hooked write: this replica writes none, and waking on
+// another replica's would race that replica's own worker for every message it
+// writes. It runs until ctx ends.
+func (w *Worker) RunUnhooked(ctx context.Context) {
+	for ctx.Err() == nil {
+		if w.deliverUnhooked(ctx) == unhookedBatch {
+			continue // a backlog: take the next batch now
+		}
+		timer := time.NewTimer(w.cfg.Poll)
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		timer.Stop()
+	}
+}
+
+// unhookedBatch bounds one pass of RunUnhooked, so a backlog is delivered in
+// steps that each finish well inside their claim's lease.
+const unhookedBatch = 100
+
+// deliverUnhooked claims one batch of messages awaiting hooks and delivers
+// each unhooked. It returns how many it claimed.
+func (w *Worker) deliverUnhooked(ctx context.Context) int {
+	now := w.now()
+	items, err := w.cfg.Store.ChannelHookClaim(ctx, w.cfg.Owner, now, now.Add(w.cfg.Lease), unhookedBatch)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("channelhooks: hooks off: claim: %v", err)
+		}
+		return 0
+	}
+	if len(items) > 0 {
+		log.Printf("channelhooks: hooks are off: delivering %d message(s) left awaiting hooks, unhooked", len(items))
+	}
+	for _, it := range items {
+		m := it.Message
+		j := &job{
+			w:        w,
+			msg:      m,
+			key:      store.ChannelMessageKey{TenantID: m.TenantID, Channel: m.Channel, Scope: m.Scope, ScopeID: m.ScopeID, ID: m.ID},
+			lease:    it.Lease,
+			progress: it.Progress,
+		}
+		// A channel declared nowhere has no hold, and a write to it is
+		// delivered at once; so is this message.
+		def, _, err := w.cfg.Defs(ctx, m.HookTenant, m.Channel)
+		if err != nil {
+			// Whether the channel holds is unknown, and a hold must not be
+			// delivered past: the message waits out this claim's lease and is
+			// tried again.
+			log.Printf("channelhooks: hooks off: %s message %s: the channel's definition could not be read: %v", m.Channel, m.ID, err)
+			continue
+		}
+		// An ask its hooks left pending has nobody waiting for its answer.
+		j.cancelStaleAsks(ctx)
+		j.record(providers.HookDecisionInfo{Hook: hooks.ChannelOwner(m.Channel), Decision: hooks.ChannelRelease,
+			Reason: "channel hooks are off"})
+		j.release(ctx, &def, j.body(), j.progress.Body != nil)
+	}
+	return len(items)
+}
+
 func (w *Worker) unregister(wake chan struct{}) {
 	if wake != nil && w.cfg.Bus != nil {
 		w.cfg.Bus.Unregister(channels.HookWakeKey, wake)

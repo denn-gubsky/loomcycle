@@ -139,3 +139,34 @@ func TestChannelHooks_HooksAreSkippedWhenDisabled(t *testing.T) {
 		t.Fatalf("%d message(s) wait for hooks that will never run", len(items))
 	}
 }
+
+// A message written while channel hooks were on is delivered once the server
+// runs with them off, as main.go wires a replica with hooks off: without
+// that, nothing would ever move it off the hook instant.
+func TestChannelHooks_OffDeliversMessagesLeftAwaitingHooks(t *testing.T) {
+	srv, st := channelHooksFixture(t, true)
+	rec := postJSON(t, srv, "/v1/_channels/screened/publish", `{"payload":{"text":"waited"}}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"awaiting_hooks":true`) {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	// Restarted with hooks off: the writer skips them, and the worker runs
+	// unhooked.
+	srv.cfg().Env.ChannelHooksEnabled = false
+	srv.SetSystemPublisher(&channels.StorePublisher{Store: st, Bus: srv.channelBus, Defs: srv.ChannelWriteDef})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { srv.NewChannelHookWorker("w2", nil, nil).RunUnhooked(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	var msgs []store.ChannelMessage
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if msgs, _ = st.ChannelPeek(context.Background(), "", "screened", store.MemoryScopeGlobal, "", "", 10); len(msgs) > 0 {
+			break
+		}
+	}
+	if len(msgs) != 1 || string(msgs[0].Payload) != `{"text":"waited"}` {
+		t.Fatalf("delivered %+v, want the message as written", msgs)
+	}
+	if items, _ := st.ChannelHookClaim(context.Background(), "w", time.Now(), time.Now().Add(time.Minute), 10); len(items) != 0 {
+		t.Fatalf("%d message(s) still wait for hooks that will never run", len(items))
+	}
+}
