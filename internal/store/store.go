@@ -2557,6 +2557,17 @@ type Store interface {
 	// session scan. Without it such a queue is never drained.
 	MemoryPendingTargets(ctx context.Context, tenantID string, scope MemoryScope, limit int) ([]string, error)
 
+	// MemoryPendingTargetsAllTenants is MemoryPendingTargets across EVERY
+	// tenant, the operator layer included: each (tenant, scope_id) under scope
+	// with at least one undrained row, the target waiting longest first (then
+	// tenant, then scope_id), at most limit of them (limit <= 0 is a small
+	// default).
+	//
+	// Only the operator-layer consolidation fan-out calls it — a schedule the
+	// operator authored, which dispatches each target's pass in that target's
+	// own tenant. A tenant-owned caller must use MemoryPendingTargets.
+	MemoryPendingTargetsAllTenants(ctx context.Context, scope MemoryScope, limit int) ([]MemoryPendingTarget, error)
+
 	// MemoryScopeUsage sums a scope's live key count and byte footprint
 	// (len(key)+len(value)) server-side, EXCLUDING keys under excludeKeyPrefix.
 	//
@@ -4285,6 +4296,14 @@ type MemoryPendingRow struct {
 	SourceRunID     string
 	CreatedAt       time.Time
 	DrainedAt       time.Time // zero = not yet drained
+}
+
+// MemoryPendingTarget is one (tenant, scope_id) with queued undrained work, as
+// MemoryPendingTargetsAllTenants reports it. The tenant travels with the scope
+// id because the same scope id in two tenants is two different targets.
+type MemoryPendingTarget struct {
+	TenantID string
+	ScopeID  string
 }
 
 // Pending-queue origins. The taxonomy matches `memory.origin`; these are the two
