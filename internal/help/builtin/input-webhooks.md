@@ -214,7 +214,8 @@ stripped keys, and it answers every delivery with `404` whatever its
 `enabled` flag says. Re-enable it with a `fork` whose own overlay supplies
 every listed key (in `user_credentials` or `user_credentials_from_env`) and
 sets `enabled: true`; a fork that supplies only some keeps the marker for
-the rest. An overlay can neither set nor clear the marker.
+the rest. A `create` on the same name writes a new version and follows the
+same rules. An overlay can neither set nor clear the marker.
 
 ## `tenant_id` — which tenant the spawned run executes as
 
