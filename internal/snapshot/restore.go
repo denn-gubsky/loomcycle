@@ -61,6 +61,10 @@ type RestoreOptions struct {
 // DefsDisabledForCredentials counts the trigger defs restored disabled
 // because their literal credentials were stripped from the snapshot; the
 // warnings name each one and its keys.
+//
+// ActivePointersRefused counts the active pointers not written because the
+// def they name is missing here or is not that tenant's def of that name —
+// what a promote refuses; the warnings name each pointer.
 type RestoreResult struct {
 	UsersRestored              int      `json:"users_restored"`
 	TokenLimitsRestored        int      `json:"token_limits_restored"`
@@ -83,6 +87,7 @@ type RestoreResult struct {
 	ScheduleDefActiveRestored  int      `json:"schedule_def_active_restored"`
 	ScheduleRunStateRestored   int      `json:"schedule_run_state_restored"`
 	DefsDisabledForCredentials int      `json:"defs_disabled_for_credentials"`
+	ActivePointersRefused      int      `json:"active_pointers_refused"`
 	EvaluationsRestored        int      `json:"evaluations_restored"`
 	PausedRunsRestored         int      `json:"paused_runs_restored"`
 	SynthesizedSessions        int      `json:"synthesized_sessions"`
@@ -275,6 +280,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
+			if !admitActivePointer(ctx, s, agentDefOwner, "agent_def_active", e.TenantID, e.Name, e.DefID, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreAgentDefActive(ctx, store.AgentDefActiveEntry{
 				Name:              e.Name,
 				TenantID:          e.TenantID,
@@ -331,6 +339,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
+			if !admitActivePointer(ctx, s, skillDefOwner, "skill_def_active", e.TenantID, e.Name, e.DefID, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreSkillDefActive(ctx, store.SkillDefActiveEntry{
 				Name:              e.Name,
 				TenantID:          e.TenantID,
@@ -388,6 +399,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
+			if !admitActivePointer(ctx, s, teamDefOwner, "team_def_active", e.TenantID, e.Name, e.DefID, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreTeamDefActive(ctx, store.TeamDefActiveEntry{
 				Name:              e.Name,
 				TenantID:          e.TenantID,
@@ -444,6 +458,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
+			if !admitActivePointer(ctx, s, hookDefOwner, "hook_def_active", e.TenantID, e.Name, e.DefID, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreHookDefActive(ctx, store.HookDefActiveEntry{
 				Name:              e.Name,
 				TenantID:          e.TenantID,
@@ -500,6 +517,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		for _, e := range sec.Entries {
+			if !admitActivePointer(ctx, s, mcpServerDefOwner, "mcp_server_def_active", e.TenantID, e.Name, e.DefID, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreMCPServerDefActive(ctx, store.MCPServerDefActiveEntry{
 				Name:              e.Name,
 				TenantID:          e.TenantID,
