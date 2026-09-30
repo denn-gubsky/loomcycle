@@ -151,8 +151,9 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 	span.SetAttributes(attribute.String("webhook.name", name), attribute.String("webhook.tenant", tenant))
 
-	// 1. Resolve the active Def. Unknown name → 404.
-	wd, ok := lookup.Webhook(ctx, rec.store, rec.cfg, tenant, name)
+	// 1. Resolve the active Def. Unknown name → 404. owner, not the URL
+	//    tenant, names the def for the per-webhook state below (webhookKey).
+	wd, owner, ok := lookup.ResolveWebhook(ctx, rec.store, rec.cfg, tenant, name)
 	if !ok {
 		rec.finish(span, name, "", "rejected_unknown", "")
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
@@ -226,18 +227,20 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//    verified — and misled legitimate senders into rotating their secret
 	//    on a dedup. Changed to an idempotent ack.)
 	//    did is the sender's id and goes back in every response; dkey scopes
-	//    it to this webhook and is what BOTH dedup layers key on.
+	//    it to the resolved webhook def and is what BOTH dedup layers key on.
 	did := deliveryID(wd.Auth, body, r.Header.Get)
-	dkey := dedupKey(tenant, name, did)
+	whKey := webhookKey(owner, name)
+	dkey := dedupKey(whKey, did)
 	if rec.dedup.seen(dkey) {
 		rec.finish(span, name, did, verdictAcceptedReplay, "")
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
 		resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
 		// Best-effort: surface the original run for the spawn path, which set
-		// idempotency_key = dkey (RFC H Decision 10). Channel-delivery
-		// has no run row, so run_id is simply omitted.
+		// idempotency_key = dkey (RFC H Decision 10) — or, for a delivery an
+		// earlier release accepted, the bare did. Channel-delivery has no run
+		// row, so run_id is simply omitted.
 		if rec.store != nil {
-			if existing, ok, lerr := rec.store.RunByIdempotencyKey(ctx, dkey); lerr == nil && ok {
+			if existing, ok := rec.priorDeliveryRun(ctx, dkey, did, wd); ok {
 				resp["run_id"] = existing.ID
 			}
 		}
@@ -260,7 +263,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Rate limit (per-Def token bucket). Exceeded → 429 + Retry-After.
-	if okRate, retry := rec.limiter.allow(name, wd.RateLimit); !okRate {
+	if okRate, retry := rec.limiter.allow(whKey, wd.RateLimit); !okRate {
 		rec.finish(span, name, did, "rejected_rate", "")
 		writeRetryAfter(w, retry)
 		return
@@ -349,7 +352,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// deployments; treat a lookup error as "not found" (fail open to the
 	// spawn path — the unique index is the real backstop).
 	if rec.store != nil && did != "" {
-		if existing, ok, lerr := rec.store.RunByIdempotencyKey(ctx, dkey); lerr == nil && ok {
+		if existing, ok := rec.priorDeliveryRun(ctx, dkey, did, wd); ok {
 			rec.dedup.record(dkey)
 			rec.finish(span, name, did, verdictAccepted, existing.ID)
 			writeJSON(w, http.StatusAccepted, map[string]string{
@@ -374,6 +377,28 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 		return
 	}
 	rec.spawnSync(ctx, w, span, name, did, dkey, wd, in, userID)
+}
+
+// priorDeliveryRun is the Layer-2 lookup: the run already started for this
+// delivery, if any. A lookup error reads as "none" (the unique index is the
+// real backstop).
+//
+// Transitional — remove in the release after this one. Runs accepted by
+// earlier releases carry the BARE delivery id as their idempotency_key, so a
+// sender retry that straddles the upgrade misses the scoped key and would
+// start a duplicate run. On a miss it falls back to the bare id, but accepts
+// that row only when it ran as this def's tenant and agent: a bare id is
+// global, and matching it unconditionally would bring back the dedup against
+// another webhook's (or tenant's) delivery that scoping the key removed.
+func (rec *Receiver) priorDeliveryRun(ctx context.Context, dkey, did string, wd config.Webhook) (store.Run, bool) {
+	if existing, ok, err := rec.store.RunByIdempotencyKey(ctx, dkey); err == nil && ok {
+		return existing, true
+	}
+	existing, ok, err := rec.store.RunByIdempotencyKey(ctx, did)
+	if err != nil || !ok || existing.TenantID != wd.TenantID || existing.Agent != wd.Agent {
+		return store.Run{}, false
+	}
+	return existing, true
 }
 
 // spawnAsync fires the run on a detached background ctx (so a client

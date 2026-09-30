@@ -137,14 +137,18 @@ A shared front-half runs for every request, then forks on `delivery`:
 4. **Replay/dedup** (Layer 1, in-memory, per `delivery_id`) + **idempotency**
    (Layer 2, durable `runs.idempotency_key`) so a re-delivered event lands
    on the same run instead of spawning twice. Both are scoped to the webhook
-   as its URL addresses it (tenant + name): the same `delivery_id`, or a
-   byte-identical body, sent to a different webhook or to a same-named
-   webhook in another tenant is a separate delivery with its own run.
+   def the URL resolves to (its owning tenant, or the static yaml config,
+   plus its name): the same `delivery_id`, or a byte-identical body, sent to
+   a different webhook or to a same-named webhook in another tenant is a
+   separate delivery with its own run. A tenant-prefixed URL that falls
+   through to a static or shared webhook is the same webhook as the bare
+   URL, so a re-send through any prefix is deduped.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure.
 6. **Rate limit** (per-Def token bucket) → `429` + `Retry-After` when
-   exceeded.
+   exceeded. Each def has its own bucket (same-named webhooks in two tenants
+   never share one), and a `rate_limit` edit applies to the next delivery.
 7. **Deliver**: spawn → build a RunInput (the mapped `goal` enters as an
    **untrusted-block**, fenced in `<untrusted>` tags — a webhook payload is
    external, attacker-influenceable input) and run it; channel → publish +

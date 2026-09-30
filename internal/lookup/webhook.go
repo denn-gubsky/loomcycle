@@ -49,20 +49,39 @@ type WebhookStore interface {
 // Returns (zero, false) when no source has the name. Malformed
 // persistence JSON also returns (zero, false).
 func Webhook(ctx context.Context, s WebhookStore, cfg *config.Config, tenantID, name string) (config.Webhook, bool) {
+	w, _, ok := ResolveWebhook(ctx, s, cfg, tenantID, name)
+	return w, ok
+}
+
+// WebhookOwner names the source a webhook resolved from: the static yaml
+// cfg.Webhooks, or the substrate tenant whose webhook_def_active row it is.
+// The URL tenant does not identify the def — an unknown tenant prefix falls
+// through to the static or shared def — so per-webhook state (delivery
+// dedup, rate-limit buckets) keys on this instead. TenantID is the tenant
+// the def is STORED under, not the def's tenant_id (the tenant its runs
+// execute as), which an admin may set to another tenant.
+type WebhookOwner struct {
+	Static   bool
+	TenantID string // substrate tier's tenant ("" = shared); empty when Static
+}
+
+// ResolveWebhook is Webhook plus the owner of the def it returned.
+func ResolveWebhook(ctx context.Context, s WebhookStore, cfg *config.Config, tenantID, name string) (config.Webhook, WebhookOwner, bool) {
 	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
 	if tenantID != "" {
 		if w, ok := resolveWebhookSubstrate(ctx, s, tenantID, name); ok {
-			return w, true
+			return w, WebhookOwner{TenantID: tenantID}, true
 		}
 	}
 	// 2. Static cfg.Webhooks — the shared operator base.
 	if cfg != nil {
 		if w, ok := cfg.Webhooks[name]; ok {
-			return w, true
+			return w, WebhookOwner{Static: true}, true
 		}
 	}
 	// 3. Shared substrate (tenant_id="").
-	return resolveWebhookSubstrate(ctx, s, "", name)
+	w, ok := resolveWebhookSubstrate(ctx, s, "", name)
+	return w, WebhookOwner{}, ok
 }
 
 // resolveWebhookSubstrate reads the webhook_def_active overlay for one

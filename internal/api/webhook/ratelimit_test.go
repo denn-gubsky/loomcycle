@@ -61,3 +61,24 @@ func TestRateLimit_PerWebhookIsolation(t *testing.T) {
 		t.Fatal("hook-b limited by hook-a's bucket")
 	}
 }
+
+func TestRateLimit_ChangedLimits_RebuildBucket(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	rl := newRateLimiter(fixedClock(now))
+	tight := config.WebhookRateLimit{RequestsPerMinute: 1, Burst: 1}
+
+	rl.allow("hook", tight)
+	if ok, _ := rl.allow("hook", tight); ok {
+		t.Fatal("hook should be exhausted at burst 1")
+	}
+	if ok, _ := rl.allow("hook", config.WebhookRateLimit{RequestsPerMinute: 1, Burst: 3}); !ok {
+		t.Fatal("a raised burst still used the exhausted bucket")
+	}
+	// Unchanged limits keep the bucket (and its spent tokens).
+	loose := config.WebhookRateLimit{RequestsPerMinute: 1, Burst: 3}
+	rl.allow("hook", loose)
+	rl.allow("hook", loose)
+	if ok, _ := rl.allow("hook", loose); ok {
+		t.Fatal("unchanged limits rebuilt the bucket — every call would refill it")
+	}
+}

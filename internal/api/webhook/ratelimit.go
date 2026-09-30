@@ -22,6 +22,9 @@ type tokenBucket struct {
 	tokens       float64
 	refillPerSec float64
 	last         time.Time
+	// limits is the def config the bucket was built from, as configured
+	// (before defaulting). A def edit changes it, which rebuilds the bucket.
+	limits config.WebhookRateLimit
 }
 
 func newTokenBucket(requestsPerMinute, burst int, now time.Time) *tokenBucket {
@@ -69,8 +72,13 @@ func (b *tokenBucket) allow(now time.Time) (bool, time.Duration) {
 	return false, retry
 }
 
-// rateLimiter holds one token bucket per webhook name. Buckets are created
-// lazily on first request for a name, using that Def's rate_limit config.
+// rateLimiter holds one token bucket per webhook def, keyed by webhookKey
+// (the def's owner + name). Buckets are created lazily on first request,
+// using that Def's rate_limit config, and rebuilt when the config changes.
+//
+// Keying on the name alone made two tenants' same-named webhooks share one
+// bucket (one tenant's traffic throttled the other's), sized by whichever
+// def reached it first — and a rate_limit edit took effect only on restart.
 type rateLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*tokenBucket
@@ -87,16 +95,19 @@ func newRateLimiter(now func() time.Time) *rateLimiter {
 	}
 }
 
-// allow checks the named webhook's bucket, creating it from rl config on
-// first use. Returns (true, 0) when permitted; (false, retryAfter) when the
-// per-Def rate is exceeded (server maps to 429 + Retry-After).
-func (r *rateLimiter) allow(name string, rl config.WebhookRateLimit) (bool, time.Duration) {
+// allow checks the webhook's bucket (key is webhookKey's value), creating it
+// from rl on first use and rebuilding it — full, at the new rate — when rl
+// differs from the limits it was built with. Returns (true, 0) when
+// permitted; (false, retryAfter) when the per-Def rate is exceeded (server
+// maps to 429 + Retry-After).
+func (r *rateLimiter) allow(key string, rl config.WebhookRateLimit) (bool, time.Duration) {
 	now := r.now()
 	r.mu.Lock()
-	b, ok := r.buckets[name]
-	if !ok {
+	b, ok := r.buckets[key]
+	if !ok || b.limits != rl {
 		b = newTokenBucket(rl.RequestsPerMinute, rl.Burst, now)
-		r.buckets[name] = b
+		b.limits = rl
+		r.buckets[key] = b
 	}
 	r.mu.Unlock()
 	return b.allow(now)
