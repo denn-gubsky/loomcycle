@@ -482,7 +482,10 @@ hooks:
 # env-var NAME (LOOMCYCLE_*-prefixed or a known third-party key — never one of
 # loomcycle's own infra secrets), resolved at use time. The peer host is dialed
 # through an SSRF guard; a private-network peer (sibling replica / tailnet) is
-# reached because the operator declared its base_url. See docs/MEMORY-BACKENDS.md.
+# reached because the operator declared its base_url. A kind: remote backend
+# authored at RUNTIME (MemoryBackendDef) gets no such trust: it reaches a private
+# host only when that hostname is in LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and
+# may not name a private/metadata IP literal at all. See docs/MEMORY-BACKENDS.md.
 memory_backends: {}
   # peer:
   #   kind: remote
@@ -553,7 +556,10 @@ change_subscriptions: {}
 # a chunk WITHOUT a natural_key is excluded and counted. CE-1 is content-only +
 # PULL-direction (push + full-tree reconciliation are follow-ons). Auth + SSRF
 # mirror memory_backends: api_key_env is a credential-allowlisted env-var NAME
-# resolved at use time, and the peer host is dialed through the SSRF guard.
+# resolved at use time, and the peer host is dialed through the SSRF guard (a
+# source declared here keeps its own host; one authored at runtime as a
+# DocumentSourceDef reaches a private host only via
+# LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST).
 document_sources: {}
   # peerA:
   #   config:

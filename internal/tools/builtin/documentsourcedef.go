@@ -48,7 +48,10 @@ type DocumentSourceDef struct {
 const documentSourceDefDescription = `Author, fork, retire, and inspect named document source definitions at runtime. ` +
 	`Static document_sources.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
-	`Operations: create, fork, get, list, retire.`
+	`Operations: create, fork, get, list, retire. ` +
+	`A source authored here may not name a private, loopback, link-local or metadata IP as config.base_url, ` +
+	`and reaches a host on a private network only when the operator lists that hostname in ` +
+	`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST (a yaml-declared source keeps its own host).`
 
 const documentSourceDefInputSchema = `{
   "type": "object",
@@ -516,6 +519,9 @@ func validateDocumentSourceDef(def mergedDocumentSourceDef) error {
 	if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
 		return err
 	}
+	if err := requirePublicIPLiteral("config.base_url", def.Config.BaseURL); err != nil {
+		return err
+	}
 	// api_key_env is resolved and SENT to the def-supplied base_url, so an
 	// unvalidated name is a one-request exfiltration vector: paired with a
 	// base_url the author controls, `api_key_env: LOOMCYCLE_AUTH_TOKEN` would
@@ -534,6 +540,11 @@ func validateDocumentSourceDef(def mergedDocumentSourceDef) error {
 	case "key_per_tenant":
 		if def.TenancyStrategy.EnvPattern != "" && !strings.Contains(def.TenancyStrategy.EnvPattern, "{tenant_id}") {
 			return fmt.Errorf("tenancy_strategy.env_pattern %q must contain {tenant_id}", def.TenancyStrategy.EnvPattern)
+		}
+		if def.TenancyStrategy.EnvPattern != "" {
+			if err := requireCredentialSafeEnvPattern("tenancy_strategy.env_pattern", def.TenancyStrategy.EnvPattern); err != nil {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("tenancy_strategy.kind %q must be \"\" or key_per_tenant", def.TenancyStrategy.Kind)

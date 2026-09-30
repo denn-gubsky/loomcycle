@@ -37,6 +37,10 @@ edges_only_remote, excluded_unkeyed_local, excluded_unkeyed_remote}`.
 - `diff_remote: unknown document source ...` — ask the operator.
 - `diff_remote: fetch remote document: ...` / `remote document not found at ...`
   — the peer is unreachable or has no document at `remote_ref`.
+- `diff_remote: fetch remote document: ... blocked: <host> has no public
+  addresses` — the source was authored at runtime and its peer is on a private
+  network the operator has not allowed. Ask the operator to add that hostname
+  to `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
 
 ## Examples
 

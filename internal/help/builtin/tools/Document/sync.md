@@ -45,6 +45,10 @@ sending side's chunks that could not be carried.
 - `sync: fetch remote document: ...` / `sync: remote document not found at ...`
   — the peer is unreachable, refused the call, or has no document at that
   path. Check `remote_ref`; a retry helps only for a network failure.
+- `sync: fetch remote document: ... blocked: <host> has no public addresses` —
+  the source was authored at runtime and its peer is on a private network the
+  operator has not allowed; nothing was sent. A retry will not help: ask the
+  operator to add that hostname to `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
 - `sync: direction must be "pull" (default) or "push" ...` — `up` and `down`
   belong to `reorder_chunk`.
 - The sync is not all-or-nothing: if it fails part-way, what was already

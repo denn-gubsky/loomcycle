@@ -137,6 +137,23 @@ gRPC, MCP meta-tool, TS `memoryBackendDef()`). The `/ui/memory` Web UI tab
 shows per-key embedding metadata (model + dimension) when the store supports
 vectors.
 
+A `kind: remote` backend dials its `config.base_url` with the operator
+credential named by `api_key_env`, so a backend authored with this tool gets
+less network trust than one declared in yaml:
+
+- its `base_url` may not be a literal private, loopback, link-local or
+  metadata IP (`127.0.0.1`, `10.0.0.5`, `169.254.169.254`, `::1`, …);
+- it reaches a host that resolves to a private address only when the operator
+  lists that hostname in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` — otherwise
+  the call fails with `blocked: <host> has no public addresses`. A fork of a
+  yaml backend is authored here too, so it follows the same rule;
+- a `key_per_tenant` `env_pattern` must produce a `LOOMCYCLE_*` name that is
+  not one of loomcycle's own secrets.
+
+A backend declared in yaml (`memory_backends:`) keeps its own host, so a
+sibling replica on a private network needs no allowlist entry. Redirects to
+any other private address are refused either way.
+
 ## The eval harness — tuning is measured, not guessed
 
 A ranker/dedup change is only an improvement if the numbers say so. The

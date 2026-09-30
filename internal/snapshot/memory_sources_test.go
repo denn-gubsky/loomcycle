@@ -109,13 +109,13 @@ func TestMemorySourceDefs_RoundTripKeepsEveryColumnAndGoesLive(t *testing.T) {
 
 	// Live without a restart: the lookups read the store per call.
 	ctx := context.Background()
-	if mb, ok := lookup.MemoryBackend(ctx, dst, nil, "", "mb"); !ok || mb.Config.BaseURL != "https://peer.example" || mb.Config.APIKeyEnv != "LOOMCYCLE_DP4_PEER_KEY" {
+	if mb, _, ok := lookup.MemoryBackend(ctx, dst, nil, "", "mb"); !ok || mb.Config.BaseURL != "https://peer.example" || mb.Config.APIKeyEnv != "LOOMCYCLE_DP4_PEER_KEY" {
 		t.Errorf("operator-layer backend resolves (ok=%v) to %+v", ok, mb)
 	}
-	if mb, ok := lookup.MemoryBackend(ctx, dst, nil, "acme", "mb"); !ok || mb.Kind != "inprocess" {
+	if mb, _, ok := lookup.MemoryBackend(ctx, dst, nil, "acme", "mb"); !ok || mb.Kind != "inprocess" {
 		t.Errorf("acme's backend resolves (ok=%v) to %+v, want its own inprocess fork", ok, mb)
 	}
-	if ds, ok := lookup.DocumentSource(ctx, dst, nil, "beta", "ds"); !ok || ds.Config.BaseURL != "https://docs.example" {
+	if ds, _, ok := lookup.DocumentSource(ctx, dst, nil, "beta", "ds"); !ok || ds.Config.BaseURL != "https://docs.example" {
 		t.Errorf("beta's source resolves (ok=%v) to %+v", ok, ds)
 	}
 
@@ -215,7 +215,7 @@ func TestMemorySourceDefs_RefusedBodyIsSkippedWithItsPointer(t *testing.T) {
 	if _, err := dst.MemoryBackendDefGetActive(ctx, "acme", "mb-exfil"); err == nil {
 		t.Error("a pointer at the refused exfiltration def was written")
 	}
-	if _, ok := lookup.MemoryBackend(ctx, dst, nil, "acme", "mb-exfil"); ok {
+	if _, _, ok := lookup.MemoryBackend(ctx, dst, nil, "acme", "mb-exfil"); ok {
 		t.Error("acme's runs would route memory through the refused def")
 	}
 	if res.ActivePointersRefused != 3 {
@@ -355,7 +355,7 @@ func TestMemorySourceDefs_LiveRowStands(t *testing.T) {
 	if !hasWarning(res, "memory_backend_def mb v1 (def mbd_src)", "live definition stands") {
 		t.Errorf("no per-row warning for the collision: %v", res.Warnings)
 	}
-	if mb, _ := lookup.MemoryBackend(context.Background(), dst, nil, "", "mb"); mb.Config.BaseURL != "https://live.example" {
+	if mb, _, _ := lookup.MemoryBackend(context.Background(), dst, nil, "", "mb"); mb.Config.BaseURL != "https://live.example" {
 		t.Errorf("the live def was replaced: %+v", mb)
 	}
 }

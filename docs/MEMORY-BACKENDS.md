@@ -86,7 +86,14 @@ persisted shape can never hold a state a backend would act on unsafely:
   would resolve to an empty key prefix and collapse every tenant into one
   keyspace — a cross-tenant read+write leak.
 - `tenancy_strategy.kind: key_per_tenant` requires any `env_pattern` it sets
-  to contain `{tenant_id}`.
+  to contain `{tenant_id}`. A definition authored at runtime also has its
+  `env_pattern` checked like `api_key_env`: it must produce a
+  `LOOMCYCLE_*` name, and must not produce one of loomcycle's own infra
+  secrets for the shared (empty) tenant — `LOOMCYCLE_AUTH_TOKEN{tenant_id}`
+  is refused. Every resolved name is re-checked at use time too.
+- A definition authored at runtime may not name a literal private, loopback,
+  link-local or metadata IP (`127.0.0.1`, `10.x`, `169.254.169.254`, `::1`,
+  `fd00::/8`, `0.0.0.0`, …) as `config.base_url`.
 
 `api_key_env` is an env-var **name**, never a plaintext key.
 
@@ -110,9 +117,18 @@ memory_backends:
 ```
 
 - **`config.base_url`** (required) — the peer's origin. Dialed through an SSRF
-  guard; a private-network peer (a sibling replica, a tailnet host) is reached
-  because the operator declared it, while a redirect to any *other* private
-  address is still refused.
+  guard. Who may reach a private network depends on who wrote the definition:
+  - **declared in yaml** (`memory_backends:`) — a private-network peer (a
+    sibling replica, a tailnet host) is reached because the operator declared
+    it.
+  - **authored at runtime** (`MemoryBackendDef` create/fork, by a tenant
+    operator or an agent granted the tool) — the peer's own host is *not*
+    trusted. It reaches a private address only when the operator lists that
+    hostname in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise the call is
+    refused (`blocked: <host> has no public addresses`). This includes a fork
+    of a yaml-declared backend, which is a runtime definition too.
+
+  Either way a redirect to any *other* private address is refused.
 - **`config.api_key_env`** — the env-var **name** of the bearer minted on the
   *peer* (a `substrate:tenant` or non-isolated member token). Credential-
   allowlisted (`LOOMCYCLE_*`-prefixed or a known third-party key) and resolved

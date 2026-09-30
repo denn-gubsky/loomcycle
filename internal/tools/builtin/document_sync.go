@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"sort"
 	"time"
 
@@ -37,18 +36,11 @@ const remoteDocumentTimeout = 30 * time.Second
 
 // newRemoteDocumentClient builds a peer-document client from a source def,
 // reusing the RFC CD Part B remote plumbing: an SSRF-guarded client whose
-// private-host allowlist is the peer's own host, and the credential-env
-// allowlist gate (resolveCredentialEnv, defined in memory.go).
-func newRemoteDocumentClient(ds config.DocumentSource) (*docremote.Client, error) {
-	host := ""
-	if u, err := url.Parse(ds.Config.BaseURL); err == nil {
-		host = u.Hostname()
-	}
-	var allow []string
-	if host != "" {
-		allow = []string{host}
-	}
-	client := netguard.NewGuardedClient(remoteDocumentTimeout, allow)
+// private-host allowlist depends on who authored the def
+// (remotePeerPrivateHosts), and the credential-env allowlist gate
+// (resolveCredentialEnv) — both defined in memory.go.
+func newRemoteDocumentClient(cfg *config.Config, ds config.DocumentSource, origin lookup.Origin) (*docremote.Client, error) {
+	client := netguard.NewGuardedClient(remoteDocumentTimeout, remotePeerPrivateHosts(cfg, ds.Config.BaseURL, origin))
 	return docremote.New(docremote.Options{
 		BaseURL:          ds.Config.BaseURL,
 		APIVersion:       ds.Config.APIVersion,
@@ -69,7 +61,7 @@ func (d *Document) setRemote(ctx context.Context, key sqlmem.ScopeKey, mscope st
 	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
 	// DocumentSourceDef substrate (dynamic, runtime-authored).
 	tenantID := tools.RunIdentity(ctx).TenantID
-	if _, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, in.Source); !ok {
+	if _, _, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, in.Source); !ok {
 		return errNotFound(fmt.Sprintf("set_remote: unknown document source %q (declare it under document_sources: or author a DocumentSourceDef)", in.Source), ""), nil
 	}
 	if in.RemoteRef == "" {
@@ -170,11 +162,11 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
 	// DocumentSourceDef substrate (dynamic, runtime-authored).
 	tenantID := tools.RunIdentity(ctx).TenantID
-	ds, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, source)
+	ds, origin, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, source)
 	if !ok {
 		return fail(errBusiness, fmt.Sprintf("unknown document source %q (was it removed from document_sources: / retired?)", source), "Rebind the document to a declared source with op=set_remote, or ask an operator to restore the source.")
 	}
-	client, err := newRemoteDocumentClient(ds)
+	client, err := newRemoteDocumentClient(d.Cfg, ds, origin)
 	if err != nil {
 		return fail(errBusiness, err.Error(), "The document source is misconfigured; ask an operator to fix it.")
 	}
