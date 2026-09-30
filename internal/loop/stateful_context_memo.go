@@ -72,16 +72,21 @@ type contextMemo struct {
 	// and it created a second document. The kept Context results pushed the
 	// work out; this keeps the latest piece of work beside them.
 	workTool, workCall, workText string
+	// workFailed marks a kept action that returned an error. It is shown as
+	// failed, not as done: the usual sequence is fail → read help → retry, and
+	// at the retry step the failed call would otherwise read "do not repeat it".
+	workFailed bool
 }
 
-// addWork keeps the latest result of an action that was not a Context call.
-func (m *contextMemo) addWork(tool string, input json.RawMessage, text string) {
-	m.workTool, m.workCall, m.workText = tool, compactCall(input), text
+// addWork keeps the latest result of an action that was not a Context call;
+// failed is whether that result is an error.
+func (m *contextMemo) addWork(tool string, input json.RawMessage, text string, failed bool) {
+	m.workTool, m.workCall, m.workText, m.workFailed = tool, compactCall(input), text, failed
 }
 
 // clearWork forgets the kept action result, for a new operator turn.
 func (m *contextMemo) clearWork() {
-	m.workTool, m.workCall, m.workText = "", "", ""
+	m.workTool, m.workCall, m.workText, m.workFailed = "", "", "", false
 }
 
 func compactCall(input json.RawMessage) string {
@@ -168,7 +173,11 @@ func (m *contextMemo) render(tool, obs string) string {
 		out = fmt.Sprintf("What you already read with %s in this run (kept for you; do not call it again for these):\n\n%s", tool, b.String())
 	}
 	if m.workText != "" && m.workText != obs {
-		out += fmt.Sprintf("Your last action (it is done; do not repeat it), %s %s, returned:\n%s\n\n", m.workTool, m.workCall, m.workText)
+		status := "it is done; do not repeat it"
+		if m.workFailed {
+			status = "it FAILED and is not done; fix what its error names before retrying"
+		}
+		out += fmt.Sprintf("Your last action (%s), %s %s, returned:\n%s\n\n", status, m.workTool, m.workCall, m.workText)
 	}
 	return out
 }

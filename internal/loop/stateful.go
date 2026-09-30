@@ -1214,7 +1214,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 					memo.add(tu.Input, obs)
 				}
 			default:
-				memo.addWork(tu.Name, tu.Input, obs)
+				memo.addWork(tu.Name, tu.Input, obs, blocks[0].IsError)
 			}
 			if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
 				msg := "run stopped: " + why + " after being told it cannot succeed as sent"
