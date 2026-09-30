@@ -57,12 +57,12 @@ func TestReceiver_RateLimitedDeliveryNotRecordedAsReplay(t *testing.T) {
 	// The rate-limited delivery B must NOT be in the dedup cache: a 429 is a
 	// "try again", not a "seen this one". If it were recorded, B's retry
 	// would be wrongly dropped as a replay.
-	if rec.dedup.seen("gh", "B") {
+	if rec.dedup.seen(dedupKey("", "gh", "B")) {
 		t.Error("rate-limited delivery B was recorded in the dedup cache; its retry would be dropped as a replay")
 	}
 	// Sanity: the ACCEPTED delivery A is recorded, so genuine duplicates are
 	// still caught (the dedup layer isn't simply disabled).
-	if !rec.dedup.seen("gh", "A") {
+	if !rec.dedup.seen(dedupKey("", "gh", "A")) {
 		t.Error("accepted delivery A was not recorded; genuine replays would not be caught")
 	}
 }

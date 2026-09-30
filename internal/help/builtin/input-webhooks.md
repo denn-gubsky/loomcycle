@@ -136,7 +136,10 @@ A shared front-half runs for every request, then forks on `delivery`:
    Plus a **bearer** fallback (`kind: bearer`) for systems that can't sign.
 4. **Replay/dedup** (Layer 1, in-memory, per `delivery_id`) + **idempotency**
    (Layer 2, durable `runs.idempotency_key`) so a re-delivered event lands
-   on the same run instead of spawning twice.
+   on the same run instead of spawning twice. Both are scoped to the webhook
+   as its URL addresses it (tenant + name): the same `delivery_id`, or a
+   byte-identical body, sent to a different webhook or to a same-named
+   webhook in another tenant is a separate delivery with its own run.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure.

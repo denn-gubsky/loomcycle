@@ -637,7 +637,7 @@ func TestReceiver_Layer2Dedup_ExistingRunReturnedWithoutSpawn(t *testing.T) {
 		PayloadMapping: map[string]string{"goal": "$.goal"},
 	}
 	fr := &fakeRunner{runID: "run-fresh", agentID: "agent-fresh"}
-	st := &fakeWebhookStore{existing: map[string]store.Run{did: {ID: "run-existing", AgentID: "agent-existing"}}}
+	st := &fakeWebhookStore{existing: map[string]store.Run{dedupKey("", "gh", did): {ID: "run-existing", AgentID: "agent-existing"}}}
 	rec := newTestReceiverWithStore(t, map[string]config.Webhook{"gh": wh}, fr, st, map[string]string{"WH_SECRET": secret}, []string{"WH_SECRET"}, now)
 
 	h := http.Header{}
@@ -692,7 +692,7 @@ func TestReceiver_Layer2Dedup_ConcurrentRaceResolvesToWinner(t *testing.T) {
 	// resolves it. (The BEFORE-check and the re-lookup both call the same
 	// fake; pre-seeding means the BEFORE-check would also hit — so instead
 	// we leave existing empty and flip it via a tiny indirection.)
-	st := &raceStore{winner: store.Run{ID: "run-winner", AgentID: "agent-winner"}, key: did}
+	st := &raceStore{winner: store.Run{ID: "run-winner", AgentID: "agent-winner"}, key: dedupKey("", "gh", did)}
 	rec := New(Deps{
 		Cfg:          &config.Config{Webhooks: map[string]config.Webhook{"gh": wh}},
 		Store:        st,

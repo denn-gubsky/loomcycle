@@ -181,7 +181,7 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		// OperatorKeyRestricted (no principal at delivery time).
 		Isolated: w.Isolated,
 		// IdempotencyKey is set by the caller (deliverSpawn) to the
-		// delivery id, keeping this builder's signature focused on the
-		// Def + projected payload. See RFC H Decision 10 "Layer 2".
+		// webhook-scoped delivery key (dedupKey), keeping this builder's
+		// signature focused on the Def + projected payload. See RFC H Decision 10 "Layer 2".
 	}
 }
