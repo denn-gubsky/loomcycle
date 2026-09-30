@@ -507,6 +507,10 @@ func Run(t *testing.T, factory Factory) {
 		// Snapshot restore of a budget row: insert-or-ignore, so a live budget
 		// on the same key stands.
 		{"SnapshotRestoreTokenLimitKeepsLiveRow", testSnapshotRestoreTokenLimitKeepsLiveRow},
+		// Snapshot restore of a dynamic volume row: every tenant's rows read
+		// back in order, timestamps kept, and a live volume on the same key
+		// stands (VolumeDefCreate is an upsert and would overwrite it).
+		{"SnapshotRestoreVolumeDefKeepsLiveRow", testSnapshotRestoreVolumeDefKeepsLiveRow},
 		// The month-to-date usage a snapshot restore carries in: max-not-add,
 		// per month, per subject, and deletable for erasure.
 		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
@@ -1228,6 +1232,63 @@ func testTokenLimits(t *testing.T, s store.Store) {
 	}
 	if len(m) != 2 {
 		t.Fatalf("after delete got %d rows, want 2", len(m))
+	}
+}
+
+// testSnapshotRestoreVolumeDefKeepsLiveRow: restored volume rows land under
+// their own tenant with both timestamps, SnapshotReadVolumeDefs returns every
+// tenant's in (tenant_id, name) order, and a restore onto a (tenant, name)
+// the target already holds leaves the live row's path and mode alone.
+func testSnapshotRestoreVolumeDefKeepsLiveRow(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	created := time.Date(2026, 9, 1, 2, 3, 4, 0, time.UTC)
+	updated := created.Add(time.Hour)
+	body := func(path, mode string) json.RawMessage {
+		return json.RawMessage(`{"path":"` + path + `","mode":"` + mode + `"}`)
+	}
+	for _, r := range []store.VolumeDefRow{
+		{TenantID: "beta", Name: "data", Definition: body("/root/beta/data", "ro"), CreatedAt: created, UpdatedAt: updated},
+		{TenantID: "", Name: "shared", Definition: body("/root/_shared/shared", "rw"), CreatedAt: created, UpdatedAt: updated},
+		{TenantID: "acme", Name: "data", Definition: body("/root/acme/data", "rw"), CreatedAt: created, UpdatedAt: updated},
+	} {
+		inserted, err := s.SnapshotRestoreVolumeDef(ctx, r)
+		if err != nil || !inserted {
+			t.Fatalf("restore %s/%s: inserted=%v err=%v, want inserted", r.TenantID, r.Name, inserted, err)
+		}
+	}
+	if _, err := s.VolumeDefCreate(ctx, store.VolumeDefRow{TenantID: "live", Name: "data", Definition: body("/root/live/data", "rw")}); err != nil {
+		t.Fatalf("VolumeDefCreate: %v", err)
+	}
+	inserted, err := s.SnapshotRestoreVolumeDef(ctx, store.VolumeDefRow{TenantID: "live", Name: "data",
+		Definition: body("/elsewhere", "ro"), CreatedAt: created, UpdatedAt: updated})
+	if err != nil || inserted {
+		t.Fatalf("restore onto a live volume: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+
+	rows, err := s.SnapshotReadVolumeDefs(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadVolumeDefs: %v", err)
+	}
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.TenantID+"/"+r.Name)
+	}
+	if got, want := strings.Join(order, ","), "/shared,acme/data,beta/data,live/data"; got != want {
+		t.Fatalf("read order = %s, want %s", got, want)
+	}
+	var b struct{ Path, Mode string }
+	if err := json.Unmarshal(rows[2].Definition, &b); err != nil || b.Path != "/root/beta/data" || b.Mode != "ro" {
+		t.Errorf("beta's body = %+v (err %v), want its own path and ro", b, err)
+	}
+	if !rows[2].CreatedAt.Equal(created) || !rows[2].UpdatedAt.Equal(updated) {
+		t.Errorf("beta's timestamps = %v/%v, want %v/%v", rows[2].CreatedAt, rows[2].UpdatedAt, created, updated)
+	}
+	live, err := s.VolumeDefGetByName(ctx, "live", "data")
+	if err != nil {
+		t.Fatalf("VolumeDefGetByName: %v", err)
+	}
+	if err := json.Unmarshal(live.Definition, &b); err != nil || b.Path != "/root/live/data" || b.Mode != "rw" {
+		t.Errorf("live volume = %+v (err %v), want its own path and rw: the live row stands", b, err)
 	}
 }
 

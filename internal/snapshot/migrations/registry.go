@@ -43,6 +43,7 @@ const (
 	SectionHookDefActive          = "hook_def_active"
 	SectionMCPServerDefs          = "mcp_server_defs"
 	SectionMCPServerDefActive     = "mcp_server_def_active"
+	SectionVolumeDefs             = "volume_defs"
 	SectionMemory                 = "memory"
 	SectionChannels               = "channels"
 	SectionChannelDefs            = "channel_defs"
@@ -126,6 +127,7 @@ var registry = map[string]map[string]Migrator{
 	SectionHookDefActive:          {"1.0": identityMigrator},
 	SectionMCPServerDefs:          {"1.0": identityMigrator},
 	SectionMCPServerDefActive:     {"1.0": identityMigrator},
+	SectionVolumeDefs:             {"1.0": identityMigrator},
 	SectionMemory:                 {"1.0": identityMigrator},
 	SectionChannels:               {"1.0": identityMigrator},
 	SectionChannelDefs:            {"1.0": identityMigrator},

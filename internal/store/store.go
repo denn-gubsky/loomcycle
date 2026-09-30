@@ -2035,6 +2035,11 @@ type Store interface {
 	SnapshotReadMemoryBackendDefActive(ctx context.Context) ([]MemoryBackendDefActiveEntry, error)
 	SnapshotReadDocumentSourceDefActive(ctx context.Context) ([]DocumentSourceDefActiveEntry, error)
 
+	// SnapshotReadVolumeDefs returns every persistent dynamic volume row,
+	// every tenant's, ordered by (tenant_id, name). The capture reads only
+	// the mode from each definition; the stored path never travels.
+	SnapshotReadVolumeDefs(ctx context.Context) ([]VolumeDefRow, error)
+
 	// SnapshotReadMemory returns every memory row across all scopes and
 	// tenants, tagged with tenant_id + scope + scope_id. Ordered by
 	// (scope ASC, scope_id ASC, key ASC). Filters out expired rows
@@ -2191,6 +2196,13 @@ type Store interface {
 	SnapshotRestoreDocumentSourceDef(ctx context.Context, r DocumentSourceDefRow) (bool, error)
 	SnapshotRestoreMemoryBackendDefActive(ctx context.Context, entry MemoryBackendDefActiveEntry) (bool, error)
 	SnapshotRestoreDocumentSourceDefActive(ctx context.Context, entry DocumentSourceDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreVolumeDef inserts one volume_defs row keeping its
+	// created_at and updated_at. A volume already on (tenant_id, name) is
+	// left alone — VolumeDefCreate is an upsert and would overwrite its path
+	// and mode — so `inserted` is true only on the first write. The caller
+	// derives Definition's path on this host; the store never checks it.
+	SnapshotRestoreVolumeDef(ctx context.Context, row VolumeDefRow) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
 	// TenantID + CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent

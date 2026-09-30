@@ -270,6 +270,7 @@ const (
 	markUser        = "dp0mark-user-subject"
 	markLimitUser   = "dp0mark-limit-subject"
 	markCarryTenant = "dp0mark-carry-tenant"
+	markVolumePath  = "/dp0mark-volume-host-path"
 	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
@@ -337,6 +338,12 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	})
 	must("document_source_defs", err)
 
+	// A dynamic volume whose stored path is a marker. Its name and mode
+	// travel; the host path never does — the target derives its own.
+	_, err = s.VolumeDefCreate(ctx, store.VolumeDefRow{TenantID: "acme", Name: "dp0mark-volume",
+		Definition: json.RawMessage(`{"path":"` + markVolumePath + `","mode":"ro"}`)})
+	must("volume_defs", err)
+
 	// A billing-ledger row. Only a month-to-date aggregate may ever travel,
 	// so none of the row's own fields may — but its tenant does, as the key
 	// of that aggregate. The check for it is in the test, since the ledger
@@ -363,6 +370,7 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 			absent: []string{markEnvResolved}},
 		{table: "document_source_defs", present: []string{"dp0mark-document-source", `"api_key_env":"` + plantedEnvName + `"`},
 			absent: []string{markEnvResolved}},
+		{table: "volume_defs", present: []string{"dp0mark-volume", `"mode":"ro"`}, absent: []string{markVolumePath, `"path"`}},
 		{table: "token_usage", absent: []string{markProvider, markModel, markUsageRun}},
 		{table: "users", present: []string{markUser}},
 		{table: "token_limits", present: []string{markLimitUser}},

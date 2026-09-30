@@ -202,6 +202,33 @@ credential name, never one of loomcycle's own secrets such as
 neither is a pointer at it. An old `kind: mem9` backend is refused the
 same way, since authoring refuses it.
 
+### Dynamic volumes
+
+The `volume_defs` section carries each persistent dynamic volume's
+tenant, name and mode. It never carries the volume's host path: the path
+a volume resolves to is what the file and exec tools are confined to, so
+restore **derives it on the target**, under the target's own
+`dynamic_root`, exactly as `VolumeDef create` would, and creates the
+directory there (`0700`). A path added to a snapshot by hand is ignored.
+
+- **Contents are not carried.** A restored volume is an empty directory;
+  each one produces a warning saying so. If a directory already sits at
+  the derived location, it is bound as found and the warning says that
+  instead. Copy the files across yourself.
+- **Skipped, with a warning:** the target has no `dynamic_root` (the whole
+  section, once); the name is a static `volumes:` entry on the target,
+  which would take precedence anyway; the name, mode or tenant fails the
+  checks `create` applies; or the directory cannot be created (including
+  when a symlink sits where it would go). A volume is only recorded once
+  its directory exists.
+- **The live volume stands.** A volume the target already has keeps its
+  mode and its directory; if the snapshot's differs, a warning says how.
+- Restored volumes count in `volume_defs`; the directories the restore
+  created count in `volume_dirs_created`.
+- Warnings name a volume's location relative to the dynamic root
+  (`<dynamic root>/acme/data`), never the host path.
+- Ephemeral (run-scoped) volumes are not carried.
+
 ### Restore warnings and missing credentials
 
 A restore warning that quotes a URL has the URL's user/password, query

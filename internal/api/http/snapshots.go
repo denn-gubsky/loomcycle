@@ -349,6 +349,9 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 //     it did not check.
 //   - EnvSet: whether an env var a restored definition names is set here.
 //     Only a yes or no leaves the process environment.
+//   - VolumeRoot / StaticVolumeNames: this host's dynamic volume root, under
+//     which every restored dynamic volume's path is derived, and its static
+//     volumes, whose names a restored one may not take.
 func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOptions {
 	opts := snapshot.RestoreOptions{
 		IncludeHistory: includeHistory,
@@ -360,9 +363,23 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 			// is sent to the URL, so both go through the authoring checks.
 			migrations.SectionMemoryBackendDefs: builtin.ValidateMemoryBackendDefBody,
 			migrations.SectionDocSourceDefs:     builtin.ValidateDocumentSourceDefBody,
+			// A dynamic volume is re-checked as create checks it; its path
+			// is derived under VolumeRoot below, never read from the file.
+			migrations.SectionVolumeDefs: builtin.ValidateVolumeDefBody,
 		},
 		CredentialExists: s.credKeyable,
 		EnvSet:           func(name string) bool { return os.Getenv(name) != "" },
+	}
+	// The dynamic root and static volume names the VolumeDef tool resolves
+	// against: a restored volume lands where a create here would put it, and
+	// never under a name a static volume already holds.
+	if cfg := s.cfg(); cfg != nil {
+		if root, ok := builtin.DynamicVolumeRoot(cfg); ok {
+			opts.VolumeRoot = root
+		}
+		for name := range cfg.Volumes {
+			opts.StaticVolumeNames = append(opts.StaticVolumeNames, name)
+		}
 	}
 	if s.resolver != nil {
 		opts.ForceProbe = s.resolver.ForceProbe

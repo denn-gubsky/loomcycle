@@ -141,6 +141,11 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "travels as the aggregate month-to-date total, not as rows",
 		Cache:  "limits.Tracker (month-to-date counters seeded at boot)"},
 	"users": {Kind: coverSection, Section: "users", Secrets: "none", Backends: onBoth},
+	// A volume's stored path is a filesystem grant lookup trusts, so it never
+	// travels: the target derives it under its own dynamic root. lookup reads
+	// the row per resolution, so nothing is cached.
+	"volume_defs": {Kind: coverSection, Section: "volume_defs", Secrets: "none", Backends: onBoth,
+		Reason: "name and mode only; the host path is re-derived on the target and the empty directory created there"},
 	// The receiver re-reads the active def per delivery; nothing is cached.
 	"webhook_def_active": {Kind: coverSection, Section: "webhook_def_active", Secrets: "none", Backends: onBoth},
 	"webhook_defs": {Kind: coverSection, Section: "webhook_defs", Backends: onBoth,
@@ -193,5 +198,4 @@ var tableCoverageMap = map[string]tableCoverage{
 	// ---- pending: a later phase adds the section ----------------------------
 	"dirents":        {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
 	"memory_pending": {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
-	"volume_defs":    {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
 }

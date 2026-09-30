@@ -44,7 +44,7 @@ type RestoreOptions struct {
 	// body, keyed by section name (migrations.Section*). The snapshot package
 	// cannot import the tools that own those rules, so the call sites inject
 	// them. A section added by RFC DP P3 or later (webhook, A2A,
-	// memory-backend and document-source defs) is never restored
+	// memory-backend, document-source and volume defs) is never restored
 	// unvalidated: a row whose validator is missing, or fails, is skipped
 	// with a warning. Sections that predate it are not consulted yet.
 	Validators map[string]func(body json.RawMessage) error
@@ -58,6 +58,16 @@ type RestoreOptions struct {
 	// with one warning.
 	CredentialExists func(ctx context.Context, tenantID, agentName, userID, name string) bool
 	EnvSet           func(name string) bool
+
+	// VolumeRoot is this host's dynamic volume root (the static volume
+	// marked dynamic_root: true). Every restored dynamic volume's path is
+	// derived under it and its directory created there; a snapshot never
+	// supplies one. "" skips the volume_defs section with a warning.
+	VolumeRoot string
+	// StaticVolumeNames are this host's static yaml volumes. A restored
+	// dynamic volume of the same name is skipped with a warning: static is
+	// ground truth and would shadow it at resolution.
+	StaticVolumeNames []string
 }
 
 // RestoreResult is the operator-facing summary of a Restore() call.
@@ -84,6 +94,10 @@ type RestoreOptions struct {
 // ActivePointersRefused counts the active pointers not written because the
 // def they name is missing here or is not that tenant's def of that name —
 // what a promote refuses; the warnings name each pointer.
+//
+// VolumeDirsCreated counts the dynamic volume directories this restore
+// created under the host's dynamic root; a restored volume whose directory
+// was already there is in VolumeDefsRestored but not here.
 type RestoreResult struct {
 	UsersRestored                  int      `json:"users_restored"`
 	TokenLimitsRestored            int      `json:"token_limits_restored"`
@@ -98,6 +112,8 @@ type RestoreResult struct {
 	HookDefActiveRestored          int      `json:"hook_def_active_restored"`
 	MCPServerDefsRestored          int      `json:"mcp_server_defs_restored"`
 	MCPServerDefActiveRestored     int      `json:"mcp_server_def_active_restored"`
+	VolumeDefsRestored             int      `json:"volume_defs_restored"`
+	VolumeDirsCreated              int      `json:"volume_dirs_created"`
 	MemoryBackendDefsRestored      int      `json:"memory_backend_defs_restored"`
 	MemoryBackendDefActiveRestored int      `json:"memory_backend_def_active_restored"`
 	DocSourceDefsRestored          int      `json:"document_source_defs_restored"`
@@ -160,6 +176,7 @@ func (r RestoreResult) Counts() map[string]int {
 //
 //	users, token_limits (first: before any definition or resumed run)
 //	agent_defs        → agent_def_active (FK: name → agent_defs.def_id)
+//	volume_defs       (path derived under this host's dynamic root)
 //	memory_backend_defs, document_source_defs → their active pointers
 //	a2a_agent_defs, a2a_server_card_defs → their active pointers
 //	webhook_defs, schedule_defs → their active pointers (after channel_defs)
@@ -572,6 +589,17 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				result.MCPServerDefActiveRestored++
 			}
 		}
+	}
+
+	// volume_defs: after the definitions that bind a volume by name and
+	// before any resumed run resolves one. Paths are derived here, never read
+	// from the envelope.
+	if rawSection, ok := sections[migrations.SectionVolumeDefs]; ok {
+		var sec VolumeDefsSection
+		if err := decodeWithMigration(migrations.SectionVolumeDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreVolumeDefs(ctx, s, &sec, opts, &result)
 	}
 
 	// The definitions this restore brings back that name credentials; the

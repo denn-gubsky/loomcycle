@@ -82,6 +82,11 @@ type Sections struct {
 	HookDefActive      HookDefActiveSection      `json:"hook_def_active"`
 	MCPServerDefs      MCPServerDefsSection      `json:"mcp_server_defs"`
 	MCPServerDefActive MCPServerDefActiveSection `json:"mcp_server_def_active"`
+	// VolumeDefs carry each dynamic volume's name and mode, never its host
+	// path: lookup trusts a stored path at run time, so restore derives it
+	// under the target's own dynamic root and creates the empty directory.
+	// Before the defs and runs that bind a volume by name.
+	VolumeDefs VolumeDefsSection `json:"volume_defs"`
 	// Memory-backend and document-source defs name an endpoint the target
 	// dials and an env var whose value is sent there, so restore re-runs the
 	// authoring validators on every body. Both precede memory: a routing def
@@ -624,6 +629,25 @@ type A2AServerCardDefActiveEntry struct {
 	DefID             string    `json:"def_id"`
 	PromotedAt        time.Time `json:"promoted_at"`
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// VolumeDefsSection carries every tenant's persistent dynamic volumes.
+type VolumeDefsSection struct {
+	Version string           `json:"version"`
+	Entries []VolumeDefEntry `json:"entries"`
+}
+
+// VolumeDefEntry is a volume_defs row minus its definition's path. There is
+// deliberately no path field, and none may be added: the stored path is a
+// filesystem grant lookup hands to agents verbatim, so restore derives it on
+// the target from (tenant, name) alone. A hand-edited envelope that adds one
+// is decoded into this struct, which drops it.
+type VolumeDefEntry struct {
+	TenantID  string    `json:"tenant_id,omitempty"`
+	Name      string    `json:"name"`
+	Mode      string    `json:"mode"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // MemoryBackendDefsSection carries every tenant's memory-backend defs.
