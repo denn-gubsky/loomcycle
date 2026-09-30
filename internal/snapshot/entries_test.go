@@ -103,8 +103,8 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 var pinnedEntryKeys = map[string][]string{
 	"Sections": {"users", "token_limits", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active",
-		"memory", "channels", "channel_defs", "evaluations", "paused_runs", "interaction_history", "sqlmem",
-		"capture_findings"},
+		"memory", "channels", "channel_defs", "schedule_defs", "schedule_def_active", "evaluations", "paused_runs",
+		"interaction_history", "sqlmem", "capture_findings"},
 
 	"UsersSection":              {"version", "entries"},
 	"TokenLimitsSection":        {"version", "entries", "usage_mtd"},
@@ -155,6 +155,17 @@ var pinnedEntryKeys = map[string][]string{
 	"TeamDefPromoterEntry":    {"operator_key_restricted", "isolated"},
 	"HookDefActiveEntry":      {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 	"MCPServerDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+
+	"ScheduleDefsSection":      {"version", "entries"},
+	"ScheduleDefActiveSection": {"version", "entries"},
+	// definition has its literal user_credentials values stripped at capture;
+	// stripped_credentials lists KEYS only. It must never gain a field for a
+	// credential value, nor one that re-projects the body through a struct.
+	"ScheduleDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
+		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",
+		"stripped_credentials", "run_state"},
+	"ScheduleRunStateEntry":  {"next_run_at", "last_run_at", "last_run_id", "last_status", "last_error", "paused_until", "fire_count"},
+	"ScheduleDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 
 	"MemoryEntry": {"tenant_id", "scope", "scope_id", "key", "value", "expires_at", "created_at", "updated_at",
 		"observed_at", "valid_at", "invalid_at", "embedding"},

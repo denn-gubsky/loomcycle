@@ -22,7 +22,17 @@ import "reflect"
 // test using this helper would have failed immediately when the
 // field was added on one side only.
 func ScheduleDefJSONTagsForDrift() map[string]bool {
-	t := reflect.TypeOf(scheduleDef{})
+	return jsonTagsForDrift(reflect.TypeOf(scheduleDef{}))
+}
+
+// ScheduleCaptureDisabledJSONTagsForDrift is the same export for the nested
+// capture_disabled marker, whose keys the write side and the snapshot restore
+// both spell.
+func ScheduleCaptureDisabledJSONTagsForDrift() map[string]bool {
+	return jsonTagsForDrift(reflect.TypeOf(scheduleCaptureDisabled{}))
+}
+
+func jsonTagsForDrift(t reflect.Type) map[string]bool {
 	out := map[string]bool{}
 	for i := 0; i < t.NumField(); i++ {
 		tag := t.Field(i).Tag.Get("json")

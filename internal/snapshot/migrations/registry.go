@@ -46,6 +46,8 @@ const (
 	SectionMemory             = "memory"
 	SectionChannels           = "channels"
 	SectionChannelDefs        = "channel_defs"
+	SectionScheduleDefs       = "schedule_defs"
+	SectionScheduleDefActive  = "schedule_def_active"
 	SectionEvaluations        = "evaluations"
 	SectionPausedRuns         = "paused_runs"
 	SectionInteractionHistory = "interaction_history"
@@ -117,6 +119,8 @@ var registry = map[string]map[string]Migrator{
 	SectionMemory:             {"1.0": identityMigrator},
 	SectionChannels:           {"1.0": identityMigrator},
 	SectionChannelDefs:        {"1.0": identityMigrator},
+	SectionScheduleDefs:       {"1.0": identityMigrator},
+	SectionScheduleDefActive:  {"1.0": identityMigrator},
 	SectionEvaluations:        {"1.0": identityMigrator},
 	SectionPausedRuns:         {"1.0": identityMigrator},
 	SectionInteractionHistory: {"1.0": identityMigrator},

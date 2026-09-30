@@ -180,6 +180,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureChannels(ctx, s, opts.Channels, &envelope.Sections.Channels); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := captureSchedules(ctx, s, &envelope.Sections.ScheduleDefs, &envelope.Sections.ScheduleDefActive); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureEvaluations(ctx, s, &envelope.Sections.Evaluations); err != nil {
 		return nil, nil, nil, err
 	}

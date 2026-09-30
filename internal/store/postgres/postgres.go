@@ -8762,6 +8762,188 @@ func (s *Store) ScheduleRunStatePause(ctx context.Context, defID string, until t
 	return nil
 }
 
+// ScheduleRunStateSeedWithFireCount seeds a def's run state with a fire
+// count already spent. See the interface for why it exists.
+func (s *Store) ScheduleRunStateSeedWithFireCount(ctx context.Context, defID string, nextRunAt time.Time, fireCount int) error {
+	if fireCount < 0 {
+		return fmt.Errorf("schedule_run_state seed: negative fire_count %d", fireCount)
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO schedule_run_state (def_id, next_run_at, fire_count) VALUES ($1, $2, $3)
+		 ON CONFLICT (def_id) DO UPDATE SET
+		     next_run_at = EXCLUDED.next_run_at,
+		     fire_count  = GREATEST(schedule_run_state.fire_count, EXCLUDED.fire_count)`,
+		defID, nextRunAt, fireCount,
+	)
+	if err != nil {
+		return fmt.Errorf("schedule_run_state seed with fire count: %w", err)
+	}
+	return nil
+}
+
+// ---- snapshot: schedule_defs, schedule_def_active, schedule_run_state ----
+
+// SnapshotReadScheduleDefs returns every tenant's schedule defs in lineage
+// order (tenant_id, name, version).
+func (s *Store) SnapshotReadScheduleDefs(ctx context.Context) ([]store.ScheduleDefRow, error) {
+	rows, err := s.pool.Query(ctx, scheduleDefSelect+` ORDER BY tenant_id ASC, name ASC, version ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_defs: %w", err)
+	}
+	defer rows.Close()
+	return s.scanScheduleDefRows(rows)
+}
+
+// SnapshotReadScheduleDefActive returns every active pointer.
+func (s *Store) SnapshotReadScheduleDefActive(ctx context.Context) ([]store.ScheduleDefActiveEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id
+		 FROM schedule_def_active
+		 ORDER BY tenant_id ASC, name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_def_active: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleDefActiveEntry
+	for rows.Next() {
+		var (
+			e        store.ScheduleDefActiveEntry
+			promoter *string
+		)
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID); err != nil {
+			return nil, fmt.Errorf("scan schedule_def_active: %w", err)
+		}
+		if promoter != nil {
+			e.PromotedByAgentID = *promoter
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotReadScheduleRunState returns every run-state row.
+func (s *Store) SnapshotReadScheduleRunState(ctx context.Context) ([]store.ScheduleRunStateRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count
+		 FROM schedule_run_state
+		 ORDER BY def_id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read schedule_run_state: %w", err)
+	}
+	defer rows.Close()
+	var out []store.ScheduleRunStateRow
+	for rows.Next() {
+		var (
+			r           store.ScheduleRunStateRow
+			lastRunAt   *time.Time
+			lastRunID   *string
+			lastStatus  *string
+			lastError   *string
+			pausedUntil *time.Time
+		)
+		if err := rows.Scan(&r.DefID, &lastRunAt, &lastRunID, &lastStatus, &lastError, &r.NextRunAt, &pausedUntil, &r.FireCount); err != nil {
+			return nil, fmt.Errorf("scan schedule_run_state: %w", err)
+		}
+		if lastRunAt != nil {
+			r.LastRunAt = *lastRunAt
+		}
+		if lastRunID != nil {
+			r.LastRunID = *lastRunID
+		}
+		if lastStatus != nil {
+			r.LastStatus = *lastStatus
+		}
+		if lastError != nil {
+			r.LastError = *lastError
+		}
+		if pausedUntil != nil {
+			r.PausedUntil = *pausedUntil
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotRestoreScheduleDef inserts one def keeping every column. A row on
+// def_id is left alone; a different live row on (tenant_id, name, version),
+// such as the target's own yaml bootstrap, is a unique violation the restore
+// turns into a warning.
+func (s *Store) SnapshotRestoreScheduleDef(ctx context.Context, r store.ScheduleDefRow) (bool, error) {
+	if r.DefID == "" || r.Name == "" {
+		return false, fmt.Errorf("snapshot restore schedule_def: def_id and name required")
+	}
+	createdAt := r.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO schedule_defs(
+			def_id, name, version, parent_def_id, definition, description,
+			created_at, created_by_agent_id, created_by_run_id,
+			retired, bootstrapped_from_static, tenant_id
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+		 ON CONFLICT (def_id) DO NOTHING`,
+		r.DefID, r.Name, r.Version, nullIfEmpty(r.ParentDefID),
+		string(r.Definition), nullIfEmpty(r.Description),
+		createdAt, nullIfEmpty(r.CreatedByAgentID), nullIfEmpty(r.CreatedByRunID),
+		r.Retired, r.BootstrappedFromStatic, r.TenantID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_def: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreScheduleDefActive inserts one active pointer; a live pointer
+// on (tenant_id, name) stands.
+func (s *Store) SnapshotRestoreScheduleDefActive(ctx context.Context, e store.ScheduleDefActiveEntry) (bool, error) {
+	if e.Name == "" || e.DefID == "" {
+		return false, fmt.Errorf("snapshot restore schedule_def_active: name and def_id required")
+	}
+	promotedAt := e.PromotedAt
+	if promotedAt.IsZero() {
+		promotedAt = time.Now().UTC()
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO schedule_def_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (tenant_id, name) DO NOTHING`,
+		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_def_active: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotRestoreScheduleRunState inserts one run-state row, every column; a
+// live row on def_id stands.
+func (s *Store) SnapshotRestoreScheduleRunState(ctx context.Context, r store.ScheduleRunStateRow) (bool, error) {
+	if r.DefID == "" {
+		return false, fmt.Errorf("snapshot restore schedule_run_state: def_id required")
+	}
+	if r.FireCount < 0 {
+		return false, fmt.Errorf("snapshot restore schedule_run_state: negative fire_count %d", r.FireCount)
+	}
+	var lastRunAt, pausedUntil any
+	if !r.LastRunAt.IsZero() {
+		lastRunAt = r.LastRunAt
+	}
+	if !r.PausedUntil.IsZero() {
+		pausedUntil = r.PausedUntil
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO schedule_run_state(def_id, last_run_at, last_run_id, last_status, last_error, next_run_at, paused_until, fire_count)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 ON CONFLICT (def_id) DO NOTHING`,
+		r.DefID, lastRunAt, nullIfEmpty(r.LastRunID), nullIfEmpty(r.LastStatus), nullIfEmpty(r.LastError),
+		r.NextRunAt, pausedUntil, r.FireCount,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore schedule_run_state: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ---- Evaluation ----
 
 func (s *Store) EvaluationSubmit(ctx context.Context, row store.EvaluationRow) (store.EvaluationRow, error) {

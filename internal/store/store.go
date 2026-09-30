@@ -1998,6 +1998,19 @@ type Store interface {
 	// SnapshotReadMCPServerDefActive — v0.9.x mirror.
 	SnapshotReadMCPServerDefActive(ctx context.Context) ([]MCPServerDefActiveEntry, error)
 
+	// SnapshotReadScheduleDefs returns every schedule_defs row, every
+	// tenant's, ordered by (tenant_id, name, version) — lineage-safe for a
+	// restore that inserts in the same order.
+	SnapshotReadScheduleDefs(ctx context.Context) ([]ScheduleDefRow, error)
+
+	// SnapshotReadScheduleDefActive returns every schedule_def_active row,
+	// ordered by (tenant_id, name).
+	SnapshotReadScheduleDefActive(ctx context.Context) ([]ScheduleDefActiveEntry, error)
+
+	// SnapshotReadScheduleRunState returns every schedule_run_state row,
+	// ordered by def_id.
+	SnapshotReadScheduleRunState(ctx context.Context) ([]ScheduleRunStateRow, error)
+
 	// SnapshotReadMemory returns every memory row across all scopes and
 	// tenants, tagged with tenant_id + scope + scope_id. Ordered by
 	// (scope ASC, scope_id ASC, key ASC). Filters out expired rows
@@ -2101,6 +2114,23 @@ type Store interface {
 
 	// SnapshotRestoreMCPServerDefActive — v0.9.x mirror.
 	SnapshotRestoreMCPServerDefActive(ctx context.Context, entry MCPServerDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreScheduleDef inserts one schedule_defs row keeping every
+	// column. A row already on def_id is left alone (inserted=false); a
+	// different row already on (tenant_id, name, version) is an error, so
+	// the caller can say which live row stood.
+	SnapshotRestoreScheduleDef(ctx context.Context, r ScheduleDefRow) (bool, error)
+
+	// SnapshotRestoreScheduleDefActive inserts one schedule_def_active row.
+	// ON CONFLICT (tenant_id, name) DO NOTHING: the live pointer stands.
+	SnapshotRestoreScheduleDefActive(ctx context.Context, entry ScheduleDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreScheduleRunState inserts one schedule_run_state row
+	// writing EVERY column, fire_count included. ON CONFLICT (def_id) DO
+	// NOTHING, so a re-restore never resets the target's count.
+	// ScheduleRunStateSeed must not be used for this: its conflict branch
+	// resets next_run_at and its insert zeroes fire_count.
+	SnapshotRestoreScheduleRunState(ctx context.Context, r ScheduleRunStateRow) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
 	// TenantID + CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent
@@ -3150,6 +3180,14 @@ type Store interface {
 	// updates next_run_at only (preserves last_*). Used when a new
 	// def is promoted to active.
 	ScheduleRunStateSeed(ctx context.Context, defID string, nextRunAt time.Time) error
+
+	// ScheduleRunStateSeedWithFireCount is ScheduleRunStateSeed for a def
+	// that must start with a fire count already spent: a fork that re-enables
+	// a schedule restored disabled for its stripped credentials inherits its
+	// parent's count, so re-enabling never hands back a max_fires budget. On
+	// an existing row it sets next_run_at and raises fire_count to the larger
+	// of the two — it never lowers a count.
+	ScheduleRunStateSeedWithFireCount(ctx context.Context, defID string, nextRunAt time.Time, fireCount int) error
 
 	// ScheduleRunStateGet fetches one row. Returns ErrNotFound if no
 	// state has been seeded for the def_id.

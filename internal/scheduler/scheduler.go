@@ -360,7 +360,7 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		s.recordFireFailure(ctx, row.DefID, "", "decode_def", err, now)
 		return
 	}
-	if def.Enabled != nil && !*def.Enabled {
+	if (def.Enabled != nil && !*def.Enabled) || def.CaptureDisabled != nil {
 		// Skip-but-advance: the operator disabled this schedule via the
 		// substrate (or the yaml template set enabled:false). Bump
 		// next_run_at to keep listDue's bounded set from re-presenting

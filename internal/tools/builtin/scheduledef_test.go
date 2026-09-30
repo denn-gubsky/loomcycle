@@ -730,6 +730,34 @@ func TestMergedScheduleDef_DriftDetection_VsSchedulerScheduleDef(t *testing.T) {
 	}
 }
 
+// TestMergedScheduleDef_DriftDetection_CaptureDisabledMarker pins the marker
+// a snapshot restore writes on a def whose literal credentials were stripped.
+// The tag-set tests above catch it going missing from ONE mirror; this one
+// also catches it leaving all three at once, and pins the nested keys
+// pairwise — the restore writes them as raw JSON, the fork reads them here,
+// and the sweeper reads them there.
+func TestMergedScheduleDef_DriftDetection_CaptureDisabledMarker(t *testing.T) {
+	for name, tags := range map[string]map[string]bool{
+		"builtin.mergedScheduleDef":   scheduleJsonTagsOf(reflect.TypeOf(mergedScheduleDef{})),
+		"lookup.SubstrateScheduleDef": scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{})),
+		"scheduler.scheduleDef":       scheduler.ScheduleDefJSONTagsForDrift(),
+	} {
+		if !tags["capture_disabled"] {
+			t.Errorf("%s has no capture_disabled field; a def restored without its credentials would lose its marker there", name)
+		}
+	}
+	want := map[string]bool{"stripped_credentials": true}
+	for name, tags := range map[string]map[string]bool{
+		"builtin.mergedScheduleCaptureDisabled":   scheduleJsonTagsOf(reflect.TypeOf(mergedScheduleCaptureDisabled{})),
+		"lookup.SubstrateScheduleCaptureDisabled": scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleCaptureDisabled{})),
+		"scheduler.scheduleCaptureDisabled":       scheduler.ScheduleCaptureDisabledJSONTagsForDrift(),
+	} {
+		if !reflect.DeepEqual(tags, want) {
+			t.Errorf("%s keys = %v, want %v", name, tags, want)
+		}
+	}
+}
+
 // scheduleJsonTagsOf mirrors jsonTagsOfFields in agentdef_test.go;
 // duplicated here because that helper is package-private and reusing
 // it would require widening test-helper visibility.

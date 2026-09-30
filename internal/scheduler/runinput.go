@@ -49,6 +49,16 @@ type scheduleDef struct {
 	// Isolated is the RFC BX P2b confinement bit captured on the def at authoring;
 	// copied into RunInput so the fired run keeps the creator's confinement.
 	Isolated bool `json:"isolated,omitempty"`
+	// CaptureDisabled marks a def restored from a snapshot without its
+	// literal credentials. fireOne treats it as disabled even if `enabled`
+	// says otherwise: a schedule must not fire without the credentials it was
+	// authored with, whichever path wrote the body.
+	CaptureDisabled *scheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+}
+
+// scheduleCaptureDisabled mirrors mergedScheduleCaptureDisabled.
+type scheduleCaptureDisabled struct {
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
 }
 
 type schedulePromptSeg struct {

@@ -121,6 +121,32 @@ captured section. Restore synthesizes a session row deterministically
 `synthesized_sessions` counter on the response surfaces this so
 operators can audit cross-instance restore behaviour.
 
+### Schedules
+
+The `schedule_defs` section carries every schedule definition with its
+run state (`next_run_at`, last run, pause, `fire_count`), and
+`schedule_def_active` carries the active pointers. A restored schedule
+is **active**: a `next_run_at` in the past fires once on the first
+sweep after resume, and `fire_count` is restored as it was, so a
+`max_fires` schedule keeps only the fires it had left. A schedule, a
+pointer or a run state already on the target stands; a re-restore never
+resets a count.
+
+Literal `user_credentials` values are never written into a snapshot.
+Their keys are listed on the entry as `stripped_credentials`, and the
+schedule is restored **disabled** with a `capture_disabled` marker. A
+warning names it and its keys, and `defs_disabled_for_credentials`
+counts it. Re-enable it with a ScheduleDef `fork` that supplies every
+listed key and `enabled: true`; the fork keeps the fire count already
+spent. References (`$cred:<name>`, `${...}`, `user_credentials_from_env`
+names) travel as written.
+
+**A snapshot is a copy, not a lease.** Restoring into a second instance
+while the first keeps running fires every enabled schedule on both, and
+together they can exceed `max_fires`. Nothing in the runtime prevents
+it: disable the schedules on one side. Every restore that brings back
+an enabled schedule warns once with the count.
+
 Per-section semver gates compatibility. A snapshot at section
 version `1.0` restored on a reader at `1.0` is identity-decoded.
 A reader at a newer section version walks a registered migration

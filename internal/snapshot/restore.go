@@ -57,6 +57,10 @@ type RestoreOptions struct {
 //
 // UsageCarryRestored counts the (tenant, user) usage carries whose stored
 // value grew; a re-restore of the same snapshot grows none.
+//
+// DefsDisabledForCredentials counts the trigger defs restored disabled
+// because their literal credentials were stripped from the snapshot; the
+// warnings name each one and its keys.
 type RestoreResult struct {
 	UsersRestored              int      `json:"users_restored"`
 	TokenLimitsRestored        int      `json:"token_limits_restored"`
@@ -75,6 +79,10 @@ type RestoreResult struct {
 	ChannelDefsRestored        int      `json:"channel_defs_restored"`
 	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
 	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
+	ScheduleDefsRestored       int      `json:"schedule_defs_restored"`
+	ScheduleDefActiveRestored  int      `json:"schedule_def_active_restored"`
+	ScheduleRunStateRestored   int      `json:"schedule_run_state_restored"`
+	DefsDisabledForCredentials int      `json:"defs_disabled_for_credentials"`
 	EvaluationsRestored        int      `json:"evaluations_restored"`
 	PausedRunsRestored         int      `json:"paused_runs_restored"`
 	SynthesizedSessions        int      `json:"synthesized_sessions"`
@@ -702,6 +710,24 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				result.ChannelCursorsRestored++
 			}
 		}
+	}
+
+	// schedule_defs with their run state, then schedule_def_active: after the
+	// agent and channel defs a schedule names. A restored schedule is ACTIVE.
+	var restoredSchedules map[string]restoredSchedule
+	if rawSection, ok := sections[migrations.SectionScheduleDefs]; ok {
+		var sec ScheduleDefsSection
+		if err := decodeWithMigration(migrations.SectionScheduleDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoredSchedules = restoreScheduleDefs(ctx, s, &sec, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionScheduleDefActive]; ok {
+		var sec ScheduleDefActiveSection
+		if err := decodeWithMigration(migrations.SectionScheduleDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreScheduleDefActive(ctx, s, &sec, restoredSchedules, &result)
 	}
 
 	// evaluations (no FK enforced — runs.agent_def_id is

@@ -260,6 +260,7 @@ const (
 	markTokSubject  = "dp0mark-operator-token-subject"
 	markTokHash     = "dp0mark-operator-token-hash"
 	markSchedCred   = "dp0mark-schedule-literal-credential"
+	markSchedRef    = "$cred:dp0mark-schedule-reference"
 	markHookCred    = "dp0mark-webhook-literal-credential"
 	markEnvResolved = "dp0mark-resolved-env-value"
 	markProvider    = "dp0mark-usage-provider"
@@ -299,10 +300,12 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	must("operator_token_defs", err)
 
 	// Trigger definitions holding a LITERAL per-user credential, the form the
-	// tools accept with only a warning.
+	// tools accept with only a warning. The schedule also holds a REFERENCE,
+	// which is authored text and must travel exactly as written.
 	_, err = s.ScheduleDefCreate(ctx, store.ScheduleDefRow{
 		DefID: "sched_dp0mark", Name: "dp0mark-schedule", Version: 1, CreatedAt: now,
-		Definition: json.RawMessage(`{"agent":"a","cron":"@hourly","user_credentials":{"GITHUB_TOKEN":"` + markSchedCred + `"}}`),
+		Definition: json.RawMessage(`{"agent":"a","cron":"@hourly","user_credentials":{"GITHUB_TOKEN":"` + markSchedCred +
+			`","JOBS":"` + markSchedRef + `"}}`),
 	})
 	must("schedule_defs", err)
 	_, err = s.WebhookDefCreate(ctx, store.WebhookDefRow{
@@ -338,7 +341,8 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	return []plantedRow{
 		{table: "credential_defs", absent: []string{markCredName, markCredCipher}},
 		{table: "operator_token_defs", absent: []string{markTokName, markTokSubject, markTokHash, "otd_dp0mark"}},
-		{table: "schedule_defs", present: []string{"dp0mark-schedule"}, absent: []string{markSchedCred}},
+		{table: "schedule_defs", present: []string{"dp0mark-schedule", markSchedRef, `"stripped_credentials":["GITHUB_TOKEN"]`},
+			absent: []string{markSchedCred}},
 		{table: "webhook_defs", present: []string{"dp0mark-webhook"}, absent: []string{markHookCred}},
 		{table: "mcp_server_defs", present: []string{"dp0mark-mcp", ref}, absent: []string{markEnvResolved}},
 		{table: "token_usage", absent: []string{markProvider, markModel, markUsageRun}},
