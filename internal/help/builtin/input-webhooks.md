@@ -292,10 +292,14 @@ scheduler). A hook failure is logged and never affects the run.
 Two bearer-authed endpoints help debug a webhook that's silently failing
 (the receiver POST itself is unauthed — it uses the per-Def secret):
 
-- `GET /v1/_webhooks/{name}/recent-deliveries?limit=50` — the last N
-  invocations with `delivery_id`, `verdict`
+- `GET /v1/_webhooks/{name}/recent-deliveries?limit=50&tenant=acme` — the
+  last N invocations with `delivery_id`, `verdict`
   (`accepted`/`accepted_replay`/`rejected_sig`/`rejected_rate`/
-  `unresolvable_secret`/…), `received_at`, `run_id`.
+  `unresolvable_secret`/…), `received_at`, `run_id`. The list belongs to
+  the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves to, so two
+  tenants' same-named webhooks have separate lists. `tenant` defaults to
+  your own; only an admin can name another. A POST to a name that resolves
+  to no webhook is not listed.
 - `POST /v1/_webhooks/{name}/test` — dry-run: POST a sample body + signature
   and get back `{would_accept, verdict, run_input_preview}` (credential
   **key names** only, never values). No run is created.
