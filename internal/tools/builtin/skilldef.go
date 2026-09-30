@@ -507,6 +507,12 @@ func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillPolicyValu
 		}
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
+	// Another tenant's def reads as not found, and before the scope check,
+	// whose refusal quotes the def's name. The store's own tenant refusal
+	// below would quote the owning tenant.
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
+	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}

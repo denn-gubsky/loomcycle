@@ -153,3 +153,55 @@ func TestDefFork_OwnSharedAndAdminParentsStillFork(t *testing.T) {
 		})
 	}
 }
+
+// promote takes a def_id too. Its scope check quotes the def's name and the
+// store's tenant refusal quotes the owning tenant, so another tenant's def must
+// be refused as not found before either runs — under a narrow grant, which
+// fails the scope check, and under "any", which reaches the store.
+func TestDefPromote_AnotherTenantsDefIsRefusedAsNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		kind    string
+		fixture func(t *testing.T) (tools.Tool, context.Context, func())
+		create  string
+		narrow  func(context.Context) context.Context
+	}{
+		{"AgentDef", func(t *testing.T) (tools.Tool, context.Context, func()) { return agentDefFixture(t) },
+			`{"system_prompt":"p"}`,
+			func(ctx context.Context) context.Context {
+				return tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:acme-own"}})
+			}},
+		{"SkillDef", func(t *testing.T) (tools.Tool, context.Context, func()) { return skillDefFixture(t) },
+			`{"body":"b"}`,
+			func(ctx context.Context) context.Context {
+				return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"acme-own"}})
+			}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			tool, base, done := tc.fixture(t)
+			defer done()
+			secretID := createDefFor(t, tool, asTenant(base, "globex"), "globex-secret", tc.create)
+			ownID := createDefFor(t, tool, asTenant(base, "acme"), "acme-own", tc.create)
+
+			const missingID = "def_no_such_def"
+			for grant, acme := range map[string]context.Context{
+				"any":    asTenant(base, "acme"),
+				"narrow": tc.narrow(asTenant(base, "acme")),
+			} {
+				missing := execDef(t, tool, acme, `{"op":"promote","def_id":"`+missingID+`"}`)
+				if !missing.IsError || !strings.Contains(missing.Text, "not found") {
+					t.Fatalf("[%s] promote of a nonexistent def_id = %q, want not found", grant, missing.Text)
+				}
+				got := execDef(t, tool, acme, `{"op":"promote","def_id":"`+secretID+`"}`)
+				if masked, want := maskID(got, secretID), maskID(missing, missingID); !reflect.DeepEqual(masked, want) {
+					t.Errorf("[%s] promote of globex's def = %+v, want the missing-def refusal %+v", grant, masked, want)
+				}
+				if strings.Contains(got.Text, "globex") || strings.Contains(got.Text, "secret") {
+					t.Errorf("[%s] refusal %q reveals another tenant's def", grant, got.Text)
+				}
+				if res := execDef(t, tool, acme, `{"op":"promote","def_id":"`+ownID+`"}`); res.IsError {
+					t.Errorf("[%s] promote of acme's own def: %s", grant, res.Text)
+				}
+			}
+		})
+	}
+}
