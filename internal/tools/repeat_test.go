@@ -195,3 +195,28 @@ func TestExecute_IdenticalCallsInOneBatchAllRunAndTheNextBatchIsRefused(t *testi
 		t.Errorf("ran %d, next batch %+v; want 3 runs and the next batch refused", mem.ran, res)
 	}
 }
+
+// An operator turn starts the count over, and takes the streak's refusals with
+// it: the call it asks for runs, rather than being refused as "already failed".
+// A failure the call really returned is still counted.
+func TestExecute_AnOperatorTurnResetsTheStreakButNotRealFailures(t *testing.T) {
+	mem := &flakyStub{pointerStub: pointerStub{name: "Memory", schema: `{"type":"object"}`}}
+	d := NewDispatcher([]Tool{mem})
+	same := json.RawMessage(`{"op":"get","scope":"user","key":"status"}`)
+	for i := 0; i < 4; i++ { // two run, two refused
+		d.Execute(context.Background(), "Memory", same)
+	}
+	d.NoteOperatorTurn()
+	if res := d.Execute(context.Background(), "Memory", same); res.IsError || mem.ran != 3 {
+		t.Fatalf("after an operator turn: ran %d, %+v; want the call run", mem.ran, res)
+	}
+
+	mem.fail = true
+	d.Execute(context.Background(), "Memory", same)
+	d.Execute(context.Background(), "Memory", same)
+	d.NoteOperatorTurn()
+	before := mem.ran
+	if res := d.Execute(context.Background(), "Memory", same); !res.IsError || mem.ran != before {
+		t.Errorf("a call that really failed twice ran again after an operator turn: %+v", res)
+	}
+}

@@ -115,6 +115,28 @@ func (d *Dispatcher) recordResult(ctx context.Context, name string, input json.R
 	}
 }
 
+// NoteOperatorTurn starts the consecutive-call count over. An operator's
+// message is new input: after "check again" the same call is a fresh request,
+// not a loop, and refusing it would refuse the operator. The streak's own
+// refusals were counted as failures of its call, so they go with it, or the
+// failed-call guard would refuse that call instead. Failures the call really
+// returned stay counted: an operator turn does not make them succeed. Nil-safe.
+func (d *Dispatcher) NoteOperatorTurn() {
+	if d == nil {
+		return
+	}
+	d.repeats.mu.Lock()
+	defer d.repeats.mu.Unlock()
+	t := &d.repeats
+	if n := t.failures[t.last] - t.refusedInRow; n > 0 {
+		t.failures[t.last] = n
+	} else {
+		delete(t.failures, t.last)
+	}
+	t.last, t.lastResult, t.streak, t.refusedInRow = "", [sha256.Size]byte{}, 0, 0
+	t.batch, t.inBatch = 0, 0
+}
+
 type ctxKeyToolBatch struct{}
 
 // WithToolBatch marks ctx as carrying one batch of tool calls: the calls a

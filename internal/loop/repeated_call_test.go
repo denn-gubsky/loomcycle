@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -95,7 +97,8 @@ func TestRun_Stateful_ARunRepeatingASuccessfulCallIsStopped(t *testing.T) {
 }
 
 // turnScriptProvider sends one assistant turn per entry of turns — the tool
-// calls in it — and then ends the run with a text answer.
+// calls in it — and answers with text for an empty entry and once the script
+// runs out.
 type turnScriptProvider struct {
 	mu    sync.Mutex
 	turns [][]providers.ToolUse
@@ -114,7 +117,7 @@ func (p *turnScriptProvider) Call(context.Context, providers.Request) (<-chan pr
 	p.turn++
 	p.mu.Unlock()
 	ch := make(chan providers.Event, 16)
-	if i < len(p.turns) {
+	if i < len(p.turns) && len(p.turns[i]) > 0 {
 		for _, tu := range p.turns[i] {
 			tu := tu
 			ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &tu}
@@ -246,5 +249,64 @@ func TestRun_IdenticalCallsInOneTurnAllRun(t *testing.T) {
 	}
 	if mem.calls != 3 {
 		t.Errorf("the tool ran %d times; want 3 (the whole first turn, not the repeat after it)", mem.calls)
+	}
+}
+
+// An operator turn starts the count over. In an interactive run the model has
+// had the same result twice and its third call was refused; the operator then
+// asks it to check again, and that call runs.
+func TestRun_AnOperatorTurnResetsTheRepeatCount(t *testing.T) {
+	const in = `{"op":"get","scope":"user","key":"status"}`
+	calls := sameCallTurns(4, "Memory", in)
+	prov := &turnScriptProvider{turns: [][]providers.ToolUse{
+		calls[0], calls[1], calls[2], // the third is refused
+		nil,      // answer, and park for the operator
+		calls[3], // after "check again"
+	}}
+	mem := &lockedNoop{}
+	q := make(chan steer.Message, 4)
+	parked := make(chan struct{}, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Run(ctx, RunOptions{
+			Provider:   prov,
+			Model:      "x",
+			Tools:      []tools.Tool{mem},
+			Dispatcher: tools.NewDispatcher([]tools.Tool{mem}),
+			Segments:   steerSegs(),
+			SteerQueue: q, Interactive: true,
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventAwaitingInput {
+					parked <- struct{}{}
+				}
+			},
+		})
+	}()
+	waitPark := func(what string) {
+		t.Helper()
+		select {
+		case <-parked:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: timed out", what)
+		}
+	}
+	waitPark("first park")
+	mem.mu.Lock()
+	before := mem.calls
+	mem.mu.Unlock()
+	if before != 2 {
+		t.Fatalf("the tool ran %d times before the operator turn; want 2 (the third refused)", before)
+	}
+	q <- steer.Message{Text: "check again"}
+	waitPark("park after the operator turn")
+	cancel()
+	<-done
+	mem.mu.Lock()
+	defer mem.mu.Unlock()
+	if mem.calls != 3 {
+		t.Errorf("the tool ran %d times; want 3 (the call after the operator's turn runs)", mem.calls)
 	}
 }
