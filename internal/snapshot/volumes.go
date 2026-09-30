@@ -173,13 +173,28 @@ func liveVolumeDiffers(where string, live store.VolumeDefRow, derived, mode, roo
 	if liveMode != mode {
 		diffs = append(diffs, fmt.Sprintf("mode %s here, %s in the snapshot", liveMode, mode))
 	}
-	if filepath.Clean(b.Path) != filepath.Clean(derived) {
+	if !sameVolumePath(root, b.Path, derived) {
 		diffs = append(diffs, "its directory is not the one this host derives for it")
 	}
 	if len(diffs) == 0 {
 		return ""
 	}
 	return fmt.Sprintf("%s: not restored: a live volume of that name stands (%s)", where, strings.Join(diffs, "; "))
+}
+
+// sameVolumePath reports whether a live row's path and the path this host
+// derives name one volume. A row written while the root was configured by its
+// real path, and the path derived under a symlink to that root, are the same
+// volume; comparing the spellings alone called them different. Only the
+// root's own symlink is followed: a row naming a symlink below the root still
+// differs.
+func sameVolumePath(root, live, derived string) bool {
+	if filepath.Clean(live) == filepath.Clean(derived) {
+		return true
+	}
+	l, errL := dynvol.UnderResolvedRoot(root, live)
+	d, errD := dynvol.UnderResolvedRoot(root, derived)
+	return errL == nil && errD == nil && l == d
 }
 
 // withoutVolumeRoot names a path under the dynamic root relative to it, so a

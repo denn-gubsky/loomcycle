@@ -18,8 +18,7 @@ import (
 )
 
 // volumeRoot is a dynamic root with no symlink in it (macOS t.TempDir sits
-// under /var -> /private/var, and the provisioning fence compares against the
-// resolved root).
+// under /var -> /private/var). symlinkedVolumeRoot builds the symlinked case.
 func volumeRoot(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())

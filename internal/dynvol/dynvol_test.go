@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// resolvedTempDir is a dynamic root with no symlink in it: on macOS t.TempDir
-// sits under /var, a symlink to /private/var, and the fence compares against
-// the resolved root.
+// resolvedTempDir is a dynamic root with no symlink in it (on macOS t.TempDir
+// sits under /var, a symlink to /private/var). symlinkedRoot builds the
+// symlinked case explicitly, so it is covered on Linux too.
 func resolvedTempDir(t *testing.T) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -131,5 +131,96 @@ func TestProvisionEphemeral_DerivesUnderTheRunDir(t *testing.T) {
 	}
 	if _, err := ProvisionEphemeral(root, "run-1", "../x"); err == nil {
 		t.Error("ProvisionEphemeral accepted a traversal name")
+	}
+}
+
+// symlinkedRoot is a dynamic root configured THROUGH a symlink, as /tmp is on
+// macOS (-> /private/tmp) or a symlinked NAS mount point. It returns the link
+// (what the operator configures) and the real directory it points at.
+func symlinkedRoot(t *testing.T) (link, target string) {
+	t.Helper()
+	target = resolvedTempDir(t)
+	link = filepath.Join(resolvedTempDir(t), "root-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	return link, target
+}
+
+// A root reached through a symlink is the operator's own choice and is
+// trusted: Provision creates under it, and the returned path — what the row
+// stores — is spelled under the root as configured.
+func TestProvision_ASymlinkedRootProvisionsUnderIt(t *testing.T) {
+	link, target := symlinkedRoot(t)
+	path, created, err := Provision(link, "acme", "data")
+	if err != nil {
+		t.Fatalf("Provision under a symlinked root: %v", err)
+	}
+	if want := filepath.Join(link, "acme", "data"); path != want || !created {
+		t.Errorf("path = %q created = %v, want %q true", path, created, want)
+	}
+	if info, err := os.Stat(filepath.Join(target, "acme", "data")); err != nil || !info.IsDir() {
+		t.Errorf("no directory in the target root: %v", err)
+	}
+	if _, again, err := Provision(link, "acme", "data"); err != nil || again {
+		t.Errorf("re-provision created=%v err=%v, want false/nil", again, err)
+	}
+	if _, err := ProvisionEphemeral(link, "run-1", "scratch"); err != nil {
+		t.Errorf("ProvisionEphemeral under a symlinked root: %v", err)
+	}
+}
+
+// Both spellings of a path inside a symlinked root are inside it; the root
+// itself (either spelling), its parent and an escape are not.
+func TestAssertInsideRoot_ASymlinkedRootComparesTheSameForm(t *testing.T) {
+	link, target := symlinkedRoot(t)
+	for _, p := range []string{filepath.Join(link, "_shared", "data"), filepath.Join(target, "_shared", "data")} {
+		if err := AssertInsideRoot(link, p); err != nil {
+			t.Errorf("AssertInsideRoot(%q) refused a path inside the root: %v", p, err)
+		}
+		if got, err := UnderResolvedRoot(link, p); err != nil || got != filepath.Join(target, "_shared", "data") {
+			t.Errorf("UnderResolvedRoot(%q) = %q, %v; want it under %s", p, got, err, target)
+		}
+	}
+	for _, p := range []string{link, target, filepath.Dir(target), filepath.Join(link, "..", "x"), "/etc"} {
+		if err := AssertInsideRoot(link, p); err == nil {
+			t.Errorf("AssertInsideRoot accepted %q", p)
+		}
+	}
+}
+
+// Trusting a symlinked ROOT does not trust a symlink BELOW it: one planted at
+// the tenant segment or the leaf is still refused, nothing is created through
+// it, and a traversal name is still refused. (It asserts the refusal, not its
+// wording: before symlinked roots worked, every create under one was refused
+// as an escape, and this must have held then too.)
+func TestProvision_ASymlinkedRootStillRefusesASymlinkBelowIt(t *testing.T) {
+	link, target := symlinkedRoot(t)
+	outside := resolvedTempDir(t)
+	if err := os.Symlink(outside, filepath.Join(target, "acme")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Provision(link, "acme", "data"); err == nil {
+		t.Error("Provision under a symlinked tenant segment was accepted")
+	}
+	if err := os.MkdirAll(filepath.Join(target, SharedTenantSegment), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(target, SharedTenantSegment, "leaf")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Provision(link, "", "leaf"); err == nil {
+		t.Error("Provision over a symlinked leaf was accepted")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Errorf("Provision created %d entries through the symlink", len(entries))
+	}
+	for _, bad := range []string{"../escape", "a/b", "x/../../y"} {
+		if _, _, err := Provision(link, "beta", bad); err == nil {
+			t.Errorf("Provision under a symlinked root accepted name %q", bad)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(target), "escape")); !os.IsNotExist(err) {
+		t.Errorf("a traversal name created a directory beside the root (err=%v)", err)
 	}
 }
