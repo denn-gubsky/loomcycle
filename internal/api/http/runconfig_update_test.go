@@ -58,6 +58,19 @@ func (refusingStore) SetRunConfigCAS(context.Context, string, json.RawMessage, j
 	return false, nil
 }
 
+// seedRunConfig replaces a test run's record with cfg, whatever it held.
+func seedRunConfig(t *testing.T, st store.Store, runID string, cfg json.RawMessage) {
+	t.Helper()
+	ctx := context.Background()
+	run, err := st.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.SetRunConfigCAS(ctx, runID, run.RunConfig, cfg); err != nil || !ok {
+		t.Fatalf("seed run config: written=%v err=%v", ok, err)
+	}
+}
+
 // The run record's writers — a retune, the review-arming record and the hook
 // pins — each read the record, set their own field and write it back. Before,
 // the write replaced the column, so of three that read the same record only

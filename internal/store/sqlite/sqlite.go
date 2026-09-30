@@ -3341,22 +3341,6 @@ func (s *Store) SetRunModel(ctx context.Context, runID, providerID, model string
 	return nil
 }
 
-// SetRunConfig implements store.Store.
-func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error {
-	if runID == "" {
-		return fmt.Errorf("set run config: run_id required")
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE runs SET run_config = ? WHERE id = ?`,
-		nilIfEmptyRaw(cfg), runID)
-	if err != nil {
-		return fmt.Errorf("set run config: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return &store.ErrNotFound{Kind: "run", ID: runID}
-	}
-	return nil
-}
-
 // SetRunConfigCAS implements store.Store. A NULL column and an empty prev
 // both read as "": a record that was never written matches a caller that read
 // none.

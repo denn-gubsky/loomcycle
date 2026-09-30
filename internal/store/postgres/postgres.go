@@ -2001,22 +2001,6 @@ func (s *Store) SetRunModel(ctx context.Context, runID, providerID, model string
 	return nil
 }
 
-// SetRunConfig implements store.Store.
-func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error {
-	if runID == "" {
-		return fmt.Errorf("set run config: run_id required")
-	}
-	tag, err := s.pool.Exec(ctx, `UPDATE runs SET run_config = $1::jsonb WHERE id = $2`,
-		nullableJSONArg(cfg), runID)
-	if err != nil {
-		return fmt.Errorf("set run config: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return &store.ErrNotFound{Kind: "run", ID: runID}
-	}
-	return nil
-}
-
 // SetRunConfigCAS implements store.Store. IS NOT DISTINCT FROM so a record
 // that was never written (NULL) matches a caller that read none.
 func (s *Store) SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error) {
