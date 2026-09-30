@@ -4,8 +4,8 @@ import { Agent, listAgents } from "../api";
 import { useFocusTenant, useUserId } from "../components/Layout";
 import AgentsTreePanel, { type StatusFilter } from "../components/AgentsTreePanel";
 import AgentDetailPane from "../components/AgentDetailPane";
-import type { BreadcrumbAncestor } from "../components/Breadcrumbs";
 import { buildTree } from "../components/AgentsTree";
+import { breadcrumbAncestors, selectedRowKey, type RunSelection } from "../lib/runLineage";
 import Splitter from "../components/Splitter";
 
 // AgentsView is the v0.8.20 split-view replacement for the
@@ -15,10 +15,12 @@ import Splitter from "../components/Splitter";
 //   LEFT  — agents tree + filter toolbar (was the whole RunList)
 //   RIGHT — selected agent's transcript + status (was AgentDetail)
 //
-// Selection lives in the URL search param `?agent=` so reloads and
-// deep-links work. The tree's onSelect callback rewrites that
-// param via useSearchParams — no React Router navigate (avoids
-// history-stack spam during quick sibling clicks).
+// Selection lives in the URL so reloads and deep-links work: `?run=`
+// names one run; `?agent=` (older links, and rows with no run id)
+// names an agent, which every run of that agent shares. The tree's
+// onSelect callback rewrites the param via useSearchParams — no
+// React Router navigate (avoids history-stack spam during quick
+// sibling clicks).
 
 // Poll cadence matches the previous RunList behaviour. Will become
 // SSE/WebSocket-driven when the v0.8.x global-events feed lands.
@@ -34,7 +36,9 @@ export default function AgentsView() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
-  const selectedId = searchParams.get("agent") ?? undefined;
+  const selectedRunId = searchParams.get("run") ?? undefined;
+  const selectedAgentId = searchParams.get("agent") ?? undefined;
+  const hasSelection = Boolean(selectedRunId || selectedAgentId);
 
   // Polling + filter-race fix lifted from RunList. Clearing the
   // agents list synchronously on filter change is the bug fix from
@@ -72,39 +76,26 @@ export default function AgentsView() {
 
   const tree = useMemo(() => buildTree(agents), [agents]);
 
-  // Walk parent_agent_id back to root using the byId lookup over
-  // the current agents list. If an ancestor isn't in the current
-  // filter result set, insert a dim slug stub and stop (we can't
-  // walk further without the row).
-  const ancestors: BreadcrumbAncestor[] = useMemo(() => {
-    if (!selectedId) return [];
-    const byId = new Map(agents.map((a) => [a.agent_id, a]));
-    const chain: BreadcrumbAncestor[] = [];
-    let cur = byId.get(selectedId);
-    while (cur?.parent_agent_id) {
-      const p = byId.get(cur.parent_agent_id);
-      if (!p) {
-        chain.unshift({
-          agent_id: cur.parent_agent_id,
-          inResultSet: false,
-        });
-        break;
-      }
-      chain.unshift({
-        agent_id: p.agent_id,
-        agent: p.agent,
-        status: p.status,
-        inResultSet: true,
-      });
-      cur = p;
-    }
-    return chain;
-  }, [agents, selectedId]);
+  // The selected row's key in the tree (see selectedRowKey), and its
+  // ancestor chain for the breadcrumbs.
+  const selectedKey = useMemo(
+    () => selectedRowKey(agents, selectedRunId, selectedAgentId),
+    [agents, selectedRunId, selectedAgentId],
+  );
+  const ancestors = useMemo(() => breadcrumbAncestors(agents, selectedKey), [agents, selectedKey]);
 
   const setSelected = useCallback(
-    (agentId: string) => {
+    (sel: RunSelection) => {
       const next = new URLSearchParams(searchParams);
-      next.set("agent", agentId);
+      // One of the two params, never both: a stale ?agent= beside a
+      // new ?run= would outlive the selection it named.
+      if (sel.runId) {
+        next.set("run", sel.runId);
+        next.delete("agent");
+      } else {
+        next.set("agent", sel.agentId);
+        next.delete("run");
+      }
       // Replace history so back-button doesn't accumulate one
       // entry per sibling click.
       setSearchParams(next, { replace: true });
@@ -117,14 +108,16 @@ export default function AgentsView() {
   }, []);
 
   if (!userId) {
-    // A link to ONE run (?agent=, e.g. "Draft saved — review it") still shows
+    // A link to ONE run (?run= or ?agent=, e.g. "Draft saved — review it") still shows
     // that run: the list needs a user, the run itself does not.
     return (
       <div>
         <div className="empty">
           <p>Enter a <code>user_id</code> in the top bar to see runs.</p>
         </div>
-        {selectedId && <AgentDetailPane agentId={selectedId} onSelect={setSelected} />}
+        {hasSelection && (
+          <AgentDetailPane runId={selectedRunId} agentId={selectedAgentId} onSelect={setSelected} />
+        )}
       </div>
     );
   }
@@ -146,14 +139,15 @@ export default function AgentsView() {
           err={err}
           userId={userId}
           onFilterChange={onFilterChange}
-          selectedId={selectedId}
+          selectedId={selectedKey}
           onSelect={setSelected}
         />
       </div>
       <div className="right">
-        {selectedId ? (
+        {hasSelection ? (
           <AgentDetailPane
-            agentId={selectedId}
+            runId={selectedRunId}
+            agentId={selectedAgentId}
             ancestors={ancestors}
             onSelect={setSelected}
           />

@@ -10,12 +10,13 @@ import {
   cancelResidentChildTurn,
   closeResidentChild,
   getAgent,
+  getRun,
   getTranscript,
 } from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
-import { parentRunHref } from "../lib/runLineage";
+import { parentRunHref, type RunSelection } from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
@@ -40,7 +41,10 @@ import {
 const REFRESH_MS = 1_500;
 
 export interface AgentDetailPaneProps {
-  agentId: string;
+  // runId names the run to show. agentId is for a selection with no
+  // run id; the server resolves it to one of that agent's runs.
+  agentId?: string;
+  runId?: string;
   // Optional ancestors chain — used by the split-view parent
   // (commit 5+) to feed the full hierarchy without per-pane
   // re-fetching. When omitted, the pane derives a single-level
@@ -51,10 +55,10 @@ export interface AgentDetailPaneProps {
   // Optional select callback — used by the split-view parent to
   // re-target the right pane on breadcrumb click. When omitted,
   // breadcrumbs fall back to <Link to=/agents/:id/>.
-  onSelect?: (agentId: string) => void;
+  onSelect?: (sel: RunSelection) => void;
 }
 
-export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentDetailPaneProps) {
+export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }: AgentDetailPaneProps) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -64,18 +68,19 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   // A draft discarded from this pane no longer exists: say so instead of
   // showing (or re-fetching into an error) the run that was just deleted.
   const [discarded, setDiscarded] = useState(false);
-  useEffect(() => setDiscarded(false), [agentId]);
+  useEffect(() => setDiscarded(false), [agentId, runId]);
   const tailRef = useRef<HTMLDivElement | null>(null);
 
   // Initial fetch + auto-refresh while running.
   useEffect(() => {
-    if (!agentId) return;
+    const read = runId ? () => getRun(runId) : agentId ? () => getAgent(agentId) : undefined;
+    if (!read) return;
     let cancelled = false;
     let timer: number | undefined;
 
     const fetchOnce = async () => {
       try {
-        const a = await getAgent(agentId);
+        const a = await read();
         if (cancelled) return;
         setAgent(a);
         if (a.session_id) {
@@ -99,7 +104,7 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
       if (timer !== undefined) window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, agent?.status]);
+  }, [agentId, runId, agent?.status]);
 
   // Auto-scroll to the bottom on new events while running.
   useEffect(() => {
@@ -111,7 +116,9 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
   // Fetch the immediate parent for the breadcrumb when no
   // ancestors prop is supplied. One-level only — for full
   // multi-level ancestry the split-view parent passes `ancestors`
-  // and skips this branch.
+  // and skips this branch. The parent is read by parent_run_id where
+  // the row has one: the parent agent id resolves to one of that
+  // agent's runs, not necessarily the one that spawned this run.
   useEffect(() => {
     if (ancestors !== undefined) return;
     if (!agent?.parent_agent_id) {
@@ -119,11 +126,11 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
       return;
     }
     let cancelled = false;
-    getAgent(agent.parent_agent_id)
+    (agent.parent_run_id ? getRun(agent.parent_run_id) : getAgent(agent.parent_agent_id))
       .then((p) => { if (!cancelled) setParentAgent(p); })
       .catch(() => { if (!cancelled) setParentAgent(null); });
     return () => { cancelled = true; };
-  }, [ancestors, agent?.parent_agent_id]);
+  }, [ancestors, agent?.parent_run_id, agent?.parent_agent_id]);
 
   // Resolve which ancestors to render. Either the prop the parent
   // supplied (split-view), or the one-shot parentAgent fetch
@@ -134,6 +141,7 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
     if (parentAgent) {
       return [{
         agent_id: parentAgent.agent_id,
+        run_id: parentAgent.run_id || undefined,
         agent: parentAgent.agent,
         status: parentAgent.status,
         inResultSet: true,
@@ -141,8 +149,8 @@ export default function AgentDetailPane({ agentId, ancestors, onSelect }: AgentD
     }
     // Parent id known but row not yet loaded — render the slug
     // dimmed so the user still sees the hierarchy depth.
-    return [{ agent_id: agent.parent_agent_id, inResultSet: false }];
-  }, [ancestors, agent?.parent_agent_id, parentAgent]);
+    return [{ agent_id: agent.parent_agent_id, run_id: agent.parent_run_id, inResultSet: false }];
+  }, [ancestors, agent?.parent_agent_id, agent?.parent_run_id, parentAgent]);
 
   const renderedEvents = useMemo(() => coalesceText(events.filter(visible)), [events]);
   const awaited = useMemo(() => deriveAwaitedState(events), [events]);

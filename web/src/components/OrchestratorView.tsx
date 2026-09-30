@@ -4,6 +4,7 @@ import { useRunStream } from "../hooks/useRunStream";
 import { buildTree } from "./AgentsTree";
 import AgentsTree from "./AgentsTree";
 import AgentDetailPane from "./AgentDetailPane";
+import { selectionKey, type RunSelection } from "../lib/runLineage";
 import RunForm from "./RunForm";
 import LiveRunPane from "./LiveRunPane";
 
@@ -27,7 +28,7 @@ export default function OrchestratorView({
   const run = useRunStream();
   const [treeUserId, setTreeUserId] = useState("");
   const [children, setChildren] = useState<Agent[]>([]);
-  const [selected, setSelected] = useState<string | undefined>(undefined);
+  const [selected, setSelected] = useState<RunSelection | undefined>(undefined);
 
   const launched = run.status !== "idle";
 
@@ -95,10 +96,10 @@ export default function OrchestratorView({
                 calls Agent.parallel_spawn.
               </div>
             ) : (
-              <AgentsTree tree={tree} selectedId={selected} onSelect={setSelected} />
+              <AgentsTree tree={tree} selectedId={selected && selectionKey(selected)} onSelect={setSelected} />
             )}
             {selected && (
-              <AgentDetailPane agentId={selected} onSelect={setSelected} />
+              <AgentDetailPane runId={selected.runId} agentId={selected.agentId} onSelect={setSelected} />
             )}
           </div>
         </div>

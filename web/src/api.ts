@@ -548,6 +548,13 @@ export function getAgent(agentId: string): Promise<Agent> {
   return jsonFetch<Agent>(`/v1/agents/${encodeURIComponent(agentId)}`);
 }
 
+// getRun reads ONE run by its run id. getAgent resolves an agent id, which
+// every run of that agent shares (every walk of one team, for one), to one of
+// those runs; this names the run itself.
+export function getRun(runId: string): Promise<Agent> {
+  return jsonFetch<Agent>(`/v1/runs/${encodeURIComponent(runId)}`);
+}
+
 export function getTranscript(sessionId: string): Promise<TranscriptResponse> {
   return jsonFetch<TranscriptResponse>(`/v1/sessions/${encodeURIComponent(sessionId)}/transcript`);
 }
