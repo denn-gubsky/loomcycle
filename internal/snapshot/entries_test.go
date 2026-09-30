@@ -106,7 +106,7 @@ var pinnedEntryKeys = map[string][]string{
 		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
 		"memory", "memory_pending", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
-		"schedule_def_active", "evaluations", "paused_runs", "interaction_history", "sqlmem", "capture_findings"},
+		"schedule_def_active", "evaluations", "paused_runs", "interaction_history", "sqlmem", "dirents", "capture_findings"},
 
 	"UsersSection":              {"version", "entries"},
 	"TokenLimitsSection":        {"version", "entries", "usage_mtd"},
@@ -220,6 +220,12 @@ var pinnedEntryKeys = map[string][]string{
 	"MemoryPendingSection": {"version", "entries"},
 	"MemoryPendingEntry": {"id", "tenant_id", "scope", "scope_id", "payload", "origin", "source_session_id",
 		"source_run_id", "created_at"},
+
+	// A Path-tree name, keyed by its full coordinate. resource_ref is a
+	// pointer (document id, memory key, volume name), never content.
+	"DirentsSection": {"version", "entries"},
+	"DirentEntry": {"tenant_id", "scope", "scope_id", "parent_path", "name", "kind", "resource_ref",
+		"created_at", "updated_at"},
 
 	"ChannelConfigEntry": {"name", "description", "scope", "ttl_seconds", "max_messages", "allowed_publishers"},
 	"ChannelMessageEntry": {"id", "channel", "scope", "scope_id", "payload", "published_at", "expires_at",

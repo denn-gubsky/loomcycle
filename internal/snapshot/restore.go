@@ -68,6 +68,14 @@ type RestoreOptions struct {
 	// dynamic volume of the same name is skipped with a warning: static is
 	// ground truth and would shadow it at resolution.
 	StaticVolumeNames []string
+
+	// DocumentExists reports whether a document a restored Path name points
+	// at is on this host. It takes the dirent's own coordinates (tenant,
+	// scope, scope_id — the dirent plane's, which SQL Memory keys
+	// differently) and must not provision a scope to answer. nil — SQL Memory
+	// is not enabled here, so no document can be — skips every document name
+	// with a warning; the other kinds are checked against the store.
+	DocumentExists func(ctx context.Context, tenantID, scope, scopeID, documentID string) (bool, error)
 }
 
 // RestoreResult is the operator-facing summary of a Restore() call.
@@ -140,6 +148,7 @@ type RestoreResult struct {
 	TranscriptEventsRestored       int      `json:"transcript_events_restored"`
 	InteractionHistoryRestored     int      `json:"interaction_history_restored"`
 	SqlMemScopesRestored           int      `json:"sqlmem_scopes_restored"`
+	DirentsRestored                int      `json:"dirents_restored"`
 	MCPServerDefsActivated         int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
 	PausedRunsResumed              int      `json:"paused_runs_resumed"`       // set by the caller's post-restore resume, not by Restore
 	PausedRunsAlreadyLive          int      `json:"paused_runs_already_live"`  // likewise: paused rows a live loop still owns, left untouched
@@ -189,6 +198,10 @@ func (r RestoreResult) Counts() map[string]int {
 //	channel_defs      → channels.messages, .cursors
 //	evaluations       (no FKs)
 //	interaction_history (optional)
+//	sqlmem            (document structure; bodies came with memory)
+//	dirents           (LAST: a name points at a document, memory entry or
+//	                   volume restored above, and is skipped when its target
+//	                   is not here)
 //
 // Idempotent: a second Restore call on the same envelope is a clean
 // no-op (every SnapshotRestore* method uses ON CONFLICT DO NOTHING /
@@ -1098,6 +1111,17 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			restoreSqlMem(ctx, opts.SqlMem, &sec, &result)
 		}
+	}
+
+	// dirents: LAST, once everything a name can point at has landed — the
+	// documents (memory + sqlmem), memory entries and volumes — so a name
+	// whose target did not arrive is found and skipped, never left dangling.
+	if rawSection, ok := sections[migrations.SectionDirents]; ok {
+		var sec DirentsSection
+		if err := decodeWithMigration(migrations.SectionDirents, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreDirents(ctx, s, &sec, opts, &result)
 	}
 
 	// capture_findings: nothing is written. Each finding is re-emitted as a

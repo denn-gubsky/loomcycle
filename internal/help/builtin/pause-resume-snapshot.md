@@ -256,6 +256,47 @@ run. Items already consolidated are not carried: their facts are in the
   as it removes their memory. Restoring a snapshot taken before an
   erasure brings them back, as it brings back everything else.
 
+### Path names
+
+The `dirents` section carries the Path tree: every name a document, a
+memory entry or a volume mount is found by, in every tenant's agent,
+user and tenant trees. A restored document is therefore reachable at the
+path it had (`Document op=get_document path:…`) and listed by
+`Path op=ls`, not only by its id. A document named twice keeps both
+names.
+
+- **Restored last**, after the documents, memory and volumes the names
+  point at. Each name keeps its tenant, scope and user or agent exactly,
+  so a name never lands in another tree.
+- **Never a name pointing at nothing.** A name whose document, memory
+  entry or volume is not on the target is not restored. The skipped
+  names produce one warning per tree and kind, with a count and the first
+  few paths. The usual cause is the SQL Memory section not restoring (SQL
+  Memory is off on the target, or the tiers differ), which leaves every
+  document without its structure. Restoring the same snapshot again once
+  the documents can land brings the names back.
+- **Directories come back with their contents.** A directory exists
+  because something is named under it, so `ls` of every ancestor lists
+  it again. An empty folder made with `Path op=mkdir` is carried as it
+  is.
+- **The target's own names stand.** A path already taken on the target
+  is left alone. If it names something else, a warning says so. If it
+  names the same thing, as on a second restore, nothing is said.
+- Every name is re-checked with the rules the Path tool writes by (one
+  `[a-zA-Z0-9._-]` segment per level, no `..`, a known scope and kind).
+  A name that fails is not restored, and the warning names it.
+- Restored names count in `dirents`.
+
+### A paused run waiting on a question
+
+Interrupts are not carried. A run asks a question from inside a tool
+call, and a pause only parks a run between steps, so a paused run is
+never waiting on one. Capture checks this for every paused run it
+includes. If one does have a pending interrupt, the capture still
+succeeds, but it warns and names the run: in the capture response, in
+the log, and in the snapshot itself, and every restore of that snapshot
+repeats the warning. Resolve or cancel the interrupt, then capture again.
+
 ### Restore warnings and missing credentials
 
 A restore warning that quotes a URL has the URL's user/password, query

@@ -50,6 +50,22 @@ func (b *postgresBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 	return out, rows.Err()
 }
 
+// scopeExists looks the scope's schema up in the catalog; it never provisions
+// the schema or its role. pg_namespace, not information_schema.schemata, which
+// lists only the schemas the current role has privileges on.
+func (b *postgresBackend) scopeExists(ctx context.Context, key ScopeKey) (bool, error) {
+	schema, _, err := pgScopeNames(key)
+	if err != nil {
+		return false, err
+	}
+	var ok bool
+	if err := b.admin.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, schema).Scan(&ok); err != nil {
+		return false, fmt.Errorf("sqlmem: scope exists: %w", err)
+	}
+	return ok, nil
+}
+
 // exportScope reconstructs the scope's schema DDL + data from the catalog,
 // running as the scope role inside a read-only transaction for a consistent view.
 func (b *postgresBackend) exportScope(ctx context.Context, key ScopeKey) (*ScopeDump, error) {

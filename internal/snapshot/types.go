@@ -132,8 +132,14 @@ type Sections struct {
 	// taken without it, or restored into a reader that predates it, sees the
 	// section absent (back-compat, like interaction_history).
 	SqlMem *SqlMemSection `json:"sqlmem,omitempty"`
+	// Dirents is the Path tree: the names documents, memory entries and volume
+	// mounts are found by. Restored LAST, after everything a name can point at
+	// (documents live in memory + sqlmem, mounts in volume_defs), so a name
+	// whose target did not arrive is recognised and not restored.
+	Dirents DirentsSection `json:"dirents"`
 	// CaptureFindings reports what the capture carried that an operator should
-	// act on — today, header values that look like literal credentials. Inside
+	// act on — header values that look like literal credentials, and a paused
+	// run found parked on a pending interrupt, which travels without it. Inside
 	// Sections so the integrity checksum covers it. Present only when there is
 	// at least one finding (omitempty), so a capture with none is byte-identical
 	// to one taken before the section existed; an older reader ignores it.
@@ -161,7 +167,8 @@ type CaptureFindingEntry struct {
 	// "body.headers.Authorization".
 	Field string `json:"field"`
 	// Detector says which rule matched: "secret-pattern" or
-	// "credential-header-name".
+	// "credential-header-name" for a header value, or "pending-interrupt" for
+	// a paused run with a pending interrupt (Field "interrupts").
 	Detector string `json:"detector"`
 }
 
@@ -803,6 +810,32 @@ type MemoryPendingEntry struct {
 	SourceSessionID string          `json:"source_session_id,omitempty"`
 	SourceRunID     string          `json:"source_run_id,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
+}
+
+// DirentsSection carries every Path-tree entry: every tenant's, every scope's
+// tree.
+type DirentsSection struct {
+	Version string        `json:"version"`
+	Entries []DirentEntry `json:"entries"`
+}
+
+// DirentEntry mirrors one dirents row, keyed by its full coordinate (tenant,
+// scope, scope_id, parent_path, name). A name holds no secret: resource_ref is
+// a pointer — a document id, a memory key in the entry's own tree, a volume
+// name — never content. ScopeID is empty for tenant scope, where the tenant
+// carries the identity; the three keying planes differ here (SQL Memory repeats
+// the tenant as the scope id, and stores tenant "" as "default"), and the entry
+// carries the dirent plane's coordinates verbatim.
+type DirentEntry struct {
+	TenantID    string          `json:"tenant_id,omitempty"`
+	Scope       string          `json:"scope"`
+	ScopeID     string          `json:"scope_id,omitempty"`
+	ParentPath  string          `json:"parent_path"`
+	Name        string          `json:"name"`
+	Kind        string          `json:"kind"`
+	ResourceRef json.RawMessage `json:"resource_ref"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // ChannelsSection wraps channels config + messages + cursors. Channel

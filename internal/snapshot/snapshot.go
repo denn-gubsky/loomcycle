@@ -208,6 +208,10 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := capturePausedRuns(ctx, s, &envelope.Sections.PausedRuns); err != nil {
 		return nil, nil, nil, err
 	}
+	interruptFindings, err := pausedRunInterruptFindings(ctx, s, envelope.Sections.PausedRuns.Entries)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	if opts.IncludeHistory {
 		hist := &InteractionHistorySection{
 			Version: SectionVersion,
@@ -225,11 +229,16 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		}
 		envelope.Sections.SqlMem = sec
 	}
+	// dirents last, as they restore: a name read after the things it names is
+	// at worst a name whose target the envelope lacks, which restore skips.
+	if err := captureDirents(ctx, s, &envelope.Sections.Dirents); err != nil {
+		return nil, nil, nil, err
+	}
 
 	// Findings are collected over what the envelope holds, after every
 	// header-bearing section is read. One log line each, by location only.
 	var warnings []string
-	if findings := collectCaptureFindings(&envelope.Sections); len(findings) > 0 {
+	if findings := append(collectCaptureFindings(&envelope.Sections), interruptFindings...); len(findings) > 0 {
 		envelope.Sections.CaptureFindings = &CaptureFindingsSection{Version: SectionVersion, Entries: findings}
 		for _, f := range findings {
 			w := f.Warning()
@@ -706,6 +715,35 @@ func captureEvaluations(ctx context.Context, s store.Store, out *EvaluationsSect
 // transcript events. Each run's transcript is filtered from its
 // session transcript by run_id; the resulting events are what the
 // model sees on resume.
+// pausedRunInterruptFindings is the capture-time guard for the one table a
+// paused run could depend on that no section carries: interrupts. A pending
+// Interruption ask blocks INSIDE tool dispatch, and a pause parks a run only at
+// an iteration boundary, so a paused run cannot be waiting on one — which is
+// why the table travels in no section. A future interrupt kind that parks at a
+// boundary would break that silently: the run would travel and its interrupt
+// would not. So every paused run the envelope carries is checked, and one found
+// with a pending interrupt is a capture finding — in the capture response, the
+// log and the envelope, and re-emitted by every restore of it.
+//
+// A failed count fails the capture, as any other section read does: a guard
+// that skips when it cannot look is not a guard.
+func pausedRunInterruptFindings(ctx context.Context, s store.Store, runs []PausedRunEntry) ([]CaptureFindingEntry, error) {
+	var out []CaptureFindingEntry
+	for _, r := range runs {
+		n, err := s.InterruptCountPendingByRun(ctx, r.RunID)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot paused_runs: pending interrupts of run %s: %w", r.RunID, err)
+		}
+		if n > 0 {
+			out = append(out, CaptureFindingEntry{
+				Section: "paused_runs", TenantID: r.TenantID, Name: r.RunID,
+				Field: "interrupts", Detector: detectorPendingInterrupt,
+			})
+		}
+	}
+	return out, nil
+}
+
 func capturePausedRuns(ctx context.Context, s store.Store, out *PausedRunsSection) error {
 	out.Version = SectionVersion
 	runs, err := s.ListPausedRuns(ctx)

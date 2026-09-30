@@ -32,6 +32,11 @@ const (
 	// credential (Authorization, *-Token, *-Key, ...) and its value holds a
 	// literal beyond an auth scheme word.
 	detectorCredentialHeader = "credential-header-name"
+	// detectorPendingInterrupt: a paused run the envelope carries has a
+	// pending interrupt, which no section carries (see
+	// pausedRunInterruptFindings). Not a header finding: Field is
+	// "interrupts".
+	detectorPendingInterrupt = "pending-interrupt"
 )
 
 // referenceRe matches the reference forms a header value may use instead of a
@@ -225,6 +230,10 @@ func (f CaptureFindingEntry) Warning() string {
 	}
 	if f.DefID != "" {
 		where += " def " + f.DefID
+	}
+	if f.Detector == detectorPendingInterrupt {
+		return fmt.Sprintf("%s: the paused run has a pending interrupt, which a snapshot does not carry — "+
+			"on a restored copy nothing can answer it; resolve or cancel the interrupt and capture again", where)
 	}
 	return fmt.Sprintf("%s: %s holds a literal value that looks like a credential (%s); it travels in the snapshot as written — replace it with a $cred: or ${LOOMCYCLE_*} reference",
 		where, f.Field, f.Detector)

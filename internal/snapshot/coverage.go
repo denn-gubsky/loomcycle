@@ -26,9 +26,6 @@ const (
 	// coverOmitted: not carried, for a stated non-secret reason (derived,
 	// instance-local, TTL-bound, operational).
 	coverOmitted coverageKind = "omitted"
-	// coverPending: not carried YET; a later phase of RFC DP adds its section.
-	// Phase names the PR that flips it. The last phase deletes this kind.
-	coverPending coverageKind = "pending"
 )
 
 // backendSet says which store backends have a table. Most tables exist on
@@ -52,11 +49,9 @@ type tableCoverage struct {
 	// (coverSection only), leading with one of: "none", "by-reference",
 	// "stripped:", "reported:".
 	Secrets string
-	// Reason explains a never / omitted / pending classification, or a partial
-	// capture of a section table.
+	// Reason explains a never / omitted classification, or a partial capture
+	// of a section table.
 	Reason string
-	// Phase is the RFC DP phase that adds the section (coverPending only).
-	Phase string
 	// Backends is where the table exists.
 	Backends backendSet
 	// Conditional, when set, says why the table may legitimately be absent
@@ -90,6 +85,11 @@ var tableCoverageMap = map[string]tableCoverage{
 	// `channels` envelope section is messages + cursors + the yaml config.
 	"channels": {Kind: coverSection, Section: "channel_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value in the channel's hooks (capture_findings)"},
+	// A Path name is a pointer (a document id, a memory key, a volume name),
+	// never content. Restored last, and only when what it names is here; the
+	// Path tool reads the store per call, so nothing is cached.
+	"dirents": {Kind: coverSection, Section: "dirents", Secrets: "none", Backends: onBoth,
+		Reason: "restored last, and a name is skipped when what it names is not on the target"},
 	// Memory-backend and document-source defs name env vars, never values:
 	// config.api_key_env and tenancy_strategy.env_pattern. Every body is
 	// re-validated on restore, since base_url + api_key_env is an
@@ -176,10 +176,14 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "TTL-bound, run-scoped registrations"},
 	"ephemeral_volume_defs": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "run-bound scratch volumes"},
-	// interrupts: a pending ask blocks inside tool dispatch, so it cannot belong
-	// to a run parked for a pause; everything else in the table is audit.
+	// interrupts: a pending ask blocks inside tool dispatch, and a pause parks a
+	// run only at an iteration boundary, so a paused run cannot be waiting on
+	// one; everything else in the table is audit. Capture checks the
+	// assumption for every paused run it carries and reports a violation as a
+	// capture finding (see pausedRunInterruptFindings), so a future interrupt
+	// kind that parks at a boundary is loud rather than silently dropped.
 	"interrupts": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "a pending ask cannot belong to a paused run; the rest is audit"},
+		Reason: "a pending ask cannot belong to a paused run (capture checks it); the rest is audit"},
 	"memory_changes": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "derived change log"},
 	"memory_cursors": {Kind: coverOmitted, Backends: onBoth,
@@ -200,7 +204,4 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "the snapshot store itself"},
 	"user_quotas": {Kind: coverOmitted, Backends: onPostgres,
 		Reason: "live concurrency slots of the source cluster"},
-
-	// ---- pending: a later phase adds the section ----------------------------
-	"dirents": {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
 }

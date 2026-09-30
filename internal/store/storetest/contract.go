@@ -522,6 +522,10 @@ func Run(t *testing.T, factory Factory) {
 		// are read, a restored row lands un-drained with its identity intact and
 		// is drainable, and a row already on the id stands (drained or not).
 		{"SnapshotMemoryPendingRestoreKeepsLiveRow", testSnapshotMemoryPendingRestoreKeepsLiveRow},
+		// Snapshot read/restore of the Path tree: every tree's entries read
+		// back in order, both timestamps kept, and an entry already on the
+		// coordinate stands (DirentCreate is an upsert and would re-point it).
+		{"SnapshotRestoreDirentKeepsLiveRow", testSnapshotRestoreDirentKeepsLiveRow},
 		// The targets holding queued work: exact tenant + scope, undrained
 		// only, one id per target, longest-waiting first, bounded.
 		{"MemoryPendingTargets", testMemoryPendingTargets},
@@ -1445,6 +1449,87 @@ func testSnapshotMemoryPendingRestoreKeepsLiveRow(t *testing.T, s store.Store) {
 	}
 	if len(drained) != 2 || drained[0].ID != "mp_acme_user_1" || drained[1].ID != "mp_acme_user_2" {
 		t.Errorf("drain of acme/alice = %+v, want the two restored rows oldest-first", drained)
+	}
+}
+
+// testSnapshotRestoreDirentKeepsLiveRow: a restored Path-tree entry lands at
+// its full coordinate with its kind, ref and BOTH timestamps; the snapshot read
+// returns every tenant's and tree's entries in (tenant, scope, scope_id,
+// parent_path, name) order; and an entry already on the coordinate — even one
+// naming something else — is left exactly as it was.
+func testSnapshotRestoreDirentKeepsLiveRow(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	created := time.Date(2026, 8, 1, 2, 3, 4, 0, time.UTC)
+	updated := created.Add(90 * time.Minute)
+	restored := []store.DirentRow{
+		{TenantID: "beta", Scope: "user", ScopeID: "alice", ParentPath: "/docs/", Name: "plan", Kind: "document",
+			ResourceRef: json.RawMessage(`{"document_id":"doc-beta"}`), CreatedAt: created, UpdatedAt: updated},
+		{TenantID: "", Scope: "agent", ScopeID: "helper", ParentPath: "/", Name: "notes", Kind: "memory_entry",
+			ResourceRef: json.RawMessage(`{"scope":"agent","scope_id":"helper","key":"k1","facet":"kv"}`), CreatedAt: created, UpdatedAt: updated},
+		{TenantID: "acme", Scope: "tenant", ScopeID: "", ParentPath: "/vol/", Name: "data", Kind: "volume_mount",
+			ResourceRef: json.RawMessage(`{"volume_name":"data","mode":"rw"}`), CreatedAt: created, UpdatedAt: updated},
+		{TenantID: "acme", Scope: "user", ScopeID: "alice", ParentPath: "/", Name: "empty", Kind: "directory",
+			CreatedAt: created, UpdatedAt: updated},
+	}
+	for _, r := range restored {
+		inserted, err := s.SnapshotRestoreDirent(ctx, r)
+		if err != nil || !inserted {
+			t.Fatalf("restore %s%s: inserted=%v err=%v, want inserted", r.ParentPath, r.Name, inserted, err)
+		}
+	}
+	if inserted, err := s.SnapshotRestoreDirent(ctx, restored[0]); err != nil || inserted {
+		t.Fatalf("re-restore: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+
+	// A live name on a coordinate the snapshot also holds, naming a different
+	// document: it stands, ref and updated_at untouched.
+	live, err := s.DirentCreate(ctx, store.DirentRow{TenantID: "acme", Scope: "user", ScopeID: "alice",
+		ParentPath: "/docs/", Name: "plan", Kind: "document", ResourceRef: json.RawMessage(`{"document_id":"doc-live"}`)})
+	if err != nil {
+		t.Fatalf("DirentCreate live: %v", err)
+	}
+	inserted, err := s.SnapshotRestoreDirent(ctx, store.DirentRow{TenantID: "acme", Scope: "user", ScopeID: "alice",
+		ParentPath: "/docs/", Name: "plan", Kind: "document", ResourceRef: json.RawMessage(`{"document_id":"doc-snapshot"}`),
+		CreatedAt: created, UpdatedAt: updated})
+	if err != nil || inserted {
+		t.Fatalf("restore onto a live name: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+	got, err := s.DirentGet(ctx, "acme", "user", "alice", "/docs/", "plan")
+	if err != nil {
+		t.Fatalf("DirentGet live: %v", err)
+	}
+	if !jsonEqual(got.ResourceRef, `{"document_id":"doc-live"}`) || !got.UpdatedAt.Equal(live.UpdatedAt) {
+		t.Errorf("live name after restore = %s updated %v; want doc-live, updated %v", got.ResourceRef, got.UpdatedAt, live.UpdatedAt)
+	}
+
+	rows, err := s.SnapshotReadDirents(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadDirents: %v", err)
+	}
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.TenantID+"|"+r.Scope+"|"+r.ScopeID+"|"+r.ParentPath+r.Name)
+	}
+	want := "|agent|helper|/notes," +
+		"acme|tenant||/vol/data," +
+		"acme|user|alice|/empty," + // parent "/" sorts before "/docs/"
+		"acme|user|alice|/docs/plan," +
+		"beta|user|alice|/docs/plan"
+	if got := strings.Join(order, ","); got != want {
+		t.Fatalf("read order = %s\nwant           %s", got, want)
+	}
+	for _, w := range restored {
+		r, err := s.DirentGet(ctx, w.TenantID, w.Scope, w.ScopeID, w.ParentPath, w.Name)
+		if err != nil {
+			t.Fatalf("DirentGet %s%s: %v", w.ParentPath, w.Name, err)
+		}
+		wantRef := string(w.ResourceRef)
+		if wantRef == "" {
+			wantRef = "{}"
+		}
+		if r.Kind != w.Kind || !jsonEqual(r.ResourceRef, wantRef) || !r.CreatedAt.Equal(w.CreatedAt) || !r.UpdatedAt.Equal(w.UpdatedAt) {
+			t.Errorf("%s%s read back as %+v, want %+v", w.ParentPath, w.Name, r, w)
+		}
 	}
 }
 

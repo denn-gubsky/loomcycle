@@ -64,6 +64,7 @@ const (
 	SectionPausedRuns             = "paused_runs"
 	SectionInteractionHistory     = "interaction_history"
 	SectionSqlMem                 = "sqlmem"
+	SectionDirents                = "dirents"
 	SectionCaptureFindings        = "capture_findings"
 )
 
@@ -149,6 +150,7 @@ var registry = map[string]map[string]Migrator{
 	SectionPausedRuns:             {"1.0": identityMigrator},
 	SectionInteractionHistory:     {"1.0": identityMigrator},
 	SectionSqlMem:                 {"1.0": identityMigrator},
+	SectionDirents:                {"1.0": identityMigrator},
 	SectionCaptureFindings:        {"1.0": identityMigrator},
 }
 

@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -62,6 +64,22 @@ func (b *sqliteBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 		return nil, fmt.Errorf("sqlmem: list scopes: %w", err)
 	}
 	return out, nil
+}
+
+// scopeExists stats the scope's .db file; it never opens (and so never creates)
+// it.
+func (b *sqliteBackend) scopeExists(_ context.Context, key ScopeKey) (bool, error) {
+	path, err := key.keyPath(b.cfg.Root)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("sqlmem: stat scope: %w", err)
+	}
+	return true, nil
 }
 
 // exportScope dumps the scope's schema (CREATE statements from sqlite_master,
