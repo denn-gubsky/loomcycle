@@ -495,6 +495,19 @@ func (s *MemoryBackendDef) bootstrapStatic(ctx context.Context, name string, sta
 	return created, nil
 }
 
+// ValidateMemoryBackendDefBody re-runs the authoring validation over a stored
+// memory-backend def body. A snapshot restore calls it (injected by the
+// restore call sites) before writing a body: base_url is dialed and the
+// api_key_env it names is sent there, so a restored pair must be one an author
+// could have created on this host.
+func ValidateMemoryBackendDefBody(body json.RawMessage) error {
+	var def mergedMemoryBackendDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as a memory backend def: %w", err)
+	}
+	return validateMemoryBackendDef(def)
+}
+
 // validateMemoryBackendDef enforces the runtime-supplied overlay shape.
 // STRUCTURAL validation only.
 //

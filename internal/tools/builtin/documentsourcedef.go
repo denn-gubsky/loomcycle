@@ -489,6 +489,18 @@ func (s *DocumentSourceDef) bootstrapStatic(ctx context.Context, name string, st
 	return created, nil
 }
 
+// ValidateDocumentSourceDefBody re-runs the authoring validation over a
+// stored document-source def body. A snapshot restore calls it (injected by
+// the restore call sites) before writing a body: base_url is dialed and the
+// api_key_env it names is sent there.
+func ValidateDocumentSourceDefBody(body json.RawMessage) error {
+	var def mergedDocumentSourceDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as a document source def: %w", err)
+	}
+	return validateDocumentSourceDef(def)
+}
+
 // validateDocumentSourceDef enforces the runtime-supplied overlay shape,
 // mirroring the static `document_sources.<name>:` validation in
 // config.Validate. A document source is dialed (base_url) and its
