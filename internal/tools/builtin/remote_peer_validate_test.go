@@ -9,9 +9,15 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// remotePeerTestHosts is the LOOMCYCLE_HTTP_HOST_ALLOWLIST the def tool
+// fixtures run under: every host their tests author a remote peer at.
+var remotePeerTestHosts = []string{"example.com", "peer.example", "peer2.example", "internal.example", "localhost", "93.184.216.34"}
+
 // authorRemoteDef runs one create or fork of a remote peer def through the real
-// def tool. kind is "memory" (a kind:remote MemoryBackendDef) or "document" (a
-// DocumentSourceDef); fork derives from the fixture's static "primary".
+// def tool, as an admin — the shape checks it exercises apply to every author,
+// and the fork keeps the static parent's api_key_env. kind is "memory" (a kind:remote MemoryBackendDef) or
+// "document" (a DocumentSourceDef); fork derives from the fixture's static
+// "primary".
 func authorRemoteDef(t *testing.T, kind, op, baseURL, tenancy string) tools.Result {
 	t.Helper()
 	name := "peer"
@@ -28,12 +34,12 @@ func authorRemoteDef(t *testing.T, kind, op, baseURL, tenancy string) tools.Resu
 		call = json.RawMessage(fmt.Sprintf(`{"op":%q,"name":%q,"overlay":{"kind":"remote",%s}}`, op, name, overlay))
 		tool, ctx, cleanup := memoryBackendDefFixture(t)
 		defer cleanup()
-		res, _ := tool.Execute(ctx, call)
+		res, _ := tool.Execute(asAdmin(ctx), call)
 		return res
 	case "document":
 		tool, ctx, cleanup := documentSourceDefFixture(t)
 		defer cleanup()
-		res, _ := tool.Execute(ctx, call)
+		res, _ := tool.Execute(asAdmin(ctx), call)
 		return res
 	}
 	t.Fatalf("unknown def kind %q", kind)

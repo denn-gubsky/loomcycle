@@ -35,11 +35,15 @@ import (
 const remoteDocumentTimeout = 30 * time.Second
 
 // newRemoteDocumentClient builds a peer-document client from a source def,
-// reusing the RFC CD Part B remote plumbing: an SSRF-guarded client whose
-// private-host allowlist depends on who authored the def
+// reusing the RFC CD Part B remote plumbing: the host floor for a def not
+// authored by the operator (requireDialablePeerHost), an SSRF-guarded client
+// whose private-host allowlist depends on who authored the def
 // (remotePeerPrivateHosts), and the credential-env allowlist gate
-// (resolveCredentialEnv) — both defined in memory.go.
+// (resolveCredentialEnv) — the last two defined in memory.go.
 func newRemoteDocumentClient(cfg *config.Config, ds config.DocumentSource, origin lookup.Origin) (*docremote.Client, error) {
+	if err := requireDialablePeerHost(cfg, ds.Config.BaseURL, origin); err != nil {
+		return nil, err
+	}
 	client := netguard.NewGuardedClient(remoteDocumentTimeout, remotePeerPrivateHosts(cfg, ds.Config.BaseURL, origin))
 	return docremote.New(docremote.Options{
 		BaseURL:          ds.Config.BaseURL,

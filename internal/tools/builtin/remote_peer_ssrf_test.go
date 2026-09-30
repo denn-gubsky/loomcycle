@@ -84,9 +84,16 @@ func remoteMemoryFixture(t *testing.T, cfg *config.Config, baseURL string) (*Mem
 	return m, ctx
 }
 
+// publicListedLocalhost lists "localhost" as a PUBLIC host only: the name
+// floor lets a runtime def aim at it, the address guard still refuses the
+// loopback address it resolves to.
+func publicListedLocalhost() *config.Config {
+	return &config.Config{Env: config.Env{HTTPHostAllowlist: []string{"localhost"}}}
+}
+
 func TestRemoteMemoryBackend_DynamicDefIsRefusedAtAPrivateHost(t *testing.T) {
 	peer := newHitCounter(t, nil)
-	m, ctx := remoteMemoryFixture(t, &config.Config{}, localhostURL(t, peer.srv.URL))
+	m, ctx := remoteMemoryFixture(t, publicListedLocalhost(), localhostURL(t, peer.srv.URL))
 
 	_, err := m.backend(ctx).Get(ctx, store.MemoryScopeUser, "u1", "k")
 	if err == nil {
@@ -205,7 +212,7 @@ func remoteDocumentFixture(t *testing.T, cfg *config.Config, baseURL string) (*D
 
 func TestRemoteDocumentSource_DynamicDefIsRefusedAtAPrivateHost(t *testing.T) {
 	peer := newHitCounter(t, newStubDocPeer().handler().ServeHTTP)
-	d, ctx, docID := remoteDocumentFixture(t, &config.Config{}, localhostURL(t, peer.srv.URL))
+	d, ctx, docID := remoteDocumentFixture(t, publicListedLocalhost(), localhostURL(t, peer.srv.URL))
 
 	_, res := docExec(t, d, ctx, fmt.Sprintf(`{"op":"sync","scope":"user","id":%q}`, docID))
 	if !res.IsError {

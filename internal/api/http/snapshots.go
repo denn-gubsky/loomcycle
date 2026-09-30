@@ -385,9 +385,11 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 			migrations.SectionA2AAgentDefs:      builtin.ValidateA2AAgentDefBody,
 			migrations.SectionA2AServerCardDefs: builtin.ValidateA2AServerCardDefBody,
 			// base_url + api_key_env is an exfiltration pair: the key named
-			// is sent to the URL, so both go through the authoring checks.
-			migrations.SectionMemoryBackendDefs: builtin.ValidateMemoryBackendDefBody,
-			migrations.SectionDocSourceDefs:     builtin.ValidateDocumentSourceDefBody,
+			// is sent to the URL, so both go through the authoring checks —
+			// the host floor judged against THIS host's allowlists (a nil
+			// config lists no host, so a remote def is refused).
+			migrations.SectionMemoryBackendDefs: builtin.MemoryBackendDefBodyValidator(s.cfg()),
+			migrations.SectionDocSourceDefs:     builtin.DocumentSourceDefBodyValidator(s.cfg()),
 			// A dynamic volume is re-checked as create checks it; its path
 			// is derived under VolumeRoot below, never read from the file.
 			migrations.SectionVolumeDefs: builtin.ValidateVolumeDefBody,

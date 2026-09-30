@@ -25,6 +25,9 @@ func documentSourceDefFixture(t *testing.T) (*DocumentSourceDef, context.Context
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	cfg := &config.Config{
+		// The hosts these tests author sources at; a runtime-authored source
+		// is refused at any other host.
+		Env: config.Env{HTTPHostAllowlist: remotePeerTestHosts},
 		DocumentSources: map[string]config.DocumentSource{
 			"primary": {
 				Config: config.DocumentSourceConfig{
@@ -172,7 +175,9 @@ func TestDocumentSourceDefTool_RefusesUnsafeAPIKeyEnv(t *testing.T) {
 			defer cleanup()
 			body := `{"op":"create","name":"d_` + tc.name[:3] + `","overlay":{` +
 				`"config":{"base_url":"https://p.example.com","api_key_env":"` + tc.env + `"}}}`
-			res, _ := tool.Execute(ctx, json.RawMessage(body))
+			// As an admin, the one author who may name api_key_env at all: this
+			// is the name allowlist every api_key_env must pass.
+			res, _ := tool.Execute(asAdmin(ctx), json.RawMessage(body))
 			if tc.refuse && !res.IsError {
 				t.Fatalf("api_key_env=%s was accepted (%s); got %s", tc.env, tc.why, res.Text)
 			}

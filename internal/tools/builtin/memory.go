@@ -196,9 +196,13 @@ const remoteBackendTimeout = 30 * time.Second
 
 // newRemoteBackend builds a remote memory backend from a resolved def. The
 // SSRF-guarded HTTP client and the credential-env allowlist are supplied here
-// (the remote package stays free of config/netguard/os coupling); the
-// private-host allowlist depends on who authored the def (remotePeerPrivateHosts).
+// (the remote package stays free of config/netguard/os coupling); the host
+// floor and the private-host allowlist depend on who authored the def
+// (requireDialablePeerHost, remotePeerPrivateHosts).
 func (m *Memory) newRemoteBackend(def config.MemoryBackend, origin lookup.Origin) (memrank.Backend, error) {
+	if err := requireDialablePeerHost(m.Cfg, def.Config.BaseURL, origin); err != nil {
+		return nil, err
+	}
 	client := netguard.NewGuardedClient(remoteBackendTimeout, remotePeerPrivateHosts(m.Cfg, def.Config.BaseURL, origin))
 	return remote.New(remote.Options{
 		BaseURL:          def.Config.BaseURL,

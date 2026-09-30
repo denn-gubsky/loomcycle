@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -15,11 +16,19 @@ import (
 )
 
 // authoringValidators are the validators the production call sites wire for
-// these two sections: the tools' own create/fork checks.
+// these two sections: the tools' own create/fork checks, judged against a
+// host that lists the peers these tests name — and declares the operator
+// layer's "ds" source in yaml, whose own url (docs.internal) it does not list.
 func authoringValidators() map[string]func(json.RawMessage) error {
+	cfg := &config.Config{
+		Env: config.Env{HTTPHostAllowlist: []string{"peer.example", "docs.example", "from-source.example", "live.example"}},
+		DocumentSources: map[string]config.DocumentSource{
+			"ds": {Config: config.DocumentSourceConfig{BaseURL: "http://docs.internal:8080"}},
+		},
+	}
 	v := passValidators()
-	v[migrations.SectionMemoryBackendDefs] = builtin.ValidateMemoryBackendDefBody
-	v[migrations.SectionDocSourceDefs] = builtin.ValidateDocumentSourceDefBody
+	v[migrations.SectionMemoryBackendDefs] = builtin.MemoryBackendDefBodyValidator(cfg)
+	v[migrations.SectionDocSourceDefs] = builtin.DocumentSourceDefBodyValidator(cfg)
 	return v
 }
 
