@@ -102,3 +102,49 @@ func TestResolvePrincipals_DuplicateSecretIsError(t *testing.T) {
 		t.Errorf("err = %v, want a duplicate-secret config error", err)
 	}
 }
+
+func TestResolvePrincipals_RefusesNonCharsetTenant(t *testing.T) {
+	// The tenant id names a directory under the dynamic volume root, so a
+	// tenant that is not one charset-clean path segment would alias another
+	// tenant's tree ("x/.." → acme's). Refused before the secret is read.
+	for _, tenant := range []string{"x/..", "a/b", "..", ".", "acme.corp", "_shared", "_EPHEMERAL"} {
+		c := &Config{Principals: map[string]PrincipalDef{
+			"p": {Tenant: tenant, Subject: "p", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_TENANT_CHARSET"},
+		}}
+		err := resolvePrincipals(c)
+		if err == nil || !strings.Contains(err.Error(), "tenant id") {
+			t.Errorf("tenant %q: err = %v, want a tenant-id config error", tenant, err)
+		}
+	}
+}
+
+func TestResolvePrincipals_RefusesCaseFoldTenantCollision(t *testing.T) {
+	// "Acme" and "acme" are one directory on a case-insensitive filesystem.
+	t.Setenv("LOOMCYCLE_TOKEN_FOLD_A", "lct_fold_a")
+	t.Setenv("LOOMCYCLE_TOKEN_FOLD_B", "lct_fold_b")
+	c := &Config{Principals: map[string]PrincipalDef{
+		"a": {Tenant: "Acme", Subject: "a", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_FOLD_A"},
+		"b": {Tenant: "acme", Subject: "b", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_FOLD_B"},
+	}}
+	err := resolvePrincipals(c)
+	if err == nil || !strings.Contains(err.Error(), "differs only by case") {
+		t.Fatalf("err = %v, want a case-collision config error", err)
+	}
+}
+
+func TestResolvePrincipals_SameTenantSpelledIdenticallyIsAccepted(t *testing.T) {
+	// Two principals in ONE tenant is the ordinary case and must keep loading.
+	t.Setenv("LOOMCYCLE_TOKEN_SAME_A", "lct_same_a")
+	t.Setenv("LOOMCYCLE_TOKEN_SAME_B", "lct_same_b")
+	c := &Config{Principals: map[string]PrincipalDef{
+		"a": {Tenant: "acme", Subject: "a", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_SAME_A"},
+		"b": {Tenant: "acme", Subject: "b", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_SAME_B"},
+		"o": {Tenant: "", Subject: "o", Scopes: []string{auth.ScopeAdmin}, TokenEnv: "LOOMCYCLE_TOKEN_SAME_O"},
+	}}
+	if err := resolvePrincipals(c); err != nil {
+		t.Fatalf("resolvePrincipals: %v", err)
+	}
+	if got := c.PrincipalTenants(); strings.Join(got, ",") != ",acme" {
+		t.Errorf("PrincipalTenants = %q, want [\"\" acme]", got)
+	}
+}

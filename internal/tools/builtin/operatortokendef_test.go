@@ -236,6 +236,62 @@ func TestOperatorTokenDef_RejectsUnknownScope(t *testing.T) {
 	}
 }
 
+// "Acme" and "acme" are two tenants to loomcycle but ONE volume directory on
+// a case-insensitive filesystem. A mint that would create the second spelling
+// is refused; the existing spelling keeps minting.
+func TestOperatorTokenMint_RefusesCaseFoldCollisionWithExistingTenant(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	tool.ConfigTenants = []string{"globex"}
+	mustOp(t, tool, ctx, `{"op":"create","name":"first","tenant_id":"acme","scopes":["runs:create"]}`)
+	// A retired token's tenant still owns its volumes on disk.
+	mustOp(t, tool, ctx, `{"op":"create","name":"old","tenant_id":"initech","scopes":["runs:create"]}`)
+	mustOp(t, tool, ctx, `{"op":"retire","name":"old"}`)
+
+	for _, tc := range []struct{ tenant, other string }{
+		{"Acme", "acme"},       // an existing token's tenant
+		{"INITECH", "initech"}, // a retired token's tenant
+		{"GloBex", "globex"},   // a config principal's tenant
+	} {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"n-`+tc.tenant+`","tenant_id":"`+tc.tenant+`","scopes":["runs:create"]}`))
+		if !res.IsError || !strings.Contains(res.Text, "differs only by case") || !strings.Contains(res.Text, tc.other) {
+			t.Errorf("mint for tenant %q = %s, want a case-collision refusal naming %q", tc.tenant, res.Text, tc.other)
+		}
+	}
+	// The exact spelling is the same tenant and keeps working.
+	mustOp(t, tool, ctx, `{"op":"create","name":"second","tenant_id":"acme","scopes":["runs:create"]}`)
+	mustOp(t, tool, ctx, `{"op":"create","name":"third","tenant_id":"globex","scopes":["runs:create"]}`)
+}
+
+// A tenant named after a reserved volume segment, in any case, would share the
+// shared tenant's or the run-scoped volume tree.
+func TestOperatorTokenMint_RefusesReservedTenantInAnyCase(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	for _, tenant := range []string{"_shared", "_Shared", "_EPHEMERAL"} {
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"r","tenant_id":"`+tenant+`","scopes":["runs:create"]}`))
+		if !res.IsError || !strings.Contains(res.Text, "reserved") {
+			t.Errorf("mint for tenant %q = %s, want a reserved refusal", tenant, res.Text)
+		}
+	}
+}
+
+// The config side of the same rule, checked at boot against minted tokens: a
+// principal added AFTER a token was minted for a case-twin tenant.
+func TestCheckPrincipalTenantsAgainstTokens_RefusesCaseFoldCollision(t *testing.T) {
+	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	mustOp(t, tool, ctx, `{"op":"create","name":"first","tenant_id":"acme","scopes":["runs:create"]}`)
+
+	err := CheckPrincipalTenantsAgainstTokens(ctx, s, []string{"", "Acme"})
+	if err == nil || !strings.Contains(err.Error(), "differs only by case") {
+		t.Errorf("err = %v, want a case-collision error", err)
+	}
+	if err := CheckPrincipalTenantsAgainstTokens(ctx, s, []string{"", "acme", "globex"}); err != nil {
+		t.Errorf("identical spellings: err = %v, want nil", err)
+	}
+}
+
 func TestOperatorTokenDef_RefusesDuplicateLiveName(t *testing.T) {
 	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
