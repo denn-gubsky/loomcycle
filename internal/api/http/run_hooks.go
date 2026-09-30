@@ -246,22 +246,15 @@ func pinnedLookup(st store.Store, runTenant string, defs map[string]string) hook
 	}
 }
 
-// recordPinnedHooks adds the pins to the run's record, read and written back.
-// Assumption: nothing else writes the record in the instant between the run's
-// creation and this write. The other writer is a retune — an operator acting
-// on a run it can already see running; one interleaved inside that window
-// (before the run's first model call) could lose its change or the pins, and
-// a run whose pins were lost resumes the way a run recorded before pinning
-// does, by resolving its hooks again.
+// recordPinnedHooks adds the pins to the run's record, keeping everything else
+// in it — including a retune that lands while the run is starting.
 func (s *Server) recordPinnedHooks(ctx context.Context, runID string, p *pinnedHooks) error {
 	if s.store == nil {
 		return nil
 	}
-	run, err := s.store.GetRun(ctx, runID)
-	if err != nil {
-		return err
-	}
-	rec, _ := decodeRunConfig(run.RunConfig)
-	rec.PinnedHooks = p
-	return s.store.SetRunConfig(ctx, runID, rec.marshal())
+	_, err := s.updateRunConfig(ctx, runID, func(rec *runConfigRecord, _ bool) error {
+		rec.PinnedHooks = p
+		return nil
+	})
+	return err
 }
