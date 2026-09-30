@@ -117,3 +117,69 @@ func TestSteer_TheRemoteGateAdmitsOnlyALiveOwnedRun(t *testing.T) {
 		t.Errorf("no cluster: status %d, want 404", rec.Code)
 	}
 }
+
+// clusterSubRun is clusterRun for a sub-run of parent: pc nil is the Agent
+// tool's child, a pc with a walk id is a team-walk member.
+func clusterSubRun(t *testing.T, srv *Server, parent, replica string, pc *store.ParentContext) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "writer", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: "sub_" + replica, ParentRunID: parent, UserID: "alice", ReplicaID: replica, ParentContext: pc,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.store.(*replicaStore).owner[run.ID] = replica
+	return run.ID
+}
+
+// A child the Agent tool spawned takes a verdict and nothing else on the
+// replica that owns it (its steer entry is VerdictsOnly). Another replica must
+// refuse it the same way: before, the remote gate admitted any running run, so
+// from there a retune changed the model or budget of a child its parent drives,
+// and its config was readable, while the owner answered 404. Its verdict still
+// routes, and a walk member and a top-level run stay reachable.
+func TestSteer_ARemoteAgentToolChildTakesOnlyAVerdict(t *testing.T) {
+	srv, cleanup := clusterFixture(t)
+	defer cleanup()
+	reg := steer.NewRegistry(2)
+	cluster := &fakeCluster{}
+	reg.SetClusterSteerer(cluster)
+	srv.SetSteerRegistry(reg)
+	parent := clusterRun(t, srv, "", "r2")
+	child := clusterSubRun(t, srv, parent, "r2", nil)
+
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", "/v1/runs/" + child + "/retune", `{"max_tokens":512}`},
+		{"POST", "/v1/runs/" + child + "/input", `{"text":"focus on auth"}`},
+		{"GET", "/v1/runs/" + child + "/config", ``},
+	} {
+		if rec := doJSON(t, srv, c.method, c.path, c.body); rec.Code != 404 {
+			t.Errorf("%s %s on another replica's Agent-tool child: status %d, want 404: %s", c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+	cluster.mu.Lock()
+	sent := len(cluster.sent)
+	cluster.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("pushed %d message(s) to the owner of a verdicts-only child, want 0", sent)
+	}
+
+	if err := srv.store.AppendEvent(context.Background(), child, "awaiting_review", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if rec := doJSON(t, srv, "POST", "/v1/runs/"+child+"/review", `{"decision":"approve"}`); rec.Code != 200 {
+		t.Errorf("verdict on another replica's held child: status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	member := clusterSubRun(t, srv, parent, "r2", &store.ParentContext{WalkID: "w1", State: "a", StateVisit: 1})
+	for _, id := range []string{member, parent} {
+		if rec := doJSON(t, srv, "POST", "/v1/runs/"+id+"/retune", `{"max_tokens":512}`); rec.Code != 200 {
+			t.Errorf("retune of %s on another replica: status %d, want 200: %s", id, rec.Code, rec.Body.String())
+		}
+	}
+}
