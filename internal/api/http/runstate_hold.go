@@ -53,7 +53,8 @@ func (h runHold) sameAnnouncement(o runHold) bool {
 // registry decides a run is no longer parked; a tool wait ends on ITS
 // tool_result, not any, because tools run in parallel and a sibling call's
 // result says nothing about this one — and when another wait is still open the
-// hold becomes that one; and done ends everything.
+// hold becomes that one; a retried or cancelled turn ends its calls' waits,
+// since they will not run; and done ends everything.
 //
 // An interactive run's approval moves a review hold straight to input, and an
 // abandoned or rejected hold ends in a terminal status, which the finishRun
@@ -88,6 +89,13 @@ func holdAfter(cur runHold, ev providers.Event) runHold {
 		}
 	case providers.EventSteer, providers.EventText:
 		if len(cur.calls) == 0 {
+			return runHold{}
+		}
+	case providers.EventRetry, providers.EventProviderFallback, providers.EventTurnCancelled:
+		// The model call is sent again, or the turn is abandoned: the calls it
+		// streamed will never run, so they get no result to end them. A retry
+		// that streams the same call again opens it under a new id.
+		if len(cur.calls) > 0 {
 			return runHold{}
 		}
 	case providers.EventDone:
