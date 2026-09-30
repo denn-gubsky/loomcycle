@@ -110,7 +110,7 @@ func TestRoundTrip_RuntimeChannelDefsKeepTheirTenantAndSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Restore(ctx, dst, raw, RestoreOptions{})
+	res, err := Restore(ctx, dst, raw, RestoreOptions{Validators: passValidators()})
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestRoundTrip_RuntimeChannelDefsKeepTheirTenantAndSettings(t *testing.T) {
 		t.Errorf("acme's channel is visible in the operator layer after restore (err = %v)", err)
 	}
 
-	again, err := Restore(ctx, dst, raw, RestoreOptions{})
+	again, err := Restore(ctx, dst, raw, RestoreOptions{Validators: passValidators()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestRestore_ChannelDefLeavesALiveDefinitionAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := Restore(ctx, dst, raw, RestoreOptions{})
+	res, err := Restore(ctx, dst, raw, RestoreOptions{Validators: passValidators()})
 	if err != nil {
 		t.Fatal(err)
 	}

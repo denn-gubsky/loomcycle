@@ -13,12 +13,19 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// passValidators accepts every body of the sections that must be validated.
-// The real validators live with the tools (internal/tools/builtin) and are
-// wired at the restore call sites; the HTTP package tests them end to end.
+// passValidators accepts every body of the sections that are validated on
+// restore, the older def sections included. The real validators live with the
+// tools (internal/tools/builtin) and are wired at the restore call sites; the
+// HTTP package tests them end to end.
 func passValidators() map[string]func(json.RawMessage) error {
 	ok := func(json.RawMessage) error { return nil }
 	return map[string]func(json.RawMessage) error{
+		migrations.SectionAgentDefs:         ok,
+		migrations.SectionSkillDefs:         ok,
+		migrations.SectionTeamDefs:          ok,
+		migrations.SectionHookDefs:          ok,
+		migrations.SectionMCPServerDefs:     ok,
+		migrations.SectionChannelDefs:       ok,
 		migrations.SectionWebhookDefs:       ok,
 		migrations.SectionA2AAgentDefs:      ok,
 		migrations.SectionA2AServerCardDefs: ok,

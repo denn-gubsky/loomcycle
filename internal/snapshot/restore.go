@@ -43,10 +43,17 @@ type RestoreOptions struct {
 	// Validators re-run a section's authoring validation over each restored
 	// body, keyed by section name (migrations.Section*). The snapshot package
 	// cannot import the tools that own those rules, so the call sites inject
-	// them. A section added by RFC DP P3 or later (webhook, A2A,
-	// memory-backend, document-source and volume defs) is never restored
-	// unvalidated: a row whose validator is missing, or fails, is skipped
-	// with a warning. Sections that predate it are not consulted yet.
+	// them. A row a validator refuses is skipped with a warning, and an active
+	// pointer at it is refused.
+	//
+	// A missing validator differs by section. The sections added with this
+	// mechanism (webhook, A2A, memory-backend, document-source and volume
+	// defs, and dirents) are never restored unvalidated: with no validator
+	// their rows are skipped. The def sections snapshots carried before it
+	// (agent, skill, team, hook, MCP server and channel defs) restore as they
+	// always have, with one section-level warning, so a caller that wires no
+	// validators keeps getting its definitions back. A channel_defs validator
+	// is given the ChannelDefEntry as JSON: a channel row has no single body.
 	Validators map[string]func(body json.RawMessage) error
 
 	// CredentialExists and EnvSet back the missing-credential scan: after the
@@ -103,6 +110,12 @@ type RestoreOptions struct {
 // def they name is missing here or is not that tenant's def of that name —
 // what a promote refuses; the warnings name each pointer.
 //
+// AgentDefsRefused, SkillDefsRefused, TeamDefsRefused, HookDefsRefused,
+// MCPServerDefsRefused and ChannelDefsRefused count the rows of those sections
+// not written because the validator the call site wired refused them — what
+// an author on this host could not have created; the warnings name each row
+// and the reason.
+//
 // VolumeDirsCreated counts the dynamic volume directories this restore
 // created under the host's dynamic root; a restored volume whose directory
 // was already there is in VolumeDefsRestored but not here.
@@ -142,6 +155,12 @@ type RestoreResult struct {
 	ScheduleRunStateRestored       int      `json:"schedule_run_state_restored"`
 	DefsDisabledForCredentials     int      `json:"defs_disabled_for_credentials"`
 	ActivePointersRefused          int      `json:"active_pointers_refused"`
+	AgentDefsRefused               int      `json:"agent_defs_refused"`
+	SkillDefsRefused               int      `json:"skill_defs_refused"`
+	TeamDefsRefused                int      `json:"team_defs_refused"`
+	HookDefsRefused                int      `json:"hook_defs_refused"`
+	MCPServerDefsRefused           int      `json:"mcp_server_defs_refused"`
+	ChannelDefsRefused             int      `json:"channel_defs_refused"`
 	EvaluationsRestored            int      `json:"evaluations_restored"`
 	PausedRunsRestored             int      `json:"paused_runs_restored"`
 	SynthesizedSessions            int      `json:"synthesized_sessions"`
@@ -316,7 +335,12 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionAgentDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
+		validate := existingSectionValidator(opts, migrations.SectionAgentDefs, len(sec.Entries), &result)
 		for _, e := range sec.Entries {
+			where := fmt.Sprintf("agent_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
+			if refusedByValidation(validate, where, e.Definition, &result.AgentDefsRefused, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreAgentDef(ctx, store.AgentDefRow{
 				DefID:                  e.DefID,
 				TenantID:               e.TenantID,
@@ -376,7 +400,12 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionSkillDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
+		validate := existingSectionValidator(opts, migrations.SectionSkillDefs, len(sec.Entries), &result)
 		for _, e := range sec.Entries {
+			where := fmt.Sprintf("skill_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
+			if refusedByValidation(validate, where, e.Definition, &result.SkillDefsRefused, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreSkillDef(ctx, store.SkillDefRow{
 				DefID:                  e.DefID,
 				TenantID:               e.TenantID,
@@ -435,7 +464,12 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionTeamDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
+		validate := existingSectionValidator(opts, migrations.SectionTeamDefs, len(sec.Entries), &result)
 		for _, e := range sec.Entries {
+			where := fmt.Sprintf("team_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
+			if refusedByValidation(validate, where, e.Definition, &result.TeamDefsRefused, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreTeamDef(ctx, store.TeamDefRow{
 				DefID:                  e.DefID,
 				TenantID:               e.TenantID,
@@ -496,7 +530,12 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionHookDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
+		validate := existingSectionValidator(opts, migrations.SectionHookDefs, len(sec.Entries), &result)
 		for _, e := range sec.Entries {
+			where := fmt.Sprintf("hook_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
+			if refusedByValidation(validate, where, e.Definition, &result.HookDefsRefused, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreHookDef(ctx, store.HookDefRow{
 				DefID:            e.DefID,
 				TenantID:         e.TenantID,
@@ -554,7 +593,14 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionMCPServerDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
+		// A refused def is not in the store, so the caller's post-restore
+		// registry reload (which reads the store) never makes it dialable.
+		validate := existingSectionValidator(opts, migrations.SectionMCPServerDefs, len(sec.Entries), &result)
 		for _, e := range sec.Entries {
+			where := fmt.Sprintf("mcp_server_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
+			if refusedByValidation(validate, where, e.Definition, &result.MCPServerDefsRefused, &result) {
+				continue
+			}
 			inserted, err := s.SnapshotRestoreMCPServerDef(ctx, store.MCPServerDefRow{
 				DefID:                  e.DefID,
 				TenantID:               e.TenantID,
@@ -799,7 +845,18 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionChannelDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
+		validate := existingSectionValidator(opts, migrations.SectionChannelDefs, len(sec.Entries), &result)
 		for _, e := range sec.Entries {
+			if validate != nil {
+				entry, err := json.Marshal(e)
+				if err != nil {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("channel_def %s: not restored: %v", qualifiedName(e.TenantID, e.Name), err))
+					continue
+				}
+				if refusedByValidation(validate, "channel_def "+qualifiedName(e.TenantID, e.Name), entry, &result.ChannelDefsRefused, &result) {
+					continue
+				}
+			}
 			err := s.ChannelsCreate(ctx, store.ChannelRow{
 				Name:        e.Name,
 				TenantID:    e.TenantID,
