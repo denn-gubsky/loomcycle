@@ -259,6 +259,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
 		{"ChannelStatsAggregatesNonExpired", testChannelStatsAggregatesNonExpired},
 		{"ChannelStatsEmptyOnNoMessages", testChannelStatsEmptyOnNoMessages},
+		{"ChannelGlobalFallbackCursorKeepsTenantsOwnMessages", testChannelGlobalFallbackCursorKeepsTenantsOwnMessages},
 		{"ChannelGetPointLookup", testChannelGetPointLookup},
 		{"ChannelsCreateConflictsOnTenantAndName", testChannelsCreateConflictsOnTenantAndName},
 		// RFC CY hold breakpoint
@@ -7007,6 +7008,118 @@ func testChannelTenantIsolation(t *testing.T, s store.Store) {
 	survivors, _, _ := s.ChannelSubscribe(ctx, "t2", "del", store.MemoryScopeAgent, "y", "", 10)
 	if len(survivors) != 1 {
 		t.Errorf("t2 del messages after t1 delete = %d, want 1 (cascade must be tenant-scoped)", len(survivors))
+	}
+}
+
+// testChannelGlobalFallbackCursorKeepsTenantsOwnMessages pins what the
+// operator-layer cursor governs for a tenant that has never acked a global
+// channel: the operator layer's rows only. The operator's subscribers advance
+// that cursor over their own layer; the tenant's own messages behind it were
+// never read by anyone, and a tenant resuming from it reads its own layer from
+// the start. Its first ack is checked against its own cursor alone.
+func testChannelGlobalFallbackCursorKeepsTenantsOwnMessages(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	g := store.MemoryScopeGlobal
+	pub := func(tenant, body string) {
+		t.Helper()
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: "alerts", TenantID: tenant, Scope: g, Payload: json.RawMessage(body)}, 0); err != nil {
+			t.Fatalf("publish %q: %v", tenant, err)
+		}
+		time.Sleep(2 * time.Millisecond) // distinct visible_at, so the merge order is the publish order
+	}
+	bodies := func(msgs []store.ChannelMessage) string {
+		var b []string
+		for _, m := range msgs {
+			var c bytes.Buffer // a JSONB backend re-spaces the payload
+			_ = json.Compact(&c, m.Payload)
+			b = append(b, c.String()+"@"+m.TenantID)
+		}
+		return strings.Join(b, " ")
+	}
+	committed := func(tenant string) string {
+		t.Helper()
+		c, err := s.ChannelCommittedCursor(ctx, tenant, "alerts", g, "")
+		if err != nil {
+			t.Fatalf("committed cursor %q: %v", tenant, err)
+		}
+		return c
+	}
+
+	pub("acme", `"a1"`)
+	pub("globex", `"g1"`)
+	pub("hooli", `"h1"`)
+	pub("hooli", `"h2"`)
+	pub("", `"o1"`)
+	// An operator-layer subscriber reads and acks through o1.
+	opMsgs, opNext, err := s.ChannelSubscribe(ctx, "", "alerts", g, "", "", 10)
+	if err != nil || bodies(opMsgs) != `"o1"@` {
+		t.Fatalf("operator read = %s (err %v), want o1 only", bodies(opMsgs), err)
+	}
+	if err := s.ChannelAck(ctx, "", "alerts", g, "", opNext); err != nil {
+		t.Fatalf("operator ack: %v", err)
+	}
+	pub("", `"o2"`)
+
+	// acme has no cursor of its own: it resumes from the operator's, which
+	// still skips o1 but no longer skips a1.
+	from := committed("acme")
+	if from != opNext {
+		t.Fatalf("acme resumes from %q, want the operator's %q", from, opNext)
+	}
+	got, next, err := s.ChannelSubscribe(ctx, "acme", "alerts", g, "", from, 10)
+	if err != nil || bodies(got) != `"a1"@acme "o2"@` {
+		t.Fatalf("acme first read = %s (err %v), want its own a1 and the operator's o2", bodies(got), err)
+	}
+	if peek, _ := s.ChannelPeek(ctx, "acme", "alerts", g, "", from, 10); bodies(peek) != bodies(got) {
+		t.Errorf("acme peek from the fallback = %s, want the subscribe's %s", bodies(peek), bodies(got))
+	}
+	if err := s.ChannelAck(ctx, "acme", "alerts", g, "", next); err != nil {
+		t.Fatalf("acme ack: %v", err)
+	}
+	if c := committed("acme"); c != next {
+		t.Errorf("acme cursor = %q, want its own %q", c, next)
+	}
+	if c := committed(""); c != opNext {
+		t.Errorf("acme's ack moved the operator cursor to %q", c)
+	}
+	// With a cursor of its own, acme's reads are the plain merged stream.
+	pub("acme", `"a2"`)
+	if got, _, _ := s.ChannelSubscribe(ctx, "acme", "alerts", g, "", committed("acme"), 10); bodies(got) != `"a2"@acme` {
+		t.Errorf("acme read from its own cursor = %s, want a2 only", bodies(got))
+	}
+
+	// globex's first read stops on its own message, before the operator's
+	// cursor. That ack is not a regression: globex's own cursor is its only
+	// bound. Its next read then includes o1, which globex has never received.
+	got, next, _ = s.ChannelSubscribe(ctx, "globex", "alerts", g, "", committed("globex"), 1)
+	if bodies(got) != `"g1"@globex` {
+		t.Fatalf("globex first read = %s, want g1", bodies(got))
+	}
+	if err := s.ChannelAck(ctx, "globex", "alerts", g, "", next); err != nil {
+		t.Fatalf("globex ack of its own g1 before the operator cursor: %v", err)
+	}
+	if got, _, _ := s.ChannelSubscribe(ctx, "globex", "alerts", g, "", committed("globex"), 10); bodies(got) != `"o1"@ "o2"@` {
+		t.Errorf("globex read from its own cursor = %s, want o1 o2", bodies(got))
+	}
+
+	// hooli pages without acking. A cursor naming its own message is a
+	// position in its own layer, so the next page moves on from it.
+	page, pnext, _ := s.ChannelSubscribe(ctx, "hooli", "alerts", g, "", committed("hooli"), 1)
+	if bodies(page) != `"h1"@hooli` {
+		t.Fatalf("hooli page 1 = %s, want h1", bodies(page))
+	}
+	if page, _, _ = s.ChannelSubscribe(ctx, "hooli", "alerts", g, "", pnext, 1); bodies(page) != `"h2"@hooli` {
+		t.Errorf("hooli page 2 = %s, want h2", bodies(page))
+	}
+	// A replay from the oldest message still covers both layers in full.
+	all, _ := s.ChannelPeek(ctx, "hooli", "alerts", g, "", "cur_0", 10)
+	if bodies(all) != `"h1"@hooli "h2"@hooli "o1"@ "o2"@` {
+		t.Fatalf("hooli replay = %s, want h1 h2 o1 o2", bodies(all))
+	}
+	// A cursor past the operator's is a position the tenant read to, in
+	// both layers: nothing before it comes back.
+	if rest, _ := s.ChannelPeek(ctx, "hooli", "alerts", g, "", store.EncodeChannelCursor(all[3].VisibleAt, all[3].ID), 10); len(rest) != 0 {
+		t.Errorf("hooli read past o2 = %s, want nothing", bodies(rest))
 	}
 }
 
