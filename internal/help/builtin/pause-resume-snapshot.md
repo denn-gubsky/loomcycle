@@ -229,6 +229,33 @@ directory there (`0700`). A path added to a snapshot by hand is ignored.
   (`<dynamic root>/acme/data`), never the host path.
 - Ephemeral (run-scoped) volumes are not carried.
 
+### Queued memory (not yet consolidated)
+
+`Memory op=add` (and a compaction banking what it discards) queues
+conversation turns for background consolidation. The `memory_pending`
+section carries every queued item that has **not been consolidated
+yet**, with its tenant, scope, user or agent, text, origin and source
+run. Items already consolidated are not carried: their facts are in the
+`memory` section.
+
+- **Always captured, paused or not.** The queue is read before
+  `memory`. A pass that finishes between the two reads leaves the item
+  in both, so the target consolidates it once more — a duplicate, never
+  a loss. Repeats usually merge into the facts the first pass wrote, but
+  extraction is model-driven, so a near-duplicate fact can remain. Pause
+  first for an exact copy.
+- **Consolidated on the target.** Items land unconsolidated and
+  unclaimed: the source's consolidation lease and progress markers do
+  not travel. The target's scheduled consolidation finds a restored
+  queue even for a user with no chats on the target.
+- **The target's own queue stands.** An item already on the target, even
+  one it has consolidated since, is left alone, so restoring the same
+  snapshot twice does not queue anything twice.
+- Restored items count in `memory_pending`.
+- An erasure of a subject on the target removes their restored items,
+  as it removes their memory. Restoring a snapshot taken before an
+  erasure brings them back, as it brings back everything else.
+
 ### Restore warnings and missing credentials
 
 A restore warning that quotes a URL has the URL's user/password, query
