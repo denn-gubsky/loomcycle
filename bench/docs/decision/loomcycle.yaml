@@ -1,0 +1,30 @@
+# Decision-model rerank probe — an isolated loomcycle that rebuilds phase M's pooled
+# ConditionalQA header store and returns each question's 20-candidate rerank pool.
+# The embedder is phase M's (bge-m3 on the Spark, OLLAMA_BASE_URL), so the pools are M's.
+models:
+  local-embedding: { provider: ollama-local, model: bge-m3:latest }
+memory:
+  embedder: { model: local-embedding }
+
+agents:
+  cqa/writer:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    code: |
+      function run(input) {
+        return { final_text: Document(JSON.parse(input.prompt)) };
+      }
+  cqa/pool:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    code: |
+      function run(input) {
+        var r = JSON.parse(Document({ op: "search", scope: "user", query: input.prompt, limit: 20 }));
+        return { final_text: JSON.stringify(r) };
+      }
