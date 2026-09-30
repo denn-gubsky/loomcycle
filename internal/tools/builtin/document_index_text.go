@@ -273,6 +273,19 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 	d.reindexing[dk] = map[string]struct{}{}
 	d.reindexMu.Unlock()
 
+	// This call owns the document's entry until it releases it or hands it to the
+	// background. A pass that panics while owning it must still give it up: an entry left
+	// behind turns every later re-index of the document into a request recorded for a
+	// pass that is gone, until restart. The flag (rather than a recover and re-panic)
+	// keeps the original panic and its stack for whoever handles it upstream, and keeps
+	// the defer from deleting an entry a NEW owner took after this one released it.
+	owned := true
+	defer func() {
+		if owned {
+			d.dropReindex(dk)
+		}
+	}()
+
 	ids, types, err := d.subtreeChunks(ctx, key, chunkID)
 	if err != nil {
 		log.Printf("document: re-index of the subtree under %s: %v", chunkID, err)
@@ -281,6 +294,7 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 	if len(ids) <= reindexSyncMax {
 		d.reindexChunks(ctx, key, mscope, ids, types)
 		if d.releaseReindex(dk) {
+			owned = false
 			return
 		}
 		// Requests arrived while this ran; their subtrees go to the background rather
@@ -291,8 +305,18 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 	// values — the run identity and tenant the store keys on.
 	bg := context.WithoutCancel(ctx)
 	d.reindexJobs.Add(1)
+	owned = false // the goroutine owns the entry from here
 	go func() {
 		defer d.reindexJobs.Done()
+		// Nothing above this goroutine would recover a panic in it, and an unrecovered
+		// panic in any goroutine ends the process. A failed pass is best-effort work like
+		// every embed: log it, give up the document's entry, keep serving.
+		defer func() {
+			if r := recover(); r != nil {
+				d.dropReindex(dk)
+				log.Printf("document: re-index of document %s panicked: %v", dk.docID, r)
+			}
+		}()
 		d.reindexChunks(bg, key, mscope, ids, types)
 		for {
 			pending := d.takePendingReindex(dk)
@@ -329,6 +353,15 @@ func (d *Document) releaseReindex(dk reindexDocKey) bool {
 	}
 	delete(d.reindexing, dk)
 	return true
+}
+
+// dropReindex gives up the document's entry after a pass that panicked. The chunks
+// recorded for it are dropped too; they keep their old index text until the next rename
+// or move re-indexes them, or the operator re-index pass runs.
+func (d *Document) dropReindex(dk reindexDocKey) {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+	delete(d.reindexing, dk)
 }
 
 // takePendingReindex hands the running pass the chunks asked for since it last looked,

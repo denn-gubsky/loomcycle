@@ -405,3 +405,91 @@ func TestReindex_OverlappingRenamesRunOnePassAndEndOnTheFinalTree(t *testing.T) 
 		t.Errorf("%d documents still marked as re-indexing after every pass ended", left)
 	}
 }
+
+// panickingEmbedder panics on its first `left` Embed calls, then embeds normally.
+type panickingEmbedder struct {
+	providers.Embedder
+	left atomic.Int64
+}
+
+func (p *panickingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if p.left.Add(-1) >= 0 {
+		panic("embedder exploded")
+	}
+	return p.Embedder.Embed(ctx, texts)
+}
+
+func reindexEntriesLeft(d *Document) int {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+	return len(d.reindexing)
+}
+
+// TestReindex_InlinePassPanicDoesNotBlockLaterRenames — a small re-index runs inline, so
+// its panic reaches the caller; the document's coalescing entry must not outlive it, or
+// every later rename of the document is recorded for a pass that no longer exists.
+func TestReindex_InlinePassPanicDoesNotBlockLaterRenames(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	_, ids := indexDoc(t, d, ctx)
+	emb := &panickingEmbedder{Embedder: d.Embedder}
+	emb.left.Store(1)
+	d.Embedder = emb
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("precondition: the first rename's pass did not panic")
+			}
+		}()
+		b, _ := json.Marshal(map[string]any{"op": "update_chunk", "id": ids["setup"],
+			"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "Getting started"})
+		_, _ = d.Execute(ctx, b)
+	}()
+	if n := reindexEntriesLeft(d); n != 0 {
+		t.Errorf("%d coalescing entries left after a pass panicked, want 0", n)
+	}
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "First steps"})
+	if got := embeddedTextFor(t, vs, ids["install"]); got != "Guide — First steps > Install\nRun the installer twice." {
+		t.Errorf("a rename after a panicked pass was not re-indexed: the child is indexed as %q", got)
+	}
+}
+
+// TestReindex_BackgroundPassPanicIsContainedAndReleased — a large re-index runs in its
+// own goroutine, where an unrecovered panic ends the process. It must be recovered, and
+// must give up the document's entry so a later rename is re-indexed.
+func TestReindex_BackgroundPassPanicIsContainedAndReleased(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "section")
+	out := docOp(t, d, ctx, map[string]any{"op": "create_document", "title": "Old name"})
+	docID, rootID := out["document_id"].(string), out["root_chunk_id"].(string)
+	var ids []string
+	for i := 0; i < reindexSyncMax+8; i++ {
+		c := docOp(t, d, ctx, map[string]any{"op": "create_chunk", "document_id": docID,
+			"title": fmt.Sprintf("Section %d", i), "body": "section text"})
+		ids = append(ids, c["id"].(string))
+	}
+	emb := &panickingEmbedder{Embedder: d.Embedder}
+	emb.left.Store(1)
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "Middle name"})
+	d.waitReindex()
+	if emb.left.Load() > 0 {
+		t.Fatal("precondition: the background pass never called the embedder")
+	}
+	if n := reindexEntriesLeft(d); n != 0 {
+		t.Errorf("%d coalescing entries left after a background pass panicked, want 0", n)
+	}
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "Final name"})
+	d.waitReindex()
+	for i, id := range ids {
+		want := fmt.Sprintf("Final name — Section %d\nsection text", i)
+		if got := embeddedTextFor(t, vs, id); got != want {
+			t.Fatalf("chunk %d after a rename that followed a panicked pass: %q, want %q", i, got, want)
+		}
+	}
+}
