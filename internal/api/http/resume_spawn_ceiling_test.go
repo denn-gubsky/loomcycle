@@ -426,6 +426,12 @@ func TestResumedChild_WithNoRecordedCeilingFailsClosed(t *testing.T) {
 // resumes serial, not on its definition's width of 16. A recorded width and a
 // top-level run's definition are left as they were. Measured on the wire: the
 // peak number of grandchild model calls in flight during the resumed fan-out.
+//
+// The grandchild calls meet at a barrier so the peak does not depend on how
+// fast a loaded box starts them. A width of N is proven by holding each call
+// until N are in flight, with a timeout generous enough never to fire when N
+// are permitted. Serial is proven the other way: each call waits briefly for
+// all three, which a missing cap would let arrive, and must still be alone.
 func TestResumedChild_FanOutWidthFailsClosedWithoutASpawnRecord(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -459,7 +465,10 @@ func TestResumedChild_FanOutWidthFailsClosedWithoutASpawnRecord(t *testing.T) {
 				"child":      {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "role:child.", MaxConcurrentChildren: 16},
 				"grandchild": {Model: "stub-model", Tools: []string{}, SystemPrompt: "role:grandchild."},
 			}
-			probe := &fanWidthProbe{joinUpTo: 3}
+			probe := newFanWidthProbe(tc.want, 10*time.Second)
+			if tc.want == 1 {
+				probe = newFanWidthProbe(3, 500*time.Millisecond)
+			}
 			prov := &roleProvider{
 				roles: []string{"child", "grandchild"},
 				scripts: map[string][][]providers.Event{
@@ -476,7 +485,19 @@ func TestResumedChild_FanOutWidthFailsClosedWithoutASpawnRecord(t *testing.T) {
 				ident.ParentAgentID = "a_gone_parent"
 			}
 			run := createCeilingRun(t, srv, "child", ident)
-			resumeAndFinish(t, srv, run)
+			parkForResume(t, srv, run.ID)
+			resumeOne(t, srv)
+			if tc.want > 1 {
+				// Bounded here rather than by the run: a width that is not
+				// permitted would otherwise hold each call for the whole
+				// barrier timeout, and the failure would read as a stuck run.
+				probe.awaitPeak(tc.want, 10*time.Second)
+				probe.release()
+			}
+			waitFor(t, "the resumed run to finish", func() bool {
+				_, live := srv.cancelReg.Get(run.AgentID)
+				return !live
+			})
 			if got := probe.peakInFlight(); got != tc.want {
 				t.Errorf("resumed run's grandchildren peaked at %d in flight, want %d", got, tc.want)
 			}
@@ -485,14 +506,22 @@ func TestResumedChild_FanOutWidthFailsClosedWithoutASpawnRecord(t *testing.T) {
 }
 
 // fanWidthProbe records the peak number of grandchild model calls in flight.
-// Each call waits a moment for siblings to join it, up to joinUpTo, so any
-// width up to that is observed whenever it is permitted.
+// Each call is held until joinUpTo calls have been in flight together or wait
+// passes, so a width up to joinUpTo is observed whenever it is permitted. The
+// release is a latch: once the barrier opens it stays open, so the calls that
+// were held do not wait out the timeout after the first of them returns.
 type fanWidthProbe struct {
 	joinUpTo int
+	wait     time.Duration
 
 	mu       sync.Mutex
 	inFlight int
 	peak     int
+	released chan struct{} // closed once joinUpTo calls are in flight, or by release
+}
+
+func newFanWidthProbe(joinUpTo int, wait time.Duration) *fanWidthProbe {
+	return &fanWidthProbe{joinUpTo: joinUpTo, wait: wait, released: make(chan struct{})}
 }
 
 func (p *fanWidthProbe) onCall(role string) {
@@ -504,20 +533,41 @@ func (p *fanWidthProbe) onCall(role string) {
 	if p.inFlight > p.peak {
 		p.peak = p.inFlight
 	}
+	if p.inFlight >= p.joinUpTo {
+		p.openLocked()
+	}
 	p.mu.Unlock()
-	deadline := time.Now().Add(300 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		p.mu.Lock()
-		joined := p.inFlight >= p.joinUpTo
-		p.mu.Unlock()
-		if joined {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-p.released:
+	case <-time.After(p.wait):
 	}
 	p.mu.Lock()
 	p.inFlight--
 	p.mu.Unlock()
+}
+
+// awaitPeak returns once want calls have been in flight together, or within
+// has passed.
+func (p *fanWidthProbe) awaitPeak(want int, within time.Duration) {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) && p.peakInFlight() < want {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// release opens the barrier for every call still held and every later one.
+func (p *fanWidthProbe) release() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.openLocked()
+}
+
+func (p *fanWidthProbe) openLocked() {
+	select {
+	case <-p.released:
+	default:
+		close(p.released)
+	}
 }
 
 func (p *fanWidthProbe) peakInFlight() int {
