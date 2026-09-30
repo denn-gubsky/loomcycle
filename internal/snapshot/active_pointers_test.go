@@ -149,6 +149,61 @@ func pointerKinds() []pointerKind {
 				return sr.Agent, ok
 			},
 		},
+		{
+			section:     "webhook_def_active",
+			defsSection: "webhook_defs",
+			seedDef: func(ctx context.Context, s store.Store, id, tenant, name string, body json.RawMessage) error {
+				_, err := s.SnapshotRestoreWebhookDef(ctx, store.WebhookDefRow{DefID: id, TenantID: tenant, Name: name, Version: 1, Definition: body, CreatedAt: now})
+				return err
+			},
+			seedPtr: func(ctx context.Context, s store.Store, tenant, name, id string) error {
+				_, err := s.SnapshotRestoreWebhookDefActive(ctx, store.WebhookDefActiveEntry{TenantID: tenant, Name: name, DefID: id, PromotedAt: now})
+				return err
+			},
+			active: func(ctx context.Context, s store.Store, tenant, name string) (string, error) {
+				r, err := s.WebhookDefGetActive(ctx, tenant, name)
+				return r.DefID, err
+			},
+			restored: func(r RestoreResult) int { return r.WebhookDefActiveRestored },
+			resolves: func(ctx context.Context, s store.Store, tenant, name string) (string, bool) {
+				w, ok := lookup.Webhook(ctx, s, nil, tenant, name)
+				return w.Agent, ok
+			},
+		},
+		{
+			section:     "a2a_agent_def_active",
+			defsSection: "a2a_agent_defs",
+			seedDef: func(ctx context.Context, s store.Store, id, tenant, name string, body json.RawMessage) error {
+				_, err := s.SnapshotRestoreA2AAgentDef(ctx, store.A2AAgentDefRow{DefID: id, TenantID: tenant, Name: name, Version: 1, Definition: body, CreatedAt: now})
+				return err
+			},
+			seedPtr: func(ctx context.Context, s store.Store, tenant, name, id string) error {
+				_, err := s.SnapshotRestoreA2AAgentDefActive(ctx, store.A2AAgentDefActiveEntry{TenantID: tenant, Name: name, DefID: id, PromotedAt: now})
+				return err
+			},
+			active: func(ctx context.Context, s store.Store, tenant, name string) (string, error) {
+				r, err := s.A2AAgentDefGetActive(ctx, tenant, name)
+				return r.DefID, err
+			},
+			restored: func(r RestoreResult) int { return r.A2AAgentDefActiveRestored },
+		},
+		{
+			section:     "a2a_server_card_def_active",
+			defsSection: "a2a_server_card_defs",
+			seedDef: func(ctx context.Context, s store.Store, id, tenant, name string, body json.RawMessage) error {
+				_, err := s.SnapshotRestoreA2AServerCardDef(ctx, store.A2AServerCardDefRow{DefID: id, TenantID: tenant, Name: name, Version: 1, Definition: body, CreatedAt: now})
+				return err
+			},
+			seedPtr: func(ctx context.Context, s store.Store, tenant, name, id string) error {
+				_, err := s.SnapshotRestoreA2AServerCardDefActive(ctx, store.A2AServerCardDefActiveEntry{TenantID: tenant, Name: name, DefID: id, PromotedAt: now})
+				return err
+			},
+			active: func(ctx context.Context, s store.Store, tenant, name string) (string, error) {
+				r, err := s.A2AServerCardDefGetActive(ctx, tenant, name)
+				return r.DefID, err
+			},
+			restored: func(r RestoreResult) int { return r.A2AServerCardDefActiveRestored },
+		},
 	}
 }
 
@@ -216,7 +271,9 @@ func TestRestore_ActivePointerIsWrittenOnlyForItsOwnTenantsDef(t *testing.T) {
 				}
 				raw = withoutDef(t, raw, k.defsSection, "pdf_gone")
 
-				res, err := Restore(ctx, dst, raw, RestoreOptions{})
+				// The sections that are never restored unvalidated need a
+				// validator to restore at all; the others ignore it.
+				res, err := Restore(ctx, dst, raw, RestoreOptions{Validators: passValidators()})
 				if err != nil {
 					t.Fatalf("Restore: %v", err)
 				}

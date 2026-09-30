@@ -571,35 +571,33 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// a2a_agent_defs, then a2a_server_card_defs, each with its pointers:
 	// before any resumed run, whose A2A peer tools are enumerated at run
 	// start; the cards after the agent defs they expose.
-	a2aAgentsNotRestored := map[string]bool{}
 	if rawSection, ok := sections[migrations.SectionA2AAgentDefs]; ok {
 		var sec A2AAgentDefsSection
 		if err := decodeWithMigration(migrations.SectionA2AAgentDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
-		a2aAgentsNotRestored = restoreA2AAgentDefs(ctx, s, &sec, opts, &result)
+		restoreA2AAgentDefs(ctx, s, &sec, opts, &result)
 	}
 	if rawSection, ok := sections[migrations.SectionA2AAgentDefActive]; ok {
 		var sec A2AAgentDefActiveSection
 		if err := decodeWithMigration(migrations.SectionA2AAgentDefActive, rawSection, &sec); err != nil {
 			return result, err
 		}
-		restoreA2AAgentDefActive(ctx, s, &sec, a2aAgentsNotRestored, &result)
+		restoreA2AAgentDefActive(ctx, s, &sec, &result)
 	}
-	a2aCardsNotRestored := map[string]bool{}
 	if rawSection, ok := sections[migrations.SectionA2AServerCardDefs]; ok {
 		var sec A2AServerCardDefsSection
 		if err := decodeWithMigration(migrations.SectionA2AServerCardDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
-		a2aCardsNotRestored = restoreA2AServerCardDefs(ctx, s, &sec, opts, scan, &result)
+		restoreA2AServerCardDefs(ctx, s, &sec, opts, scan, &result)
 	}
 	if rawSection, ok := sections[migrations.SectionA2AServerCardDefActive]; ok {
 		var sec A2AServerCardDefActiveSection
 		if err := decodeWithMigration(migrations.SectionA2AServerCardDefActive, rawSection, &sec); err != nil {
 			return result, err
 		}
-		restoreA2AServerCardDefActive(ctx, s, &sec, a2aCardsNotRestored, &result)
+		restoreA2AServerCardDefActive(ctx, s, &sec, &result)
 	}
 
 	// memory (no FK; embedding field carried but Phase 1 always
@@ -799,20 +797,19 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 
 	// webhook_defs, then webhook_def_active: after the agent and channel defs
 	// a webhook delivers to.
-	webhooksNotRestored := map[string]bool{}
 	if rawSection, ok := sections[migrations.SectionWebhookDefs]; ok {
 		var sec WebhookDefsSection
 		if err := decodeWithMigration(migrations.SectionWebhookDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
-		webhooksNotRestored = restoreWebhookDefs(ctx, s, &sec, opts, scan, &result)
+		restoreWebhookDefs(ctx, s, &sec, opts, scan, &result)
 	}
 	if rawSection, ok := sections[migrations.SectionWebhookDefActive]; ok {
 		var sec WebhookDefActiveSection
 		if err := decodeWithMigration(migrations.SectionWebhookDefActive, rawSection, &sec); err != nil {
 			return result, err
 		}
-		restoreWebhookDefActive(ctx, s, &sec, webhooksNotRestored, &result)
+		restoreWebhookDefActive(ctx, s, &sec, &result)
 	}
 
 	// schedule_defs with their run state, then schedule_def_active: after the

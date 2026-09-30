@@ -143,10 +143,9 @@ func validRestoredBody(opts RestoreOptions, section, where string, body json.Raw
 }
 
 // restoreWebhookDefs inserts each def the target does not have, in lineage
-// order. Returns the def_ids it did not restore (skipped or refused), so the
-// pointer pass does not point a name at them.
-func restoreWebhookDefs(ctx context.Context, s store.Store, sec *WebhookDefsSection, opts RestoreOptions, scan *credScan, result *RestoreResult) map[string]bool {
-	notRestored := map[string]bool{}
+// order. A def it skips or refuses is not on the target, so the pointer pass
+// refuses a pointer at it (admitActivePointer).
+func restoreWebhookDefs(ctx context.Context, s store.Store, sec *WebhookDefsSection, opts RestoreOptions, scan *credScan, result *RestoreResult) {
 	for _, e := range sec.Entries {
 		where := fmt.Sprintf("webhook_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
 		body := e.Definition
@@ -157,13 +156,11 @@ func restoreWebhookDefs(ctx context.Context, s store.Store, sec *WebhookDefsSect
 			forced, err := forceCaptureDisabled(body, e.StrippedCredentials)
 			if err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("%s: not restored: it lost credentials and %v, so it cannot be stored disabled", where, err))
-				notRestored[e.DefID] = true
 				continue
 			}
 			body = forced
 		}
 		if !validRestoredBody(opts, migrations.SectionWebhookDefs, where, body, result) {
-			notRestored[e.DefID] = true
 			continue
 		}
 		inserted, err := s.SnapshotRestoreWebhookDef(ctx, store.WebhookDefRow{
@@ -176,7 +173,6 @@ func restoreWebhookDefs(ctx context.Context, s store.Store, sec *WebhookDefsSect
 			// Typically a live def on the same (tenant, name, version) — this
 			// instance's own yaml bootstrap, say. The live row stands.
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: not restored, the live definition stands: %v", where, err))
-			notRestored[e.DefID] = true
 			continue
 		}
 		if !inserted {
@@ -194,29 +190,28 @@ func restoreWebhookDefs(ctx context.Context, s store.Store, sec *WebhookDefsSect
 			scan.add("webhook_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, body)
 		}
 	}
-	return notRestored
 }
 
-// restoreActivePointer is the shared shape of the three pointer passes: a
-// pointer at a def this restore refused is skipped (it would name a def that
-// is not here, or one that failed validation), and a live pointer stands.
-func restoreActivePointer(section, tenantID, name, defID string, notRestored map[string]bool, insert func() (bool, error), result *RestoreResult) bool {
-	where := fmt.Sprintf("%s %s", section, qualifiedName(tenantID, name))
-	if notRestored[defID] {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("%s: not restored: it points at def %s, which this restore did not restore", where, defID))
+// restoreActivePointer is the shared shape of the three pointer passes. The
+// pointer is written only if the def it names is on the target under the
+// pointer's own tenant and name — the promote's check (admitActivePointer),
+// which also refuses a pointer at a def this restore skipped or refused — and
+// a live pointer stands.
+func restoreActivePointer(ctx context.Context, s store.Store, owner defOwner, section, tenantID, name, defID string, insert func() (bool, error), result *RestoreResult) bool {
+	if !admitActivePointer(ctx, s, owner, section, tenantID, name, defID, result) {
 		return false
 	}
 	inserted, err := insert()
 	if err != nil {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("%s: %v", where, err))
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%s %s: %v", section, qualifiedName(tenantID, name), err))
 		return false
 	}
 	return inserted
 }
 
-func restoreWebhookDefActive(ctx context.Context, s store.Store, sec *WebhookDefActiveSection, notRestored map[string]bool, result *RestoreResult) {
+func restoreWebhookDefActive(ctx context.Context, s store.Store, sec *WebhookDefActiveSection, result *RestoreResult) {
 	for _, e := range sec.Entries {
-		if restoreActivePointer(migrations.SectionWebhookDefActive, e.TenantID, e.Name, e.DefID, notRestored, func() (bool, error) {
+		if restoreActivePointer(ctx, s, webhookDefOwner, migrations.SectionWebhookDefActive, e.TenantID, e.Name, e.DefID, func() (bool, error) {
 			return s.SnapshotRestoreWebhookDefActive(ctx, store.WebhookDefActiveEntry{
 				Name: e.Name, TenantID: e.TenantID, DefID: e.DefID, PromotedAt: e.PromotedAt, PromotedByAgentID: e.PromotedByAgentID,
 			})
@@ -226,12 +221,10 @@ func restoreWebhookDefActive(ctx context.Context, s store.Store, sec *WebhookDef
 	}
 }
 
-func restoreA2AAgentDefs(ctx context.Context, s store.Store, sec *A2AAgentDefsSection, opts RestoreOptions, result *RestoreResult) map[string]bool {
-	notRestored := map[string]bool{}
+func restoreA2AAgentDefs(ctx context.Context, s store.Store, sec *A2AAgentDefsSection, opts RestoreOptions, result *RestoreResult) {
 	for _, e := range sec.Entries {
 		where := fmt.Sprintf("a2a_agent_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
 		if !validRestoredBody(opts, migrations.SectionA2AAgentDefs, where, e.Definition, result) {
-			notRestored[e.DefID] = true
 			continue
 		}
 		inserted, err := s.SnapshotRestoreA2AAgentDef(ctx, store.A2AAgentDefRow{
@@ -242,19 +235,17 @@ func restoreA2AAgentDefs(ctx context.Context, s store.Store, sec *A2AAgentDefsSe
 		})
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: not restored, the live definition stands: %v", where, err))
-			notRestored[e.DefID] = true
 			continue
 		}
 		if inserted {
 			result.A2AAgentDefsRestored++
 		}
 	}
-	return notRestored
 }
 
-func restoreA2AAgentDefActive(ctx context.Context, s store.Store, sec *A2AAgentDefActiveSection, notRestored map[string]bool, result *RestoreResult) {
+func restoreA2AAgentDefActive(ctx context.Context, s store.Store, sec *A2AAgentDefActiveSection, result *RestoreResult) {
 	for _, e := range sec.Entries {
-		if restoreActivePointer(migrations.SectionA2AAgentDefActive, e.TenantID, e.Name, e.DefID, notRestored, func() (bool, error) {
+		if restoreActivePointer(ctx, s, a2aAgentDefOwner, migrations.SectionA2AAgentDefActive, e.TenantID, e.Name, e.DefID, func() (bool, error) {
 			return s.SnapshotRestoreA2AAgentDefActive(ctx, store.A2AAgentDefActiveEntry{
 				Name: e.Name, TenantID: e.TenantID, DefID: e.DefID, PromotedAt: e.PromotedAt, PromotedByAgentID: e.PromotedByAgentID,
 			})
@@ -264,12 +255,10 @@ func restoreA2AAgentDefActive(ctx context.Context, s store.Store, sec *A2AAgentD
 	}
 }
 
-func restoreA2AServerCardDefs(ctx context.Context, s store.Store, sec *A2AServerCardDefsSection, opts RestoreOptions, scan *credScan, result *RestoreResult) map[string]bool {
-	notRestored := map[string]bool{}
+func restoreA2AServerCardDefs(ctx context.Context, s store.Store, sec *A2AServerCardDefsSection, opts RestoreOptions, scan *credScan, result *RestoreResult) {
 	for _, e := range sec.Entries {
 		where := fmt.Sprintf("a2a_server_card_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
 		if !validRestoredBody(opts, migrations.SectionA2AServerCardDefs, where, e.Definition, result) {
-			notRestored[e.DefID] = true
 			continue
 		}
 		inserted, err := s.SnapshotRestoreA2AServerCardDef(ctx, store.A2AServerCardDefRow{
@@ -280,7 +269,6 @@ func restoreA2AServerCardDefs(ctx context.Context, s store.Store, sec *A2AServer
 		})
 		if err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: not restored, the live definition stands: %v", where, err))
-			notRestored[e.DefID] = true
 			continue
 		}
 		if !inserted {
@@ -291,16 +279,15 @@ func restoreA2AServerCardDefs(ctx context.Context, s store.Store, sec *A2AServer
 			scan.add("a2a_server_card_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, e.Definition)
 		}
 	}
-	return notRestored
 }
 
 // restoreA2AServerCardDefActive restores the card pointers and warns once per
 // card it made live: a card publishes an AgentCard and accepts A2A calls for
 // the agents it exposes as soon as the runtime resumes, so cloning a snapshot
 // into a staging instance must not expose agents unnoticed.
-func restoreA2AServerCardDefActive(ctx context.Context, s store.Store, sec *A2AServerCardDefActiveSection, notRestored map[string]bool, result *RestoreResult) {
+func restoreA2AServerCardDefActive(ctx context.Context, s store.Store, sec *A2AServerCardDefActiveSection, result *RestoreResult) {
 	for _, e := range sec.Entries {
-		if !restoreActivePointer(migrations.SectionA2AServerCardDefActive, e.TenantID, e.Name, e.DefID, notRestored, func() (bool, error) {
+		if !restoreActivePointer(ctx, s, a2aServerCardDefOwner, migrations.SectionA2AServerCardDefActive, e.TenantID, e.Name, e.DefID, func() (bool, error) {
 			return s.SnapshotRestoreA2AServerCardDefActive(ctx, store.A2AServerCardDefActiveEntry{
 				Name: e.Name, TenantID: e.TenantID, DefID: e.DefID, PromotedAt: e.PromotedAt, PromotedByAgentID: e.PromotedByAgentID,
 			})
