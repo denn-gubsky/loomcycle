@@ -105,8 +105,15 @@ type Sections struct {
 	A2AServerCardDefs      A2AServerCardDefsSection      `json:"a2a_server_card_defs"`
 	A2AServerCardDefActive A2AServerCardDefActiveSection `json:"a2a_server_card_def_active"`
 	Memory                 MemorySection                 `json:"memory"`
-	Channels               ChannelsSection               `json:"channels"`
-	ChannelDefs            ChannelDefsSection            `json:"channel_defs"`
+	// MemoryPending is the consolidation queue's UNDRAINED rows: adds that
+	// were accepted but not yet consolidated. It is read BEFORE memory at
+	// capture (a row that drains between the two reads is then in both, a
+	// duplicate, never in neither) and restored after it, un-drained, so the
+	// target's consolidator picks the rows up. The per-target watermark and
+	// lease (memory_cursors) do not travel.
+	MemoryPending MemoryPendingSection `json:"memory_pending"`
+	Channels      ChannelsSection      `json:"channels"`
+	ChannelDefs   ChannelDefsSection   `json:"channel_defs"`
 	// WebhookDefs lose their literal user_credentials values at capture, as
 	// schedules do; a def that lost any travels disabled.
 	WebhookDefs      WebhookDefsSection      `json:"webhook_defs"`
@@ -771,6 +778,31 @@ type MemoryEntry struct {
 	ValidAt    *time.Time               `json:"valid_at,omitempty"`
 	InvalidAt  *time.Time               `json:"invalid_at,omitempty"`
 	Embedding  *MemoryEmbeddingSnapshot `json:"embedding"` // explicit null when nil; see memory_embedding.go
+}
+
+// MemoryPendingSection carries every tenant's undrained consolidation-queue
+// rows.
+type MemoryPendingSection struct {
+	Version string               `json:"version"`
+	Entries []MemoryPendingEntry `json:"entries"`
+}
+
+// MemoryPendingEntry is one undrained memory_pending row. There is no
+// drained_at: only undrained rows are captured, and a restored row is always
+// work still to do. There is no lease or claim either — a row carries none;
+// the per-target lease lives in memory_cursors, which never travels. Payload
+// is the queued conversation the consolidator will read: user data, carried
+// as written.
+type MemoryPendingEntry struct {
+	ID              string          `json:"id"`
+	TenantID        string          `json:"tenant_id,omitempty"`
+	Scope           string          `json:"scope"`
+	ScopeID         string          `json:"scope_id"`
+	Payload         json.RawMessage `json:"payload"`
+	Origin          string          `json:"origin,omitempty"`
+	SourceSessionID string          `json:"source_session_id,omitempty"`
+	SourceRunID     string          `json:"source_run_id,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 // ChannelsSection wraps channels config + messages + cursors. Channel

@@ -123,6 +123,7 @@ type RestoreResult struct {
 	A2AServerCardDefsRestored      int      `json:"a2a_server_card_defs_restored"`
 	A2AServerCardDefActiveRestored int      `json:"a2a_server_card_def_active_restored"`
 	MemoryRestored                 int      `json:"memory_restored"`
+	MemoryPendingRestored          int      `json:"memory_pending_restored"`
 	ChannelDefsRestored            int      `json:"channel_defs_restored"`
 	ChannelMessagesRestored        int      `json:"channel_messages_restored"`
 	ChannelCursorsRestored         int      `json:"channel_cursors_restored"`
@@ -179,6 +180,7 @@ func (r RestoreResult) Counts() map[string]int {
 //	volume_defs       (path derived under this host's dynamic root)
 //	memory_backend_defs, document_source_defs → their active pointers
 //	a2a_agent_defs, a2a_server_card_defs → their active pointers
+//	memory            → memory_pending (undrained, unleased: consolidated here)
 //	webhook_defs, schedule_defs → their active pointers (after channel_defs)
 //	(missing-credential scan over the restored triggers and cards)
 //	(sessions synth)  → paused_runs       (FK: session_id → sessions.id)
@@ -760,6 +762,17 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				}
 			}
 		}
+	}
+
+	// memory_pending: after memory and the memory-backend defs, before any
+	// resumed run. Each row lands un-drained and unleased (the per-target
+	// lease never travels), so the target's consolidator picks it up.
+	if rawSection, ok := sections[migrations.SectionMemoryPending]; ok {
+		var sec MemoryPendingSection
+		if err := decodeWithMigration(migrations.SectionMemoryPending, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreMemoryPending(ctx, s, &sec, &result)
 	}
 
 	// channel_defs, before the messages they govern: the hook worker claims a

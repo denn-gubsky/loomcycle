@@ -111,6 +111,12 @@ var tableCoverageMap = map[string]tableCoverage{
 		Cache:   "mcp.DynamicRegistry (filled from the active defs at boot)"},
 	"memory":                    {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onBoth},
 	"memory_backend_def_active": {Kind: coverSection, Section: "memory_backend_def_active", Secrets: "none", Backends: onBoth},
+	// The queue's payload is the conversation to consolidate: user data, not
+	// an operator secret. Only undrained rows travel, and never a lease (that
+	// is memory_cursors). The consolidator reads the queue from the store per
+	// pass; nothing is cached.
+	"memory_pending": {Kind: coverSection, Section: "memory_pending", Secrets: "none", Backends: onBoth,
+		Reason: "undrained rows only, captured before memory (at-least-once) and restored un-drained"},
 	"memory_backend_defs": {Kind: coverSection, Section: "memory_backend_defs", Backends: onBoth,
 		Secrets: "by-reference: config.api_key_env, tenancy_strategy.env_pattern (env var names)"},
 	"memory_embeddings": {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onPostgres,
@@ -196,6 +202,5 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "live concurrency slots of the source cluster"},
 
 	// ---- pending: a later phase adds the section ----------------------------
-	"dirents":        {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
-	"memory_pending": {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
+	"dirents": {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
 }

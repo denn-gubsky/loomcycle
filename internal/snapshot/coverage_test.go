@@ -271,6 +271,9 @@ const (
 	markLimitUser   = "dp0mark-limit-subject"
 	markCarryTenant = "dp0mark-carry-tenant"
 	markVolumePath  = "/dp0mark-volume-host-path"
+	markPending     = "dp0mark-pending-undrained-content"
+	markDrained     = "dp0mark-pending-drained-content"
+	markLeaseOwner  = "dp0mark-consolidation-lease-owner"
 	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
@@ -344,6 +347,18 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		Definition: json.RawMessage(`{"path":"` + markVolumePath + `","mode":"ro"}`)})
 	must("volume_defs", err)
 
+	// The consolidation queue: an undrained row is user data still to be
+	// consolidated and travels; a drained one is history and does not. The
+	// lease a source pass holds on the target is a replica's claim and never
+	// travels.
+	must("memory_pending", s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{ID: "pend_dp0mark", TenantID: "acme",
+		Scope: store.MemoryScopeUser, ScopeID: "u1", Payload: json.RawMessage(`{"messages":[{"role":"user","content":"` + markPending + `"}]}`)}))
+	must("memory_pending", s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{ID: "pend_dp0mark_drained", TenantID: "acme",
+		Scope: store.MemoryScopeUser, ScopeID: "u1", Payload: json.RawMessage(`{"messages":[{"role":"user","content":"` + markDrained + `"}]}`)}))
+	must("memory_pending", s.MemoryPendingAck(ctx, "acme", store.MemoryScopeUser, "u1", []string{"pend_dp0mark_drained"}))
+	_, _, err = s.MemoryCursorLease(ctx, "acme", store.MemoryScopeUser, "u1", markLeaseOwner, now, time.Hour)
+	must("memory_cursors", err)
+
 	// A billing-ledger row. Only a month-to-date aggregate may ever travel,
 	// so none of the row's own fields may — but its tenant does, as the key
 	// of that aggregate. The check for it is in the test, since the ledger
@@ -371,6 +386,8 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		{table: "document_source_defs", present: []string{"dp0mark-document-source", `"api_key_env":"` + plantedEnvName + `"`},
 			absent: []string{markEnvResolved}},
 		{table: "volume_defs", present: []string{"dp0mark-volume", `"mode":"ro"`}, absent: []string{markVolumePath, `"path"`}},
+		{table: "memory_pending", present: []string{markPending}, absent: []string{markDrained, "drained_at"}},
+		{table: "memory_cursors", absent: []string{markLeaseOwner}},
 		{table: "token_usage", absent: []string{markProvider, markModel, markUsageRun}},
 		{table: "users", present: []string{markUser}},
 		{table: "token_limits", present: []string{markLimitUser}},

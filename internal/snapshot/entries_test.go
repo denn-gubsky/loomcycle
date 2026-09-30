@@ -105,7 +105,7 @@ var pinnedEntryKeys = map[string][]string{
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active", "volume_defs",
 		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
-		"memory", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
+		"memory", "memory_pending", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
 		"schedule_def_active", "evaluations", "paused_runs", "interaction_history", "sqlmem", "capture_findings"},
 
 	"UsersSection":              {"version", "entries"},
@@ -212,6 +212,14 @@ var pinnedEntryKeys = map[string][]string{
 	"MemoryEntry": {"tenant_id", "scope", "scope_id", "key", "value", "expires_at", "created_at", "updated_at",
 		"observed_at", "valid_at", "invalid_at", "embedding"},
 	"MemoryEmbeddingSnapshot": {"provider", "model", "dimension", "vector", "embed_text", "created_at"},
+
+	// An undrained consolidation-queue row. The payload is the queued
+	// conversation — user data, not an operator secret. NO drained_at (only
+	// undrained rows travel) and NO lease or claim holder: a source replica's
+	// claim must never come back on the target. Never add one.
+	"MemoryPendingSection": {"version", "entries"},
+	"MemoryPendingEntry": {"id", "tenant_id", "scope", "scope_id", "payload", "origin", "source_session_id",
+		"source_run_id", "created_at"},
 
 	"ChannelConfigEntry": {"name", "description", "scope", "ttl_seconds", "max_messages", "allowed_publishers"},
 	"ChannelMessageEntry": {"id", "channel", "scope", "scope_id", "payload", "published_at", "expires_at",

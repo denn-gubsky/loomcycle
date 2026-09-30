@@ -180,6 +180,13 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureA2A(ctx, s, &envelope.Sections); err != nil {
 		return nil, nil, nil, err
 	}
+	// memory_pending is read BEFORE memory, always, paused or not. A pass that
+	// acks a row between the two reads then leaves it in both — a duplicate
+	// the target re-consolidates — where the other order would leave it in
+	// neither. See memory_pending.go.
+	if err := captureMemoryPending(ctx, s, &envelope.Sections.MemoryPending); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureMemory(ctx, s, &envelope.Sections.Memory); err != nil {
 		return nil, nil, nil, err
 	}
