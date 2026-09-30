@@ -4976,6 +4976,25 @@ func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope sto
 	return nil
 }
 
+// MemoryPendingPruneDrained deletes up to limit rows acked before `before`.
+// Undrained rows are never touched.
+func (s *Store) MemoryPendingPruneDrained(ctx context.Context, before time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM memory_pending WHERE id IN (
+		   SELECT id FROM memory_pending
+		    WHERE drained_at IS NOT NULL AND drained_at < $1
+		    LIMIT $2)`,
+		before.UTC(), limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("memory pending prune drained: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // MemoryPendingTargets returns the scope ids under (tenant, scope) with queued
 // undrained work, the longest-waiting first.
 func (s *Store) MemoryPendingTargets(ctx context.Context, tenantID string, scope store.MemoryScope, limit int) ([]string, error) {
