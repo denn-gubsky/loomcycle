@@ -77,6 +77,56 @@ func TestProvision_RefusesAReservedTenant(t *testing.T) {
 	}
 }
 
+// A tenant id is used verbatim as one path segment, so one carrying path
+// components would derive another tenant's tree: tenant "x/.." with volume
+// "acme" is <root>/acme, the whole of tenant acme's tree. "a/b" and "." stay
+// inside the root, so the fence alone would not refuse them.
+func TestProvision_RefusesTenantWithPathComponents(t *testing.T) {
+	root := resolvedTempDir(t)
+	for _, tenant := range []string{"x/..", "a/b", "..", "."} {
+		if _, _, err := Provision(root, tenant, "acme"); err == nil {
+			t.Errorf("Provision accepted tenant %q", tenant)
+		}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("refused tenants left %d entries under the root", len(entries))
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(root), "acme")); !os.IsNotExist(err) {
+		t.Errorf("a traversal tenant created a directory beside the root (err=%v)", err)
+	}
+}
+
+// On a case-insensitive filesystem "_Shared" IS the shared tenant's tree and
+// "_EPHEMERAL" the run-scoped one.
+func TestValidTenant_RefusesReservedCaseVariants(t *testing.T) {
+	for _, tenant := range []string{"_Shared", "_EPHEMERAL", "_SHARED", "_Ephemeral"} {
+		if err := ValidTenant(tenant); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("ValidTenant(%q) err = %v, want reserved", tenant, err)
+		}
+	}
+	for _, tenant := range []string{"", "acme", "Acme", "tenant_1-x"} {
+		if err := ValidTenant(tenant); err != nil {
+			t.Errorf("ValidTenant(%q) = %v, want accepted", tenant, err)
+		}
+	}
+}
+
+func TestCaseFoldCollision_FindsOnlyADifferentSpelling(t *testing.T) {
+	known := []string{"", "acme", "globex"}
+	if other, clash := CaseFoldCollision("Acme", known); !clash || other != "acme" {
+		t.Errorf(`CaseFoldCollision("Acme") = %q,%v, want "acme",true`, other, clash)
+	}
+	for _, c := range []string{"acme", "initech", ""} {
+		if other, clash := CaseFoldCollision(c, known); clash {
+			t.Errorf("CaseFoldCollision(%q) clashed with %q", c, other)
+		}
+	}
+}
+
 // The fence refuses a derived path that is the root itself or leaves it.
 func TestAssertInsideRoot_RefusesTheRootAndEscapes(t *testing.T) {
 	root := resolvedTempDir(t)

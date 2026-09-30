@@ -65,19 +65,49 @@ func ValidMode(mode string) error {
 	return nil
 }
 
+// tenantRe is the tenant-id charset, the same one minted tokens enforce. The
+// id is used verbatim as ONE path segment (TenantSegment), so it must never
+// carry "/" or be "." / "..": "x/.." would derive tenant acme's tree, and a
+// purge by that tenant would delete it. Tenant ids also reach this package
+// from config principals and hand-edited snapshot entries, which do not go
+// through the mint check, so the charset is enforced here as well.
+var tenantRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 // ReservedTenant reports whether tenantID collides with a reserved on-disk
 // segment: "_shared" would share the shared tenant's tree, "_ephemeral" the
-// run-scoped tree, blurring the purge fences either way.
+// run-scoped tree, blurring the purge fences either way. The comparison
+// ignores case because on a case-insensitive filesystem (the macOS default,
+// a ZFS dataset with casesensitivity=insensitive) "_Shared" IS "_shared".
 func ReservedTenant(tenantID string) bool {
-	return tenantID == SharedTenantSegment || tenantID == EphemeralSegment
+	return strings.EqualFold(tenantID, SharedTenantSegment) || strings.EqualFold(tenantID, EphemeralSegment)
 }
 
-// ValidTenant refuses a reserved tenant id.
+// ValidTenant accepts the shared tenant "" or an id that is exactly one
+// charset-clean path segment, and refuses a reserved one.
 func ValidTenant(tenantID string) error {
+	if tenantID == "" {
+		return nil
+	}
 	if ReservedTenant(tenantID) {
 		return fmt.Errorf("tenant id %q is reserved", tenantID)
 	}
+	if !tenantRe.MatchString(tenantID) {
+		return fmt.Errorf("tenant id %q invalid (must match ^[a-zA-Z0-9_-]{1,64}$ — one path segment, no slashes or dots)", tenantID)
+	}
 	return nil
+}
+
+// CaseFoldCollision returns the first id in known that differs from
+// candidate but equals it ignoring case. Two such tenants would share one
+// volume tree on a case-insensitive filesystem, so whatever registers a new
+// tenant id refuses one that has such a twin.
+func CaseFoldCollision(candidate string, known []string) (string, bool) {
+	for _, k := range known {
+		if k != candidate && strings.EqualFold(k, candidate) {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 // TenantSegment maps a tenant id to its on-disk path segment. The shared
