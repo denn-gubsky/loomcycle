@@ -176,3 +176,22 @@ func TestExecute_AnIdenticalCallWhoseResultChangesIsNeverRefused(t *testing.T) {
 		t.Errorf("a run polling for new results was flagged to stop: %s", why)
 	}
 }
+
+// Identical calls sent together in one turn all run, even with identical
+// results: none was sent after seeing another's result. The same call in the
+// next turn has seen three identical results, and is refused.
+func TestExecute_IdenticalCallsInOneBatchAllRunAndTheNextBatchIsRefused(t *testing.T) {
+	mem := &flakyStub{pointerStub: pointerStub{name: "Memory", schema: `{"type":"object"}`}}
+	d := NewDispatcher([]Tool{mem})
+	same := json.RawMessage(`{"op":"set","scope":"tenant","key":"k","value":"v"}`)
+	turn := d.WithToolBatch(context.Background())
+	for i := 0; i < 3; i++ {
+		if res := d.Execute(turn, "Memory", same); res.IsError {
+			t.Fatalf("call %d of one batch refused: %s", i+1, res.Text)
+		}
+	}
+	res := d.Execute(d.WithToolBatch(context.Background()), "Memory", same)
+	if mem.ran != 3 || !res.IsError || !strings.Contains(res.Text, "this exact call 3 times in a row") {
+		t.Errorf("ran %d, next batch %+v; want 3 runs and the next batch refused", mem.ran, res)
+	}
+}

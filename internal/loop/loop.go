@@ -3769,6 +3769,9 @@ func executePendingTools(
 	if parallelism < 1 {
 		parallelism = 1
 	}
+	// One batch: the model sent these together, before seeing any of their
+	// results, so the repeat guard does not count them against each other.
+	ctx = dispatcher.WithToolBatch(ctx)
 
 	type result struct {
 		idx int

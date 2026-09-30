@@ -2023,7 +2023,7 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 	if r, refused := d.refuseRepeat(name, input); refused {
 		return d.withHelpPointer(name, input, r), nil
 	}
-	if r, refused := d.refuseConsecutive(name, input); refused {
+	if r, refused := d.refuseConsecutive(ctx, name, input); refused {
 		// No "correct call" example: the call's shape was never the problem,
 		// and an example would read as if it were.
 		d.noteResult(name, input, r)
@@ -2051,7 +2051,7 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 	} else {
 		return toolNotFound(name), nil
 	}
-	d.recordResult(name, input, res)
+	d.recordResult(ctx, name, input, res)
 	d.noteResult(name, input, res)
 	d.noteHelpRead(name, input, res)
 	return d.withHelpPointer(name, input, res), goErr

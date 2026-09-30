@@ -202,3 +202,49 @@ func TestRun_ARepeatedCallWithTheSameResultIsStillStopped(t *testing.T) {
 		t.Errorf("the tool ran %d times; want 2 (the repeats after that are refused, not run)", mem.calls)
 	}
 }
+
+// lockedNoop is countingNoop safe for a turn's concurrent calls.
+type lockedNoop struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *lockedNoop) Name() string                 { return "Memory" }
+func (c *lockedNoop) Description() string          { return "stores things" }
+func (c *lockedNoop) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (c *lockedNoop) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return tools.Result{Text: `{"ok":true}`}, nil
+}
+
+// Three identical calls in ONE turn all run: the model sent them together,
+// before seeing any result, so none is a repeat of a result it already had.
+// Sending the same call again in the next turn is refused. One call at a time,
+// so each has finished before the next starts: run concurrently, all three
+// could start before any result is in, and the test would pass either way.
+func TestRun_IdenticalCallsInOneTurnAllRun(t *testing.T) {
+	const in = `{"op":"set","scope":"tenant","key":"k","value":"v"}`
+	mem := &lockedNoop{}
+	calls := sameCallTurns(4, "Memory", in)
+	prov := &turnScriptProvider{turns: [][]providers.ToolUse{
+		{calls[0][0], calls[1][0], calls[2][0]},
+		calls[3],
+	}}
+	res, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      []tools.Tool{mem},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{mem}),
+		Segments:   statefulTaskSegs(),
+		// See above.
+		ToolParallelism: 1,
+	})
+	if err != nil || res.StopReason != "end_turn" {
+		t.Fatalf("stop=%q err=%v; want end_turn", res.StopReason, err)
+	}
+	if mem.calls != 3 {
+		t.Errorf("the tool ran %d times; want 3 (the whole first turn, not the repeat after it)", mem.calls)
+	}
+}

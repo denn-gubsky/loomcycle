@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,12 @@ type repeatTracker struct {
 	lastResult   [sha256.Size]byte
 	streak       int
 	refusedInRow int
+
+	// batch is the batch (WithToolBatch) the latest call in the streak ran in,
+	// and inBatch how many of the streak ran in it. batches mints batch ids.
+	batch   uint64
+	inBatch int
+	batches uint64
 }
 
 // consecutiveCallsAllowed is how many times in a row a run may make the exact
@@ -61,11 +68,25 @@ const consecutiveCallsAllowed = 2
 // consecutiveCallsAllowed times in a row with the same result, or false to run
 // it. A refused call leaves the streak as it is, so a model that keeps sending
 // it keeps being refused.
-func (d *Dispatcher) refuseConsecutive(name string, input json.RawMessage) (Result, bool) {
+//
+// Only results the model had seen when it sent the call count. Calls it sent
+// together in one turn run concurrently and none of them has seen another's
+// result, so three identical calls in one turn all run — three identical
+// spawns for a majority vote are a deliberate request, and "use the result you
+// already have" would be false for them. If they all come back the same, that
+// same call in a LATER turn is refused.
+func (d *Dispatcher) refuseConsecutive(ctx context.Context, name string, input json.RawMessage) (Result, bool) {
 	d.repeats.mu.Lock()
 	defer d.repeats.mu.Unlock()
 	t := &d.repeats
-	if repeatKey(name, input) != t.last || t.streak < consecutiveCallsAllowed {
+	if repeatKey(name, input) != t.last {
+		return Result{}, false
+	}
+	seen := t.streak
+	if b := toolBatch(ctx); b != 0 && b == t.batch {
+		seen -= t.inBatch
+	}
+	if seen < consecutiveCallsAllowed {
 		return Result{}, false
 	}
 	n := t.streak + t.refusedInRow
@@ -76,16 +97,45 @@ func (d *Dispatcher) refuseConsecutive(name string, input json.RawMessage) (Resu
 // recordResult makes this call, with what it returned, the run's latest. The
 // same call returning the same thing extends the streak; anything else starts
 // a new one.
-func (d *Dispatcher) recordResult(name string, input json.RawMessage, res Result) {
-	k, h := repeatKey(name, input), resultHash(res)
+func (d *Dispatcher) recordResult(ctx context.Context, name string, input json.RawMessage, res Result) {
+	k, h, b := repeatKey(name, input), resultHash(res), toolBatch(ctx)
 	d.repeats.mu.Lock()
 	defer d.repeats.mu.Unlock()
 	t := &d.repeats
 	if k == t.last && h == t.lastResult {
 		t.streak++
-		return
+	} else {
+		t.last, t.lastResult, t.streak, t.refusedInRow = k, h, 1, 0
+		t.batch, t.inBatch = 0, 0
 	}
-	t.last, t.lastResult, t.streak, t.refusedInRow = k, h, 1, 0
+	if b != 0 && b == t.batch {
+		t.inBatch++
+	} else {
+		t.batch, t.inBatch = b, 1
+	}
+}
+
+type ctxKeyToolBatch struct{}
+
+// WithToolBatch marks ctx as carrying one batch of tool calls: the calls a
+// model sent together in one turn. The loop wraps each turn's dispatch in it,
+// so the consecutive-call guard can tell a call that was sent after seeing an
+// identical call's result from one sent alongside it. Nil-safe.
+func (d *Dispatcher) WithToolBatch(ctx context.Context) context.Context {
+	if d == nil {
+		return ctx
+	}
+	d.repeats.mu.Lock()
+	d.repeats.batches++
+	id := d.repeats.batches
+	d.repeats.mu.Unlock()
+	return context.WithValue(ctx, ctxKeyToolBatch{}, id)
+}
+
+// toolBatch is ctx's batch id, 0 for a call outside any batch.
+func toolBatch(ctx context.Context) uint64 {
+	id, _ := ctx.Value(ctxKeyToolBatch{}).(uint64)
+	return id
 }
 
 // resultHash is what "the same result" means: the same text, and the same
