@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -202,4 +203,52 @@ func (s *Store) DirentMove(ctx context.Context, tenantID, scope, scopeID, fromPa
 		return false, err
 	}
 	return true, nil
+}
+
+// SnapshotReadDirents returns every tree's entries, every tenant's.
+func (s *Store) SnapshotReadDirents(ctx context.Context) ([]store.DirentRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+direntCols+` FROM dirents
+		 ORDER BY tenant_id, scope, scope_id, parent_path, name`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read dirents: %w", err)
+	}
+	defer rows.Close()
+	out, err := collectDirents(rows)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read dirents: %w", err)
+	}
+	return out, nil
+}
+
+// SnapshotRestoreDirent inserts one entry, keeping both timestamps; an entry
+// already on the coordinate stands. The conflict target is the key, not INSERT
+// OR IGNORE, which would also swallow a NOT NULL failure as "already here".
+func (s *Store) SnapshotRestoreDirent(ctx context.Context, row store.DirentRow) (bool, error) {
+	ref := row.ResourceRef
+	if len(ref) == 0 {
+		ref = json.RawMessage("{}") // DirentCreate's default, for backend parity
+	}
+	createdAt, updatedAt := row.CreatedAt, row.UpdatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO dirents (`+direntCols+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, scope, scope_id, parent_path, name) DO NOTHING`,
+		row.TenantID, row.Scope, row.ScopeID, row.ParentPath, row.Name,
+		row.Kind, string(ref), createdAt.UnixNano(), updatedAt.UnixNano(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore dirent: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore dirent: %w", err)
+	}
+	return n > 0, nil
 }

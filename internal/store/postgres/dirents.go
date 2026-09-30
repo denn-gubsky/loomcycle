@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -181,4 +182,47 @@ func (s *Store) DirentMove(ctx context.Context, tenantID, scope, scopeID, fromPa
 		return false, err
 	}
 	return true, nil
+}
+
+// SnapshotReadDirents returns every tree's entries, every tenant's.
+func (s *Store) SnapshotReadDirents(ctx context.Context) ([]store.DirentRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+direntCols+` FROM dirents
+		 ORDER BY tenant_id, scope, scope_id, parent_path, name`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read dirents: %w", err)
+	}
+	defer rows.Close()
+	out, err := collectDirents(rows)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read dirents: %w", err)
+	}
+	return out, nil
+}
+
+// SnapshotRestoreDirent inserts one entry, keeping both timestamps; an entry
+// already on the coordinate stands.
+func (s *Store) SnapshotRestoreDirent(ctx context.Context, row store.DirentRow) (bool, error) {
+	ref := row.ResourceRef
+	if len(ref) == 0 {
+		ref = json.RawMessage("{}") // DirentCreate's default: resource_ref is jsonb NOT NULL
+	}
+	createdAt, updatedAt := row.CreatedAt, row.UpdatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO dirents (tenant_id, scope, scope_id, parent_path, name, kind, resource_ref, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+		 ON CONFLICT (tenant_id, scope, scope_id, parent_path, name) DO NOTHING`,
+		row.TenantID, row.Scope, row.ScopeID, row.ParentPath, row.Name,
+		row.Kind, string(ref), createdAt, updatedAt,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore dirent: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }

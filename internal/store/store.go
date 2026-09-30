@@ -2058,6 +2058,11 @@ type Store interface {
 	// work, so it is never returned; DrainedAt is always zero.
 	SnapshotReadMemoryPending(ctx context.Context) ([]MemoryPendingRow, error)
 
+	// SnapshotReadDirents returns every Path-tree entry, every tenant's and
+	// every (scope, scope_id) tree's, ordered by (tenant_id, scope, scope_id,
+	// parent_path, name). DirentList and DirentListUnder are per-tree.
+	SnapshotReadDirents(ctx context.Context) ([]DirentRow, error)
+
 	// SnapshotReadChannelMessages returns every channel_messages row.
 	// Filters out expired rows. Ordered by (channel ASC, scope ASC,
 	// scope_id ASC, visible_at ASC, id ASC) — matches the natural
@@ -2230,6 +2235,14 @@ type Store interface {
 	// on the first write. MemoryPendingEnqueue cannot serve: it is a plain
 	// insert that errors on an existing id and stamps its own created_at.
 	SnapshotRestoreMemoryPending(ctx context.Context, row MemoryPendingRow) (bool, error)
+
+	// SnapshotRestoreDirent inserts one Path-tree entry at its full coordinate
+	// (tenant_id, scope, scope_id, parent_path, name), keeping kind,
+	// resource_ref, created_at and updated_at. An entry already on the
+	// coordinate is left alone and `inserted` is false: DirentCreate is an
+	// upsert that would re-point a live name and reset its updated_at, which a
+	// restore must never do. The caller validates the row; the store does not.
+	SnapshotRestoreDirent(ctx context.Context, row DirentRow) (bool, error)
 
 	// SnapshotRestoreChannelMessage inserts one channel_messages row
 	// preserving the ID + timestamps. Idempotent on id (PK).
