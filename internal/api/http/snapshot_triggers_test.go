@@ -83,6 +83,12 @@ func triggerSource(t *testing.T) store.Store {
 	peer("aad_ok", "peer-ok", `{"endpoint":"https://peer.example/a2a","binding":"jsonrpc"}`)
 	peer("aad_scheme", "peer-file", `{"agent_card_url":"file:///etc/passwd"}`)
 	peer("aad_metadata", "peer-meta", `{"endpoint":"grpc://169.254.169.254:443","binding":"grpc"}`)
+	card := func(defID, name string, body string) {
+		_, err := src.SnapshotRestoreA2AServerCardDef(ctx, store.A2AServerCardDefRow{DefID: defID, Name: name, Version: 1, CreatedAt: now, Definition: json.RawMessage(body)})
+		put(err)
+	}
+	card("ascd_ok", "card-ok", `{"name":"card-ok","exposed_agents":[{"agent_name":"helper"}]}`)
+	card("ascd_bad", "card-bad", `{"name":"card-bad","exposed_agents":[]}`)
 	return src
 }
 
@@ -110,13 +116,15 @@ func TestRestore_EveryCallSiteRevalidatesAndScansTriggerDefs(t *testing.T) {
 				}
 				return false
 			}
-			if restored["webhook_defs"] != 1 || restored["a2a_agent_defs"] != 1 || restored["defs_disabled_for_credentials"] != 1 {
+			if restored["webhook_defs"] != 1 || restored["a2a_agent_defs"] != 1 || restored["a2a_server_card_defs"] != 1 ||
+				restored["defs_disabled_for_credentials"] != 1 {
 				t.Errorf("restored = %v; want the valid webhook and peer only, the webhook disabled", restored)
 			}
 			for _, refused := range []struct{ where, why string }{
 				{"webhook_def bad-auth", "not a valid env-var name"},
 				{"a2a_agent_def peer-file", "http or https"},
 				{"a2a_agent_def peer-meta", "private/loopback/link-local"},
+				{"a2a_server_card_def card-bad", "exposed_agents"},
 			} {
 				if !has(refused.where, "not restored", refused.why) {
 					t.Errorf("no warning refusing %s (%s): %v", refused.where, refused.why, warnings)
