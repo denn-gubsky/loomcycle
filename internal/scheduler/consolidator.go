@@ -169,8 +169,9 @@ func fanoutScope(def scheduleDef) (store.MemoryScope, error) {
 
 // fireConsolidationFanout is fireOne's per-target twin. It enumerates the
 // targets with new work, dispatches one child run each, and records ONE result
-// for the schedule — so the schedule's next_run_at, fire count, and
-// on_complete hooks behave exactly as they do for a single-run fire.
+// for the schedule — so the schedule's next_run_at and fire count behave
+// exactly as they do for a single-run fire. on_complete hooks fire per tenant
+// the runs executed in (see dispatchFanoutHooks).
 //
 // The whole batch shares fireOne's per-fire budget (cfg.FireTimeout), so a
 // consolidation schedule never consumes more wall-clock than any other fire and
@@ -309,6 +310,9 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		lastRunID string
 		tally     fanoutTally
 		skipped   int
+		// Per tenant as well as overall: hooks fire per tenant (see
+		// dispatchFanoutHooks), the schedule's result is recorded overall.
+		byTenant = map[string]*tenantBatch{}
 	)
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
@@ -336,12 +340,20 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			runID, runErr := s.runConsolidationTarget(ctx, def, target)
 			mu.Lock()
 			defer mu.Unlock()
+			tb := byTenant[target.TenantID]
+			if tb == nil {
+				tb = &tenantBatch{}
+				byTenant[target.TenantID] = tb
+			}
 			tally.dispatched++
+			tb.tally.dispatched++
 			if runID != "" {
 				lastRunID = runID
+				tb.lastRunID = runID
 			}
 			if runErr != nil {
 				tally.classify(runErr)
+				tb.tally.classify(runErr)
 				// Per-target failures are logged and counted, never fatal to
 				// the batch: one user's wedged consolidation must not stop
 				// everyone else's.
@@ -371,8 +383,46 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			row.Name, def.Agent, where, tally.dispatched)
 	}
 	s.recordFanoutResult(ctx, row, def, now, status, errStr, lastRunID, countAsFire)
-	if status == "completed" {
-		s.dispatchHooks(ctx, row.Name, def, lastRunID, "")
+	s.dispatchFanoutHooks(ctx, row.Name, def, byTenant)
+}
+
+// tenantBatch is one tenant's share of a fan-out fire: how its targets' runs
+// went, and the last run it started.
+type tenantBatch struct {
+	tally     fanoutTally
+	lastRunID string
+}
+
+// dispatchFanoutHooks fires the schedule's on_complete hooks once per tenant
+// whose runs completed, IN that tenant, reporting that tenant's run.
+//
+// A hook's writes belong where the run executed. Fired once in the def's layer,
+// an operator-layer sweep's hooks wrote into "": a global channel's operator
+// layer, which every tenant reads, got a message naming one tenant's run, and a
+// memory.set landed in a tenant nobody signs in to. Per tenant is what the
+// operator would get from one yaml schedule per tenant with `tenant_id`, which
+// is the equivalence the operator-layer sweep rests on (operatorLayerFanout) —
+// including that one tenant's failed pass does not withhold another's hooks.
+//
+// A tenant's fan-out has one tenant, its own, so it fires exactly as before:
+// once, in its tenant, when the whole batch completed.
+func (s *Scheduler) dispatchFanoutHooks(ctx context.Context, scheduleName string, def scheduleDef, byTenant map[string]*tenantBatch) {
+	if len(def.OnComplete) == 0 {
+		return
+	}
+	tenants := make([]string, 0, len(byTenant))
+	for tenant := range byTenant {
+		tenants = append(tenants, tenant)
+	}
+	sort.Strings(tenants)
+	for _, tenant := range tenants {
+		b := byTenant[tenant]
+		if status, _, _ := b.tally.outcome(def.Agent); status != "completed" {
+			continue
+		}
+		hookDef := def
+		hookDef.TenantID = tenant
+		s.dispatchHooks(ctx, scheduleName, hookDef, b.lastRunID, "")
 	}
 }
 
