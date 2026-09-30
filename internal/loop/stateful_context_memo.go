@@ -16,6 +16,8 @@ import (
 // deepseek read History/recap 4 times in another — and two ornith runs spent
 // their whole 10-minute budget that way. So what the run's Context tool
 // returned (help, its scopes, its tools) is kept and shown on every later step.
+// Only reference ops are kept (see contextOpIsStatic): a kept clock or Σ would
+// be shown as current long after it was not.
 //
 // Bounded, because the stateful prompt is meant to stay flat: the kept text is
 // capped at contextMemoBudget characters, the oldest entry dropped first. A
@@ -101,8 +103,34 @@ func helpToolName(ts []tools.Tool) string {
 	return ""
 }
 
-// add keeps one successful Context result.
+// contextOpIsStatic classifies every Context op: static (reference text that
+// stays true for the whole run, so it is kept and the model is told not to
+// call it again) or live (a clock, Σ, the window's fill, the channel list — a
+// kept copy goes stale and would contradict the step's own "Current state:").
+// known is false for an op this list does not name: such a result is not kept,
+// and TestContextOpIsStatic_ClassifiesEveryContextOp fails until the new op is
+// classified here.
+func contextOpIsStatic(op string) (static, known bool) {
+	switch op {
+	case "help", "guide", "doc", "tools", "permissions", "capabilities":
+		return true, true
+	case "self", "agents", "lineage", "evaluations", "channels", "time", "compact", "state":
+		return false, true
+	}
+	return false, false
+}
+
+// add keeps one successful Context result, when its op is static.
 func (m *contextMemo) add(input json.RawMessage, text string) {
+	var in struct {
+		Op string `json:"op"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return
+	}
+	if static, _ := contextOpIsStatic(in.Op); !static {
+		return
+	}
 	call := compactCall(input)
 	key := memoKey(input, text)
 	kept := m.entries[:0]

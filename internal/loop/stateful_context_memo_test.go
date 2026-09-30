@@ -12,7 +12,7 @@ import (
 func TestContextMemo_KeepsEachCallOnceAndItsLatestResult(t *testing.T) {
 	m := &contextMemo{}
 	m.add(json.RawMessage(`{"op":"help", "topic":"Memory/set"}`), "old article")
-	m.add(json.RawMessage(`{"op":"self"}`), "self result")
+	m.add(json.RawMessage(`{"op":"doc","name":"Memory"}`), "doc result")
 	m.add(json.RawMessage(`{"op":"help","topic":"Memory/set"}`), "new article") // same call, other spacing
 	if len(m.entries) != 2 {
 		t.Fatalf("entries = %d, want 2 (the repeated call replaces its entry)", len(m.entries))
@@ -21,7 +21,7 @@ func TestContextMemo_KeepsEachCallOnceAndItsLatestResult(t *testing.T) {
 	if strings.Contains(got, "old article") || !strings.Contains(got, "new article") {
 		t.Errorf("want only the latest result of a repeated call:\n%s", got)
 	}
-	if strings.Index(got, "self result") > strings.Index(got, "new article") {
+	if strings.Index(got, "doc result") > strings.Index(got, "new article") {
 		t.Errorf("the repeated call should move to the end:\n%s", got)
 	}
 }
@@ -63,6 +63,28 @@ func TestMemoKey_OtherOpsIgnoreKeyOrderAndEmptyArguments(t *testing.T) {
 	}
 	if a == c {
 		t.Errorf("different calls share a key: %q", a)
+	}
+}
+
+// A live op's result (the clock, Σ, the window's fill, the channel list) is
+// stale by the next step, and the memo tells the model not to call it again,
+// so the model would work from an old clock or a Σ that contradicts "Current
+// state:". Only reference ops are kept.
+func TestContextMemo_KeepsOnlyReferenceOps(t *testing.T) {
+	m := &contextMemo{}
+	m.add(json.RawMessage(`{"op":"help","topic":"Memory/set"}`), "HELP ARTICLE")
+	m.add(json.RawMessage(`{"op":"guide"}`), "GUIDE TEXT")
+	m.add(json.RawMessage(`{"op":"time"}`), `{"now_rfc3339":"2026-09-30T06:00:00Z"}`)
+	m.add(json.RawMessage(`{"op":"state"}`), `{"state":{"step":1}}`)
+	m.add(json.RawMessage(`{"op":"self"}`), `{"context":{"used_pct":12}}`)
+	got := m.render("Context", "")
+	for _, live := range []string{`{"op":"time"}`, `{"op":"state"}`, `{"op":"self"}`, "now_rfc3339", "used_pct"} {
+		if strings.Contains(got, live) {
+			t.Errorf("a live Context result is kept as if it were current (%s):\n%s", live, got)
+		}
+	}
+	if !strings.Contains(got, "HELP ARTICLE") || !strings.Contains(got, "GUIDE TEXT") {
+		t.Errorf("a reference result was dropped:\n%s", got)
 	}
 }
 
