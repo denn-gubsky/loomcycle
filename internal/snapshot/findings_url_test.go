@@ -81,9 +81,14 @@ func TestCaptureFindings_ReportsURLUserinfoQueryTokenAndStdioArgs(t *testing.T) 
 			"endpoint": "https://a2a:" + urlMarks["endpoint-pw"] + "@peer.example/a2a"}, true)
 
 	// Negatives: references and innocent query parameters are not literals.
+	// The first URL parses as written, so only stripping its references
+	// keeps it quiet; the second is refused by the parser before stripping.
 	_, err = src.MCPServerDefCreate(ctx, store.MCPServerDefRow{DefID: "md_clean", TenantID: "acme", Name: "clean-http", Version: 1, CreatedAt: now,
 		Definition: body(map[string]any{"transport": "http",
-			"url": "https://u:${LOOMCYCLE_PEER_PW}@peer.example/mcp?api_key=${LOOMCYCLE_X}&page=2&token=$cred:peer"})})
+			"url": "https://peer.example/mcp?api_key=${LOOMCYCLE_X}&page=2&token=$cred:peer"})})
+	must(err)
+	_, err = src.MCPServerDefCreate(ctx, store.MCPServerDefRow{DefID: "md_clean_ui", TenantID: "acme", Name: "clean-userinfo", Version: 1, CreatedAt: now,
+		Definition: body(map[string]any{"transport": "http", "url": "https://u:${LOOMCYCLE_PEER_PW}@peer.example/mcp"})})
 	must(err)
 	_, err = src.MemoryBackendDefCreate(ctx, store.MemoryBackendDefRow{DefID: "mbd_clean", TenantID: "acme", Name: "clean-mem", Version: 1, CreatedAt: now,
 		Definition: body(map[string]any{"kind": "remote", "config": map[string]any{"base_url": "https://user@mem.example/v1?page=2&token="}})})
