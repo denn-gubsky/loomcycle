@@ -191,3 +191,50 @@ func TestCheckBreakpointTargets_ReviewReachesAgentAndParallelStates(t *testing.T
 		}
 	}
 }
+
+// A walk nested inside a member runs under a ctx that carries the ENCLOSING
+// walk's review arming and deadline. Its own members take the nested walk's
+// arming; its consolidators must take none — never the outer state's — or
+// they are held for a review nobody armed, and a deadline turns the hold into
+// a rejection that fails both walks.
+func TestMemberReview_NestedWalkConsolidatorIsNotArmedByTheEnclosingWalk(t *testing.T) {
+	for name, st := range map[string]teamgraph.State{
+		"agent": {ID: "draft", Handler: teamgraph.Handler{
+			Kind: teamgraph.HandlerAgent, Agent: "writer", Consolidator: "judge"}},
+		"parallel": {ID: "draft", Handler: teamgraph.Handler{
+			Kind: teamgraph.HandlerParallel, Agents: []string{"a", "b"}, Consolidator: "judge"}},
+		"standalone": {ID: "draft", Handler: teamgraph.Handler{
+			Kind: teamgraph.HandlerConsolidator, Agent: "judge"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			outer := WithReviewArming(context.Background(), func(context.Context) bool { return true })
+			outer = WithReviewTTL(outer, func() time.Duration { return 7 * time.Second })
+			spy := &armingSpy{}
+			r := varsRunner(spy.spawn)
+			WithMemberReview(armedReview("nothing-armed-here"), 0)(r)
+			if _, err := r.RunHandler(outer, st, &Task{Input: "go"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ran := spy.armed["judge"]; !ran {
+				t.Fatal("the consolidator never ran")
+			}
+			for agent, armed := range spy.armed {
+				if armed || spy.ttl[agent] != 0 {
+					t.Errorf("%q armed=%v ttl=%v, want no arming and no deadline from the enclosing walk",
+						agent, armed, spy.ttl[agent])
+				}
+			}
+		})
+	}
+}
+
+// A nil arming or deadline clears one inherited from an enclosing walk rather
+// than leaving it in place.
+func TestWithReviewArming_NilClearsAnInheritedArming(t *testing.T) {
+	ctx := WithReviewArming(context.Background(), func(context.Context) bool { return true })
+	ctx = WithReviewTTL(ctx, func() time.Duration { return time.Minute })
+	ctx = WithReviewTTL(WithReviewArming(ctx, nil), nil)
+	if ReviewArming(ctx) != nil || ReviewTTL(ctx) != 0 {
+		t.Errorf("after clearing: arming set=%v ttl=%v, want neither", ReviewArming(ctx) != nil, ReviewTTL(ctx))
+	}
+}

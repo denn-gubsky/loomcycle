@@ -319,6 +319,14 @@ func (r *agentRunner) withMemberReview(ctx context.Context, st teamgraph.State) 
 	return WithReviewTTL(ctx, r.reviewTTL)
 }
 
+// withoutReview takes any review arming and deadline off the ctx a consolidator
+// is spawned from. Its answer is the verdict on its state's work, not work to
+// review, so it is never held — even in a walk nested inside a member, whose
+// ctx carries the enclosing walk's arming.
+func withoutReview(ctx context.Context) context.Context {
+	return WithReviewTTL(WithReviewArming(ctx, nil), nil)
+}
+
 // previewPrompts renders the pending runs for the BeforeDispatch pause, in wave
 // order. It takes the indices rather than a range because the pending set is
 // not always a suffix.

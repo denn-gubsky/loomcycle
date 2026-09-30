@@ -141,10 +141,11 @@ type reviewArmingKey struct{}
 // that answer is held for an operator's verdict. It is a callback rather than
 // a flag because arming can change while the member runs (a walk armed
 // mid-wave holds the members that have not finished yet).
+//
+// nil CLEARS an arming inherited from an enclosing walk, as WithHoldObserver
+// does: a walk nested inside a member would otherwise hold its own runs on the
+// outer state's arming — its consolidators included, which are never armable.
 func WithReviewArming(ctx context.Context, armed func(context.Context) bool) context.Context {
-	if armed == nil {
-		return ctx
-	}
 	return context.WithValue(ctx, reviewArmingKey{}, armed)
 }
 
@@ -160,11 +161,9 @@ type reviewTTLKey struct{}
 // WithReviewTTL attaches the walk's review deadline for its members: a hold
 // nobody rules on within it ends the member rejected. A callback for the same
 // reason the arming is one: the deadline can change while the member runs, and
-// each hold reads it when it begins.
+// each hold reads it when it begins. nil CLEARS an inherited deadline, for the
+// reason WithReviewArming's nil does.
 func WithReviewTTL(ctx context.Context, ttl func() time.Duration) context.Context {
-	if ttl == nil {
-		return ctx
-	}
 	return context.WithValue(ctx, reviewTTLKey{}, ttl)
 }
 
@@ -486,7 +485,7 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		// it reads the raw work product (not a results envelope) — it judges the
 		// previous state's output directly. This state IS the consolidator, so
 		// the node's own system prompt applies to it.
-		sp, err := r.spawnWork(ctx, st.Handler.Agent, r.nodePrompt(st.Handler, input, env))
+		sp, err := r.spawnWork(withoutReview(ctx), st.Handler.Agent, r.nodePrompt(st.Handler, input, env))
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -715,7 +714,7 @@ func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelop
 	// The envelope is built from the agents' OWN OUTPUTS — the most obviously
 	// model-written text in a walk, and the one a consolidator is definitionally
 	// handed. It rides a data slot for the same reason threaded output does.
-	sp, err := r.spawnWork(ctx, consolidator, Prompt{
+	sp, err := r.spawnWork(withoutReview(ctx), consolidator, Prompt{
 		Input:          ThreadedOutputSlot,
 		DataSlots:      map[string]string{ThreadedOutputSlot: envelope},
 		SystemAuthored: r.operatorAuthored,
