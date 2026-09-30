@@ -164,6 +164,9 @@ var agentDefOverridability = map[string]overridability{
 	// Which version the run is on: resolved by lookup and recorded at start
 	// so a resume continues on it. A run naming its own would pick its version.
 	"DefID": notOverridable,
+	// The same for a registered agent, which has no versions: the digest of
+	// the row it started on, which a resume compares against.
+	"RegisteredSHA256": notOverridable,
 
 	// --- operator configuration (D6): the declarations themselves are the
 	// operator's; an override selects WITHIN them and may not change them. ---

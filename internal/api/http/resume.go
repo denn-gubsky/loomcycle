@@ -830,7 +830,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 //     operator's yaml, which only the operator changes and every run of it
 //     follows, or a registered agent. It resolves by name — unless the name now
 //     resolves to an AgentDef version, which is not the definition it started
-//     on but one that has shadowed it since.
+//     on but one that has shadowed it since, or the run started on a
+//     registered agent whose row has changed or gone since (its recorded
+//     digest no longer matches).
 //   - A run recorded before versions were resolves by name, as it always did.
 //
 // A child its parent pinned by def_id (runs.agent_def_id) ran on that version
@@ -859,6 +861,12 @@ func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentV
 		}
 		if ver != nil && d.DefID != "" {
 			return config.AgentDef{}, true, fmt.Errorf("agent %q now resolves to AgentDef version %s, not the definition the run started on", run.Agent, d.DefID)
+		}
+		// A registered agent is re-registered in place, so its name resolving
+		// is not enough: the row must still be the one the run started on. A
+		// run recorded before the digest was carries none and is not checked.
+		if ver != nil && ver.RegisteredSHA256 != "" && d.RegisteredSHA256 != ver.RegisteredSHA256 {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q: the registered agent the run started on was changed or removed since it started", run.Agent)
 		}
 		def = d
 	}

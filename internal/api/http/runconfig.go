@@ -135,13 +135,19 @@ type runConfigRecord struct {
 // name resolved to a definition with no versions: the operator's yaml, or a
 // registered agent. Present-but-empty is how resume tells that apart from a
 // run recorded before versions were.
+//
+// RegisteredSHA256 stands in for a version when the definition was a
+// registered agent, whose row is rewritten in place: the digest of the row the
+// run started on. "" for every other source, and on a run recorded before it
+// existed, which resumes by name as before.
 type agentVersionRecord struct {
-	DefID string `json:"def_id,omitempty"`
+	DefID            string `json:"def_id,omitempty"`
+	RegisteredSHA256 string `json:"registered_sha256,omitempty"`
 }
 
 // agentVersionOf records the version def was read from.
 func agentVersionOf(def config.AgentDef) *agentVersionRecord {
-	return &agentVersionRecord{DefID: def.DefID}
+	return &agentVersionRecord{DefID: def.DefID, RegisteredSHA256: def.RegisteredSHA256}
 }
 
 // spawnRecord is a sub-run's inherited ceiling, captured from the parent's
