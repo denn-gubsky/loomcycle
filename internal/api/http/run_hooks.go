@@ -190,6 +190,15 @@ func (p *pinRecorder) record(ctx context.Context, tenant, name string, version i
 // A pinned version reads by def_id, whether or not it has since been retired;
 // one since deleted stops the run. A lookup the run never made is refused
 // rather than answered from today's definitions.
+//
+// The pins come from the run's record, which a snapshot carries between
+// deployments and can be edited in transit, and a def_id is a handle global
+// across tenants. So a pin is honoured only for a row the live lookup could
+// have found: one in the tenant the lookup is made in (the tenant of the
+// definition that named the hook, then the shared one — see
+// hooks.lookupInScope). Any other row is refused exactly as a deleted version
+// is, naming no tenant: another tenant's HookDef must not fire in, or gate,
+// this run.
 func pinnedLookup(st store.Store, defs map[string]string) hooks.LookupDef {
 	return func(ctx context.Context, tenant, name string, version int) (hooks.Def, string, error) {
 		id, ok := defs[pinKey(tenant, name, version)]
@@ -202,6 +211,9 @@ func pinnedLookup(st store.Store, defs map[string]string) hooks.LookupDef {
 			return hooks.Def{}, "", fmt.Errorf("no store: HookDefs are not available")
 		}
 		row, err := st.HookDefGet(ctx, id)
+		if err == nil && row.TenantID != tenant {
+			err = &store.ErrNotFound{Kind: "hook_def", ID: id}
+		}
 		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
