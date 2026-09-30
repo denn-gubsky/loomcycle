@@ -375,6 +375,9 @@ func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSe
 func restoreScheduleDefActive(ctx context.Context, s store.Store, sec *ScheduleDefActiveSection, defs map[string]restoredSchedule, result *RestoreResult) {
 	enabled := 0
 	for _, e := range sec.Entries {
+		if !admitActivePointer(ctx, s, scheduleDefOwner, "schedule_def_active", e.TenantID, e.Name, e.DefID, result) {
+			continue
+		}
 		inserted, err := s.SnapshotRestoreScheduleDefActive(ctx, store.ScheduleDefActiveEntry{
 			Name:              e.Name,
 			TenantID:          e.TenantID,
