@@ -690,6 +690,12 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	if res, refused := refuseForeignExecTenant(ctx, opLabel, def.TenantID); refused {
 		return res, nil
 	}
+	// The new version fires under the bits it carries. It keeps the parent's
+	// and adds the editor's — the most restrictive wins — so a confined editor
+	// cannot mint a version that fires unconfined, and an unconfined one does
+	// not widen a confined author's schedule by editing a hook.
+	def.OperatorKeyRestricted = def.OperatorKeyRestricted || operatorKeyRestrictedFromCtx(ctx, s.Cfg)
+	def.Isolated = def.Isolated || tools.AuthorIsolated(ctx)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
 	}
