@@ -4306,6 +4306,11 @@ agents:
 # compromise: often enough that a chat is consolidated the same day, rare enough
 # that an idle deployment costs nothing (a target with no new work releases its
 # lease and exits before the first extraction, at zero token cost). RETUNE THIS.
+#
+# Reach: with no `tenant_id` (as here) the schedule is the operator's, and it
+# consolidates users in EVERY tenant — the legacy LOOMCYCLE_AUTH_TOKEN's
+# "default" tenant included — each run in its user's own tenant. Set
+# `tenant_id` to confine it to one tenant.
 scheduled_runs:
   memory-consolidation:
     agent: memory/consolidator
