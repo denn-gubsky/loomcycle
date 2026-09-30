@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -247,7 +248,7 @@ func TestVolumeDefTool_PurgeReDerivesIgnoringTamperedPath(t *testing.T) {
 	// Create the volume legitimately, then tamper the stored path directly
 	// in the store to point at `outside`.
 	vdExec(t, tool, ctx, `{"op":"create","name":"evil","mode":"rw"}`)
-	tampered, _ := json.Marshal(volumeDefBody{Path: outside, Mode: "rw"})
+	tampered, _ := json.Marshal(dynvol.Body{Path: outside, Mode: "rw"})
 	if _, err := tool.Store.VolumeDefCreate(ctx, store.VolumeDefRow{TenantID: "", Name: "evil", Definition: tampered}); err != nil {
 		t.Fatal(err)
 	}

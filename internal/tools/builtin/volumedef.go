@@ -7,10 +7,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -56,19 +56,6 @@ type VolumeDef struct {
 	// MaxNameLen caps the volume name length. 0 → the regex's own 64-char
 	// ceiling applies.
 	MaxNameLen int
-}
-
-// volumeNameRe constrains a dynamic volume name so it can NEVER inject a
-// path component: no "/", no ".", no "..", no leading dot, lowercase
-// alnum + "_" + "-" only, 1–64 chars. This is the first line of the
-// no-caller-controlled-path defence.
-var volumeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-
-// volumeDefBody is the {path,mode} shape persisted in volume_defs.definition.
-// Path is runtime-derived; never caller-supplied.
-type volumeDefBody struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"`
 }
 
 const volumeDefDescription = `Provision, inspect, and remove CONFINED dynamic filesystem volumes at runtime (see Context op=help topic=volumedef). ` +
@@ -117,7 +104,7 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 		return errResult("VolumeDef tool: not configured (no Config — dynamic root unavailable)"), nil
 	}
 	// The shared tenant ("") maps to the reserved on-disk segment
-	// sharedTenantSegment. Refuse a real tenant whose minted id is literally
+	// dynvol.SharedTenantSegment. Refuse a real tenant whose minted id is literally
 	// that string, so the reserved segment can never be shared by two distinct
 	// tenants (which would let one purge the other's volume tree). The tenant
 	// is authoritative from the principal, never the wire.
@@ -126,7 +113,7 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 	// would let a persistent volume's <root>/_ephemeral/<name> tree collide
 	// with the run-scoped <root>/_ephemeral/<run_id>/ subtree, blurring the
 	// two purge fences. Reject it up front.
-	if tid := tools.RunIdentity(ctx).TenantID; tid == sharedTenantSegment || tid == ephemeralSegment {
+	if tid := tools.RunIdentity(ctx).TenantID; dynvol.ReservedTenant(tid) {
 		return errResult(fmt.Sprintf("VolumeDef tool: tenant id %q is reserved", tid)), nil
 	}
 	var in volumeDefInput
@@ -164,7 +151,7 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	if mode == "" {
 		mode = "rw"
 	}
-	if mode != "rw" && mode != "ro" {
+	if dynvol.ValidMode(mode) != nil {
 		return errResult(fmt.Sprintf("create: invalid mode %q (want rw or ro)", in.Mode)), nil
 	}
 	// Static cfg.Volumes is ground truth — refuse a name that collides with
@@ -186,21 +173,14 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
-	path := derivedVolumePath(dynRoot, tenantID, in.Name)
-
-	// Defence-in-depth: even though the path is runtime-derived, verify it
-	// resolves STRICTLY inside the dynamic root before we MkdirAll. This
-	// catches a future bug in the derivation (or a symlinked dynamic root
-	// that escapes) rather than trusting the construction blindly.
-	if err := assertInsideDynamicRoot(dynRoot, path); err != nil {
-		return errResult(fmt.Sprintf("create: refusing to provision outside the dynamic root: %s", err)), nil
-	}
-	// 0o700: the volume tree is the tenant's own; not group/world readable.
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return errResult(fmt.Sprintf("create: mkdir %q: %s", path, err)), nil
+	// Derive + fence + MkdirAll through the one provisioning helper snapshot
+	// restore also uses, so a restored volume lands exactly where this would.
+	path, _, err := dynvol.Provision(dynRoot, tenantID, in.Name)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 
-	body, err := json.Marshal(volumeDefBody{Path: path, Mode: mode})
+	body, err := json.Marshal(dynvol.Body{Path: path, Mode: mode})
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
 	}
@@ -291,18 +271,13 @@ func (v *VolumeDef) execCreateEphemeral(ctx context.Context, in volumeDefInput, 
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	path := derivedEphemeralVolumePath(dynRoot, rootRunID, in.Name)
-
-	// Defence-in-depth: assert the derived path resolves STRICTLY inside the
-	// dynamic root before MkdirAll (same posture as the persistent path).
-	if err := assertInsideDynamicRoot(dynRoot, path); err != nil {
-		return errResult(fmt.Sprintf("create: refusing to provision outside the dynamic root: %s", err)), nil
-	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return errResult(fmt.Sprintf("create: mkdir %q: %s", path, err)), nil
+	// Same fenced provisioning as the persistent path.
+	path, err := dynvol.ProvisionEphemeral(dynRoot, rootRunID, in.Name)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 
-	body, err := json.Marshal(volumeDefBody{Path: path, Mode: mode})
+	body, err := json.Marshal(dynvol.Body{Path: path, Mode: mode})
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
 	}
@@ -431,7 +406,7 @@ func (v *VolumeDef) execPurge(ctx context.Context, in volumeDefInput) (tools.Res
 	}
 
 	// Fence (2): RE-DERIVE the path — never trust the stored definition.path.
-	derived := derivedVolumePath(dynRoot, tenantID, in.Name)
+	derived := dynvol.DerivedPath(dynRoot, tenantID, in.Name)
 
 	// Fences (3)+(4): EvalSymlinks + strictly-inside + expected
 	// <root>/<tenant-segment>/ prefix + not-the-root/parent, via the shared
@@ -441,7 +416,7 @@ func (v *VolumeDef) execPurge(ctx context.Context, in volumeDefInput) (tools.Res
 	if err != nil {
 		return errResult(fmt.Sprintf("purge: dynamic root: %s", err)), nil
 	}
-	tenantDir := filepath.Join(rootResolved, tenantSegment(tenantID))
+	tenantDir := filepath.Join(rootResolved, dynvol.TenantSegment(tenantID))
 	who := fmt.Sprintf("VolumeDef purge (tenant=%q name=%q)", tenantID, in.Name)
 	removed, err := fencedRemoveAll(dynRoot, tenantDir, derived, who)
 	if err != nil {
@@ -465,10 +440,7 @@ func (v *VolumeDef) validateName(name string) error {
 	if v.MaxNameLen > 0 && len(name) > v.MaxNameLen {
 		return fmt.Errorf("name %q exceeds max length %d", name, v.MaxNameLen)
 	}
-	if !volumeNameRe.MatchString(name) {
-		return fmt.Errorf("name %q invalid (must match ^[a-z0-9][a-z0-9_-]{0,63}$ — no slashes, dots, or leading dot)", name)
-	}
-	return nil
+	return dynvol.ValidName(name)
 }
 
 // dynamicRoot returns the operator-blessed parent (the static volume marked
@@ -513,55 +485,6 @@ func (v *VolumeDef) checkScopeForName(ctx context.Context, name string) error {
 		}
 	}
 	return fmt.Errorf("VolumeDef tool: name %q not in this agent's volume_def_scopes (%v)", name, policy.Scopes)
-}
-
-// sharedTenantSegment is the on-disk path segment for the shared tenant ("").
-// A real tenant whose minted id is literally this string is REJECTED at the op
-// boundary (see Execute), so the segment is unambiguous and two distinct
-// tenants can never share a directory subtree.
-const sharedTenantSegment = "_shared"
-
-// ephemeralSegment is the RESERVED first on-disk segment under the dynamic
-// root for RUN-TREE-SCOPED ephemeral volumes (RFC AH Phase 2b):
-// <dynamic_root>/_ephemeral/<root_run_id>/<name>. It must never collide with
-// a tenant segment or a volume name — Execute rejects a tenant id literally
-// equal to it (so a tenant can't author under _ephemeral) and validateName's
-// charset already forbids a leading "_" so no volume name can be _ephemeral.
-const ephemeralSegment = "_ephemeral"
-
-// tenantSegment maps a tenant id to its on-disk path segment. The shared
-// tenant "" uses sharedTenantSegment; every other tenant uses its id verbatim.
-// The Execute guard rejects a tenant id equal to sharedTenantSegment, so the
-// "" → sharedTenantSegment mapping can never collide with a real tenant.
-func tenantSegment(tenantID string) string {
-	if tenantID == "" {
-		return sharedTenantSegment
-	}
-	return tenantID
-}
-
-// derivedVolumePath builds <dynamic_root>/<tenant-segment>/<name>. The name
-// MUST already be charset-validated (no path components) by the caller.
-func derivedVolumePath(dynRoot, tenantID, name string) string {
-	return filepath.Join(dynRoot, tenantSegment(tenantID), name)
-}
-
-// derivedEphemeralVolumePath builds
-// <dynamic_root>/_ephemeral/<root_run_id>/<name> (RFC AH Phase 2b). The name
-// MUST already be charset-validated; rootRunID is a globally-unique run id
-// (charset [A-Za-z0-9_-], validated at the wire boundary), so two runs — any
-// tenant — never collide. The _ephemeral first segment is reserved (see
-// ephemeralSegment).
-func derivedEphemeralVolumePath(dynRoot, rootRunID, name string) string {
-	return filepath.Join(dynRoot, ephemeralSegment, rootRunID, name)
-}
-
-// ephemeralRunDir is the per-run ephemeral subtree
-// <dynamic_root>/_ephemeral/<root_run_id> — the unit BOTH purge paths
-// (inline at run completion + the sweeper backstop) RemoveAll. Re-derived,
-// never trusted from a stored row.
-func ephemeralRunDir(dynRoot, rootRunID string) string {
-	return filepath.Join(dynRoot, ephemeralSegment, rootRunID)
 }
 
 // fencedRemoveAll is the shared os.RemoveAll fence used by EVERY destructive
@@ -638,35 +561,16 @@ func PurgeEphemeralRunTree(dynRoot, rootRunID, who string) (removed bool, err er
 	if rerr != nil {
 		return false, fmt.Errorf("dynamic root: %w", rerr)
 	}
-	expectedParent := filepath.Join(rootResolved, ephemeralSegment)
-	target := ephemeralRunDir(dynRoot, rootRunID)
+	expectedParent := filepath.Join(rootResolved, dynvol.EphemeralSegment)
+	target := dynvol.EphemeralRunDir(dynRoot, rootRunID)
 	return fencedRemoveAll(dynRoot, expectedParent, target, who)
-}
-
-// assertInsideDynamicRoot verifies path resolves strictly inside dynRoot.
-// Used at create-time (defence-in-depth on the derivation). The parent
-// (tenant-segment dir) may not exist yet at create, so we resolve the
-// dynamic root and check the lexical containment of the (cleaned) path —
-// the purge-time check additionally EvalSymlinks the real path.
-func assertInsideDynamicRoot(dynRoot, path string) error {
-	rootResolved, err := filepath.EvalSymlinks(dynRoot)
-	if err != nil {
-		return fmt.Errorf("dynamic root: %w", err)
-	}
-	clean := filepath.Clean(path)
-	// rel against the resolved root; reject "." (equals root) and any "..".
-	rel, err := filepath.Rel(rootResolved, clean)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path %q escapes dynamic root %q", clean, rootResolved)
-	}
-	return nil
 }
 
 // volumeDefRowResponse shapes the tool's reply for one row. mode is the
 // caller-supplied/created mode for create; for get/list it is decoded from
 // the row's definition (empty → decode here).
 func volumeDefRowResponse(row store.VolumeDefRow, mode string) map[string]any {
-	var body volumeDefBody
+	var body dynvol.Body
 	_ = json.Unmarshal(row.Definition, &body)
 	if mode == "" {
 		mode = body.Mode
