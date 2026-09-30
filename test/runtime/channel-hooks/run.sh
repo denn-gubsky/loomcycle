@@ -9,7 +9,8 @@
 #     /metrics
 #   - after a kill -9 with messages still waiting, a restart decides each one
 #     exactly once
-#   - with channel hooks off, the hooked channel's hooks are skipped
+#   - with channel hooks off, the hooked channel's hooks are skipped, and a
+#     message left waiting for them (by a kill -9 mid-ask) is delivered
 #
 # Open mode (no LOOMCYCLE_AUTH_TOKEN), deliberately: the yaml channel's hooks
 # resolve in the operator's own tenant (""), which is where an open-mode
@@ -175,12 +176,22 @@ api -X POST "$BASE/v1/runs/$NEW_RUN/interrupts/$NEW_ASK/resolve" -d '{"kind":"qu
 for i in $(seq 1 100); do [[ "$(gated_count)" == "2" ]] && break; sleep 0.1; done
 [[ "$(gated_count)" == "2" ]] || fail "the re-asked hold did not deliver"
 
-echo "[7/7] with channel hooks off, the channel's hooks are skipped"
-kill "$PID"; wait "$PID" 2>/dev/null || true; PID=""
+echo "[7/7] with channel hooks off, the channel's hooks are skipped — and what waited for them is delivered"
+# A message still waiting for a person when the replica dies, then restarted
+# with hooks off: nothing but the hooks-off drain would ever deliver it.
+api -X POST "$BASE/v1/_channels/gated/publish" -d '{"payload":{"text":"third"}}' > /dev/null
+read -r OFF_ASK OFF_RUN <<< "$(pending_ask "$NEW_ASK")"
+kill -9 "$PID"; wait "$PID" 2>/dev/null || true; PID=""
 boot 0
 grep -q 'declares hooks, but channel hooks are off' "$TEST_DIR/boot.log" || fail "no boot warning for the hooked channel"
 publish '{"text":"unhooked"}' | grep -q '"awaiting_hooks":true' && fail "a publish waited for hooks that are off"
 wait_for_count 24 20
 peek_inbox | grep -q '"text":"unhooked"' || fail "the unhooked message was not delivered as written"
+# The killed worker's lease (60s) runs out first — hence the long wait.
+for i in $(seq 1 900); do [[ "$(gated_count)" == "3" ]] && break; sleep 0.1; done
+[[ "$(gated_count)" == "3" ]] || fail "the message left awaiting hooks was not delivered with hooks off ($(gated_count) of 3)"
+api "$BASE/v1/_channels/gated/peek?max_messages=10" | grep -q '"text":"third"' || fail "the delivered message is not the one that waited"
+api "$BASE/v1/runs/$OFF_RUN/interrupts?status=all" | grep -q '"resolved_by":"hook_restart"' || fail "the ask it left pending was not cancelled"
+grep -q 'left awaiting hooks, unhooked' "$TEST_DIR/boot.log" || fail "no log of the hooks-off delivery"
 
 echo "PASS ✓ — channel hooks decided every surface's messages, recorded their decisions, survived a kill -9, and are skipped when off"
