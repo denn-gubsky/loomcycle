@@ -482,3 +482,34 @@ func HookDefLookup(st store.Store) hooks.LookupDef {
 		return def, row.DefID, nil
 	}
 }
+
+// HookDefBodyValidator returns the authoring validation of a stored HookDef
+// body, for a snapshot restore to run before writing one: it decodes strictly
+// as a hook definition, passes the event and body-kind rules (an http body's
+// url and the headers a call may send), and a code-js body compiles with
+// compile — the host's code-hook runner. compile nil means code hooks are not
+// enabled on this host, and a code-js body is refused, as a create here would
+// refuse it.
+func HookDefBodyValidator(compile func(src string) error) func(json.RawMessage) error {
+	return func(body json.RawMessage) error {
+		var def hooks.Def
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&def); err != nil {
+			return fmt.Errorf("definition does not decode as a hook def: %w", err)
+		}
+		if err := def.Validate(); err != nil {
+			return err
+		}
+		if def.Body.Kind != hooks.BodyKindCode {
+			return nil
+		}
+		if compile == nil {
+			return fmt.Errorf("a code-js body, and code hooks are not enabled on this host (LOOMCYCLE_CODE_HOOKS_ENABLED)")
+		}
+		if err := compile(def.Body.Code); err != nil {
+			return fmt.Errorf("body.code: %w", err)
+		}
+		return nil
+	}
+}

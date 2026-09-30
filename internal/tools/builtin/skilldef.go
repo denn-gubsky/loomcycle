@@ -738,3 +738,16 @@ func mintSkillDefID() string {
 	_, _ = rand.Read(b[:])
 	return "sdf_" + hex.EncodeToString(b[:])
 }
+
+// ValidateSkillDefBody re-runs, over a stored skill def body, the authoring
+// checks that depend on the body alone: it decodes as a skill definition and
+// has a non-blank body. A snapshot restore calls it before writing a body. The
+// caller-dependent checks (the skills allowlist, the tools ceiling) and the
+// operator's size caps are not part of it.
+func ValidateSkillDefBody(body json.RawMessage) error {
+	var def skillDefOverlay
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as a skill def: %w", err)
+	}
+	return (&SkillDef{}).validateBody(def.Body)
+}

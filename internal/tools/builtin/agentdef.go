@@ -1760,3 +1760,24 @@ func boolPtrCopy(b *bool) *bool {
 	v := *b
 	return &v
 }
+
+// ValidateAgentDefBody re-runs, over a stored agent def body, the authoring
+// checks that depend on the body alone: it decodes as an agent definition, and
+// its hooks are well formed — known events, tool hooks only on the agent's own
+// tools, inline webhooks with an http(s) url and headers a call may send. A
+// snapshot restore calls it (injected by the restore call sites) before
+// writing a body.
+//
+// Deliberately not part of it: the checks that depend on WHO writes (the
+// caller's tools ceiling, its scope grants, hooks unchangeable from inside a
+// run) — a restore is an operator action with no authoring caller — and the
+// overlay-only checks, which by design never judge what a stored def already
+// carries. The HookDef references are not resolved either: hook defs restore
+// after agent defs, and a run resolving the def still refuses a missing one.
+func ValidateAgentDefBody(body json.RawMessage) error {
+	var def mergedDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as an agent def: %w", err)
+	}
+	return config.ValidateAgentHooks(config.AgentDef{Tools: def.Tools, Hooks: def.Hooks, ToolHooks: def.ToolHooks})
+}

@@ -485,6 +485,11 @@ func validateOn(i int, on string) error {
 	return fmt.Errorf("team definition: transition[%d] has invalid `on` %q (want success | pushback:<reason> | conditional:<expr>)", i, on)
 }
 
+// ValidateHooks is the hooks part of Validate alone: the checks a snapshot
+// restore re-runs over a stored team definition, whose graph it does not
+// re-validate (a team dials nothing; its hooks' webhooks do).
+func ValidateHooks(d Definition) error { return validateHooks(d) }
+
 // validateHooks checks a team's hooks. The walk's own run makes no model or
 // tool calls and runs no agent, so only run_end ever fires for it; a state's
 // hooks are added to the runs it starts, so a state that starts none (vars,
