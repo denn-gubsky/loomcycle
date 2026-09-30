@@ -160,6 +160,12 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 	if err != nil || run.Status != store.RunRunning || run.ReplicaID == "" || run.ReplicaID == s.replicaID {
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
+	if takesOnlyVerdicts(run) {
+		// The owner refuses it (its entry is VerdictsOnly), so this replica
+		// must too: otherwise a retune from here changes the model, budget or
+		// parking of a child its parent drives, which the owner answers 404.
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
 	if run.SessionID != "" {
 		sess, serr := s.store.GetSession(ctx, run.SessionID)
 		if serr != nil || !sessionOwnershipOK(ctx, sess) {
@@ -167,6 +173,20 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 		}
 	}
 	return run, nil
+}
+
+// takesOnlyVerdicts is the steer entry's VerdictsOnly read off the run's row,
+// for a replica that does not have the entry. The row carries no such flag, so
+// it is derived: a sub-run (it has a parent) that is not a team-walk member
+// (every member row carries its walk's id; a member's own sub-agents do not).
+// That is the Agent tool's child, which its owner registers verdicts-only.
+//
+// It also covers a resident child and a resumed sub-run, whose rows are
+// indistinguishable but whose owner registers a full entry: the owner admits a
+// retune, a non-owning replica refuses it. Refusing is the side a gate may err
+// on; carrying the kind on the row would make the two agree.
+func takesOnlyVerdicts(run store.Run) bool {
+	return run.ParentRunID != "" && (run.ParentContext == nil || run.ParentContext.WalkID == "")
 }
 
 // retuneRun merges an override into a live run's stored configuration.
