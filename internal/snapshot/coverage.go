@@ -72,7 +72,16 @@ type tableCoverage struct {
 // kind and alphabetical within a group.
 var tableCoverageMap = map[string]tableCoverage{
 	// ---- carried by an existing section ------------------------------------
-	"agent_def_active": {Kind: coverSection, Section: "agent_def_active", Secrets: "none", Backends: onBoth},
+	// A2A defs hold no secret material: a peer's auth names a per-run
+	// credential key, a card's security schemes are public descriptions and
+	// sign_with_key_env is an env NAME. Every body is re-validated on restore.
+	// The peer tools are enumerated per run from the store, and the card is
+	// read per request, so no cache needs a refresh.
+	"a2a_agent_def_active":       {Kind: coverSection, Section: "a2a_agent_def_active", Secrets: "none", Backends: onBoth},
+	"a2a_agent_defs":             {Kind: coverSection, Section: "a2a_agent_defs", Secrets: "by-reference: auth.bearer_credential_ref (a per-run credential key)", Backends: onBoth},
+	"a2a_server_card_def_active": {Kind: coverSection, Section: "a2a_server_card_def_active", Secrets: "none", Backends: onBoth},
+	"a2a_server_card_defs":       {Kind: coverSection, Section: "a2a_server_card_defs", Secrets: "by-reference: sign_with_key_env (an env var name)", Backends: onBoth},
+	"agent_def_active":           {Kind: coverSection, Section: "agent_def_active", Secrets: "none", Backends: onBoth},
 	"agent_defs": {Kind: coverSection, Section: "agent_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value in an inline hook block (capture_findings)"},
 	"channel_cursors":  {Kind: coverSection, Section: "channels", Secrets: "none", Backends: onBoth},
@@ -121,6 +130,10 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "travels as the aggregate month-to-date total, not as rows",
 		Cache:  "limits.Tracker (month-to-date counters seeded at boot)"},
 	"users": {Kind: coverSection, Section: "users", Secrets: "none", Backends: onBoth},
+	// The receiver re-reads the active def per delivery; nothing is cached.
+	"webhook_def_active": {Kind: coverSection, Section: "webhook_def_active", Secrets: "none", Backends: onBoth},
+	"webhook_defs": {Kind: coverSection, Section: "webhook_defs", Backends: onBoth,
+		Secrets: "stripped: literal user_credentials values (keys kept as stripped_credentials; the def travels with enabled:false)"},
 
 	// ---- never in an envelope (§3.1) ----------------------------------------
 	"credential_defs": {Kind: coverNever, Backends: onBoth,
@@ -167,10 +180,6 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "live concurrency slots of the source cluster"},
 
 	// ---- pending: a later phase adds the section ----------------------------
-	"a2a_agent_def_active":       {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
-	"a2a_agent_defs":             {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
-	"a2a_server_card_def_active": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
-	"a2a_server_card_defs":       {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
 	"dirents":                    {Kind: coverPending, Phase: "DP-P7", Backends: onBoth},
 	"document_source_def_active": {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
 	"document_source_defs":       {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
@@ -178,7 +187,4 @@ var tableCoverageMap = map[string]tableCoverage{
 	"memory_backend_defs":        {Kind: coverPending, Phase: "DP-P4", Backends: onBoth},
 	"memory_pending":             {Kind: coverPending, Phase: "DP-P6", Backends: onBoth},
 	"volume_defs":                {Kind: coverPending, Phase: "DP-P5", Backends: onBoth},
-	"webhook_def_active":         {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
-	// Literal user_credentials values are stripped at capture once P3 lands.
-	"webhook_defs": {Kind: coverPending, Phase: "DP-P3", Backends: onBoth},
 }

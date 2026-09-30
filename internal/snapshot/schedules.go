@@ -292,7 +292,7 @@ type restoredSchedule struct {
 // restoreScheduleDefs inserts each def the target does not have, then its run
 // state. Entries are in lineage order (a fork after its parent), as captured.
 // Returns what the active-pointer pass needs, keyed by def_id.
-func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSection, result *RestoreResult) map[string]restoredSchedule {
+func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSection, scan *credScan, result *RestoreResult) map[string]restoredSchedule {
 	out := make(map[string]restoredSchedule, len(sec.Entries))
 	for _, e := range sec.Entries {
 		where := fmt.Sprintf("schedule_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
@@ -330,6 +330,9 @@ func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSe
 			continue
 		}
 		out[e.DefID] = restoredSchedule{fires: !e.Retired && scheduleFires(body)}
+		if inserted && !e.Retired {
+			scan.add("schedule_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, body)
+		}
 		if inserted {
 			result.ScheduleDefsRestored++
 			if stripped {

@@ -578,6 +578,18 @@ func warnLiteralUserCredentials(name string, def mergedWebhookDef) {
 	}
 }
 
+// ValidateWebhookDefBody re-runs the authoring validation over a stored
+// webhook def body. A snapshot restore calls it (injected by the restore call
+// sites) before writing a body, so a restored def is one an author could
+// have created on this host.
+func ValidateWebhookDefBody(body json.RawMessage) error {
+	var def mergedWebhookDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as a webhook def: %w", err)
+	}
+	return validateWebhookDef(def)
+}
+
 // validateWebhookDef enforces the runtime-supplied overlay shape.
 // STRUCTURAL validation only — the env-allowlist RESOLVABILITY check for
 // signing_secret_env / bearer_token_env / user_credentials_from_env is
