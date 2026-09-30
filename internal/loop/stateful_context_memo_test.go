@@ -12,7 +12,7 @@ import (
 func TestContextMemo_KeepsEachCallOnceAndItsLatestResult(t *testing.T) {
 	m := &contextMemo{}
 	m.add(json.RawMessage(`{"op":"help", "topic":"Memory/set"}`), "old article")
-	m.add(json.RawMessage(`{"op":"self"}`), "self result")
+	m.add(json.RawMessage(`{"op":"doc","name":"Memory"}`), "doc result")
 	m.add(json.RawMessage(`{"op":"help","topic":"Memory/set"}`), "new article") // same call, other spacing
 	if len(m.entries) != 2 {
 		t.Fatalf("entries = %d, want 2 (the repeated call replaces its entry)", len(m.entries))
@@ -21,7 +21,7 @@ func TestContextMemo_KeepsEachCallOnceAndItsLatestResult(t *testing.T) {
 	if strings.Contains(got, "old article") || !strings.Contains(got, "new article") {
 		t.Errorf("want only the latest result of a repeated call:\n%s", got)
 	}
-	if strings.Index(got, "self result") > strings.Index(got, "new article") {
+	if strings.Index(got, "doc result") > strings.Index(got, "new article") {
 		t.Errorf("the repeated call should move to the end:\n%s", got)
 	}
 }
@@ -63,6 +63,28 @@ func TestMemoKey_OtherOpsIgnoreKeyOrderAndEmptyArguments(t *testing.T) {
 	}
 	if a == c {
 		t.Errorf("different calls share a key: %q", a)
+	}
+}
+
+// A live op's result (the clock, Σ, the window's fill, the channel list) is
+// stale by the next step, and the memo tells the model not to call it again,
+// so the model would work from an old clock or a Σ that contradicts "Current
+// state:". Only reference ops are kept.
+func TestContextMemo_KeepsOnlyReferenceOps(t *testing.T) {
+	m := &contextMemo{}
+	m.add(json.RawMessage(`{"op":"help","topic":"Memory/set"}`), "HELP ARTICLE")
+	m.add(json.RawMessage(`{"op":"guide"}`), "GUIDE TEXT")
+	m.add(json.RawMessage(`{"op":"time"}`), `{"now_rfc3339":"2026-09-30T06:00:00Z"}`)
+	m.add(json.RawMessage(`{"op":"state"}`), `{"state":{"step":1}}`)
+	m.add(json.RawMessage(`{"op":"self"}`), `{"context":{"used_pct":12}}`)
+	got := m.render("Context", "")
+	for _, live := range []string{`{"op":"time"}`, `{"op":"state"}`, `{"op":"self"}`, "now_rfc3339", "used_pct"} {
+		if strings.Contains(got, live) {
+			t.Errorf("a live Context result is kept as if it were current (%s):\n%s", live, got)
+		}
+	}
+	if !strings.Contains(got, "HELP ARTICLE") || !strings.Contains(got, "GUIDE TEXT") {
+		t.Errorf("a reference result was dropped:\n%s", got)
 	}
 }
 
@@ -200,5 +222,78 @@ func TestRun_Stateful_TheLastActionResultIsKeptBesideAContextResult(t *testing.T
 	}
 	if strings.Contains(s4, "Your last action") {
 		t.Errorf("step 4 repeats the latest observation as the last action:\n%s", s4)
+	}
+}
+
+// A kept action that failed is not done. After the usual fail → read help →
+// retry sequence, the retry step must not be told the failed call is done.
+func TestContextMemo_RendersAFailedLastActionAsFailed(t *testing.T) {
+	m := &contextMemo{}
+	m.addWork("Document", json.RawMessage(`{"op":"create_chunk","document_id":"d"}`), `{"isError":true,"error":"missing body"}`, true)
+	got := m.render("Context", "the help article")
+	if !strings.Contains(got, "FAILED") || !strings.Contains(got, "missing body") {
+		t.Errorf("a failed last action is not shown as failed:\n%s", got)
+	}
+	if strings.Contains(got, "do not repeat it") || strings.Contains(got, "it is done") {
+		t.Errorf("a failed last action is shown as done:\n%s", got)
+	}
+}
+
+func TestContextMemo_RendersASuccessfulLastActionAsDone(t *testing.T) {
+	m := &contextMemo{}
+	m.addWork("Document", json.RawMessage(`{"op":"create_document"}`), `{"document_id":"D1"}`, false)
+	got := m.render("Context", "the help article")
+	if !strings.Contains(got, `Your last action (it is done; do not repeat it), Document {"op":"create_document"}, returned:`) {
+		t.Errorf("a successful last action lost its wording:\n%s", got)
+	}
+	if strings.Contains(got, "FAILED") {
+		t.Errorf("a successful last action is shown as failed:\n%s", got)
+	}
+}
+
+// failingDoc is a Document stand-in whose every call fails.
+type failingDoc struct{}
+
+func (failingDoc) Name() string                 { return "Document" }
+func (failingDoc) Description() string          { return "documents" }
+func (failingDoc) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (failingDoc) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: "create_chunk: missing required field: body", IsError: true}, nil
+}
+
+// The failure flag must cross from the dispatched result into the memo: a
+// failed action, then a help read, and the next step shows the failure as
+// failed rather than done.
+func TestRun_Stateful_AFailedLastActionIsNotShownAsDone(t *testing.T) {
+	prov := &statefulScriptProvider{scripts: []string{
+		`{"patch":{},"action":{"tool":"Document","input":{"op":"create_chunk","document_id":"d"}}}`,
+		`{"patch":{},"action":{"tool":"Context","input":{"op":"help","topic":"Document/create_chunk"}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	order := []tools.Tool{failingDoc{}, helpDoc{}}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      order,
+		Dispatcher: tools.NewDispatcher(order),
+		Segments:   statefulTaskSegs(),
+		Context:    statefulCtx(nil),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prov.requests) < 3 {
+		t.Fatalf("%d model calls, want 3", len(prov.requests))
+	}
+	msgs := prov.requests[2]
+	var b strings.Builder
+	for _, c := range msgs[len(msgs)-1].Content {
+		b.WriteString(c.Text)
+	}
+	s := b.String()
+	if !strings.Contains(s, "missing required field: body") {
+		t.Fatalf("step 3 does not show the failed action at all:\n%s", s)
+	}
+	if !strings.Contains(s, "FAILED") || strings.Contains(s, "do not repeat it") {
+		t.Errorf("step 3 shows the failed action as done:\n%s", s)
 	}
 }

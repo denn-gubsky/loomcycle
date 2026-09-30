@@ -110,3 +110,33 @@ func TestRun_Stateful_OneHelpTopicReadTwiceIsKeptOnce(t *testing.T) {
 		t.Errorf("the Memory/set article appears %d times on step 4, want 1:\n%s", n, text.String())
 	}
 }
+
+// The stateful memo keeps a Context result only when its op is classified
+// static, so every op the real Context tool offers must be classified: a new op
+// left out is silently never kept, and a new live op classified by habit as
+// static would be shown stale as current. Read from the tool's own schema so
+// the list here cannot drift from it.
+func TestContextOpIsStatic_ClassifiesEveryContextOp(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Op struct {
+				Enum []string `json:"enum"`
+			} `json:"op"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal((&builtin.Context{}).InputSchema(), &schema); err != nil {
+		t.Fatalf("Context schema: %v", err)
+	}
+	ops := schema.Properties.Op.Enum
+	if len(ops) == 0 {
+		t.Fatal("Context schema lists no ops")
+	}
+	for _, op := range ops {
+		if _, known := loop.ContextOpIsStatic(op); !known {
+			t.Errorf("Context op %q is not classified static or live in contextOpIsStatic", op)
+		}
+	}
+	if _, known := loop.ContextOpIsStatic("no-such-op"); known {
+		t.Error("an op Context does not have is classified")
+	}
+}

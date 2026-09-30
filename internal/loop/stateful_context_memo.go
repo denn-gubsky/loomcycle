@@ -16,6 +16,8 @@ import (
 // deepseek read History/recap 4 times in another — and two ornith runs spent
 // their whole 10-minute budget that way. So what the run's Context tool
 // returned (help, its scopes, its tools) is kept and shown on every later step.
+// Only reference ops are kept (see contextOpIsStatic): a kept clock or Σ would
+// be shown as current long after it was not.
 //
 // Bounded, because the stateful prompt is meant to stay flat: the kept text is
 // capped at contextMemoBudget characters, the oldest entry dropped first. A
@@ -70,16 +72,21 @@ type contextMemo struct {
 	// and it created a second document. The kept Context results pushed the
 	// work out; this keeps the latest piece of work beside them.
 	workTool, workCall, workText string
+	// workFailed marks a kept action that returned an error. It is shown as
+	// failed, not as done: the usual sequence is fail → read help → retry, and
+	// at the retry step the failed call would otherwise read "do not repeat it".
+	workFailed bool
 }
 
-// addWork keeps the latest result of an action that was not a Context call.
-func (m *contextMemo) addWork(tool string, input json.RawMessage, text string) {
-	m.workTool, m.workCall, m.workText = tool, compactCall(input), text
+// addWork keeps the latest result of an action that was not a Context call;
+// failed is whether that result is an error.
+func (m *contextMemo) addWork(tool string, input json.RawMessage, text string, failed bool) {
+	m.workTool, m.workCall, m.workText, m.workFailed = tool, compactCall(input), text, failed
 }
 
 // clearWork forgets the kept action result, for a new operator turn.
 func (m *contextMemo) clearWork() {
-	m.workTool, m.workCall, m.workText = "", "", ""
+	m.workTool, m.workCall, m.workText, m.workFailed = "", "", "", false
 }
 
 func compactCall(input json.RawMessage) string {
@@ -101,8 +108,34 @@ func helpToolName(ts []tools.Tool) string {
 	return ""
 }
 
-// add keeps one successful Context result.
+// contextOpIsStatic classifies every Context op: static (reference text that
+// stays true for the whole run, so it is kept and the model is told not to
+// call it again) or live (a clock, Σ, the window's fill, the channel list — a
+// kept copy goes stale and would contradict the step's own "Current state:").
+// known is false for an op this list does not name: such a result is not kept,
+// and TestContextOpIsStatic_ClassifiesEveryContextOp fails until the new op is
+// classified here.
+func contextOpIsStatic(op string) (static, known bool) {
+	switch op {
+	case "help", "guide", "doc", "tools", "permissions", "capabilities":
+		return true, true
+	case "self", "agents", "lineage", "evaluations", "channels", "time", "compact", "state":
+		return false, true
+	}
+	return false, false
+}
+
+// add keeps one successful Context result, when its op is static.
 func (m *contextMemo) add(input json.RawMessage, text string) {
+	var in struct {
+		Op string `json:"op"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return
+	}
+	if static, _ := contextOpIsStatic(in.Op); !static {
+		return
+	}
 	call := compactCall(input)
 	key := memoKey(input, text)
 	kept := m.entries[:0]
@@ -140,7 +173,11 @@ func (m *contextMemo) render(tool, obs string) string {
 		out = fmt.Sprintf("What you already read with %s in this run (kept for you; do not call it again for these):\n\n%s", tool, b.String())
 	}
 	if m.workText != "" && m.workText != obs {
-		out += fmt.Sprintf("Your last action (it is done; do not repeat it), %s %s, returned:\n%s\n\n", m.workTool, m.workCall, m.workText)
+		status := "it is done; do not repeat it"
+		if m.workFailed {
+			status = "it FAILED and is not done; fix what its error names before retrying"
+		}
+		out += fmt.Sprintf("Your last action (%s), %s %s, returned:\n%s\n\n", status, m.workTool, m.workCall, m.workText)
 	}
 	return out
 }
