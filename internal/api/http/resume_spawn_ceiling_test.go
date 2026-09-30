@@ -421,6 +421,161 @@ func TestResumedChild_WithNoRecordedCeilingFailsClosed(t *testing.T) {
 	})
 }
 
+// The fan-out width is the third bound a sub-run's record carries, and it
+// fails closed like the other two: a sub-run whose record has no spawn entry
+// resumes serial, not on its definition's width of 16. A recorded width and a
+// top-level run's definition are left as they were. Measured on the wire: the
+// peak number of grandchild model calls in flight during the resumed fan-out.
+//
+// The grandchild calls meet at a barrier so the peak does not depend on how
+// fast a loaded box starts them. A width of N is proven by holding each call
+// until N are in flight, with a timeout generous enough never to fire when N
+// are permitted. Serial is proven the other way: each call waits briefly for
+// all three, which a missing cap would let arrive, and must still be alone.
+func TestResumedChild_FanOutWidthFailsClosedWithoutASpawnRecord(t *testing.T) {
+	cases := []struct {
+		name      string
+		sub       bool
+		runConfig json.RawMessage
+		want      int
+	}{{
+		name:      "sub-run whose record predates the spawn entry resumes serial",
+		sub:       true,
+		runConfig: runConfigRecord{RunTimeoutSeconds: 600}.marshal(),
+		want:      1,
+	}, {
+		name: "sub-run with no record at all resumes serial",
+		sub:  true,
+		want: 1,
+	}, {
+		name:      "sub-run with a recorded width keeps it",
+		sub:       true,
+		runConfig: runConfigRecord{Spawn: spawnRecordOf(tools.VolumePolicyValue{}, 2)}.marshal(),
+		want:      2,
+	}, {
+		name:      "top-level run keeps its definition's width",
+		runConfig: runConfigRecord{RunTimeoutSeconds: 600}.marshal(),
+		want:      3,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := makeBaseConfig()
+			cfg.Defaults.Provider = "scripted"
+			cfg.Agents = map[string]config.AgentDef{
+				"child":      {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "role:child.", MaxConcurrentChildren: 16},
+				"grandchild": {Model: "stub-model", Tools: []string{}, SystemPrompt: "role:grandchild."},
+			}
+			probe := newFanWidthProbe(tc.want, 10*time.Second)
+			if tc.want == 1 {
+				probe = newFanWidthProbe(3, 500*time.Millisecond)
+			}
+			prov := &roleProvider{
+				roles: []string{"child", "grandchild"},
+				scripts: map[string][][]providers.Event{
+					// Straight to the resumed turn: these rows had no live phase here.
+					"child": {toolCallTurn("tu_fan", "Agent",
+						`{"op":"parallel_spawn","spawns":[{"name":"grandchild","prompt":"a"},{"name":"grandchild","prompt":"b"},{"name":"grandchild","prompt":"c"}]}`)},
+				},
+				calls:  map[string]int{},
+				onCall: probe.onCall,
+			}
+			srv, _ := makeServerWithTools(t, prov, cfg, nil)
+			ident := store.RunIdentity{AgentID: "a_legacy", RunConfig: tc.runConfig}
+			if tc.sub {
+				ident.ParentAgentID = "a_gone_parent"
+			}
+			run := createCeilingRun(t, srv, "child", ident)
+			parkForResume(t, srv, run.ID)
+			resumeOne(t, srv)
+			if tc.want > 1 {
+				// Bounded here rather than by the run: a width that is not
+				// permitted would otherwise hold each call for the whole
+				// barrier timeout, and the failure would read as a stuck run.
+				probe.awaitPeak(tc.want, 10*time.Second)
+				probe.release()
+			}
+			waitFor(t, "the resumed run to finish", func() bool {
+				_, live := srv.cancelReg.Get(run.AgentID)
+				return !live
+			})
+			if got := probe.peakInFlight(); got != tc.want {
+				t.Errorf("resumed run's grandchildren peaked at %d in flight, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// fanWidthProbe records the peak number of grandchild model calls in flight.
+// Each call is held until joinUpTo calls have been in flight together or wait
+// passes, so a width up to joinUpTo is observed whenever it is permitted. The
+// release is a latch: once the barrier opens it stays open, so the calls that
+// were held do not wait out the timeout after the first of them returns.
+type fanWidthProbe struct {
+	joinUpTo int
+	wait     time.Duration
+
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+	released chan struct{} // closed once joinUpTo calls are in flight, or by release
+}
+
+func newFanWidthProbe(joinUpTo int, wait time.Duration) *fanWidthProbe {
+	return &fanWidthProbe{joinUpTo: joinUpTo, wait: wait, released: make(chan struct{})}
+}
+
+func (p *fanWidthProbe) onCall(role string) {
+	if role != "grandchild" {
+		return
+	}
+	p.mu.Lock()
+	p.inFlight++
+	if p.inFlight > p.peak {
+		p.peak = p.inFlight
+	}
+	if p.inFlight >= p.joinUpTo {
+		p.openLocked()
+	}
+	p.mu.Unlock()
+	select {
+	case <-p.released:
+	case <-time.After(p.wait):
+	}
+	p.mu.Lock()
+	p.inFlight--
+	p.mu.Unlock()
+}
+
+// awaitPeak returns once want calls have been in flight together, or within
+// has passed.
+func (p *fanWidthProbe) awaitPeak(want int, within time.Duration) {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) && p.peakInFlight() < want {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// release opens the barrier for every call still held and every later one.
+func (p *fanWidthProbe) release() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.openLocked()
+}
+
+func (p *fanWidthProbe) openLocked() {
+	select {
+	case <-p.released:
+	default:
+		close(p.released)
+	}
+}
+
+func (p *fanWidthProbe) peakInFlight() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.peak
+}
+
 // makeServerWithTools is makeServer with a tool set.
 func makeServerWithTools(t *testing.T, prov providers.Provider, cfg *config.Config, toolset []tools.Tool) (*Server, store.Store) {
 	t.Helper()
