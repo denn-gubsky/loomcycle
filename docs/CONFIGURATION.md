@@ -1155,7 +1155,7 @@ Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and r
 ```yaml
 principals:
   marketing:                                   # informational handle (the map key)
-    tenant: acme                               # authoritative tenant ("" = the shared/operator tenant)
+    tenant: acme                               # authoritative tenant — required unless the principal is substrate:admin
     subject: marketing                         # authoritative user id (= scope_id for user-scoped tools)
     scopes: [runs:create, runs:read, substrate:tenant]
     token_env: LOOMCYCLE_TOKEN_MARKETING       # env var holding the SECRET (in .env.local)
@@ -1166,7 +1166,7 @@ principals:
 ```
 
 - **The yaml carries only `token_env` (a name), never the secret.** The bearer value lives in `.env.local` (e.g. `LOOMCYCLE_TOKEN_MARKETING=lct_…`). `token_env` must be `LOOMCYCLE_*`-prefixed (or an allowlisted third-party name) and may **not** name one of loomcycle's own infra secrets (the DSN / pepper / `LOOMCYCLE_AUTH_TOKEN` / upstream MCP token).
-- **`tenant` / `subject` / `scopes`** become the resolved `Principal` — authoritative, server-side, never from the wire. `scopes` is validated against the closed catalog above; an empty/missing `scopes` authenticates but is gated out of everything.
+- **`tenant` / `subject` / `scopes`** become the resolved `Principal` — authoritative, server-side, never from the wire. `tenant` may be omitted only for a `substrate:admin` principal (whose empty tenant is the all-tenants view); any other principal without one is a config-load error, because list queries read an empty tenant as *every* tenant. `scopes` is validated against the closed catalog above; an empty/missing `scopes` authenticates but is gated out of everything.
 - **Resolution order:** minted `OperatorTokenDef` → **declared principal** → legacy token. A token value shared by two declared principals is a config-load error; an empty `token_env` at boot makes that principal **inert** (a startup warning, not an open door).
 - **The payoff — alignment by construction.** Use one declared token for **both** the Web UI login (`/ui/login`) and an MCP thin client (`LOOMCYCLE_MCP_UPSTREAM_TOKEN`); both resolve to the same `(tenant, subject)`. Combined with the per-principal `/v1/_mcp` transport (RFC AG), an MCP agent's user-scoped Documents/Memory land under the same user the UI reads — no synthetic-operator mismatch.
 
