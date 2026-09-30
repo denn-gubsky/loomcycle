@@ -2,6 +2,8 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -17,6 +19,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -99,5 +103,84 @@ func TestGrpcCancelAgent_IsolatedMemberCannotCancelAnotherUsersRun(t *testing.T)
 	}
 	if resp, err := cancelAs(scopedCtx("acme", "op", auth.ScopeTenant), "a_alice"); err != nil || resp.GetCancelledCount() != 1 || !aliceLive() {
 		t.Errorf("tenant operator cancelling a member's run = %v, %v; want one cancelled", resp, err)
+	}
+}
+
+// seedConversation files a finished run of agentx in tenant/user whose
+// transcript is long enough for compaction to reach the summary call.
+func seedConversation(t *testing.T, st store.Store, tenant, user string) (sessID, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, tenant, "agentx", user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_" + user, UserID: user, TenantID: tenant, Model: "stub-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEv := func(typ string, payload any) {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AppendEvent(ctx, run.ID, typ, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bulk := strings.Repeat("with enough substance that summarising it is a saving. ", 6)
+	for i := 1; i <= 8; i++ {
+		appendEv("user_input", []loop.PromptSegment{{Role: "user",
+			Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: fmt.Sprintf("question %d %s", i, bulk)}}}})
+		appendEv("text", providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d %s", i, bulk)})
+		appendEv("done", providers.Event{Type: providers.EventDone, StopReason: "end_turn"})
+	}
+	if err := st.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	return sess.ID, run.ID
+}
+
+func compactionMarkers(t *testing.T, st store.Store, sessID string) int {
+	t.Helper()
+	events, err := st.GetTranscript(context.Background(), sessID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range events {
+		if e.Type == string(providers.EventContextCompaction) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestGrpcCompactRun_IsolatedMemberCannotCompactAnotherUsersRun(t *testing.T) {
+	adapter, _, st, prov := ownershipGRPC(t)
+	aliceSess, aliceRun := seedConversation(t, st, "acme", "alice")
+	bobSess, bobRun := seedConversation(t, st, "acme", "bob")
+
+	compactAs := func(ctx context.Context, runID string) (*loomcyclepb.CompactRunResult, error) {
+		return adapter.CompactRun(ctx, &loomcyclepb.CompactRunRequest{RunId: runID})
+	}
+	bob := scopedCtx("acme", "bob", auth.ScopeUser)
+	_, ghostErr := compactAs(bob, "run_ghost")
+	if status.Code(ghostErr) != codes.NotFound {
+		t.Fatalf("unknown run id: %v, want NotFound", ghostErr)
+	}
+	res, err := compactAs(bob, aliceRun)
+	if status.Code(err) != codes.NotFound || status.Convert(err).Message() != status.Convert(ghostErr).Message() {
+		t.Errorf("isolated member compacting another user's run = %v, %v; want %v", res, err, ghostErr)
+	}
+	if prov.last != nil || compactionMarkers(t, st, aliceSess) != 0 {
+		t.Fatal("another user's run was compacted over gRPC")
+	}
+
+	if res, err := compactAs(bob, bobRun); err != nil || !res.GetCompacted() || compactionMarkers(t, st, bobSess) != 1 {
+		t.Errorf("isolated member compacting its own run = %v, %v; want compacted with a marker", res, err)
+	}
+	if res, err := compactAs(scopedCtx("acme", "op", auth.ScopeTenant), aliceRun); err != nil || !res.GetCompacted() || compactionMarkers(t, st, aliceSess) != 1 {
+		t.Errorf("tenant operator compacting a member's run = %v, %v; want compacted with a marker", res, err)
 	}
 }

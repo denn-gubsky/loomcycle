@@ -8498,8 +8498,11 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// missing) run both fold into the same opaque 404 (run_ids aren't secrets,
 	// so the gate must not become an existence oracle). Shared by the HTTP
 	// handler and the gRPC/MCP CompactRun — both carry the principal in ctx.
+	// An isolated member may compact only its own runs: the op makes a billed
+	// model call over the session's transcript and rewrites what the run's next
+	// turn sees, so another user's run gets the same 404 as a missing one.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
-	if err != nil {
+	if err != nil || !runOwnershipOK(ctx, run) {
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 
