@@ -151,8 +151,9 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	defer span.End()
 	span.SetAttributes(attribute.String("webhook.name", name), attribute.String("webhook.tenant", tenant))
 
-	// 1. Resolve the active Def. Unknown name → 404.
-	wd, ok := lookup.Webhook(ctx, rec.store, rec.cfg, tenant, name)
+	// 1. Resolve the active Def. Unknown name → 404. owner, not the URL
+	//    tenant, names the def for the per-webhook state below (webhookKey).
+	wd, owner, ok := lookup.ResolveWebhook(ctx, rec.store, rec.cfg, tenant, name)
 	if !ok {
 		rec.finish(span, name, "", "rejected_unknown", "")
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
@@ -226,9 +227,10 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//    verified — and misled legitimate senders into rotating their secret
 	//    on a dedup. Changed to an idempotent ack.)
 	//    did is the sender's id and goes back in every response; dkey scopes
-	//    it to this webhook and is what BOTH dedup layers key on.
+	//    it to the resolved webhook def and is what BOTH dedup layers key on.
 	did := deliveryID(wd.Auth, body, r.Header.Get)
-	dkey := dedupKey(tenant, name, did)
+	whKey := webhookKey(owner, name)
+	dkey := dedupKey(whKey, did)
 	if rec.dedup.seen(dkey) {
 		rec.finish(span, name, did, verdictAcceptedReplay, "")
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)

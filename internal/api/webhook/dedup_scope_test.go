@@ -266,3 +266,73 @@ func TestReceiver_SameDeliveryIDHeaderOnTwoWebhooks_StartsTwoRuns(t *testing.T) 
 		}
 	}
 }
+
+// putWebhookDef stores def as the active webhook `name` in routeTenant.
+func putWebhookDef(t *testing.T, st store.Store, routeTenant, name string, def map[string]any) {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := json.Marshal(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.WebhookDefCreate(ctx, store.WebhookDefRow{
+		DefID: fmt.Sprintf("wd-%s-%s-%d", routeTenant, name, time.Now().UnixNano()), Name: name, Definition: raw, TenantID: routeTenant,
+	})
+	if err != nil {
+		t.Fatalf("WebhookDefCreate(%s/%s): %v", routeTenant, name, err)
+	}
+	if err := st.WebhookDefSetActive(ctx, routeTenant, name, row.DefID, "test"); err != nil {
+		t.Fatalf("WebhookDefSetActive(%s/%s): %v", routeTenant, name, err)
+	}
+}
+
+func signedSpawnDef(tenant string) map[string]any {
+	return map[string]any{
+		"enabled": true, "delivery": "spawn", "agent": "x", "tenant_id": tenant,
+		"auth": map[string]any{"kind": "hmac", "header": "X-Hub-Signature-256", "signing_secret_env": "WH_SECRET"},
+	}
+}
+
+// An unknown tenant prefix falls through to the static (or shared) webhook,
+// so the prefix must not mint a fresh dedup key: a captured signed delivery
+// replayed through made-up prefixes is the same delivery to the same def.
+func TestReceiver_SignedDeliveryReplayedThroughTenantPrefixes_StartsOneRun(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, st store.Store) map[string]config.Webhook
+	}{
+		{"static", func(t *testing.T, st store.Store) map[string]config.Webhook {
+			return map[string]config.Webhook{"deploy": scopeWebhook("")}
+		}},
+		{"shared-substrate", func(t *testing.T, st store.Store) map[string]config.Webhook {
+			putWebhookDef(t, st, "", "deploy", signedSpawnDef(""))
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openScopeStore(t)
+			fr := &storeRunner{st: st}
+			hooks := tc.setup(t, st)
+			rec := newScopeReceiver(st, fr, hooks)
+			body := []byte(`{"goal":"deploy prod"}`)
+
+			code, got := postSigned(t, rec, "/v1/_webhooks/x/deploy", body, "")
+			original := assertFreshRun(t, "/x/deploy", code, got)
+			for _, p := range []string{"/v1/_webhooks/y/deploy", "/v1/_webhooks/deploy"} {
+				code, got = postSigned(t, rec, p, body, "")
+				if got["deduped"] != "true" || got["run_id"] != original {
+					t.Errorf("%s = %d %v; want deduped against run %s", p, code, got, original)
+				}
+			}
+			// Layer 2 on its own: a fresh receiver (restart / other replica).
+			fresh := newScopeReceiver(st, fr, hooks)
+			code, got = postSigned(t, fresh, "/v1/_webhooks/z/deploy", body, "")
+			if code != http.StatusAccepted || got["deduped"] != "true" || got["run_id"] != original {
+				t.Errorf("layer-2 /z/deploy = %d %v; want 202 deduped run_id=%s", code, got, original)
+			}
+			if n := fr.callCount(); n != 1 {
+				t.Errorf("one signed delivery started %d runs, want 1", n)
+			}
+		})
+	}
+}

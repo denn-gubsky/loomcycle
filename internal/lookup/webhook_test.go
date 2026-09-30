@@ -134,6 +134,57 @@ func TestWebhook_StaticBeforeSubstrate(t *testing.T) {
 	}
 }
 
+// tenantWebhookStore keys active defs by "tenant/name", so the resolver's
+// per-tier lookups are distinguishable.
+type tenantWebhookStore struct {
+	stubWebhookStore
+	active map[string]store.WebhookDefRow
+}
+
+func (s *tenantWebhookStore) WebhookDefGetActive(_ context.Context, tenantID, name string) (store.WebhookDefRow, error) {
+	if row, ok := s.active[tenantID+"/"+name]; ok {
+		return row, nil
+	}
+	return store.WebhookDefRow{}, &store.ErrNotFound{Kind: "webhook_def_active", ID: name}
+}
+
+// The owner is the tier the def came from — never the URL tenant that asked,
+// and never the def's own tenant_id (where its runs execute).
+func TestResolveWebhook_OwnerIsTheTierItResolvedFrom(t *testing.T) {
+	def := func(agent, execTenant string) store.WebhookDefRow {
+		return store.WebhookDefRow{Definition: json.RawMessage(`{"delivery":"spawn","agent":"` + agent + `","tenant_id":"` + execTenant + `"}`)}
+	}
+	ss := &tenantWebhookStore{active: map[string]store.WebhookDefRow{
+		"acme/own":    def("acme-agent", "globex"),
+		"/shared":     def("shared-agent", ""),
+		"/yaml":       def("shadowed-agent", ""),
+		"globex/yaml": def("globex-agent", "globex"),
+	}}
+	cfg := &config.Config{Webhooks: map[string]config.Webhook{"yaml": {Delivery: "spawn", Agent: "yaml-agent"}}}
+
+	for _, tc := range []struct {
+		urlTenant, name, agent string
+		want                   lookup.WebhookOwner
+	}{
+		{"acme", "own", "acme-agent", lookup.WebhookOwner{TenantID: "acme"}},
+		{"acme", "yaml", "yaml-agent", lookup.WebhookOwner{Static: true}},
+		{"made-up", "yaml", "yaml-agent", lookup.WebhookOwner{Static: true}},
+		{"", "yaml", "yaml-agent", lookup.WebhookOwner{Static: true}},
+		{"globex", "yaml", "globex-agent", lookup.WebhookOwner{TenantID: "globex"}},
+		{"acme", "shared", "shared-agent", lookup.WebhookOwner{}},
+		{"", "shared", "shared-agent", lookup.WebhookOwner{}},
+	} {
+		got, owner, ok := lookup.ResolveWebhook(context.Background(), ss, cfg, tc.urlTenant, tc.name)
+		if !ok || got.Agent != tc.agent {
+			t.Errorf("%s/%s resolved (%q, %v), want agent %q", tc.urlTenant, tc.name, got.Agent, ok, tc.agent)
+			continue
+		}
+		if owner != tc.want {
+			t.Errorf("%s/%s owner = %+v, want %+v", tc.urlTenant, tc.name, owner, tc.want)
+		}
+	}
+}
+
 // TestWebhook_DriftDetection pins the SubstrateWebhookDef field set
 // against an explicit `want` enumeration. A field added to or removed
 // from SubstrateWebhookDef without updating this map fails CI.
