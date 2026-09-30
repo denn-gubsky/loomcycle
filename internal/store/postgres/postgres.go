@@ -5964,6 +5964,32 @@ func (s *Store) ListPurgeableRetiredDefVersions(ctx context.Context, defType str
 	// survives. This keeps lineage intact AND avoids the parent_def_id FK violation
 	// a single batched DELETE of a still-referenced parent would trigger; a retired
 	// chain drains leaf-first over successive ticks.
+	args := []any{olderThan, keepLastN, limit}
+	pinned := ""
+	if defType == "hook" {
+		// A run records the HookDef versions it resolved in its run_config
+		// (pinned_hooks.defs: lookup key → def_id) and, when resumed after a
+		// pause, fires exactly those, failing closed on one that no longer
+		// exists. So a version a still-live run pinned must outlive retention.
+		// "Live" is the same non-terminal test PrunableAgedSessions uses. The
+		// scan reads the runs table once per sweep, as that query does. Only an
+		// object-shaped defs counts (jsonb_each_text errors on anything else,
+		// which would fail the whole sweep) — the only shape resume can read.
+		//
+		// Only the live database is consulted: a snapshot taken earlier may
+		// carry a paused run pinning a version purged since, and restoring it
+		// fails that run closed on resume.
+		nTerm := len(store.TerminalRunStatuses)
+		pinned = `
+			  AND NOT EXISTS (
+				SELECT 1 FROM runs r, jsonb_each_text(
+					CASE WHEN jsonb_typeof(r.run_config->'pinned_hooks'->'defs') = 'object'
+					     THEN r.run_config->'pinned_hooks'->'defs' END) p
+				WHERE (r.status NOT IN (` + pgPlaceholders(4, nTerm) + `)
+				       OR r.pause_state IN ('paused', 'pausing'))
+				  AND p.value = d.def_id)`
+		args = append(args, store.TerminalRunStatusArgs()...)
+	}
 	q := fmt.Sprintf(`
 		SELECT def_id, tenant_id, name, version, definition::text, created_at
 		FROM (
@@ -5973,12 +5999,12 @@ func (s *Store) ListPurgeableRetiredDefVersions(ctx context.Context, defType str
 			WHERE d.retired = TRUE
 			  AND d.created_at < $1
 			  AND NOT EXISTS (SELECT 1 FROM %s a WHERE a.def_id = d.def_id)
-			  AND NOT EXISTS (SELECT 1 FROM %s c WHERE c.parent_def_id = d.def_id)
+			  AND NOT EXISTS (SELECT 1 FROM %s c WHERE c.parent_def_id = d.def_id)%s
 		) sub
 		WHERE sub.rn > $2
 		ORDER BY sub.tenant_id, sub.name, sub.version DESC
-		LIMIT $3`, defsTable, activeTable, defsTable)
-	rows, err := s.pool.Query(ctx, q, olderThan, keepLastN, limit)
+		LIMIT $3`, defsTable, activeTable, defsTable, pinned)
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("retention list %s: %w", defType, err)
 	}

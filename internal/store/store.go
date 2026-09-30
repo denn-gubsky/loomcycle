@@ -1648,6 +1648,10 @@ type Store interface {
 	//   - created_at < olderThan (the age cutoff),
 	//   - it is NOT the current active pointer (defence-in-depth: even a
 	//     retired-but-active "ActiveRetired" corrupt-legacy row is protected),
+	//   - it is not the parent_def_id of a surviving version (leaf-first),
+	//   - for "hook" only: no non-terminal run (by status, or pause_state
+	//     paused/pausing) names it in run_config.pinned_hooks.defs — resume
+	//     fires exactly the pinned versions and fails closed on a missing one,
 	//   - and it is beyond the keepLastN most-recent qualifying versions per
 	//     (tenant_id, name) — so the N newest retired versions survive as
 	//     lineage history. keepLastN=0 keeps none (purge every qualifying row).

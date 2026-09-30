@@ -321,6 +321,10 @@ func Run(t *testing.T, factory Factory) {
 		// load-bearing, and DeleteDefVersions removes exactly the listed rows.
 		{"RetentionPurgeDefVersions", testRetentionPurgeDefVersions},
 		{"RetentionPurgesRetiredHookDefVersionsKeepsActive", testRetentionPurgesRetiredHookDefVersionsKeepsActive},
+		// A HookDef version a paused or running run pinned in its run_config
+		// is not purged: resume fires exactly the pinned versions and fails
+		// closed on a missing one. Fail-before: the purge never read runs.
+		{"RetentionKeepsHookDefVersionsPinnedByLiveRuns", testRetentionKeepsHookDefVersionsPinnedByLiveRuns},
 		// v0.8.22 SkillDef substrate — mirror of the AgentDef tests.
 		{"SkillDefCreateAndGet", testSkillDefCreateAndGet},
 		{"SkillDefVersionMonotonicUnderContention", testSkillDefVersionMonotonicUnderContention},
@@ -8571,6 +8575,128 @@ func testRetentionPurgesRetiredHookDefVersionsKeepsActive(t *testing.T, s store.
 	}
 	if _, err := s.HookDefGetActive(ctx, "tenant-a", "guard"); err != nil {
 		t.Errorf("active rh-2 lost: %v", err)
+	}
+}
+
+// testRetentionKeepsHookDefVersionsPinnedByLiveRuns: a run records the HookDef
+// versions it resolved in run_config.pinned_hooks.defs, and on resume after a
+// pause fires exactly those — a version that no longer exists stops the run.
+// So a retired, old, non-active, beyond-keep-N version that a paused (or still
+// running) run pinned must not be purgeable, while the same kind of version
+// pinned only by a finished run, or by nothing, still is. The runs table holds
+// only HookDef pins, so an agent def with a colliding id is unaffected.
+func testRetentionKeepsHookDefVersionsPinnedByLiveRuns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const tenant, name = "tenant-p", "pinned-gate"
+	// Five versions with no lineage link (each a fresh create, as when an
+	// author replaces a hook rather than forking it), so only the retired,
+	// active and pin rules decide. rp-5 is the active one.
+	for _, id := range []string{"rp-1", "rp-2", "rp-3", "rp-4", "rp-5"} {
+		if _, err := s.HookDefCreate(ctx, mkHookDef(id, tenant, name, "")); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	for _, id := range []string{"rp-1", "rp-2", "rp-3", "rp-4"} {
+		if err := s.HookDefSetRetired(ctx, id, true); err != nil {
+			t.Fatalf("retire %s: %v", id, err)
+		}
+	}
+	if err := s.HookDefSetActive(ctx, tenant, name, "rp-5", ""); err != nil {
+		t.Fatalf("promote rp-5: %v", err)
+	}
+	// The same shape of retired, non-active agent def, under an id a live run
+	// also names in its hook pins.
+	for _, id := range []string{"rpa-1", "rpa-2"} {
+		if _, err := s.AgentDefCreate(ctx, mkDef(id, "pinned-agent", "")); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	if err := s.AgentDefSetRetired(ctx, "rpa-1", true); err != nil {
+		t.Fatalf("retire rpa-1: %v", err)
+	}
+	if err := s.AgentDefSetActive(ctx, "", "pinned-agent", "rpa-2", ""); err != nil {
+		t.Fatalf("promote rpa-2: %v", err)
+	}
+
+	pins := func(ids ...string) json.RawMessage {
+		defs := map[string]string{}
+		for i, id := range ids {
+			defs[fmt.Sprintf("%s/%s@%d", tenant, name, i+1)] = id
+		}
+		b, _ := json.Marshal(map[string]any{"pinned_hooks": map[string]any{"agent": "fp", "defs": defs}})
+		return b
+	}
+	sess, err := s.CreateSession(ctx, tenant, "a", "u")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	newRun := func(agentID string, cfg json.RawMessage) store.Run {
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID, TenantID: tenant, RunConfig: cfg})
+		if err != nil {
+			t.Fatalf("create run %s: %v", agentID, err)
+		}
+		return run
+	}
+	// rp-1 (and the agent-def id rpa-1) pinned by a PAUSED run.
+	paused := newRun("a_paused", pins("rp-1", "rpa-1"))
+	if err := s.SetRunPauseState(ctx, paused.ID, store.PauseStatePaused); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	// rp-2 pinned by a run still RUNNING (it can be paused later).
+	newRun("a_running", pins("rp-2"))
+	// rp-3 pinned only by a FINISHED run: nothing can resume it.
+	done := newRun("a_done", pins("rp-3"))
+	if err := s.FinishRun(ctx, done.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	// A live run whose pins are not the object shape resume reads names
+	// nothing — and must not fail the sweep. rp-4 is otherwise unpinned.
+	newRun("a_odd", json.RawMessage(`{"pinned_hooks":{"agent":"fp","defs":["rp-4"]}}`))
+
+	future := time.Now().Add(time.Hour)
+	got, err := s.ListPurgeableRetiredDefVersions(ctx, "hook", future, 0, 100)
+	if err != nil {
+		t.Fatalf("list purgeable hook: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, r := range got {
+		ids[r.DefID] = true
+	}
+	if ids["rp-1"] {
+		t.Error("rp-1 is purgeable while a paused run pins it — the run would fail closed on resume")
+	}
+	if ids["rp-2"] {
+		t.Error("rp-2 is purgeable while a running run pins it")
+	}
+	if !ids["rp-3"] || !ids["rp-4"] || len(got) != 2 {
+		t.Errorf("purgeable hook ids = %v, want exactly rp-3 (pinned only by a finished run) and rp-4 (unpinned)", ids)
+	}
+
+	agents, err := s.ListPurgeableRetiredDefVersions(ctx, "agent", future, 0, 100)
+	if err != nil {
+		t.Fatalf("list purgeable agent: %v", err)
+	}
+	if len(agents) != 1 || agents[0].DefID != "rpa-1" {
+		t.Errorf("purgeable agent refs = %+v, want exactly rpa-1 — hook pins must not protect another def kind", agents)
+	}
+
+	// Once the paused run ends, its pin no longer protects the version.
+	if err := s.SetRunPauseState(ctx, paused.ID, store.PauseStateRunning); err != nil {
+		t.Fatalf("unpause: %v", err)
+	}
+	if err := s.FinishRun(ctx, paused.ID, store.RunCancelled, "cancelled", store.Usage{}, ""); err != nil {
+		t.Fatalf("finish paused: %v", err)
+	}
+	got, err = s.ListPurgeableRetiredDefVersions(ctx, "hook", future, 0, 100)
+	if err != nil {
+		t.Fatalf("list purgeable hook (after finish): %v", err)
+	}
+	ids = map[string]bool{}
+	for _, r := range got {
+		ids[r.DefID] = true
+	}
+	if !ids["rp-1"] {
+		t.Errorf("purgeable hook ids = %v after the pinning run finished, want rp-1 included", ids)
 	}
 }
 
