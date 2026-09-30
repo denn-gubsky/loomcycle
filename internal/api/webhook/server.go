@@ -262,7 +262,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Rate limit (per-Def token bucket). Exceeded → 429 + Retry-After.
-	if okRate, retry := rec.limiter.allow(name, wd.RateLimit); !okRate {
+	if okRate, retry := rec.limiter.allow(whKey, wd.RateLimit); !okRate {
 		rec.finish(span, name, did, "rejected_rate", "")
 		writeRetryAfter(w, retry)
 		return
