@@ -34,17 +34,40 @@ import (
 // transcript and re-enters loop.Run mid-conversation, so a mid-run experiment
 // genuinely continues after a snapshot→restore or a process restart.
 //
-// Called from two places (see the restore handler + boot wiring):
-//   - after snapshot.Restore writes the rows (the explicit migration path), and
+// Called from two places (see finishRestore + the boot wiring):
+//   - after a snapshot restore writes the rows, on every transport that
+//     restores (HTTP, gRPC, MCP), and
 //   - at boot, scanning the store for any paused runs (crash recovery).
 //
-// LIMITATIONS (documented; the snapshot deliberately omits these):
-//   - Per-run SECRETS (UserBearer / named UserCredentials) are never
-//     snapshotted, so a resumed run can't restore them; a tool call that needs
+// WHAT A RESUMED RUN IS BUILT FROM: its own row and its run_config record
+// (runConfigRecord), not from the definition as it stands now and not from
+// whoever triggered the resume. The row gives its tenant, user, tier, starting
+// model, interactive flag, parent run and operator-key / isolation bits. The
+// record gives its sampling, tool choice, output format, compaction, context
+// mode, budgets, run timeout, routing, interactive / review state, interruption
+// narrowing, caller host narrowing, added and pinned hooks, a sub-run's spawn
+// ceiling (its parent's volumes and fan-out width), and the definition it
+// started on — an AgentDef version by id, or a registered agent's row by
+// digest; one gone or changed since fails the run, one in another tenant is
+// refused. A row recorded before a piece of the record existed resumes that
+// piece from the definition, as before — except a sub-run's inherited
+// ceilings, which fail closed (no caller hosts, no volumes, serial fan-out).
+//
+// LIMITATIONS:
+//   - Per-run SECRETS (UserBearer / named UserCredentials) are never persisted
+//     with the run, so a resumed run can't restore them; a tool call that needs
 //     ${run.user_bearer} / ${run.credentials.*} in an MCP header degrades.
-//   - Per-run CALL-TIME OVERRIDES (allowed_hosts narrowing, per-run sampling,
-//     metadata, run-timeout) aren't persisted — resume re-derives everything
-//     from the agent definition (the operator's static floor applies for hosts).
+//   - Run METADATA is not recorded: the loop is re-entered with none, so a
+//     code-js orchestrator reads no metadata on its resumed turns.
+//   - SKILLS are not pinned. The Skill tool loads the SkillDef version active
+//     when it is called, for a live run and a resumed one alike; a skill loaded
+//     before the pause stays as loaded, in the replayed transcript.
+//   - The MODEL restored is the one the run STARTED on. A mid-run provider
+//     fallback is not recorded on the row, so a resumed run does not continue
+//     on the fallback target.
+//   - Registered agents (dynamic_agents) are not carried by snapshots, so a
+//     paused run of one restored on another instance fails unless the same
+//     registration exists there, as stored.
 //   - A run that was IDLE when paused (its conversation ends on an assistant
 //     turn, not a pending user/tool_result) cannot re-enter the loop directly —
 //     that would send the provider a trailing assistant turn. It is restored to
