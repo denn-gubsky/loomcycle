@@ -147,6 +147,9 @@ func Run(t *testing.T, factory Factory) {
 		{"ListPausedRunsOrderedByStartedAtAsc", testListPausedRunsOrderedByStartedAtAsc},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
+		{"SnapshotRestoreRunEventsSortAfterTheTargetsHistory", testSnapshotRestoreRunEventsSortAfterTheTargetsHistory},
+		{"SnapshotRestoreRunEventsWritesARunsTranscriptOnce", testSnapshotRestoreRunEventsWritesARunsTranscriptOnce},
+		{"SnapshotRestoreRunEventsKeepTheSequenceAheadOfThem", testSnapshotRestoreRunEventsKeepTheSequenceAheadOfThem},
 		{"SnapshotCreateRoundTrip", testSnapshotCreateRoundTrip},
 		{"SnapshotCreateConflictOnDuplicateID", testSnapshotCreateConflictOnDuplicateID},
 		{"SnapshotCreateRejectsEmptyFields", testSnapshotCreateRejectsEmptyFields},
@@ -4015,6 +4018,159 @@ func testSnapshotRestoreRunKeepsItsTenant(t *testing.T, s store.Store) {
 	}
 	if containsAll(runIDs(other), restored.ID) {
 		t.Errorf("globex's listing %v contains acme's restored run", runIDs(other))
+	}
+}
+
+// restoredPausedRun writes a session + paused run the way snapshot restore
+// does, for the transcript contracts below.
+func restoredPausedRun(t *testing.T, s store.Store, runID string) store.Run {
+	t.Helper()
+	ctx := context.Background()
+	sess := store.Session{ID: "sess_" + runID, TenantID: "acme", Agent: "a", UserID: "alice"}
+	if ok, err := s.SnapshotRestoreSession(ctx, sess); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreSession = %v, %v", ok, err)
+	}
+	r := store.Run{
+		ID: runID, SessionID: sess.ID, TenantID: "acme", UserID: "alice",
+		AgentID: "a_" + runID, Status: store.RunRunning, PauseState: store.PauseStatePaused,
+	}
+	if ok, err := s.SnapshotRestoreRun(ctx, r); err != nil || !ok {
+		t.Fatalf("SnapshotRestoreRun = %v, %v", ok, err)
+	}
+	return r
+}
+
+// capturedEvents is a transcript as a snapshot carries it, under the SOURCE's
+// seqs firstSeq, firstSeq+1, ...
+func capturedEvents(firstSeq int64, n int) []store.Event {
+	evs := make([]store.Event, n)
+	for i := range evs {
+		evs[i] = store.Event{Seq: firstSeq + int64(i), Timestamp: time.Now(), Type: "text", Payload: json.RawMessage(fmt.Sprintf(`{"restored":%d}`, i))}
+	}
+	return evs
+}
+
+// A restored transcript lands whole and in order on a target that already has
+// history, and under seqs the target minted: events appended afterwards, for
+// any run, succeed and sort after it, so a from_seq re-attach sees them.
+// Keeping the source's seqs collided with the target's rows (they were
+// dropped) and, on postgres, left the sequence behind the restored rows.
+func testSnapshotRestoreRunEventsSortAfterTheTargetsHistory(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "other", "a", "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_other", UserID: "bob", TenantID: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := s.AppendEvent(ctx, other.ID, "text", json.RawMessage(`{"other":true}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := restoredPausedRun(t, s, "r_restored_seq")
+	written, err := s.SnapshotRestoreRunEvents(ctx, r.ID, r.SessionID, capturedEvents(1, 3)) // collides with the 5 above
+	if err != nil || written != 3 {
+		t.Fatalf("SnapshotRestoreRunEvents = %d, %v; want 3, nil", written, err)
+	}
+	evs, err := s.GetRunEventsSince(ctx, r.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("restored run has %d events, want 3: %+v", len(evs), evs)
+	}
+	for i, e := range evs {
+		if want := fmt.Sprintf(`{"restored":%d}`, i); !jsonEqual(e.Payload, want) {
+			t.Errorf("restored event %d = %s, want %s (captured order lost)", i, e.Payload, want)
+		}
+		if e.SessionID != r.SessionID || e.RunID != r.ID {
+			t.Errorf("restored event %d has session=%q run=%q, want %q/%q", i, e.SessionID, e.RunID, r.SessionID, r.ID)
+		}
+	}
+	lastRestored := evs[len(evs)-1].Seq
+
+	// Enough appends to walk a sequence left at the start through any
+	// restored range.
+	for i := 0; i < 6; i++ {
+		if err := s.AppendEvent(ctx, other.ID, "text", json.RawMessage(`{"after":true}`)); err != nil {
+			t.Fatalf("AppendEvent #%d after the restore: %v", i+1, err)
+		}
+	}
+	if err := s.AppendEvent(ctx, r.ID, "text", json.RawMessage(`{"resumed":true}`)); err != nil {
+		t.Fatalf("AppendEvent on the restored run: %v", err)
+	}
+	tail, err := s.GetRunEventsSince(ctx, r.ID, lastRestored, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tail) != 1 || !jsonEqual(tail[0].Payload, `{"resumed":true}`) {
+		t.Errorf("events after seq %d = %+v, want only the resumed run's new event", lastRestored, tail)
+	}
+	if full, _ := s.GetRunEventsSince(ctx, r.ID, 0, 100); len(full) != 4 || !jsonEqual(full[3].Payload, `{"resumed":true}`) {
+		t.Errorf("the resumed run's transcript = %+v, want the 3 restored events then the new one", full)
+	}
+}
+
+// Restored events on an empty target leave the store's own seq ahead of them:
+// the resumed run's next events append cleanly and sort after its history.
+// Written under the source's seqs 3..5, postgres' sequence stayed at 1, so the
+// run's new events sorted first and the third append hit a duplicate key.
+func testSnapshotRestoreRunEventsKeepTheSequenceAheadOfThem(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r := restoredPausedRun(t, s, "r_restored_ahead")
+	if n, err := s.SnapshotRestoreRunEvents(ctx, r.ID, r.SessionID, capturedEvents(3, 3)); err != nil || n != 3 {
+		t.Fatalf("SnapshotRestoreRunEvents = %d, %v; want 3, nil", n, err)
+	}
+	for i := 0; i < 6; i++ {
+		if err := s.AppendEvent(ctx, r.ID, "text", json.RawMessage(`{"resumed":true}`)); err != nil {
+			t.Fatalf("AppendEvent #%d after the restore: %v", i+1, err)
+		}
+	}
+	evs, err := s.GetRunEventsSince(ctx, r.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 9 {
+		t.Fatalf("the run has %d events, want 3 restored + 6 appended", len(evs))
+	}
+	for i, e := range evs {
+		want := `{"resumed":true}`
+		if i < 3 {
+			want = fmt.Sprintf(`{"restored":%d}`, i)
+		}
+		if !jsonEqual(e.Payload, want) {
+			t.Errorf("event %d (seq %d) = %s, want %s", i, e.Seq, e.Payload, want)
+		}
+	}
+}
+
+// A run's transcript is written once: restoring it again — or onto a target
+// where the run already has events — writes nothing and reports 0.
+func testSnapshotRestoreRunEventsWritesARunsTranscriptOnce(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	r := restoredPausedRun(t, s, "r_restored_once")
+	if n, err := s.SnapshotRestoreRunEvents(ctx, r.ID, r.SessionID, capturedEvents(1, 3)); err != nil || n != 3 {
+		t.Fatalf("first SnapshotRestoreRunEvents = %d, %v; want 3, nil", n, err)
+	}
+	if n, err := s.SnapshotRestoreRunEvents(ctx, r.ID, r.SessionID, capturedEvents(1, 3)); err != nil || n != 0 {
+		t.Fatalf("second SnapshotRestoreRunEvents = %d, %v; want 0, nil", n, err)
+	}
+	if evs, _ := s.GetRunEventsSince(ctx, r.ID, 0, 100); len(evs) != 3 {
+		t.Errorf("after a re-restore the run has %d events, want 3", len(evs))
+	}
+
+	live := restoredPausedRun(t, s, "r_already_live")
+	if err := s.AppendEvent(ctx, live.ID, "text", json.RawMessage(`{"live":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SnapshotRestoreRunEvents(ctx, live.ID, live.SessionID, capturedEvents(1, 2)); err != nil || n != 0 {
+		t.Fatalf("SnapshotRestoreRunEvents onto a run with events = %d, %v; want 0, nil", n, err)
+	}
+	if evs, _ := s.GetRunEventsSince(ctx, live.ID, 0, 100); len(evs) != 1 {
+		t.Errorf("a run that already had a transcript now has %d events, want 1", len(evs))
 	}
 }
 
