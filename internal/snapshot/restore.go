@@ -58,7 +58,7 @@ type RestoreOptions struct {
 
 	// CredentialExists and EnvSet back the missing-credential scan: after the
 	// definitions land, each $cred:/$ghapp: reference and env-var name a
-	// restored trigger or card names is checked here, and a miss is a warning
+	// restored definition names is checked here, and a miss is a warning
 	// naming the definition and the reference. Both answer yes or no and
 	// never return a value. CredentialExists takes the scope a run of that
 	// definition resolves credentials in. nil skips that half of the scan
@@ -329,6 +329,10 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		restoreTokenLimits(ctx, s, &sec, now(), &result)
 	}
 
+	// The definitions this restore brings back that name credentials; the
+	// missing-credential scan checks them once every def section has landed.
+	scan := &credScan{}
+
 	// agent_defs
 	if rawSection, ok := sections[migrations.SectionAgentDefs]; ok {
 		var sec AgentDefsSection
@@ -363,6 +367,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.AgentDefsRestored++
+				if !e.Retired {
+					scan.addRefs("agent_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition))
+				}
 			}
 		}
 	}
@@ -492,6 +499,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.TeamDefsRestored++
+				if !e.Retired {
+					scan.addRefs("team_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition))
+				}
 			}
 		}
 	}
@@ -556,6 +566,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.HookDefsRestored++
+				if !e.Retired {
+					scan.addRefs("hook_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition))
+				}
 			}
 		}
 	}
@@ -622,6 +635,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			}
 			if inserted {
 				result.MCPServerDefsRestored++
+				if !e.Retired {
+					scan.addRefs("mcp_server_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition, "url", "env"))
+				}
 			}
 		}
 	}
@@ -663,10 +679,6 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		}
 		restoreVolumeDefs(ctx, s, &sec, opts, &result)
 	}
-
-	// The definitions this restore brings back that name credentials; the
-	// missing-credential scan checks them once every def section has landed.
-	scan := &credScan{}
 
 	// memory_backend_defs, then document_source_defs, each with its pointers:
 	// before memory, since a routing def precedes the data routed through it,
@@ -875,6 +887,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			switch {
 			case err == nil:
 				result.ChannelDefsRestored++
+				scan.addRefs("channel_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("hooks", e.Hooks))
 			case errors.As(err, &conflict):
 				// Already defined here: the live definition stands.
 			default:
@@ -984,8 +997,10 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		restoreScheduleDefActive(ctx, s, &sec, restoredSchedules, &result)
 	}
 
-	// Every trigger, card, memory-backend and document-source definition has
-	// landed: say which credentials they name that this host cannot supply.
+	// Every definition that can name a credential has landed — the agent,
+	// team, hook, MCP server and channel defs, the triggers, cards, memory
+	// backends and document sources: say which credentials they name that
+	// this host cannot supply.
 	scan.run(ctx, opts, &result)
 
 	// evaluations (no FK enforced — runs.agent_def_id is
