@@ -6449,6 +6449,13 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 		return nil, "", err
 	}
 
+	ownFromStart := false
+	if !fromOldest {
+		if ownFromStart, err = ownLayerFromStart(ctx, s.db, tenantID, channel, scope, scopeID, fromCursor, cursorMsgID); err != nil {
+			return nil, "", err
+		}
+	}
+
 	now := time.Now().UnixNano()
 	var (
 		rows  *sql.Rows
@@ -6467,18 +6474,24 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 			own, shared, channel, string(scope), scopeID, now, now, limit)
 	} else {
 		// Strictly-greater-than tuple comparison: (visible_at, id) > (cv, cid).
+		// With ownFromStart the cursor bounds the operator layer only (own is
+		// then a tenant, never the operator's "").
+		after := `(visible_at > ? OR (visible_at = ? AND id > ?))`
+		args := []any{own, shared, channel, string(scope), scopeID, now, now}
+		if ownFromStart {
+			after = `(tenant_id = ? OR ` + after + `)`
+			args = append(args, own)
+		}
+		args = append(args, cursorVisibleAt.UnixNano(), cursorVisibleAt.UnixNano(), cursorMsgID, limit)
 		query = `SELECT id, payload, published_at, expires_at, visible_at, published_by_user_id, tenant_id
 			 FROM channel_messages
 			 WHERE tenant_id IN (?, ?) AND channel = ? AND scope = ? AND scope_id = ?
 			   AND visible_at <= ?
 			   AND (expires_at IS NULL OR expires_at > ?)
-			   AND (visible_at > ? OR (visible_at = ? AND id > ?))
+			   AND ` + after + `
 			 ORDER BY visible_at ASC, id ASC
 			 LIMIT ?`
-		rows, qErr = s.db.QueryContext(ctx, query,
-			own, shared, channel, string(scope), scopeID, now, now,
-			cursorVisibleAt.UnixNano(), cursorVisibleAt.UnixNano(), cursorMsgID,
-			limit)
+		rows, qErr = s.db.QueryContext(ctx, query, args...)
 	}
 	if qErr != nil {
 		return nil, "", qErr
@@ -6551,7 +6564,11 @@ func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	existing, err := committedCursor(ctx, tx, tenantID, channel, scope, scopeID)
+	// Against the subscriber's OWN cursor, not the operator-layer fallback: a
+	// tenant that has never acked reads its own layer from the start (see
+	// ownLayerFromStart), so its first ack can lie before the operator's
+	// cursor without rewinding anything it holds.
+	existing, _, err := cursorOf(ctx, tx, tenantID, channel, scope, scopeID)
 	if err != nil {
 		return err
 	}
@@ -6595,17 +6612,65 @@ func committedCursor(ctx context.Context, q interface {
 		tenants = append(tenants, store.ChannelOperatorTenant)
 	}
 	for _, t := range tenants {
-		var cursor string
-		err := q.QueryRowContext(ctx,
-			`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
-			t, channel, string(scope), scopeID,
-		).Scan(&cursor)
-		if err == sql.ErrNoRows {
-			continue
+		cursor, ok, err := cursorOf(ctx, q, t, channel, scope, scopeID)
+		if err != nil || ok {
+			return cursor, err
 		}
-		return cursor, err
 	}
 	return "", nil
+}
+
+// cursorOf is one tenant's own committed cursor, with no fallback; ok is false
+// when it has none.
+func cursorOf(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, tenantID, channel string, scope store.MemoryScope, scopeID string) (string, bool, error) {
+	var cursor string
+	err := q.QueryRowContext(ctx,
+		`SELECT cursor FROM channel_cursors WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ?`,
+		tenantID, channel, string(scope), scopeID,
+	).Scan(&cursor)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return cursor, err == nil, err
+}
+
+// ownLayerFromStart reports whether a read from fromCursor takes the reader's
+// own layer from the start and applies the cursor to the operator layer only.
+//
+// A tenant that has never acked a global channel resumes from the operator
+// layer's cursor (committedCursor's fallback). That position says nothing about
+// the tenant's own layer, which the operator's subscribers never read: bounding
+// both layers by it skipped, for good, everything the tenant itself published
+// before it. The store cannot see where a cursor came from, so it takes one at
+// or before the operator's cursor as that fallback — unless the cursor names
+// one of the tenant's own messages, which it can only have got by reading its
+// own layer. The residual cost is a tenant paging explicitly from an operator
+// message before the operator's cursor seeing its own messages again: a
+// repeat, never a loss.
+func ownLayerFromStart(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor, cursorMsgID string) (bool, error) {
+	if !store.ChannelCursorFallback(tenantID, scope) {
+		return false, nil
+	}
+	if _, has, err := cursorOf(ctx, q, tenantID, channel, scope, scopeID); err != nil || has {
+		return false, err
+	}
+	opCursor, has, err := cursorOf(ctx, q, store.ChannelOperatorTenant, channel, scope, scopeID)
+	if err != nil || !has || fromCursor > opCursor {
+		return false, err
+	}
+	var ownMsg int
+	err = q.QueryRowContext(ctx,
+		`SELECT 1 FROM channel_messages WHERE tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ? AND id = ?`,
+		tenantID, channel, string(scope), scopeID, cursorMsgID,
+	).Scan(&ownMsg)
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	return false, err
 }
 
 // ChannelListCursorsForScope — see store.Store doc. v0.9.x

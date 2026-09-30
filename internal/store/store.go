@@ -2787,9 +2787,11 @@ type Store interface {
 
 	// ChannelAck advances the committed cursor for one subscriber to
 	// the supplied cursor value. Idempotent — re-acking the same
-	// cursor is a no-op. Acking a cursor older than the current
-	// committed value is rejected with ErrChannelCursorRegression so
-	// out-of-order acks from buggy agents can't rewind delivery.
+	// cursor is a no-op. Acking a cursor older than the subscriber's
+	// own committed value (never the operator-layer fallback that
+	// ChannelCommittedCursor may return) is rejected with
+	// ErrChannelCursorRegression so out-of-order acks from buggy agents
+	// can't rewind delivery.
 	ChannelAck(ctx context.Context, tenantID, channel string, scope MemoryScope, scopeID, cursor string) error
 
 	// ChannelCommittedCursor returns the most recent cursor a
@@ -3817,7 +3819,10 @@ const (
 // Writes are keyed by the writer's tenant as given. Reads go through
 // ChannelReadTenants; the (visible_at, id) cursor orders both keyspaces as
 // one stream. A subscriber's cursor lives in its own tenant; the shared
-// cursor every tenant used before the split is read as a fallback.
+// cursor every tenant used before the split is read as a fallback. The
+// fallback is the operator layer's position only: a tenant that has never
+// acked reads its own layer from the start, and its ack is checked against its
+// own cursor alone.
 
 // ChannelOperatorTenant is the global channels' shared operator layer.
 const ChannelOperatorTenant = ""

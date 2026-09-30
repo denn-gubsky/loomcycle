@@ -5585,6 +5585,12 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 	if err != nil {
 		return nil, "", err
 	}
+	ownFromStart := false
+	if !fromOldest {
+		if ownFromStart, err = ownLayerFromStart(ctx, s.pool, tenantID, channel, scope, scopeID, fromCursor, cursorMsgID); err != nil {
+			return nil, "", fmt.Errorf("channel read cursor: %w", err)
+		}
+	}
 
 	// Retry Query on transient connection-acquire errors so a
 	// launch-storm subscriber doesn't read empty + wake the
@@ -5604,13 +5610,19 @@ func (s *Store) channelRead(ctx context.Context, tenantID, channel string, scope
 				 LIMIT $4`,
 				channel, string(scope), scopeID, limit, own, shared)
 		} else {
+			// With ownFromStart the cursor bounds the operator layer only
+			// (own, $7, is then a tenant, never the operator's "").
+			after := `(visible_at > $4 OR (visible_at = $4 AND id > $5))`
+			if ownFromStart {
+				after = `(tenant_id = $7 OR ` + after + `)`
+			}
 			rows, qErr = s.pool.Query(ctx,
 				`SELECT id, payload::text, published_at, expires_at, visible_at, published_by_user_id, tenant_id
 				 FROM channel_messages
 				 WHERE tenant_id IN ($7, $8) AND channel = $1 AND scope = $2 AND scope_id = $3
 				   AND visible_at <= NOW()
 				   AND (expires_at IS NULL OR expires_at > NOW())
-				   AND (visible_at > $4 OR (visible_at = $4 AND id > $5))
+				   AND `+after+`
 				 ORDER BY visible_at ASC, id ASC
 				 LIMIT $6`,
 				channel, string(scope), scopeID,
@@ -5687,7 +5699,11 @@ func (s *Store) ChannelAck(ctx context.Context, tenantID, channel string, scope 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	existing, err := committedCursor(ctx, tx, tenantID, channel, scope, scopeID)
+	// Against the subscriber's OWN cursor, not the operator-layer fallback: a
+	// tenant that has never acked reads its own layer from the start (see
+	// ownLayerFromStart), so its first ack can lie before the operator's
+	// cursor without rewinding anything it holds.
+	existing, _, err := cursorOf(ctx, tx, tenantID, channel, scope, scopeID)
 	if err != nil {
 		return fmt.Errorf("channel ack lookup: %w", err)
 	}
@@ -5732,17 +5748,55 @@ func committedCursor(ctx context.Context, q interface {
 		tenants = append(tenants, store.ChannelOperatorTenant)
 	}
 	for _, t := range tenants {
-		var cursor string
-		err := q.QueryRow(ctx,
-			`SELECT cursor FROM channel_cursors WHERE tenant_id = $4 AND channel = $1 AND scope = $2 AND scope_id = $3`,
-			channel, string(scope), scopeID, t,
-		).Scan(&cursor)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
+		cursor, ok, err := cursorOf(ctx, q, t, channel, scope, scopeID)
+		if err != nil || ok {
+			return cursor, err
 		}
-		return cursor, err
 	}
 	return "", nil
+}
+
+// cursorOf is one tenant's own committed cursor, with no fallback; ok is false
+// when it has none.
+func cursorOf(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, tenantID, channel string, scope store.MemoryScope, scopeID string) (string, bool, error) {
+	var cursor string
+	err := q.QueryRow(ctx,
+		`SELECT cursor FROM channel_cursors WHERE tenant_id = $4 AND channel = $1 AND scope = $2 AND scope_id = $3`,
+		channel, string(scope), scopeID, tenantID,
+	).Scan(&cursor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return cursor, err == nil, err
+}
+
+// ownLayerFromStart reports whether a read from fromCursor takes the reader's
+// own layer from the start and applies the cursor to the operator layer only.
+// See the sqlite twin for the reasoning; the two must agree.
+func ownLayerFromStart(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, tenantID, channel string, scope store.MemoryScope, scopeID, fromCursor, cursorMsgID string) (bool, error) {
+	if !store.ChannelCursorFallback(tenantID, scope) {
+		return false, nil
+	}
+	if _, has, err := cursorOf(ctx, q, tenantID, channel, scope, scopeID); err != nil || has {
+		return false, err
+	}
+	opCursor, has, err := cursorOf(ctx, q, store.ChannelOperatorTenant, channel, scope, scopeID)
+	if err != nil || !has || fromCursor > opCursor {
+		return false, err
+	}
+	var ownMsg int
+	err = q.QueryRow(ctx,
+		`SELECT 1 FROM channel_messages WHERE tenant_id = $1 AND channel = $2 AND scope = $3 AND scope_id = $4 AND id = $5`,
+		tenantID, channel, string(scope), scopeID, cursorMsgID,
+	).Scan(&ownMsg)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	return false, err
 }
 
 // ChannelListCursorsForScope — see store.Store doc. v0.9.x introspection.
