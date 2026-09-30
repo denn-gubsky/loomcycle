@@ -511,6 +511,13 @@ func Run(t *testing.T, factory Factory) {
 		// back in order, timestamps kept, and a live volume on the same key
 		// stands (VolumeDefCreate is an upsert and would overwrite it).
 		{"SnapshotRestoreVolumeDefKeepsLiveRow", testSnapshotRestoreVolumeDefKeepsLiveRow},
+		// Snapshot read/restore of the consolidation queue: only un-drained rows
+		// are read, a restored row lands un-drained with its identity intact and
+		// is drainable, and a row already on the id stands (drained or not).
+		{"SnapshotMemoryPendingRestoreKeepsLiveRow", testSnapshotMemoryPendingRestoreKeepsLiveRow},
+		// The targets holding queued work: exact tenant + scope, undrained
+		// only, one id per target, longest-waiting first, bounded.
+		{"MemoryPendingTargets", testMemoryPendingTargets},
 		// The month-to-date usage a snapshot restore carries in: max-not-add,
 		// per month, per subject, and deletable for erasure.
 		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
@@ -1289,6 +1296,142 @@ func testSnapshotRestoreVolumeDefKeepsLiveRow(t *testing.T, s store.Store) {
 	}
 	if err := json.Unmarshal(live.Definition, &b); err != nil || b.Path != "/root/live/data" || b.Mode != "rw" {
 		t.Errorf("live volume = %+v (err %v), want its own path and rw: the live row stands", b, err)
+	}
+}
+
+// testSnapshotMemoryPendingRestoreKeepsLiveRow: the snapshot read returns only
+// UN-DRAINED queue rows, every tenant's and target's in drain order; a
+// restored row lands un-drained with every identity column kept and is what
+// the target's drain hands out; and a row already on the id is left alone —
+// in particular one the target has already drained stays drained, so a
+// re-restore never queues the same work twice.
+func testSnapshotMemoryPendingRestoreKeepsLiveRow(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 1, 2, 3, 4, 0, time.UTC)
+	restored := []store.MemoryPendingRow{
+		{ID: "mp_beta_user", TenantID: "beta", Scope: store.MemoryScopeUser, ScopeID: "alice",
+			Payload: json.RawMessage(`{"messages":[{"role":"user","content":"beta alice"}]}`),
+			Origin:  store.PendingOriginCompaction, SourceSessionID: "sess-b", SourceRunID: "run-b", CreatedAt: base},
+		{ID: "mp_op_agent", TenantID: "", Scope: store.MemoryScopeAgent, ScopeID: "helper",
+			Payload: json.RawMessage(`{"messages":[{"role":"user","content":"operator agent"}]}`), CreatedAt: base.Add(time.Second)},
+		{ID: "mp_acme_user_2", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "alice",
+			Payload: json.RawMessage(`{"messages":[{"role":"user","content":"acme second"}]}`),
+			Origin:  store.PendingOriginAgentExplicit, CreatedAt: base.Add(2 * time.Second)},
+		{ID: "mp_acme_user_1", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "alice",
+			Payload: json.RawMessage(`{"messages":[{"role":"user","content":"acme first"}]}`),
+			Origin:  store.PendingOriginAgentExplicit, SourceSessionID: "sess-a", SourceRunID: "run-a", CreatedAt: base.Add(time.Second)},
+	}
+	for _, r := range restored {
+		// DrainedAt on input must be ignored: a restored row is work to do.
+		r.DrainedAt = base
+		inserted, err := s.SnapshotRestoreMemoryPending(ctx, r)
+		if err != nil || !inserted {
+			t.Fatalf("restore %s: inserted=%v err=%v, want inserted", r.ID, inserted, err)
+		}
+	}
+	if inserted, err := s.SnapshotRestoreMemoryPending(ctx, restored[0]); err != nil || inserted {
+		t.Fatalf("re-restore %s: inserted=%v err=%v, want not inserted", restored[0].ID, inserted, err)
+	}
+
+	// A live row the target already DRAINED, on an id the snapshot also holds.
+	live := store.MemoryPendingRow{ID: "mp_live", TenantID: "acme", Scope: store.MemoryScopeUser, ScopeID: "bob",
+		Payload: json.RawMessage(`{"messages":[{"role":"user","content":"live"}]}`)}
+	if err := s.MemoryPendingEnqueue(ctx, live); err != nil {
+		t.Fatalf("enqueue live: %v", err)
+	}
+	if err := s.MemoryPendingAck(ctx, "acme", store.MemoryScopeUser, "bob", []string{"mp_live"}); err != nil {
+		t.Fatalf("ack live: %v", err)
+	}
+	inserted, err := s.SnapshotRestoreMemoryPending(ctx, store.MemoryPendingRow{ID: "mp_live", TenantID: "acme",
+		Scope: store.MemoryScopeUser, ScopeID: "bob", Payload: json.RawMessage(`{"messages":[{"role":"user","content":"snapshot"}]}`), CreatedAt: base})
+	if err != nil || inserted {
+		t.Fatalf("restore onto a live drained row: inserted=%v err=%v, want not inserted", inserted, err)
+	}
+	got, err := s.MemoryPendingGet(ctx, "acme", store.MemoryScopeUser, "bob", "mp_live")
+	if err != nil {
+		t.Fatalf("MemoryPendingGet live: %v", err)
+	}
+	if got.DrainedAt.IsZero() || !jsonEqual(got.Payload, `{"messages":[{"role":"user","content":"live"}]}`) {
+		t.Errorf("live row after restore = drained %v payload %s; want still drained with its own payload", got.DrainedAt, got.Payload)
+	}
+
+	rows, err := s.SnapshotReadMemoryPending(ctx)
+	if err != nil {
+		t.Fatalf("SnapshotReadMemoryPending: %v", err)
+	}
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.ID)
+		if !r.DrainedAt.IsZero() {
+			t.Errorf("%s read with drained_at %v; the snapshot read returns un-drained rows only", r.ID, r.DrainedAt)
+		}
+	}
+	// (tenant, scope, scope_id, created_at, id): "" < acme < beta; the drained
+	// live row is absent.
+	if got, want := strings.Join(order, ","), "mp_op_agent,mp_acme_user_1,mp_acme_user_2,mp_beta_user"; got != want {
+		t.Fatalf("read order = %s, want %s", got, want)
+	}
+	byID := map[string]store.MemoryPendingRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	for _, want := range restored {
+		r := byID[want.ID]
+		if r.TenantID != want.TenantID || r.Scope != want.Scope || r.ScopeID != want.ScopeID ||
+			r.Origin != want.Origin || r.SourceSessionID != want.SourceSessionID || r.SourceRunID != want.SourceRunID ||
+			!r.CreatedAt.Equal(want.CreatedAt) || !jsonEqual(r.Payload, string(want.Payload)) {
+			t.Errorf("%s read back as %+v, want %+v", want.ID, r, want)
+		}
+	}
+
+	// The target's own drain hands the restored rows out, oldest-first.
+	drained, err := s.MemoryPendingDrain(ctx, "acme", store.MemoryScopeUser, "alice", 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain: %v", err)
+	}
+	if len(drained) != 2 || drained[0].ID != "mp_acme_user_1" || drained[1].ID != "mp_acme_user_2" {
+		t.Errorf("drain of acme/alice = %+v, want the two restored rows oldest-first", drained)
+	}
+}
+
+// testMemoryPendingTargets: the scope ids with undrained work under one exact
+// (tenant, scope) — another tenant's, another scope's and a drained row's
+// targets are not listed — each once, longest-waiting first, capped.
+func testMemoryPendingTargets(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	enqueue := func(id, tenant string, scope store.MemoryScope, scopeID string, at time.Time) {
+		t.Helper()
+		if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{ID: id, TenantID: tenant, Scope: scope, ScopeID: scopeID,
+			Payload: json.RawMessage(`{}`), CreatedAt: at}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	enqueue("t_bob_new", "acme", store.MemoryScopeUser, "bob", base.Add(3*time.Minute))
+	enqueue("t_carol", "acme", store.MemoryScopeUser, "carol", base.Add(2*time.Minute))
+	enqueue("t_bob_old", "acme", store.MemoryScopeUser, "bob", base.Add(time.Minute))
+	enqueue("t_dave_drained", "acme", store.MemoryScopeUser, "dave", base)
+	enqueue("t_other_tenant", "beta", store.MemoryScopeUser, "erin", base)
+	enqueue("t_operator", "", store.MemoryScopeUser, "frank", base)
+	enqueue("t_agent_scope", "acme", store.MemoryScopeAgent, "helper", base)
+	if err := s.MemoryPendingAck(ctx, "acme", store.MemoryScopeUser, "dave", []string{"t_dave_drained"}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	got, err := s.MemoryPendingTargets(ctx, "acme", store.MemoryScopeUser, 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingTargets: %v", err)
+	}
+	if strings.Join(got, ",") != "bob,carol" {
+		t.Errorf("acme/user targets = %v, want [bob carol] (bob waiting since his oldest row)", got)
+	}
+	got, err = s.MemoryPendingTargets(ctx, "", store.MemoryScopeUser, 10)
+	if err != nil || strings.Join(got, ",") != "frank" {
+		t.Errorf("operator-layer targets = %v (err %v), want [frank] only: the tenant match is exact", got, err)
+	}
+	got, err = s.MemoryPendingTargets(ctx, "acme", store.MemoryScopeUser, 1)
+	if err != nil || strings.Join(got, ",") != "bob" {
+		t.Errorf("capped targets = %v (err %v), want [bob]", got, err)
 	}
 }
 

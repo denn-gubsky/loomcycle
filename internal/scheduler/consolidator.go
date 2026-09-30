@@ -392,8 +392,9 @@ func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire b
 // Candidates come from the session list (most-recently-active first) rather than
 // from ConsolidatableSessions directly: that query is ascending from the
 // beginning of time, so a large already-consolidated backlog would fill the scan
-// window and permanently starve newly-active targets. Each candidate is then
-// confirmed against its OWN watermark before it earns a dispatch.
+// window and permanently starve newly-active targets. Targets with queued
+// work follow, longest-waiting first. Each candidate is then confirmed against
+// its OWN watermark and queue before it earns a dispatch.
 func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope) ([]consolidationTarget, int, error) {
 	// The exclusion is pushed into the QUERY rather than applied to the result:
 	// the scan window is a fixed 500 rows ordered most-recently-active first, and
@@ -432,6 +433,24 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		}
 		seen[sess.UserID] = true
 		candidates = append(candidates, sess.UserID)
+	}
+
+	// Targets whose queue holds work, after the session-derived ones. A queue
+	// can outlive every session the scan sees: a snapshot restore brings the
+	// queue but not the sessions, and a user whose chats have aged out of the
+	// scan window can still have rows banked by a compaction. Sessions alone
+	// would leave such a queue undrained forever. The read is exact on the
+	// def's tenant, and the candidates still go through targetHasNewWork.
+	queued, err := s.store.MemoryPendingTargets(ctx, def.TenantID, scope, candidateScanLimit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list queued targets: %w", err)
+	}
+	for _, userID := range queued {
+		if userID == "" || seen[userID] {
+			continue
+		}
+		seen[userID] = true
+		candidates = append(candidates, userID)
 	}
 
 	maxTargets := s.cfg.MaxConsolidationTargets

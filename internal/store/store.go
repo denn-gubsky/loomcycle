@@ -2047,6 +2047,13 @@ type Store interface {
 	// carry already-stale entries.
 	SnapshotReadMemory(ctx context.Context) ([]MemorySnapshotEntry, error)
 
+	// SnapshotReadMemoryPending returns every UN-DRAINED consolidation-queue
+	// row (drained_at IS NULL), every tenant's and every target's, ordered by
+	// (tenant_id, scope, scope_id, created_at, id) — each target's rows in the
+	// order its consolidator would drain them. A drained row is history, not
+	// work, so it is never returned; DrainedAt is always zero.
+	SnapshotReadMemoryPending(ctx context.Context) ([]MemoryPendingRow, error)
+
 	// SnapshotReadChannelMessages returns every channel_messages row.
 	// Filters out expired rows. Ordered by (channel ASC, scope ASC,
 	// scope_id ASC, visible_at ASC, id ASC) — matches the natural
@@ -2209,6 +2216,16 @@ type Store interface {
 	// on (tenant_id, scope, scope_id, key). An entry with no TenantID
 	// (an older snapshot) restores under the legacy tenant "".
 	SnapshotRestoreMemory(ctx context.Context, entry MemorySnapshotEntry) (bool, error)
+
+	// SnapshotRestoreMemoryPending inserts one consolidation-queue row as
+	// UN-DRAINED, keeping its id, target (tenant, scope, scope_id), payload,
+	// origin, source ids and created_at. row.DrainedAt is ignored: a restored
+	// row is work the target's consolidator still has to do. A row already on
+	// the id is left alone — including one the target has since drained, so a
+	// re-restore never queues it a second time — and `inserted` is true only
+	// on the first write. MemoryPendingEnqueue cannot serve: it is a plain
+	// insert that errors on an existing id and stamps its own created_at.
+	SnapshotRestoreMemoryPending(ctx context.Context, row MemoryPendingRow) (bool, error)
 
 	// SnapshotRestoreChannelMessage inserts one channel_messages row
 	// preserving the ID + timestamps. Idempotent on id (PK).
@@ -2523,6 +2540,18 @@ type Store interface {
 	//
 	// Returns *ErrNotFound when no such row is visible to the caller.
 	MemoryPendingGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, id string) (MemoryPendingRow, error)
+
+	// MemoryPendingTargets returns the scope ids under (tenantID, scope) that
+	// hold at least one UN-DRAINED queue row, the target waiting longest first
+	// (oldest undrained created_at, then scope_id), at most limit of them
+	// (limit <= 0 is a small default). The tenant match is exact: "" is the
+	// operator layer, not "every tenant".
+	//
+	// It is how the consolidation fan-out finds queued work whose target has
+	// no recent session — a queue restored from a snapshot (sessions do not
+	// travel), or a row banked for a user whose chats have aged out of the
+	// session scan. Without it such a queue is never drained.
+	MemoryPendingTargets(ctx context.Context, tenantID string, scope MemoryScope, limit int) ([]string, error)
 
 	// MemoryScopeUsage sums a scope's live key count and byte footprint
 	// (len(key)+len(value)) server-side, EXCLUDING keys under excludeKeyPrefix.

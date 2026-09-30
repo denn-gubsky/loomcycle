@@ -125,3 +125,35 @@ func TestScheduler_RestoredCredentialStrippedScheduleAdvancesWithoutFiring(t *te
 		t.Errorf("state = count %d status %q next %v; want 3, skipped_disabled, advanced", st.FireCount, st.LastStatus, st.NextRunAt)
 	}
 }
+
+// A consolidation queue restored from a snapshot is drained by the target's
+// scheduled consolidation fan-out. The source's sessions do not travel, so on
+// a fresh target the restored queue is the only sign the user exists: the
+// fan-out must find the target from the queue itself and dispatch a pass
+// under that user's identity, in the row's own tenant.
+func TestScheduler_RestoredConsolidationQueueIsDispatchedOnAFreshTarget(t *testing.T) {
+	src := openSQLite(t, "src.db")
+	ctx := context.Background()
+	// On the source alice has a chat AND a queued add; only the add travels.
+	seedSettledSession(t, src, "", "alice")
+	if err := src.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{ID: "pend_restored", Scope: store.MemoryScopeUser,
+		ScopeID: "alice", Payload: json.RawMessage(`{"messages":[{"role":"user","content":"I moved to Porto"}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	sched, fr, dst, logs := fanoutFixture(t, fanoutDef(nil), nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	if res := snapshotInto(t, src, dst); res.MemoryPendingRestored != 1 {
+		t.Fatalf("memory_pending restored = %d, want 1", res.MemoryPendingRestored)
+	}
+	if sessions, _, err := dst.ListSessions(ctx, store.SessionFilter{}, 10, 0); err != nil || len(sessions) != 0 {
+		t.Fatalf("premise: the target holds sessions %+v (err %v); the case is a target with the queue alone", sessions, err)
+	}
+
+	fireT(t, sched)
+
+	calls := fr.Calls()
+	if len(calls) != 1 || calls[0].UserID != "alice" || calls[0].TenantID != "" {
+		t.Fatalf("fan-out dispatched %+v, want one pass for alice in the operator layer; logs:\n%s", calls, logs.all())
+	}
+}
