@@ -805,9 +805,12 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 	// F32: the stored def keeps the ${ref}, but the host-allowlist gate must
 	// see the RESOLVED host. Expand transiently here (in-memory, validation
 	// only) — buildDefinition does not persist this expanded form.
-	u, err := url.Parse(config.ExpandEnv(ov.URL))
+	expanded := config.ExpandEnv(ov.URL)
+	u, err := url.Parse(expanded)
 	if err != nil {
-		return fmt.Errorf("url parse: %w", err)
+		// Not %w: a *url.Error embeds the URL, here with its ${...}
+		// references already expanded.
+		return fmt.Errorf("url parse: %s", urlForMessage(expanded))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("url scheme must be http or https; got %q", u.Scheme)
