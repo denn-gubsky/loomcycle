@@ -39,12 +39,23 @@ state row is updated; the runner goroutine watching the broadcast
 channel re-enters the loop. Resume is intentionally CHEAP — it
 just clears the brakes; the runs drive themselves forward.
 
-**Snapshot** captures running-state into a JSON envelope:
-seven sections (`agent_defs`, `agent_def_active`, `memory`,
-`channels`, `evaluations`, `paused_runs`, optional `interaction_
-history`). Each section carries its own version. The envelope is
-stored in the new `snapshots` table; export streams the raw JSON
-to the operator.
+**Snapshot** captures running-state into a JSON envelope. Its
+sections, grouped:
+
+- **Identities and budgets:** `users`, and `token_limits` with this
+  month's usage.
+- **Definitions,** each kind with its active pointers where it has
+  them: agents, skills, teams, hooks, MCP servers, channels, webhooks,
+  schedules, A2A agents and server cards, memory backends, document
+  sources, and dynamic volumes.
+- **Memory:** `memory`, `memory_pending` (items queued but not yet
+  consolidated), and `sqlmem` (SQL Memory, when it is enabled).
+- `channels`, `evaluations`, `paused_runs`, and optionally
+  `interaction_history`.
+- `dirents`, the Path tree.
+
+Each section carries its own version. The envelope is stored in the
+`snapshots` table; export streams the raw JSON to the operator.
 
 ## When to use each
 
@@ -99,7 +110,7 @@ The **same surface** is exposed through every wire transport
   `RestoreSnapshot`, `DeleteSnapshot`). Typed errors map to
   `Unavailable` / `FailedPrecondition` / `NotFound` /
   `ResourceExhausted` status codes.
-- **LoomCycle MCP** (`loomcycle mcp`): 9 of the 22 meta-tools
+- **LoomCycle MCP** (`loomcycle mcp`): 9 meta-tools
   cover this surface (`pause_runtime`, `resume_runtime`,
   `get_runtime_state`, plus the 6 snapshot ops). External
   orchestrators (Claude Code etc.) drive it through standard MCP.
@@ -116,6 +127,35 @@ rows already exist — the counter is `rows_actually_written`, not
 backends: a **different** definition on a name and version the target
 already has (its own yaml bootstrap, say) is not written, and the restore
 warns, naming it. The live definition stands.
+
+### What restore reports
+
+Every transport returns a `restored` map with every counter by name
+(`agent_defs`, `memory`, `dirents`, …), each counting rows actually
+written. A few count what the restore held back instead:
+
+- each `<section>_refused` and `active_pointers_refused` count rows this
+  host refused, which were not written;
+- `defs_disabled_for_credentials` counts schedules and webhooks written
+  **disabled** because the snapshot stripped their literal credentials.
+
+The CLI prints those on a separate `not restored` line, and the Web UI
+shows them as a warning. `paused_runs_resumed` counts the restored paused
+runs relaunched on this instance, whichever transport ran the restore; a
+run that cannot resume is marked failed and named in the warnings.
+
+### Users and token limits
+
+`users` and `token_limits` restore first, before any definition or
+resumed run. A user or a budget the target already has stands: the live
+row is kept, and a warning names a user the snapshot has stricter
+(isolated or disabled) than the live one.
+
+Month-to-date usage travels with the budgets, so a tenant near its limit
+on the source is near it on the target. The carried total is kept as the
+larger of the carry already stored and the snapshot's, so restoring the
+same snapshot twice counts it once. Usage from an earlier month is not
+carried: the budget window has rolled over.
 
 ### Definitions: agents, skills, teams, hooks, MCP servers, channels
 
@@ -381,8 +421,8 @@ v0.8.17 RFC.
 
 ## What this is NOT
 
-- **Not a backup.** Snapshot scope is running-state only (paused
-  runs, Memory, Channel, agent_defs, evaluations). External DB
+- **Not a backup.** Snapshot scope is running-state only (the
+  sections listed above). External DB
   backups handle archival history. The optional `include_history`
   flag adds an interaction-history section but is not how you
   back up a busy production database.
