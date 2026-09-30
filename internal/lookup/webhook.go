@@ -115,6 +115,15 @@ type SubstrateWebhookDef struct {
 	// Isolated (RFC BX P2b) mirrors mergedWebhookDef — captured from the authoring
 	// principal, projected onto config.Webhook for the receiver.
 	Isolated bool `json:"isolated,omitempty"`
+	// CaptureDisabled mirrors mergedWebhookDef's marker for a def restored
+	// from a snapshot without its literal credentials. Projected onto
+	// config.Webhook, where the receiver treats it as disabled.
+	CaptureDisabled *SubstrateWebhookCaptureDisabled `json:"capture_disabled,omitempty"`
+}
+
+// SubstrateWebhookCaptureDisabled mirrors mergedWebhookCaptureDisabled.
+type SubstrateWebhookCaptureDisabled struct {
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
 }
 
 // SubstrateWebhookAuth mirrors config.WebhookAuth.
@@ -176,5 +185,13 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		OnComplete:            s.OnComplete,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,
 		Isolated:              s.Isolated,
+		CaptureDisabled:       s.CaptureDisabled.toConfig(),
 	}
+}
+
+func (c *SubstrateWebhookCaptureDisabled) toConfig() *config.WebhookCaptureDisabled {
+	if c == nil {
+		return nil
+	}
+	return &config.WebhookCaptureDisabled{StrippedCredentials: c.StrippedCredentials}
 }
