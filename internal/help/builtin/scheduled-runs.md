@@ -120,9 +120,17 @@ boundary). Omit it (`""`) for a shared/default run with no tenant scoping.
 
 It is def-content (lives in the definition, participates in the def's
 serialized identity), so a schedule that runs as tenant A is a genuinely
-different def than one running as tenant B. It is **operator-authored
-only** — the scheduler has no inbound payload, so there is no way for an
-external value to set the tenant. It flows to `RunInput.TenantID`.
+different def than one running as tenant B. The scheduler has no inbound
+payload, so there is no way for an external value to set the tenant. It
+flows to `RunInput.TenantID`.
+
+**Through the ScheduleDef tool, `tenant_id` may name only your own tenant
+unless you are an admin.** Omitted, it defaults to your tenant. A
+non-admin `create` or `fork` whose `tenant_id` names another tenant is
+refused, and so is a `fork` or hook edit of a definition whose runs
+already execute in another tenant — set `tenant_id` to your own tenant in
+the fork's overlay to re-home it. The operator's yaml may still name any
+tenant.
 
 ## Schedules restored from a snapshot
 

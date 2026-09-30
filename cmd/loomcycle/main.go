@@ -2250,6 +2250,15 @@ func main() {
 		} else if n > 0 {
 			log.Printf("webhooks: materialized %d static webhook(s) into the substrate", n)
 		}
+		// Read-only: name any stored webhook whose runs execute outside its
+		// owning tenant (a non-admin could author one before the guard).
+		if warns, err := bootWH.ForeignExecTenantWarnings(bootWHCtx); err != nil {
+			log.Printf("webhooks: execution-tenant audit: %v (continuing)", err)
+		} else {
+			for _, warn := range warns {
+				log.Printf("webhooks: WARNING: %s", warn)
+			}
+		}
 	} else if cfg.Env.WebhooksEnabled {
 		log.Printf("webhooks: disabled (no Store backend or no HTTP server)")
 	} else {
@@ -2993,6 +3002,15 @@ func main() {
 			log.Printf("scheduler: static-schedule bootstrap: %v (continuing)", err)
 		} else if n > 0 {
 			log.Printf("scheduler: materialized %d static schedule(s) into the substrate", n)
+		}
+		// Read-only: name any stored schedule whose runs execute outside its
+		// owning tenant (a non-admin could author one before the guard).
+		if warns, err := bootSched.ForeignExecTenantWarnings(bootCtx); err != nil {
+			log.Printf("scheduler: execution-tenant audit: %v (continuing)", err)
+		} else {
+			for _, warn := range warns {
+				log.Printf("scheduler: WARNING: %s", warn)
+			}
 		}
 
 		// srv satisfies runner.Runner via its RunOnce method (the same

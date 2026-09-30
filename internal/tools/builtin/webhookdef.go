@@ -53,6 +53,8 @@ const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook
 	`Static webhooks.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
 	`Operations: create, fork, get, list, retire. ` +
+	`The definition's tenant_id is the tenant its spawned runs execute in: it defaults to your own tenant, ` +
+	`and only an admin may set it to another tenant (a fork that would inherit another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
 	`it answers every delivery with 404 until a fork, or a create on the same name, re-supplies EVERY key listed ` +
 	`there (in user_credentials or user_credentials_from_env) and sets enabled: true.`
@@ -66,7 +68,7 @@ const webhookDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of the webhook definition for create/fork. Server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of the webhook definition for create/fork. tenant_id (where spawned runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -156,10 +158,14 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	// empty. F30: an un-stamped tenant made a `spawn` webhook resolve a
 	// dynamic agent under "" while AgentDef persisted it under the principal's
 	// tenant ("default" for the legacy token) → "unknown agent". An explicit
-	// overlay tenant_id still wins. Mirrors AgentDef.execCreate's stamp.
+	// overlay tenant_id wins only when it names the author's own tenant, or
+	// the author is an admin. Mirrors AgentDef.execCreate's stamp.
 	ident := tools.RunIdentity(ctx)
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
+	}
+	if res, refused := refuseForeignExecTenant(ctx, "create", def.TenantID); refused {
+		return res, nil
 	}
 	// RFC AX: capture the author's operator-key restriction (server
 	// authority — unconditional so the payload/overlay can't set it) so the
@@ -366,9 +372,13 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	}
 	warnLiteralUserCredentials(in.Name, def)
 	// Run-execution tenant (in the definition JSON) defaults to the forking
-	// principal's tenant unless the parent/overlay already carries one.
+	// principal's tenant unless the parent/overlay already carries one; a
+	// non-admin may not end up with another tenant's, either way.
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
+	}
+	if res, refused := refuseForeignExecTenant(ctx, "fork", def.TenantID); refused {
+		return res, nil
 	}
 	// RFC AX: re-capture the forker's operator-key restriction (server
 	// authority) — a fork is a new version, its authority is the forker's grant.

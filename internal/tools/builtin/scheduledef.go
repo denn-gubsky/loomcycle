@@ -74,6 +74,8 @@ const scheduleDefDescription = `Author, fork, retire, and inspect schedule defin
 	`Static scheduled_runs.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored per-user forks. ` +
 	`Operations: create, fork, get, list, retire, add_hook, remove_hook. ` +
+	`The definition's tenant_id is the tenant its fired runs execute in: it defaults to your own tenant, ` +
+	`and only an admin may set it to another tenant (a fork or hook edit that would keep another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
 	`it stays disabled until a fork, or a create on the same name, re-supplies EVERY key listed there (in ` +
 	`user_credentials or user_credentials_from_env) and sets enabled: true. Either keeps the fire count already spent.`
@@ -87,7 +89,7 @@ const scheduleDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name, or bootstraps from a yaml template)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent) or channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). Immutable / server-set fields are silently ignored if supplied.",
+      "description": "Mutable subset of ScheduledRun for create/fork (delivery, channel, agent, prompt, schedule/user_tier_schedules, timezone, enabled, catch_up_max, max_fires, user_id, user_tier, user_credentials, user_credentials_from_env, on_complete, metadata, tenant_id). delivery is run (default — invoke the agent) or channel (publish a cadence tick to the named channel and start NO run; forbids agent/prompt/on_complete/credentials, and carries metadata as the message payload). max_fires N>0 auto-retires the def after its Nth fire (1 = one-shot; 0 = unbounded). tenant_id (where fired runs execute) may name only your own tenant unless you are an admin; omit it to use yours. Immutable / server-set fields are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -185,10 +187,14 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	// fired run resolves agents/skills/MCP at the shared "" tenant and can't
 	// find the creator's substrate agents (`unknown agent`). Defaulting it to
 	// the creator's tenant resolves them where they live; an explicit overlay
-	// tenant_id still wins (the documented owning-vs-execution split).
+	// tenant_id wins only when it names the creator's own tenant, or the
+	// creator is an admin (the documented owning-vs-execution split).
 	ident := tools.RunIdentity(ctx)
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
+	}
+	if res, refused := refuseForeignExecTenant(ctx, "create", def.TenantID); refused {
+		return res, nil
 	}
 	// RFC AX: capture the author's operator-key restriction (server
 	// authority — unconditional so the overlay can't set it) so the scheduler
@@ -420,9 +426,13 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// rationale as create). A fork inherits the parent body's tenant_id; when
 	// that's empty (e.g. a legacy or pre-fix parent) default it so the fired
 	// run resolves the fork-owner's substrate agents instead of failing at the
-	// shared "" tenant. An explicit overlay tenant_id still wins.
+	// shared "" tenant. An overlay tenant_id, or an inherited one, must name
+	// the fork-owner's own tenant unless the fork-owner is an admin.
 	if def.TenantID == "" {
 		def.TenantID = ident.TenantID
+	}
+	if res, refused := refuseForeignExecTenant(ctx, "fork", def.TenantID); refused {
+		return res, nil
 	}
 	// RFC AX: re-capture the forker's operator-key restriction (server
 	// authority) — a fork is a new version, its authority is the forker's grant.
@@ -675,6 +685,11 @@ func (s *ScheduleDef) loadParentForHookOp(ctx context.Context, policy tools.Sche
 // validation chain fork uses, persists as a new version, and
 // auto-promotes. Returns the row response with promoted=true.
 func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.ScheduleDefRow, def mergedScheduleDef, opLabel string) (tools.Result, error) {
+	// A hook edit re-mints the parent's body as a new version; a non-admin
+	// must not re-mint (or add hooks to) one whose runs execute elsewhere.
+	if res, refused := refuseForeignExecTenant(ctx, opLabel, def.TenantID); refused {
+		return res, nil
+	}
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
 	}
