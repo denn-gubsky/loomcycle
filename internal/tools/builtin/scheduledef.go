@@ -75,8 +75,8 @@ const scheduleDefDescription = `Author, fork, retire, and inspect schedule defin
 	`produces the DERIVED layer of orchestrator-authored per-user forks. ` +
 	`Operations: create, fork, get, list, retire, add_hook, remove_hook. ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
-	`it stays disabled until a fork re-supplies EVERY key listed there (in user_credentials or ` +
-	`user_credentials_from_env) and sets enabled: true. The fork keeps the fire count already spent.`
+	`it stays disabled until a fork, or a create on the same name, re-supplies EVERY key listed there (in ` +
+	`user_credentials or user_credentials_from_env) and sets enabled: true. Either keeps the fire count already spent.`
 
 const scheduleDefInputSchema = `{
   "type": "object",
@@ -197,6 +197,24 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// A create on a name whose current def was restored without its literal
+	// credentials writes a new version of it: the marker carries over unless
+	// this create supplies every stripped key, and the fire count carries
+	// over either way — otherwise create would be a way around fork's rules.
+	pred, marked, err := s.markedPredecessor(ctx, ident.TenantID, in.Name)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	fireCount := 0
+	if marked {
+		def.CaptureDisabled = &mergedScheduleCaptureDisabled{StrippedCredentials: pred.stripped}
+		if _, err := resolveCaptureDisabled(&def, in.Overlay); err != nil {
+			return errResult(fmt.Sprintf("create: %s", err)), nil
+		}
+		if fireCount, err = s.parentFireCount(ctx, pred.defID); err != nil {
+			return errResult(fmt.Sprintf("create: read the superseded def's fire count: %s", err)), nil
+		}
+	}
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -234,6 +252,15 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		if err := s.Store.ScheduleDefSetActive(ctx, tenantID, in.Name, created.DefID, ident.AgentID); err != nil {
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
+	}
+	if marked {
+		// Seeded even when not promoted, as fork does: a later seed keeps an
+		// existing row's count, so writing it now stops any path from
+		// starting this def at zero.
+		if err := s.Store.ScheduleRunStateSeedWithFireCount(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()), fireCount); err != nil {
+			return errResult(fmt.Sprintf("create: created def %s but could not carry the superseded def's fire count: %s", created.DefID, err)), nil
+		}
+	} else if promote {
 		// Seed schedule_run_state so the sweeper's due-query JOIN
 		// returns this def. Without this, ScheduleRunStateListDue
 		// returns nothing for the def and the sweeper never fires
@@ -242,6 +269,60 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	}
 	return okJSON(scheduleRowResponse(created, promote))
+}
+
+// markedPredecessorRef names the def a create on an existing name supersedes,
+// when that def carries a capture_disabled marker.
+type markedPredecessorRef struct {
+	defID    string
+	stripped []string
+}
+
+// markedPredecessor finds the def a create on (tenantID, name) supersedes —
+// the tenant's active version, else its latest — and reports whether it
+// carries a capture_disabled marker. Only the caller's own tenant's lineage
+// counts: that is the lineage the create extends.
+func (s *ScheduleDef) markedPredecessor(ctx context.Context, tenantID, name string) (markedPredecessorRef, bool, error) {
+	var body json.RawMessage
+	var defID string
+	row, err := s.Store.ScheduleDefGetActive(ctx, tenantID, name)
+	switch {
+	case err == nil:
+		body, defID = row.Definition, row.DefID
+	case isNotFound(err):
+		rows, lerr := s.Store.ScheduleDefListByName(ctx, name)
+		if lerr != nil {
+			return markedPredecessorRef{}, false, lerr
+		}
+		best := -1
+		for i, r := range rows {
+			if r.TenantID == tenantID && (best < 0 || r.Version > rows[best].Version) {
+				best = i
+			}
+		}
+		if best < 0 {
+			return markedPredecessorRef{}, false, nil
+		}
+		body, defID = rows[best].Definition, rows[best].DefID
+	default:
+		return markedPredecessorRef{}, false, err
+	}
+	stripped, marked := captureDisabledKeys(body)
+	return markedPredecessorRef{defID: defID, stripped: stripped}, marked, nil
+}
+
+// captureDisabledKeys reads a stored schedule or webhook body's
+// capture_disabled marker: its keys, and whether the marker is there at all.
+func captureDisabledKeys(body json.RawMessage) ([]string, bool) {
+	var probe struct {
+		CaptureDisabled *struct {
+			StrippedCredentials []string `json:"stripped_credentials"`
+		} `json:"capture_disabled"`
+	}
+	if json.Unmarshal(body, &probe) != nil || probe.CaptureDisabled == nil {
+		return nil, false
+	}
+	return probe.CaptureDisabled.StrippedCredentials, true
 }
 
 // ---- fork ----
@@ -1027,21 +1108,9 @@ func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage) (bo
 	if def.CaptureDisabled == nil {
 		return false, nil
 	}
-	var ov struct {
-		UserCredentials        map[string]string `json:"user_credentials"`
-		UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
-	}
-	if len(overlay) > 0 {
-		if err := json.Unmarshal(overlay, &ov); err != nil {
-			return true, fmt.Errorf("parse overlay: %w", err)
-		}
-	}
-	var missing []string
-	for _, k := range def.CaptureDisabled.StrippedCredentials {
-		if ov.UserCredentials[k] != "" || ov.UserCredentialsFromEnv[k] != "" {
-			continue
-		}
-		missing = append(missing, k)
+	missing, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay)
+	if err != nil {
+		return true, err
 	}
 	if len(missing) == 0 {
 		def.CaptureDisabled = nil
@@ -1051,6 +1120,31 @@ func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage) (bo
 	off := false
 	def.Enabled = &off
 	return true, nil
+}
+
+// credentialsStillMissing returns the stripped credential keys a fork's
+// overlay does NOT re-supply, in their listed order. Only the overlay counts:
+// a key is re-supplied when the overlay gives it a non-empty value in
+// user_credentials or user_credentials_from_env. The ScheduleDef and
+// WebhookDef forks share it, so a marker clears on the same rule for both.
+func credentialsStillMissing(stripped []string, overlay json.RawMessage) ([]string, error) {
+	var ov struct {
+		UserCredentials        map[string]string `json:"user_credentials"`
+		UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
+	}
+	if len(overlay) > 0 {
+		if err := json.Unmarshal(overlay, &ov); err != nil {
+			return nil, fmt.Errorf("parse overlay: %w", err)
+		}
+	}
+	var missing []string
+	for _, k := range stripped {
+		if ov.UserCredentials[k] != "" || ov.UserCredentialsFromEnv[k] != "" {
+			continue
+		}
+		missing = append(missing, k)
+	}
+	return missing, nil
 }
 
 // parentFireCount reads the fire count a new version of a marked def must

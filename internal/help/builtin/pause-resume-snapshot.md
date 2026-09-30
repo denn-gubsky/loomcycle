@@ -138,7 +138,8 @@ schedule is restored **disabled** with a `capture_disabled` marker. A
 warning names it and its keys, and `defs_disabled_for_credentials`
 counts it. Re-enable it with a ScheduleDef `fork` that supplies every
 listed key and `enabled: true`; the fork keeps the fire count already
-spent. References (`$cred:<name>`, `${...}`, `user_credentials_from_env`
+spent. A `create` on the same name counts as a new version: it keeps the
+marker unless it supplies every key, and keeps the fire count. References (`$cred:<name>`, `${...}`, `user_credentials_from_env`
 names) travel as written.
 
 **A snapshot is a copy, not a lease.** Restoring into a second instance
@@ -146,6 +147,49 @@ while the first keeps running fires every enabled schedule on both, and
 together they can exceed `max_fires`. Nothing in the runtime prevents
 it: disable the schedules on one side. Every restore that brings back
 an enabled schedule warns once with the count.
+
+### Webhooks and A2A definitions
+
+The `webhook_defs`, `a2a_agent_defs` and `a2a_server_card_defs`
+sections carry every definition with its active pointers
+(`webhook_def_active`, `a2a_agent_def_active`,
+`a2a_server_card_def_active`). A definition already on the target
+stands, including one the target bootstrapped from its own yaml: a
+collision on the same name and version is a warning, not an overwrite.
+
+A webhook's literal `user_credentials` values are stripped exactly as a
+schedule's are. The webhook is restored **disabled** with a
+`capture_disabled` marker listing the stripped keys, and it answers
+every delivery with `404` — even if its body says `enabled: true` — until
+a WebhookDef `fork` whose own overlay supplies **every** listed key (in
+`user_credentials` or `user_credentials_from_env`) and sets
+`enabled: true`. A key the parent already sources does not count. A fork
+that supplies only some of them stays disabled, and its marker lists the
+keys still missing. A `create` on the same name follows the same rules.
+It also counts in `defs_disabled_for_credentials`.
+The signing-secret and bearer env-var names travel as written.
+
+A2A definitions carry no secret: a peer's `auth.bearer_credential_ref`
+names a per-run credential key, and a card holds public scheme
+descriptions and an env-var name. A restored active server card
+publishes an AgentCard and accepts A2A calls for the agents it exposes
+once the runtime resumes, and the restore warns once per card.
+
+**Every restored webhook, A2A peer and server card is re-validated** with
+the rules an author faces on this host: auth kind and env-var-name
+charset, delivery-mode rules, peer endpoint and agent-card URL checks
+(http(s) only, no literal private or metadata address for gRPC). A
+definition that fails is not restored, and neither is a pointer at it;
+the warning names it and the reason.
+
+**Missing credentials.** A snapshot never lists the source's
+credentials. After the definitions land, the restore reads the
+references in each restored webhook, schedule and server card —
+`user_credentials_from_env` names, the webhook signing/bearer env names,
+`sign_with_key_env`, and `$cred:` / `$ghapp:` / `${...}` references —
+and warns for each one this host cannot supply: an env var that is not
+set, or a credential the definition's tenant does not have. A warning
+names the definition and the reference, never a value.
 
 Per-section semver gates compatibility. A snapshot at section
 version `1.0` restored on a reader at `1.0` is identity-decoded.

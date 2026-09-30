@@ -144,7 +144,10 @@ To re-enable it, `fork` it with every listed key in `user_credentials` or
 `user_credentials_from_env` and `enabled: true`. A fork that supplies only
 some of the keys stays disabled and keeps the marker with the keys still
 missing. Either way the fork starts from the fire count already spent,
-never from zero. The marker cannot be set or cleared through an overlay.
+never from zero. A `create` on the same name writes a new version of it
+and follows the same rules: it keeps the marker unless it supplies every
+listed key, and it keeps the fire count. The marker cannot be set or
+cleared through an overlay.
 
 A snapshot is a copy, not a lease: restoring one into a second instance
 while the first keeps running fires every enabled schedule on both, and

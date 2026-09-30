@@ -103,8 +103,9 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 var pinnedEntryKeys = map[string][]string{
 	"Sections": {"users", "token_limits", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active",
-		"memory", "channels", "channel_defs", "schedule_defs", "schedule_def_active", "evaluations", "paused_runs",
-		"interaction_history", "sqlmem", "capture_findings"},
+		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
+		"memory", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
+		"schedule_def_active", "evaluations", "paused_runs", "interaction_history", "sqlmem", "capture_findings"},
 
 	"UsersSection":              {"version", "entries"},
 	"TokenLimitsSection":        {"version", "entries", "usage_mtd"},
@@ -155,6 +156,28 @@ var pinnedEntryKeys = map[string][]string{
 	"TeamDefPromoterEntry":    {"operator_key_restricted", "isolated"},
 	"HookDefActiveEntry":      {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 	"MCPServerDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+
+	"WebhookDefsSection":      {"version", "entries"},
+	"WebhookDefActiveSection": {"version", "entries"},
+	// definition has its literal user_credentials values stripped at capture;
+	// stripped_credentials lists KEYS only. It must never gain a field for a
+	// credential value, nor one that re-projects the body through a struct.
+	"WebhookDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
+		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",
+		"stripped_credentials"},
+	"WebhookDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+
+	// A2A defs carry references only (a per-run credential key, an env name).
+	"A2AAgentDefsSection":      {"version", "entries"},
+	"A2AAgentDefActiveSection": {"version", "entries"},
+	"A2AAgentDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
+		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static"},
+	"A2AAgentDefActiveEntry":        {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+	"A2AServerCardDefsSection":      {"version", "entries"},
+	"A2AServerCardDefActiveSection": {"version", "entries"},
+	"A2AServerCardDefEntry": {"def_id", "tenant_id", "name", "version", "parent_def_id", "definition", "description",
+		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static"},
+	"A2AServerCardDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
 
 	"ScheduleDefsSection":      {"version", "entries"},
 	"ScheduleDefActiveSection": {"version", "entries"},

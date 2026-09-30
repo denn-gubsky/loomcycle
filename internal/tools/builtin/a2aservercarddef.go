@@ -495,6 +495,17 @@ var a2aSecuritySchemeKinds = map[string]bool{
 	"mtls":   true,
 }
 
+// ValidateA2AServerCardDefBody re-runs the authoring validation over a
+// stored A2A server-card def body. A snapshot restore calls it (injected by
+// the restore call sites) before writing a body.
+func ValidateA2AServerCardDefBody(body json.RawMessage) error {
+	var def mergedA2AServerCardDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as an A2A server card def: %w", err)
+	}
+	return validateA2AServerCardDef(def)
+}
+
 // validateA2AServerCardDef enforces the runtime-supplied overlay shape.
 // Validates STRUCTURE only — the env-allowlist check for
 // sign_with_key_env is enforced at card-serving time (a later slice),

@@ -487,6 +487,19 @@ var a2aBindings = map[string]bool{
 // bearer_credential_ref ([a-zA-Z0-9_-]{1,64}).
 var a2aCredentialRefRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
+// ValidateA2AAgentDefBody re-runs the authoring validation over a stored
+// A2A peer def body — reachability mode, endpoint and agent-card URL checks,
+// credential-ref charset. A snapshot restore calls it (injected by the
+// restore call sites) before writing a body: a peer endpoint is something
+// this host will dial.
+func ValidateA2AAgentDefBody(body json.RawMessage) error {
+	var def mergedA2AAgentDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as an A2A peer def: %w", err)
+	}
+	return validateA2AAgentDef(def)
+}
+
 // validateA2AAgentDef enforces the runtime-supplied overlay shape.
 // EXACTLY ONE of agent_card_url OR (endpoint+binding) must be set.
 func validateA2AAgentDef(def mergedA2AAgentDef) error {

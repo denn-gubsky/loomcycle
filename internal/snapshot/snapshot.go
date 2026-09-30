@@ -171,6 +171,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureMCPServerDefActive(ctx, s, &envelope.Sections.MCPServerDefActive); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := captureA2A(ctx, s, &envelope.Sections); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureMemory(ctx, s, &envelope.Sections.Memory); err != nil {
 		return nil, nil, nil, err
 	}
@@ -178,6 +181,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		return nil, nil, nil, err
 	}
 	if err := captureChannels(ctx, s, opts.Channels, &envelope.Sections.Channels); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := captureWebhooks(ctx, s, &envelope.Sections.WebhookDefs, &envelope.Sections.WebhookDefActive); err != nil {
 		return nil, nil, nil, err
 	}
 	if err := captureSchedules(ctx, s, &envelope.Sections.ScheduleDefs, &envelope.Sections.ScheduleDefActive); err != nil {

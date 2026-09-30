@@ -31,28 +31,34 @@ const CurrentVersion = "1.0"
 // tags; we redeclare here to avoid an import cycle (migrations
 // imported by snapshot/restore.go, NOT the other way around).
 const (
-	SectionUsers              = "users"
-	SectionTokenLimits        = "token_limits"
-	SectionAgentDefs          = "agent_defs"
-	SectionAgentDefActive     = "agent_def_active"
-	SectionSkillDefs          = "skill_defs"
-	SectionSkillDefActive     = "skill_def_active"
-	SectionTeamDefs           = "team_defs"
-	SectionTeamDefActive      = "team_def_active"
-	SectionHookDefs           = "hook_defs"
-	SectionHookDefActive      = "hook_def_active"
-	SectionMCPServerDefs      = "mcp_server_defs"
-	SectionMCPServerDefActive = "mcp_server_def_active"
-	SectionMemory             = "memory"
-	SectionChannels           = "channels"
-	SectionChannelDefs        = "channel_defs"
-	SectionScheduleDefs       = "schedule_defs"
-	SectionScheduleDefActive  = "schedule_def_active"
-	SectionEvaluations        = "evaluations"
-	SectionPausedRuns         = "paused_runs"
-	SectionInteractionHistory = "interaction_history"
-	SectionSqlMem             = "sqlmem"
-	SectionCaptureFindings    = "capture_findings"
+	SectionUsers                  = "users"
+	SectionTokenLimits            = "token_limits"
+	SectionAgentDefs              = "agent_defs"
+	SectionAgentDefActive         = "agent_def_active"
+	SectionSkillDefs              = "skill_defs"
+	SectionSkillDefActive         = "skill_def_active"
+	SectionTeamDefs               = "team_defs"
+	SectionTeamDefActive          = "team_def_active"
+	SectionHookDefs               = "hook_defs"
+	SectionHookDefActive          = "hook_def_active"
+	SectionMCPServerDefs          = "mcp_server_defs"
+	SectionMCPServerDefActive     = "mcp_server_def_active"
+	SectionMemory                 = "memory"
+	SectionChannels               = "channels"
+	SectionChannelDefs            = "channel_defs"
+	SectionScheduleDefs           = "schedule_defs"
+	SectionScheduleDefActive      = "schedule_def_active"
+	SectionWebhookDefs            = "webhook_defs"
+	SectionWebhookDefActive       = "webhook_def_active"
+	SectionA2AAgentDefs           = "a2a_agent_defs"
+	SectionA2AAgentDefActive      = "a2a_agent_def_active"
+	SectionA2AServerCardDefs      = "a2a_server_card_defs"
+	SectionA2AServerCardDefActive = "a2a_server_card_def_active"
+	SectionEvaluations            = "evaluations"
+	SectionPausedRuns             = "paused_runs"
+	SectionInteractionHistory     = "interaction_history"
+	SectionSqlMem                 = "sqlmem"
+	SectionCaptureFindings        = "capture_findings"
 )
 
 // Migrator transforms a section's raw JSON bytes from one version
@@ -104,28 +110,34 @@ func (e *ErrUnknownSectionVersion) Error() string {
 // CurrentVersion; intermediate versions need their own migrators
 // in the chain.
 var registry = map[string]map[string]Migrator{
-	SectionUsers:              {"1.0": identityMigrator},
-	SectionTokenLimits:        {"1.0": identityMigrator},
-	SectionAgentDefs:          {"1.0": identityMigrator},
-	SectionAgentDefActive:     {"1.0": identityMigrator},
-	SectionSkillDefs:          {"1.0": identityMigrator},
-	SectionSkillDefActive:     {"1.0": identityMigrator},
-	SectionTeamDefs:           {"1.0": identityMigrator},
-	SectionTeamDefActive:      {"1.0": identityMigrator},
-	SectionHookDefs:           {"1.0": identityMigrator},
-	SectionHookDefActive:      {"1.0": identityMigrator},
-	SectionMCPServerDefs:      {"1.0": identityMigrator},
-	SectionMCPServerDefActive: {"1.0": identityMigrator},
-	SectionMemory:             {"1.0": identityMigrator},
-	SectionChannels:           {"1.0": identityMigrator},
-	SectionChannelDefs:        {"1.0": identityMigrator},
-	SectionScheduleDefs:       {"1.0": identityMigrator},
-	SectionScheduleDefActive:  {"1.0": identityMigrator},
-	SectionEvaluations:        {"1.0": identityMigrator},
-	SectionPausedRuns:         {"1.0": identityMigrator},
-	SectionInteractionHistory: {"1.0": identityMigrator},
-	SectionSqlMem:             {"1.0": identityMigrator},
-	SectionCaptureFindings:    {"1.0": identityMigrator},
+	SectionUsers:                  {"1.0": identityMigrator},
+	SectionTokenLimits:            {"1.0": identityMigrator},
+	SectionAgentDefs:              {"1.0": identityMigrator},
+	SectionAgentDefActive:         {"1.0": identityMigrator},
+	SectionSkillDefs:              {"1.0": identityMigrator},
+	SectionSkillDefActive:         {"1.0": identityMigrator},
+	SectionTeamDefs:               {"1.0": identityMigrator},
+	SectionTeamDefActive:          {"1.0": identityMigrator},
+	SectionHookDefs:               {"1.0": identityMigrator},
+	SectionHookDefActive:          {"1.0": identityMigrator},
+	SectionMCPServerDefs:          {"1.0": identityMigrator},
+	SectionMCPServerDefActive:     {"1.0": identityMigrator},
+	SectionMemory:                 {"1.0": identityMigrator},
+	SectionChannels:               {"1.0": identityMigrator},
+	SectionChannelDefs:            {"1.0": identityMigrator},
+	SectionScheduleDefs:           {"1.0": identityMigrator},
+	SectionScheduleDefActive:      {"1.0": identityMigrator},
+	SectionWebhookDefs:            {"1.0": identityMigrator},
+	SectionWebhookDefActive:       {"1.0": identityMigrator},
+	SectionA2AAgentDefs:           {"1.0": identityMigrator},
+	SectionA2AAgentDefActive:      {"1.0": identityMigrator},
+	SectionA2AServerCardDefs:      {"1.0": identityMigrator},
+	SectionA2AServerCardDefActive: {"1.0": identityMigrator},
+	SectionEvaluations:            {"1.0": identityMigrator},
+	SectionPausedRuns:             {"1.0": identityMigrator},
+	SectionInteractionHistory:     {"1.0": identityMigrator},
+	SectionSqlMem:                 {"1.0": identityMigrator},
+	SectionCaptureFindings:        {"1.0": identityMigrator},
 }
 
 // KnownSection reports whether this reader understands the named envelope

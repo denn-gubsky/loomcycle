@@ -158,10 +158,12 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return
 	}
-	if !wd.Enabled {
+	if !wd.Enabled || wd.CaptureDisabled != nil {
 		// A disabled Def is addressable but inert. 404 (not 403) so a
 		// disabled webhook is indistinguishable from a never-registered one
-		// to an external caller — no enumeration signal.
+		// to an external caller — no enumeration signal. A def a snapshot
+		// restored without its literal credentials is disabled whatever its
+		// `enabled` says: it must not run without them.
 		rec.finish(span, name, "", "rejected_disabled", "")
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return

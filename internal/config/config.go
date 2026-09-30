@@ -3056,6 +3056,19 @@ type Webhook struct {
 	// Flows write→read→consumer alongside OperatorKeyRestricted; drift-tested
 	// against mergedWebhookDef / SubstrateWebhookDef.
 	Isolated bool `json:"isolated,omitempty" yaml:"isolated"`
+	// CaptureDisabled is set only on a DYNAMIC WebhookDef that a snapshot
+	// restore brought back without its literal user_credentials (they never
+	// travel). Server authority, never operator yaml (yaml:"-"): the receiver
+	// treats a marked def as disabled whatever Enabled says, until a fork
+	// re-supplies every listed key. Drift-tested against mergedWebhookDef /
+	// SubstrateWebhookDef.
+	CaptureDisabled *WebhookCaptureDisabled `json:"capture_disabled,omitempty" yaml:"-"`
+}
+
+// WebhookCaptureDisabled lists the credential keys a snapshot stripped from a
+// webhook def and a fork has not yet re-supplied.
+type WebhookCaptureDisabled struct {
+	StrippedCredentials []string `json:"stripped_credentials,omitempty" yaml:"-"`
 }
 
 // WebhookAuth declares how inbound webhook requests are authenticated.

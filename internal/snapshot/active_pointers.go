@@ -55,6 +55,21 @@ func scheduleDefOwner(ctx context.Context, s store.Store, defID string) (string,
 	return r.TenantID, r.Name, err
 }
 
+func webhookDefOwner(ctx context.Context, s store.Store, defID string) (string, string, error) {
+	r, err := s.WebhookDefGet(ctx, defID)
+	return r.TenantID, r.Name, err
+}
+
+func a2aAgentDefOwner(ctx context.Context, s store.Store, defID string) (string, string, error) {
+	r, err := s.A2AAgentDefGet(ctx, defID)
+	return r.TenantID, r.Name, err
+}
+
+func a2aServerCardDefOwner(ctx context.Context, s store.Store, defID string) (string, string, error) {
+	r, err := s.A2AServerCardDefGet(ctx, defID)
+	return r.TenantID, r.Name, err
+}
+
 // admitActivePointer reports whether the pointer (tenantID, name) → defID may
 // be written: its def is on the target under the same tenant and name, which
 // is what a promote requires. A refused pointer is counted and named in a

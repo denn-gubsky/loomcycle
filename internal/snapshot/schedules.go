@@ -37,19 +37,20 @@ import (
 // The live row stands, as in every def section: a def, pointer or run state
 // already on the target's key is left alone and not counted.
 
-// scheduleCredentialsKey and the other body keys this file touches. The strip
+// triggerCredentialsKey and the other body keys the strip and force touch —
+// schedule and webhook bodies spell them the same way. The strip
 // and the force work from this explicit list and never re-project the body,
 // because a projection through a struct could drop a field the struct does
 // not know — a confinement bit among them.
 const (
-	scheduleCredentialsKey     = "user_credentials"
-	scheduleEnabledKey         = "enabled"
-	scheduleCaptureDisabledKey = "capture_disabled"
+	triggerCredentialsKey     = "user_credentials"
+	triggerEnabledKey         = "enabled"
+	triggerCaptureDisabledKey = "capture_disabled"
 )
 
 // captureDisabledMarker is the stored shape of the capture_disabled marker;
-// the ScheduleDef tool and the scheduler decode the same keys (drift-tested
-// there).
+// the ScheduleDef and WebhookDef tools, the scheduler and the webhook receiver
+// decode the same keys (drift-tested there).
 type captureDisabledMarker struct {
 	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
 }
@@ -73,7 +74,7 @@ func captureSchedules(ctx context.Context, s store.Store, defs *ScheduleDefsSect
 	}
 	defs.Entries = make([]ScheduleDefEntry, 0, len(rows))
 	for _, r := range rows {
-		body, stripped, err := stripScheduleCredentials(r.Definition)
+		body, stripped, err := stripTriggerCredentials(r.Definition)
 		if err != nil {
 			// A body this cannot read is a body it cannot prove secret-free.
 			return fmt.Errorf("snapshot schedule_defs %s: %w", r.DefID, err)
@@ -137,7 +138,7 @@ func runStateEntry(st store.ScheduleRunStateRow) *ScheduleRunStateEntry {
 	return out
 }
 
-// stripScheduleCredentials returns the body to carry and the credential keys
+// stripTriggerCredentials returns the body to carry and the credential keys
 // it lost, sorted. A literal user_credentials value is removed; a value that
 // is a reference ($cred:<name>, ${...}) is authored text, not a secret, and
 // stays exactly as written — capture never expands one. When every value is
@@ -150,7 +151,7 @@ func runStateEntry(st store.ScheduleRunStateRow) *ScheduleRunStateEntry {
 //
 // Any listed key means the body carries enabled:false. A body with nothing to
 // strip and no marker is returned byte-for-byte.
-func stripScheduleCredentials(body json.RawMessage) (json.RawMessage, []string, error) {
+func stripTriggerCredentials(body json.RawMessage) (json.RawMessage, []string, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil || m == nil {
 		return nil, nil, errors.New("definition is not a JSON object; its credentials cannot be checked")
@@ -158,10 +159,10 @@ func stripScheduleCredentials(body json.RawMessage) (json.RawMessage, []string, 
 
 	keys := map[string]bool{}
 	changed := false
-	if raw, ok := m[scheduleCredentialsKey]; ok && string(raw) != "null" {
+	if raw, ok := m[triggerCredentialsKey]; ok && string(raw) != "null" {
 		var creds map[string]any
 		if err := json.Unmarshal(raw, &creds); err != nil {
-			return nil, nil, fmt.Errorf("%s is not an object; its values cannot be checked", scheduleCredentialsKey)
+			return nil, nil, fmt.Errorf("%s is not an object; its values cannot be checked", triggerCredentialsKey)
 		}
 		kept := map[string]any{}
 		for k, v := range creds {
@@ -174,13 +175,13 @@ func stripScheduleCredentials(body json.RawMessage) (json.RawMessage, []string, 
 		if len(kept) != len(creds) {
 			changed = true
 			if len(kept) == 0 {
-				delete(m, scheduleCredentialsKey)
+				delete(m, triggerCredentialsKey)
 			} else {
 				b, err := json.Marshal(kept)
 				if err != nil {
 					return nil, nil, err
 				}
-				m[scheduleCredentialsKey] = b
+				m[triggerCredentialsKey] = b
 			}
 		}
 	}
@@ -197,7 +198,7 @@ func stripScheduleCredentials(body json.RawMessage) (json.RawMessage, []string, 
 	if !changed && enabledIsFalse(m) {
 		return body, sortedKeys(keys), nil // an earlier hop's body, already disabled
 	}
-	m[scheduleEnabledKey] = json.RawMessage("false")
+	m[triggerEnabledKey] = json.RawMessage("false")
 	out, err := json.Marshal(m)
 	if err != nil {
 		return nil, nil, err
@@ -224,20 +225,20 @@ func isCredentialReference(v string) bool {
 // decodeCaptureDisabled reads the keys of a capture_disabled marker already
 // in a body.
 func decodeCaptureDisabled(m map[string]json.RawMessage) ([]string, error) {
-	raw, ok := m[scheduleCaptureDisabledKey]
+	raw, ok := m[triggerCaptureDisabledKey]
 	if !ok || string(raw) == "null" {
 		return nil, nil
 	}
 	var marker captureDisabledMarker
 	if err := json.Unmarshal(raw, &marker); err != nil {
-		return nil, fmt.Errorf("%s is malformed: %w", scheduleCaptureDisabledKey, err)
+		return nil, fmt.Errorf("%s is malformed: %w", triggerCaptureDisabledKey, err)
 	}
 	return marker.StrippedCredentials, nil
 }
 
 func enabledIsFalse(m map[string]json.RawMessage) bool {
 	var b *bool
-	if raw, ok := m[scheduleEnabledKey]; ok && json.Unmarshal(raw, &b) == nil && b != nil {
+	if raw, ok := m[triggerEnabledKey]; ok && json.Unmarshal(raw, &b) == nil && b != nil {
 		return !*b
 	}
 	return false
@@ -264,8 +265,8 @@ func forceCaptureDisabled(body json.RawMessage, stripped []string) (json.RawMess
 	if err != nil {
 		return nil, err
 	}
-	m[scheduleEnabledKey] = json.RawMessage("false")
-	m[scheduleCaptureDisabledKey] = marker
+	m[triggerEnabledKey] = json.RawMessage("false")
+	m[triggerCaptureDisabledKey] = marker
 	return json.Marshal(m)
 }
 
@@ -276,7 +277,7 @@ func scheduleFires(body json.RawMessage) bool {
 	if json.Unmarshal(body, &m) != nil || m == nil {
 		return false
 	}
-	if raw, ok := m[scheduleCaptureDisabledKey]; ok && string(raw) != "null" {
+	if raw, ok := m[triggerCaptureDisabledKey]; ok && string(raw) != "null" {
 		return false
 	}
 	return !enabledIsFalse(m)
@@ -291,7 +292,7 @@ type restoredSchedule struct {
 // restoreScheduleDefs inserts each def the target does not have, then its run
 // state. Entries are in lineage order (a fork after its parent), as captured.
 // Returns what the active-pointer pass needs, keyed by def_id.
-func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSection, result *RestoreResult) map[string]restoredSchedule {
+func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSection, scan *credScan, result *RestoreResult) map[string]restoredSchedule {
 	out := make(map[string]restoredSchedule, len(sec.Entries))
 	for _, e := range sec.Entries {
 		where := fmt.Sprintf("schedule_def %s v%d (def %s)", qualifiedName(e.TenantID, e.Name), e.Version, e.DefID)
@@ -329,6 +330,9 @@ func restoreScheduleDefs(ctx context.Context, s store.Store, sec *ScheduleDefsSe
 			continue
 		}
 		out[e.DefID] = restoredSchedule{fires: !e.Retired && scheduleFires(body)}
+		if inserted && !e.Retired {
+			scan.add("schedule_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, body)
+		}
 		if inserted {
 			result.ScheduleDefsRestored++
 			if stripped {

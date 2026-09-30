@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // Snapshot admin endpoints — v0.8.17 Pause/Resume/Snapshot (PR 2).
@@ -295,16 +297,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	// refreshed before this returns. Operators can call Resume
 	// immediately after a successful restore without waiting for
 	// the periodic probe.
-	opts := snapshot.RestoreOptions{
-		IncludeHistory: req.IncludeHistory,
-	}
-	if s.resolver != nil {
-		opts.ForceProbe = s.resolver.ForceProbe
-	}
-	if s.sqlMem != nil {
-		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
-	}
-	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, opts)
+	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, s.snapshotRestoreOptions(req.IncludeHistory))
 	if err != nil {
 		// Migration / version errors map to 422 (semantically valid
 		// JSON, semantically invalid state). The error message
@@ -341,6 +334,39 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 		InteractionHistoryRestored: result.InteractionHistoryRestored,
 		Warnings:                   result.Warnings,
 	})
+}
+
+// snapshotRestoreOptions is the RestoreOptions every restore call site passes
+// (the HTTP handler and the connector behind gRPC and MCP), so no transport
+// can restore with less validation than another.
+//
+//   - Validators: the authoring validators of each section that is never
+//     restored unvalidated. A row a validator refuses is skipped with a
+//     warning — restoring never widens what an author could create here.
+//   - CredentialExists: the metadata-only keyability probe (never decrypts),
+//     so the missing-credential scan names a $cred: reference this host
+//     cannot resolve. nil when no credential store is wired: the scan says
+//     it did not check.
+//   - EnvSet: whether an env var a restored definition names is set here.
+//     Only a yes or no leaves the process environment.
+func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOptions {
+	opts := snapshot.RestoreOptions{
+		IncludeHistory: includeHistory,
+		Validators: map[string]func(json.RawMessage) error{
+			migrations.SectionWebhookDefs:       builtin.ValidateWebhookDefBody,
+			migrations.SectionA2AAgentDefs:      builtin.ValidateA2AAgentDefBody,
+			migrations.SectionA2AServerCardDefs: builtin.ValidateA2AServerCardDefBody,
+		},
+		CredentialExists: s.credKeyable,
+		EnvSet:           func(name string) bool { return os.Getenv(name) != "" },
+	}
+	if s.resolver != nil {
+		opts.ForceProbe = s.resolver.ForceProbe
+	}
+	if s.sqlMem != nil {
+		opts.SqlMem = s.sqlMem // RFC AA Phase 3e
+	}
+	return opts
 }
 
 // finishRestore is what every restore call site owes once snapshot.Restore has

@@ -2011,6 +2011,21 @@ type Store interface {
 	// ordered by def_id.
 	SnapshotReadScheduleRunState(ctx context.Context) ([]ScheduleRunStateRow, error)
 
+	// SnapshotReadWebhookDefs / SnapshotReadA2AAgentDefs /
+	// SnapshotReadA2AServerCardDefs return every row of the def table, every
+	// tenant's, ordered by (tenant_id, name, version) — lineage-safe for a
+	// restore that inserts in the same order.
+	SnapshotReadWebhookDefs(ctx context.Context) ([]WebhookDefRow, error)
+	SnapshotReadA2AAgentDefs(ctx context.Context) ([]A2AAgentDefRow, error)
+	SnapshotReadA2AServerCardDefs(ctx context.Context) ([]A2AServerCardDefRow, error)
+
+	// SnapshotReadWebhookDefActive / SnapshotReadA2AAgentDefActive /
+	// SnapshotReadA2AServerCardDefActive return every active pointer,
+	// ordered by (tenant_id, name).
+	SnapshotReadWebhookDefActive(ctx context.Context) ([]WebhookDefActiveEntry, error)
+	SnapshotReadA2AAgentDefActive(ctx context.Context) ([]A2AAgentDefActiveEntry, error)
+	SnapshotReadA2AServerCardDefActive(ctx context.Context) ([]A2AServerCardDefActiveEntry, error)
+
 	// SnapshotReadMemory returns every memory row across all scopes and
 	// tenants, tagged with tenant_id + scope + scope_id. Ordered by
 	// (scope ASC, scope_id ASC, key ASC). Filters out expired rows
@@ -2131,6 +2146,23 @@ type Store interface {
 	// ScheduleRunStateSeed must not be used for this: its conflict branch
 	// resets next_run_at and its insert zeroes fire_count.
 	SnapshotRestoreScheduleRunState(ctx context.Context, r ScheduleRunStateRow) (bool, error)
+
+	// SnapshotRestoreWebhookDef / SnapshotRestoreA2AAgentDef /
+	// SnapshotRestoreA2AServerCardDef insert one def row keeping every
+	// column. As for schedules, the conflict target is def_id ONLY: a row
+	// already on def_id is left alone (inserted=false), and a different row
+	// already on (tenant_id, name, version) — the target's own yaml
+	// bootstrap, say — is an error the caller reports, not a silent skip.
+	SnapshotRestoreWebhookDef(ctx context.Context, r WebhookDefRow) (bool, error)
+	SnapshotRestoreA2AAgentDef(ctx context.Context, r A2AAgentDefRow) (bool, error)
+	SnapshotRestoreA2AServerCardDef(ctx context.Context, r A2AServerCardDefRow) (bool, error)
+
+	// SnapshotRestoreWebhookDefActive / SnapshotRestoreA2AAgentDefActive /
+	// SnapshotRestoreA2AServerCardDefActive insert one active pointer. ON
+	// CONFLICT (tenant_id, name) DO NOTHING: the live pointer stands.
+	SnapshotRestoreWebhookDefActive(ctx context.Context, entry WebhookDefActiveEntry) (bool, error)
+	SnapshotRestoreA2AAgentDefActive(ctx context.Context, entry A2AAgentDefActiveEntry) (bool, error)
+	SnapshotRestoreA2AServerCardDefActive(ctx context.Context, entry A2AServerCardDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
 	// TenantID + CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent

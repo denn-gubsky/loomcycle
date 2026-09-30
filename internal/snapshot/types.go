@@ -82,9 +82,21 @@ type Sections struct {
 	HookDefActive      HookDefActiveSection      `json:"hook_def_active"`
 	MCPServerDefs      MCPServerDefsSection      `json:"mcp_server_defs"`
 	MCPServerDefActive MCPServerDefActiveSection `json:"mcp_server_def_active"`
-	Memory             MemorySection             `json:"memory"`
-	Channels           ChannelsSection           `json:"channels"`
-	ChannelDefs        ChannelDefsSection        `json:"channel_defs"`
+	// A2A peer and server-card defs hold no secret: a peer's auth names a
+	// per-run credential key, a card's security schemes are public
+	// descriptions. Restore re-runs the authoring validators on every body,
+	// because a peer endpoint is something the target will dial.
+	A2AAgentDefs           A2AAgentDefsSection           `json:"a2a_agent_defs"`
+	A2AAgentDefActive      A2AAgentDefActiveSection      `json:"a2a_agent_def_active"`
+	A2AServerCardDefs      A2AServerCardDefsSection      `json:"a2a_server_card_defs"`
+	A2AServerCardDefActive A2AServerCardDefActiveSection `json:"a2a_server_card_def_active"`
+	Memory                 MemorySection                 `json:"memory"`
+	Channels               ChannelsSection               `json:"channels"`
+	ChannelDefs            ChannelDefsSection            `json:"channel_defs"`
+	// WebhookDefs lose their literal user_credentials values at capture, as
+	// schedules do; a def that lost any travels disabled.
+	WebhookDefs      WebhookDefsSection      `json:"webhook_defs"`
+	WebhookDefActive WebhookDefActiveSection `json:"webhook_def_active"`
 	// ScheduleDefs carry each def's run state inside its entry, so a fire
 	// count can never travel without its def or a def without its count.
 	// Literal user_credentials values are stripped at capture.
@@ -483,6 +495,121 @@ type ScheduleDefActiveSection struct {
 }
 
 type ScheduleDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// WebhookDefsSection carries every tenant's webhook defs.
+type WebhookDefsSection struct {
+	Version string            `json:"version"`
+	Entries []WebhookDefEntry `json:"entries"`
+}
+
+// WebhookDefEntry mirrors a webhook_defs row. Definition is the stored body
+// with its literal user_credentials values removed (a reference, like
+// $cred:<name> or ${...}, stays); StrippedCredentials names the keys that
+// were removed, and a def that lost any is carried with enabled:false. The
+// signing-secret and bearer env NAMES, the owning tenant, the body's
+// execution tenant_id and its confinement bits travel verbatim.
+type WebhookDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+	// StrippedCredentials is a list of KEYS, never values.
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
+}
+
+// WebhookDefActiveSection mirrors the other active-pointer sections.
+type WebhookDefActiveSection struct {
+	Version string                  `json:"version"`
+	Entries []WebhookDefActiveEntry `json:"entries"`
+}
+
+type WebhookDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// A2AAgentDefsSection carries every tenant's A2A peer defs.
+type A2AAgentDefsSection struct {
+	Version string             `json:"version"`
+	Entries []A2AAgentDefEntry `json:"entries"`
+}
+
+// A2AAgentDefEntry mirrors an a2a_agent_defs row. The body's
+// auth.bearer_credential_ref is a per-run credential KEY, not a value.
+type A2AAgentDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+type A2AAgentDefActiveSection struct {
+	Version string                   `json:"version"`
+	Entries []A2AAgentDefActiveEntry `json:"entries"`
+}
+
+type A2AAgentDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// A2AServerCardDefsSection carries every tenant's A2A server-card defs.
+type A2AServerCardDefsSection struct {
+	Version string                  `json:"version"`
+	Entries []A2AServerCardDefEntry `json:"entries"`
+}
+
+// A2AServerCardDefEntry mirrors an a2a_server_card_defs row. The body's
+// security_schemes are public descriptions; sign_with_key_env is an env NAME.
+type A2AServerCardDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+type A2AServerCardDefActiveSection struct {
+	Version string                        `json:"version"`
+	Entries []A2AServerCardDefActiveEntry `json:"entries"`
+}
+
+type A2AServerCardDefActiveEntry struct {
 	Name              string    `json:"name"`
 	TenantID          string    `json:"tenant_id,omitempty"`
 	DefID             string    `json:"def_id"`

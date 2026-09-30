@@ -39,6 +39,24 @@ type RestoreOptions struct {
 	// Now is the target's clock, which decides whether carried month-to-date
 	// usage is still in the current budget window. nil = time.Now; tests set it.
 	Now func() time.Time
+
+	// Validators re-run a section's authoring validation over each restored
+	// body, keyed by section name (migrations.Section*). The snapshot package
+	// cannot import the tools that own those rules, so the call sites inject
+	// them. A section added by RFC DP P3 or later is never restored
+	// unvalidated: a row whose validator is missing, or fails, is skipped
+	// with a warning. Sections that predate it are not consulted yet.
+	Validators map[string]func(body json.RawMessage) error
+
+	// CredentialExists and EnvSet back the missing-credential scan: after the
+	// definitions land, each $cred:/$ghapp: reference and env-var name a
+	// restored trigger or card names is checked here, and a miss is a warning
+	// naming the definition and the reference. Both answer yes or no and
+	// never return a value. CredentialExists takes the scope a run of that
+	// definition resolves credentials in. nil skips that half of the scan
+	// with one warning.
+	CredentialExists func(ctx context.Context, tenantID, agentName, userID, name string) bool
+	EnvSet           func(name string) bool
 }
 
 // RestoreResult is the operator-facing summary of a Restore() call.
@@ -58,45 +76,51 @@ type RestoreOptions struct {
 // UsageCarryRestored counts the (tenant, user) usage carries whose stored
 // value grew; a re-restore of the same snapshot grows none.
 //
-// DefsDisabledForCredentials counts the trigger defs restored disabled
-// because their literal credentials were stripped from the snapshot; the
-// warnings name each one and its keys.
+// DefsDisabledForCredentials counts the trigger defs — schedules and
+// webhooks — restored disabled because their literal credentials were
+// stripped from the snapshot; the warnings name each one and its keys.
 //
 // ActivePointersRefused counts the active pointers not written because the
 // def they name is missing here or is not that tenant's def of that name —
 // what a promote refuses; the warnings name each pointer.
 type RestoreResult struct {
-	UsersRestored              int      `json:"users_restored"`
-	TokenLimitsRestored        int      `json:"token_limits_restored"`
-	UsageCarryRestored         int      `json:"usage_carry_restored"`
-	AgentDefsRestored          int      `json:"agent_defs_restored"`
-	AgentDefActiveRestored     int      `json:"agent_def_active_restored"`
-	SkillDefsRestored          int      `json:"skill_defs_restored"`
-	SkillDefActiveRestored     int      `json:"skill_def_active_restored"`
-	TeamDefsRestored           int      `json:"team_defs_restored"`
-	TeamDefActiveRestored      int      `json:"team_def_active_restored"`
-	HookDefsRestored           int      `json:"hook_defs_restored"`
-	HookDefActiveRestored      int      `json:"hook_def_active_restored"`
-	MCPServerDefsRestored      int      `json:"mcp_server_defs_restored"`
-	MCPServerDefActiveRestored int      `json:"mcp_server_def_active_restored"`
-	MemoryRestored             int      `json:"memory_restored"`
-	ChannelDefsRestored        int      `json:"channel_defs_restored"`
-	ChannelMessagesRestored    int      `json:"channel_messages_restored"`
-	ChannelCursorsRestored     int      `json:"channel_cursors_restored"`
-	ScheduleDefsRestored       int      `json:"schedule_defs_restored"`
-	ScheduleDefActiveRestored  int      `json:"schedule_def_active_restored"`
-	ScheduleRunStateRestored   int      `json:"schedule_run_state_restored"`
-	DefsDisabledForCredentials int      `json:"defs_disabled_for_credentials"`
-	ActivePointersRefused      int      `json:"active_pointers_refused"`
-	EvaluationsRestored        int      `json:"evaluations_restored"`
-	PausedRunsRestored         int      `json:"paused_runs_restored"`
-	SynthesizedSessions        int      `json:"synthesized_sessions"`
-	TranscriptEventsRestored   int      `json:"transcript_events_restored"`
-	InteractionHistoryRestored int      `json:"interaction_history_restored"`
-	SqlMemScopesRestored       int      `json:"sqlmem_scopes_restored"`
-	MCPServerDefsActivated     int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
-	PausedRunsResumed          int      `json:"paused_runs_resumed"`       // set by the caller's post-restore resume, not by Restore
-	Warnings                   []string `json:"warnings,omitempty"`
+	UsersRestored                  int      `json:"users_restored"`
+	TokenLimitsRestored            int      `json:"token_limits_restored"`
+	UsageCarryRestored             int      `json:"usage_carry_restored"`
+	AgentDefsRestored              int      `json:"agent_defs_restored"`
+	AgentDefActiveRestored         int      `json:"agent_def_active_restored"`
+	SkillDefsRestored              int      `json:"skill_defs_restored"`
+	SkillDefActiveRestored         int      `json:"skill_def_active_restored"`
+	TeamDefsRestored               int      `json:"team_defs_restored"`
+	TeamDefActiveRestored          int      `json:"team_def_active_restored"`
+	HookDefsRestored               int      `json:"hook_defs_restored"`
+	HookDefActiveRestored          int      `json:"hook_def_active_restored"`
+	MCPServerDefsRestored          int      `json:"mcp_server_defs_restored"`
+	MCPServerDefActiveRestored     int      `json:"mcp_server_def_active_restored"`
+	A2AAgentDefsRestored           int      `json:"a2a_agent_defs_restored"`
+	A2AAgentDefActiveRestored      int      `json:"a2a_agent_def_active_restored"`
+	A2AServerCardDefsRestored      int      `json:"a2a_server_card_defs_restored"`
+	A2AServerCardDefActiveRestored int      `json:"a2a_server_card_def_active_restored"`
+	MemoryRestored                 int      `json:"memory_restored"`
+	ChannelDefsRestored            int      `json:"channel_defs_restored"`
+	ChannelMessagesRestored        int      `json:"channel_messages_restored"`
+	ChannelCursorsRestored         int      `json:"channel_cursors_restored"`
+	WebhookDefsRestored            int      `json:"webhook_defs_restored"`
+	WebhookDefActiveRestored       int      `json:"webhook_def_active_restored"`
+	ScheduleDefsRestored           int      `json:"schedule_defs_restored"`
+	ScheduleDefActiveRestored      int      `json:"schedule_def_active_restored"`
+	ScheduleRunStateRestored       int      `json:"schedule_run_state_restored"`
+	DefsDisabledForCredentials     int      `json:"defs_disabled_for_credentials"`
+	ActivePointersRefused          int      `json:"active_pointers_refused"`
+	EvaluationsRestored            int      `json:"evaluations_restored"`
+	PausedRunsRestored             int      `json:"paused_runs_restored"`
+	SynthesizedSessions            int      `json:"synthesized_sessions"`
+	TranscriptEventsRestored       int      `json:"transcript_events_restored"`
+	InteractionHistoryRestored     int      `json:"interaction_history_restored"`
+	SqlMemScopesRestored           int      `json:"sqlmem_scopes_restored"`
+	MCPServerDefsActivated         int      `json:"mcp_server_defs_activated"` // set by the caller's post-restore refresh, not by Restore
+	PausedRunsResumed              int      `json:"paused_runs_resumed"`       // set by the caller's post-restore resume, not by Restore
+	Warnings                       []string `json:"warnings,omitempty"`
 
 	// Refresh is what the caller's post-restore refresh pushes into the
 	// in-process caches. Never serialized.
@@ -131,6 +155,9 @@ func (r RestoreResult) Counts() map[string]int {
 //
 //	users, token_limits (first: before any definition or resumed run)
 //	agent_defs        → agent_def_active (FK: name → agent_defs.def_id)
+//	a2a_agent_defs, a2a_server_card_defs → their active pointers
+//	webhook_defs, schedule_defs → their active pointers (after channel_defs)
+//	(missing-credential scan over the restored triggers and cards)
 //	(sessions synth)  → paused_runs       (FK: session_id → sessions.id)
 //	                  → transcript events (FK: run_id    → runs.id)
 //	channel_defs      → channels.messages, .cursors
@@ -537,6 +564,42 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		}
 	}
 
+	// The definitions this restore brings back that name credentials; the
+	// missing-credential scan checks them once every def section has landed.
+	scan := &credScan{}
+
+	// a2a_agent_defs, then a2a_server_card_defs, each with its pointers:
+	// before any resumed run, whose A2A peer tools are enumerated at run
+	// start; the cards after the agent defs they expose.
+	if rawSection, ok := sections[migrations.SectionA2AAgentDefs]; ok {
+		var sec A2AAgentDefsSection
+		if err := decodeWithMigration(migrations.SectionA2AAgentDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreA2AAgentDefs(ctx, s, &sec, opts, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionA2AAgentDefActive]; ok {
+		var sec A2AAgentDefActiveSection
+		if err := decodeWithMigration(migrations.SectionA2AAgentDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreA2AAgentDefActive(ctx, s, &sec, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionA2AServerCardDefs]; ok {
+		var sec A2AServerCardDefsSection
+		if err := decodeWithMigration(migrations.SectionA2AServerCardDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreA2AServerCardDefs(ctx, s, &sec, opts, scan, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionA2AServerCardDefActive]; ok {
+		var sec A2AServerCardDefActiveSection
+		if err := decodeWithMigration(migrations.SectionA2AServerCardDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreA2AServerCardDefActive(ctx, s, &sec, &result)
+	}
+
 	// memory (no FK; embedding field carried but Phase 1 always
 	// null; Phase 2 will populate)
 	if rawSection, ok := sections[migrations.SectionMemory]; ok {
@@ -732,6 +795,23 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		}
 	}
 
+	// webhook_defs, then webhook_def_active: after the agent and channel defs
+	// a webhook delivers to.
+	if rawSection, ok := sections[migrations.SectionWebhookDefs]; ok {
+		var sec WebhookDefsSection
+		if err := decodeWithMigration(migrations.SectionWebhookDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreWebhookDefs(ctx, s, &sec, opts, scan, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionWebhookDefActive]; ok {
+		var sec WebhookDefActiveSection
+		if err := decodeWithMigration(migrations.SectionWebhookDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreWebhookDefActive(ctx, s, &sec, &result)
+	}
+
 	// schedule_defs with their run state, then schedule_def_active: after the
 	// agent and channel defs a schedule names. A restored schedule is ACTIVE.
 	var restoredSchedules map[string]restoredSchedule
@@ -740,7 +820,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionScheduleDefs, rawSection, &sec); err != nil {
 			return result, err
 		}
-		restoredSchedules = restoreScheduleDefs(ctx, s, &sec, &result)
+		restoredSchedules = restoreScheduleDefs(ctx, s, &sec, scan, &result)
 	}
 	if rawSection, ok := sections[migrations.SectionScheduleDefActive]; ok {
 		var sec ScheduleDefActiveSection
@@ -749,6 +829,10 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		}
 		restoreScheduleDefActive(ctx, s, &sec, restoredSchedules, &result)
 	}
+
+	// Every trigger and card definition has landed: say which credentials
+	// they name that this host cannot supply.
+	scan.run(ctx, opts, &result)
 
 	// evaluations (no FK enforced — runs.agent_def_id is
 	// denormalised at submit time; runs may not even exist on the

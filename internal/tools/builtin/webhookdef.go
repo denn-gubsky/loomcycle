@@ -52,7 +52,10 @@ type WebhookDef struct {
 const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook definitions at runtime. ` +
 	`Static webhooks.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
-	`Operations: create, fork, get, list, retire.`
+	`Operations: create, fork, get, list, retire. ` +
+	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
+	`it answers every delivery with 404 until a fork, or a create on the same name, re-supplies EVERY key listed ` +
+	`there (in user_credentials or user_credentials_from_env) and sets enabled: true.`
 
 const webhookDefInputSchema = `{
   "type": "object",
@@ -165,6 +168,17 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the webhook receiver stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// A create on a name whose current def was restored without its literal
+	// credentials writes a new version of it: the marker carries over unless
+	// this create supplies every stripped key, as a fork's would.
+	stillMissing, err := s.inheritCaptureDisabled(ctx, ident.TenantID, in.Name, &def, in.Overlay)
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if len(stillMissing) > 0 {
+		log.Printf("webhookdef %q: create stays disabled — it did not supply the credential keys a snapshot stripped: %s",
+			in.Name, strings.Join(stillMissing, ", "))
+	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: marshal: %s", err)), nil
@@ -202,7 +216,48 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 			return errResult(fmt.Sprintf("create: promote: %s", err)), nil
 		}
 	}
-	return okJSON(webhookRowResponse(created, promote))
+	resp := webhookRowResponse(created, promote)
+	if len(stillMissing) > 0 {
+		resp["disabled_until_credentials_supplied"] = stillMissing
+	}
+	return okJSON(resp)
+}
+
+// inheritCaptureDisabled gives a create the capture_disabled marker of the def
+// it supersedes — the caller's tenant's active version of the name, else its
+// latest — and resolves it against the create's own overlay exactly as a fork
+// does. Returns the keys still missing (nil when there was no marker or the
+// create supplied every key).
+func (s *WebhookDef) inheritCaptureDisabled(ctx context.Context, tenantID, name string, def *mergedWebhookDef, overlay json.RawMessage) ([]string, error) {
+	var body json.RawMessage
+	row, err := s.Store.WebhookDefGetActive(ctx, tenantID, name)
+	switch {
+	case err == nil:
+		body = row.Definition
+	case isNotFound(err):
+		rows, lerr := s.Store.WebhookDefListByName(ctx, name)
+		if lerr != nil {
+			return nil, lerr
+		}
+		best := -1
+		for i, r := range rows {
+			if r.TenantID == tenantID && (best < 0 || r.Version > rows[best].Version) {
+				best = i
+			}
+		}
+		if best < 0 {
+			return nil, nil
+		}
+		body = rows[best].Definition
+	default:
+		return nil, err
+	}
+	stripped, marked := captureDisabledKeys(body)
+	if !marked {
+		return nil, nil
+	}
+	def.CaptureDisabled = &mergedWebhookCaptureDisabled{StrippedCredentials: stripped}
+	return resolveWebhookCaptureDisabled(def, overlay)
 }
 
 // ---- fork ----
@@ -296,6 +351,16 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	// A parent restored without its literal credentials carries a marker;
+	// this fork clears it only by re-supplying every stripped key.
+	stillMissing, err := resolveWebhookCaptureDisabled(&def, in.Overlay)
+	if err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if len(stillMissing) > 0 {
+		log.Printf("webhookdef %q: fork stays disabled — it did not re-supply the credential keys a snapshot stripped: %s",
+			in.Name, strings.Join(stillMissing, ", "))
+	}
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
@@ -344,7 +409,11 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 			return errResult(fmt.Sprintf("fork: promote: %s", err)), nil
 		}
 	}
-	return okJSON(webhookRowResponse(created, promote))
+	resp := webhookRowResponse(created, promote)
+	if len(stillMissing) > 0 {
+		resp["disabled_until_credentials_supplied"] = stillMissing
+	}
+	return okJSON(resp)
 }
 
 // ---- get / list ----
@@ -561,6 +630,18 @@ func warnLiteralUserCredentials(name string, def mergedWebhookDef) {
 	}
 }
 
+// ValidateWebhookDefBody re-runs the authoring validation over a stored
+// webhook def body. A snapshot restore calls it (injected by the restore call
+// sites) before writing a body, so a restored def is one an author could
+// have created on this host.
+func ValidateWebhookDefBody(body json.RawMessage) error {
+	var def mergedWebhookDef
+	if err := json.Unmarshal(body, &def); err != nil {
+		return fmt.Errorf("definition does not decode as a webhook def: %w", err)
+	}
+	return validateWebhookDef(def)
+}
+
 // validateWebhookDef enforces the runtime-supplied overlay shape.
 // STRUCTURAL validation only — the env-allowlist RESOLVABILITY check for
 // signing_secret_env / bearer_token_env / user_credentials_from_env is
@@ -732,6 +813,44 @@ type mergedWebhookDef struct {
 	// confinement. Mirrors OperatorKeyRestricted; omitempty keeps pre-P2b bodies
 	// byte-identical. Drift-tested against config.Webhook / SubstrateWebhookDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// CaptureDisabled is the marker a snapshot restore writes on a def whose
+	// literal user_credentials values were stripped from the snapshot (they
+	// never travel). Server authority: only restore sets it, and applyOverlay
+	// never copies it, so an overlay can neither set nor clear it. The
+	// receiver treats a marked def as disabled whatever `enabled` says; a fork
+	// clears the marker only when its own overlay re-supplies EVERY listed
+	// key, so no delivery runs without the credentials the def was authored
+	// with.
+	CaptureDisabled *mergedWebhookCaptureDisabled `json:"capture_disabled,omitempty"`
+}
+
+// mergedWebhookCaptureDisabled lists the credential keys a snapshot stripped
+// and a fork has not yet re-supplied.
+type mergedWebhookCaptureDisabled struct {
+	StrippedCredentials []string `json:"stripped_credentials,omitempty"`
+}
+
+// resolveWebhookCaptureDisabled applies a fork's overlay to the marker the
+// def inherited from its parent (same rule as the ScheduleDef fork). Every
+// key re-supplied by the overlay: the marker is dropped and the overlay's
+// `enabled` stands. Otherwise the marker keeps the keys still missing and the
+// def stays disabled whatever the overlay says. Returns the keys still
+// missing (nil when the marker cleared or was never there).
+func resolveWebhookCaptureDisabled(def *mergedWebhookDef, overlay json.RawMessage) ([]string, error) {
+	if def.CaptureDisabled == nil {
+		return nil, nil
+	}
+	missing, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay)
+	if err != nil {
+		return nil, err
+	}
+	if len(missing) == 0 {
+		def.CaptureDisabled = nil
+		return nil, nil
+	}
+	def.CaptureDisabled = &mergedWebhookCaptureDisabled{StrippedCredentials: missing}
+	def.Enabled = false
+	return missing, nil
 }
 
 // mergedWebhookAuth mirrors config.WebhookAuth.
