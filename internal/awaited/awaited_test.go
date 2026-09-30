@@ -2,6 +2,7 @@ package awaited
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -109,25 +110,31 @@ func TestFromEvent_ReportsWhatTheOpenToolCallBlocksOn(t *testing.T) {
 	}
 }
 
-// fakeEvents is a run's persisted event types in append order.
+// fakeEvents is a run's persisted events in append order; an event's seq is
+// its position, from 1.
 type fakeEvents []store.Event
 
-func (f fakeEvents) GetLastEventForRun(context.Context, string) (store.Event, error) {
-	if len(f) == 0 {
-		return store.Event{}, &store.ErrNotFound{Kind: "event", ID: "r"}
-	}
-	return f[len(f)-1], nil
+func (f fakeEvents) at(i int) store.Event { e := f[i]; e.Seq = int64(i + 1); return e }
+
+func (f fakeEvents) GetLastEventOfTypes(ctx context.Context, runID string, types []string) (store.Event, error) {
+	return f.GetLastEventOfTypesBefore(ctx, runID, types, int64(len(f)+1))
 }
 
-func (f fakeEvents) GetLastEventOfTypes(_ context.Context, _ string, types []string) (store.Event, error) {
-	for i := len(f) - 1; i >= 0; i-- {
-		for _, t := range types {
-			if f[i].Type == t {
-				return f[i], nil
-			}
+func (f fakeEvents) GetLastEventOfTypesBefore(_ context.Context, _ string, types []string, beforeSeq int64) (store.Event, error) {
+	for i := min(len(f), int(beforeSeq-1)) - 1; i >= 0; i-- {
+		if slices.Contains(types, f[i].Type) {
+			return f.at(i), nil
 		}
 	}
 	return store.Event{}, &store.ErrNotFound{Kind: "event", ID: "r"}
+}
+
+func (f fakeEvents) GetRunEventsSince(_ context.Context, _ string, afterSeq int64, limit int) ([]store.Event, error) {
+	var out []store.Event
+	for i := int(afterSeq); i < len(f) && len(out) < limit; i++ {
+		out = append(out, f.at(i))
+	}
+	return out, nil
 }
 
 func ev(typ, payload string) store.Event { return store.Event{Type: typ, Payload: []byte(payload)} }
@@ -149,6 +156,60 @@ func TestForRun_ReportsAParkedRunAndTheHookHoldingAReview(t *testing.T) {
 		{"review_by_arming", fakeEvents{ev("awaiting_review", `{"type":"awaiting_review","awaiting_review":{"round":1}}`)}, Review, ""},
 		{"approved_interactive_parks", fakeEvents{ev("awaiting_review", `{"type":"awaiting_review","awaiting_review":{"round":1}}`), parked}, Input, ""},
 		{"no_events", fakeEvents{}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotS, gotO := ForRun(context.Background(), tc.events, "r")
+			if gotS != tc.wantState || gotO != tc.wantOn {
+				t.Errorf("ForRun = (%q,%q), want (%q,%q)", gotS, gotO, tc.wantState, tc.wantOn)
+			}
+		})
+	}
+}
+
+func call(id, name, input string) store.Event {
+	return ev("tool_call", `{"type":"tool_call","tool_use":{"id":"`+id+`","name":"`+name+`","input":`+input+`}}`)
+}
+
+func result(id string) store.Event {
+	return ev("tool_result", `{"type":"tool_result","tool_use":{"id":"`+id+`"},"text":"ok"}`)
+}
+
+// A turn's calls are persisted as the model streams them, the turn's usage
+// after them, and only then do they run — in parallel. A call is open until its
+// own result, whatever was written since; with several open, the newest is
+// reported, as the run-state stream announces it.
+func TestForRun_ReportsTheNewestToolCallStillOpen(t *testing.T) {
+	sub := call("tu_sub", "Channel", `{"op":"subscribe","channel":"findings"}`)
+	ask := call("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`)
+	read := call("tu_read", "Read", `{"path":"/x"}`)
+	usage := ev("usage", `{"type":"usage"}`)
+	retry := ev("retry", `{"type":"retry"}`)
+	text := ev("text", `{"type":"text","text":"."}`)
+	parked := ev("awaiting_input", `{"type":"awaiting_input","awaiting_input":{"since_turn":2}}`)
+	many := func(n int, e store.Event) fakeEvents { return slices.Repeat(fakeEvents{e}, n) }
+	for _, tc := range []struct {
+		name              string
+		events            fakeEvents
+		wantState, wantOn string
+	}{
+		{"a_running_call_behind_its_turns_usage", fakeEvents{text, sub, usage}, Channel, "findings"},
+		{"a_non_blocking_sibling_streamed_after_it", fakeEvents{sub, read, usage, result("tu_read")}, Channel, "findings"},
+		{"two_open_reports_the_newest", fakeEvents{sub, ask, usage}, Interrupted, "approval"},
+		{"the_later_calls_result_leaves_the_other_open", fakeEvents{sub, ask, usage, result("tu_ask")}, Channel, "findings"},
+		{"the_earlier_calls_result_leaves_the_later_open", fakeEvents{sub, ask, usage, result("tu_sub")}, Interrupted, "approval"},
+		{"all_returned", fakeEvents{sub, ask, usage, result("tu_ask"), result("tu_sub"), text}, "", ""},
+		{"an_earlier_turns_call_that_never_returned", fakeEvents{sub, usage, text, read, usage, result("tu_read")}, "", ""},
+		{"an_earlier_turns_call_has_returned", fakeEvents{sub, usage, result("tu_sub"), text, read, usage}, "", ""},
+		{"a_park_after_the_turn_returned", fakeEvents{sub, usage, result("tu_sub"), text, usage, parked}, Input, ""},
+		// A call streamed before a retry or a cancel never runs, so no result
+		// ends it.
+		{"a_retried_attempts_call", fakeEvents{call("tu_sub_1", "Channel", `{"op":"subscribe","channel":"old"}`), retry,
+			call("tu_sub_2", "Channel", `{"op":"subscribe","channel":"findings"}`), usage, result("tu_sub_2")}, "", ""},
+		{"a_retry_that_streamed_no_call", fakeEvents{read, usage, result("tu_read"), sub, retry, text, usage}, "", ""},
+		{"a_cancelled_turns_call", fakeEvents{sub, ev("turn_cancelled", `{}`)}, "", ""},
+		{"a_cancelled_turns_call_before_the_next_turn", fakeEvents{sub, ev("turn_cancelled", `{}`), parked, ev("user_input", `[]`), read, usage}, "", ""},
+		{"a_long_preamble_before_the_call", append(append(fakeEvents{read, usage, result("tu_read")}, many(600, text)...), sub, usage), Channel, "findings"},
+		{"a_long_tail_while_the_call_is_open", append(fakeEvents{sub, usage}, many(600, ev("hook_decision", `{}`))...), Channel, "findings"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gotS, gotO := ForRun(context.Background(), tc.events, "r")
