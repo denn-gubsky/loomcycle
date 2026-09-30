@@ -2092,11 +2092,20 @@ type Store interface {
 	// including PauseState. Idempotent.
 	SnapshotRestoreRun(ctx context.Context, r Run) (bool, error)
 
-	// SnapshotRestoreEvent inserts one transcript event preserving
-	// the supplied seq + RunID + Timestamp + Payload. Note: events
-	// use BIGSERIAL/AUTOINCREMENT seq normally; this method writes
-	// the seq explicitly. Idempotent on (run_id, seq).
-	SnapshotRestoreEvent(ctx context.Context, e Event) (bool, error)
+	// SnapshotRestoreRunEvents writes one restored run's transcript in a
+	// single transaction and returns how many events it wrote. Each event
+	// gets a seq minted by THIS store, in slice order; the Seq, RunID and
+	// SessionID on the elements are ignored. A captured seq is the source
+	// instance's key in a table-global sequence, so keeping it collides
+	// with this store's own history and, on postgres, leaves the sequence
+	// behind the restored rows.
+	//
+	// Idempotent per run: when the run already holds any event here (a
+	// re-restore, or a restore onto the instance the run lives on) nothing
+	// is written and 0 is returned. The check is in the same transaction
+	// as the writes, so an interrupted restore leaves no partial transcript
+	// to be mistaken for a finished one.
+	SnapshotRestoreRunEvents(ctx context.Context, runID, sessionID string, events []Event) (int, error)
 
 	// SnapshotRestoreAgentDef inserts one agent_defs row preserving
 	// the supplied DefID + Version + parent linkage. Idempotent.

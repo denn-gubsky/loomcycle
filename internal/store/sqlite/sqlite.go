@@ -4262,43 +4262,58 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 	return n > 0, nil
 }
 
-// SnapshotRestoreEvent implements store.Store. Writes one event with
-// caller-supplied seq + run_id. INSERT OR IGNORE on (run_id, seq) →
-// idempotent. seq is normally AUTOINCREMENT but restore needs the
-// explicit value to preserve transcript order across the boundary.
-func (s *Store) SnapshotRestoreEvent(ctx context.Context, e store.Event) (bool, error) {
-	if e.RunID == "" || e.SessionID == "" {
-		return false, fmt.Errorf("snapshot restore event: run_id and session_id required")
+// SnapshotRestoreRunEvents implements store.Store. AUTOINCREMENT mints each
+// seq, so the restored rows sort after everything already here, in slice
+// order. BEGIN IMMEDIATE (on a pinned connection, as MemoryIncrement does)
+// takes the write lock before the "already has a transcript" read, so two
+// concurrent restores of one snapshot cannot both find the run empty.
+func (s *Store) SnapshotRestoreRunEvents(ctx context.Context, runID, sessionID string, events []store.Event) (int, error) {
+	if runID == "" || sessionID == "" {
+		return 0, fmt.Errorf("snapshot restore events: run_id and session_id required")
 	}
-	tsNs := e.Timestamp.UnixNano()
-	if e.Timestamp.IsZero() {
-		tsNs = time.Now().UnixNano()
+	if len(events) == 0 {
+		return 0, nil
 	}
-	// Build the INSERT to include seq when non-zero. SQLite's
-	// INSERT OR IGNORE on the (seq) PK is the idempotency anchor.
-	if e.Seq != 0 {
-		res, err := s.db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO events(seq, session_id, run_id, ts, type, payload) VALUES (?, ?, ?, ?, ?, ?)`,
-			e.Seq, e.SessionID, e.RunID, tsNs, e.Type, e.Payload,
-		)
-		if err != nil {
-			return false, fmt.Errorf("snapshot restore event: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		return n > 0, nil
-	}
-	// Caller didn't supply a seq — let the AUTOINCREMENT mint one.
-	// Used when the snapshot envelope's event had seq=0 (rare;
-	// usually all events carry a seq from capture). Always counts as
-	// inserted because no PK collision is possible.
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES (?, ?, ?, ?, ?)`,
-		e.SessionID, e.RunID, tsNs, e.Type, e.Payload,
-	)
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return false, fmt.Errorf("snapshot restore event (auto-seq): %w", err)
+		return 0, err
 	}
-	return true, nil
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, fmt.Errorf("snapshot restore events: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	var existing int
+	if err := conn.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?)`, runID,
+	).Scan(&existing); err != nil {
+		return 0, fmt.Errorf("snapshot restore events: read existing: %w", err)
+	}
+	if existing != 0 {
+		return 0, nil
+	}
+	for _, e := range events {
+		tsNs := e.Timestamp.UnixNano()
+		if e.Timestamp.IsZero() {
+			tsNs = time.Now().UnixNano()
+		}
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES (?, ?, ?, ?, ?)`,
+			sessionID, runID, tsNs, e.Type, e.Payload,
+		); err != nil {
+			return 0, fmt.Errorf("snapshot restore events: %w", err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return 0, fmt.Errorf("snapshot restore events: commit: %w", err)
+	}
+	committed = true
+	return len(events), nil
 }
 
 // SnapshotRestoreAgentDef implements store.Store. Preserves DefID +
