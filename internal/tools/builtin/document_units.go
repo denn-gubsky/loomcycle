@@ -158,7 +158,8 @@ func (d *Document) reindexUnitsOf(ctx context.Context, tenant string, mscope sto
 	for _, u := range d.unitsOf(ctx, tenant, mscope, key.ScopeID, chunkID) {
 		var v memrank.UnitValue
 		_ = json.Unmarshal(u.Value, &v)
-		if idx := d.unitIndexText(ctx, key, chunkID, v.Text); idx != "" {
+		if idx := d.unitIndexText(ctx, key, chunkID, v.Text); idx != "" &&
+			!d.indexCurrent(ctx, tenant, mscope, key.ScopeID, u.Key, idx) {
 			d.embedText(ctx, tenant, mscope, key.ScopeID, u.Key, idx)
 		}
 	}

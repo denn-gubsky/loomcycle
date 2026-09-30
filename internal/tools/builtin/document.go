@@ -84,6 +84,11 @@ type Document struct {
 	// reindexJobs tracks background subtree re-indexes (see reindexSubtree), so a test
 	// can wait for their end state. A Document is only ever used by pointer.
 	reindexJobs sync.WaitGroup
+	// reindexing holds one entry per document with a subtree re-index in flight: the
+	// chunks whose subtrees were asked for while it ran, which the running pass
+	// re-indexes before it lets go (see reindexSubtree). Guarded by reindexMu.
+	reindexMu  sync.Mutex
+	reindexing map[reindexDocKey]map[string]struct{}
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -2771,11 +2776,14 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
-	if _, has := present["title"]; has {
+	if _, has := present["title"]; has && in.Title != row.Title {
 		// A title is part of the index text of this chunk and of every chunk beneath it
 		// (their headers), so a rename re-indexes the subtree. A root rename is a
 		// document rename, and re-indexes every chunk in the document.
-		d.reindexSubtree(ctx, key, mscope, in.ID)
+		//
+		// Only a CHANGED title: models echo every field back, and an unchanged title on
+		// a root re-embedded the whole document on a status-only update.
+		d.reindexSubtree(ctx, key, mscope, row.DocumentID, in.ID)
 	}
 	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
@@ -2982,8 +2990,12 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		nullIfEmpty(in.NewParentID), pos, now, in.ID); err != nil {
 		return errFrom("move_chunk: "+err.Error(), err), nil
 	}
-	// Moving changes the heading path of the chunk and everything under it.
-	d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), in.ID)
+	// Moving to a new parent changes the heading path of the chunk and everything under
+	// it. A reorder under the same parent changes only the position, which no index text
+	// carries, so it re-indexes nothing.
+	if in.NewParentID != row.ParentID {
+		d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), row.DocumentID, in.ID)
+	}
 	d.publishChange(ctx, store.MemoryScope(key.Scope), key.ScopeID, row.DocumentID, "move_chunk", in.ID)
 	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
 }

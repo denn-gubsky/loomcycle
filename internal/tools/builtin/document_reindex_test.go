@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -231,6 +232,264 @@ func TestReindexScope_PagesByCursor(t *testing.T) {
 	for _, role := range []string{"install", "setup", "screen"} {
 		if got := embeddedTextFor(t, vs, ids[role]); strings.Contains(got, "stale") {
 			t.Errorf("%s still stale after paging: %q", role, got)
+		}
+	}
+}
+
+// TestReindex_UnchangedTitleReembedsNothing — models echo every field back, so an
+// update_chunk carrying the chunk's CURRENT title is not a rename. It used to re-embed the
+// whole subtree (the whole document, on the root) whenever `title` was merely present.
+func TestReindex_UnchangedTitleReembedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	_, ids := indexDoc(t, d, ctx)
+	emb := &countingEmbedder{Embedder: d.Embedder}
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["root"],
+		"revision": chunkRevision(t, d, ctx, ids["root"]), "title": "Guide", "status": "review"})
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "Setup"})
+	d.waitReindex()
+	if n := emb.n.Load(); n != 0 {
+		t.Fatalf("an update_chunk with an unchanged title made %d embed calls, want 0", n)
+	}
+
+	// The counter is live: a real rename of the same chunk re-indexes its subtree.
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "Getting started"})
+	if emb.n.Load() == 0 {
+		t.Fatal("a real rename made no embed call")
+	}
+	if got := embeddedTextFor(t, vs, ids["install"]); got != "Guide — Getting started > Install\nRun the installer twice." {
+		t.Errorf("after a real rename the child is indexed as %q", got)
+	}
+}
+
+// TestReindex_SameParentMoveReembedsNothing — a move that keeps the parent changes only
+// the position, which no index text carries, so it must cost no embedding call.
+func TestReindex_SameParentMoveReembedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	_, ids := indexDoc(t, d, ctx)
+	emb := &countingEmbedder{Embedder: d.Embedder}
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "move_chunk", "id": ids["install"], "new_parent_id": ids["setup"], "position": 3})
+	// An empty new_parent_id means "under the root" — setup's parent already.
+	docOp(t, d, ctx, map[string]any{"op": "move_chunk", "id": ids["setup"], "position": 2})
+	d.waitReindex()
+	if n := emb.n.Load(); n != 0 {
+		t.Fatalf("a same-parent move made %d embed calls, want 0", n)
+	}
+
+	docOp(t, d, ctx, map[string]any{"op": "move_chunk", "id": ids["install"], "new_parent_id": ids["screen"]})
+	if emb.n.Load() == 0 {
+		t.Fatal("a cross-parent move made no embed call")
+	}
+	if got := embeddedTextFor(t, vs, ids["install"]); got != "Guide — Screen > Install\nRun the installer twice." {
+		t.Errorf("after a cross-parent move the chunk is indexed as %q", got)
+	}
+}
+
+// TestReindex_CurrentSubtreeReembedsNothing — a subtree pass skips every chunk and unit
+// whose stored vector already stands for its derived text. That is what keeps the re-run
+// a coalesced pass makes after a late request cheap.
+func TestReindex_CurrentSubtreeReembedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	docID, ids := indexDoc(t, d, ctx)
+	if _, err := d.ReplaceUnits(ctx, "user", ids["install"], []DerivedUnit{
+		{Kind: memrank.UnitClaim, Text: "the installer runs twice"},
+	}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	key, mscope, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emb := &countingEmbedder{Embedder: d.Embedder}
+	d.Embedder = emb
+
+	d.reindexSubtree(ctx, key, mscope, docID, ids["root"])
+	d.waitReindex()
+	if n := emb.n.Load(); n != 0 {
+		t.Fatalf("re-indexing an already-current subtree made %d embed calls, want 0", n)
+	}
+
+	// A vector from another embedder model is not current, even under the same text.
+	unitKey := memrank.UnitKey(ids["install"], memrank.UnitClaim, 0)
+	e, err := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "u1", unitKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Model = "an-older-model"
+	if err := vs.MemoryEmbedSet(context.Background(), direntTenant(ctx), store.MemoryScopeUser, "u1", unitKey, e); err != nil {
+		t.Fatal(err)
+	}
+	d.reindexSubtree(ctx, key, mscope, docID, ids["root"])
+	d.waitReindex()
+	if n := emb.n.Load(); n != 1 {
+		t.Errorf("a unit embedded by another model: %d embed calls, want exactly 1", n)
+	}
+}
+
+// gatedEmbedder holds every Embed call until gate is closed, and records how many were
+// in flight at once.
+type gatedEmbedder struct {
+	providers.Embedder
+	gate                 chan struct{}
+	n, inFlight, maxSeen atomic.Int64
+}
+
+func (g *gatedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	cur := g.inFlight.Add(1)
+	defer g.inFlight.Add(-1)
+	for {
+		m := g.maxSeen.Load()
+		if cur <= m || g.maxSeen.CompareAndSwap(m, cur) {
+			break
+		}
+	}
+	g.n.Add(1)
+	<-g.gate
+	return g.Embedder.Embed(ctx, texts)
+}
+
+// TestReindex_OverlappingRenamesRunOnePassAndEndOnTheFinalTree — two renames of a large
+// document's root in quick succession. Each used to start its own detached full-document
+// pass, so they re-embedded the document twice at once and the older one could finish
+// last, leaving vectors under the name in between. Now the second waits for the first to
+// finish and is then re-applied, and the index ends on the final name.
+func TestReindex_OverlappingRenamesRunOnePassAndEndOnTheFinalTree(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "section")
+	out := docOp(t, d, ctx, map[string]any{"op": "create_document", "title": "Old name"})
+	docID, rootID := out["document_id"].(string), out["root_chunk_id"].(string)
+	var ids []string
+	for i := 0; i < reindexSyncMax+8; i++ {
+		c := docOp(t, d, ctx, map[string]any{"op": "create_chunk", "document_id": docID,
+			"title": fmt.Sprintf("Section %d", i), "body": "section text"})
+		ids = append(ids, c["id"].(string))
+	}
+	emb := &gatedEmbedder{Embedder: d.Embedder, gate: make(chan struct{})}
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "Middle name"})
+	// The first pass is now held inside its first embed call, under "Middle name".
+	for deadline := time.Now().Add(5 * time.Second); emb.n.Load() == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the first background pass never reached the embedder")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "Final name"})
+	// A second pass, if one was started, reaches the embedder well within this window.
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline) && emb.maxSeen.Load() < 2; {
+		time.Sleep(time.Millisecond)
+	}
+	close(emb.gate)
+	d.waitReindex()
+
+	if m := emb.maxSeen.Load(); m != 1 {
+		t.Errorf("%d re-index passes over one document ran at once, want 1", m)
+	}
+	for i, id := range ids {
+		want := fmt.Sprintf("Final name — Section %d\nsection text", i)
+		if got := embeddedTextFor(t, vs, id); got != want {
+			t.Fatalf("chunk %d after two overlapping renames: %q, want %q", i, got, want)
+		}
+	}
+	d.reindexMu.Lock()
+	left := len(d.reindexing)
+	d.reindexMu.Unlock()
+	if left != 0 {
+		t.Errorf("%d documents still marked as re-indexing after every pass ended", left)
+	}
+}
+
+// panickingEmbedder panics on its first `left` Embed calls, then embeds normally.
+type panickingEmbedder struct {
+	providers.Embedder
+	left atomic.Int64
+}
+
+func (p *panickingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if p.left.Add(-1) >= 0 {
+		panic("embedder exploded")
+	}
+	return p.Embedder.Embed(ctx, texts)
+}
+
+func reindexEntriesLeft(d *Document) int {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+	return len(d.reindexing)
+}
+
+// TestReindex_InlinePassPanicDoesNotBlockLaterRenames — a small re-index runs inline, so
+// its panic reaches the caller; the document's coalescing entry must not outlive it, or
+// every later rename of the document is recorded for a pass that no longer exists.
+func TestReindex_InlinePassPanicDoesNotBlockLaterRenames(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	_, ids := indexDoc(t, d, ctx)
+	emb := &panickingEmbedder{Embedder: d.Embedder}
+	emb.left.Store(1)
+	d.Embedder = emb
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("precondition: the first rename's pass did not panic")
+			}
+		}()
+		b, _ := json.Marshal(map[string]any{"op": "update_chunk", "id": ids["setup"],
+			"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "Getting started"})
+		_, _ = d.Execute(ctx, b)
+	}()
+	if n := reindexEntriesLeft(d); n != 0 {
+		t.Errorf("%d coalescing entries left after a pass panicked, want 0", n)
+	}
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "First steps"})
+	if got := embeddedTextFor(t, vs, ids["install"]); got != "Guide — First steps > Install\nRun the installer twice." {
+		t.Errorf("a rename after a panicked pass was not re-indexed: the child is indexed as %q", got)
+	}
+}
+
+// TestReindex_BackgroundPassPanicIsContainedAndReleased — a large re-index runs in its
+// own goroutine, where an unrecovered panic ends the process. It must be recovered, and
+// must give up the document's entry so a later rename is re-indexed.
+func TestReindex_BackgroundPassPanicIsContainedAndReleased(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "section")
+	out := docOp(t, d, ctx, map[string]any{"op": "create_document", "title": "Old name"})
+	docID, rootID := out["document_id"].(string), out["root_chunk_id"].(string)
+	var ids []string
+	for i := 0; i < reindexSyncMax+8; i++ {
+		c := docOp(t, d, ctx, map[string]any{"op": "create_chunk", "document_id": docID,
+			"title": fmt.Sprintf("Section %d", i), "body": "section text"})
+		ids = append(ids, c["id"].(string))
+	}
+	emb := &panickingEmbedder{Embedder: d.Embedder}
+	emb.left.Store(1)
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "Middle name"})
+	d.waitReindex()
+	if emb.left.Load() > 0 {
+		t.Fatal("precondition: the background pass never called the embedder")
+	}
+	if n := reindexEntriesLeft(d); n != 0 {
+		t.Errorf("%d coalescing entries left after a background pass panicked, want 0", n)
+	}
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "Final name"})
+	d.waitReindex()
+	for i, id := range ids {
+		want := fmt.Sprintf("Final name — Section %d\nsection text", i)
+		if got := embeddedTextFor(t, vs, id); got != want {
+			t.Fatalf("chunk %d after a rename that followed a panicked pass: %q, want %q", i, got, want)
 		}
 	}
 }

@@ -239,40 +239,179 @@ func (d *Document) subtreeChunks(ctx context.Context, key sqlmem.ScopeKey, chunk
 // every chunk's) or a move (the heading path changes for the whole moved subtree).
 // Best-effort like every embed: a failure leaves a chunk under its old text and never
 // fails the op that triggered it.
-func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, chunkID string) {
+//
+// AT MOST ONE PASS PER DOCUMENT RUNS AT A TIME. Each pass reads the tree as it goes, so
+// two overlapping passes could finish out of order and the older one leave a vector for
+// a title that has since changed again; and every overlapping pass over a large document
+// was a full re-embed of it, with nothing bounding how many ran. A request that arrives
+// while a pass runs only records its chunk; the running pass re-indexes the recorded
+// subtrees before it lets go, and repeats while more arrive. Its last round starts after
+// the last request was recorded, so it reads the final tree and its writes are the last
+// ones. Chunks already carrying their current text are skipped, which keeps that round
+// cheap.
+//
+// With no pass running, a small subtree is still re-indexed inline and is current when
+// the op returns. One that arrives while a pass runs is current when that pass ends.
+//
+// The coalescing is per Document value: the one tool instance serves every run and the
+// HTTP/gRPC/MCP document routes, and the ad-hoc &Document{} values built elsewhere
+// either carry no embedder or never rename or move a chunk, so they never get here.
+func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, chunkID string) {
 	if d.Embedder == nil || d.Store == nil || d.SqlMem == nil {
 		return
 	}
+	dk := reindexDocKey{tenant: direntTenant(ctx), key: key, docID: docID}
+	d.reindexMu.Lock()
+	if pending, running := d.reindexing[dk]; running {
+		pending[chunkID] = struct{}{}
+		d.reindexMu.Unlock()
+		return
+	}
+	if d.reindexing == nil {
+		d.reindexing = map[reindexDocKey]map[string]struct{}{}
+	}
+	d.reindexing[dk] = map[string]struct{}{}
+	d.reindexMu.Unlock()
+
+	// This call owns the document's entry until it releases it or hands it to the
+	// background. A pass that panics while owning it must still give it up: an entry left
+	// behind turns every later re-index of the document into a request recorded for a
+	// pass that is gone, until restart. The flag (rather than a recover and re-panic)
+	// keeps the original panic and its stack for whoever handles it upstream, and keeps
+	// the defer from deleting an entry a NEW owner took after this one released it.
+	owned := true
+	defer func() {
+		if owned {
+			d.dropReindex(dk)
+		}
+	}()
+
 	ids, types, err := d.subtreeChunks(ctx, key, chunkID)
 	if err != nil {
 		log.Printf("document: re-index of the subtree under %s: %v", chunkID, err)
-		return
-	}
-	run := func(ctx context.Context) {
-		tenant := direntTenant(ctx)
-		for i, id := range ids {
-			cb, err := d.readBody(ctx, mscope, key.ScopeID, id)
-			if err != nil {
-				log.Printf("document: re-index %s: read body: %v", id, err)
-				continue
-			}
-			d.embedBody(ctx, tenant, mscope, key, chunkBodyKey(id), id, types[i], cb.Body)
-			// A chunk's units carry its header too.
-			d.reindexUnitsOf(ctx, tenant, mscope, key, id)
-		}
+		ids, types = nil, nil
 	}
 	if len(ids) <= reindexSyncMax {
-		run(ctx)
-		return
+		d.reindexChunks(ctx, key, mscope, ids, types)
+		if d.releaseReindex(dk) {
+			owned = false
+			return
+		}
+		// Requests arrived while this ran; their subtrees go to the background rather
+		// than holding this caller for work it did not ask for.
+		ids, types = nil, nil
 	}
 	// Detached from the caller's cancellation (the op has returned) but keeping its
 	// values — the run identity and tenant the store keys on.
 	bg := context.WithoutCancel(ctx)
 	d.reindexJobs.Add(1)
+	owned = false // the goroutine owns the entry from here
 	go func() {
 		defer d.reindexJobs.Done()
-		run(bg)
+		// Nothing above this goroutine would recover a panic in it, and an unrecovered
+		// panic in any goroutine ends the process. A failed pass is best-effort work like
+		// every embed: log it, give up the document's entry, keep serving.
+		defer func() {
+			if r := recover(); r != nil {
+				d.dropReindex(dk)
+				log.Printf("document: re-index of document %s panicked: %v", dk.docID, r)
+			}
+		}()
+		d.reindexChunks(bg, key, mscope, ids, types)
+		for {
+			pending := d.takePendingReindex(dk)
+			if pending == nil {
+				return
+			}
+			for id := range pending {
+				ids, types, err := d.subtreeChunks(bg, key, id)
+				if err != nil {
+					log.Printf("document: re-index of the subtree under %s: %v", id, err)
+					continue
+				}
+				d.reindexChunks(bg, key, mscope, ids, types)
+			}
+		}
 	}()
+}
+
+// reindexDocKey names one document for the re-index coalescing. The raw tenant is part
+// of it because the body rows key on it, while the SQL scope key canonicalises it.
+type reindexDocKey struct {
+	tenant string
+	key    sqlmem.ScopeKey
+	docID  string
+}
+
+// releaseReindex ends the document's pass if nothing was asked for while it ran, and
+// reports whether it did. When it reports false the caller still owns the pass.
+func (d *Document) releaseReindex(dk reindexDocKey) bool {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+	if len(d.reindexing[dk]) > 0 {
+		return false
+	}
+	delete(d.reindexing, dk)
+	return true
+}
+
+// dropReindex gives up the document's entry after a pass that panicked. The chunks
+// recorded for it are dropped too; they keep their old index text until the next rename
+// or move re-indexes them, or the operator re-index pass runs.
+func (d *Document) dropReindex(dk reindexDocKey) {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+	delete(d.reindexing, dk)
+}
+
+// takePendingReindex hands the running pass the chunks asked for since it last looked,
+// or ends the pass (nil) when there are none.
+func (d *Document) takePendingReindex(dk reindexDocKey) map[string]struct{} {
+	d.reindexMu.Lock()
+	defer d.reindexMu.Unlock()
+	pending := d.reindexing[dk]
+	if len(pending) == 0 {
+		delete(d.reindexing, dk)
+		return nil
+	}
+	d.reindexing[dk] = map[string]struct{}{}
+	return pending
+}
+
+// reindexChunks brings each chunk's index text, and its units', in line with the tree.
+func (d *Document) reindexChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ids, types []string) {
+	tenant := direntTenant(ctx)
+	for i, id := range ids {
+		cb, err := d.readBody(ctx, mscope, key.ScopeID, id)
+		if err != nil {
+			log.Printf("document: re-index %s: read body: %v", id, err)
+			continue
+		}
+		bodyKey := chunkBodyKey(id)
+		text := d.chunkIndexText(ctx, key, id, types[i], cb.Body)
+		switch {
+		case d.indexCurrent(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
+		case text == "":
+			// Nothing may stay indexed for a chunk that derives to nothing (see embedBody).
+			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, bodyKey)
+		case !d.embedText(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
+			log.Printf("document: re-index %s: embed failed", id)
+		}
+		// A chunk's units carry its header too.
+		d.reindexUnitsOf(ctx, tenant, mscope, key, id)
+	}
+}
+
+// indexCurrent reports whether a row's stored vector already stands for text, from the
+// configured embedder — so re-indexing it would cost an embedding call and change
+// nothing. A text of "" is current when there is no vector at all.
+func (d *Document) indexCurrent(ctx context.Context, tenant string, mscope store.MemoryScope, scopeID, rowKey, text string) bool {
+	stored, err := d.Store.MemoryEmbedGet(ctx, tenant, mscope, scopeID, rowKey)
+	if err != nil {
+		return text == "" && isNotFound(err)
+	}
+	return text != "" && stored.EmbedText == text &&
+		stored.Provider == d.Embedder.Provider() && stored.Model == d.Embedder.Model()
 }
 
 // waitReindex blocks until every background subtree re-index has finished. Tests use it
