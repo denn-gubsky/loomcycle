@@ -2382,6 +2382,15 @@ type Store interface {
 	// caller only ever sees its OWN tenant's changes.
 	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]MemoryChange, error)
 
+	// GetMemoryChangesSinceAllTenants is GetMemoryChangesSince across EVERY
+	// tenant, the operator layer included, in one seq order. Each row carries
+	// its tenant.
+	//
+	// Only an operator-declared change subscription with no tenant_id calls it
+	// — subscriptions are declared in the operator's yaml and nowhere else. A
+	// caller acting for a principal must use GetMemoryChangesSince.
+	GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]MemoryChange, error)
+
 	// PruneMemoryChanges deletes change rows recorded before olderThan and
 	// returns the count removed — keeps the opt-in feed table bounded.
 	PruneMemoryChanges(ctx context.Context, olderThan time.Time) (int, error)

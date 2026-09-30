@@ -2986,8 +2986,9 @@ type ChangeSubscription struct {
 	// carried as X-Loomcycle-Signature = hex(hmac-sha256(secret, body)), the
 	// same scheme loomcycle's inbound webhook verifier checks. Empty = unsigned.
 	SecretEnv string `json:"secret_env,omitempty" yaml:"secret_env"`
-	// TenantID is WHICH tenant's change feed to deliver. "" = the shared/default
-	// tenant. A subscription only ever sees its own tenant's changes.
+	// TenantID is WHICH tenant's change feed to deliver: a named tenant sees
+	// only that tenant's changes. "" = the operator's feed of EVERY tenant,
+	// each change naming its tenant (subscriptions are operator-declared only).
 	TenantID string `json:"tenant_id,omitempty" yaml:"tenant_id"`
 	// Scope, when set, filters to changes in that memory scope (agent/user/tenant).
 	Scope string `json:"scope,omitempty" yaml:"scope"`
