@@ -110,22 +110,58 @@ func EphemeralRunDir(dynRoot, rootRunID string) string {
 	return filepath.Join(dynRoot, EphemeralSegment, rootRunID)
 }
 
-// AssertInsideRoot verifies path resolves strictly inside dynRoot. The parent
-// (tenant-segment dir) may not exist yet at create, so it resolves the dynamic
-// root and checks the lexical containment of the cleaned path; the purge-time
-// check additionally EvalSymlinks the real path.
+// AssertInsideRoot verifies path lies strictly inside dynRoot. The parent
+// (tenant-segment dir) may not exist yet at create, so the check is on the
+// cleaned path, not on a resolved one; the purge-time check additionally
+// EvalSymlinks the real path.
 func AssertInsideRoot(dynRoot, path string) error {
-	rootResolved, err := filepath.EvalSymlinks(dynRoot)
+	_, _, err := locateBelowRoot(dynRoot, path)
+	return err
+}
+
+// locateBelowRoot resolves the dynamic root once and returns it with path's
+// location below it (rel: never "." and never a ".." step).
+//
+// A root reached through a symlink (/tmp on macOS, a symlinked NAS mount) is
+// the operator's own choice and is trusted, so path may be spelled under the
+// root as configured — which is how DerivedPath builds it — or under the
+// resolved root. Each spelling is compared with the root in the SAME form:
+// comparing the configured spelling against the resolved root refused every
+// path under a symlinked root. Nothing below the root is trusted by this; the
+// provisioning write walks those components (refuseSymlinkBelowRoot).
+func locateBelowRoot(dynRoot, path string) (rootResolved, rel string, err error) {
+	rootResolved, err = filepath.EvalSymlinks(dynRoot)
 	if err != nil {
-		return fmt.Errorf("dynamic root: %w", err)
+		return "", "", fmt.Errorf("dynamic root: %w", err)
 	}
 	clean := filepath.Clean(path)
-	// rel against the resolved root; reject "." (equals root) and any "..".
-	rel, err := filepath.Rel(rootResolved, clean)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path %q escapes dynamic root %q", clean, rootResolved)
+	for _, root := range []string{filepath.Clean(dynRoot), rootResolved} {
+		if r, ok := strictlyBelow(root, clean); ok {
+			return rootResolved, r, nil
+		}
 	}
-	return nil
+	return "", "", fmt.Errorf("path %q escapes dynamic root %q", clean, rootResolved)
+}
+
+// UnderResolvedRoot respells a path inside dynRoot under the resolved root,
+// following the root's own symlink and nothing below it — the one form in
+// which two spellings of a volume path compare equal.
+func UnderResolvedRoot(dynRoot, path string) (string, error) {
+	rootResolved, rel, err := locateBelowRoot(dynRoot, path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootResolved, rel), nil
+}
+
+// strictlyBelow returns path relative to root when it lies strictly inside
+// it: not the root itself, and no ".." step out of it.
+func strictlyBelow(root, path string) (string, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // Provision derives a persistent dynamic volume's path, fences it inside the
@@ -166,9 +202,9 @@ func ProvisionEphemeral(dynRoot, rootRunID, name string) (string, error) {
 }
 
 // mkdirFenced is the one provisioning write: even though path is
-// runtime-derived, it is verified to resolve strictly inside the dynamic root
-// before MkdirAll, which catches a future bug in the derivation (or a
-// symlinked dynamic root that escapes) rather than trusting the construction.
+// runtime-derived, it is verified to lie strictly inside the dynamic root
+// before MkdirAll, which catches a future bug in the derivation rather than
+// trusting the construction.
 //
 // The lexical fence alone is not enough: MkdirAll follows a symlink it finds
 // on the way, so a symlink already sitting at the tenant segment or the leaf
@@ -176,40 +212,37 @@ func ProvisionEphemeral(dynRoot, rootRunID, name string) (string, error) {
 // Every existing component below the root is therefore refused if it is a
 // symlink, and the created path must resolve to itself afterwards, which
 // catches one swapped in between the check and the MkdirAll.
+//
+// Every filesystem call below works on the path under the RESOLVED root: the
+// root's own (trusted) symlink is followed once, when it is resolved, and so
+// "resolves to itself" means exactly "no symlink below the root". The caller
+// still stores path as derived, under the root as configured.
 func mkdirFenced(dynRoot, path string) (created bool, err error) {
-	if err := AssertInsideRoot(dynRoot, path); err != nil {
+	rootResolved, rel, err := locateBelowRoot(dynRoot, path)
+	if err != nil {
 		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)
 	}
-	if err := refuseSymlinkBelowRoot(dynRoot, path); err != nil {
+	if err := refuseSymlinkBelowRoot(rootResolved, rel); err != nil {
 		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)
 	}
-	if _, statErr := os.Lstat(path); os.IsNotExist(statErr) {
+	onDisk := filepath.Join(rootResolved, rel)
+	if _, statErr := os.Lstat(onDisk); os.IsNotExist(statErr) {
 		created = true
 	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return false, fmt.Errorf("mkdir %q: %s", path, err)
+	if err := os.MkdirAll(onDisk, 0o700); err != nil {
+		return false, fmt.Errorf("mkdir %q: %s", onDisk, err)
 	}
-	clean := filepath.Clean(path)
-	if resolved, err := filepath.EvalSymlinks(clean); err != nil || resolved != clean {
-		return false, fmt.Errorf("refusing to provision outside the dynamic root: %q does not resolve to itself", clean)
+	if resolved, err := filepath.EvalSymlinks(onDisk); err != nil || resolved != onDisk {
+		return false, fmt.Errorf("refusing to provision outside the dynamic root: %q does not resolve to itself", onDisk)
 	}
 	return created, nil
 }
 
-// refuseSymlinkBelowRoot walks path's components below the (resolved) root
-// and refuses any that already exists as a symlink. It stops at the first
+// refuseSymlinkBelowRoot walks rel's components below the resolved root and
+// refuses any that already exists as a symlink. It stops at the first
 // component that does not exist yet: MkdirAll creates the rest as real
-// directories. AssertInsideRoot has already placed path lexically inside the
-// resolved root.
-func refuseSymlinkBelowRoot(dynRoot, path string) error {
-	rootResolved, err := filepath.EvalSymlinks(dynRoot)
-	if err != nil {
-		return fmt.Errorf("dynamic root: %w", err)
-	}
-	rel, err := filepath.Rel(rootResolved, filepath.Clean(path))
-	if err != nil {
-		return err
-	}
+// directories. locateBelowRoot has already placed rel strictly inside.
+func refuseSymlinkBelowRoot(rootResolved, rel string) error {
 	cur := rootResolved
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
 		cur = filepath.Join(cur, part)
