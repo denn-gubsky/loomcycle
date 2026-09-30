@@ -75,8 +75,9 @@ export default function SnapshotsView() {
         ...prev,
       ]);
       setCaptureLabel("");
-      // The capture's warnings (a literal credential in a captured header)
-      // render in the same list a restore's warnings do.
+      // The capture's warnings (a literal-looking credential in a captured
+      // definition, a paused run parked on a pending interrupt) render in the
+      // same list a restore's warnings do.
       setRestoreFlash({
         ok: true,
         message: `captured ${created.id} (${formatBytes(created.byte_size)})`,

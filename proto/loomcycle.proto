@@ -1859,10 +1859,12 @@ message SnapshotDescriptor {
   google.protobuf.Timestamp since_ts = 5;
   string description = 6;
   string format_version = 7;
-  // What the capture carried that the operator should act on — a header
-  // value that looks like a literal credential — named by location, never
-  // by value. Set on the CreateSnapshot response only; ListSnapshots leaves
-  // it empty (the envelope's capture_findings section keeps the findings).
+  // What the capture carried that the operator should act on: every
+  // literal-looking credential in a captured definition (headers, URLs,
+  // stdio env/command/args), and every paused run parked on a pending
+  // interrupt. Named by location, never by value. Set on the CreateSnapshot
+  // response only; ListSnapshots leaves it empty (the envelope's
+  // capture_findings section keeps the findings).
   repeated string warnings = 8;
 }
 

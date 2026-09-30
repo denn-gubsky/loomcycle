@@ -2101,8 +2101,9 @@ def _snapshot_descriptor_to_dict(d: pb.SnapshotDescriptor) -> Mapping[str, Any]:
         "since_ts": _ts_to_iso(d.since_ts) if d.HasField("since_ts") else "",
         "description": d.description,
         "format_version": d.format_version,
-        # Set by create_snapshot only: header values in captured definitions
-        # that look like literal credentials, named by location, never value.
+        # Set by create_snapshot only: literal-looking credentials in captured
+        # definitions (headers, URLs, stdio env/command/args) and paused runs
+        # parked on a pending interrupt, named by location, never by value.
         "warnings": list(d.warnings),
     }
 

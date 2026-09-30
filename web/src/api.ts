@@ -917,8 +917,9 @@ export interface SnapshotCreateResponse {
   label?: string;
   schema_version: number;
   byte_size: number;
-  // Header values in captured definitions that look like literal credentials,
-  // named by location only.
+  // Literal-looking credentials in captured definitions (headers, URLs, stdio
+  // env/command/args) and paused runs parked on a pending interrupt, named by
+  // location only.
   warnings?: string[];
 }
 

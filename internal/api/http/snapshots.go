@@ -61,8 +61,9 @@ type snapshotCreateResponse struct {
 	SchemaVersion int    `json:"schema_version"`
 	ByteSize      int64  `json:"byte_size"`
 	// Warnings names what the capture carried that the operator should act on
-	// — a header value that looks like a literal credential — by location,
-	// never by value. The findings also travel in the envelope.
+	// — a literal-looking credential in a captured definition (headers, URLs,
+	// stdio env/command/args), or a paused run parked on a pending interrupt —
+	// by location, never by value. The findings also travel in the envelope.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
