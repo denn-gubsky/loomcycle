@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -882,6 +883,94 @@ func TestRoundTrip_PreservesParentRunID(t *testing.T) {
 	}
 	if got.ParentAgentID != "a_parent" {
 		t.Errorf("restored run's parent agent = %q, want a_parent", got.ParentAgentID)
+	}
+}
+
+// A paused run's transcript restores whole and in captured order onto a target
+// that already has history. Restore wrote each event under the SOURCE's seq —
+// the events table's global key — so every captured event that collided with
+// one of the target's own rows was dropped, with no count and no warning.
+func TestRestore_PausedRunTranscriptLandsWholeOnATargetWithHistory(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	sess, _ := src.CreateSession(ctx, "acme", "qa", "alice")
+	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_paused", UserID: "alice", TenantID: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const captured = 4
+	for i := 0; i < captured; i++ {
+		if err := src.AppendEvent(ctx, run.ID, "text", []byte(fmt.Sprintf(`{"turn":%d}`, i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := src.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := Capture(ctx, src, CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The target has been running: its own events hold the low seqs the
+	// source's transcript also used.
+	osess, _ := dst.CreateSession(ctx, "other", "qa", "bob")
+	other, err := dst.CreateRun(ctx, osess.ID, store.RunIdentity{AgentID: "a_other", UserID: "bob", TenantID: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		if err := dst.AppendEvent(ctx, other.ID, "text", []byte(`{"other":true}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := Restore(ctx, dst, raw, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if res.TranscriptEventsRestored != captured {
+		t.Errorf("TranscriptEventsRestored = %d, want %d (warnings %v)", res.TranscriptEventsRestored, captured, res.Warnings)
+	}
+	evs, err := dst.GetRunEventsSince(ctx, run.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != captured {
+		t.Fatalf("the restored run has %d events on the target, want %d", len(evs), captured)
+	}
+	for i, e := range evs {
+		if want := fmt.Sprintf(`{"turn":%d}`, i); string(e.Payload) != want {
+			t.Errorf("restored event %d = %s, want %s", i, e.Payload, want)
+		}
+	}
+	if others, _ := dst.GetRunEventsSince(ctx, other.ID, 0, 100); len(others) != 6 {
+		t.Errorf("the target's own run has %d events after the restore, want 6", len(others))
+	}
+
+	// Restoring the same snapshot again writes no second copy, and says so.
+	res2, err := Restore(ctx, dst, raw, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("second Restore: %v", err)
+	}
+	if res2.TranscriptEventsRestored != 0 {
+		t.Errorf("second restore TranscriptEventsRestored = %d, want 0", res2.TranscriptEventsRestored)
+	}
+	if again, _ := dst.GetRunEventsSince(ctx, run.ID, 0, 100); len(again) != captured {
+		t.Errorf("after a re-restore the run has %d events, want %d", len(again), captured)
+	}
+	warned := false
+	for _, w := range res2.Warnings {
+		if strings.Contains(w, run.ID) && strings.Contains(w, "not written") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("the re-restore wrote none of %s's %d captured events without a warning: %v", run.ID, captured, res2.Warnings)
 	}
 }
 

@@ -2861,34 +2861,55 @@ func (s *Store) SnapshotRestoreRun(ctx context.Context, r store.Run) (bool, erro
 	return tag.RowsAffected() > 0, nil
 }
 
-// SnapshotRestoreEvent implements store.Store.
-func (s *Store) SnapshotRestoreEvent(ctx context.Context, e store.Event) (bool, error) {
-	if e.RunID == "" || e.SessionID == "" {
-		return false, fmt.Errorf("snapshot restore event: run_id and session_id required")
+// SnapshotRestoreRunEvents implements store.Store. The BIGSERIAL default
+// mints each seq, so the restored rows sort after everything already here, in
+// slice order, and the sequence never falls behind them. Locking the run row
+// serializes two concurrent restores of one snapshot on the "already has a
+// transcript" read.
+func (s *Store) SnapshotRestoreRunEvents(ctx context.Context, runID, sessionID string, events []store.Event) (int, error) {
+	if runID == "" || sessionID == "" {
+		return 0, fmt.Errorf("snapshot restore events: run_id and session_id required")
 	}
-	ts := e.Timestamp
-	if ts.IsZero() {
-		ts = time.Now().UTC()
+	if len(events) == 0 {
+		return 0, nil
 	}
-	if e.Seq != 0 {
-		tag, err := s.pool.Exec(ctx,
-			`INSERT INTO events(seq, session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5, $6)
-			 ON CONFLICT (seq) DO NOTHING`,
-			e.Seq, e.SessionID, e.RunID, ts, e.Type, e.Payload,
-		)
-		if err != nil {
-			return false, fmt.Errorf("snapshot restore event: %w", err)
-		}
-		return tag.RowsAffected() > 0, nil
-	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5)`,
-		e.SessionID, e.RunID, ts, e.Type, e.Payload,
-	)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("snapshot restore event (auto-seq): %w", err)
+		return 0, fmt.Errorf("snapshot restore events: begin: %w", err)
 	}
-	return true, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	var one int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&one); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return 0, fmt.Errorf("snapshot restore events: lock run: %w", err)
+	}
+	var existing bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM events WHERE run_id = $1)`, runID,
+	).Scan(&existing); err != nil {
+		return 0, fmt.Errorf("snapshot restore events: read existing: %w", err)
+	}
+	if existing {
+		return 0, nil
+	}
+	for _, e := range events {
+		ts := e.Timestamp
+		if ts.IsZero() {
+			ts = time.Now().UTC()
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO events(session_id, run_id, ts, type, payload) VALUES ($1, $2, $3, $4, $5)`,
+			sessionID, runID, ts, e.Type, e.Payload,
+		); err != nil {
+			return 0, fmt.Errorf("snapshot restore events: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("snapshot restore events: commit: %w", err)
+	}
+	return len(events), nil
 }
 
 // SnapshotRestoreAgentDef implements store.Store.

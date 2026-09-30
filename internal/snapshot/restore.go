@@ -993,23 +993,26 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				result.PausedRunsRestored++
 			}
 
-			// Transcript events for the run.
-			for _, te := range e.TranscriptEvents {
-				evtInserted, err := s.SnapshotRestoreEvent(ctx, store.Event{
-					Seq:       te.Seq,
-					SessionID: sessionID,
-					RunID:     e.RunID,
-					Timestamp: time.Unix(0, te.TsNs),
-					Type:      te.Type,
-					Payload:   te.Payload,
-				})
-				if err != nil {
-					result.Warnings = append(result.Warnings, fmt.Sprintf("transcript event run=%s seq=%d: %v", e.RunID, te.Seq, err))
-					continue
+			// Transcript events for the run, written as one batch in captured
+			// order under seqs this store mints. The captured seq is the
+			// source's key in a table-global sequence and is not carried.
+			if len(e.TranscriptEvents) > 0 {
+				evs := make([]store.Event, 0, len(e.TranscriptEvents))
+				for _, te := range e.TranscriptEvents {
+					evs = append(evs, store.Event{
+						Timestamp: time.Unix(0, te.TsNs),
+						Type:      te.Type,
+						Payload:   te.Payload,
+					})
 				}
-				if evtInserted {
-					result.TranscriptEventsRestored++
+				written, err := s.SnapshotRestoreRunEvents(ctx, e.RunID, sessionID, evs)
+				switch {
+				case err != nil:
+					result.Warnings = append(result.Warnings, fmt.Sprintf("paused_run %s: its %d captured transcript events were not written: %v", e.RunID, len(evs), err))
+				case written < len(evs):
+					result.Warnings = append(result.Warnings, fmt.Sprintf("paused_run %s: its %d captured transcript events were not written: the run already has a transcript on this target", e.RunID, len(evs)-written))
 				}
+				result.TranscriptEventsRestored += written
 			}
 		}
 	}
