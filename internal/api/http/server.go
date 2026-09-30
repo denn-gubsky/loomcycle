@@ -8014,8 +8014,16 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	// missing run into an opaque 404 (mirrors the steer + compact
 	// run-mutations, which were migrated onto the accessor; cancel was the gap).
 	// admin / legacy / open see all tenants → unchanged.
+	// The tenant fold alone admits an isolated member to another user's run in
+	// its tenant, so the ownership rule every other run mutation applies folds
+	// that run into the same 404 — else the 200-vs-404 is also an oracle for
+	// another user's agent ids and how their runs ended.
 	if s.store != nil {
-		if _, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID); err != nil {
+		run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
+		if err == nil && !runOwnershipOK(r.Context(), run) {
+			err = &store.ErrNotFound{Kind: "run", ID: agentID}
+		}
+		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
 				w.Header().Set("Content-Type", "application/json")
