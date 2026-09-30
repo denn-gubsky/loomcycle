@@ -336,3 +336,93 @@ func TestReceiver_SignedDeliveryReplayedThroughTenantPrefixes_StartsOneRun(t *te
 		})
 	}
 }
+
+// seedPreUpgradeRun stores a run the way releases before the scoped key
+// did: idempotency_key is the BARE delivery id.
+func seedPreUpgradeRun(t *testing.T, st store.Store, tenant, agent, bareID string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := st.CreateSession(ctx, tenant, agent, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "pre-upgrade", TenantID: tenant, IdempotencyKey: bareID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run.ID
+}
+
+func bodyHashID(body []byte) string {
+	return deliveryID(config.WebhookAuth{}, body, func(string) string { return "" })
+}
+
+// A delivery accepted before the upgrade (bare-id key) and retried after it
+// must still land on the original run, not start a duplicate.
+func TestReceiver_PreUpgradeBareDeliveryIDRow_DedupsStraddlingRetry(t *testing.T) {
+	body := []byte(`{"goal":"once"}`)
+	for _, tc := range []struct {
+		name, path, tenant, did string
+		setup                   func(t *testing.T, st store.Store) map[string]config.Webhook
+	}{
+		{"static body-hash", "/v1/_webhooks/gh", "", "", func(t *testing.T, st store.Store) map[string]config.Webhook {
+			return map[string]config.Webhook{"gh": scopeWebhook("")}
+		}},
+		{"tenant delivery-id-header", "/v1/_webhooks/acme/gh", "acme", "evt-1", func(t *testing.T, st store.Store) map[string]config.Webhook {
+			def := signedSpawnDef("acme")
+			def["auth"].(map[string]any)["delivery_id_header"] = "X-Delivery-Id"
+			putWebhookDef(t, st, "acme", "gh", def)
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openScopeStore(t)
+			hooks := tc.setup(t, st)
+			bare := tc.did
+			if bare == "" {
+				bare = bodyHashID(body)
+			}
+			original := seedPreUpgradeRun(t, st, tc.tenant, "x", bare)
+			fr := &storeRunner{st: st}
+			rec := newScopeReceiver(st, fr, hooks)
+
+			code, got := postSigned(t, rec, tc.path, body, tc.did)
+			if code != http.StatusAccepted || got["deduped"] != "true" || got["run_id"] != original {
+				t.Errorf("straddling retry = %d %v; want 202 deduped run_id=%s", code, got, original)
+			}
+			// A second retry is a Layer-1 hit; it still names the original run.
+			code, got = postSigned(t, rec, tc.path, body, tc.did)
+			if code != http.StatusOK || got["deduped"] != "true" || got["run_id"] != original {
+				t.Errorf("second retry = %d %v; want 200 deduped run_id=%s", code, got, original)
+			}
+			if n := fr.callCount(); n != 0 {
+				t.Errorf("straddling retries started %d run(s), want 0", n)
+			}
+		})
+	}
+}
+
+// The bare id is global, so the transitional fallback must only match a row
+// that ran as this def's tenant and agent — never another webhook's delivery.
+func TestReceiver_PreUpgradeBareDeliveryIDRowOfAnotherWebhook_StartsFreshRun(t *testing.T) {
+	body := []byte(`{"goal":"same bytes"}`)
+	for _, tc := range []struct{ name, tenant, agent string }{
+		{"other agent", "", "other-agent"},
+		{"other tenant", "acme", "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openScopeStore(t)
+			foreign := seedPreUpgradeRun(t, st, tc.tenant, tc.agent, bodyHashID(body))
+			fr := &storeRunner{st: st}
+			rec := newScopeReceiver(st, fr, map[string]config.Webhook{"gh": scopeWebhook("")})
+
+			code, got := postSigned(t, rec, "/v1/_webhooks/gh", body, "")
+			if runID := assertFreshRun(t, "delivery", code, got); runID == foreign {
+				t.Errorf("answered with the other webhook's run %s", foreign)
+			}
+			if n := fr.callCount(); n != 1 {
+				t.Errorf("runner invoked %d times, want 1", n)
+			}
+		})
+	}
+}
