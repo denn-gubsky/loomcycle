@@ -2838,14 +2838,17 @@ func main() {
 	// reconstructing each run's loop from its transcript. One-shot, run after
 	// the server is fully wired (providers/tools/cancel/steer/pause). In a
 	// cluster, gate behind an advisory lock so exactly ONE replica resurrects
-	// each run; single-replica runs it directly. Backgrounded so a long-lived
-	// resumed loop never blocks the rest of boot.
+	// each run; single-replica runs it directly. The lock only orders booting
+	// replicas: a run whose loop is still alive on another replica (parked at
+	// a cluster pause) is left alone by ResumePausedRuns itself, which checks
+	// the owner's heartbeat. Backgrounded so a long-lived resumed loop never
+	// blocks the rest of boot.
 	if storeIface != nil {
 		go func() {
 			resume := func(ctx context.Context) error {
 				n, warnings := srv.ResumePausedRuns(ctx)
 				if n > 0 || len(warnings) > 0 {
-					log.Printf("resume(boot): re-dispatched %d paused run(s); %d skipped/flagged", n, len(warnings))
+					log.Printf("resume(boot): re-dispatched %d paused run(s); %d flagged", n, len(warnings))
 				}
 				return nil
 			}

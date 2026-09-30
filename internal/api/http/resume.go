@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -57,29 +58,107 @@ import (
 // store. Returns the count successfully re-dispatched and any per-run warnings
 // (a run whose agent no longer resolves, or that isn't auto-resumable, is
 // flagged failed and counted as a warning, not a hard error). Safe to call when
-// the store is nil (no-op) and idempotent: a run already live (cancel-registry
-// ErrInUse) is skipped.
+// the store is nil (no-op) and idempotent: a run that is already live is left
+// alone and is neither counted nor warned about (see resumePausedRunsReport).
 func (s *Server) ResumePausedRuns(ctx context.Context) (int, []string) {
+	r := s.resumePausedRunsReport(ctx)
+	return r.Resumed, r.Warnings
+}
+
+// resumeReport is what one resume pass did with the paused rows it found.
+type resumeReport struct {
+	Resumed int
+	// AlreadyLive counts rows left untouched because a live loop still owns
+	// them: in this process, or on another replica that is alive. Not a
+	// failure — nothing was wrong with them — and not a warning.
+	AlreadyLive int
+	Warnings    []string
+}
+
+// errRunAlreadyLive is resumePausedRun's answer for a run a live loop still
+// owns. It is returned before anything about the run is written.
+var errRunAlreadyLive = errors.New("run is already live")
+
+// resumeLivenessProbeTimeout bounds the replicas-table read that decides
+// whether a run's owner is alive. The resume runs on a context with no
+// deadline, and a hung database must not hang boot's resume pass.
+const resumeLivenessProbeTimeout = 5 * time.Second
+
+func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
+	var r resumeReport
 	if s.store == nil {
-		return 0, nil
+		return r
 	}
 	paused, err := s.store.ListPausedRuns(ctx)
 	if err != nil {
-		return 0, []string{fmt.Sprintf("list paused runs: %v", err)}
+		r.Warnings = []string{fmt.Sprintf("list paused runs: %v", err)}
+		return r
 	}
-	var warnings []string
-	redispatched := 0
 	for _, run := range paused {
 		if err := s.resumePausedRun(run); err != nil {
-			warnings = append(warnings, fmt.Sprintf("run %s (%s): %v", run.ID, run.Agent, err))
+			if errors.Is(err, errRunAlreadyLive) {
+				r.AlreadyLive++
+				continue
+			}
+			r.Warnings = append(r.Warnings, fmt.Sprintf("run %s (%s): %v", run.ID, run.Agent, err))
 			continue
 		}
-		redispatched++
+		r.Resumed++
 	}
-	if redispatched > 0 || len(warnings) > 0 {
-		log.Printf("resume: re-dispatched %d paused run(s); %d skipped/flagged", redispatched, len(warnings))
+	if r.Resumed > 0 || r.AlreadyLive > 0 || len(r.Warnings) > 0 {
+		log.Printf("resume: re-dispatched %d paused run(s); %d already live; %d flagged", r.Resumed, r.AlreadyLive, len(r.Warnings))
 	}
-	return redispatched, warnings
+	return r
+}
+
+// pausedRunIsLive reports whether a live loop still owns a paused row, so the
+// resume must not touch it. A row says pause_state='paused' both when it is
+// restored data with no goroutine behind it and when its loop is alive and
+// parked at a runtime pause; only the second is live. It is live when:
+//   - this process holds it: its agent_id is in the cancel registry, or its
+//     loop is registered with the pause manager; or
+//   - its replica_id names ANOTHER replica whose heartbeat is fresh (by the
+//     coordinators' own cutoff). Resuming it here would run the conversation
+//     twice, once on each replica.
+//
+// A row naming this replica but held by nothing here, naming no replica, or
+// naming a replica that is gone or stale is the crash-recovery case and is not
+// live. Without a replicas table (single instance) only this process counts.
+// A failed liveness read is an error, not "dead": resuming on a guess could
+// start the second copy, while leaving the row paused costs only a later pass.
+//
+// An agent_id held here by a DIFFERENT run is neither: the row cannot be
+// resumed under an id already in use, and it is refused before it is touched.
+func (s *Server) pausedRunIsLive(ctx context.Context, run store.Run) (bool, error) {
+	if live, err := s.heldInCancelRegistry(run); live || err != nil {
+		return live, err
+	}
+	if s.pauseMgr.HoldsRun(run.ID) {
+		return true, nil
+	}
+	if s.replicaStore == nil || run.ReplicaID == "" || run.ReplicaID == s.replicaID {
+		return false, nil
+	}
+	probeCtx, stop := context.WithTimeout(ctx, resumeLivenessProbeTimeout)
+	defer stop()
+	alive, err := s.replicaStore.IsReplicaAlive(probeCtx, run.ReplicaID, coord.StaleReplicaThreshold)
+	if err != nil {
+		return false, fmt.Errorf("owning replica %q liveness: %w", run.ReplicaID, err)
+	}
+	return alive, nil
+}
+
+// heldInCancelRegistry reports whether this process's cancel registry holds
+// the run's loop, and errors when its agent_id is held by some other run.
+func (s *Server) heldInCancelRegistry(run store.Run) (bool, error) {
+	e, ok := s.cancelReg.Get(run.AgentID)
+	if !ok {
+		return false, nil
+	}
+	if e.RunID != run.ID {
+		return false, fmt.Errorf("agent_id %q is held by another live run (%s)", run.AgentID, e.RunID)
+	}
+	return true, nil
 }
 
 // resumePausedRun re-dispatches ONE paused run under its EXISTING run_id (no
@@ -104,6 +183,17 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	ctx := context.Background()
 	if run.ID == "" || run.AgentID == "" || run.SessionID == "" {
 		return fmt.Errorf("missing id/agent_id/session_id")
+	}
+	// First, before any store write: a row a live loop still owns is not ours
+	// to resume. Everything below mutates the row (flags it failed, flips it
+	// to running, re-stamps its heartbeat and replica), which on a live run
+	// corrupts what its own loop and the next snapshot read.
+	live, liveErr := s.pausedRunIsLive(ctx, run)
+	if liveErr != nil {
+		return liveErr
+	}
+	if live {
+		return errRunAlreadyLive
 	}
 
 	// RFC AX: restore the operator-key restriction from the runs row so a resumed
@@ -416,9 +506,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		RootRunID:  rootRunID,
 	}
 
-	// Claim the run in the cancel registry. ErrInUse ⇒ already live on this
-	// instance (e.g. a double restore, or boot racing a restore) — skip
-	// without disturbing the running copy.
+	// Claim the run in the cancel registry. ErrInUse ⇒ another resume in this
+	// process claimed it between the liveness check above and here (a double
+	// restore, or boot racing a restore) — that copy runs, this one stops.
 	regErr := s.cancelReg.Register(cancel.Entry{
 		AgentID:   run.AgentID,
 		RunID:     run.ID,
@@ -432,6 +522,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if regErr != nil {
 		runSpan.End()
 		cancelFn(nil)
+		if held, _ := s.heldInCancelRegistry(run); held {
+			return errRunAlreadyLive
+		}
 		return fmt.Errorf("cancel registry: %w", regErr)
 	}
 	s.publishRunState(meta, "running", "", "")

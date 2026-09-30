@@ -401,7 +401,11 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 // step nor its order can differ by transport.
 //
 // A run whose agent no longer resolves, or that is not auto-resumable, is
-// flagged failed and named in the warnings; PausedRunsResumed counts the rest.
+// flagged failed and named in the warnings; PausedRunsResumed counts the ones
+// re-dispatched. A paused row that a live loop still owns — parked here by a
+// runtime pause, or owned by another replica that is alive — is left exactly
+// as it is and counted in PausedRunsAlreadyLive, neither resumed nor warned
+// about.
 // The resume gets a context that outlives the request, so a slow re-dispatch
 // or a long-lived resumed loop does not block the response and is not killed
 // when the caller hangs up.
@@ -409,13 +413,14 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 // No advisory lock, as the restore endpoint never had one: the lock
 // (coord.LockKeyResumePausedRuns) is for boot, where every replica would
 // otherwise scan the same store at once. A restore runs on the one replica
-// that received it, and a run already live here is skipped by
-// ResumePausedRuns itself.
+// that received it; a run a live loop owns, on this replica or another, is
+// left alone by the resume itself, before it writes anything.
 func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResult) {
 	s.postRestoreRefresh(ctx, result)
-	resumed, warnings := s.ResumePausedRuns(context.WithoutCancel(ctx))
-	result.PausedRunsResumed = resumed
-	result.Warnings = append(result.Warnings, warnings...)
+	r := s.resumePausedRunsReport(context.WithoutCancel(ctx))
+	result.PausedRunsResumed = r.Resumed
+	result.PausedRunsAlreadyLive = r.AlreadyLive
+	result.Warnings = append(result.Warnings, r.Warnings...)
 }
 
 // postRestoreRefresh brings the in-process caches over restored tables in

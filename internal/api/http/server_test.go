@@ -259,6 +259,21 @@ func (f *fakeReplicaLister) ListReplicas(ctx context.Context) ([]coord.Replica, 
 	return f.rows, f.err
 }
 
+// IsReplicaAlive answers from the fake's rows the way the replicas table does:
+// a row whose heartbeat is within the threshold is alive, a stale or missing
+// row is not.
+func (f *fakeReplicaLister) IsReplicaAlive(ctx context.Context, id string, threshold time.Duration) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	for _, r := range f.rows {
+		if r.ID == id {
+			return time.Since(r.LastHeartbeatAt) < threshold, nil
+		}
+	}
+	return false, nil
+}
+
 func TestHealthz_ClusterViewIncludedWhenCoordSet(t *testing.T) {
 	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1, QueueTimeoutMS: 100}}
 	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
