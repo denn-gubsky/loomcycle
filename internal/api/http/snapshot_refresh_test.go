@@ -54,6 +54,10 @@ func newMCPRefreshHarness(t *testing.T) *mcpRefreshHarness {
 	t.Helper()
 	srv, st, cleanup := minimalServerWithSnapshotStore(t)
 	t.Cleanup(cleanup)
+	// The target allows every host the captured defs name, so each is one an
+	// author here could register: a restore re-validates it against this.
+	srv.cfg().Env.HTTPHostAllowlist = []string{"retired.example.test", "source-side.example.test"}
+	srv.cfg().Env.HTTPPrivateHostAllowlist = []string{"127.0.0.1"}
 	h := &mcpRefreshHarness{srv: srv, st: st, reg: loommcp.NewDynamicRegistry()}
 	srv.SetMCPRegistryRefresh(func(ctx context.Context) (int, error) {
 		return builtin.RehydrateMCPRegistry(ctx, st, srv.cfg().MCPServers, h.reg, t.Logf)
