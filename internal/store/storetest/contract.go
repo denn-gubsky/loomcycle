@@ -78,6 +78,7 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunIdempotent", testFinishRunIdempotent},
 		{"GetTranscriptEmpty", testGetTranscriptEmpty},
 		{"GetRunEventsSince", testGetRunEventsSince},
+		{"GetLastEventOfTypesBefore", testGetLastEventOfTypesBefore},
 		// RFC CD Part C — the memory/document change-data-capture feed
 		// (append / tenant-scoped since-cursor / prune). sqlite always;
 		// Postgres when a DSN is set.
@@ -705,6 +706,53 @@ func testGetRunEventsSince(t *testing.T, s store.Store) {
 	}
 	if len(none) != 0 {
 		t.Errorf("GetRunEventsSince past tail len = %d, want 0", len(none))
+	}
+}
+
+// The latest of the given types strictly older than a seq, run-scoped: the
+// newest tool_result before a turn's newest tool_call is where that turn's calls
+// begin, and must not be a result of the same turn or another run's.
+func testGetLastEventOfTypesBefore(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "default", "")
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, typ := range []string{"tool_call", "tool_result", "text", "tool_call", "tool_result"} {
+		if err := s.AppendEvent(ctx, run.ID, typ, []byte(`{"type":"`+typ+`"}`)); err != nil {
+			t.Fatalf("AppendEvent[%d]: %v", i, err)
+		}
+		if err := s.AppendEvent(ctx, other.ID, "tool_result", []byte(`{}`)); err != nil {
+			t.Fatalf("AppendEvent(other)[%d]: %v", i, err)
+		}
+	}
+	all, err := s.GetRunEventsSince(ctx, run.ID, 0, 100)
+	if err != nil || len(all) != 5 {
+		t.Fatalf("GetRunEventsSince = %d events, %v; want 5", len(all), err)
+	}
+
+	got, err := s.GetLastEventOfTypesBefore(ctx, run.ID, []string{"tool_result"}, all[3].Seq)
+	if err != nil {
+		t.Fatalf("GetLastEventOfTypesBefore: %v", err)
+	}
+	if got.Seq != all[1].Seq || got.RunID != run.ID || got.Type != "tool_result" {
+		t.Errorf("got seq %d run %s type %s, want the first tool_result (seq %d)", got.Seq, got.RunID, got.Type, all[1].Seq)
+	}
+	// Strictly before: the bound itself is not returned.
+	if got, err := s.GetLastEventOfTypesBefore(ctx, run.ID, []string{"tool_result"}, all[4].Seq); err != nil || got.Seq != all[1].Seq {
+		t.Errorf("before the second tool_result = seq %d, %v; want seq %d", got.Seq, err, all[1].Seq)
+	}
+	var nf *store.ErrNotFound
+	if _, err := s.GetLastEventOfTypesBefore(ctx, run.ID, []string{"tool_result"}, all[1].Seq); !errors.As(err, &nf) {
+		t.Errorf("none older = %v, want ErrNotFound", err)
+	}
+	if _, err := s.GetLastEventOfTypesBefore(ctx, run.ID, nil, all[4].Seq); !errors.As(err, &nf) {
+		t.Errorf("no types = %v, want ErrNotFound", err)
 	}
 }
 
