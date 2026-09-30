@@ -2230,6 +2230,19 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.Provider == nil {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
 	}
+	// Every operator turn — a steer, a continue, review feedback, in either
+	// loop — reaches OnSteer, so hooking it here resets the repeat guard at all
+	// of them and at any park added later. Without it an operator asking
+	// "check again" in a long interactive run had the same call refused.
+	if d := opts.Dispatcher; d != nil {
+		onSteer := opts.OnSteer
+		opts.OnSteer = func(m steer.Message) {
+			d.NoteOperatorTurn()
+			if onSteer != nil {
+				onSteer(m)
+			}
+		}
+	}
 
 	// A synthetic provider whose loop turns are internal tool-dispatch steps of
 	// one run (code-js — Capabilities().UnboundedIterations) is exempt from the
@@ -3769,6 +3782,9 @@ func executePendingTools(
 	if parallelism < 1 {
 		parallelism = 1
 	}
+	// One batch: the model sent these together, before seeing any of their
+	// results, so the repeat guard does not count them against each other.
+	ctx = dispatcher.WithToolBatch(ctx)
 
 	type result struct {
 		idx int

@@ -2018,16 +2018,14 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 // the failure count behind it, and the help appended to a failure. goErr is a
 // Go error the tool itself returned, reported separately for the span.
 func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMessage) (res Result, goErr error) {
-	streak := d.recordCall(name, input)
 	// A call already known to fail keeps its own refusal: that guard counts its
 	// refusals and ends a run that will not stop sending it.
 	if r, refused := d.refuseRepeat(name, input); refused {
 		return d.withHelpPointer(name, input, r), nil
 	}
-	if streak > consecutiveCallsAllowed {
+	if r, refused := d.refuseConsecutive(ctx, name, input); refused {
 		// No "correct call" example: the call's shape was never the problem,
 		// and an example would read as if it were.
-		r := consecutiveRefusal(name, streak)
 		d.noteResult(name, input, r)
 		return r, nil
 	}
@@ -2053,6 +2051,7 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 	} else {
 		return toolNotFound(name), nil
 	}
+	d.recordResult(ctx, name, input, res)
 	d.noteResult(name, input, res)
 	d.noteHelpRead(name, input, res)
 	return d.withHelpPointer(name, input, res), goErr

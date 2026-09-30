@@ -145,3 +145,78 @@ func TestExecute_ALoopThatWillNotBreakStopsTheRun(t *testing.T) {
 		t.Errorf("after 7 identical calls in a row: stop=%v why=%q; want the run flagged to stop", stop, why)
 	}
 }
+
+// changingStub succeeds every time with a different result, as a poll, a
+// queue subscribe or a clock read does.
+type changingStub struct {
+	pointerStub
+	ran int
+}
+
+func (c *changingStub) Execute(context.Context, json.RawMessage) (Result, error) {
+	c.ran++
+	return Result{Text: `{"state":"running","output":"step ` + strings.Repeat("x", c.ran) + `"}`}, nil
+}
+
+// A call repeated with the same arguments is not refused while what it returns
+// keeps changing: a poll or a queue drain is meant to be sent again as it is.
+func TestExecute_AnIdenticalCallWhoseResultChangesIsNeverRefused(t *testing.T) {
+	poll := &changingStub{pointerStub: pointerStub{name: "Agent", schema: `{"type":"object"}`}}
+	d := NewDispatcher([]Tool{poll})
+	same := json.RawMessage(`{"op":"poll","child_run_id":"r_1","timeout_ms":60000}`)
+	for i := 0; i < 8; i++ {
+		if res := d.Execute(context.Background(), "Agent", same); res.IsError {
+			t.Fatalf("call %d refused: %s", i+1, res.Text)
+		}
+	}
+	if poll.ran != 8 {
+		t.Errorf("the tool ran %d times; want 8", poll.ran)
+	}
+	if why, stop := d.RepeatedFailure(); stop {
+		t.Errorf("a run polling for new results was flagged to stop: %s", why)
+	}
+}
+
+// Identical calls sent together in one turn all run, even with identical
+// results: none was sent after seeing another's result. The same call in the
+// next turn has seen three identical results, and is refused.
+func TestExecute_IdenticalCallsInOneBatchAllRunAndTheNextBatchIsRefused(t *testing.T) {
+	mem := &flakyStub{pointerStub: pointerStub{name: "Memory", schema: `{"type":"object"}`}}
+	d := NewDispatcher([]Tool{mem})
+	same := json.RawMessage(`{"op":"set","scope":"tenant","key":"k","value":"v"}`)
+	turn := d.WithToolBatch(context.Background())
+	for i := 0; i < 3; i++ {
+		if res := d.Execute(turn, "Memory", same); res.IsError {
+			t.Fatalf("call %d of one batch refused: %s", i+1, res.Text)
+		}
+	}
+	res := d.Execute(d.WithToolBatch(context.Background()), "Memory", same)
+	if mem.ran != 3 || !res.IsError || !strings.Contains(res.Text, "this exact call 3 times in a row") {
+		t.Errorf("ran %d, next batch %+v; want 3 runs and the next batch refused", mem.ran, res)
+	}
+}
+
+// An operator turn starts the count over, and takes the streak's refusals with
+// it: the call it asks for runs, rather than being refused as "already failed".
+// A failure the call really returned is still counted.
+func TestExecute_AnOperatorTurnResetsTheStreakButNotRealFailures(t *testing.T) {
+	mem := &flakyStub{pointerStub: pointerStub{name: "Memory", schema: `{"type":"object"}`}}
+	d := NewDispatcher([]Tool{mem})
+	same := json.RawMessage(`{"op":"get","scope":"user","key":"status"}`)
+	for i := 0; i < 4; i++ { // two run, two refused
+		d.Execute(context.Background(), "Memory", same)
+	}
+	d.NoteOperatorTurn()
+	if res := d.Execute(context.Background(), "Memory", same); res.IsError || mem.ran != 3 {
+		t.Fatalf("after an operator turn: ran %d, %+v; want the call run", mem.ran, res)
+	}
+
+	mem.fail = true
+	d.Execute(context.Background(), "Memory", same)
+	d.Execute(context.Background(), "Memory", same)
+	d.NoteOperatorTurn()
+	before := mem.ran
+	if res := d.Execute(context.Background(), "Memory", same); !res.IsError || mem.ran != before {
+		t.Errorf("a call that really failed twice ran again after an operator turn: %+v", res)
+	}
+}

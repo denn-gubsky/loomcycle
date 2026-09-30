@@ -2,6 +2,8 @@ package tools
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -29,48 +31,155 @@ type repeatTracker struct {
 	refused  int
 	stopped  string
 
-	// last and streak are the most recent call and how many times in a row it
-	// has been made, for refuseConsecutive.
-	last   string
-	streak int
+	// last is the most recent call that ran, lastResult a hash of what it
+	// returned, and streak how many calls in a row have been that call with
+	// that result, for refuseConsecutive. refusedInRow is how many times it
+	// has been refused since, for the refusal's count.
+	last         string
+	lastResult   [sha256.Size]byte
+	streak       int
+	refusedInRow int
+
+	// batch is the batch (WithToolBatch) the latest call in the streak ran in,
+	// and inBatch how many of the streak ran in it. batches mints batch ids.
+	batch   uint64
+	inBatch int
+	batches uint64
 }
 
 // consecutiveCallsAllowed is how many times in a row a run may make the exact
-// same call. The next one is refused unrun.
+// same call and get the exact same result back. The next such call is refused
+// unrun.
 //
 // A model looping on one call: measured live (ornith-1.5 behind chat/local),
 // the same successful tenant save was re-sent 36, 17 and 12 times in a row,
 // and one help article re-read 7 times. The failed-call guard never saw it,
 // because every call succeeded. This is deliberately narrow: only the SAME
-// tool with the SAME arguments, back to back. Any other call in between, or
-// any change to the arguments, starts the count over, so re-reading a file
-// after editing it, or polling between other steps, is untouched.
+// tool with the SAME arguments, back to back, returning the SAME result. Any
+// other call in between, any change to the arguments, or any change in what
+// the call returns starts the count over. The last one matters because some
+// calls are meant to be repeated as they are: a poll of a sub-agent, a
+// subscribe that drains a queue batch by batch, a clock read. Each returns
+// something new, and refusing them would end a run that is doing what the
+// tool's help tells it to.
 const consecutiveCallsAllowed = 2
 
-// recordCall makes this call the run's latest and returns how many times in a
-// row it has now been made. Every attempted call is recorded, refused ones
-// included, so a model that keeps sending the same call keeps being refused.
-func (d *Dispatcher) recordCall(name string, input json.RawMessage) int {
+// refuseConsecutive returns the refusal for a call that has already been made
+// consecutiveCallsAllowed times in a row with the same result, or false to run
+// it. A refused call leaves the streak as it is, so a model that keeps sending
+// it keeps being refused.
+//
+// Only results the model had seen when it sent the call count. Calls it sent
+// together in one turn run concurrently and none of them has seen another's
+// result, so three identical calls in one turn all run — three identical
+// spawns for a majority vote are a deliberate request, and "use the result you
+// already have" would be false for them. If they all come back the same, that
+// same call in a LATER turn is refused.
+func (d *Dispatcher) refuseConsecutive(ctx context.Context, name string, input json.RawMessage) (Result, bool) {
 	d.repeats.mu.Lock()
 	defer d.repeats.mu.Unlock()
-	k := repeatKey(name, input)
-	if k == d.repeats.last {
-		d.repeats.streak++
-	} else {
-		d.repeats.last, d.repeats.streak = k, 1
+	t := &d.repeats
+	if repeatKey(name, input) != t.last {
+		return Result{}, false
 	}
-	return d.repeats.streak
+	seen := t.streak
+	if b := toolBatch(ctx); b != 0 && b == t.batch {
+		seen -= t.inBatch
+	}
+	if seen < consecutiveCallsAllowed {
+		return Result{}, false
+	}
+	n := t.streak + t.refusedInRow
+	t.refusedInRow++
+	return consecutiveRefusal(name, n), true
+}
+
+// recordResult makes this call, with what it returned, the run's latest. The
+// same call returning the same thing extends the streak; anything else starts
+// a new one.
+func (d *Dispatcher) recordResult(ctx context.Context, name string, input json.RawMessage, res Result) {
+	k, h, b := repeatKey(name, input), resultHash(res), toolBatch(ctx)
+	d.repeats.mu.Lock()
+	defer d.repeats.mu.Unlock()
+	t := &d.repeats
+	if k == t.last && h == t.lastResult {
+		t.streak++
+	} else {
+		t.last, t.lastResult, t.streak, t.refusedInRow = k, h, 1, 0
+		t.batch, t.inBatch = 0, 0
+	}
+	if b != 0 && b == t.batch {
+		t.inBatch++
+	} else {
+		t.batch, t.inBatch = b, 1
+	}
+}
+
+// NoteOperatorTurn starts the consecutive-call count over. An operator's
+// message is new input: after "check again" the same call is a fresh request,
+// not a loop, and refusing it would refuse the operator. The streak's own
+// refusals were counted as failures of its call, so they go with it, or the
+// failed-call guard would refuse that call instead. Failures the call really
+// returned stay counted: an operator turn does not make them succeed. Nil-safe.
+func (d *Dispatcher) NoteOperatorTurn() {
+	if d == nil {
+		return
+	}
+	d.repeats.mu.Lock()
+	defer d.repeats.mu.Unlock()
+	t := &d.repeats
+	if n := t.failures[t.last] - t.refusedInRow; n > 0 {
+		t.failures[t.last] = n
+	} else {
+		delete(t.failures, t.last)
+	}
+	t.last, t.lastResult, t.streak, t.refusedInRow = "", [sha256.Size]byte{}, 0, 0
+	t.batch, t.inBatch = 0, 0
+}
+
+type ctxKeyToolBatch struct{}
+
+// WithToolBatch marks ctx as carrying one batch of tool calls: the calls a
+// model sent together in one turn. The loop wraps each turn's dispatch in it,
+// so the consecutive-call guard can tell a call that was sent after seeing an
+// identical call's result from one sent alongside it. Nil-safe.
+func (d *Dispatcher) WithToolBatch(ctx context.Context) context.Context {
+	if d == nil {
+		return ctx
+	}
+	d.repeats.mu.Lock()
+	d.repeats.batches++
+	id := d.repeats.batches
+	d.repeats.mu.Unlock()
+	return context.WithValue(ctx, ctxKeyToolBatch{}, id)
+}
+
+// toolBatch is ctx's batch id, 0 for a call outside any batch.
+func toolBatch(ctx context.Context) uint64 {
+	id, _ := ctx.Value(ctxKeyToolBatch{}).(uint64)
+	return id
+}
+
+// resultHash is what "the same result" means: the same text, and the same
+// success or failure.
+func resultHash(res Result) [sha256.Size]byte {
+	flag := byte(0)
+	if res.IsError {
+		flag = 1
+	}
+	return sha256.Sum256(append([]byte{flag}, res.Text...))
 }
 
 // consecutiveRefusal is the refusal for a call made more than
-// consecutiveCallsAllowed times in a row. It is a failure, so a model that will
-// not break the loop is then caught by the failed-call guard, which ends the
-// run.
-func consecutiveRefusal(name string, streak int) Result {
+// consecutiveCallsAllowed times in a row with the same result each time. It
+// says what happened rather than predicting the next result. It is a failure,
+// so a model that will not break the loop is then caught by the failed-call
+// guard, which ends the run.
+func consecutiveRefusal(name string, made int) Result {
 	return Result{
-		Text: fmt.Sprintf("%s: you have made this exact call %d times in a row with the same arguments, so it was NOT run again. "+
-			"Repeating it will not change the result. Use the result you already have and take the next step, "+
-			"change the arguments, or answer the user.", name, streak-1),
+		Text: fmt.Sprintf("%s: you have made this exact call %d times in a row with the same arguments, and it returned the same result each time, so it was NOT run again. "+
+			"Use the result you already have and take the next step, "+
+			"change the arguments, or answer the user.", name, made),
 		IsError: true,
 		Error:   &ErrorInfo{Category: "business", Retryable: false},
 	}
