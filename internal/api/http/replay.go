@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -108,6 +109,22 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	if cErr != nil {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusInternalServerError, msg: "create session: " + cErr.Error()}
 	}
+	// The seed run only holds events; no loop ever runs it. Created running
+	// (the one way CreateRun makes a row) and left so, it read as a live run
+	// owned by this replica until the stale sweeper failed it: this replica had
+	// no steer entry for it, but another replica's remote steer gate admitted
+	// a steer or retune on it. Close it when the seeding returns — completed
+	// once every event is in, failed on a partial copy.
+	seeded := false
+	defer func() {
+		status, msg := store.RunFailed, "replay: seeding the transcript did not complete"
+		if seeded {
+			status, msg = store.RunCompleted, ""
+		}
+		if ferr := s.store.FinishRun(context.WithoutCancel(ctx), seedRunID, status, "", store.Usage{}, msg); ferr != nil {
+			log.Printf("replay: finish seed run %s: %v", seedRunID, ferr)
+		}
+	}()
 
 	// Copy the source transcript into the seed run, stripping provider-specific
 	// reasoning from assistant turns (cross-provider safety).
@@ -142,6 +159,7 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 		}
 	}
 
+	seeded = true
 	return connector.ReplaySessionResult{
 		NewSessionID: newSessionID, SeedRunID: seedRunID, EventsCopied: copied, Compacted: compacted,
 	}, nil
