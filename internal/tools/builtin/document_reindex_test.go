@@ -554,3 +554,42 @@ func TestReindex_BodyWriteDuringPassEndsOnTheNewBody(t *testing.T) {
 		t.Errorf("after a body write raced the re-index pass the chunk is indexed as %q, want %q", got, want)
 	}
 }
+
+// TestReindex_TypeOnlyUpdateReindexesTheChunk — a chunk's type decides how its body is
+// indexed (a mermaid chunk under its labels, not its raw source), so an update_chunk that
+// changes only the type must re-index it. It used to embed nothing, leaving the chunk
+// under the text of its old type. An unchanged type costs nothing.
+func TestReindex_TypeOnlyUpdateReindexesTheChunk(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "user", "reads", "memory", "flowchart")
+	out := docOp(t, d, ctx, map[string]any{"op": "create_document", "title": "Diagrams"})
+	src := "graph TD\n  A[User] -->|reads| B[(Memory)]"
+	id := docOp(t, d, ctx, map[string]any{"op": "create_chunk", "document_id": out["document_id"],
+		"title": "Flow", "body": src})["id"].(string)
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asProse := embeddedTextFor(t, vs, id)
+	asMermaid := d.chunkIndexText(ctx, key, id, "mermaid", src)
+	if asProse == "" || asProse == asMermaid {
+		t.Fatalf("precondition: the prose and mermaid index texts must differ: %q vs %q", asProse, asMermaid)
+	}
+	emb := &countingEmbedder{Embedder: d.Embedder}
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": id,
+		"revision": chunkRevision(t, d, ctx, id), "type": "mermaid"})
+	if n := emb.n.Load(); n != 1 {
+		t.Errorf("a type-only update made %d embed calls, want 1", n)
+	}
+	if got := embeddedTextFor(t, vs, id); got != asMermaid {
+		t.Errorf("after a type-only update the chunk is indexed as %q, want %q", got, asMermaid)
+	}
+
+	// The same type again, and a status-only update, change no index text.
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": id,
+		"revision": chunkRevision(t, d, ctx, id), "type": "mermaid", "status": "review"})
+	if n := emb.n.Load(); n != 1 {
+		t.Errorf("an update with an unchanged type made %d more embed calls, want 0", n-1)
+	}
+}
