@@ -2026,6 +2026,15 @@ type Store interface {
 	SnapshotReadA2AAgentDefActive(ctx context.Context) ([]A2AAgentDefActiveEntry, error)
 	SnapshotReadA2AServerCardDefActive(ctx context.Context) ([]A2AServerCardDefActiveEntry, error)
 
+	// SnapshotReadMemoryBackendDefs / SnapshotReadDocumentSourceDefs return
+	// every row of the def table, every tenant's, ordered by (tenant_id,
+	// name, version); their *Active twins return every active pointer,
+	// ordered by (tenant_id, name). Same shape as the webhook and A2A reads.
+	SnapshotReadMemoryBackendDefs(ctx context.Context) ([]MemoryBackendDefRow, error)
+	SnapshotReadDocumentSourceDefs(ctx context.Context) ([]DocumentSourceDefRow, error)
+	SnapshotReadMemoryBackendDefActive(ctx context.Context) ([]MemoryBackendDefActiveEntry, error)
+	SnapshotReadDocumentSourceDefActive(ctx context.Context) ([]DocumentSourceDefActiveEntry, error)
+
 	// SnapshotReadMemory returns every memory row across all scopes and
 	// tenants, tagged with tenant_id + scope + scope_id. Ordered by
 	// (scope ASC, scope_id ASC, key ASC). Filters out expired rows
@@ -2163,6 +2172,16 @@ type Store interface {
 	SnapshotRestoreWebhookDefActive(ctx context.Context, entry WebhookDefActiveEntry) (bool, error)
 	SnapshotRestoreA2AAgentDefActive(ctx context.Context, entry A2AAgentDefActiveEntry) (bool, error)
 	SnapshotRestoreA2AServerCardDefActive(ctx context.Context, entry A2AServerCardDefActiveEntry) (bool, error)
+
+	// SnapshotRestoreMemoryBackendDef / SnapshotRestoreDocumentSourceDef
+	// insert one def row keeping every column, with the webhook and A2A
+	// rule: conflict target def_id ONLY, so a different live row on
+	// (tenant_id, name, version) is an error the caller reports. Their
+	// *Active twins insert one pointer; the live pointer stands.
+	SnapshotRestoreMemoryBackendDef(ctx context.Context, r MemoryBackendDefRow) (bool, error)
+	SnapshotRestoreDocumentSourceDef(ctx context.Context, r DocumentSourceDefRow) (bool, error)
+	SnapshotRestoreMemoryBackendDefActive(ctx context.Context, entry MemoryBackendDefActiveEntry) (bool, error)
+	SnapshotRestoreDocumentSourceDefActive(ctx context.Context, entry DocumentSourceDefActiveEntry) (bool, error)
 
 	// SnapshotRestoreMemory inserts one memory row preserving
 	// TenantID + CreatedAt + UpdatedAt + ExpiresAt + Value. Idempotent
@@ -5374,6 +5393,17 @@ type MemoryBackendDefActiveEntry struct {
 	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
 	// TenantID is the RFC N tenant-isolation axis (part of the
 	// memory_backend_def_active PK). "" = the shared/operator/legacy tenant.
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// DocumentSourceDefActiveEntry mirrors MemoryBackendDefActiveEntry.
+type DocumentSourceDefActiveEntry struct {
+	Name              string    `json:"name"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+	// TenantID is the RFC N tenant-isolation axis (part of the
+	// document_source_def_active PK). "" = the shared/operator/legacy tenant.
 	TenantID string `json:"tenant_id,omitempty"`
 }
 

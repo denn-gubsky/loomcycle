@@ -356,6 +356,10 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 			migrations.SectionWebhookDefs:       builtin.ValidateWebhookDefBody,
 			migrations.SectionA2AAgentDefs:      builtin.ValidateA2AAgentDefBody,
 			migrations.SectionA2AServerCardDefs: builtin.ValidateA2AServerCardDefBody,
+			// base_url + api_key_env is an exfiltration pair: the key named
+			// is sent to the URL, so both go through the authoring checks.
+			migrations.SectionMemoryBackendDefs: builtin.ValidateMemoryBackendDefBody,
+			migrations.SectionDocSourceDefs:     builtin.ValidateDocumentSourceDefBody,
 		},
 		CredentialExists: s.credKeyable,
 		EnvSet:           func(name string) bool { return os.Getenv(name) != "" },

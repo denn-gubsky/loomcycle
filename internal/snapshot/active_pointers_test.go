@@ -204,6 +204,40 @@ func pointerKinds() []pointerKind {
 			},
 			restored: func(r RestoreResult) int { return r.A2AServerCardDefActiveRestored },
 		},
+		{
+			section:     "memory_backend_def_active",
+			defsSection: "memory_backend_defs",
+			seedDef: func(ctx context.Context, s store.Store, id, tenant, name string, body json.RawMessage) error {
+				_, err := s.SnapshotRestoreMemoryBackendDef(ctx, store.MemoryBackendDefRow{DefID: id, TenantID: tenant, Name: name, Version: 1, Definition: body, CreatedAt: now})
+				return err
+			},
+			seedPtr: func(ctx context.Context, s store.Store, tenant, name, id string) error {
+				_, err := s.SnapshotRestoreMemoryBackendDefActive(ctx, store.MemoryBackendDefActiveEntry{TenantID: tenant, Name: name, DefID: id, PromotedAt: now})
+				return err
+			},
+			active: func(ctx context.Context, s store.Store, tenant, name string) (string, error) {
+				r, err := s.MemoryBackendDefGetActive(ctx, tenant, name)
+				return r.DefID, err
+			},
+			restored: func(r RestoreResult) int { return r.MemoryBackendDefActiveRestored },
+		},
+		{
+			section:     "document_source_def_active",
+			defsSection: "document_source_defs",
+			seedDef: func(ctx context.Context, s store.Store, id, tenant, name string, body json.RawMessage) error {
+				_, err := s.SnapshotRestoreDocumentSourceDef(ctx, store.DocumentSourceDefRow{DefID: id, TenantID: tenant, Name: name, Version: 1, Definition: body, CreatedAt: now})
+				return err
+			},
+			seedPtr: func(ctx context.Context, s store.Store, tenant, name, id string) error {
+				_, err := s.SnapshotRestoreDocumentSourceDefActive(ctx, store.DocumentSourceDefActiveEntry{TenantID: tenant, Name: name, DefID: id, PromotedAt: now})
+				return err
+			},
+			active: func(ctx context.Context, s store.Store, tenant, name string) (string, error) {
+				r, err := s.DocumentSourceDefGetActive(ctx, tenant, name)
+				return r.DefID, err
+			},
+			restored: func(r RestoreResult) int { return r.DocSourceDefActiveRestored },
+		},
 	}
 }
 

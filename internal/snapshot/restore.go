@@ -43,7 +43,8 @@ type RestoreOptions struct {
 	// Validators re-run a section's authoring validation over each restored
 	// body, keyed by section name (migrations.Section*). The snapshot package
 	// cannot import the tools that own those rules, so the call sites inject
-	// them. A section added by RFC DP P3 or later is never restored
+	// them. A section added by RFC DP P3 or later (webhook, A2A,
+	// memory-backend and document-source defs) is never restored
 	// unvalidated: a row whose validator is missing, or fails, is skipped
 	// with a warning. Sections that predate it are not consulted yet.
 	Validators map[string]func(body json.RawMessage) error
@@ -97,6 +98,10 @@ type RestoreResult struct {
 	HookDefActiveRestored          int      `json:"hook_def_active_restored"`
 	MCPServerDefsRestored          int      `json:"mcp_server_defs_restored"`
 	MCPServerDefActiveRestored     int      `json:"mcp_server_def_active_restored"`
+	MemoryBackendDefsRestored      int      `json:"memory_backend_defs_restored"`
+	MemoryBackendDefActiveRestored int      `json:"memory_backend_def_active_restored"`
+	DocSourceDefsRestored          int      `json:"document_source_defs_restored"`
+	DocSourceDefActiveRestored     int      `json:"document_source_def_active_restored"`
 	A2AAgentDefsRestored           int      `json:"a2a_agent_defs_restored"`
 	A2AAgentDefActiveRestored      int      `json:"a2a_agent_def_active_restored"`
 	A2AServerCardDefsRestored      int      `json:"a2a_server_card_defs_restored"`
@@ -155,6 +160,7 @@ func (r RestoreResult) Counts() map[string]int {
 //
 //	users, token_limits (first: before any definition or resumed run)
 //	agent_defs        → agent_def_active (FK: name → agent_defs.def_id)
+//	memory_backend_defs, document_source_defs → their active pointers
 //	a2a_agent_defs, a2a_server_card_defs → their active pointers
 //	webhook_defs, schedule_defs → their active pointers (after channel_defs)
 //	(missing-credential scan over the restored triggers and cards)
@@ -181,7 +187,11 @@ func (r RestoreResult) Counts() map[string]int {
 // *migrations.ErrUnknownSectionVersion for corrupted / unsupported
 // snapshots. Both errors carry the section + version strings for
 // operator-actionable messaging.
-func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions) (RestoreResult, error) {
+func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions) (out RestoreResult, err error) {
+	// Every warning, on every return path, leaves without a URL credential:
+	// the ones that quote a refused body (a validator's error repeats the
+	// value it refused) and any a future section adds.
+	defer func() { out.Warnings = redactWarnings(out.Warnings) }()
 	if s == nil {
 		return RestoreResult{}, fmt.Errorf("snapshot restore: nil store")
 	}
@@ -568,6 +578,38 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	// missing-credential scan checks them once every def section has landed.
 	scan := &credScan{}
 
+	// memory_backend_defs, then document_source_defs, each with its pointers:
+	// before memory, since a routing def precedes the data routed through it,
+	// and before any resumed run makes its first Memory or Document call.
+	if rawSection, ok := sections[migrations.SectionMemoryBackendDefs]; ok {
+		var sec MemoryBackendDefsSection
+		if err := decodeWithMigration(migrations.SectionMemoryBackendDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreMemoryBackendDefs(ctx, s, &sec, opts, scan, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionMemoryBackendDefActive]; ok {
+		var sec MemoryBackendDefActiveSection
+		if err := decodeWithMigration(migrations.SectionMemoryBackendDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreMemoryBackendDefActive(ctx, s, &sec, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionDocSourceDefs]; ok {
+		var sec DocSourceDefsSection
+		if err := decodeWithMigration(migrations.SectionDocSourceDefs, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreDocSourceDefs(ctx, s, &sec, opts, scan, &result)
+	}
+	if rawSection, ok := sections[migrations.SectionDocSourceDefActive]; ok {
+		var sec DocSourceDefActiveSection
+		if err := decodeWithMigration(migrations.SectionDocSourceDefActive, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreDocSourceDefActive(ctx, s, &sec, &result)
+	}
+
 	// a2a_agent_defs, then a2a_server_card_defs, each with its pointers:
 	// before any resumed run, whose A2A peer tools are enumerated at run
 	// start; the cards after the agent defs they expose.
@@ -830,8 +872,8 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		restoreScheduleDefActive(ctx, s, &sec, restoredSchedules, &result)
 	}
 
-	// Every trigger and card definition has landed: say which credentials
-	// they name that this host cannot supply.
+	// Every trigger, card, memory-backend and document-source definition has
+	// landed: say which credentials they name that this host cannot supply.
 	scan.run(ctx, opts, &result)
 
 	// evaluations (no FK enforced — runs.agent_def_id is

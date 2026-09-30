@@ -98,3 +98,13 @@ func admitActivePointer(ctx context.Context, s store.Store, owner defOwner, sect
 		section, qualifiedName(tenantID, name), defID, reason))
 	return false
 }
+
+func memoryBackendDefOwner(ctx context.Context, s store.Store, defID string) (string, string, error) {
+	r, err := s.MemoryBackendDefGet(ctx, defID)
+	return r.TenantID, r.Name, err
+}
+
+func docSourceDefOwner(ctx context.Context, s store.Store, defID string) (string, string, error) {
+	r, err := s.DocumentSourceDefGet(ctx, defID)
+	return r.TenantID, r.Name, err
+}

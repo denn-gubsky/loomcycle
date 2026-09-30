@@ -324,6 +324,19 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	})
 	must("mcp_server_defs", err)
 
+	// A memory backend and a document source whose api_key_env NAMES that
+	// same env var. The name travels as written; the value is never resolved.
+	_, err = s.MemoryBackendDefCreate(ctx, store.MemoryBackendDefRow{
+		DefID: "mbd_dp0mark", Name: "dp0mark-memory-backend", Version: 1, CreatedAt: now,
+		Definition: json.RawMessage(`{"kind":"remote","config":{"base_url":"https://example.test","api_key_env":"` + plantedEnvName + `"}}`),
+	})
+	must("memory_backend_defs", err)
+	_, err = s.DocumentSourceDefCreate(ctx, store.DocumentSourceDefRow{
+		DefID: "dsd_dp0mark", Name: "dp0mark-document-source", Version: 1, CreatedAt: now,
+		Definition: json.RawMessage(`{"config":{"base_url":"https://example.test","api_key_env":"` + plantedEnvName + `"}}`),
+	})
+	must("document_source_defs", err)
+
 	// A billing-ledger row. Only a month-to-date aggregate may ever travel,
 	// so none of the row's own fields may — but its tenant does, as the key
 	// of that aggregate. The check for it is in the test, since the ledger
@@ -346,6 +359,10 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		{table: "webhook_defs", present: []string{"dp0mark-webhook", `"stripped_credentials":["SLACK_TOKEN"]`},
 			absent: []string{markHookCred}},
 		{table: "mcp_server_defs", present: []string{"dp0mark-mcp", ref}, absent: []string{markEnvResolved}},
+		{table: "memory_backend_defs", present: []string{"dp0mark-memory-backend", `"api_key_env":"` + plantedEnvName + `"`},
+			absent: []string{markEnvResolved}},
+		{table: "document_source_defs", present: []string{"dp0mark-document-source", `"api_key_env":"` + plantedEnvName + `"`},
+			absent: []string{markEnvResolved}},
 		{table: "token_usage", absent: []string{markProvider, markModel, markUsageRun}},
 		{table: "users", present: []string{markUser}},
 		{table: "token_limits", present: []string{markLimitUser}},

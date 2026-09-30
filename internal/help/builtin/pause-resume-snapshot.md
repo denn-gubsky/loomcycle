@@ -182,6 +182,32 @@ charset, delivery-mode rules, peer endpoint and agent-card URL checks
 definition that fails is not restored, and neither is a pointer at it;
 the warning names it and the reason.
 
+### Memory backends and document sources
+
+The `memory_backend_defs` and `document_source_defs` sections carry every
+definition with its active pointers (`memory_backend_def_active`,
+`document_source_def_active`), restored before memory so a run resumed by
+the same restore routes its Memory and Document calls through them. A
+definition already on the target stands, as above. A restored definition
+is live at once: nothing needs a restart.
+
+`config.api_key_env` and `tenancy_strategy.env_pattern` are env-var
+**names**. They travel as written and are never resolved, so the key's
+value never enters the snapshot. But the host sends that key to
+`config.base_url`, so **every restored memory backend and document
+source is re-validated** with the rules an author faces: `base_url` must
+be an http(s) URL with a host, and `api_key_env` must be an allowed
+credential name, never one of loomcycle's own secrets such as
+`LOOMCYCLE_AUTH_TOKEN`. A definition that fails is not restored, and
+neither is a pointer at it. An old `kind: mem9` backend is refused the
+same way, since authoring refuses it.
+
+### Restore warnings and missing credentials
+
+A restore warning that quotes a URL has the URL's user/password, query
+and fragment replaced by `REDACTED`, so a refused endpoint's embedded
+credential is never printed.
+
 **Missing credentials.** A snapshot never lists the source's
 credentials. After the definitions land, the restore reads the
 references in each restored webhook, schedule and server card —
@@ -190,6 +216,13 @@ references in each restored webhook, schedule and server card —
 and warns for each one this host cannot supply: an env var that is not
 set, or a credential the definition's tenant does not have. A warning
 names the definition and the reference, never a value.
+
+For a memory backend that dials a peer (`kind: remote`) and for every
+document source, the restore checks the env var a call would send: a
+tenant's own `key_per_tenant` pattern with its tenant filled in, else
+`api_key_env`. An operator-layer pattern names a different variable for
+each calling tenant, so it is not checked; an in-process backend sends
+no key, so nothing it names is checked.
 
 Per-section semver gates compatibility. A snapshot at section
 version `1.0` restored on a reader at `1.0` is identity-decoded.

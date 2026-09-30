@@ -82,6 +82,15 @@ type Sections struct {
 	HookDefActive      HookDefActiveSection      `json:"hook_def_active"`
 	MCPServerDefs      MCPServerDefsSection      `json:"mcp_server_defs"`
 	MCPServerDefActive MCPServerDefActiveSection `json:"mcp_server_def_active"`
+	// Memory-backend and document-source defs name an endpoint the target
+	// dials and an env var whose value is sent there, so restore re-runs the
+	// authoring validators on every body. Both precede memory: a routing def
+	// is in place before the data routed through it, and before any resumed
+	// run makes its first Memory or Document call.
+	MemoryBackendDefs      MemoryBackendDefsSection      `json:"memory_backend_defs"`
+	MemoryBackendDefActive MemoryBackendDefActiveSection `json:"memory_backend_def_active"`
+	DocSourceDefs          DocSourceDefsSection          `json:"document_source_defs"`
+	DocSourceDefActive     DocSourceDefActiveSection     `json:"document_source_def_active"`
 	// A2A peer and server-card defs hold no secret: a peer's auth names a
 	// per-run credential key, a card's security schemes are public
 	// descriptions. Restore re-runs the authoring validators on every body,
@@ -610,6 +619,79 @@ type A2AServerCardDefActiveSection struct {
 }
 
 type A2AServerCardDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// MemoryBackendDefsSection carries every tenant's memory-backend defs.
+type MemoryBackendDefsSection struct {
+	Version string                  `json:"version"`
+	Entries []MemoryBackendDefEntry `json:"entries"`
+}
+
+// MemoryBackendDefEntry mirrors a memory_backend_defs row. The body's
+// config.api_key_env and tenancy_strategy.env_pattern are env-var NAMES,
+// carried as written and never resolved; config.base_url is an endpoint.
+type MemoryBackendDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+type MemoryBackendDefActiveSection struct {
+	Version string                        `json:"version"`
+	Entries []MemoryBackendDefActiveEntry `json:"entries"`
+}
+
+type MemoryBackendDefActiveEntry struct {
+	Name              string    `json:"name"`
+	TenantID          string    `json:"tenant_id,omitempty"`
+	DefID             string    `json:"def_id"`
+	PromotedAt        time.Time `json:"promoted_at"`
+	PromotedByAgentID string    `json:"promoted_by_agent_id,omitempty"`
+}
+
+// DocSourceDefsSection carries every tenant's document-source defs.
+type DocSourceDefsSection struct {
+	Version string              `json:"version"`
+	Entries []DocSourceDefEntry `json:"entries"`
+}
+
+// DocSourceDefEntry mirrors a document_source_defs row, with the same
+// env-NAME and endpoint fields as a memory-backend def.
+type DocSourceDefEntry struct {
+	DefID                  string          `json:"def_id"`
+	TenantID               string          `json:"tenant_id,omitempty"`
+	Name                   string          `json:"name"`
+	Version                int             `json:"version"`
+	ParentDefID            string          `json:"parent_def_id,omitempty"`
+	Definition             json.RawMessage `json:"definition"`
+	Description            string          `json:"description,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
+	CreatedByAgentID       string          `json:"created_by_agent_id,omitempty"`
+	CreatedByRunID         string          `json:"created_by_run_id,omitempty"`
+	Retired                bool            `json:"retired"`
+	BootstrappedFromStatic bool            `json:"bootstrapped_from_static"`
+}
+
+type DocSourceDefActiveSection struct {
+	Version string                    `json:"version"`
+	Entries []DocSourceDefActiveEntry `json:"entries"`
+}
+
+type DocSourceDefActiveEntry struct {
 	Name              string    `json:"name"`
 	TenantID          string    `json:"tenant_id,omitempty"`
 	DefID             string    `json:"def_id"`

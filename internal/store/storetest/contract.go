@@ -511,8 +511,9 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotScheduleRestoreKeepsLiveRows", testSnapshotScheduleRestoreKeepsLiveRows},
 		// The seed a re-enabling fork uses carries a fire count, never lowered.
 		{"ScheduleRunStateSeedWithFireCount", testScheduleRunStateSeedWithFireCount},
-		// Snapshot restore of webhook and A2A defs: every column lands, the
-		// live rows stand, and a clash on (tenant, name, version) is an error.
+		// Snapshot restore of webhook, A2A, memory-backend and document-source
+		// defs: every column lands, the live rows stand, and a clash on
+		// (tenant, name, version) is an error.
 		{"SnapshotTriggerDefRestoreKeepsLiveRows", testSnapshotTriggerDefRestoreKeepsLiveRows},
 		{"SessionArchiver", testSessionArchiver},
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
@@ -1458,7 +1459,7 @@ func testSnapshotScheduleRestoreKeepsLiveRows(t *testing.T, s store.Store) {
 // def at the given count, and on an existing row raises the count but never
 // lowers it.
 // snapshotDefOps adapts one def table's snapshot methods to a common shape so
-// the three tables that share a column set share one contract test.
+// the tables that share a column set share one contract test.
 type snapshotDefOps struct {
 	table         string
 	restoreDef    func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error)
@@ -1561,11 +1562,67 @@ func snapshotDefOpsAll() []snapshotDefOps {
 				return out, err
 			},
 		},
+		{
+			table: "memory_backend_defs",
+			restoreDef: func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error) {
+				return s.SnapshotRestoreMemoryBackendDef(ctx, store.MemoryBackendDefRow{DefID: c.DefID, TenantID: c.TenantID, Name: c.Name, Version: c.Version,
+					ParentDefID: c.ParentDefID, Definition: c.Definition, Description: c.Description, CreatedAt: c.CreatedAt,
+					CreatedByAgentID: c.AgentID, CreatedByRunID: c.RunID, Retired: c.Retired, BootstrappedFromStatic: c.Bootstrapped})
+			},
+			readDefs: func(ctx context.Context, s store.Store) ([]snapshotDefCase, error) {
+				rows, err := s.SnapshotReadMemoryBackendDefs(ctx)
+				var out []snapshotDefCase
+				for _, r := range rows {
+					out = append(out, snapshotDefCase{r.DefID, r.TenantID, r.Name, r.ParentDefID, r.Description, r.CreatedByAgentID, r.CreatedByRunID,
+						r.Version, r.Definition, r.CreatedAt, r.Retired, r.BootstrappedFromStatic})
+				}
+				return out, err
+			},
+			restoreActive: func(ctx context.Context, s store.Store, tenant, name, defID string, at time.Time, by string) (bool, error) {
+				return s.SnapshotRestoreMemoryBackendDefActive(ctx, store.MemoryBackendDefActiveEntry{TenantID: tenant, Name: name, DefID: defID, PromotedAt: at, PromotedByAgentID: by})
+			},
+			readActive: func(ctx context.Context, s store.Store) ([][4]string, error) {
+				rows, err := s.SnapshotReadMemoryBackendDefActive(ctx)
+				var out [][4]string
+				for _, r := range rows {
+					out = append(out, [4]string{r.TenantID, r.Name, r.DefID, r.PromotedByAgentID})
+				}
+				return out, err
+			},
+		},
+		{
+			table: "document_source_defs",
+			restoreDef: func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error) {
+				return s.SnapshotRestoreDocumentSourceDef(ctx, store.DocumentSourceDefRow{DefID: c.DefID, TenantID: c.TenantID, Name: c.Name, Version: c.Version,
+					ParentDefID: c.ParentDefID, Definition: c.Definition, Description: c.Description, CreatedAt: c.CreatedAt,
+					CreatedByAgentID: c.AgentID, CreatedByRunID: c.RunID, Retired: c.Retired, BootstrappedFromStatic: c.Bootstrapped})
+			},
+			readDefs: func(ctx context.Context, s store.Store) ([]snapshotDefCase, error) {
+				rows, err := s.SnapshotReadDocumentSourceDefs(ctx)
+				var out []snapshotDefCase
+				for _, r := range rows {
+					out = append(out, snapshotDefCase{r.DefID, r.TenantID, r.Name, r.ParentDefID, r.Description, r.CreatedByAgentID, r.CreatedByRunID,
+						r.Version, r.Definition, r.CreatedAt, r.Retired, r.BootstrappedFromStatic})
+				}
+				return out, err
+			},
+			restoreActive: func(ctx context.Context, s store.Store, tenant, name, defID string, at time.Time, by string) (bool, error) {
+				return s.SnapshotRestoreDocumentSourceDefActive(ctx, store.DocumentSourceDefActiveEntry{TenantID: tenant, Name: name, DefID: defID, PromotedAt: at, PromotedByAgentID: by})
+			},
+			readActive: func(ctx context.Context, s store.Store) ([][4]string, error) {
+				rows, err := s.SnapshotReadDocumentSourceDefActive(ctx)
+				var out [][4]string
+				for _, r := range rows {
+					out = append(out, [4]string{r.TenantID, r.Name, r.DefID, r.PromotedByAgentID})
+				}
+				return out, err
+			},
+		},
 	}
 }
 
-// testSnapshotTriggerDefRestoreKeepsLiveRows: for each of the webhook and A2A
-// def tables, a restored def and active pointer land with every column as
+// testSnapshotTriggerDefRestoreKeepsLiveRows: for each of the webhook, A2A,
+// memory-backend and document-source def tables, a restored def and active pointer land with every column as
 // given; a re-restore onto the same keys is a silent no-op; a DIFFERENT def on
 // a live (tenant, name, version) — the target's own yaml bootstrap — is an
 // error, not a silent skip; and the snapshot read returns lineage order.

@@ -22,6 +22,8 @@ func passValidators() map[string]func(json.RawMessage) error {
 		migrations.SectionWebhookDefs:       ok,
 		migrations.SectionA2AAgentDefs:      ok,
 		migrations.SectionA2AServerCardDefs: ok,
+		migrations.SectionMemoryBackendDefs: ok,
+		migrations.SectionDocSourceDefs:     ok,
 	}
 }
 

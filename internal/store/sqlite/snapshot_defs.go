@@ -10,9 +10,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// Snapshot read/restore for the webhook and A2A def tables (RFC DP P3).
+// Snapshot read/restore for the webhook, A2A, memory-backend and
+// document-source def tables (RFC DP P3, P4).
 //
-// The three def tables share one column set and so do their active-pointer
+// These def tables share one column set and so do their active-pointer
 // tables, so each restore goes through one helper parameterised by table
 // name. The names are compile-time constants below, never caller input.
 
@@ -23,9 +24,13 @@ const (
 	tblA2AAgentDefActive      = "a2a_agent_def_active"
 	tblA2AServerCardDefs      = "a2a_server_card_defs"
 	tblA2AServerCardDefActive = "a2a_server_card_def_active"
+	tblMemoryBackendDefs      = "memory_backend_defs"
+	tblMemoryBackendDefActive = "memory_backend_def_active"
+	tblDocSourceDefs          = "document_source_defs"
+	tblDocSourceDefActive     = "document_source_def_active"
 )
 
-// snapshotDefCols is the column set the three def tables share.
+// snapshotDefCols is the column set the def tables share.
 type snapshotDefCols struct {
 	DefID, Name, ParentDefID, Description string
 	Version                               int
@@ -36,7 +41,7 @@ type snapshotDefCols struct {
 	TenantID                              string
 }
 
-// snapshotActiveCols is the column set the three active-pointer tables share.
+// snapshotActiveCols is the column set the active-pointer tables share.
 type snapshotActiveCols struct {
 	TenantID, Name, DefID string
 	PromotedAt            time.Time
@@ -231,6 +236,80 @@ func (s *Store) SnapshotRestoreA2AServerCardDef(ctx context.Context, r store.A2A
 
 func (s *Store) SnapshotRestoreA2AServerCardDefActive(ctx context.Context, e store.A2AServerCardDefActiveEntry) (bool, error) {
 	return s.snapshotRestoreActive(ctx, tblA2AServerCardDefActive, snapshotActiveCols{
+		TenantID: e.TenantID, Name: e.Name, DefID: e.DefID, PromotedAt: e.PromotedAt, PromotedByAgentID: e.PromotedByAgentID,
+	})
+}
+
+// ---- memory_backend_defs ----
+
+func (s *Store) SnapshotReadMemoryBackendDefs(ctx context.Context) ([]store.MemoryBackendDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, memoryBackendDefSelect+snapshotDefOrder)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read memory_backend_defs: %w", err)
+	}
+	defer rows.Close()
+	return s.scanMemoryBackendDefRows(rows)
+}
+
+func (s *Store) SnapshotReadMemoryBackendDefActive(ctx context.Context) ([]store.MemoryBackendDefActiveEntry, error) {
+	cols, err := s.snapshotReadActive(ctx, tblMemoryBackendDefActive)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.MemoryBackendDefActiveEntry, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, store.MemoryBackendDefActiveEntry{Name: c.Name, DefID: c.DefID, PromotedAt: c.PromotedAt, PromotedByAgentID: c.PromotedByAgentID, TenantID: c.TenantID})
+	}
+	return out, nil
+}
+
+func (s *Store) SnapshotRestoreMemoryBackendDef(ctx context.Context, r store.MemoryBackendDefRow) (bool, error) {
+	return s.snapshotRestoreDef(ctx, tblMemoryBackendDefs, snapshotDefCols{
+		DefID: r.DefID, Name: r.Name, Version: r.Version, ParentDefID: r.ParentDefID, Definition: r.Definition,
+		Description: r.Description, CreatedAt: r.CreatedAt, CreatedByAgentID: r.CreatedByAgentID, CreatedByRunID: r.CreatedByRunID,
+		Retired: r.Retired, BootstrappedFromStatic: r.BootstrappedFromStatic, TenantID: r.TenantID,
+	})
+}
+
+func (s *Store) SnapshotRestoreMemoryBackendDefActive(ctx context.Context, e store.MemoryBackendDefActiveEntry) (bool, error) {
+	return s.snapshotRestoreActive(ctx, tblMemoryBackendDefActive, snapshotActiveCols{
+		TenantID: e.TenantID, Name: e.Name, DefID: e.DefID, PromotedAt: e.PromotedAt, PromotedByAgentID: e.PromotedByAgentID,
+	})
+}
+
+// ---- document_source_defs ----
+
+func (s *Store) SnapshotReadDocumentSourceDefs(ctx context.Context) ([]store.DocumentSourceDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, documentSourceDefSelect+snapshotDefOrder)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read document_source_defs: %w", err)
+	}
+	defer rows.Close()
+	return s.scanDocumentSourceDefRows(rows)
+}
+
+func (s *Store) SnapshotReadDocumentSourceDefActive(ctx context.Context) ([]store.DocumentSourceDefActiveEntry, error) {
+	cols, err := s.snapshotReadActive(ctx, tblDocSourceDefActive)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.DocumentSourceDefActiveEntry, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, store.DocumentSourceDefActiveEntry{Name: c.Name, DefID: c.DefID, PromotedAt: c.PromotedAt, PromotedByAgentID: c.PromotedByAgentID, TenantID: c.TenantID})
+	}
+	return out, nil
+}
+
+func (s *Store) SnapshotRestoreDocumentSourceDef(ctx context.Context, r store.DocumentSourceDefRow) (bool, error) {
+	return s.snapshotRestoreDef(ctx, tblDocSourceDefs, snapshotDefCols{
+		DefID: r.DefID, Name: r.Name, Version: r.Version, ParentDefID: r.ParentDefID, Definition: r.Definition,
+		Description: r.Description, CreatedAt: r.CreatedAt, CreatedByAgentID: r.CreatedByAgentID, CreatedByRunID: r.CreatedByRunID,
+		Retired: r.Retired, BootstrappedFromStatic: r.BootstrappedFromStatic, TenantID: r.TenantID,
+	})
+}
+
+func (s *Store) SnapshotRestoreDocumentSourceDefActive(ctx context.Context, e store.DocumentSourceDefActiveEntry) (bool, error) {
+	return s.snapshotRestoreActive(ctx, tblDocSourceDefActive, snapshotActiveCols{
 		TenantID: e.TenantID, Name: e.Name, DefID: e.DefID, PromotedAt: e.PromotedAt, PromotedByAgentID: e.PromotedByAgentID,
 	})
 }
