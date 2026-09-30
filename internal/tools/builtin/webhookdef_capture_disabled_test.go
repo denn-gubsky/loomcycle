@@ -212,3 +212,41 @@ func TestMergedWebhookDef_DriftDetection_CaptureDisabledMarker(t *testing.T) {
 		}
 	}
 }
+
+// A create on a name whose current def is capture-disabled writes a new
+// version of it, so it follows the fork's rules: a partial supply stays
+// disabled with the rest listed; a full supply clears the marker.
+func TestWebhookDefTool_CreateOverCaptureDisabledPartialStaysDisabled(t *testing.T) {
+	tool, ctx, cleanup := webhookDefFixture(t)
+	defer cleanup()
+	plantCaptureDisabledWebhook(t, tool.Store, "restored", []string{"jobs", "slack"})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"restored","overlay":{"enabled":true,"delivery":"spawn",
+		"agent":"intake","auth":{"signing_secret_env":"LOOMCYCLE_WH_SECRET"},"user_credentials":{"jobs":"j-new"}}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	if got, _ := decodeResult(t, res.Text)["disabled_until_credentials_supplied"].([]any); len(got) != 1 || got[0] != "slack" {
+		t.Errorf("result lists %v, want [slack]", got)
+	}
+	w := resolvedWebhook(t, tool, "restored")
+	if w.CaptureDisabled == nil || !reflect.DeepEqual(w.CaptureDisabled.StrippedCredentials, []string{"slack"}) || w.Enabled {
+		t.Errorf("receiver sees marker=%+v enabled=%v; want [slack] still missing and disabled", w.CaptureDisabled, w.Enabled)
+	}
+}
+
+func TestWebhookDefTool_CreateOverCaptureDisabledFullClears(t *testing.T) {
+	tool, ctx, cleanup := webhookDefFixture(t)
+	defer cleanup()
+	plantCaptureDisabledWebhook(t, tool.Store, "restored", []string{"jobs", "slack"})
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"restored","overlay":{"enabled":true,"delivery":"spawn",
+		"agent":"intake","auth":{"signing_secret_env":"LOOMCYCLE_WH_SECRET"},
+		"user_credentials":{"jobs":"j-new"},"user_credentials_from_env":{"slack":"LOOMCYCLE_SLACK"}}}`))
+	if res.IsError {
+		t.Fatalf("create: %s", res.Text)
+	}
+	if w := resolvedWebhook(t, tool, "restored"); w.CaptureDisabled != nil || !w.Enabled {
+		t.Errorf("receiver sees marker=%+v enabled=%v; want cleared and enabled", w.CaptureDisabled, w.Enabled)
+	}
+}

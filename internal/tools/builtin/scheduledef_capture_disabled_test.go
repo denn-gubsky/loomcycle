@@ -275,3 +275,52 @@ func TestScheduleDefTool_UnpromotedForkOfCaptureDisabledDefStillCarriesCount(t *
 		t.Errorf("after a later seed fire_count = %d (err %v), want 2", st.FireCount, err)
 	}
 }
+
+// A create on a name whose current def is capture-disabled writes a new
+// version of it, so it follows the fork's rules: a create supplying only some
+// stripped keys stays disabled with the rest listed, and it inherits the fire
+// count — create is not a way around either.
+func TestScheduleDefTool_CreateOverCaptureDisabledPartialStaysDisabled(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	plantCaptureDisabled(t, tool.Store, "digest", []string{"jobs", "slack"}, 3)
+
+	_, def, count := forkResult(t, tool, ctx, `{"op":"create","name":"digest","overlay":{"agent":"job-search-batch",
+		"schedule":"0 6 * * *","max_fires":5,"enabled":true,"user_credentials":{"jobs":"j-new"}}}`)
+	if def.CaptureDisabled == nil || !reflect.DeepEqual(def.CaptureDisabled.StrippedCredentials, []string{"slack"}) {
+		t.Fatalf("marker = %+v, want [slack] still missing", def.CaptureDisabled)
+	}
+	if enabledOf(def) {
+		t.Error("a create that supplied only some stripped keys is enabled")
+	}
+	if count != 3 {
+		t.Errorf("create fire_count = %d, want 3 (inherited from the superseded def)", count)
+	}
+}
+
+func TestScheduleDefTool_CreateOverCaptureDisabledFullClearsAndKeepsCount(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	plantCaptureDisabled(t, tool.Store, "digest", []string{"jobs", "slack"}, 3)
+
+	_, def, count := forkResult(t, tool, ctx, `{"op":"create","name":"digest","overlay":{"agent":"job-search-batch",
+		"schedule":"0 6 * * *","max_fires":5,"enabled":true,
+		"user_credentials":{"jobs":"j-new"},"user_credentials_from_env":{"slack":"LOOMCYCLE_SLACK"}}}`)
+	if def.CaptureDisabled != nil || !enabledOf(def) {
+		t.Errorf("marker %+v enabled %v; want cleared and enabled (every key supplied)", def.CaptureDisabled, enabledOf(def))
+	}
+	if count != 3 {
+		t.Errorf("create fire_count = %d, want 3 (re-enabling must not reset max_fires)", count)
+	}
+}
+
+// An ordinary create — no marked def on the name — starts at zero as before.
+func TestScheduleDefTool_CreateOverUnmarkedNameStartsAtZero(t *testing.T) {
+	tool, ctx, cleanup := scheduleDefFixture(t)
+	defer cleanup()
+	_, def, count := forkResult(t, tool, ctx, `{"op":"create","name":"digest","overlay":{"agent":"job-search-batch",
+		"schedule":"0 6 * * *","max_fires":5,"enabled":true}}`)
+	if def.CaptureDisabled != nil || count != 0 {
+		t.Errorf("marker %+v fire_count %d; want no marker and 0", def.CaptureDisabled, count)
+	}
+}
