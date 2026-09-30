@@ -511,6 +511,9 @@ func Run(t *testing.T, factory Factory) {
 		{"SnapshotScheduleRestoreKeepsLiveRows", testSnapshotScheduleRestoreKeepsLiveRows},
 		// The seed a re-enabling fork uses carries a fire count, never lowered.
 		{"ScheduleRunStateSeedWithFireCount", testScheduleRunStateSeedWithFireCount},
+		// Snapshot restore of webhook and A2A defs: every column lands, the
+		// live rows stand, and a clash on (tenant, name, version) is an error.
+		{"SnapshotTriggerDefRestoreKeepsLiveRows", testSnapshotTriggerDefRestoreKeepsLiveRows},
 		{"SessionArchiver", testSessionArchiver},
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
 		// (all automated retention). Fails on the pre-fix query (no exclusion).
@@ -1454,6 +1457,185 @@ func testSnapshotScheduleRestoreKeepsLiveRows(t *testing.T, s store.Store) {
 // testScheduleRunStateSeedWithFireCount: a count-carrying seed starts a new
 // def at the given count, and on an existing row raises the count but never
 // lowers it.
+// snapshotDefOps adapts one def table's snapshot methods to a common shape so
+// the three tables that share a column set share one contract test.
+type snapshotDefOps struct {
+	table         string
+	restoreDef    func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error)
+	readDefs      func(ctx context.Context, s store.Store) ([]snapshotDefCase, error)
+	restoreActive func(ctx context.Context, s store.Store, tenant, name, defID string, at time.Time, by string) (bool, error)
+	readActive    func(ctx context.Context, s store.Store) ([][4]string, error) // tenant, name, def_id, promoter
+}
+
+type snapshotDefCase struct {
+	DefID, TenantID, Name, ParentDefID, Description, AgentID, RunID string
+	Version                                                         int
+	Definition                                                      json.RawMessage
+	CreatedAt                                                       time.Time
+	Retired, Bootstrapped                                           bool
+}
+
+func snapshotDefOpsAll() []snapshotDefOps {
+	return []snapshotDefOps{
+		{
+			table: "webhook_defs",
+			restoreDef: func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error) {
+				return s.SnapshotRestoreWebhookDef(ctx, store.WebhookDefRow{DefID: c.DefID, TenantID: c.TenantID, Name: c.Name, Version: c.Version,
+					ParentDefID: c.ParentDefID, Definition: c.Definition, Description: c.Description, CreatedAt: c.CreatedAt,
+					CreatedByAgentID: c.AgentID, CreatedByRunID: c.RunID, Retired: c.Retired, BootstrappedFromStatic: c.Bootstrapped})
+			},
+			readDefs: func(ctx context.Context, s store.Store) ([]snapshotDefCase, error) {
+				rows, err := s.SnapshotReadWebhookDefs(ctx)
+				var out []snapshotDefCase
+				for _, r := range rows {
+					out = append(out, snapshotDefCase{r.DefID, r.TenantID, r.Name, r.ParentDefID, r.Description, r.CreatedByAgentID, r.CreatedByRunID,
+						r.Version, r.Definition, r.CreatedAt, r.Retired, r.BootstrappedFromStatic})
+				}
+				return out, err
+			},
+			restoreActive: func(ctx context.Context, s store.Store, tenant, name, defID string, at time.Time, by string) (bool, error) {
+				return s.SnapshotRestoreWebhookDefActive(ctx, store.WebhookDefActiveEntry{TenantID: tenant, Name: name, DefID: defID, PromotedAt: at, PromotedByAgentID: by})
+			},
+			readActive: func(ctx context.Context, s store.Store) ([][4]string, error) {
+				rows, err := s.SnapshotReadWebhookDefActive(ctx)
+				var out [][4]string
+				for _, r := range rows {
+					out = append(out, [4]string{r.TenantID, r.Name, r.DefID, r.PromotedByAgentID})
+				}
+				return out, err
+			},
+		},
+		{
+			table: "a2a_agent_defs",
+			restoreDef: func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error) {
+				return s.SnapshotRestoreA2AAgentDef(ctx, store.A2AAgentDefRow{DefID: c.DefID, TenantID: c.TenantID, Name: c.Name, Version: c.Version,
+					ParentDefID: c.ParentDefID, Definition: c.Definition, Description: c.Description, CreatedAt: c.CreatedAt,
+					CreatedByAgentID: c.AgentID, CreatedByRunID: c.RunID, Retired: c.Retired, BootstrappedFromStatic: c.Bootstrapped})
+			},
+			readDefs: func(ctx context.Context, s store.Store) ([]snapshotDefCase, error) {
+				rows, err := s.SnapshotReadA2AAgentDefs(ctx)
+				var out []snapshotDefCase
+				for _, r := range rows {
+					out = append(out, snapshotDefCase{r.DefID, r.TenantID, r.Name, r.ParentDefID, r.Description, r.CreatedByAgentID, r.CreatedByRunID,
+						r.Version, r.Definition, r.CreatedAt, r.Retired, r.BootstrappedFromStatic})
+				}
+				return out, err
+			},
+			restoreActive: func(ctx context.Context, s store.Store, tenant, name, defID string, at time.Time, by string) (bool, error) {
+				return s.SnapshotRestoreA2AAgentDefActive(ctx, store.A2AAgentDefActiveEntry{TenantID: tenant, Name: name, DefID: defID, PromotedAt: at, PromotedByAgentID: by})
+			},
+			readActive: func(ctx context.Context, s store.Store) ([][4]string, error) {
+				rows, err := s.SnapshotReadA2AAgentDefActive(ctx)
+				var out [][4]string
+				for _, r := range rows {
+					out = append(out, [4]string{r.TenantID, r.Name, r.DefID, r.PromotedByAgentID})
+				}
+				return out, err
+			},
+		},
+		{
+			table: "a2a_server_card_defs",
+			restoreDef: func(ctx context.Context, s store.Store, c snapshotDefCase) (bool, error) {
+				return s.SnapshotRestoreA2AServerCardDef(ctx, store.A2AServerCardDefRow{DefID: c.DefID, TenantID: c.TenantID, Name: c.Name, Version: c.Version,
+					ParentDefID: c.ParentDefID, Definition: c.Definition, Description: c.Description, CreatedAt: c.CreatedAt,
+					CreatedByAgentID: c.AgentID, CreatedByRunID: c.RunID, Retired: c.Retired, BootstrappedFromStatic: c.Bootstrapped})
+			},
+			readDefs: func(ctx context.Context, s store.Store) ([]snapshotDefCase, error) {
+				rows, err := s.SnapshotReadA2AServerCardDefs(ctx)
+				var out []snapshotDefCase
+				for _, r := range rows {
+					out = append(out, snapshotDefCase{r.DefID, r.TenantID, r.Name, r.ParentDefID, r.Description, r.CreatedByAgentID, r.CreatedByRunID,
+						r.Version, r.Definition, r.CreatedAt, r.Retired, r.BootstrappedFromStatic})
+				}
+				return out, err
+			},
+			restoreActive: func(ctx context.Context, s store.Store, tenant, name, defID string, at time.Time, by string) (bool, error) {
+				return s.SnapshotRestoreA2AServerCardDefActive(ctx, store.A2AServerCardDefActiveEntry{TenantID: tenant, Name: name, DefID: defID, PromotedAt: at, PromotedByAgentID: by})
+			},
+			readActive: func(ctx context.Context, s store.Store) ([][4]string, error) {
+				rows, err := s.SnapshotReadA2AServerCardDefActive(ctx)
+				var out [][4]string
+				for _, r := range rows {
+					out = append(out, [4]string{r.TenantID, r.Name, r.DefID, r.PromotedByAgentID})
+				}
+				return out, err
+			},
+		},
+	}
+}
+
+// testSnapshotTriggerDefRestoreKeepsLiveRows: for each of the webhook and A2A
+// def tables, a restored def and active pointer land with every column as
+// given; a re-restore onto the same keys is a silent no-op; a DIFFERENT def on
+// a live (tenant, name, version) — the target's own yaml bootstrap — is an
+// error, not a silent skip; and the snapshot read returns lineage order.
+func testSnapshotTriggerDefRestoreKeepsLiveRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	created := time.Date(2026, 9, 3, 4, 5, 6, 0, time.UTC)
+	for _, ops := range snapshotDefOpsAll() {
+		t.Run(ops.table, func(t *testing.T) {
+			parent := snapshotDefCase{
+				DefID: ops.table + "_p", TenantID: "acme", Name: "n", Version: 1, CreatedAt: created,
+				Definition: json.RawMessage(`{"agent":"a"}`), Description: "p", AgentID: "ag", RunID: "run1", Bootstrapped: true,
+			}
+			child := snapshotDefCase{
+				DefID: ops.table + "_c", TenantID: "acme", Name: "n", Version: 2, ParentDefID: parent.DefID,
+				CreatedAt: created.Add(time.Minute), Definition: json.RawMessage(`{"agent":"b"}`), Retired: true,
+			}
+			shared := snapshotDefCase{DefID: ops.table + "_s", Name: "n", Version: 1, CreatedAt: created, Definition: json.RawMessage(`{}`)}
+			for _, c := range []snapshotDefCase{parent, child, shared} {
+				if inserted, err := ops.restoreDef(ctx, s, c); err != nil || !inserted {
+					t.Fatalf("restore %s: inserted=%v err=%v, want inserted", c.DefID, inserted, err)
+				}
+			}
+			if inserted, err := ops.restoreDef(ctx, s, parent); err != nil || inserted {
+				t.Errorf("re-restore of the same def: inserted=%v err=%v, want a silent no-op", inserted, err)
+			}
+			clash := parent
+			clash.DefID = ops.table + "_clash"
+			if inserted, err := ops.restoreDef(ctx, s, clash); err == nil || inserted {
+				t.Errorf("a different def on a live (tenant, name, version): inserted=%v err=%v, want an error", inserted, err)
+			}
+
+			defs, err := ops.readDefs(ctx, s)
+			if err != nil {
+				t.Fatalf("read defs: %v", err)
+			}
+			if len(defs) != 3 || defs[0].DefID != shared.DefID || defs[1].DefID != parent.DefID || defs[2].DefID != child.DefID {
+				t.Fatalf("read defs = %+v, want shared (tenant \"\") then parent then child", defs)
+			}
+			p, c := defs[1], defs[2]
+			if !p.Bootstrapped || p.Description != "p" || p.AgentID != "ag" || p.RunID != "run1" || p.TenantID != "acme" ||
+				!p.CreatedAt.Equal(created) || p.Version != 1 {
+				t.Errorf("read-back parent lost a column: %+v", p)
+			}
+			if c.ParentDefID != parent.DefID || !c.Retired || c.Version != 2 || !c.CreatedAt.Equal(child.CreatedAt) ||
+				!strings.Contains(string(c.Definition), `"b"`) {
+				t.Errorf("read-back child lost a column: %+v", c)
+			}
+
+			promoted := created.Add(2 * time.Minute)
+			if inserted, err := ops.restoreActive(ctx, s, "acme", "n", parent.DefID, promoted, "ag"); err != nil || !inserted {
+				t.Fatalf("restore active: inserted=%v err=%v", inserted, err)
+			}
+			if inserted, err := ops.restoreActive(ctx, s, "acme", "n", child.DefID, promoted, ""); err != nil || inserted {
+				t.Errorf("restore onto a live pointer: inserted=%v err=%v, want not inserted", inserted, err)
+			}
+			if inserted, err := ops.restoreActive(ctx, s, "", "n", shared.DefID, promoted, ""); err != nil || !inserted {
+				t.Errorf("a pointer on the same name in another tenant: inserted=%v err=%v, want inserted", inserted, err)
+			}
+			actives, err := ops.readActive(ctx, s)
+			if err != nil {
+				t.Fatalf("read active: %v", err)
+			}
+			want := [][4]string{{"", "n", shared.DefID, ""}, {"acme", "n", parent.DefID, "ag"}}
+			if !reflect.DeepEqual(actives, want) {
+				t.Errorf("active pointers = %v, want %v", actives, want)
+			}
+		})
+	}
+}
+
 func testScheduleRunStateSeedWithFireCount(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	for _, id := range []string{"sd_a", "sd_b"} {
