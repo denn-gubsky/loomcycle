@@ -82,6 +82,27 @@ func TestRecordingEmit_AnnouncesEachWaitOnceAndItsEnd(t *testing.T) {
 				text,
 			},
 			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 3}}},
+		// Two waits in one turn run in parallel. The later one answering first
+		// leaves the run held on the other, and the stream says so; only the
+		// last open wait ending ends the hold.
+		{"parallel_waits_a_later_calls_result_leaves_the_run_held_on_the_other",
+			[]providers.Event{
+				holdToolCall("tu_sub", "Channel", `{"op":"subscribe","channel":"findings"}`),
+				holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`),
+				holdToolResult("tu_ask", "Interruption"),
+				text,
+				holdToolResult("tu_sub", "Channel"),
+			},
+			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 1, state: awaited.Interrupted, on: "approval"},
+				{at: 2, state: awaited.Channel, on: "findings"}, {at: 4}}},
+		{"parallel_waits_an_earlier_calls_result_changes_nothing_announced",
+			[]providers.Event{
+				holdToolCall("tu_sub", "Channel", `{"op":"subscribe","channel":"findings"}`),
+				holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`),
+				holdToolResult("tu_sub", "Channel"),
+				holdToolResult("tu_ask", "Interruption"),
+			},
+			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 1, state: awaited.Interrupted, on: "approval"}, {at: 3}}},
 		{"interruption_ask_waits_until_answered",
 			[]providers.Event{holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`), holdToolResult("tu_ask", "Interruption")},
 			[]holdSeen{{at: 0, state: awaited.Interrupted, on: "approval"}, {at: 1}}},
