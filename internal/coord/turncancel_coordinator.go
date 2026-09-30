@@ -131,7 +131,7 @@ func (c *TurnCancelCoordinator) CancelRemote(ctx context.Context, runID, reason 
 	if run.ReplicaID == "" || run.ReplicaID == c.replicaID {
 		return false, nil
 	}
-	if alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, staleReplicaThreshold); err != nil {
+	if alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, StaleReplicaThreshold); err != nil {
 		// Probe failure: proceed with the broadcast — a real cancel may still
 		// land if the owner responds.
 		log.Printf("coord: turncancel IsReplicaAlive probe for %s failed: %v (proceeding)", run.ReplicaID, err)

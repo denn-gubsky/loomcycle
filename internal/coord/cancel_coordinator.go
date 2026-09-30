@@ -75,11 +75,12 @@ type cancelRunStore interface {
 	FinishRun(ctx context.Context, runID string, status store.RunStatus, stopReason string, usage store.Usage, errMsg string) error
 }
 
-// staleReplicaThreshold is the dead-owner cutoff. 3× the 30s
+// StaleReplicaThreshold is the dead-owner cutoff. 3× the 30s
 // heartbeat interval = 90s. A replica whose last_heartbeat_at is
 // older than this is presumed dead and CancelRemote marks the run
-// failed without a broadcast.
-const staleReplicaThreshold = 90 * time.Second
+// failed without a broadcast. Exported so the paused-run resume judges
+// "owned by a live replica" by the same cutoff.
+const StaleReplicaThreshold = 90 * time.Second
 
 const (
 	topicCancel    = "loomcycle.cancel"
@@ -159,7 +160,7 @@ func (c *CancelCoordinator) CancelRemote(ctx context.Context, agentID, reason st
 
 	// Check owner liveness before broadcasting. A dead owner triggers
 	// the "mark failed in DB + return success" short-circuit.
-	alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, staleReplicaThreshold)
+	alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, StaleReplicaThreshold)
 	if err != nil {
 		// Liveness probe failure: log and continue with broadcast. A
 		// real cancel may still succeed if the replica responds.

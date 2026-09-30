@@ -140,7 +140,7 @@ func (c *SteerCoordinator) PushRemote(ctx context.Context, runID string, m steer
 	if run.ReplicaID == "" || run.ReplicaID == c.replicaID {
 		return false, false, nil
 	}
-	if alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, staleReplicaThreshold); err != nil {
+	if alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, StaleReplicaThreshold); err != nil {
 		// Probe failure: proceed with the broadcast — a real steer may still
 		// land if the owner responds.
 		log.Printf("coord: steer IsReplicaAlive probe for %s failed: %v (proceeding)", run.ReplicaID, err)
