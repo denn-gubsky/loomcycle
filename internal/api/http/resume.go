@@ -70,7 +70,7 @@ func (s *Server) ResumePausedRuns(ctx context.Context) (int, []string) {
 	var warnings []string
 	redispatched := 0
 	for _, run := range paused {
-		if err := s.resumePausedRun(ctx, run); err != nil {
+		if err := s.resumePausedRun(run); err != nil {
 			warnings = append(warnings, fmt.Sprintf("run %s (%s): %v", run.ID, run.Agent, err))
 			continue
 		}
@@ -88,7 +88,20 @@ func (s *Server) ResumePausedRuns(ctx context.Context) (int, []string) {
 // prompt, re-derives provider/model/tools/system-prompt from the agent def it
 // started on (resumedAgentDef), and runs the loop in a detached background
 // goroutine (no HTTP request backs it).
-func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
+//
+// It takes no context from its caller, on purpose. A restore resumes runs on
+// the restore request's context, which carries the restoring operator's
+// auth.Principal — and the principal readers (the def tools' admin bypass,
+// tenantFromCtx, Context op=self) prefer that principal over the run's own
+// identity, so each tenant's resumed run, and every sub-agent it spawned, acted
+// as the operator. A resumed run is the run its row records, not whoever
+// triggered the resume: it starts from an empty context, the one a boot resume
+// has always had, and gets its identity, tenant, isolation, operator-key
+// restriction and policies only from the row and its definition, stamped
+// below. Nothing it needs comes from the caller — the boot path, which passes
+// no values, is proof of that.
+func (s *Server) resumePausedRun(run store.Run) error {
+	ctx := context.Background()
 	if run.ID == "" || run.AgentID == "" || run.SessionID == "" {
 		return fmt.Errorf("missing id/agent_id/session_id")
 	}
@@ -367,12 +380,11 @@ func (s *Server) resumePausedRun(ctx context.Context, run store.Run) error {
 		}
 	}
 
-	// Detached background context: keep ctx VALUES but do NOT die when the
-	// caller (restore handler / boot) returns. Stops only via the cancel
-	// registry (operator cancel) or process exit. Mirrors the interactive
-	// background-goroutine pattern in handleRuns.
-	runParent := context.WithoutCancel(ctx)
-	runCtx, cancelFn := context.WithCancelCause(runParent)
+	// Detached background context: it does not die when the caller (restore
+	// handler / boot) returns. Stops only via the cancel registry (operator
+	// cancel) or process exit. Mirrors the interactive background-goroutine
+	// pattern in handleRuns.
+	runCtx, cancelFn := context.WithCancelCause(ctx)
 	// A resumed sub-run is still its parent's child: it reports the same parent
 	// and belongs to the same spawn tree as it did before the pause. The row
 	// holds the parent; the tree's root is found by walking up from it.
