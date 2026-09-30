@@ -171,6 +171,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureMCPServerDefActive(ctx, s, &envelope.Sections.MCPServerDefActive); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := captureVolumeDefs(ctx, s, &envelope.Sections.VolumeDefs); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureMemorySources(ctx, s, &envelope.Sections); err != nil {
 		return nil, nil, nil, err
 	}

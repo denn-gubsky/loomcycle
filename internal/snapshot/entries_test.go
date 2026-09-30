@@ -102,7 +102,7 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 // deployment. Do not add a key without that decision.
 var pinnedEntryKeys = map[string][]string{
 	"Sections": {"users", "token_limits", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
-		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active",
+		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active", "volume_defs",
 		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
 		"memory", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
@@ -167,6 +167,11 @@ var pinnedEntryKeys = map[string][]string{
 		"created_at", "created_by_agent_id", "created_by_run_id", "retired", "bootstrapped_from_static",
 		"stripped_credentials"},
 	"WebhookDefActiveEntry": {"name", "tenant_id", "def_id", "promoted_at", "promoted_by_agent_id"},
+
+	// A dynamic volume travels as name and mode. NO path and no definition:
+	// lookup trusts a stored path, so the target derives it. Never add one.
+	"VolumeDefsSection": {"version", "entries"},
+	"VolumeDefEntry":    {"tenant_id", "name", "mode", "created_at", "updated_at"},
 
 	// Memory-backend and document-source defs carry env var NAMES only. The
 	// definition is the stored body; it must never gain a resolved value.
