@@ -29,6 +29,10 @@ destructive `purge` can only ever delete a runtime-derived path inside it.
 Names must match `^[a-z0-9][a-z0-9_-]{0,63}$` — lowercase alnum, `_`, `-`,
 no slashes or dots (so a name can't inject a path component).
 
+`create` also refuses when something already on disk would redirect it: if
+the tenant-segment directory or the volume's own directory is a symlink,
+the create fails instead of following it out of the dynamic root.
+
 ## Operations
 
 - **create** `{name, mode}` — provision the volume: derive the path, make
@@ -72,3 +76,11 @@ one — `volumes: [repo-a]` in its AgentDef. Run-start resolves the name
 (static first, then your tenant's dynamic volumes, then shared) and the
 file/exec tools confine to its root. Spawn confinement is unchanged: a
 sub-agent's volumes are the narrow-only intersection with the parent's.
+
+## Snapshots
+
+A snapshot carries each persistent dynamic volume's name and mode, never
+its path or its files. Restoring re-creates the volume the way `create`
+would on the restoring host: the path is derived under that host's
+`dynamic_root` and an **empty** directory is made there. Copy the files
+yourself if the new host needs them. Ephemeral volumes are not carried.
