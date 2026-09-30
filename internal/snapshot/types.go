@@ -138,7 +138,8 @@ type Sections struct {
 	// whose target did not arrive is recognised and not restored.
 	Dirents DirentsSection `json:"dirents"`
 	// CaptureFindings reports what the capture carried that an operator should
-	// act on — today, header values that look like literal credentials. Inside
+	// act on — header values that look like literal credentials, and a paused
+	// run found parked on a pending interrupt, which travels without it. Inside
 	// Sections so the integrity checksum covers it. Present only when there is
 	// at least one finding (omitempty), so a capture with none is byte-identical
 	// to one taken before the section existed; an older reader ignores it.
@@ -166,7 +167,8 @@ type CaptureFindingEntry struct {
 	// "body.headers.Authorization".
 	Field string `json:"field"`
 	// Detector says which rule matched: "secret-pattern" or
-	// "credential-header-name".
+	// "credential-header-name" for a header value, or "pending-interrupt" for
+	// a paused run with a pending interrupt (Field "interrupts").
 	Detector string `json:"detector"`
 }
 

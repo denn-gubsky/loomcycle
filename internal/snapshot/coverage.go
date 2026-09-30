@@ -181,10 +181,14 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "TTL-bound, run-scoped registrations"},
 	"ephemeral_volume_defs": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "run-bound scratch volumes"},
-	// interrupts: a pending ask blocks inside tool dispatch, so it cannot belong
-	// to a run parked for a pause; everything else in the table is audit.
+	// interrupts: a pending ask blocks inside tool dispatch, and a pause parks a
+	// run only at an iteration boundary, so a paused run cannot be waiting on
+	// one; everything else in the table is audit. Capture checks the
+	// assumption for every paused run it carries and reports a violation as a
+	// capture finding (see pausedRunInterruptFindings), so a future interrupt
+	// kind that parks at a boundary is loud rather than silently dropped.
 	"interrupts": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "a pending ask cannot belong to a paused run; the rest is audit"},
+		Reason: "a pending ask cannot belong to a paused run (capture checks it); the rest is audit"},
 	"memory_changes": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "derived change log"},
 	"memory_cursors": {Kind: coverOmitted, Backends: onBoth,
