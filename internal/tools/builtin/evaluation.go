@@ -231,7 +231,7 @@ func (e *Evaluation) execGet(ctx context.Context, policy tools.EvaluationPolicyV
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
 	}
-	if !defCallerIsAdmin(ctx) {
+	if !defCallerIsAdmin(ctx) || tools.RunIdentity(ctx).Isolated {
 		if _, ok, err := e.visibleRun(ctx, row.RunID); err != nil {
 			return errResult(fmt.Sprintf("get: %s", err)), nil
 		} else if !ok {
@@ -248,7 +248,7 @@ func (e *Evaluation) execListForRun(ctx context.Context, policy tools.Evaluation
 	if in.RunID == "" {
 		return errResult("list_for_run: missing required field: run_id"), nil
 	}
-	if !defCallerIsAdmin(ctx) {
+	if !defCallerIsAdmin(ctx) || tools.RunIdentity(ctx).Isolated {
 		if _, ok, err := e.visibleRun(ctx, in.RunID); err != nil {
 			return errResult(fmt.Sprintf("list_for_run: %s", err)), nil
 		} else if !ok {
@@ -318,9 +318,14 @@ func (e *Evaluation) execAggregate(ctx context.Context, policy tools.EvaluationP
 // does: the caller's own tenant, or every tenant for a substrate:admin. What a
 // caller may not see reads exactly like what does not exist, so a guessed id
 // tells nothing across the boundary.
+//
+// An isolated member's run is confined further, to its own user: another
+// member's scores and rationales are that member's data, as their transcript
+// is. The isolated bit wins over an admin principal, so it fails closed.
 
 // visibleRun reads a run for this caller. ok is false both for a run that does
-// not exist and for another tenant's.
+// not exist and for one outside the caller's tenant, or, for an isolated run,
+// outside its own user.
 func (e *Evaluation) visibleRun(ctx context.Context, runID string) (store.Run, bool, error) {
 	run, err := e.Store.GetRun(ctx, runID)
 	if err != nil {
@@ -330,16 +335,25 @@ func (e *Evaluation) visibleRun(ctx context.Context, runID string) (store.Run, b
 		}
 		return store.Run{}, false, err
 	}
-	if !defCallerIsAdmin(ctx) && run.TenantID != tools.RunIdentity(ctx).TenantID {
+	id := tools.RunIdentity(ctx)
+	if !defCallerIsAdmin(ctx) && run.TenantID != id.TenantID {
+		return store.Run{}, false, nil
+	}
+	if id.Isolated && (id.UserID == "" || run.UserID != id.UserID) {
 		return store.Run{}, false, nil
 	}
 	return run, true, nil
 }
 
-// defReadable reports whether def_id names a def this caller may see: its own
-// tenant's or a shared one (defVisible). An unknown id is not readable either.
-// An admin sees every def, so its read goes straight to the store, as before.
+// defReadable reports whether def_id names a def whose evaluations this caller
+// may read: its own tenant's or a shared one (defVisible). An unknown id is not
+// readable either. An admin sees every def, so its read goes straight to the
+// store, as before. An isolated run reads none: every user's runs score a def,
+// so a read by def is cross-user by nature, and it answers as an unknown id.
 func (e *Evaluation) defReadable(ctx context.Context, defID string) (bool, error) {
+	if tools.RunIdentity(ctx).Isolated {
+		return false, nil
+	}
 	if defCallerIsAdmin(ctx) {
 		return true, nil
 	}

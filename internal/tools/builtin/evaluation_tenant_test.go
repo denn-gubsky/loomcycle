@@ -260,3 +260,179 @@ func TestEvaluationTool_SubmitAgainstOwnTenantsRunIsRecorded(t *testing.T) {
 		t.Errorf("acme's run holds %d evaluations, want 2", n)
 	}
 }
+
+// An isolated member's run is confined to its own user inside its tenant:
+// read_any and submit_any reach its own runs' evaluations only. Another acme
+// member's run reads exactly like a run that does not exist, and a read by def
+// — cross-user by nature — answers as an unknown def does.
+
+// addUserRun adds an acme run for user, under def_acme, scored once with
+// rationale, and returns the run id and eval id.
+func (f *evalTenantFixture) addUserRun(t *testing.T, user, agentID, rationale string) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := f.st.CreateSession(ctx, "acme", "worker", user)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := f.st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: agentID, UserID: user, TenantID: "acme", AgentDefID: "def_acme"})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	evalID := "eval_" + user
+	if _, err := f.st.EvaluationSubmit(ctx, store.EvaluationRow{
+		EvalID: evalID, RunID: run.ID, DefID: "def_acme", Score: 0.3, Rationale: rationale, EmitterRole: "self",
+	}); err != nil {
+		t.Fatalf("EvaluationSubmit: %v", err)
+	}
+	return run.ID, evalID
+}
+
+// isolatedCtx is an isolated member's run (bob in acme) holding scopes; p is
+// its principal.
+func isolatedCtx(agentID string, p auth.Principal, scopes ...string) context.Context {
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: agentID, UserID: "bob", TenantID: "acme", Isolated: true})
+	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: scopes})
+	return auth.WithPrincipal(ctx, p)
+}
+
+func isolatedBob(agentID string, scopes ...string) context.Context {
+	return isolatedCtx(agentID, auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeUser}}, scopes...)
+}
+
+func TestEvaluationTool_IsolatedRunReadsAnotherUsersRunLikeAMissingOne(t *testing.T) {
+	f := newEvalTenantFixture(t)
+	aliceRun, aliceEval := f.addUserRun(t, "alice", "a_alice", "alice private notes")
+	for name, ctx := range map[string]context.Context{
+		"isolated member": isolatedBob("a_bob", "read_any", "submit_any"),
+		// The isolated bit fails closed even under a principal that would
+		// otherwise see every tenant.
+		"isolated under admin": isolatedCtx("a_bob", auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeAdmin}}, "read_any", "submit_any"),
+	} {
+		for _, tc := range []struct {
+			op, theirs, missing string
+			input               func(id string) string
+		}{
+			{"get", aliceEval, "eval_nope", func(id string) string { return `{"op":"get","eval_id":"` + id + `"}` }},
+			{"list_for_run", aliceRun, "r_nope", func(id string) string { return `{"op":"list_for_run","run_id":"` + id + `"}` }},
+		} {
+			t.Run(name+"/"+tc.op, func(t *testing.T) {
+				theirs := f.exec(t, ctx, tc.input(tc.theirs))
+				none := f.exec(t, ctx, tc.input(tc.missing))
+				got := strings.ReplaceAll(theirs.Text, tc.theirs, "<id>")
+				want := strings.ReplaceAll(none.Text, tc.missing, "<id>")
+				if got != want || theirs.IsError != none.IsError {
+					t.Errorf("alice's reads differently from a missing id:\n theirs: %v %s\n none:   %v %s", theirs.IsError, got, none.IsError, want)
+				}
+				if strings.Contains(got, "alice") {
+					t.Errorf("response carries alice's evaluation data: %s", got)
+				}
+			})
+		}
+	}
+}
+
+func TestEvaluationTool_IsolatedRunReadsByDefLikeAnUnknownDef(t *testing.T) {
+	f := newEvalTenantFixture(t)
+	f.addUserRun(t, "alice", "a_alice", "alice private notes")
+	f.addUserRun(t, "bob", "a_bob", "bob own notes")
+	ctx := isolatedBob("a_bob", "read_any")
+	for _, tc := range []struct {
+		name  string
+		input func(id string) string
+	}{
+		{"list_for_def", func(id string) string { return `{"op":"list_for_def","def_id":"` + id + `"}` }},
+		{"aggregate", func(id string) string { return `{"op":"aggregate","def_id":"` + id + `"}` }},
+		{"aggregate with lineage", func(id string) string { return `{"op":"aggregate","def_id":"` + id + `","include_lineage":true}` }},
+	} {
+		for _, def := range []string{"def_acme", "def_shared"} {
+			t.Run(tc.name+"/"+def, func(t *testing.T) {
+				theirs := f.exec(t, ctx, tc.input(def))
+				none := f.exec(t, ctx, tc.input("def_nope"))
+				got := strings.ReplaceAll(theirs.Text, def, "<id>")
+				want := strings.ReplaceAll(none.Text, "def_nope", "<id>")
+				if got != want || theirs.IsError != none.IsError {
+					t.Errorf("%s reads differently from an unknown def:\n got:  %v %s\n none: %v %s", def, theirs.IsError, got, none.IsError, want)
+				}
+				if strings.Contains(got, "notes") {
+					t.Errorf("response carries evaluation data: %s", got)
+				}
+			})
+		}
+	}
+}
+
+// A submit against another member's run is refused as a missing run and
+// writes nothing — with submit_self too, where the emitter's agent id matches
+// the target run's agent and the role would derive "self".
+func TestEvaluationTool_IsolatedSubmitAgainstAnotherUsersRunReadsLikeAMissingOne(t *testing.T) {
+	f := newEvalTenantFixture(t)
+	aliceRun, _ := f.addUserRun(t, "alice", "a_alice", "alice private notes")
+	for name, ctx := range map[string]context.Context{
+		"submit_any":  isolatedBob("a_bob", "submit_any"),
+		"submit_self": isolatedBob("a_alice", "submit_self"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			theirs := f.exec(t, ctx, `{"op":"submit","run_id":"`+aliceRun+`","score":0.1}`)
+			none := f.exec(t, ctx, `{"op":"submit","run_id":"r_nope","score":0.1}`)
+			got := strings.ReplaceAll(theirs.Text, aliceRun, "<id>")
+			want := strings.ReplaceAll(none.Text, "r_nope", "<id>")
+			if !theirs.IsError || got != want {
+				t.Errorf("submit against alice's run = %v %s, want the missing-run refusal %s", theirs.IsError, got, want)
+			}
+			rows, err := f.st.EvaluationListForRun(context.Background(), aliceRun, 0)
+			if err != nil {
+				t.Fatalf("EvaluationListForRun: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Errorf("alice's run holds %d evaluations, want her own 1", len(rows))
+			}
+		})
+	}
+}
+
+func TestEvaluationTool_IsolatedRunReadsAndScoresItsOwnRuns(t *testing.T) {
+	f := newEvalTenantFixture(t)
+	bobRun, bobEval := f.addUserRun(t, "bob", "a_bob", "bob own notes")
+	ctx := isolatedBob("a_bob", "read_any", "submit_any")
+	for input, want := range map[string]string{
+		`{"op":"get","eval_id":"` + bobEval + `"}`:        "bob own notes",
+		`{"op":"list_for_run","run_id":"` + bobRun + `"}`: "bob own notes",
+	} {
+		res := f.exec(t, ctx, input)
+		if res.IsError || !strings.Contains(res.Text, want) {
+			t.Errorf("%s = %s, want it to contain %q", input, res.Text, want)
+		}
+	}
+	if res := f.exec(t, ctx, `{"op":"submit","run_id":"`+bobRun+`","score":0.5}`); res.IsError {
+		t.Fatalf("submit on own run: %s", res.Text)
+	}
+	rows, err := f.st.EvaluationListForRun(context.Background(), bobRun, 0)
+	if err != nil {
+		t.Fatalf("EvaluationListForRun: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("bob's run holds %d evaluations, want 2", len(rows))
+	}
+}
+
+// A non-isolated member of the same tenant keeps its tenant-wide reach.
+func TestEvaluationTool_NonIsolatedTenantCallerReadsEveryUsersEvaluations(t *testing.T) {
+	f := newEvalTenantFixture(t)
+	aliceRun, aliceEval := f.addUserRun(t, "alice", "a_alice", "alice private notes")
+	ctx := callerCtx("acme", "a_bob", &auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeTenant}}, "read_any", "submit_any")
+	for input, want := range map[string]string{
+		`{"op":"get","eval_id":"` + aliceEval + `"}`:        "alice private notes",
+		`{"op":"list_for_run","run_id":"` + aliceRun + `"}`: "alice private notes",
+		`{"op":"list_for_def","def_id":"def_acme"}`:         "alice private notes",
+		`{"op":"aggregate","def_id":"def_acme"}`:            `"count":2`,
+	} {
+		res := f.exec(t, ctx, input)
+		if res.IsError || !strings.Contains(res.Text, want) {
+			t.Errorf("%s = %s, want it to contain %q", input, res.Text, want)
+		}
+	}
+	if res := f.exec(t, ctx, `{"op":"submit","run_id":"`+aliceRun+`","score":0.5}`); res.IsError {
+		t.Errorf("submit on alice's run: %s", res.Text)
+	}
+}
