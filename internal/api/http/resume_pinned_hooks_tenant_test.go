@@ -14,8 +14,9 @@ import (
 // A resumed run fires the HookDef versions it pinned at start, read by def_id.
 // The pins travel in the run's record, which a snapshot carries between
 // deployments, and a def_id is a handle global across tenants: a pin must name
-// a HookDef the lookup could have found — one in the tenant it is made in, here
-// the run's own or the shared one — or the run stops as if it were gone.
+// a HookDef the lookup could have found — one in the tenant it is made in —
+// and that tenant must be the run's own or the shared one, or the run stops as
+// if the version were gone.
 
 // pinTenantHooks is a resumable run of a hookless static agent in tenant acme,
 // whose hooks come from its record: a HookDef "gate" on run_end, added by the
@@ -107,20 +108,35 @@ func TestResumePausedRuns_APinToAnotherTenantsHookDefStopsTheRunAsGone(t *testin
 	for _, tc := range []struct {
 		name string
 		rec  func(id string) runConfigRecord
+		// deleted is the same record shape pinning a version that no longer
+		// exists, where rec alone cannot give one; nil means rec.
+		deleted func(id string) runConfigRecord
 	}{
 		// The run's own lookup, answered with globex's version.
 		{"own tenant's lookup", func(id string) runConfigRecord {
 			return callerPins(map[string]string{"acme/gate@0": id})
-		}},
+		}, nil},
 		// The shared tenant's lookup, answered with globex's version.
 		{"shared lookup", func(id string) runConfigRecord {
 			return callerPins(map[string]string{"acme/gate@0": "", "/gate@0": id})
+		}, nil},
+		// A record naming globex as the source of a hook, and pinning globex's
+		// version for the lookup made there. The row is in the tenant its
+		// lookup names; the lookup is in a tenant this run cannot resolve in.
+		{"globex source", func(id string) runConfigRecord {
+			return sourcedPins("globex", map[string]string{"globex/gate@0": id})
+		}, func(id string) runConfigRecord {
+			return sourcedPins("", map[string]string{"/gate@0": id})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPinTenantHooks(t)
 			// The refusal for a pinned version that no longer exists.
-			missing := f.resume(t, tc.rec("hdf_7d04"), store.RunFailed)
+			deleted := tc.deleted
+			if deleted == nil {
+				deleted = tc.rec
+			}
+			missing := f.resume(t, deleted("hdf_7d04"), store.RunFailed)
 			gone := strings.ReplaceAll(missing.ErrorMsg, "hdf_7d04", "<id>")
 
 			run := f.resume(t, tc.rec(f.globexID), store.RunFailed)

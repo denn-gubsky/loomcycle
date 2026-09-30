@@ -67,7 +67,7 @@ func (s *Server) withResumedRunHooks(ctx context.Context, run store.Run, def con
 	if agentHooksFingerprint(def) != pinned.Agent {
 		set = hooks.FailedSet(fmt.Errorf("agent %s: its hooks were changed while the run was paused; a run does not continue under hooks it did not start with", run.Agent))
 	} else {
-		set = s.resolveRunHooks(ctx, run.Agent, def, hooks.Additions{}, hooks.AdditionsFrom(ctx), pinnedLookup(s.store, pinned.Defs))
+		set = s.resolveRunHooks(ctx, run.Agent, def, hooks.Additions{}, hooks.AdditionsFrom(ctx), pinnedLookup(s.store, run.TenantID, pinned.Defs))
 	}
 	s.runHookSets.Store(run.ID, set)
 	return hooks.WithSet(ctx, set)
@@ -199,7 +199,16 @@ func (p *pinRecorder) record(ctx context.Context, tenant, name string, version i
 // hooks.lookupInScope). Any other row is refused exactly as a deleted version
 // is, naming no tenant: another tenant's HookDef must not fire in, or gate,
 // this run.
-func pinnedLookup(st store.Store, defs map[string]string) hooks.LookupDef {
+//
+// The tenant a lookup is made in comes from the same record — a TeamDef
+// state's hooks are recorded with their team's tenant as their source — so it
+// too must be one this run can have resolved in: its own (runTenant) or the
+// shared one. That refuses a record crafted to name another tenant as a
+// hook's source, and with it the one legitimate case the record cannot tell
+// apart: an admin's walk over another tenant's team, whose members' hooks
+// resolve in the team's tenant. Such a member fails closed on resume; the live
+// walk is unchanged.
+func pinnedLookup(st store.Store, runTenant string, defs map[string]string) hooks.LookupDef {
 	return func(ctx context.Context, tenant, name string, version int) (hooks.Def, string, error) {
 		id, ok := defs[pinKey(tenant, name, version)]
 		switch {
@@ -210,7 +219,15 @@ func pinnedLookup(st store.Store, defs map[string]string) hooks.LookupDef {
 		case st == nil:
 			return hooks.Def{}, "", fmt.Errorf("no store: HookDefs are not available")
 		}
-		row, err := st.HookDefGet(ctx, id)
+		var (
+			row store.HookDefRow
+			err error
+		)
+		if tenant != runTenant && tenant != "" {
+			err = &store.ErrNotFound{Kind: "hook_def", ID: id}
+		} else {
+			row, err = st.HookDefGet(ctx, id)
+		}
 		if err == nil && row.TenantID != tenant {
 			err = &store.ErrNotFound{Kind: "hook_def", ID: id}
 		}
