@@ -1,5 +1,6 @@
 import type { Agent } from "../api";
 import AgentsTree, { type TreeNode } from "./AgentsTree";
+import type { RunSelection } from "../lib/runLineage";
 
 // AgentsTreePanel is the left side of the split agents view: a
 // toolbar (filter buttons + count + refreshing indicator) on top
@@ -24,8 +25,10 @@ export interface AgentsTreePanelProps {
   err: string | null;
   userId: string;
   onFilterChange: (f: StatusFilter) => void;
+  // A row key (rowKey): the selected run's id, or an agent id for a
+  // row that carries no run id.
   selectedId?: string;
-  onSelect?: (agentId: string) => void;
+  onSelect?: (sel: RunSelection) => void;
 }
 
 export default function AgentsTreePanel({

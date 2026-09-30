@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { Agent } from "../api";
+import type { RunSelection } from "../lib/runLineage";
 
 // BreadcrumbAncestor is one node in the ancestor chain from root
 // down to (but not including) the currently-selected agent.
@@ -11,6 +12,9 @@ import type { Agent } from "../api";
 // dim slug for context without making it clickable.
 export interface BreadcrumbAncestor {
   agent_id: string;
+  // The ancestor run itself, when known — clicking it selects that run, not
+  // whichever run of the agent the agent id resolves to.
+  run_id?: string;
   agent?: string;
   status?: string;
   inResultSet: boolean;
@@ -24,7 +28,7 @@ export interface BreadcrumbsProps {
   // re-target the right pane without a route change. When omitted,
   // we fall back to <Link to=/agents/:id/> for the standalone
   // detail page.
-  onSelect?: (agentId: string) => void;
+  onSelect?: (sel: RunSelection) => void;
 }
 
 export default function Breadcrumbs({ ancestors, selected, onSelect }: BreadcrumbsProps) {
@@ -35,13 +39,13 @@ export default function Breadcrumbs({ ancestors, selected, onSelect }: Breadcrum
       </Link>
       {ancestors.length > 0 && <span className="crumb-sep">›</span>}
       {ancestors.map((a, i) => (
-        <span key={a.agent_id} className="crumb">
+        <span key={a.run_id || a.agent_id} className="crumb">
           {a.inResultSet ? (
             onSelect ? (
               <button
                 type="button"
                 className="crumb-link"
-                onClick={() => onSelect(a.agent_id)}
+                onClick={() => onSelect(a.run_id ? { runId: a.run_id, agentId: a.agent_id } : { agentId: a.agent_id })}
               >
                 {a.agent || a.agent_id.slice(0, 8)}
               </button>
