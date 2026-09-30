@@ -124,6 +124,9 @@ type backend interface {
 	// listScopes enumerates every DURABLE scope for snapshot capture (RFC AA
 	// Phase 3e); exportScope/restoreScope move one scope's logical dump in/out.
 	listScopes(ctx context.Context) ([]ScopeKey, error)
+	// scopeExists reports whether one DURABLE scope is provisioned, without
+	// provisioning it (every other entry point creates the scope on first use).
+	scopeExists(ctx context.Context, key ScopeKey) (bool, error)
 	exportScope(ctx context.Context, key ScopeKey) (*ScopeDump, error)
 	restoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error
 	close() error
@@ -400,6 +403,25 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 	}
 	defer m.touch(key)
 	return m.backend.exec(ctx, key, statement, args, quotaOverride)
+}
+
+// ScopeExists reports whether a DURABLE scope has been provisioned (sqlite: its
+// .db file; postgres: its schema). Unlike Query it never creates the scope, so
+// a caller can ask "is there anything here?" without leaving an empty database
+// (and, on postgres, a login role) behind for every key it asks about. The key
+// is the logical one Query takes — ListScopes is no substitute on sqlite, whose
+// path component is the SANITIZED id.
+func (m *Manager) ScopeExists(ctx context.Context, key ScopeKey) (bool, error) {
+	if key.Scope == runScope {
+		return false, fmt.Errorf("sqlmem: ScopeExists is for durable scopes")
+	}
+	if key.Scope == "" || strings.TrimSpace(key.ScopeID) == "" {
+		return false, fmt.Errorf("sqlmem: ScopeExists requires a non-empty scope and scope_id")
+	}
+	if err := key.validate(); err != nil {
+		return false, err
+	}
+	return m.backend.scopeExists(ctx, key)
 }
 
 // DropRunScope removes the ephemeral run scope (sqlite: the .db file behind a
