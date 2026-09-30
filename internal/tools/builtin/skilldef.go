@@ -291,16 +291,16 @@ func (s *SkillDef) execFork(ctx context.Context, policy tools.SkillPolicyValue, 
 			}
 			return errResult(fmt.Sprintf("fork: %s", err)), nil
 		}
-		if row.Name != in.Name {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
-		}
 		// Allow forking the SHARED ("") base or the caller's own tenant (the
 		// fork lands under the caller's tenant); refuse only another specific
 		// tenant's private def, unless the caller is substrate:admin (crosses
 		// tenants, RFC L). The "" allowance lets a legacy/default or tenant
 		// principal migrate a pre-RFC-N / bootstrapped shared def.
-		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		if !forkParentVisible(ctx, row.TenantID, tenantID) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
+		}
+		if row.Name != in.Name {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
 		parent = row
 	} else {
@@ -506,6 +506,12 @@ func (s *SkillDef) execPromote(ctx context.Context, policy tools.SkillPolicyValu
 			return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
 		}
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
+	}
+	// Another tenant's def reads as not found, and before the scope check,
+	// whose refusal quotes the def's name. The store's own tenant refusal
+	// below would quote the owning tenant.
+	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil

@@ -289,13 +289,13 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 			}
 			return errResult(fmt.Sprintf("fork: %s", err)), nil
 		}
-		if row.Name != in.Name {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
-		}
 		// Allow forking the shared "" base or the caller's own def; refuse
 		// another tenant's private def unless substrate:admin.
-		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		if !forkParentVisible(ctx, row.TenantID, tenantID) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
+		}
+		if row.Name != in.Name {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
 		parent = row
 	} else {
