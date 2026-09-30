@@ -37,7 +37,7 @@ func keyArgs(k store.ChannelMessageKey) []any {
 const keyWhere = `tenant_id = ? AND channel = ? AND scope = ? AND scope_id = ? AND id = ?`
 
 // ChannelReleaseHookHeld implements store.Store.
-func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string, payload json.RawMessage, to time.Time) (bool, error) {
+func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, lease string, payload json.RawMessage, to time.Time) (bool, error) {
 	now := time.Now()
 	// Never earlier than now: a release that landed in the past would sort
 	// behind a subscriber that has already read past it.
@@ -56,7 +56,7 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 	}
 	args = append(args, keyArgs(key)...)
 	args = append(args, store.ChannelHookHeldVisibleAt().UnixNano(), now.UnixNano())
-	args = append(append(args, keyArgs(key)...), owner)
+	args = append(append(args, keyArgs(key)...), lease)
 	res, err := tx.ExecContext(ctx,
 		`UPDATE channel_messages SET `+set+`
 		  WHERE `+keyWhere+` AND visible_at = ? AND (expires_at IS NULL OR expires_at > ?)
@@ -78,14 +78,14 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 }
 
 // ChannelDropHookHeld implements store.Store.
-func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string) (bool, error) {
+func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey, lease string) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	args := append(keyArgs(key), store.ChannelHookHeldVisibleAt().UnixNano())
-	args = append(append(args, keyArgs(key)...), owner)
+	args = append(append(args, keyArgs(key)...), lease)
 	res, err := tx.ExecContext(ctx, `DELETE FROM channel_messages WHERE `+keyWhere+` AND visible_at = ?
 		AND EXISTS (SELECT 1 FROM channel_hook_state WHERE `+keyWhere+` AND lease_owner = ?)`, args...)
 	if err != nil {
@@ -143,6 +143,9 @@ func (s *Store) ChannelHookClaim(ctx context.Context, owner string, now, leaseUn
 	if err != nil {
 		return nil, fmt.Errorf("channel hook claim select: %w", err)
 	}
+	// One token for this claim; a later claim of any of these messages, by
+	// any owner, writes another (see store.NewChannelHookLease).
+	lease := store.NewChannelHookLease(owner)
 	var out []store.ChannelHookWork
 	for rows.Next() {
 		w, err := scanHookWork(rows)
@@ -150,6 +153,7 @@ func (s *Store) ChannelHookClaim(ctx context.Context, owner string, now, leaseUn
 			rows.Close()
 			return nil, err
 		}
+		w.Lease = lease
 		out = append(out, w)
 	}
 	if err := rows.Err(); err != nil {
@@ -165,7 +169,7 @@ func (s *Store) ChannelHookClaim(ctx context.Context, owner string, now, leaseUn
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(tenant_id, channel, scope, scope_id, id)
 			 DO UPDATE SET lease_owner = excluded.lease_owner, lease_until = excluded.lease_until, updated_at = excluded.updated_at`,
-			m.TenantID, m.Channel, string(m.Scope), m.ScopeID, m.ID, owner, leaseUntil.UnixNano(), nowNs, nowNs); err != nil {
+			m.TenantID, m.Channel, string(m.Scope), m.ScopeID, m.ID, lease, leaseUntil.UnixNano(), nowNs, nowNs); err != nil {
 			return nil, fmt.Errorf("channel hook claim lease: %w", err)
 		}
 	}
@@ -222,10 +226,10 @@ func scanHookWork(rows *sql.Rows) (store.ChannelHookWork, error) {
 }
 
 // ChannelHookRenew implements store.Store.
-func (s *Store) ChannelHookRenew(ctx context.Context, key store.ChannelMessageKey, owner string, leaseUntil time.Time) (bool, error) {
+func (s *Store) ChannelHookRenew(ctx context.Context, key store.ChannelMessageKey, lease string, leaseUntil time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE channel_hook_state SET lease_until = ?, updated_at = ? WHERE `+keyWhere+` AND lease_owner = ?`,
-		append(append([]any{leaseUntil.UnixNano(), time.Now().UnixNano()}, keyArgs(key)...), owner)...)
+		append(append([]any{leaseUntil.UnixNano(), time.Now().UnixNano()}, keyArgs(key)...), lease)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook renew: %w", err)
 	}
@@ -234,14 +238,14 @@ func (s *Store) ChannelHookRenew(ctx context.Context, key store.ChannelMessageKe
 }
 
 // ChannelHookSaveProgress implements store.Store.
-func (s *Store) ChannelHookSaveProgress(ctx context.Context, key store.ChannelMessageKey, owner string, p store.ChannelHookProgress, leaseUntil time.Time) (bool, error) {
+func (s *Store) ChannelHookSaveProgress(ctx context.Context, key store.ChannelMessageKey, lease string, p store.ChannelHookProgress, leaseUntil time.Time) (bool, error) {
 	var nextNs int64
 	if !p.NextAttemptAt.IsZero() {
 		nextNs = p.NextAttemptAt.UnixNano()
 	}
 	args := []any{p.RunID, p.ChainPos, rawOrNil(p.Body), rawOrNil(p.Journal), p.Attempts, nextNs, p.LastError,
 		leaseUntil.UnixNano(), time.Now().UnixNano()}
-	args = append(append(args, keyArgs(key)...), owner)
+	args = append(append(args, keyArgs(key)...), lease)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE channel_hook_state
 		    SET run_id = ?, chain_pos = ?, body = ?, journal = ?, attempts = ?, next_attempt_at = ?, last_error = ?,

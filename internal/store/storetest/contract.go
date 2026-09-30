@@ -285,6 +285,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelTrimTakesDeliveredBeforeAwaiting", testChannelTrimTakesDeliveredBeforeAwaiting},
 		{"ChannelsHooksRoundTrip", testChannelsHooksRoundTrip},
 		{"ChannelSettleNeedsTheLease", testChannelSettleNeedsTheLease},
+		{"ChannelHookReclaimBySameOwnerSupersedesTheLease", testChannelHookReclaimBySameOwnerSupersedesTheLease},
 		{"ChannelStatsCountHeldAndAwaitingSeparately", testChannelStatsCountHeldAndAwaitingSeparately},
 		// v0.8.6 deferred publish (PR 1)
 		{"ChannelDeferredHiddenUntilVisible", testChannelDeferredHiddenUntilVisible},

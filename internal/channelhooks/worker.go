@@ -75,7 +75,8 @@ type Config struct {
 	Bus       *channels.Bus
 	Scheduler *channels.Scheduler
 
-	// Owner names this worker on its leases; unique per replica.
+	// Owner names this worker on its claims; unique per replica. Each claim
+	// gets a lease token of its own (store.NewChannelHookLease).
 	Owner string
 	// Concurrency bounds the messages this worker decides at once, PerChannel
 	// those of one channel. Defaults 16 and 4.
@@ -222,7 +223,8 @@ func (w *Worker) claim(ctx context.Context) bool {
 		return false
 	}
 	now := w.now()
-	items, err := w.cfg.Store.ChannelHookClaim(ctx, w.cfg.Owner, now, now.Add(w.cfg.Lease), free)
+	until := now.Add(w.cfg.Lease)
+	items, err := w.cfg.Store.ChannelHookClaim(ctx, w.cfg.Owner, now, until, free)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: claim: %v", err)
@@ -243,7 +245,7 @@ func (w *Worker) claim(ctx context.Context) bool {
 				}
 				w.wg.Done()
 			}()
-			w.process(ctx, it)
+			w.process(ctx, it, until)
 		}(it)
 	}
 	return len(items) == free
@@ -274,6 +276,7 @@ type job struct {
 	w        *Worker
 	msg      store.ChannelMessage
 	key      store.ChannelMessageKey
+	lease    string // the claim's lease token: what every renew and settle is checked against
 	progress store.ChannelHookProgress
 	deadline time.Time
 	jrnl     journal
@@ -284,12 +287,15 @@ type job struct {
 	lost context.CancelFunc
 }
 
-func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
+// process decides one claimed message; leaseUntil is when its claim's lease
+// runs out unless renewed.
+func (w *Worker) process(ctx context.Context, it store.ChannelHookWork, leaseUntil time.Time) {
 	m := it.Message
 	j := &job{
 		w:        w,
 		msg:      m,
 		key:      store.ChannelMessageKey{TenantID: m.TenantID, Channel: m.Channel, Scope: m.Scope, ScopeID: m.ScopeID, ID: m.ID},
+		lease:    it.Lease,
 		progress: it.Progress,
 		deadline: w.deadlineFor(m),
 	}
@@ -301,7 +307,7 @@ func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
 	jctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	j.lost = cancel
-	go j.renew(jctx, cancel)
+	go j.renew(jctx, cancel, leaseUntil.Sub(w.now()))
 	sem, ok := w.channelSlot(jctx, m.HookTenant, m.Channel)
 	if !ok {
 		return
@@ -337,19 +343,36 @@ func (w *Worker) deadlineFor(m store.ChannelMessage) time.Time {
 	return d
 }
 
-func (j *job) renew(ctx context.Context, lost func()) {
+// renew keeps the job's lease, and stops the job when it is gone: when the
+// store says another claim holds it, or when renewals kept failing until the
+// lease the store last granted ran out (left is what remains of the claim's).
+// In the second case the store cannot say so, but the message may be claimed
+// again from that instant — by this very replica — and the job must stop by
+// then, before it acts on an ask the new claim cancels as stale.
+func (j *job) renew(ctx context.Context, lost func(), left time.Duration) {
 	t := time.NewTicker(j.w.cfg.Lease / 3)
 	defer t.Stop()
+	expired := time.NewTimer(left)
+	defer expired.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-expired.C:
+			log.Printf("channelhooks: %s message %s: lease ran out while renewals failed; stopping", j.msg.Channel, j.msg.ID)
+			lost()
+			return
 		case <-t.C:
-			ok, err := j.w.cfg.Store.ChannelHookRenew(ctx, j.key, j.w.cfg.Owner, j.w.now().Add(j.w.cfg.Lease))
-			if err == nil && !ok {
+			until := j.w.now().Add(j.w.cfg.Lease)
+			ok, err := j.w.cfg.Store.ChannelHookRenew(ctx, j.key, j.lease, until)
+			if err != nil {
+				continue // a fault, not a verdict: the lease stands until it runs out
+			}
+			if !ok {
 				lost()
 				return
 			}
+			expired.Reset(until.Sub(j.w.now()))
 		}
 	}
 }
@@ -601,7 +624,7 @@ func (j *job) saveProgress(ctx context.Context, pos int, body json.RawMessage, a
 		// Between hooks (or asks): keep the lease, the chain goes on.
 		leaseUntil = leaseUntil.Add(j.w.cfg.Lease)
 	}
-	ok, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.w.cfg.Owner, p, leaseUntil)
+	ok, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.lease, p, leaseUntil)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: save progress: %v", j.msg.Channel, j.msg.ID, err)
@@ -633,7 +656,7 @@ func (j *job) release(ctx context.Context, def *Def, body json.RawMessage, chang
 	case j.msg.RequestedVisibleAt.After(time.Now()):
 		to = j.msg.RequestedVisibleAt
 	}
-	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, j.w.cfg.Owner, bodyOrNil(body, changed), to)
+	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, j.lease, bodyOrNil(body, changed), to)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: release: %v", j.msg.Channel, j.msg.ID, err)
@@ -665,7 +688,7 @@ func (j *job) drop(ctx context.Context, def *Def, reason, by string) {
 		j.release(ctx, def, sinkError(j.msg.Payload, reason), true)
 		return
 	}
-	ok, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key, j.w.cfg.Owner)
+	ok, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key, j.lease)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: drop: %v", j.msg.Channel, j.msg.ID, err)

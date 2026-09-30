@@ -210,7 +210,7 @@ func TestWorker_RestartMidAskCancelsAndReasks(t *testing.T) {
 	}
 	key := keyOf(res.Message)
 	key.TenantID = items[0].Message.TenantID
-	if ok, err := f.st.ChannelHookSaveProgress(ctx, key, "dead", store.ChannelHookProgress{RunID: deadRun}, now.Add(time.Millisecond)); err != nil || !ok {
+	if ok, err := f.st.ChannelHookSaveProgress(ctx, key, items[0].Lease, store.ChannelHookProgress{RunID: deadRun}, now.Add(time.Millisecond)); err != nil || !ok {
 		t.Fatalf("setup progress: %v %v", ok, err)
 	}
 	time.Sleep(5 * time.Millisecond)
@@ -341,7 +341,7 @@ func TestWorker_AnAnsweredHoldIsNotAskedAgain(t *testing.T) {
 	}
 	first := &countingTool{answer: "release"}
 	f.w.cfg.Interruption, f.w.cfg.Runs = first, runs
-	j := &job{w: f.w, msg: items[0].Message, key: keyOf(items[0].Message), progress: items[0].Progress, chSem: make(chan struct{}, 1)}
+	j := &job{w: f.w, msg: items[0].Message, key: keyOf(items[0].Message), lease: items[0].Lease, progress: items[0].Progress, chSem: make(chan struct{}, 1)}
 	j.chSem <- struct{}{}
 	f.w.sem <- struct{}{}
 	j.loadJournal()
@@ -358,7 +358,7 @@ func TestWorker_AnAnsweredHoldIsNotAskedAgain(t *testing.T) {
 	}
 	second := &countingTool{answer: "drop"}
 	f.w.cfg.Interruption = second
-	j2 := &job{w: f.w, msg: again[0].Message, key: keyOf(again[0].Message), progress: again[0].Progress, chSem: make(chan struct{}, 1)}
+	j2 := &job{w: f.w, msg: again[0].Message, key: keyOf(again[0].Message), lease: again[0].Lease, progress: again[0].Progress, chSem: make(chan struct{}, 1)}
 	j2.chSem <- struct{}{} // the slots a job holds, which an ask it did make would give up
 	j2.loadJournal()
 	if got, err := j2.askHold(context.Background(), 0, "gate", "channel:inbox/gate", "why", res.Message.Payload, nil); err != nil || got != "release" || second.calls != 0 {
