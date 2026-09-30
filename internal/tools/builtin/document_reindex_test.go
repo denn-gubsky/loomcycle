@@ -234,3 +234,57 @@ func TestReindexScope_PagesByCursor(t *testing.T) {
 		}
 	}
 }
+
+// TestReindex_UnchangedTitleReembedsNothing — models echo every field back, so an
+// update_chunk carrying the chunk's CURRENT title is not a rename. It used to re-embed the
+// whole subtree (the whole document, on the root) whenever `title` was merely present.
+func TestReindex_UnchangedTitleReembedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	_, ids := indexDoc(t, d, ctx)
+	emb := &countingEmbedder{Embedder: d.Embedder}
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["root"],
+		"revision": chunkRevision(t, d, ctx, ids["root"]), "title": "Guide", "status": "review"})
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "Setup"})
+	d.waitReindex()
+	if n := emb.n.Load(); n != 0 {
+		t.Fatalf("an update_chunk with an unchanged title made %d embed calls, want 0", n)
+	}
+
+	// The counter is live: a real rename of the same chunk re-indexes its subtree.
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": ids["setup"],
+		"revision": chunkRevision(t, d, ctx, ids["setup"]), "title": "Getting started"})
+	if emb.n.Load() == 0 {
+		t.Fatal("a real rename made no embed call")
+	}
+	if got := embeddedTextFor(t, vs, ids["install"]); got != "Guide — Getting started > Install\nRun the installer twice." {
+		t.Errorf("after a real rename the child is indexed as %q", got)
+	}
+}
+
+// TestReindex_SameParentMoveReembedsNothing — a move that keeps the parent changes only
+// the position, which no index text carries, so it must cost no embedding call.
+func TestReindex_SameParentMoveReembedsNothing(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "installer", "setup", "guide")
+	_, ids := indexDoc(t, d, ctx)
+	emb := &countingEmbedder{Embedder: d.Embedder}
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "move_chunk", "id": ids["install"], "new_parent_id": ids["setup"], "position": 3})
+	// An empty new_parent_id means "under the root" — setup's parent already.
+	docOp(t, d, ctx, map[string]any{"op": "move_chunk", "id": ids["setup"], "position": 2})
+	d.waitReindex()
+	if n := emb.n.Load(); n != 0 {
+		t.Fatalf("a same-parent move made %d embed calls, want 0", n)
+	}
+
+	docOp(t, d, ctx, map[string]any{"op": "move_chunk", "id": ids["install"], "new_parent_id": ids["screen"]})
+	if emb.n.Load() == 0 {
+		t.Fatal("a cross-parent move made no embed call")
+	}
+	if got := embeddedTextFor(t, vs, ids["install"]); got != "Guide — Screen > Install\nRun the installer twice." {
+		t.Errorf("after a cross-parent move the chunk is indexed as %q", got)
+	}
+}
