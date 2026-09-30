@@ -52,7 +52,10 @@ type MemoryBackendDef struct {
 const memoryBackendDefDescription = `Author, fork, retire, and inspect named memory backend definitions at runtime. ` +
 	`Static memory_backends.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
-	`Operations: create, fork, get, list, retire.`
+	`Operations: create, fork, get, list, retire. ` +
+	`A backend authored here may not name a private, loopback, link-local or metadata IP as config.base_url, ` +
+	`and reaches a host on a private network only when the operator lists that hostname in ` +
+	`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST (a yaml-declared backend keeps its own host).`
 
 const memoryBackendDefInputSchema = `{
   "type": "object",
@@ -533,6 +536,9 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 			if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
 				return err
 			}
+			if err := requirePublicIPLiteral("config.base_url", def.Config.BaseURL); err != nil {
+				return err
+			}
 		}
 		// api_key_env gets the SAME authoring-time treatment, and for the same
 		// stated reason: no shipped kind resolves it, but it is the field a future
@@ -557,6 +563,9 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 			return fmt.Errorf("config.base_url is required for kind %q", def.Kind)
 		}
 		if err := requireHTTPURL("config.base_url", def.Config.BaseURL); err != nil {
+			return err
+		}
+		if err := requirePublicIPLiteral("config.base_url", def.Config.BaseURL); err != nil {
 			return err
 		}
 		if def.Config.APIKeyEnv != "" && !config.EnvNameCredentialSafe(def.Config.APIKeyEnv) {
@@ -585,6 +594,11 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 	case "key_per_tenant":
 		if def.TenancyStrategy.EnvPattern != "" && !strings.Contains(def.TenancyStrategy.EnvPattern, "{tenant_id}") {
 			return fmt.Errorf("tenancy_strategy.env_pattern %q must contain {tenant_id}", def.TenancyStrategy.EnvPattern)
+		}
+		if def.TenancyStrategy.EnvPattern != "" {
+			if err := requireCredentialSafeEnvPattern("tenancy_strategy.env_pattern", def.TenancyStrategy.EnvPattern); err != nil {
+				return err
+			}
 		}
 	case "shared_key_with_prefix":
 		// The {tenant_id} token is MANDATORY here (no `!= ""` escape): for
