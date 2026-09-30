@@ -121,6 +121,12 @@ and examples, as `Document/<op>` — for example
 | `sync` | reconcile the bound documents' keyed chunks, `pull` (default) or `push` | `id` or `path` |
 | `diff_remote` | dry run: what a `sync` would change | `id` or `path` |
 
+A source declared in the operator's yaml reaches its peer wherever it runs. A
+source authored at runtime (`DocumentSourceDef`) reaches a peer on a private
+network only when the operator lists that hostname in
+`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise `sync` and `diff_remote`
+fail with `blocked: <host> has no public addresses`, and nothing is sent.
+
 **Facts**
 
 | op | What it does | Required besides `op` |
