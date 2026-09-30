@@ -142,6 +142,31 @@ func TestVolumeDefTool_CreateRefusesASymlinkedDerivedPath(t *testing.T) {
 	}
 }
 
+// A snapshot restore refuses what create refuses: a name that is not one
+// charset-clean segment, a mode other than rw/ro, a reserved tenant segment.
+func TestValidateVolumeDefBody_RefusesWhatCreateRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		ok   bool
+	}{
+		{`{"tenant_id":"acme","name":"data","mode":"rw"}`, true},
+		{`{"name":"data","mode":"ro"}`, true},
+		{`{"tenant_id":"acme","name":"../etc","mode":"rw"}`, false},
+		{`{"tenant_id":"acme","name":"a/b","mode":"rw"}`, false},
+		{`{"tenant_id":"acme","name":"","mode":"rw"}`, false},
+		{`{"tenant_id":"acme","name":"data","mode":"rwx"}`, false},
+		{`{"tenant_id":"acme","name":"data","mode":""}`, false},
+		{`{"tenant_id":"_shared","name":"data","mode":"rw"}`, false},
+		{`{"tenant_id":"_ephemeral","name":"data","mode":"rw"}`, false},
+		{`not json`, false},
+	} {
+		err := ValidateVolumeDefBody(json.RawMessage(tc.body))
+		if (err == nil) != tc.ok {
+			t.Errorf("ValidateVolumeDefBody(%s) err = %v, want ok=%v", tc.body, err, tc.ok)
+		}
+	}
+}
+
 // create refuses a name colliding with a static volume (yaml is ground truth).
 func TestVolumeDefTool_CreateRefusesStaticCollision(t *testing.T) {
 	tool, ctx, _, cleanup := volumeDefFixture(t)

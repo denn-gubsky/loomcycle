@@ -443,6 +443,31 @@ func (v *VolumeDef) validateName(name string) error {
 	return dynvol.ValidName(name)
 }
 
+// ValidateVolumeDefBody re-runs the create-time checks over a volume a
+// snapshot restore is about to provision: the name charset, the access mode
+// and the reserved tenant segments. body is the snapshot's volume entry
+// ({tenant_id, name, mode}); it carries no path, which restore derives on
+// this host. The restore call sites inject this, as they do the other
+// sections' authoring validators, since the snapshot package cannot import
+// this one.
+func ValidateVolumeDefBody(body json.RawMessage) error {
+	var e struct {
+		TenantID string `json:"tenant_id"`
+		Name     string `json:"name"`
+		Mode     string `json:"mode"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		return fmt.Errorf("entry does not decode as a volume: %w", err)
+	}
+	if err := dynvol.ValidTenant(e.TenantID); err != nil {
+		return err
+	}
+	if err := dynvol.ValidName(e.Name); err != nil {
+		return err
+	}
+	return dynvol.ValidMode(e.Mode)
+}
+
 // dynamicRoot returns the operator-blessed parent (the static volume marked
 // dynamic_root: true). Refuses when none is configured.
 func (v *VolumeDef) dynamicRoot() (string, error) {
