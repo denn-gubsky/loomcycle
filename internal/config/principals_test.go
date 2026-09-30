@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -107,9 +108,12 @@ func TestResolvePrincipals_RefusesNonCharsetTenant(t *testing.T) {
 	// The tenant id names a directory under the dynamic volume root, so a
 	// tenant that is not one charset-clean path segment would alias another
 	// tenant's tree ("x/.." → acme's). Refused before the secret is read.
-	for _, tenant := range []string{"x/..", "a/b", "..", ".", "acme.corp", "_shared", "_EPHEMERAL"} {
+	for i, tenant := range []string{"x/..", "a/b", "..", ".", "acme.corp", "_shared", "_EPHEMERAL"} {
+		// A distinct token_env per case: a principal that passes marks its
+		// token_env non-interpolatable, which would refuse the next case for
+		// the wrong reason.
 		c := &Config{Principals: map[string]PrincipalDef{
-			"p": {Tenant: tenant, Subject: "p", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_TENANT_CHARSET"},
+			"p": {Tenant: tenant, Subject: "p", Scopes: []string{auth.ScopeTenant}, TokenEnv: fmt.Sprintf("LOOMCYCLE_TOKEN_TENANT_CHARSET_%d", i)},
 		}}
 		err := resolvePrincipals(c)
 		if err == nil || !strings.Contains(err.Error(), "tenant id") {

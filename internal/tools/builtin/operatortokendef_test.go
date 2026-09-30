@@ -269,7 +269,7 @@ func TestOperatorTokenMint_RefusesReservedTenantInAnyCase(t *testing.T) {
 	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
 	for _, tenant := range []string{"_shared", "_Shared", "_EPHEMERAL"} {
-		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"r","tenant_id":"`+tenant+`","scopes":["runs:create"]}`))
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"r`+tenant+`","tenant_id":"`+tenant+`","scopes":["runs:create"]}`))
 		if !res.IsError || !strings.Contains(res.Text, "reserved") {
 			t.Errorf("mint for tenant %q = %s, want a reserved refusal", tenant, res.Text)
 		}
