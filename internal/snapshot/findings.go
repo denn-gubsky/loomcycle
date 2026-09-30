@@ -12,8 +12,9 @@ import (
 
 // Capture findings (RFC DP §3.2 e).
 //
-// A header map in a definition body may hold a literal credential where a
-// reference ($cred:<name>, ${LOOMCYCLE_*}) was meant. The owner decided such a
+// A header map — or an MCP server def's stdio env map — in a definition body
+// may hold a literal credential where a reference ($cred:<name>,
+// ${LOOMCYCLE_*}) was meant. The owner decided such a
 // value travels AS AUTHORED — stripping it would break the definition, and the
 // capture is not refused — but it is REPORTED, so the operator can find it and
 // replace it with a reference. It is the one place a secret value can knowingly
@@ -32,6 +33,9 @@ const (
 	// credential (Authorization, *-Token, *-Key, ...) and its value holds a
 	// literal beyond an auth scheme word.
 	detectorCredentialHeader = "credential-header-name"
+	// detectorCredentialEnv: an env entry's NAME says it carries a
+	// credential (*_KEY, *_TOKEN, ...) and its value holds a literal.
+	detectorCredentialEnv = "credential-env-name"
 	// detectorPendingInterrupt: a paused run the envelope carries has a
 	// pending interrupt, which no section carries (see
 	// pausedRunInterruptFindings). Not a header finding: Field is
@@ -97,10 +101,35 @@ func headerDetector(name, value string) string {
 	return literalDetector(name, value, credentialHeaderName, detectorCredentialHeader)
 }
 
+// credentialEnvName reports whether an env var's name says it carries a
+// credential, by the repo's secret-name convention.
+func credentialEnvName(name string) bool {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	for _, suffix := range []string{"_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_AUTH", "_CREDENTIAL"} {
+		if strings.HasSuffix(n, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// envDetector returns the detector an env entry (an MCP server def's stdio
+// env) trips.
+func envDetector(name, value string) string {
+	return literalDetector(name, value, credentialEnvName, detectorCredentialEnv)
+}
+
 // literalMaps maps the key of a string map a body may hold to the detector
 // its entries are judged by.
 var literalMaps = map[string]func(name, value string) string{
 	"headers": headerDetector,
+	"env":     envDetector,
+}
+
+// isEnvField reports whether a finding's field is an env entry. Assumes no
+// header name contains ".env." — a misread only changes the advice wording.
+func isEnvField(field string) bool {
+	return strings.HasPrefix(field, "env.") || strings.Contains(field, ".env.")
 }
 
 // findingSubject says which row a body belongs to.
@@ -119,6 +148,8 @@ type findingSubject struct {
 // handler, a channel's hooks, a run's recorded hooks). Walking the shape
 // rather than decoding each definition type means a hook block added to a
 // definition later is scanned without anyone remembering to add it here.
+// An env map is any object under an "env" key whose values are all strings —
+// in def bodies today, only an MCP server def's stdio env.
 //
 // prefix is the path of the body itself ("" for a whole definition, "hooks"
 // for a channel's hooks column). The walk is deterministic: keys sorted.
@@ -248,6 +279,12 @@ func (f CaptureFindingEntry) Warning() string {
 		return fmt.Sprintf("%s: the paused run has a pending interrupt, which a snapshot does not carry — "+
 			"on a restored copy nothing can answer it; resolve or cancel the interrupt and capture again", where)
 	}
-	return fmt.Sprintf("%s: %s holds a literal value that looks like a credential (%s); it travels in the snapshot as written — replace it with a $cred: or ${LOOMCYCLE_*} reference",
-		where, f.Field, f.Detector)
+	// A stdio env is expanded at spawn by the allowlisted env expander only;
+	// nothing resolves a $cred: there, so advising one would break the server.
+	fix := "a $cred: or ${LOOMCYCLE_*} reference"
+	if isEnvField(f.Field) {
+		fix = "a ${LOOMCYCLE_*} reference"
+	}
+	return fmt.Sprintf("%s: %s holds a literal value that looks like a credential (%s); it travels in the snapshot as written — replace it with %s",
+		where, f.Field, f.Detector, fix)
 }
