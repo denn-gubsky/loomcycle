@@ -116,9 +116,7 @@ func TestReReadShape_ReportsOnlyWhatTheRecordChanged(t *testing.T) {
 	startTC := &config.ToolChoice{Mode: "required", Until: "until_called"}
 	startOF := &config.OutputFormat{Schema: map[string]any{"type": "object", "maxProperties": 3}}
 	seed := runConfigRecord{ToolChoice: startTC, OutputFormat: startOF}
-	if err := srv.store.SetRunConfig(ctx, run.ID, seed.marshal()); err != nil {
-		t.Fatal(err)
-	}
+	seedRunConfig(t, srv.store, run.ID, seed.marshal())
 	read := srv.reReadShapeOnOperatorTurnFn(run.ID, startTC, startOF)
 
 	if got, err := read(ctx); err != nil || got.ToolChoiceChanged || got.OutputFormatChanged {

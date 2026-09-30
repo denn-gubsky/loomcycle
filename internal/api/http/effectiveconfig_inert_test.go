@@ -72,9 +72,7 @@ func parkedInertRun(t *testing.T, runCfg string) (*httptest.Server, store.Run) {
 		t.Fatal(err)
 	}
 	if runCfg != "" {
-		if err := st.SetRunConfig(ctx, run.ID, json.RawMessage(runCfg)); err != nil {
-			t.Fatal(err)
-		}
+		seedRunConfig(t, st, run.ID, json.RawMessage(runCfg))
 	}
 	appendResumeEvent(t, srv, run.ID, "user_input", []loop.PromptSegment{
 		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},

@@ -116,13 +116,10 @@ func TestRetune_UpdatesTheRunRowSoARestartCannotUndoIt(t *testing.T) {
 // was started with — an override is state with a lifetime (D4).
 func TestRetune_MergesRatherThanReplaces(t *testing.T) {
 	srv, ts, _, run := parkedRoutedRun(t)
-	ctx := context.Background()
 
 	// A run that already carries a budget from its start.
 	seed := runConfigRecord{Resources: &resourceOverride{MaxTokens: 4321}}
-	if err := srv.store.SetRunConfig(ctx, run.ID, seed.marshal()); err != nil {
-		t.Fatal(err)
-	}
+	seedRunConfig(t, srv.store, run.ID, seed.marshal())
 
 	if code, b := postInput(t, ts, run.ID, `{"text":"go on","overrides":{"model":"model-b"}}`); code != 200 {
 		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
@@ -390,12 +387,9 @@ func TestRetuneEndpoint_UnknownRunIsTheSame404AsAForbiddenOne(t *testing.T) {
 // Promoting must not disturb what else the run carries.
 func TestRetune_PromotingKeepsTheRestOfTheConfiguration(t *testing.T) {
 	srv, ts, _, run := parkedRoutedRun(t)
-	ctx := context.Background()
 
 	seed := runConfigRecord{Resources: &resourceOverride{MaxTokens: 4321}}
-	if err := srv.store.SetRunConfig(ctx, run.ID, seed.marshal()); err != nil {
-		t.Fatal(err)
-	}
+	seedRunConfig(t, srv.store, run.ID, seed.marshal())
 	if code, b := postRetune(t, ts, run.ID, `{"interactive":true}`); code != 200 {
 		t.Fatalf("promote: %d %s", code, strings.TrimSpace(b))
 	}
@@ -496,9 +490,7 @@ func TestRetune_TheAnsweredRecordShowsTheMergeTheCallerCannotRecompute(t *testin
 	srv, ts, _, run := parkedRoutedRun(t)
 
 	seed := runConfigRecord{Routing: &routingOverride{Provider: "stub"}}
-	if err := srv.store.SetRunConfig(context.Background(), run.ID, seed.marshal()); err != nil {
-		t.Fatal(err)
-	}
+	seedRunConfig(t, srv.store, run.ID, seed.marshal())
 	_, body := postRetune(t, ts, run.ID, `{"model":"model-b"}`)
 	var resp struct {
 		Config runConfigRecord `json:"config"`
@@ -715,7 +707,6 @@ func TestRetune_ARoutingChangeProducesBothEventsAndTheyAreDistinguishable(t *tes
 // those, so a retuned run that later paused resumed under re-resolved hooks.
 func TestRetune_KeepsEveryFieldItDoesNotChange(t *testing.T) {
 	srv, ts, _, run := parkedRoutedRun(t)
-	ctx := context.Background()
 	seed := runConfigRecord{
 		Resources:         &resourceOverride{MaxTokens: 4321},
 		RunTimeoutSeconds: 90,
@@ -725,9 +716,7 @@ func TestRetune_KeepsEveryFieldItDoesNotChange(t *testing.T) {
 		}},
 		PinnedHooks: &pinnedHooks{Agent: "fingerprint", Defs: map[string]string{"acme/gate@0": "hdf_gate"}},
 	}
-	if err := srv.store.SetRunConfig(ctx, run.ID, seed.marshal()); err != nil {
-		t.Fatal(err)
-	}
+	seedRunConfig(t, srv.store, run.ID, seed.marshal())
 	if code, b := postInput(t, ts, run.ID, `{"text":"go on","overrides":{"model":"model-b"}}`); code != 200 {
 		t.Fatalf("retune: %d %s", code, strings.TrimSpace(b))
 	}

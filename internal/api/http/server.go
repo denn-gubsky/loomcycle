@@ -6942,20 +6942,20 @@ func (s *Server) writeReviewRecord(ctx context.Context, runID string, armed bool
 	if s.store == nil || runID == "" {
 		return false
 	}
-	run, err := s.store.GetRun(ctx, runID)
-	if err != nil {
-		log.Printf("review: could not read run %s to record its arming: %v", runID, err)
+	_, err := s.updateRunConfig(ctx, runID, func(rec *runConfigRecord, unreadable bool) error {
+		if unreadable {
+			return errRunConfigUnreadable // overwriting it would lose what it holds
+		}
+		rec.Review = &armed
+		if ttl > 0 {
+			rec.ReviewTTLSeconds = int(math.Ceil(ttl.Seconds()))
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errRunConfigUnreadable):
 		return false
-	}
-	rec, ok := decodeRunConfig(run.RunConfig)
-	if !ok && len(run.RunConfig) > 0 {
-		return false // unreadable: overwriting it would lose what it holds
-	}
-	rec.Review = &armed
-	if ttl > 0 {
-		rec.ReviewTTLSeconds = int(math.Ceil(ttl.Seconds()))
-	}
-	if err := s.store.SetRunConfig(ctx, runID, rec.marshal()); err != nil {
+	case err != nil:
 		log.Printf("review: could not record run %s's arming: %v", runID, err)
 		return false
 	}

@@ -1898,14 +1898,23 @@ type Store interface {
 	// is the mechanism V4 would need, not V4.
 	SetRunModel(ctx context.Context, runID, providerID, model string) error
 
-	// SetRunConfig replaces the run's configuration record.
+	// SetRunConfigCAS replaces the run's configuration record only if it still
+	// holds prev — the record as the caller read it, nil for none — and reports
+	// whether it did. ErrNotFound when there is no such run.
 	//
 	// The record is written at CreateRun and was immutable until RFC DC P3 made a
 	// PARKED run retunable: an operator changes the model on a waiting chat, and
 	// the run must both act on it next turn and still have it after a restart.
 	// Opaque here, like the column — the store persists it, the caller owns its
 	// shape.
-	SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error
+	//
+	// Several writers read the record, change their own field and write it back
+	// (a retune, the review arming, the hook pins). A plain replace let the last
+	// of two such writers erase the other's field; comparing against what was
+	// read turns that into a refusal the caller retries on a fresh read.
+	// Postgres compares the documents (jsonb), SQLite the stored text, which is
+	// the text a read returned.
+	SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error)
 
 	SetRunPauseState(ctx context.Context, runID, state string) error
 

@@ -217,59 +217,65 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 		return runConfigRecord{}, fmt.Errorf("%w: %s", runner.ErrUnknownAgent, run.Agent)
 	}
 
-	cur, _ := decodeRunConfig(run.RunConfig)
-	next := in.split()
-	// Start from the whole record and change only what a retune may change.
-	// It used to be rebuilt field by field, which silently dropped every field
-	// the list did not name — the hooks the run added and the hooks it pinned
-	// at start — so a retuned run that later paused resumed under re-resolved
-	// hooks. The start-only fields (sampling, compaction, hosts, the review
-	// deadline, …) are kept by the copy.
-	merged := cur
-	merged.Routing = mergeRouting(cur.Routing, next.Routing)
-	merged.Resources = mergeResources(cur.Resources, next.Resources)
-	merged.Tuning = mergeTuning(cur.Tuning, next.Tuning)
-	// Last writer wins for the single decisions below, unlike the merged
-	// blocks above: "keep what is there unless this call says otherwise" IS
-	// the merge.
-	if in.Interactive != nil {
-		merged.Interactive = in.Interactive
-	}
-	if in.Review != nil {
-		merged.Review = in.Review
-	}
-	if in.Interruption != nil {
-		merged.Interruption = in.Interruption
-	}
-	// The start-time validators, so a retune cannot store a block a run start
-	// would have refused.
-	if in.ToolChoice != nil {
-		if err := in.ToolChoice.Validate(); err != nil {
-			return runConfigRecord{}, fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+	// Merged onto the record as it is when written, not as runForSteer read
+	// it: a writer that got in between keeps its field. See updateRunConfig.
+	merged, err := s.updateRunConfig(ctx, run.ID, func(rec *runConfigRecord, _ bool) error {
+		cur := *rec
+		next := in.split()
+		// Start from the whole record and change only what a retune may change.
+		// It used to be rebuilt field by field, which silently dropped every field
+		// the list did not name — the hooks the run added and the hooks it pinned
+		// at start — so a retuned run that later paused resumed under re-resolved
+		// hooks. The start-only fields (sampling, compaction, hosts, the review
+		// deadline, …) are kept by the copy.
+		merged := cur
+		merged.Routing = mergeRouting(cur.Routing, next.Routing)
+		merged.Resources = mergeResources(cur.Resources, next.Resources)
+		merged.Tuning = mergeTuning(cur.Tuning, next.Tuning)
+		// Last writer wins for the single decisions below, unlike the merged
+		// blocks above: "keep what is there unless this call says otherwise" IS
+		// the merge.
+		if in.Interactive != nil {
+			merged.Interactive = in.Interactive
 		}
-		// Plain auto asks for nothing, and an absent record field is how every
-		// reader already spells "no forced choice".
-		merged.ToolChoice = nil
-		if !in.ToolChoice.IsZero() {
-			merged.ToolChoice = in.ToolChoice.Clone()
+		if in.Review != nil {
+			merged.Review = in.Review
 		}
-	}
-	if in.OutputFormat != nil {
-		// Validate refuses an empty schema, which is what keeps `{}` from
-		// silently meaning "remove it".
-		if err := in.OutputFormat.Validate(); err != nil {
-			return runConfigRecord{}, fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+		if in.Interruption != nil {
+			merged.Interruption = in.Interruption
 		}
-		merged.OutputFormat = in.OutputFormat.Clone()
-	}
+		// The start-time validators, so a retune cannot store a block a run start
+		// would have refused.
+		if in.ToolChoice != nil {
+			if err := in.ToolChoice.Validate(); err != nil {
+				return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+			}
+			// Plain auto asks for nothing, and an absent record field is how every
+			// reader already spells "no forced choice".
+			merged.ToolChoice = nil
+			if !in.ToolChoice.IsZero() {
+				merged.ToolChoice = in.ToolChoice.Clone()
+			}
+		}
+		if in.OutputFormat != nil {
+			// Validate refuses an empty schema, which is what keeps `{}` from
+			// silently meaning "remove it".
+			if err := in.OutputFormat.Validate(); err != nil {
+				return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
+			}
+			merged.OutputFormat = in.OutputFormat.Clone()
+		}
 
-	// Refuse now, not next turn.
-	if _, err := s.effectiveDef(ctx, agentDef, runOverrides{
-		Routing: merged.Routing, Resources: merged.Resources, Tuning: merged.Tuning,
-	}); err != nil {
-		return runConfigRecord{}, err
-	}
-	if err := s.store.SetRunConfig(ctx, run.ID, merged.marshal()); err != nil {
+		// Refuse now, not next turn.
+		if _, err := s.effectiveDef(ctx, agentDef, runOverrides{
+			Routing: merged.Routing, Resources: merged.Resources, Tuning: merged.Tuning,
+		}); err != nil {
+			return err
+		}
+		*rec = merged
+		return nil
+	})
+	if err != nil {
 		return runConfigRecord{}, err
 	}
 	// After the write, never before: a transcript line about a change that did

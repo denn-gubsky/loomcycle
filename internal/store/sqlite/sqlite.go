@@ -3347,20 +3347,29 @@ func (s *Store) SetRunModel(ctx context.Context, runID, providerID, model string
 	return nil
 }
 
-// SetRunConfig implements store.Store.
-func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error {
+// SetRunConfigCAS implements store.Store. A NULL column and an empty prev
+// both read as "": a record that was never written matches a caller that read
+// none.
+func (s *Store) SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error) {
 	if runID == "" {
-		return fmt.Errorf("set run config: run_id required")
+		return false, fmt.Errorf("set run config: run_id required")
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE runs SET run_config = ? WHERE id = ?`,
-		nilIfEmptyRaw(cfg), runID)
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET run_config = ? WHERE id = ? AND COALESCE(run_config, '') = ?`,
+		nilIfEmptyRaw(next), runID, string(prev))
 	if err != nil {
-		return fmt.Errorf("set run config: %w", err)
+		return false, fmt.Errorf("set run config: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return &store.ErrNotFound{Kind: "run", ID: runID}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return true, nil
 	}
-	return nil
+	var one int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE id = ?`, runID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return false, fmt.Errorf("set run config: %w", err)
+	}
+	return false, nil
 }
 
 // SetRunReplica implements store.Store. SQLite's runs table has no replica_id

@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"slices"
 	"time"
@@ -273,6 +274,51 @@ func decodeRunConfig(raw json.RawMessage) (runConfigRecord, bool) {
 		return runConfigRecord{}, false
 	}
 	return rc, true
+}
+
+// runConfigWriteAttempts bounds updateRunConfig's retries. A run's record has a
+// handful of writers, each writing once per operator action or arming change,
+// so losing this many reads in a row means something is writing in a loop.
+const runConfigWriteAttempts = 8
+
+// errRunConfigContended is updateRunConfig giving up after
+// runConfigWriteAttempts refused writes.
+var errRunConfigContended = errors.New("run config: another writer kept changing it; not written")
+
+// errRunConfigUnreadable is a change refusing to overwrite a stored record
+// that does not decode.
+var errRunConfigUnreadable = errors.New("run config: stored record does not decode; not overwritten")
+
+// updateRunConfig applies change to the run's stored record and writes the
+// result back only over the record it read, re-reading and re-applying when
+// another writer got there first. It returns the record as written.
+//
+// Every writer that edits a field of a live run's record goes through here.
+// Each used to read the record, set its field and replace the column, so two
+// of them interleaving (a retune landing as a team member's review arming
+// flips) wrote back two versions of the same read, and the later one erased
+// the other's field. change must therefore be a pure edit of rec: it may run
+// more than once. unreadable is a stored record that does not decode; change
+// decides whether to overwrite it, and any error it returns aborts the write.
+func (s *Server) updateRunConfig(ctx context.Context, runID string, change func(rec *runConfigRecord, unreadable bool) error) (runConfigRecord, error) {
+	for attempt := 0; attempt < runConfigWriteAttempts; attempt++ {
+		run, err := s.store.GetRun(ctx, runID)
+		if err != nil {
+			return runConfigRecord{}, err
+		}
+		rec, ok := decodeRunConfig(run.RunConfig)
+		if err := change(&rec, !ok && len(run.RunConfig) > 0); err != nil {
+			return runConfigRecord{}, err
+		}
+		written, err := s.store.SetRunConfigCAS(ctx, runID, run.RunConfig, rec.marshal())
+		if err != nil {
+			return runConfigRecord{}, err
+		}
+		if written {
+			return rec, nil
+		}
+	}
+	return runConfigRecord{}, errRunConfigContended
 }
 
 // toolChoiceSpent reports whether a paused run already used up its tool_choice

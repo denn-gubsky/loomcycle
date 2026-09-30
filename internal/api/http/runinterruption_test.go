@@ -361,7 +361,6 @@ func TestRunInterruption_ResumeKeepsTheRunsBlock(t *testing.T) {
 // run whose block was inert was reported as allowed to ask.
 func TestEffectiveConfig_ReportsTheInterruptionPolicyTheRunHas(t *testing.T) {
 	srv, ts, _, run := parkedAskerRun(t)
-	ctx := context.Background()
 
 	read := func() effectiveValue {
 		t.Helper()
@@ -395,9 +394,7 @@ func TestEffectiveConfig_ReportsTheInterruptionPolicyTheRunHas(t *testing.T) {
 	// A block asking for MORE than the definition allows reports the narrowed
 	// policy, not the block.
 	wide := runConfigRecord{Interruption: &config.AgentInterruptionACL{Enabled: true, Kinds: []string{"approval", "wait"}, MaxPending: 10}}
-	if err := srv.store.SetRunConfig(ctx, run.ID, wide.marshal()); err != nil {
-		t.Fatal(err)
-	}
+	seedRunConfig(t, srv.store, run.ID, wide.marshal())
 	got = read()
 	if a := acl(got); got.Source != sourceRun || !reflect.DeepEqual(a.Kinds, []string{"approval"}) || a.MaxPending != 3 {
 		t.Errorf("narrowed = %+v (%+v), want kinds [approval] max_pending 3 from the run", got, a)

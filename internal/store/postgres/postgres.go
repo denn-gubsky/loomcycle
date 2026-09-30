@@ -2007,20 +2007,28 @@ func (s *Store) SetRunModel(ctx context.Context, runID, providerID, model string
 	return nil
 }
 
-// SetRunConfig implements store.Store.
-func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error {
+// SetRunConfigCAS implements store.Store. IS NOT DISTINCT FROM so a record
+// that was never written (NULL) matches a caller that read none.
+func (s *Store) SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error) {
 	if runID == "" {
-		return fmt.Errorf("set run config: run_id required")
+		return false, fmt.Errorf("set run config: run_id required")
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE runs SET run_config = $1::jsonb WHERE id = $2`,
-		nullableJSONArg(cfg), runID)
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET run_config = $1::jsonb WHERE id = $2 AND run_config IS NOT DISTINCT FROM $3::jsonb`,
+		nullableJSONArg(next), runID, nullableJSONArg(prev))
 	if err != nil {
-		return fmt.Errorf("set run config: %w", err)
+		return false, fmt.Errorf("set run config: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return &store.ErrNotFound{Kind: "run", ID: runID}
+	if tag.RowsAffected() > 0 {
+		return true, nil
 	}
-	return nil
+	var one int
+	if err := s.pool.QueryRow(ctx, `SELECT 1 FROM runs WHERE id = $1`, runID).Scan(&one); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return false, fmt.Errorf("set run config: %w", err)
+	}
+	return false, nil
 }
 
 func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error {
