@@ -26,9 +26,6 @@ const (
 	// coverOmitted: not carried, for a stated non-secret reason (derived,
 	// instance-local, TTL-bound, operational).
 	coverOmitted coverageKind = "omitted"
-	// coverPending: not carried YET; a later phase of RFC DP adds its section.
-	// Phase names the PR that flips it. The last phase deletes this kind.
-	coverPending coverageKind = "pending"
 )
 
 // backendSet says which store backends have a table. Most tables exist on
@@ -52,11 +49,9 @@ type tableCoverage struct {
 	// (coverSection only), leading with one of: "none", "by-reference",
 	// "stripped:", "reported:".
 	Secrets string
-	// Reason explains a never / omitted / pending classification, or a partial
-	// capture of a section table.
+	// Reason explains a never / omitted classification, or a partial capture
+	// of a section table.
 	Reason string
-	// Phase is the RFC DP phase that adds the section (coverPending only).
-	Phase string
 	// Backends is where the table exists.
 	Backends backendSet
 	// Conditional, when set, says why the table may legitimately be absent

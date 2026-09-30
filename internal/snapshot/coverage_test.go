@@ -146,7 +146,7 @@ func TestSnapshotCoverage_EveryTableIsClassified(t *testing.T) {
 				case !ok:
 					t.Errorf("table %q is not classified in internal/snapshot/coverage.go. Decide whether a "+
 						"restore needs its rows and whether they are safe in a portable file, then add it "+
-						"as section, never, omitted or pending.", n)
+						"as section, never or omitted.", n)
 				case c.Backends&b.bit == 0:
 					t.Errorf("table %q exists on %s but its classification does not list that backend", n, b.name)
 				}
@@ -171,11 +171,11 @@ func TestSnapshotCoverage_EveryTableIsClassified(t *testing.T) {
 	}
 }
 
-var pendingPhase = regexp.MustCompile(`^DP-P[1-8][ab]?$`)
-
 // TestSnapshotCoverage_ClassificationsAreWellFormed: an entry says enough to
 // be reviewed — a section entry names a real envelope section and what secret
-// material it may hold; every other entry says why, or which phase fixes it.
+// material it may hold; every other entry says why. There is no "not decided
+// yet": every table is carried, never allowed, or left out for a reason, so a
+// kind outside those three fails here.
 func TestSnapshotCoverage_ClassificationsAreWellFormed(t *testing.T) {
 	sections := envelopeSectionKeys()
 	for name, c := range tableCoverageMap {
@@ -194,18 +194,11 @@ func TestSnapshotCoverage_ClassificationsAreWellFormed(t *testing.T) {
 			if c.Reason == "" {
 				t.Errorf("%s: a %s classification needs a reason", name, c.Kind)
 			}
-		case coverPending:
-			if !pendingPhase.MatchString(c.Phase) {
-				t.Errorf("%s: pending needs the phase that adds its section (DP-P<n>), got %q", name, c.Phase)
-			}
 		default:
 			t.Errorf("%s: unknown kind %q", name, c.Kind)
 		}
 		if c.Kind != coverSection && (c.Section != "" || c.Secrets != "") {
 			t.Errorf("%s: only a section classification names a section or a secrets note", name)
-		}
-		if c.Kind != coverPending && c.Phase != "" {
-			t.Errorf("%s: only a pending classification names a phase", name)
 		}
 	}
 }
@@ -243,8 +236,8 @@ func jsonKey(f reflect.StructField) string {
 
 // plantedRow is a row a guard seeds into the store: Present strings must
 // appear in the envelope exactly when the row's table is carried by a
-// section (so the check is not vacuous, and a pending table whose rows start
-// travelling cannot stay classified pending); Absent strings must never
+// section (so the check is not vacuous, and a table not classified as a
+// section whose rows start travelling is caught); Absent strings must never
 // appear.
 type plantedRow struct {
 	table   string
