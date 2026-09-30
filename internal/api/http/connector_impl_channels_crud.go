@@ -311,8 +311,17 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 	// keyspace, not blindly the caller's tenant — otherwise a global
 	// channel's messages (at "") are never drained.
 	declaredScope := ""
+	purger := tenantFromCtx(ctx)
+	// operatorChannel: the purged channel is the operator's, whose global
+	// layers every tenant without a channel of that name resolves to. A yaml
+	// channel is (yaml wins a name collision); a runtime one only in the
+	// operator's own tenant. ownRows are the tenants with a runtime channel of
+	// that name — their layers belong to it, not to the operator's.
+	operatorChannel := false
+	ownRows := map[string]bool{}
 	if yamlCh, isYaml := s.cfg().Channels[name]; isYaml {
 		declaredScope = yamlCh.Scope
+		operatorChannel = true
 	} else {
 		// Only the runtime plane obeys the strict name shape — yaml
 		// channels may use exotic names (slashes etc.) the runtime
@@ -330,21 +339,28 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 		tenantID, all := s.principalTenantScope(ctx, "")
 		found := false
 		for i := range rows {
-			if rows[i].Name == name && (all || rows[i].TenantID == tenantID) {
-				found = true
+			if rows[i].Name != name {
+				continue
+			}
+			ownRows[rows[i].TenantID] = true
+			if rows[i].TenantID == purger {
 				declaredScope = rows[i].Scope
-				break
+				operatorChannel = purger == store.ChannelOperatorTenant
+			}
+			if all || rows[i].TenantID == tenantID {
+				found = true
 			}
 		}
 		if !found {
 			return connector.ChannelPurgeResult{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
 		}
 	}
-	// A purge empties the purger's own keyspace; an admin's purge of a global
-	// channel empties every tenant's layer of it, and the operator's.
-	layers := []string{tenantFromCtx(ctx)}
+	// A purge empties the purger's own keyspace. An admin's purge of the
+	// operator's global channel also empties the global layer of every tenant
+	// that resolves to it — never a tenant's own same-named channel.
+	layers := []string{purger}
 	var scope store.MemoryScope // every scope of the purger's own channel
-	if _, all := s.principalTenantScope(ctx, ""); all && store.MemoryScope(declaredScope) == store.MemoryScopeGlobal {
+	if _, all := s.principalTenantScope(ctx, ""); all && operatorChannel && store.MemoryScope(declaredScope) == store.MemoryScopeGlobal {
 		scope = store.MemoryScopeGlobal // other tenants' layers, never their own channels
 		layers = []string{store.ChannelOperatorTenant}
 		stats, err := s.store.ChannelStats(ctx)
@@ -352,7 +368,7 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 			return connector.ChannelPurgeResult{}, fmt.Errorf("purge channel: %w", err)
 		}
 		for _, st := range stats {
-			if st.Channel == name && st.TenantID != store.ChannelOperatorTenant {
+			if st.Channel == name && st.TenantID != store.ChannelOperatorTenant && !ownRows[st.TenantID] {
 				layers = append(layers, st.TenantID)
 			}
 		}

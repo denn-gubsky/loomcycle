@@ -183,8 +183,9 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Read the def's scope first: the cascade must delete messages/cursors
-	// from the keyspaces they actually live in — this tenant's, and for a
-	// global channel every tenant's layer of it (see store.ChannelReadTenants).
+	// from the keyspaces they actually live in — this tenant's, and for the
+	// operator's global channel the tenants' layers of it (see
+	// store.ChannelReadTenants).
 	var scope string
 	if err := tx.QueryRow(ctx, `SELECT scope FROM channels WHERE tenant_id = $1 AND name = $2`, tenantID, name).Scan(&scope); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -197,12 +198,15 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	}
 	// Cascade scoped by keyspace so deleting one tenant's channel never
 	// touches another tenant's same-named channel: this tenant's rows, plus —
-	// for a global channel — every tenant's global layer of it, which the
-	// channel's deletion orphans. (Global channels are an admin's to create.)
+	// for the operator's global channel — the global layer of every tenant
+	// that has no channel of that name itself. Only those layers belong to
+	// the operator's channel; a tenant with its own row (global or not: a
+	// wire publish names its scope) keeps its layer, and deleting a tenant's
+	// channel never reaches past that tenant.
 	where := `tenant_id = $1 AND channel = $2`
 	args := []any{tenantID, name}
-	if store.MemoryScope(scope) == store.MemoryScopeGlobal {
-		where = `channel = $2 AND (tenant_id = $1 OR scope = $3)`
+	if tenantID == store.ChannelOperatorTenant && store.MemoryScope(scope) == store.MemoryScopeGlobal {
+		where = `channel = $2 AND (tenant_id = $1 OR (scope = $3 AND tenant_id NOT IN (SELECT tenant_id FROM channels WHERE name = $2)))`
 		args = append(args, string(store.MemoryScopeGlobal))
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM channel_messages WHERE `+where, args...); err != nil {

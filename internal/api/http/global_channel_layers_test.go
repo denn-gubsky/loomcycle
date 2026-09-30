@@ -7,6 +7,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 func adminCtx(tenant string) context.Context {
@@ -103,4 +104,67 @@ func TestGlobalChannel_ATenantsSameNamedChannelCannotFeedAnother(t *testing.T) {
 	if err != nil || rel.ReleasedCount != 0 {
 		t.Fatalf("the operator's release reached mallory's layer: %+v, %v", rel, err)
 	}
+}
+
+// Runtime channels are per (tenant, name): the operator, acme and globex each
+// own a global "jobs", hooli a tenant-scope one that still holds global rows
+// (a wire publish names its scope), and initech none. A purge takes only the
+// layers of the channel it names: acme's purge its own; the operator's its
+// own and initech's, which resolves to no channel of its own — never globex's
+// or hooli's.
+func TestPurgeChannel_SparesTenantsWithTheirOwnSameNamedChannel(t *testing.T) {
+	srv, st, cleanup := channelHoldFixture(t)
+	defer cleanup()
+	for _, tenant := range []string{"", "acme", "globex"} {
+		if _, err := srv.CreateChannel(adminCtx(tenant), connector.ChannelCreateRequest{Name: "jobs", Scope: "global", Semantic: "queue"}); err != nil {
+			t.Fatalf("create %q: %v", tenant, err)
+		}
+	}
+	if _, err := srv.CreateChannel(tenantCtx("hooli"), connector.ChannelCreateRequest{Name: "jobs", Scope: "tenant", Semantic: "queue"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.PublishChannel(tenantCtx("hooli"), connector.ChannelPublishRequest{Channel: "jobs", Scope: "global", Payload: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	layers := []string{"", "acme", "globex", "hooli", "initech"}
+	for _, tenant := range []string{"", "acme", "globex", "initech"} {
+		if _, _, err := st.ChannelPublish(context.Background(), store.ChannelMessage{Channel: "jobs", TenantID: tenant, Scope: store.MemoryScopeGlobal, Payload: json.RawMessage(`{}`)}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	own := func(tenant string) int {
+		t.Helper()
+		msgs, err := st.ChannelPeek(context.Background(), tenant, "jobs", store.MemoryScopeGlobal, "", "", 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, m := range msgs {
+			if m.TenantID == tenant {
+				n++
+			}
+		}
+		return n
+	}
+	check := func(step string, gone map[string]bool) {
+		t.Helper()
+		for _, tenant := range layers {
+			want := 1
+			if gone[tenant] {
+				want = 0
+			}
+			if got := own(tenant); got != want {
+				t.Errorf("%s: %q's layer has %d message(s), want %d", step, tenant, got, want)
+			}
+		}
+	}
+
+	if res, err := srv.PurgeChannel(adminCtx("acme"), "jobs"); err != nil || res.Purged != 1 {
+		t.Errorf("acme's purge = %+v, %v; want its own 1", res, err)
+	}
+	check("acme purges", map[string]bool{"acme": true})
+	if res, err := srv.PurgeChannel(adminCtx(""), "jobs"); err != nil || res.Purged != 2 {
+		t.Errorf("the operator's purge = %+v, %v; want its own and initech's 2", res, err)
+	}
+	check("the operator purges", map[string]bool{"acme": true, "": true, "initech": true})
 }
