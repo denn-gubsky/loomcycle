@@ -215,15 +215,15 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 			}
 			return errResult(fmt.Sprintf("fork: %s", err)), nil
 		}
-		if row.Name != in.Name {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
-		}
 		// A def_id is a global handle. Allow forking the SHARED ("") base or
 		// the caller's OWN tenant's def; refuse forking ANOTHER tenant's
 		// private def (would copy its body across the boundary) unless the
 		// caller is a substrate:admin (crosses tenants by design).
-		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		if !forkParentVisible(ctx, row.TenantID, tenantID) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
+		}
+		if row.Name != in.Name {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
 		parent = row
 	} else {

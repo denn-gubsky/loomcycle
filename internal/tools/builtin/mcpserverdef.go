@@ -332,16 +332,16 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 			}
 			return errResult(fmt.Sprintf("fork: %s", err)), nil
 		}
-		if parent.Name != in.Name {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, parent.Name, in.Name)), nil
-		}
 		// RFC N: a fork may pin the SHARED ("") base or the caller's own
 		// tenant (it lands under the caller's tenant); refuse only another
 		// specific tenant's private def, unless the caller is substrate:admin
 		// (crosses tenants, RFC L). The "" allowance lets a legacy/default or
 		// tenant principal migrate a pre-RFC-N / bootstrapped shared def.
-		if parent.TenantID != "" && parent.TenantID != tenantID && !defCallerIsAdmin(ctx) {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to tenant %q, refusing to fork under tenant %q", parentDefID, parent.TenantID, tenantID)), nil
+		if !forkParentVisible(ctx, parent.TenantID, tenantID) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
+		}
+		if parent.Name != in.Name {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, parent.Name, in.Name)), nil
 		}
 		parentJSON = string(parent.Definition)
 	} else {

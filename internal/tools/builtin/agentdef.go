@@ -174,6 +174,16 @@ func defCallerIsAdmin(ctx context.Context) bool {
 	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
 }
 
+// forkParentVisible reports whether a caller in callerTenant may fork a
+// parent_def_id owned by rowTenant: its own tenant's, the shared ("") base, or
+// any tenant's for a substrate:admin. A def_id is a global handle, so a fork
+// must refuse anything else exactly as it refuses a def_id that does not
+// exist, and before comparing names: the name-mismatch refusal quotes the
+// parent's name.
+func forkParentVisible(ctx context.Context, rowTenant, callerTenant string) bool {
+	return rowTenant == "" || rowTenant == callerTenant || defCallerIsAdmin(ctx)
+}
+
 // operatorKeyRestrictedFromCtx computes the RFC AX operator-key restriction for
 // whoever is AUTHORING a trigger def through ctx, adapting the deployment gate
 // from cfg for tools.AuthorOperatorKeyRestricted (the run's own bit OR the live
@@ -346,9 +356,6 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 			}
 			return errResult(fmt.Sprintf("fork: %s", err)), nil
 		}
-		if row.Name != in.Name {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
-		}
 		// A def_id is a global handle. A caller may fork the SHARED ("")
 		// base — the common ground every tenant builds on (e.g. migrate a
 		// pre-RFC-N / bootstrapped def to code-js) — or its OWN tenant's def;
@@ -358,8 +365,11 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		// substrate:admin (crosses tenants by design, RFC L). Without the ""
 		// allowance, a legacy/default or tenant principal could not fork the
 		// shared base at all.
-		if row.TenantID != "" && row.TenantID != tenantID && !defCallerIsAdmin(ctx) {
-			return errResult(fmt.Sprintf("fork: parent_def_id %q belongs to another tenant, refusing", parentDefID)), nil
+		if !forkParentVisible(ctx, row.TenantID, tenantID) {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q not found", parentDefID)), nil
+		}
+		if row.Name != in.Name {
+			return errResult(fmt.Sprintf("fork: parent_def_id %q has name %q, refusing to fork under name %q", parentDefID, row.Name, in.Name)), nil
 		}
 		parent = row
 	} else {
