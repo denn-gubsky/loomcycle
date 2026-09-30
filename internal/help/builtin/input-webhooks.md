@@ -206,6 +206,16 @@ leak a secret onto the message bus. `user_credentials_from_env` (and any
 `payload_mapping` `user_credentials.*` target) is **refused at create time**
 for `delivery: channel`.
 
+### After a snapshot restore: `capture_disabled`
+
+A literal `user_credentials` value never travels in a snapshot. A webhook
+that held one is restored with a `capture_disabled` marker listing the
+stripped keys, and it answers every delivery with `404` whatever its
+`enabled` flag says. Re-enable it with a `fork` whose own overlay supplies
+every listed key (in `user_credentials` or `user_credentials_from_env`) and
+sets `enabled: true`; a fork that supplies only some keeps the marker for
+the rest. An overlay can neither set nor clear the marker.
+
 ## `tenant_id` — which tenant the spawned run executes as
 
 Set `tenant_id:` on a webhook def to make its **spawn** run execute as that
