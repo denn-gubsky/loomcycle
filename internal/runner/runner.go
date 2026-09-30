@@ -229,7 +229,8 @@ type RunInput struct {
 
 	// IdempotencyKey is the optional RFC H Decision 10 "Layer 2"
 	// durable dedup key. Empty (the default) for interactive runs. Set
-	// by the webhook spawn path to the delivery id; threaded into
+	// by the webhook spawn path to a delivery key scoped to the tenant +
+	// webhook (the unique index is database-wide); threaded into
 	// RunIdentity so CreateRun persists it to runs.idempotency_key. When
 	// a second run carries a key already claimed, CreateRun returns
 	// store.ErrDuplicateIdempotencyKey and RunOnce aborts BEFORE the
