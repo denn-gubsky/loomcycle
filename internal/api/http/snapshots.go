@@ -541,19 +541,16 @@ func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.Restor
 // DELETE left a phantom ceiling). A key the store no longer holds is dropped.
 //
 // If the read fails, the envelope rows are pushed as before, so a restored
-// budget is never left unenforced by a transient store fault.
+// budget is never left unenforced by a transient store fault. A PUT landing
+// between this read and the push can still be overwritten, the same window
+// two concurrent PUTs already have; the read narrows it from the whole
+// restore to that moment.
 func (s *Server) refreshRestoredLimits(ctx context.Context, restored []store.TokenLimitRow) {
 	if len(restored) == 0 {
 		return
 	}
 	type limitKey struct{ scope, tenantID, scopeID string }
-	var rows []store.TokenLimitRow
-	var err error
-	if s.store == nil {
-		err = errors.New("no store")
-	} else {
-		rows, err = s.store.TokenLimitsAll(ctx)
-	}
+	rows, err := s.store.TokenLimitsAll(ctx)
 	if err != nil {
 		log.Printf("snapshot restore: re-reading token_limits for the refresh failed, pushing the restored rows as written: %v", err)
 		for _, row := range restored {
