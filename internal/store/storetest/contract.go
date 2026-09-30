@@ -128,6 +128,8 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunOperatorKeyRestrictedRoundTrip", testCreateRunOperatorKeyRestrictedRoundTrip},
 		{"CreateRunIsolatedRoundTrip", testCreateRunIsolatedRoundTrip},
 		{"CreateRunConfigRoundTrip", testCreateRunConfigRoundTrip},
+		{"SetRunConfigCASRefusesAStalePrev", testSetRunConfigCASRefusesAStalePrev},
+		{"SetRunConfigCASConcurrentWritersAllSurvive", testSetRunConfigCASConcurrentWritersAllSurvive},
 		{"FinishRunPersistsResult", testFinishRunPersistsResult},
 		// RFC DI D5: configured (created, not started) runs.
 		{"ConfiguredRunLifecycle", testConfiguredRunLifecycle},

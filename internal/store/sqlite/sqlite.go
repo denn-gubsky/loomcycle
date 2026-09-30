@@ -3357,6 +3357,31 @@ func (s *Store) SetRunConfig(ctx context.Context, runID string, cfg json.RawMess
 	return nil
 }
 
+// SetRunConfigCAS implements store.Store. A NULL column and an empty prev
+// both read as "": a record that was never written matches a caller that read
+// none.
+func (s *Store) SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error) {
+	if runID == "" {
+		return false, fmt.Errorf("set run config: run_id required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET run_config = ? WHERE id = ? AND COALESCE(run_config, '') = ?`,
+		nilIfEmptyRaw(next), runID, string(prev))
+	if err != nil {
+		return false, fmt.Errorf("set run config: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return true, nil
+	}
+	var one int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM runs WHERE id = ?`, runID).Scan(&one); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, &store.ErrNotFound{Kind: "run", ID: runID}
+		}
+		return false, fmt.Errorf("set run config: %w", err)
+	}
+	return false, nil
+}
+
 // SetRunReplica implements store.Store. SQLite's runs table has no replica_id
 // column: a single-file store is a single-replica deployment, so there is
 // nothing to route to and nothing to record.

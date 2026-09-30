@@ -1901,6 +1901,18 @@ type Store interface {
 	// shape.
 	SetRunConfig(ctx context.Context, runID string, cfg json.RawMessage) error
 
+	// SetRunConfigCAS replaces the run's configuration record only if it still
+	// holds prev — the record as the caller read it, nil for none — and reports
+	// whether it did. ErrNotFound when there is no such run.
+	//
+	// Several writers read the record, change their own field and write it back
+	// (a retune, the review arming, the hook pins). A plain replace let the last
+	// of two such writers erase the other's field; comparing against what was
+	// read turns that into a refusal the caller retries on a fresh read.
+	// Postgres compares the documents (jsonb), SQLite the stored text, which is
+	// the text a read returned.
+	SetRunConfigCAS(ctx context.Context, runID string, prev, next json.RawMessage) (bool, error)
+
 	SetRunPauseState(ctx context.Context, runID, state string) error
 
 	// SetRunReplica records the replica that now owns a run's live state. A
