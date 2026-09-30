@@ -599,9 +599,18 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
 	// as the original's were. A live sub-run never sets its own: it runs on
 	// the width inherited from its ancestors, which its record kept.
+	//
+	// A sub-run with no record of it (spawned before the record existed) fails
+	// closed to serial, as its volumes and hosts do: the width its ancestors
+	// allowed is unknown, and its definition's is exactly the widening the
+	// record guards against.
 	fanoutCap := agentDef.MaxConcurrentChildren
-	if runCfg.Spawn != nil && runCfg.Spawn.FanoutCap > 0 {
+	switch {
+	case runCfg.Spawn != nil && runCfg.Spawn.FanoutCap > 0:
 		fanoutCap = runCfg.Spawn.FanoutCap
+	case runCfg.Spawn == nil && isSubRun(run):
+		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
+		fanoutCap = 1
 	}
 	loopCtx = tools.WithFanoutCap(loopCtx, fanoutCap)
 	// RFC DC P5: offer this run's overrides to its children. Only a child of the
