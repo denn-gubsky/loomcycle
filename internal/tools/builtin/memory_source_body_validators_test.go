@@ -33,6 +33,10 @@ func TestMemorySourceBodyValidators_RefuseWhatAuthoringRefuses(t *testing.T) {
 		{"backend prefix without tenant", ValidateMemoryBackendDefBody,
 			`{"kind":"inprocess","tenancy_strategy":{"kind":"shared_key_with_prefix","prefix_pattern":"all"}}`, "{tenant_id}"},
 		{"backend not a def", ValidateMemoryBackendDefBody, `{"config":"x"}`, "does not decode"},
+		{"backend metadata IP", ValidateMemoryBackendDefBody,
+			`{"kind":"remote","config":{"base_url":"http://169.254.169.254/latest/meta-data/"}}`, "metadata address"},
+		{"backend env_pattern names the bearer", ValidateMemoryBackendDefBody,
+			`{"kind":"remote","config":{"base_url":"https://peer.example"},"tenancy_strategy":{"kind":"key_per_tenant","env_pattern":"LOOMCYCLE_AUTH_TOKEN{tenant_id}"}}`, "env var pattern"},
 
 		{"source ok", ValidateDocumentSourceDefBody,
 			`{"name":"ds","config":{"base_url":"https://peer.example","api_key_env":"LOOMCYCLE_PEER_KEY"}}`, ""},
@@ -42,6 +46,9 @@ func TestMemorySourceBodyValidators_RefuseWhatAuthoringRefuses(t *testing.T) {
 		{"source gopher", ValidateDocumentSourceDefBody, `{"config":{"base_url":"gopher://peer.example"}}`, "http or https"},
 		{"source prefix tenancy", ValidateDocumentSourceDefBody,
 			`{"config":{"base_url":"https://peer.example"},"tenancy_strategy":{"kind":"shared_key_with_prefix"}}`, "key_per_tenant"},
+		{"source loopback IPv6", ValidateDocumentSourceDefBody, `{"config":{"base_url":"http://[::1]:8787"}}`, "metadata address"},
+		{"source env_pattern outside LOOMCYCLE_", ValidateDocumentSourceDefBody,
+			`{"config":{"base_url":"https://peer.example"},"tenancy_strategy":{"kind":"key_per_tenant","env_pattern":"PEER_{tenant_id}_KEY"}}`, "env var pattern"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

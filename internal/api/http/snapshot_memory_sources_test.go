@@ -95,13 +95,13 @@ func TestRestore_EveryCallSiteRevalidatesMemorySourceDefs(t *testing.T) {
 			if !has("missing credential", "memory_backend_def mb-ok", "LOOMCYCLE_DP4_HTTP_UNSET") {
 				t.Errorf("the scan did not name the unset key: %v", warnings)
 			}
-			if _, ok := lookup.MemoryBackend(ctx, srv.store, nil, "", "mb-exfil"); ok {
+			if _, _, ok := lookup.MemoryBackend(ctx, srv.store, nil, "", "mb-exfil"); ok {
 				t.Error("the refused exfiltration def resolves on the target")
 			}
-			if mb, ok := lookup.MemoryBackend(ctx, srv.store, nil, "", "mb-ok"); !ok || mb.Config.BaseURL != "https://peer.example" {
+			if mb, _, ok := lookup.MemoryBackend(ctx, srv.store, nil, "", "mb-ok"); !ok || mb.Config.BaseURL != "https://peer.example" {
 				t.Errorf("the restored backend is not live (ok=%v): %+v", ok, mb)
 			}
-			if ds, ok := lookup.DocumentSource(ctx, srv.store, nil, "", "ds-ok"); !ok || ds.Config.BaseURL != "https://docs.example" {
+			if ds, _, ok := lookup.DocumentSource(ctx, srv.store, nil, "", "ds-ok"); !ok || ds.Config.BaseURL != "https://docs.example" {
 				t.Errorf("the restored source is not live (ok=%v): %+v", ok, ds)
 			}
 		})
