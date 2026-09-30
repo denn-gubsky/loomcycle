@@ -65,7 +65,7 @@ func TestDocumentSource_EquivalenceYamlVsSubstrate(t *testing.T) {
 			"primary": {DefID: "ds_v1", Name: "primary", Version: 1, Definition: defJSON, CreatedAt: time.Now()},
 		},
 	}
-	resolved, ok := lookup.DocumentSource(context.Background(), ss, &config.Config{}, "", "primary")
+	resolved, _, ok := lookup.DocumentSource(context.Background(), ss, &config.Config{}, "", "primary")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -84,14 +84,14 @@ func TestDocumentSource_RetiredActiveDoesNotResolve(t *testing.T) {
 	}
 	// A retired def that is still the active pointer must NOT resolve — retiring
 	// the active source deactivates it.
-	if _, ok := lookup.DocumentSource(context.Background(), ss, &config.Config{}, "", "peer"); ok {
+	if _, _, ok := lookup.DocumentSource(context.Background(), ss, &config.Config{}, "", "peer"); ok {
 		t.Errorf("a retired active def must not resolve")
 	}
 	// Static yaml still wins even when a retired substrate pointer exists.
 	cfg := &config.Config{DocumentSources: map[string]config.DocumentSource{
 		"peer": {Config: config.DocumentSourceConfig{BaseURL: "https://static.example.com"}},
 	}}
-	got, ok := lookup.DocumentSource(context.Background(), ss, cfg, "", "peer")
+	got, _, ok := lookup.DocumentSource(context.Background(), ss, cfg, "", "peer")
 	if !ok || got.Config.BaseURL != "https://static.example.com" {
 		t.Errorf("static should resolve past a retired substrate pointer, got ok=%v %q", ok, got.Config.BaseURL)
 	}
@@ -108,7 +108,7 @@ func TestDocumentSource_StaticBeforeSubstrate(t *testing.T) {
 			"peer": {DefID: "ds_v1", Name: "peer", Definition: json.RawMessage(`{"config":{"base_url":"https://substrate.example.com"}}`)},
 		},
 	}
-	got, ok := lookup.DocumentSource(context.Background(), ss, cfg, "", "peer")
+	got, _, ok := lookup.DocumentSource(context.Background(), ss, cfg, "", "peer")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -130,7 +130,7 @@ func TestDocumentSource_TenantSubstrateBeforeStatic(t *testing.T) {
 	}
 	// A non-"" tenant consults its own substrate FIRST (step 1), overriding the
 	// shared static base.
-	got, ok := lookup.DocumentSource(context.Background(), ss, cfg, "acme", "peer")
+	got, _, ok := lookup.DocumentSource(context.Background(), ss, cfg, "acme", "peer")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}

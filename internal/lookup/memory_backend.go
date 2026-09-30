@@ -32,40 +32,50 @@ type MemoryBackendStore interface {
 // Returns (zero, false) when no source has the name. Malformed
 // persistence JSON also returns (zero, false) — defensive against
 // future-field churn or hand-edited rows.
-func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, bool) {
+//
+// The Origin says who authored the resolved def (see Origin); a caller that
+// dials the def's base_url bases its network trust on it.
+func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Origin, bool) {
 	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
 	if tenantID != "" {
-		if mb, ok := resolveMemoryBackendSubstrate(ctx, s, tenantID, name); ok {
-			return mb, true
+		if mb, origin, ok := resolveMemoryBackendSubstrate(ctx, s, cfg, tenantID, name); ok {
+			return mb, origin, true
 		}
 	}
 	// 2. Static cfg.MemoryBackends — the shared operator base.
 	if cfg != nil {
 		if mb, ok := cfg.MemoryBackends[name]; ok {
-			return mb, true
+			return mb, OriginOperator, true
 		}
 	}
 	// 3. Shared substrate (tenant_id="").
-	return resolveMemoryBackendSubstrate(ctx, s, "", name)
+	return resolveMemoryBackendSubstrate(ctx, s, cfg, "", name)
 }
 
 // resolveMemoryBackendSubstrate reads the memory_backend_def_active
 // overlay for one tenant pass. Returns (zero, false) when the store is
 // nil, the name has no active pointer for that tenant, or the row's JSON
 // is malformed.
-func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, tenantID, name string) (config.MemoryBackend, bool) {
+func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Origin, bool) {
 	if s == nil {
-		return config.MemoryBackend{}, false
+		return config.MemoryBackend{}, OriginRuntime, false
 	}
 	activeRow, err := s.MemoryBackendDefGetActive(ctx, tenantID, name)
 	if err != nil {
-		return config.MemoryBackend{}, false
+		return config.MemoryBackend{}, OriginRuntime, false
 	}
 	var md SubstrateMemoryBackendDef
 	if uerr := json.Unmarshal(activeRow.Definition, &md); uerr != nil {
-		return config.MemoryBackend{}, false
+		return config.MemoryBackend{}, OriginRuntime, false
 	}
-	return md.ToConfigDef(), true
+	def := md.ToConfigDef()
+	origin := OriginRuntime
+	if activeRow.BootstrappedFromStatic && cfg != nil {
+		if static, ok := cfg.MemoryBackends[name]; ok && static.Config.BaseURL == def.Config.BaseURL {
+			origin = OriginOperator
+		}
+	}
+	return def, origin, true
 }
 
 // SubstrateMemoryBackendDef mirrors the JSON shape `MemoryBackendDef`

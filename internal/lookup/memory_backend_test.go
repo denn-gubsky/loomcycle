@@ -74,7 +74,7 @@ func TestMemoryBackend_EquivalenceYamlVsSubstrate(t *testing.T) {
 			"primary": {DefID: "mb_v1", Name: "primary", Version: 1, Definition: defJSON, CreatedAt: time.Now()},
 		},
 	}
-	resolved, ok := lookup.MemoryBackend(context.Background(), ss, &config.Config{}, "", "primary")
+	resolved, _, ok := lookup.MemoryBackend(context.Background(), ss, &config.Config{}, "", "primary")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}
@@ -94,7 +94,7 @@ func TestMemoryBackend_StaticBeforeSubstrate(t *testing.T) {
 			"backend": {DefID: "mb_v1", Name: "backend", Definition: json.RawMessage(`{"kind":"substrate-only"}`)},
 		},
 	}
-	got, ok := lookup.MemoryBackend(context.Background(), ss, cfg, "", "backend")
+	got, _, ok := lookup.MemoryBackend(context.Background(), ss, cfg, "", "backend")
 	if !ok {
 		t.Fatal("resolver returned !ok")
 	}

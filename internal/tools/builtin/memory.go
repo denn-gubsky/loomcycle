@@ -163,7 +163,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	// RFC N: resolve under the run's tenant so a tenant-private backend
 	// shadows the shared base; "" tenant collapses to static→shared exactly
 	// as before.
-	def, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, tools.RunIdentity(ctx).TenantID, name)
+	def, origin, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, tools.RunIdentity(ctx).TenantID, name)
 	if !ok {
 		log.Printf("memory: memory_backend %q not found — using operator-default backend", name)
 		return m.defaultBackend()
@@ -172,7 +172,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	case "", "inprocess":
 		return m.newInprocess()
 	case "remote":
-		rb, err := m.newRemoteBackend(def)
+		rb, err := m.newRemoteBackend(def, origin)
 		if err != nil {
 			// A misconfigured remote def must not fail the agent's run: log and
 			// serve locally (same degrade posture as the unknown-kind arm).
@@ -196,21 +196,10 @@ const remoteBackendTimeout = 30 * time.Second
 
 // newRemoteBackend builds a remote memory backend from a resolved def. The
 // SSRF-guarded HTTP client and the credential-env allowlist are supplied here
-// (the remote package stays free of config/netguard/os coupling). The peer's
-// own host is added to the guarded client's private-host allowlist — the
-// operator authored this base_url, so reaching it on a private network
-// (sibling replica / tailnet) is an explicit trust decision; redirects to any
-// OTHER private address stay blocked.
-func (m *Memory) newRemoteBackend(def config.MemoryBackend) (memrank.Backend, error) {
-	host := ""
-	if u, err := url.Parse(def.Config.BaseURL); err == nil {
-		host = u.Hostname()
-	}
-	var allowlist []string
-	if host != "" {
-		allowlist = []string{host}
-	}
-	client := netguard.NewGuardedClient(remoteBackendTimeout, allowlist)
+// (the remote package stays free of config/netguard/os coupling); the
+// private-host allowlist depends on who authored the def (remotePeerPrivateHosts).
+func (m *Memory) newRemoteBackend(def config.MemoryBackend, origin lookup.Origin) (memrank.Backend, error) {
+	client := netguard.NewGuardedClient(remoteBackendTimeout, remotePeerPrivateHosts(m.Cfg, def.Config.BaseURL, origin))
 	return remote.New(remote.Options{
 		BaseURL:          def.Config.BaseURL,
 		APIVersion:       def.Config.APIVersion,
@@ -220,6 +209,36 @@ func (m *Memory) newRemoteBackend(def config.MemoryBackend) (memrank.Backend, er
 		KeyResolver:      resolveCredentialEnv,
 		HTTPClient:       client,
 	})
+}
+
+// remotePeerPrivateHosts is the private-host allowlist for the guarded client
+// of a remote memory backend or document source — the hosts it may reach even
+// when they resolve to a private / loopback / link-local address.
+//
+// Both send an operator credential (api_key_env) to base_url, so the answer
+// depends on who wrote base_url:
+//   - an operator-declared def (yaml) gets its own host: the operator chose it,
+//     and a sibling replica or tailnet peer on a private network is the normal
+//     case.
+//   - a runtime-authored def gets only the hosts the operator vouched for in
+//     LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST (the list the HTTP tool and the MCP
+//     client already honour). Its own host is NOT added: that would let whoever
+//     authored the def aim the operator's credential at the metadata service
+//     or any internal host just by naming it.
+//
+// Either way each redirect hop re-dials through the guard, so a peer cannot
+// bounce the call to a private address outside this list.
+func remotePeerPrivateHosts(cfg *config.Config, baseURL string, origin lookup.Origin) []string {
+	if origin != lookup.OriginOperator {
+		if cfg == nil {
+			return nil
+		}
+		return cfg.Env.HTTPPrivateHostAllowlist
+	}
+	if u, err := url.Parse(baseURL); err == nil && u.Hostname() != "" {
+		return []string{u.Hostname()}
+	}
+	return nil
 }
 
 // resolveCredentialEnv resolves an env-var NAME to its value, gated by the SAME
