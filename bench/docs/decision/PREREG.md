@@ -102,3 +102,14 @@ The margin is 0.03, about 40% of the rerank's own gain in phase M (+0.073).
   corpus. The gate result is still reported, since it is independent of ranking.
 - **The gate is usable:** a "nothing here answers" signal gets its own probe on a corpus
   with real unanswerable questions, before any feature is proposed.
+
+## Amendment 1 — 2026-09-30 14:50, before any pool was fetched
+
+The embedder moves from the Spark's `bge-m3` to TrueNAS's `bge-m3` at the operator's
+request. Both hosts serve the identical model: digest `7907646426070047…` on both.
+- **Ingestion:** 520 of the 652 pages were embedded on the Spark and the rest on TrueNAS. A
+  page that was mid-import when the server stopped left a partial document, which was
+  found (its root chunk was in no page's map) and deleted before ingestion resumed.
+- **Queries:** pool queries are embedded on TrueNAS.
+- **The check that matters:** instrument check 1 (the rebuilt pools equal phase M's) tests
+  whether the swap changed anything. Nothing else changes.
