@@ -145,3 +145,34 @@ func TestExecute_ALoopThatWillNotBreakStopsTheRun(t *testing.T) {
 		t.Errorf("after 7 identical calls in a row: stop=%v why=%q; want the run flagged to stop", stop, why)
 	}
 }
+
+// changingStub succeeds every time with a different result, as a poll, a
+// queue subscribe or a clock read does.
+type changingStub struct {
+	pointerStub
+	ran int
+}
+
+func (c *changingStub) Execute(context.Context, json.RawMessage) (Result, error) {
+	c.ran++
+	return Result{Text: `{"state":"running","output":"step ` + strings.Repeat("x", c.ran) + `"}`}, nil
+}
+
+// A call repeated with the same arguments is not refused while what it returns
+// keeps changing: a poll or a queue drain is meant to be sent again as it is.
+func TestExecute_AnIdenticalCallWhoseResultChangesIsNeverRefused(t *testing.T) {
+	poll := &changingStub{pointerStub: pointerStub{name: "Agent", schema: `{"type":"object"}`}}
+	d := NewDispatcher([]Tool{poll})
+	same := json.RawMessage(`{"op":"poll","child_run_id":"r_1","timeout_ms":60000}`)
+	for i := 0; i < 8; i++ {
+		if res := d.Execute(context.Background(), "Agent", same); res.IsError {
+			t.Fatalf("call %d refused: %s", i+1, res.Text)
+		}
+	}
+	if poll.ran != 8 {
+		t.Errorf("the tool ran %d times; want 8", poll.ran)
+	}
+	if why, stop := d.RepeatedFailure(); stop {
+		t.Errorf("a run polling for new results was flagged to stop: %s", why)
+	}
+}

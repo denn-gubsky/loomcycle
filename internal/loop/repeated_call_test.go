@@ -3,9 +3,12 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -88,5 +91,114 @@ func TestRun_Stateful_ARunRepeatingASuccessfulCallIsStopped(t *testing.T) {
 	}
 	if prov.calls() > 10 {
 		t.Errorf("%d model calls; the run should stop soon after the refusals, not at its cap", prov.calls())
+	}
+}
+
+// turnScriptProvider sends one assistant turn per entry of turns — the tool
+// calls in it — and then ends the run with a text answer.
+type turnScriptProvider struct {
+	mu    sync.Mutex
+	turns [][]providers.ToolUse
+	turn  int
+}
+
+func (p *turnScriptProvider) ID() string                                   { return "turn-script" }
+func (p *turnScriptProvider) Probe(context.Context) error                  { return nil }
+func (p *turnScriptProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *turnScriptProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *turnScriptProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	i := p.turn
+	p.turn++
+	p.mu.Unlock()
+	ch := make(chan providers.Event, 16)
+	if i < len(p.turns) {
+		for _, tu := range p.turns[i] {
+			tu := tu
+			ch <- providers.Event{Type: providers.EventToolCall, ToolUse: &tu}
+		}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}}
+	} else {
+		ch <- providers.Event{Type: providers.EventText, Text: "done"}
+		ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
+	}
+	close(ch)
+	return ch, nil
+}
+
+// sameCallTurns is n turns of one identical call each.
+func sameCallTurns(n int, name, input string) [][]providers.ToolUse {
+	turns := make([][]providers.ToolUse, n)
+	for i := range turns {
+		turns[i] = []providers.ToolUse{{ID: fmt.Sprintf("t%d", i), Name: name, Input: json.RawMessage(input)}}
+	}
+	return turns
+}
+
+// pollingChild is a resident sub-agent seen through Agent op=poll: its output
+// grows on every poll until its turn is done.
+type pollingChild struct {
+	mu     sync.Mutex
+	calls  int
+	doneAt int
+}
+
+func (p *pollingChild) Name() string                 { return "Agent" }
+func (p *pollingChild) Description() string          { return "runs sub-agents" }
+func (p *pollingChild) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (p *pollingChild) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	state := "running"
+	if p.calls >= p.doneAt {
+		state = "awaiting_input"
+	}
+	return tools.Result{Text: fmt.Sprintf(`{"child_run_id":"r_1","state":%q,"output":"%d sections written"}`, state, p.calls)}, nil
+}
+
+// A parent waiting on a resident child polls it with the same arguments, as the
+// poll help says to, and gets a new answer each time. Every poll runs, and the
+// run ends on the model's answer — measured before, the third poll was refused
+// and the seventh ended the run repeated_failed_call.
+func TestRun_APollRepeatedWithChangingResultsRunsEveryTime(t *testing.T) {
+	const polls = 8
+	child := &pollingChild{doneAt: polls}
+	prov := &turnScriptProvider{turns: sameCallTurns(polls, "Agent", `{"op":"poll","child_run_id":"r_1","timeout_ms":60000}`)}
+	res, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      []tools.Tool{child},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{child}),
+		Segments:   statefulTaskSegs(),
+	})
+	if err != nil || res.StopReason != "end_turn" {
+		t.Fatalf("stop=%q err=%v; want end_turn", res.StopReason, err)
+	}
+	if child.calls != polls {
+		t.Errorf("the poll ran %d times; want %d (every poll returned something new)", child.calls, polls)
+	}
+}
+
+// The case the guard exists for, in the ordinary loop: the same successful
+// save, with the same result every time. The third is refused unrun and a
+// model that keeps sending it is stopped.
+func TestRun_ARepeatedCallWithTheSameResultIsStillStopped(t *testing.T) {
+	mem := &countingNoop{}
+	prov := &turnScriptProvider{turns: sameCallTurns(20, "Memory", `{"op":"set","scope":"tenant","key":"k","value":"v"}`)}
+	res, err := Run(context.Background(), RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      []tools.Tool{mem},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{mem}),
+		Segments:   statefulTaskSegs(),
+	})
+	if err == nil || res.StopReason != StopReasonRepeatedFailedCall {
+		t.Fatalf("stop=%q err=%v; want repeated_failed_call", res.StopReason, err)
+	}
+	if mem.calls != 2 {
+		t.Errorf("the tool ran %d times; want 2 (the repeats after that are refused, not run)", mem.calls)
 	}
 }
