@@ -37,6 +37,12 @@ func teamStateHarness(t *testing.T) *reviewHarness {
 // run is spawned with — what the walk hands the server.
 func memberCtx(t *testing.T, operatorAuthored bool) context.Context {
 	t.Helper()
+	return memberCtxIn(t, "globex", operatorAuthored)
+}
+
+// memberCtxIn is memberCtx walked from a run in callerTenant.
+func memberCtxIn(t *testing.T, callerTenant string, operatorAuthored bool) context.Context {
+	t.Helper()
 	var got context.Context
 	r := teamrun.NewAgentRunner(func(ctx context.Context, _ string, _ teamrun.Prompt, _ string) (teamrun.SpawnResult, error) {
 		got = ctx
@@ -44,7 +50,7 @@ func memberCtx(t *testing.T, operatorAuthored bool) context.Context {
 	}, teamrun.WithTeamSource("triage", "acme"), teamrun.WithOperatorAuthored(operatorAuthored))
 	st := teamgraph.State{ID: "fetch", Handler: teamgraph.Handler{Kind: teamgraph.HandlerAgent, Agent: "writer",
 		ToolHooks: hooks.ToolHooks{"WebFetch": {hooks.PhasePre: {{Ref: "url-gate"}}}}}}
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "root", TenantID: "globex"})
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "root", TenantID: callerTenant})
 	if _, err := r.RunHandler(ctx, st, &teamrun.Task{Input: "go"}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,18 +153,41 @@ func TestTeamStateHooks_ASubAgentInheritsTheHookWithItsSource(t *testing.T) {
 
 // A resumed member fires the state's hook as it started: the record keeps its
 // source, so it still resolves in the team's tenant and may still widen.
+//
+// Only when the team is in the member's own tenant (or the shared one). The
+// source is read back from the run's record, which a snapshot carries and can
+// be edited in transit, so a resume cannot tell an admin's walk over another
+// tenant's team from a record crafted to fire that tenant's HookDef: a
+// resumed member of such a walk stops, as if its pinned HookDef were gone,
+// rather than resolve in a tenant not its own. The live walk is unchanged.
 func TestTeamStateHooks_AResumedRunKeepsTheHooksSource(t *testing.T) {
-	h := teamStateHarness(t)
-	member := startSub(t, h, memberCtx(t, true))
-	run, err := h.st.GetRun(t.Context(), member.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	set := resumedSet(t, h, run)
-	gate := theGate(t, set)
-	if gate.Owner != "team:triage" || gate.CallbackURL != teamGateURL || !gate.WidenPermitted {
-		t.Fatalf("resumed gate = owner %q, url %q, widen %v; want it as it started", gate.Owner, gate.CallbackURL, gate.WidenPermitted)
-	}
+	t.Run("team in the run's tenant", func(t *testing.T) {
+		h := teamStateHarness(t)
+		member := startSub(t, h, memberCtxIn(t, "acme", true))
+		run, err := h.st.GetRun(t.Context(), member.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gate := theGate(t, resumedSet(t, h, run))
+		if gate.Owner != "team:triage" || gate.CallbackURL != teamGateURL || !gate.WidenPermitted {
+			t.Fatalf("resumed gate = owner %q, url %q, widen %v; want it as it started", gate.Owner, gate.CallbackURL, gate.WidenPermitted)
+		}
+	})
+	t.Run("another tenant's team fails closed", func(t *testing.T) {
+		h := teamStateHarness(t)
+		member := startSub(t, h, memberCtx(t, true))
+		if gate := theGate(t, hooks.SetFrom(member.LoopCtx)); gate.CallbackURL != teamGateURL {
+			t.Fatalf("live gate = url %q; the live walk resolves in the team's tenant", gate.CallbackURL)
+		}
+		run, err := h.st.GetRun(t.Context(), member.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = resumedSet(t, h, run).Err()
+		if err == nil || !strings.Contains(err.Error(), "which the run started with, no longer exists") {
+			t.Fatalf("resumed member's hooks: err = %v, want the gone-version refusal", err)
+		}
+	})
 }
 
 // A run request cannot claim a source. Whatever keys it adds — at the top, or
