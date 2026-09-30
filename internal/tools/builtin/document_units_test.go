@@ -211,3 +211,67 @@ func TestMemory_AnAgentCannotWriteAUnit(t *testing.T) {
 		}
 	}
 }
+
+// TestReplaceUnits_AReplaceLeavesExactlyTheNewSet — the new units are written over
+// the old keys and the old ones they did not overwrite are gone, whichever set is
+// larger; every unit records its set's size.
+func TestReplaceUnits_AReplaceLeavesExactlyTheNewSet(t *testing.T) {
+	d, _, ctx, ids := unitsDocFixture(t)
+	id := ids["install"]
+	set := func(claims, questions int) []DerivedUnit {
+		out := []DerivedUnit{{Kind: memrank.UnitDescription, Text: "installs it"}}
+		for i := 0; i < claims; i++ {
+			out = append(out, DerivedUnit{Kind: memrank.UnitClaim, Text: "a claim"})
+		}
+		for i := 0; i < questions; i++ {
+			out = append(out, DerivedUnit{Kind: memrank.UnitQuestion, Text: "a question"})
+		}
+		return out
+	}
+	for _, c := range []struct{ claims, questions int }{{3, 3}, {1, 0}, {2, 4}} {
+		units := set(c.claims, c.questions)
+		if n, err := d.ReplaceUnits(ctx, "user", id, units, UnitSource{Model: "m", BodyRevision: 1}); err != nil || n != len(units) {
+			t.Fatalf("ReplaceUnits = %d, %v", n, err)
+		}
+		var want []string
+		want = append(want, memrank.UnitKey(id, memrank.UnitClaim, 0))
+		for i := 1; i < c.claims; i++ {
+			want = append(want, memrank.UnitKey(id, memrank.UnitClaim, i))
+		}
+		want = append(want, memrank.UnitKey(id, memrank.UnitDescription, 0))
+		for i := 0; i < c.questions; i++ {
+			want = append(want, memrank.UnitKey(id, memrank.UnitQuestion, i))
+		}
+		if got := unitKeysOf(t, d, ctx, id); strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("after writing %d claims and %d questions the chunk holds %v, want %v", c.claims, c.questions, got, want)
+		}
+		us, _ := d.UnitsForChunk(ctx, "user", id)
+		for _, u := range us {
+			if u.UnitCount != len(units) {
+				t.Errorf("a unit records a set of %d, want %d", u.UnitCount, len(units))
+			}
+		}
+	}
+}
+
+// TestReplaceUnits_AnOverwrittenUnitThatFailsToEmbedKeepsNoOldVector — a new unit
+// is written over an old one's key; when its embed fails the key must not keep the
+// old unit's vector, which would find the chunk by what it no longer says.
+func TestReplaceUnits_AnOverwrittenUnitThatFailsToEmbedKeepsNoOldVector(t *testing.T) {
+	d, vs, ctx, ids := unitsDocFixture(t)
+	id := ids["install"]
+	if _, err := d.ReplaceUnits(ctx, "user", id, []DerivedUnit{{Kind: memrank.UnitClaim, Text: "the installer runs twice"}}, UnitSource{Model: "m", BodyRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	k := memrank.UnitKey(id, memrank.UnitClaim, 0)
+	if _, err := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "u1", k); err != nil {
+		t.Fatalf("the first unit was not embedded: %v", err)
+	}
+	d.Embedder.(*fakeEmbedder).failNext = true
+	if _, err := d.ReplaceUnits(ctx, "user", id, []DerivedUnit{{Kind: memrank.UnitClaim, Text: "reboot after login"}}, UnitSource{Model: "m", BodyRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if e, err := vs.MemoryEmbedGet(context.Background(), "", store.MemoryScopeUser, "u1", k); err == nil {
+		t.Errorf("the unit's key still carries a vector for %q", e.EmbedText)
+	}
+}

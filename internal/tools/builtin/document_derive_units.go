@@ -231,7 +231,9 @@ func (d *Document) deriveDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		if err != nil {
 			// A failed chunk keeps whatever units it had: a transport fault or an
-			// unreadable answer is no reason to delete units that still match.
+			// unreadable answer is no reason to delete units that still match. A
+			// write that failed part-way leaves them beside some new ones, a mix the
+			// next pass rewrites.
 			rep.Failed++
 			if len(rep.FailedChunks) < deriveFailedCap {
 				rep.FailedChunks = append(rep.FailedChunks, chunkID)
@@ -379,19 +381,33 @@ func (d *Document) unitSourceText(ctx context.Context, mscope store.MemoryScope,
 	return text, true
 }
 
-// unitsCurrent reports whether a chunk's units were written from this body and cover
-// exactly the kinds asked for.
+// unitsCurrent reports whether a chunk's units were written from this body, are the
+// whole set that write produced, and cover exactly the kinds asked for.
+//
+// A set with no unit count at all was written before units recorded one, and is
+// judged by hash and kinds alone, as it was then: regenerating every such set would
+// spend a model call per chunk on units that are almost always complete, and swap
+// them for a new sample. A body edit rewrites it with a count.
 func unitsCurrent(existing []store.MemoryEntry, sha string, kinds []string) bool {
 	if len(existing) == 0 {
 		return false
 	}
 	have := map[string]bool{}
+	count := -1
 	for _, e := range existing {
 		var v memrank.UnitValue
 		if json.Unmarshal(e.Value, &v) != nil || v.BodySHA256 != sha {
 			return false
 		}
+		// Units that disagree on their set's size are from different writes.
+		if count >= 0 && v.UnitCount != count {
+			return false
+		}
+		count = v.UnitCount
 		have[kindOption(v.Kind)] = true
+	}
+	if count != 0 && count != len(existing) {
+		return false
 	}
 	want := map[string]bool{}
 	for _, k := range kinds {
