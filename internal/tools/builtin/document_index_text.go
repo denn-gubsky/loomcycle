@@ -382,23 +382,60 @@ func (d *Document) takePendingReindex(dk reindexDocKey) map[string]struct{} {
 func (d *Document) reindexChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ids, types []string) {
 	tenant := direntTenant(ctx)
 	for i, id := range ids {
-		cb, err := d.readBody(ctx, mscope, key.ScopeID, id)
-		if err != nil {
-			log.Printf("document: re-index %s: read body: %v", id, err)
-			continue
-		}
-		bodyKey := chunkBodyKey(id)
-		text := d.chunkIndexText(ctx, key, id, types[i], cb.Body)
+		d.reindexChunk(ctx, tenant, key, mscope, id, types[i])
+		// A chunk's units carry its header too.
+		d.reindexUnitsOf(ctx, tenant, mscope, key, id)
+	}
+}
+
+// reindexChunkRechecks bounds how many times one chunk is re-derived because it changed
+// while the pass was indexing it.
+const reindexChunkRechecks = 3
+
+// reindexChunk brings one chunk's index text in line with the tree.
+//
+// A WRITE CAN LAND WHILE THIS EMBEDS. A body write re-embeds its chunk itself
+// (embedBody), and with a fast enough embedder stores that vector BEFORE this pass stores
+// the one for the body it read earlier — which then overwrote the new text's vector with
+// the old one's, until the chunk was next touched. A vector has no conditional write, so
+// the pass re-derives the text AFTER storing and goes again when it changed. That makes
+// the last write win: every writer changes the chunk before it stores its own vector, so
+// a writer whose vector landed before ours changed the chunk before ours too and is seen
+// by the re-derivation, and one that changes it later stores its vector after ours. The
+// re-derivation reads the type from the store rather than trusting the pass's snapshot,
+// so a type change racing the pass is caught the same way. Bounded, because a chunk
+// rewritten continuously is indexed by each of its writers anyway.
+func (d *Document) reindexChunk(ctx context.Context, tenant string, key sqlmem.ScopeKey, mscope store.MemoryScope, id, chunkType string) {
+	bodyKey := chunkBodyKey(id)
+	cb, err := d.readBody(ctx, mscope, key.ScopeID, id)
+	if err != nil {
+		log.Printf("document: re-index %s: read body: %v", id, err)
+		return
+	}
+	text := d.chunkIndexText(ctx, key, id, chunkType, cb.Body)
+	for recheck := 0; ; recheck++ {
 		switch {
 		case d.indexCurrent(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
+			return // nothing stored, so nothing newer was overwritten
 		case text == "":
 			// Nothing may stay indexed for a chunk that derives to nothing (see embedBody).
 			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, bodyKey)
 		case !d.embedText(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
 			log.Printf("document: re-index %s: embed failed", id)
+			return
 		}
-		// A chunk's units carry its header too.
-		d.reindexUnitsOf(ctx, tenant, mscope, key, id)
+		if recheck == reindexChunkRechecks {
+			return
+		}
+		now, err := d.readBody(ctx, mscope, key.ScopeID, id)
+		if err != nil {
+			return
+		}
+		next := d.chunkIndexText(ctx, key, id, "", now.Body)
+		if next == text {
+			return
+		}
+		text = next
 	}
 }
 

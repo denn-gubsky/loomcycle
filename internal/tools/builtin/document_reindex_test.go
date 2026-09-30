@@ -493,3 +493,64 @@ func TestReindex_BackgroundPassPanicIsContainedAndReleased(t *testing.T) {
 		}
 	}
 }
+
+// textGatedEmbedder holds the FIRST Embed call whose text contains marker until release
+// is closed, signalling reached when it arrives. Every other call passes straight through.
+type textGatedEmbedder struct {
+	providers.Embedder
+	marker  string
+	armed   atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (g *textGatedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) > 0 && strings.Contains(texts[0], g.marker) && g.armed.CompareAndSwap(true, false) {
+		close(g.reached)
+		<-g.release
+	}
+	return g.Embedder.Embed(ctx, texts)
+}
+
+// TestReindex_BodyWriteDuringPassEndsOnTheNewBody — a background re-index reads a chunk's
+// body, and while it embeds that text the chunk's body is rewritten. The write indexes the
+// new body itself; the pass, finishing after it, stored the vector of the body it had
+// read and so replaced the newer vector with the older text's until the chunk was next
+// touched. The last write must win: the chunk ends indexed under its new body.
+func TestReindex_BodyWriteDuringPassEndsOnTheNewBody(t *testing.T) {
+	d, vs, ctx := mermaidDocFixture(t, "section", "alpha", "beta")
+	out := docOp(t, d, ctx, map[string]any{"op": "create_document", "title": "Old name"})
+	docID, rootID := out["document_id"].(string), out["root_chunk_id"].(string)
+	// Enough chunks that the rename's pass runs in the background.
+	for i := 0; i < reindexSyncMax+2; i++ {
+		docOp(t, d, ctx, map[string]any{"op": "create_chunk", "document_id": docID,
+			"title": fmt.Sprintf("Section %d", i), "body": "section text"})
+	}
+	target := docOp(t, d, ctx, map[string]any{"op": "create_chunk", "document_id": docID,
+		"title": "Target", "body": "alpha words"})["id"].(string)
+
+	emb := &textGatedEmbedder{Embedder: d.Embedder, marker: "alpha words",
+		reached: make(chan struct{}), release: make(chan struct{})}
+	emb.armed.Store(true)
+	d.Embedder = emb
+
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": rootID,
+		"revision": chunkRevision(t, d, ctx, rootID), "title": "New name"})
+	select {
+	case <-emb.reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background pass never reached the target chunk's embed")
+	}
+	// The pass now holds the target's OLD text. Rewrite the body; its own embed is not gated.
+	docOp(t, d, ctx, map[string]any{"op": "update_chunk", "id": target,
+		"revision": chunkRevision(t, d, ctx, target), "body": "beta words"})
+	if got := embeddedTextFor(t, vs, target); got != "New name — Target\nbeta words" {
+		t.Fatalf("precondition: the body write indexed the chunk as %q", got)
+	}
+	close(emb.release)
+	d.waitReindex()
+
+	if got, want := embeddedTextFor(t, vs, target), "New name — Target\nbeta words"; got != want {
+		t.Errorf("after a body write raced the re-index pass the chunk is indexed as %q, want %q", got, want)
+	}
+}
