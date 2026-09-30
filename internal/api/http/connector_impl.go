@@ -313,10 +313,16 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 	// A cancel keyed only by agent_id must not reach another tenant's run (ids
 	// are not secret; cluster cancel broadcasts). tenantStore folds a
 	// cross-tenant/missing run into an opaque ErrNotFound; open/legacy/admin see
-	// all tenants so behaviour is unchanged for them.
+	// all tenants so behaviour is unchanged for them. An isolated member is
+	// confined to its own runs, as on HTTP: another user's run is the same
+	// ErrNotFound, never a cancel and never an AlreadyEnded answer.
 	if s.store != nil {
-		if _, err := s.tenantStore(ctx).GetRunByAgentID(ctx, agentID); err != nil {
+		run, err := s.tenantStore(ctx).GetRunByAgentID(ctx, agentID)
+		if err != nil {
 			return connector.CancelRunResult{}, err
+		}
+		if !runOwnershipOK(ctx, run) {
+			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 	}
 	res, ok := s.cancelReg.Cancel(agentID, reason)

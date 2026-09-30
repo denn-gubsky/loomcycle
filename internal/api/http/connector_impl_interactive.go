@@ -153,7 +153,9 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	if s.store == nil {
 		return false, false, connector.ErrRunNotInFlight
 	}
-	if _, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil {
+	// The tenant fold alone would let an isolated member stop another user's
+	// turn on another replica; the local path confines it via the session gate.
+	if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil || !runOwnershipOK(ctx, run) {
 		return false, false, connector.ErrRunNotInFlight
 	}
 	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)
