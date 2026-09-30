@@ -7346,6 +7346,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 	// And the walk state: a member's own sub-agents are not the walk's members,
 	// and a walk nested inside a member stamps its own.
 	subRunCtx = store.WithWalkTask(subRunCtx, store.WalkTask{})
+	// And the walk's review arming and deadline. runTeamMember has read this
+	// member's own from ctx already; left on its execution ctx, a walk nested
+	// inside the member would hold its runs on the OUTER state's arming.
+	subRunCtx = teamrun.WithReviewTTL(teamrun.WithReviewArming(subRunCtx, nil), nil)
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)
