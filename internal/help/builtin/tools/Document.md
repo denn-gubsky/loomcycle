@@ -122,10 +122,12 @@ and examples, as `Document/<op>` — for example
 | `diff_remote` | dry run: what a `sync` would change | `id` or `path` |
 
 A source declared in the operator's yaml reaches its peer wherever it runs. A
-source authored at runtime (`DocumentSourceDef`) reaches a peer on a private
-network only when the operator lists that hostname in
+source authored at runtime (`DocumentSourceDef`) reaches only a host the
+operator lists in `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or
 `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise `sync` and `diff_remote`
-fail with `blocked: <host> has no public addresses`, and nothing is sent.
+fail with `... is not in LOOMCYCLE_HTTP_HOST_ALLOWLIST ...`, and nothing is
+sent. A peer on a private network needs the private list:
+without it they fail with `blocked: <host> has no public addresses`.
 
 **Facts**
 

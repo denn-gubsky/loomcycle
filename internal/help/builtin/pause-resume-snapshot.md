@@ -228,7 +228,11 @@ value never enters the snapshot. But the host sends that key to
 source is re-validated** with the rules an author faces: `base_url` must
 be an http(s) URL with a host, and `api_key_env` must be an allowed
 credential name, never one of loomcycle's own secrets such as
-`LOOMCYCLE_AUTH_TOKEN`. A definition that fails is not restored, and
+`LOOMCYCLE_AUTH_TOKEN`. A peer that dials (a remote backend, every
+source) must also be at a host **this host** lists in
+`LOOMCYCLE_HTTP_HOST_ALLOWLIST` or `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`,
+unless its `base_url` is exactly the one this host's yaml declares under
+the same name. A definition that fails is not restored, and
 neither is a pointer at it. An old `kind: mem9` backend is refused the
 same way, since authoring refuses it.
 

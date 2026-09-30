@@ -41,6 +41,10 @@ edges_only_remote, excluded_unkeyed_local, excluded_unkeyed_remote}`.
   addresses` — the source was authored at runtime and its peer is on a private
   network the operator has not allowed. Ask the operator to add that hostname
   to `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
+- `diff_remote: base_url host "<host>" is not in LOOMCYCLE_HTTP_HOST_ALLOWLIST
+  or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST ...` — the source was authored at
+  runtime and the operator does not list its host; nothing was sent. Ask the
+  operator to list the host.
 
 ## Examples
 

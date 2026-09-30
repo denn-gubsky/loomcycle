@@ -49,6 +49,11 @@ sending side's chunks that could not be carried.
   the source was authored at runtime and its peer is on a private network the
   operator has not allowed; nothing was sent. A retry will not help: ask the
   operator to add that hostname to `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
+- `sync: base_url host "<host>" is not in LOOMCYCLE_HTTP_HOST_ALLOWLIST or
+  LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST ...` — the source was authored at
+  runtime and the operator does not list its host; nothing was sent. A retry
+  will not help: ask the operator to list the host, or to declare the source
+  in the server config.
 - `sync: direction must be "pull" (default) or "push" ...` — `up` and `down`
   belong to `reorder_chunk`.
 - The sync is not all-or-nothing: if it fails part-way, what was already

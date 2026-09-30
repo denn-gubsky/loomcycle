@@ -93,7 +93,9 @@ persisted shape can never hold a state a backend would act on unsafely:
   is refused. Every resolved name is re-checked at use time too.
 - A definition authored at runtime may not name a literal private, loopback,
   link-local or metadata IP (`127.0.0.1`, `10.x`, `169.254.169.254`, `::1`,
-  `fd00::/8`, `0.0.0.0`, …) as `config.base_url`.
+  `fd00::/8`, `0.0.0.0`, …) as `config.base_url`. A `kind: remote` one also
+  needs a host the operator lists, and only an admin may set its
+  `api_key_env` (see `kind: remote` below).
 
 `api_key_env` is an env-var **name**, never a plaintext key.
 
@@ -122,11 +124,17 @@ memory_backends:
     sibling replica, a tailnet host) is reached because the operator declared
     it.
   - **authored at runtime** (`MemoryBackendDef` create/fork, by a tenant
-    operator or an agent granted the tool) — the peer's own host is *not*
-    trusted. It reaches a private address only when the operator lists that
-    hostname in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise the call is
-    refused (`blocked: <host> has no public addresses`). This includes a fork
-    of a yaml-declared backend, which is a runtime definition too.
+    operator, an admin, or an agent granted the tool) — the peer's own host
+    is *not* trusted. Its host must be on `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or
+    `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` (the floor a runtime
+    `MCPServerDef` meets; empty lists deny). An unlisted host is refused at
+    create/fork and on snapshot restore, and a stored backend at an unlisted
+    host is never dialed: memory falls back to in-process with a log line,
+    and nothing — no Authorization header — is sent. It reaches a private
+    address only when the operator lists that hostname in
+    `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise the call is refused
+    (`blocked: <host> has no public addresses`). This includes a fork of a
+    yaml-declared backend, which is a runtime definition too.
 
   Either way a redirect to any *other* private address is refused.
 - **`config.api_key_env`** — the env-var **name** of the bearer minted on the
@@ -134,6 +142,16 @@ memory_backends:
   allowlisted (`LOOMCYCLE_*`-prefixed or a known third-party key) and resolved
   at use time, so it can never be pointed at one of loomcycle's own infra
   secrets. Sent as `Authorization: Bearer`; never logged.
+
+  In a definition authored at runtime, **only a `substrate:admin` may set
+  `api_key_env`**: it can name any credential this server holds (another
+  tenant's `LOOMCYCLE_PEER_KEY_<tenant>`, a `GITHUB_TOKEN`), and the
+  definition's author chooses where it is sent. Anyone else leaves the
+  credential unset or uses `tenancy_strategy.kind: key_per_tenant` with an
+  `env_pattern` containing `{tenant_id}`, which each run completes with its
+  own tenant — refused for an author with no tenant, whose definition every
+  tenant resolves. A fork that keeps a yaml backend's `base_url` and
+  credential exactly as declared is allowed.
 - **`fallback_on_error: inprocess`** — wrap the remote so an unreachable peer
   **degrades to local memory per-op** instead of failing the run. A genuine
   "key absent" from the peer is a valid answer and does *not* fall back (it
