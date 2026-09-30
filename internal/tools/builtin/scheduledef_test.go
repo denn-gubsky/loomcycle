@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
@@ -142,12 +143,13 @@ func TestScheduleDefTool_CreateStampsBodyTenant(t *testing.T) {
 // TestScheduleDefTool_CreateExplicitBodyTenantWins: an explicit overlay
 // tenant_id overrides the principal-tenant default (the documented
 // owning-vs-execution split — an admin can author a def that runs as another
-// tenant).
+// tenant; a non-admin is refused, see trigger_exec_tenant_test.go).
 func TestScheduleDefTool_CreateExplicitBodyTenantWins(t *testing.T) {
 	tool, _, cleanup := scheduleDefFixture(t)
 	defer cleanup()
 
-	res, _ := tool.Execute(ctxForTenant("tnt-a"), json.RawMessage(`{"op":"create","name":"explicit-sched","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","tenant_id":"exec-b"}}`))
+	adminCtx := auth.WithPrincipal(ctxForTenant("tnt-a"), auth.Principal{TenantID: "tnt-a", Subject: "op", Scopes: []string{auth.ScopeAdmin}})
+	res, _ := tool.Execute(adminCtx, json.RawMessage(`{"op":"create","name":"explicit-sched","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","tenant_id":"exec-b"}}`))
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
 	}
