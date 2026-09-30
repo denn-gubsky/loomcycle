@@ -186,7 +186,7 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 
 	// Read the def's scope first: the cascade must delete messages/cursors
 	// from the keyspaces they actually live in — this tenant's, and for a
-	// global channel every tenant's layer of it (see store.ChannelReadTenants).
+	// the operator's global channel the tenants' layers of it (see store.ChannelReadTenants).
 	var scope string
 	if err := tx.QueryRowContext(ctx, `SELECT scope FROM channels WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&scope); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -199,13 +199,16 @@ func (s *Store) ChannelsDelete(ctx context.Context, tenantID, name string) error
 	}
 	// Cascade scoped by keyspace so deleting one tenant's channel never
 	// touches another tenant's same-named channel: this tenant's rows, plus —
-	// for a global channel — every tenant's global layer of it, which the
-	// channel's deletion orphans. (Global channels are an admin's to create.)
+	// for the operator's global channel — the global layer of every tenant
+	// that has no channel of that name itself. Only those layers belong to
+	// the operator's channel; a tenant with its own row (global or not: a
+	// wire publish names its scope) keeps its layer, and deleting a tenant's
+	// channel never reaches past that tenant.
 	where := `tenant_id = ? AND channel = ?`
 	args := []any{tenantID, name}
-	if store.MemoryScope(scope) == store.MemoryScopeGlobal {
-		where = `channel = ? AND (tenant_id = ? OR scope = ?)`
-		args = []any{name, tenantID, string(store.MemoryScopeGlobal)}
+	if tenantID == store.ChannelOperatorTenant && store.MemoryScope(scope) == store.MemoryScopeGlobal {
+		where = `channel = ? AND (tenant_id = ? OR (scope = ? AND tenant_id NOT IN (SELECT tenant_id FROM channels WHERE name = ?)))`
+		args = []any{name, tenantID, string(store.MemoryScopeGlobal), name}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_messages WHERE `+where, args...); err != nil {
 		return fmt.Errorf("channels delete messages cascade: %w", err)

@@ -252,6 +252,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ChannelScopeIsolation", testChannelScopeIsolation},
 		{"ChannelTenantIsolation", testChannelTenantIsolation},
 		{"ChannelGlobalTenantLayers", testChannelGlobalTenantLayers},
+		{"ChannelsDeleteSparesTenantsOwnSameNamedChannel", testChannelsDeleteSparesTenantsOwnSameNamedChannel},
 		{"ChannelPurge", testChannelPurge},
 		{"ChannelPeekDoesNotConsume", testChannelPeekDoesNotConsume},
 		{"ChannelReplayFromCursorZero", testChannelReplayFromCursorZero},
@@ -7031,6 +7032,124 @@ func testChannelGlobalTenantLayers(t *testing.T, s store.Store) {
 	}
 	if left, _ := s.ChannelPeek(ctx, "t1", "g", store.MemoryScopeAgent, "a", "", 10); len(left) != 1 {
 		t.Errorf("deleting the global channel took t1's agent-scope g")
+	}
+}
+
+// testChannelsDeleteSparesTenantsOwnSameNamedChannel pins which layers a
+// channel's delete takes. Channels are per (tenant, name), so two tenants may
+// each own a global "jobs", and a tenant's non-global "jobs" can still hold
+// global-scope rows (a wire publish names its scope). Deleting a tenant's
+// channel takes that tenant's rows only. Deleting the operator's global
+// channel takes the operator layer and the layer of every tenant with no
+// "jobs" of its own — and spares a tenant that has one. Messages, cursors and
+// hook progress alike.
+func testChannelsDeleteSparesTenantsOwnSameNamedChannel(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const ch = "jobs"
+	g := store.MemoryScopeGlobal
+	// "" is the operator; acme and globex own a global jobs, hooli a
+	// tenant-scope one; initech has none.
+	for tenant, scope := range map[string]string{"": "global", "acme": "global", "globex": "global", "hooli": "tenant"} {
+		if err := s.ChannelsCreate(ctx, store.ChannelRow{Name: ch, TenantID: tenant, Scope: scope, Semantic: "queue", CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("create %q: %v", tenant, err)
+		}
+	}
+	// The operator publishes first, so each tenant's cursor (the end of its
+	// own layer merged with the operator's) is its own message's and differs
+	// from the operator's: a lost cursor shows as a different committed one.
+	layers := []string{"", "acme", "globex", "hooli", "initech"}
+	for _, tenant := range layers {
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: ch, TenantID: tenant, Scope: g, Payload: json.RawMessage(`{}`)}, 0); err != nil {
+			t.Fatalf("publish %q: %v", tenant, err)
+		}
+		if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{Channel: ch, TenantID: tenant, Scope: g, Payload: json.RawMessage(`{}`), VisibleAt: store.ChannelHookHeldVisibleAt()}, 0); err != nil {
+			t.Fatalf("publish awaiting hook %q: %v", tenant, err)
+		}
+		time.Sleep(2 * time.Millisecond) // distinct visible_at per layer
+	}
+	cursor := map[string]string{}
+	for _, tenant := range layers {
+		_, next, err := s.ChannelSubscribe(ctx, tenant, ch, g, "", "", 10)
+		if err != nil {
+			t.Fatalf("subscribe %q: %v", tenant, err)
+		}
+		if err := s.ChannelAck(ctx, tenant, ch, g, "", next); err != nil {
+			t.Fatalf("ack %q: %v", tenant, err)
+		}
+		cursor[tenant] = next
+	}
+	now := time.Now()
+	work, err := s.ChannelHookClaim(ctx, "w", now, now.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	claims := map[string]store.ChannelHookWork{}
+	for _, w := range work {
+		if w.Message.Channel == ch {
+			claims[w.Message.TenantID] = w
+		}
+	}
+	if len(claims) != len(layers) {
+		t.Fatalf("claimed %d layer(s) of %s, want %d", len(claims), ch, len(layers))
+	}
+
+	// intact reports what is left of one tenant's layer: its own delivered
+	// message, its own cursor, and its hook progress.
+	intact := func(tenant string) (msgs int, ownCursor, progress bool) {
+		t.Helper()
+		got, err := s.ChannelPeek(ctx, tenant, ch, g, "", "", 10)
+		if err != nil {
+			t.Fatalf("peek %q: %v", tenant, err)
+		}
+		for _, m := range got {
+			if m.TenantID == tenant {
+				msgs++
+			}
+		}
+		c, err := s.ChannelCommittedCursor(ctx, tenant, ch, g, "")
+		if err != nil {
+			t.Fatalf("cursor %q: %v", tenant, err)
+		}
+		ownCursor = c == cursor[tenant]
+		w := claims[tenant]
+		key := store.ChannelMessageKey{TenantID: w.Message.TenantID, Channel: ch, Scope: w.Message.Scope, ScopeID: w.Message.ScopeID, ID: w.Message.ID}
+		progress, err = s.ChannelHookRenew(ctx, key, w.Lease, now.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("renew %q: %v", tenant, err)
+		}
+		return msgs, ownCursor, progress
+	}
+	check := func(step string, wantGone map[string]bool) {
+		t.Helper()
+		for _, tenant := range layers {
+			msgs, ownCursor, progress := intact(tenant)
+			if wantGone[tenant] {
+				if msgs != 0 || ownCursor || progress {
+					t.Errorf("%s: %q's layer kept messages=%d cursor=%v progress=%v, want it gone", step, tenant, msgs, ownCursor, progress)
+				}
+				continue
+			}
+			if msgs != 1 || !ownCursor || !progress {
+				t.Errorf("%s: %q's layer has messages=%d cursor=%v progress=%v, want it untouched", step, tenant, msgs, ownCursor, progress)
+			}
+		}
+	}
+
+	if err := s.ChannelsDelete(ctx, "acme", ch); err != nil {
+		t.Fatalf("delete acme's: %v", err)
+	}
+	check("acme deletes its jobs", map[string]bool{"acme": true})
+
+	if err := s.ChannelsDelete(ctx, store.ChannelOperatorTenant, ch); err != nil {
+		t.Fatalf("delete the operator's: %v", err)
+	}
+	// acme's own row is gone, so the operator's channel now owns its (empty)
+	// layer; initech never had one. globex and hooli keep theirs.
+	check("the operator deletes its jobs", map[string]bool{"acme": true, "": true, "initech": true})
+	for _, tenant := range []string{"globex", "hooli"} {
+		if _, err := s.ChannelGet(ctx, tenant, ch); err != nil {
+			t.Errorf("%q's jobs definition: %v", tenant, err)
+		}
 	}
 }
 
