@@ -91,7 +91,7 @@ func TestA2AAgentDefTool_CreateWithEndpointBinding(t *testing.T) {
 
 // A model-authored grpc endpoint pointing at a literal private/link-local IP
 // (the cloud metadata service) must be refused at create — the gRPC binding
-// dials outside the SSRF-blocking peerDialContext, so registration-time is
+// dials outside the SSRF-blocking netguard dialer, so registration-time is
 // the defense. A public-host grpc endpoint is still accepted (the dial-time
 // hostname/rebinding case for gRPC is the documented deferred residual).
 func TestA2AAgentDefTool_CreateRefusesPrivateGRPCEndpoint(t *testing.T) {
