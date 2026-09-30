@@ -1115,6 +1115,44 @@ func TestContextTool_EvaluationsOfSharedDefCountOnlyTheCallersTenant(t *testing.
 	}
 }
 
+// An isolated member's run is confined to its own user, and a def's aggregate
+// counts every user's runs: it is refused exactly as an unknown def_id is, even
+// for the caller's own tenant's def. A non-isolated member still reads it.
+func TestContextTool_EvaluationsRefusedToAnIsolatedRunLikeAMissingDef(t *testing.T) {
+	tool, s, _, agentName, _, v2ID := substrateFixture(t)
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "tenant-a", agentName, "alice")
+	run, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_a", UserID: "alice", TenantID: "tenant-a", AgentDefID: v2ID})
+	if _, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+		EvalID: "eval_a_" + v2ID, RunID: run.ID, DefID: v2ID, Score: 0.1, EmitterRole: "self",
+	}); err != nil {
+		t.Fatalf("EvaluationSubmit: %v", err)
+	}
+	bob := func(isolated bool) context.Context {
+		return tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_b", UserID: "bob", TenantID: "tenant-a", Isolated: isolated})
+	}
+	const missing = "def_nope_does_not_exist"
+	theirs, _ := tool.Execute(bob(true), json.RawMessage(`{"op":"evaluations","def_id":"`+v2ID+`"}`))
+	none, _ := tool.Execute(bob(true), json.RawMessage(`{"op":"evaluations","def_id":"`+missing+`"}`))
+	if !theirs.IsError || !none.IsError {
+		t.Fatalf("both must refuse; theirs=%q none=%q", theirs.Text, none.Text)
+	}
+	if got, want := strings.ReplaceAll(theirs.Text, v2ID, "ID"), strings.ReplaceAll(none.Text, missing, "ID"); got != want {
+		t.Errorf("the def reads differently from a missing one:\n theirs: %s\n none:   %s", got, want)
+	}
+	if theirs.Error == nil || none.Error == nil || *theirs.Error != *none.Error {
+		t.Errorf("the def is classified differently from a missing one: %+v vs %+v", theirs.Error, none.Error)
+	}
+
+	res, _ := tool.Execute(bob(false), json.RawMessage(`{"op":"evaluations","def_id":"`+v2ID+`"}`))
+	if res.IsError {
+		t.Fatalf("non-isolated: evaluations: %s", res.Text)
+	}
+	if got := decodeResult(t, res.Text)["count"]; got != float64(1) {
+		t.Errorf("non-isolated: count = %v, want 1 (alice's score)", got)
+	}
+}
+
 // ---- channels (PR 3) ----
 
 func TestContextTool_ChannelsListsAccessible(t *testing.T) {

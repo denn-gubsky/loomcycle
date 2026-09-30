@@ -944,7 +944,10 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 			return errFrom(fmt.Sprintf("evaluations: %s", err), err), nil
 		}
 	}
-	if err != nil || !defVisible(ctx, def) {
+	// Every user's runs score a def, so its aggregate is cross-user by nature:
+	// an isolated member's run, confined to its own user, is refused it the
+	// same way.
+	if err != nil || !defVisible(ctx, def) || tools.RunIdentity(ctx).Isolated {
 		return errNotFound(fmt.Sprintf("evaluations: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 	}
 	// Seeing a shared def is not seeing every tenant's scores of it.
