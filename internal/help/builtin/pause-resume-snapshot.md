@@ -109,11 +109,41 @@ The **same surface** is exposed through every wire transport
 
 ## Restore semantics
 
-Restore is idempotent: each section's per-row insert is
-`ON CONFLICT DO NOTHING` (Postgres) / `INSERT OR IGNORE` (SQLite).
-A re-restore reports `0` in the counter for every section whose
+Restore is idempotent: a row whose key is already on the target is left
+alone, so a re-restore reports `0` in the counter for every section whose
 rows already exist — the counter is `rows_actually_written`, not
-`rows_attempted`.
+`rows_attempted`. For a definition the key is its `def_id`, on both
+backends: a **different** definition on a name and version the target
+already has (its own yaml bootstrap, say) is not written, and the restore
+warns, naming it. The live definition stands.
+
+### Definitions: agents, skills, teams, hooks, MCP servers, channels
+
+**Every restored definition is re-validated** with the rules an author
+faces on this host, and one that fails is not restored. The warning names
+it and the reason, a pointer at it is not restored either, and the
+section's `<section>_refused` counter (`mcp_server_defs_refused`,
+`hook_defs_refused`, …) counts it. The rest of the section lands. What
+each is checked for:
+
+- **MCP servers:** the transport, and for http a url whose host is on
+  **this host's** `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or
+  `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; a stdio server only when this
+  host sets `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO`. A server that is not
+  restored is never dialed.
+- **Hooks:** the event and body rules, an http body's url and headers (no
+  `Host`, `Content-Type` or other header the call sets itself, no line
+  break in a value), and a code-js body only when this host has code
+  hooks enabled, compiled here.
+- **Channels:** the name, scope and semantic a create accepts, no name a
+  yaml channel here already holds, and hooks whose HookDef references
+  resolve on this host.
+- **Agents and teams:** their inline hook webhooks, by the same header
+  and url rules. **Skills:** a non-blank body.
+
+This can skip a definition an older restore brought back — typically an
+MCP server whose host this host does not allow. Add the host to the
+allowlist and restore again: the rows already restored are left alone.
 
 `paused_runs` reference session_ids, but sessions aren't a
 captured section. Restore synthesizes a session row deterministically
@@ -308,9 +338,11 @@ credentials. After the definitions land, the restore reads the
 references in each restored webhook, schedule and server card —
 `user_credentials_from_env` names, the webhook signing/bearer env names,
 `sign_with_key_env`, and `$cred:` / `$ghapp:` / `${...}` references —
-and warns for each one this host cannot supply: an env var that is not
-set, or a credential the definition's tenant does not have. A warning
-names the definition and the reference, never a value.
+and in the header maps of every restored MCP server, hook, channel,
+agent and team (plus an MCP server's url and stdio `env`), and warns for
+each one this host cannot supply: an env var that is not set, or a
+credential the definition's tenant does not have. A warning names the
+definition and the reference, never a value.
 
 For a memory backend that dials a peer (`kind: remote`) and for every
 document source, the restore checks the env var a call would send: a

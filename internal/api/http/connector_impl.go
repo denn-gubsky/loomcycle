@@ -1225,7 +1225,7 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: one of snapshot_id, raw_json, or file_path is required")
 	}
 
-	result, err := snapshot.Restore(ctx, s.store, rawBytes, s.snapshotRestoreOptions(req.IncludeHistory))
+	result, err := snapshot.Restore(ctx, s.store, rawBytes, s.snapshotRestoreOptions(ctx, req.IncludeHistory))
 	if err != nil {
 		var tooNew *migrations.ErrSnapshotVersionTooNew
 		var unknown *migrations.ErrUnknownSectionVersion

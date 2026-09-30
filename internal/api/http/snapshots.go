@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -297,7 +299,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	// refreshed before this returns. Operators can call Resume
 	// immediately after a successful restore without waiting for
 	// the periodic probe.
-	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, s.snapshotRestoreOptions(req.IncludeHistory))
+	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, s.snapshotRestoreOptions(r.Context(), req.IncludeHistory))
 	if err != nil {
 		// Migration / version errors map to 422 (semantically valid
 		// JSON, semantically invalid state). The error message
@@ -340,9 +342,13 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 // (the HTTP handler and the connector behind gRPC and MCP), so no transport
 // can restore with less validation than another.
 //
-//   - Validators: the authoring validators of each section that is never
-//     restored unvalidated. A row a validator refuses is skipped with a
+//   - Validators: the authoring validators of every section that has one —
+//     the newer sections, which are never restored unvalidated, and the def
+//     sections snapshots carried first (agent, skill, team, hook, MCP server
+//     and channel defs). A row a validator refuses is skipped with a
 //     warning — restoring never widens what an author could create here.
+//     The MCP server and hook validators judge against THIS host: its
+//     allowlists and stdio opt-in, and its code-hook runner.
 //   - CredentialExists: the metadata-only keyability probe (never decrypts),
 //     so the missing-credential scan names a $cred: reference this host
 //     cannot resolve. nil when no credential store is wired: the scan says
@@ -355,10 +361,26 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 //   - DocumentExists: whether a document a restored Path name points at is on
 //     this host, asked without provisioning a SQL Memory scope. nil when SQL
 //     Memory is off here: no document can be, so no document name restores.
-func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOptions {
+//
+// ctx is the restore's own: the channel validator resolves HookDef references
+// through the store under it.
+func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool) snapshot.RestoreOptions {
+	var compileCode func(string) error
+	if s.codeHooks != nil {
+		compileCode = s.codeHooks.Compile
+	}
 	opts := snapshot.RestoreOptions{
 		IncludeHistory: includeHistory,
 		Validators: map[string]func(json.RawMessage) error{
+			// The def sections snapshots carried first. Agent, skill and team
+			// bodies are checked for what they carry themselves — the inline
+			// hook webhooks above all; hook and channel defs for their
+			// headers, urls and references.
+			migrations.SectionAgentDefs:         builtin.ValidateAgentDefBody,
+			migrations.SectionSkillDefs:         builtin.ValidateSkillDefBody,
+			migrations.SectionTeamDefs:          builtin.ValidateTeamDefBody,
+			migrations.SectionHookDefs:          builtin.HookDefBodyValidator(compileCode),
+			migrations.SectionChannelDefs:       s.restoredChannelDefValidator(ctx),
 			migrations.SectionWebhookDefs:       builtin.ValidateWebhookDefBody,
 			migrations.SectionA2AAgentDefs:      builtin.ValidateA2AAgentDefBody,
 			migrations.SectionA2AServerCardDefs: builtin.ValidateA2AServerCardDefBody,
@@ -380,6 +402,11 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 	// against: a restored volume lands where a create here would put it, and
 	// never under a name a static volume already holds.
 	if cfg := s.cfg(); cfg != nil {
+		// An MCP server def is dialed at its url, so it restores only when an
+		// author here could register it: this host's allowlists, its stdio
+		// opt-in. With no config there is nothing to judge against; the section
+		// then restores unvalidated and says so.
+		opts.Validators[migrations.SectionMCPServerDefs] = builtin.MCPServerDefBodyValidator(cfg)
 		if root, ok := builtin.DynamicVolumeRoot(cfg); ok {
 			opts.VolumeRoot = root
 		}
@@ -395,6 +422,53 @@ func (s *Server) snapshotRestoreOptions(includeHistory bool) snapshot.RestoreOpt
 		opts.DocumentExists = builtin.SnapshotDocumentExists(s.sqlMem)
 	}
 	return opts
+}
+
+// restoredChannelDefValidator is a runtime channel create's validation, for a
+// snapshot restore to run over each channel it would write (it is given the
+// snapshot.ChannelDefEntry as JSON): a name, scope and semantic a create
+// accepts, no name a yaml channel here already holds, and hooks that validate
+// and whose HookDef references resolve in the channel's tenant or the shared
+// one — hook defs restore before channel defs, so a reference to one this
+// restore brought back resolves, and one it refused does not. The admin-only
+// check on a global channel is not repeated: a restore is admin-only already.
+func (s *Server) restoredChannelDefValidator(ctx context.Context) func(json.RawMessage) error {
+	return func(raw json.RawMessage) error {
+		var e snapshot.ChannelDefEntry
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return fmt.Errorf("does not decode as a channel definition: %w", err)
+		}
+		if cfg := s.cfg(); cfg != nil {
+			if _, yaml := cfg.Channels[e.Name]; yaml {
+				return fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, e.Name)
+			}
+		}
+		if !validChannelName(e.Name) {
+			return fmt.Errorf("name must match [A-Za-z0-9_-]{1,128}")
+		}
+		switch e.Scope {
+		case "global", "agent", "user", "tenant":
+		default:
+			return fmt.Errorf("scope must be one of global|tenant|user|agent, got %q", e.Scope)
+		}
+		switch e.Semantic {
+		case "queue", "topic":
+		default:
+			return fmt.Errorf("semantic must be one of queue|topic, got %q", e.Semantic)
+		}
+		if e.DefaultTTL < 0 || e.MaxMessages < 0 {
+			return fmt.Errorf("default_ttl and max_messages must be >= 0")
+		}
+		if store.NoChannelHooks(e.Hooks) {
+			return nil
+		}
+		var h hooks.EventHooks
+		if err := json.Unmarshal(e.Hooks, &h); err != nil {
+			return fmt.Errorf("hooks do not decode: %w", err)
+		}
+		_, err := s.checkChannelHooks(ctx, e.Name, e.Publisher, e.TenantID, h)
+		return err
+	}
 }
 
 // finishRestore is what every restore call site owes once snapshot.Restore has

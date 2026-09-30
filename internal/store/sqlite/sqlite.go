@@ -4332,7 +4332,11 @@ func (s *Store) SnapshotRestoreRunEvents(ctx context.Context, runID, sessionID s
 }
 
 // SnapshotRestoreAgentDef implements store.Store. Preserves DefID +
-// Version + parent linkage. INSERT OR IGNORE → idempotent.
+// Version + parent linkage. Idempotent on def_id only: a DIFFERENT def on a
+// live (tenant_id, name, version) is an error, as it is on postgres. INSERT OR
+// IGNORE would swallow that collision too, and the restore would read it as
+// "already here" with no warning. The skill, team, hook and MCP server def
+// restores below follow the same rule.
 func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow) (bool, error) {
 	if r.DefID == "" || r.Name == "" {
 		return false, fmt.Errorf("snapshot restore agent_def: def_id and name required")
@@ -4342,12 +4346,13 @@ func (s *Store) SnapshotRestoreAgentDef(ctx context.Context, r store.AgentDefRow
 		createdNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO agent_defs(
+		`INSERT INTO agent_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id,
 			operator_authored
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
@@ -4397,11 +4402,12 @@ func (s *Store) SnapshotRestoreSkillDef(ctx context.Context, r store.SkillDefRow
 		createdNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO skill_defs(
+		`INSERT INTO skill_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
@@ -4447,12 +4453,13 @@ func (s *Store) SnapshotRestoreTeamDef(ctx context.Context, r store.TeamDefRow) 
 		createdNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO teamdefs(
+		`INSERT INTO teamdefs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id,
 			operator_authored
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
@@ -4501,11 +4508,12 @@ func (s *Store) SnapshotRestoreHookDef(ctx context.Context, r store.HookDefRow) 
 		createdNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO hook_defs(
+		`INSERT INTO hook_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),
@@ -4549,11 +4557,12 @@ func (s *Store) SnapshotRestoreMCPServerDef(ctx context.Context, r store.MCPServ
 		createdNs = time.Now().UnixNano()
 	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO mcp_server_defs(
+		`INSERT INTO mcp_server_defs(
 			def_id, name, version, parent_def_id, definition, description,
 			created_at, created_by_agent_id, created_by_run_id,
 			retired, bootstrapped_from_static, content_sha256, tenant_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(def_id) DO NOTHING`,
 		r.DefID, r.Name, r.Version, nilIfEmpty(r.ParentDefID),
 		string(r.Definition), nilIfEmpty(r.Description),
 		createdNs, nilIfEmpty(r.CreatedByAgentID), nilIfEmpty(r.CreatedByRunID),

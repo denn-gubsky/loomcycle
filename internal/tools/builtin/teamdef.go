@@ -1542,3 +1542,17 @@ func walkFinalOutput(trace []teamrun.StepRecord) string {
 	}
 	return ""
 }
+
+// ValidateTeamDefBody re-runs, over a stored team def body, the authoring
+// checks on its hooks: it parses as a team definition, and the walk's and each
+// state's hooks are well formed (inline webhooks included). A snapshot restore
+// calls it before writing a body. The graph itself is not re-validated — a
+// team dials nothing of its own — and neither are the caller-dependent channel
+// authority checks.
+func ValidateTeamDefBody(body json.RawMessage) error {
+	def, err := teamgraph.Parse(body)
+	if err != nil {
+		return err
+	}
+	return teamgraph.ValidateHooks(def)
+}

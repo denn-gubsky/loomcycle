@@ -37,6 +37,8 @@ func TestRestoreCounts_CarriesEveryCounter(t *testing.T) {
 		"synthesized_sessions":      "SynthesizedSessions",
 		"mcp_server_defs_activated": "MCPServerDefsActivated",
 		"paused_runs_resumed":       "PausedRunsResumed",
+		"mcp_server_defs_refused":   "MCPServerDefsRefused",
+		"channel_defs_refused":      "ChannelDefsRefused",
 	} {
 		if want := int(rv.FieldByName(field).Int()); got[key] != want {
 			t.Errorf("Counts()[%q] = %d, want %s = %d", key, got[key], field, want)

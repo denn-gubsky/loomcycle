@@ -952,3 +952,19 @@ func mintMCPServerDefID() string {
 	_, _ = rand.Read(buf[:])
 	return "mdf_" + hex.EncodeToString(buf[:])
 }
+
+// MCPServerDefBodyValidator returns the authoring validation of a stored MCP
+// server def body against cfg — this host's config — for a snapshot restore to
+// run before writing one: the transport, the dynamic-stdio opt-in, and for an
+// http transport the url's scheme and a host on THIS host's allowlists. So a
+// definition an author here could not register is not restored either.
+func MCPServerDefBodyValidator(cfg *config.Config) func(json.RawMessage) error {
+	m := &MCPServerDef{Cfg: cfg}
+	return func(body json.RawMessage) error {
+		var def mcpServerOverlay
+		if err := json.Unmarshal(body, &def); err != nil {
+			return fmt.Errorf("definition does not decode as an MCP server def: %w", err)
+		}
+		return m.validateOverlay(def)
+	}
+}

@@ -18,6 +18,12 @@ import (
 // restored, through two injected yes/no checks. Neither check returns a
 // value, and a warning names only the definition, the field and the reference.
 //
+// The older def sections are scanned too, where their bodies name a
+// credential by reference: every header map (an MCP server def's headers, an
+// http HookDef body's headers, the inline hook webhooks of an agent, a team or
+// a channel), and an MCP server def's url and stdio env, which are expanded
+// from the environment when the server is dialed or spawned (defRefs).
+//
 // An A2A peer's auth.bearer_credential_ref is deliberately not scanned: the
 // A2A tool resolves it from the RUN's per-run credentials, which each caller
 // supplies with its run — not from the credential store or the environment —
@@ -77,6 +83,75 @@ type credScanBody struct {
 		BearerTokenEnv   string `json:"bearer_token_env"`
 	} `json:"auth"`
 	SignWithKeyEnv string `json:"sign_with_key_env"`
+}
+
+// defRefs lists the references in a definition body: in every header map it
+// carries, wherever nested — any object under a "headers" key whose values
+// are all strings, the walk the capture findings make — and in the top-level
+// fields named in extra, a string or a map of strings. prefix is the body's
+// own path ("hooks" for a channel's hooks column). Keys are walked sorted, so
+// the order is stable.
+func defRefs(prefix string, body json.RawMessage, extra ...string) []credRef {
+	if len(body) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return nil
+	}
+	var out []credRef
+	add := func(field, value string) {
+		for _, m := range credRefRe.FindAllStringSubmatch(value, -1) {
+			out = append(out, credRef{field: field, cred: m[0], name: m[2]})
+		}
+		for _, m := range envRefRe.FindAllStringSubmatch(value, -1) {
+			out = append(out, credRef{field: field, env: m[1]})
+		}
+	}
+	addMap := func(path string, m map[string]string) {
+		for _, k := range sortedMapKeys(m) {
+			add(path+"."+k, m[k])
+		}
+	}
+	if top, ok := v.(map[string]any); ok {
+		for _, k := range extra {
+			switch t := top[k].(type) {
+			case string:
+				add(joinPath(prefix, k), t)
+			default:
+				if m, ok := stringMap(t); ok {
+					addMap(joinPath(prefix, k), m)
+				}
+			}
+		}
+	}
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			keys := make([]string, 0, len(t))
+			for k := range t {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				p := joinPath(path, k)
+				if k == "headers" {
+					if m, ok := stringMap(t[k]); ok {
+						addMap(p, m)
+						continue
+					}
+				}
+				walk(p, t[k])
+			}
+		case []any:
+			for i, e := range t {
+				walk(fmt.Sprintf("%s[%d]", path, i), e)
+			}
+		}
+	}
+	walk(prefix, v)
+	return out
 }
 
 // credRef is one reference found in a body.
