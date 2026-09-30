@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -84,6 +85,56 @@ func (s *Store) VolumeDefDelete(ctx context.Context, tenantID, name string) (boo
 		`DELETE FROM volume_defs WHERE tenant_id = $1 AND name = $2`, tenantID, name)
 	if err != nil {
 		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SnapshotReadVolumeDefs returns every tenant's volume rows, ordered by
+// (tenant_id, name).
+func (s *Store) SnapshotReadVolumeDefs(ctx context.Context) ([]store.VolumeDefRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT tenant_id, name, definition::text, created_at, updated_at
+		 FROM volume_defs ORDER BY tenant_id, name`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read volume_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.VolumeDefRow
+	for rows.Next() {
+		var (
+			r          store.VolumeDefRow
+			definition string
+		)
+		if err := rows.Scan(&r.TenantID, &r.Name, &definition, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("snapshot read volume_defs: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotRestoreVolumeDef inserts one volume row keeping both timestamps; a
+// volume already on (tenant_id, name) is left alone.
+func (s *Store) SnapshotRestoreVolumeDef(ctx context.Context, row store.VolumeDefRow) (bool, error) {
+	if row.Name == "" {
+		return false, fmt.Errorf("snapshot restore volume_defs: name required")
+	}
+	created, updated := row.CreatedAt, row.UpdatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	if updated.IsZero() {
+		updated = created
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO volume_defs (tenant_id, name, definition, created_at, updated_at)
+		 VALUES ($1, $2, $3::jsonb, $4, $5)
+		 ON CONFLICT (tenant_id, name) DO NOTHING`,
+		row.TenantID, row.Name, string(row.Definition), created, updated,
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore volume_defs: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
 }

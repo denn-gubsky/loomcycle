@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -98,6 +99,65 @@ func (s *Store) VolumeDefDelete(ctx context.Context, tenantID, name string) (boo
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, err
+	}
+	return n > 0, nil
+}
+
+// SnapshotReadVolumeDefs returns every tenant's volume rows, ordered by
+// (tenant_id, name).
+func (s *Store) SnapshotReadVolumeDefs(ctx context.Context) ([]store.VolumeDefRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT tenant_id, name, definition, created_at, updated_at
+		 FROM volume_defs ORDER BY tenant_id, name`)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot read volume_defs: %w", err)
+	}
+	defer rows.Close()
+	var out []store.VolumeDefRow
+	for rows.Next() {
+		var (
+			r                    store.VolumeDefRow
+			definition           string
+			createdAt, updatedAt int64
+		)
+		if err := rows.Scan(&r.TenantID, &r.Name, &definition, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("snapshot read volume_defs: %w", err)
+		}
+		r.Definition = json.RawMessage(definition)
+		r.CreatedAt = time.Unix(0, createdAt)
+		r.UpdatedAt = time.Unix(0, updatedAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SnapshotRestoreVolumeDef inserts one volume row keeping both timestamps; a
+// volume already on (tenant_id, name) is left alone. The conflict target is
+// the key, not INSERT OR IGNORE, which would also swallow a NOT NULL failure
+// as "already here".
+func (s *Store) SnapshotRestoreVolumeDef(ctx context.Context, row store.VolumeDefRow) (bool, error) {
+	if row.Name == "" {
+		return false, fmt.Errorf("snapshot restore volume_defs: name required")
+	}
+	created, updated := row.CreatedAt, row.UpdatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	if updated.IsZero() {
+		updated = created
+	}
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO volume_defs (tenant_id, name, definition, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, name) DO NOTHING`,
+		row.TenantID, row.Name, string(row.Definition), created.UnixNano(), updated.UnixNano(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore volume_defs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore volume_defs: %w", err)
 	}
 	return n > 0, nil
 }
