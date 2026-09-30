@@ -1027,21 +1027,9 @@ func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage) (bo
 	if def.CaptureDisabled == nil {
 		return false, nil
 	}
-	var ov struct {
-		UserCredentials        map[string]string `json:"user_credentials"`
-		UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
-	}
-	if len(overlay) > 0 {
-		if err := json.Unmarshal(overlay, &ov); err != nil {
-			return true, fmt.Errorf("parse overlay: %w", err)
-		}
-	}
-	var missing []string
-	for _, k := range def.CaptureDisabled.StrippedCredentials {
-		if ov.UserCredentials[k] != "" || ov.UserCredentialsFromEnv[k] != "" {
-			continue
-		}
-		missing = append(missing, k)
+	missing, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay)
+	if err != nil {
+		return true, err
 	}
 	if len(missing) == 0 {
 		def.CaptureDisabled = nil
@@ -1051,6 +1039,31 @@ func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage) (bo
 	off := false
 	def.Enabled = &off
 	return true, nil
+}
+
+// credentialsStillMissing returns the stripped credential keys a fork's
+// overlay does NOT re-supply, in their listed order. Only the overlay counts:
+// a key is re-supplied when the overlay gives it a non-empty value in
+// user_credentials or user_credentials_from_env. The ScheduleDef and
+// WebhookDef forks share it, so a marker clears on the same rule for both.
+func credentialsStillMissing(stripped []string, overlay json.RawMessage) ([]string, error) {
+	var ov struct {
+		UserCredentials        map[string]string `json:"user_credentials"`
+		UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
+	}
+	if len(overlay) > 0 {
+		if err := json.Unmarshal(overlay, &ov); err != nil {
+			return nil, fmt.Errorf("parse overlay: %w", err)
+		}
+	}
+	var missing []string
+	for _, k := range stripped {
+		if ov.UserCredentials[k] != "" || ov.UserCredentialsFromEnv[k] != "" {
+			continue
+		}
+		missing = append(missing, k)
+	}
+	return missing, nil
 }
 
 // parentFireCount reads the fire count a new version of a marked def must
