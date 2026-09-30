@@ -244,6 +244,13 @@ into another tenant's agents/skills/memory. `tenant_id` is def-content
 (operator-authored), flows to `RunInput.TenantID`, and cannot be overridden
 from the wire.
 
+**Through the WebhookDef tool, `tenant_id` may name only your own tenant
+unless you are an admin.** Omitted, it defaults to your tenant. A non-admin
+`create` or `fork` whose `tenant_id` names another tenant is refused, and so
+is a `fork` of a definition whose runs already execute in another tenant —
+set `tenant_id` to your own tenant in the fork's overlay to re-home it. The
+operator's yaml may still name any tenant.
+
 ## Response policy
 
 `202 Accepted` with `{run_id, webhook_name, delivery_id}` (async, the
