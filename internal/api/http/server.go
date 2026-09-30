@@ -1413,25 +1413,27 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 		// `provider`/`cap` fields so an adapter can retry a different tier
 		// immediately rather than backing off operator-wide.
 		w.Header().Set("Retry-After", "5")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"code":"provider_concurrency_exhausted","error":%q,"provider":%q,"cap":%d}`,
-			pce.Error(), pce.Provider, pce.Cap)
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			Provider string `json:"provider"`
+			Cap      int    `json:"cap"`
+		}{"provider_concurrency_exhausted", pce.Error(), pce.Provider, pce.Cap})
 		return
 	}
 	var pue *concurrency.ErrPerUserQuotaExhausted
 	if errors.As(err, &pue) {
 		w.Header().Set("Retry-After", "5")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"code":"per_user_quota_exhausted","error":%q,"user_id":%q,"cap":%d}`,
-			pue.Error(), pue.UserID, pue.Cap)
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code   string `json:"code"`
+			Error  string `json:"error"`
+			UserID string `json:"user_id"`
+			Cap    int    `json:"cap"`
+		}{"per_user_quota_exhausted", pue.Error(), pue.UserID, pue.Cap})
 		return
 	}
 	if concurrency.IsBackpressure(err) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"code":"backpressure","error":%q}`, err.Error())
+		writeJSONError(w, http.StatusTooManyRequests, "backpressure", err.Error())
 		return
 	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)
