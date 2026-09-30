@@ -3,11 +3,15 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // decodeErrorBody fails the test unless body is JSON, and returns its fields.
@@ -83,6 +87,61 @@ func TestWriteQuotaError_BodiesDecodeWithControlBytes(t *testing.T) {
 			if c.field != "" && got[c.field] != c.value {
 				t.Errorf("%s = %v, want %q", c.field, got[c.field], c.value)
 			}
+		})
+	}
+}
+
+// assertErrorEnvelope fails unless body decodes to exactly {code, error: msg}.
+// It does not stop the test, so a caller holding a blocked run still releases it.
+func assertErrorEnvelope(t *testing.T, body []byte, code, msg string) {
+	t.Helper()
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Errorf("error body is not JSON (%v): %s", err, body)
+		return
+	}
+	if got["code"] != code || got["error"] != msg {
+		t.Errorf("body = %v, want code %s and error %q", got, code, msg)
+	}
+}
+
+// The agent routes' 404s placed a %q-quoted id inside a JSON string, nesting
+// Go's quotes in the JSON ones — {"error":"no run found for agent_id "a_x""} —
+// so no client could decode the body for its code, whatever the id.
+func TestAgentRoutes_UnknownAgentID404DecodesAsJSON(t *testing.T) {
+	withStore, _ := makeServer(t, &scriptedProvider{}, makeBaseConfig())
+	noStore := New(makeBaseConfig(), &stubResolver{p: &scriptedProvider{}}, []tools.Tool{},
+		concurrency.New(4, 4, time.Second), nil)
+
+	cases := []struct {
+		name, method, path, msg string
+		srv                     *Server
+	}{
+		{"get", "GET", "/v1/agents/a_nope", `no run found for agent_id "a_nope"`, withStore},
+		{"cancel", "POST", "/v1/agents/a_nope/cancel", `no run found for agent_id "a_nope"`, withStore},
+		{"get without a store", "GET", "/v1/agents/a_nope",
+			`no live run for "a_nope" (no store configured)`, noStore},
+		{"cancel without a store", "POST", "/v1/agents/a_nope/cancel",
+			`no live or terminated run for "a_nope" (no store configured)`, noStore},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ts := httptest.NewServer(c.srv.Mux())
+			defer ts.Close()
+			req, err := http.NewRequest(c.method, ts.URL+c.path, strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("%s %s = %d %s, want 404", c.method, c.path, resp.StatusCode, body)
+			}
+			assertErrorEnvelope(t, body, "unknown_agent_id", c.msg)
 		})
 	}
 }
