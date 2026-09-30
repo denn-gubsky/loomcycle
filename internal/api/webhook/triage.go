@@ -27,14 +27,38 @@ func (rec *Receiver) MountAdmin(reg Registrar, adminAuth func(http.Handler) http
 		adminAuth(http.HandlerFunc(rec.handleTest)))
 }
 
-// handleRecentDeliveries returns the recorded triage entries for a webhook
-// name, newest-first, capped at min(limit, recentBufferCap, ring length).
-// 404 when the name has never been invoked (so a typo is distinguishable
-// from a quiet-but-real webhook). The entries carry ONLY non-sensitive
-// fields (delivery id, verdict, received_at, run id) — no credentials, no
-// payloads.
+// handleRecentDeliveries returns the recorded triage entries for a webhook,
+// newest-first, capped at min(limit, recentBufferCap, ring length). The
+// webhook is the def that POST /v1/_webhooks/{tenant}/{name} resolves to, with
+// tenant from ?tenant= or else the caller's own tenant; the ring is keyed the
+// same way as the rate-limit bucket (webhookKey), so two tenants' same-named
+// webhooks have separate lists. Only an admin (or legacy / open mode) may name
+// another tenant; anyone else gets the same 404 as an unknown webhook.
+//
+// 404 when the def does not resolve or has never been invoked (so a typo is
+// distinguishable from a quiet-but-real webhook). The entries carry ONLY
+// non-sensitive fields (delivery id, verdict, received_at, run id) — no
+// credentials, no payloads.
 func (rec *Receiver) handleRecentDeliveries(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+
+	tenant := ""
+	p, hasPrincipal := auth.PrincipalFromContext(r.Context())
+	if hasPrincipal {
+		tenant = p.TenantID
+	}
+	if q := r.URL.Query().Get("tenant"); q != "" && q != tenant {
+		if hasPrincipal && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+			writeError(w, http.StatusNotFound, "unknown_webhook", "")
+			return
+		}
+		tenant = q
+	}
+	_, owner, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, tenant, name)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown_webhook", "")
+		return
+	}
 
 	limit := recentBufferCap
 	if q := r.URL.Query().Get("limit"); q != "" {
@@ -46,7 +70,7 @@ func (rec *Receiver) handleRecentDeliveries(w http.ResponseWriter, r *http.Reque
 		limit = recentBufferCap
 	}
 
-	entries, ok := rec.recentSnapshot(name, limit)
+	entries, ok := rec.recentSnapshot(webhookKey(owner, name), limit)
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return

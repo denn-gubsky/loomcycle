@@ -3,7 +3,7 @@ package webhook
 import "time"
 
 // recentBufferCap is the per-webhook ring depth: the last N invocations of a
-// given webhook name are retained for the triage endpoint. Bounded so a
+// given webhook def are retained for the triage endpoint. Bounded so a
 // high-traffic webhook can't grow the buffer without limit — triage is a
 // recent-activity window, not an audit log (the runs table is the durable
 // record). 50 matches the recent-deliveries endpoint's hard cap.
@@ -22,7 +22,7 @@ type deliveryRecord struct {
 }
 
 // recentRing is a fixed-capacity, newest-overwrites-oldest ring of
-// deliveryRecords for one webhook name. Not safe for concurrent use on its
+// deliveryRecords for one webhook def. Not safe for concurrent use on its
 // own — the Receiver's recentMu guards all access.
 type recentRing struct {
 	buf  []deliveryRecord
@@ -65,12 +65,20 @@ func (r *recentRing) snapshot(limit int) []deliveryRecord {
 	return out
 }
 
-// recordDelivery appends a triage record for the given webhook name. Called
-// at every terminal point in handle()/deliver* with the verdict already
-// computed for the span. did + runID may be empty (a rejection before the
-// delivery id is derived, or a non-spawn / rejected delivery). Best-effort:
-// it holds recentMu only briefly and never affects the response.
-func (rec *Receiver) recordDelivery(name, did, verdict, runID string) {
+// recordDelivery appends a triage record to the ring of the webhook def named
+// by key (webhookKey's value, the same key as the def's rate-limit bucket).
+// Called at every terminal point in handle()/deliver* with the verdict already
+// computed for the span. key is "" when the request resolved no def: that
+// delivery is not recorded, because the receiver POST is unauthenticated and a
+// ring per made-up name would let anyone grow the map without bound. Keyed
+// this way, the map holds at most one ring per def. did + runID may be empty
+// (a rejection before the delivery id is derived, or a non-spawn / rejected
+// delivery). Best-effort: it holds recentMu only briefly and never affects
+// the response.
+func (rec *Receiver) recordDelivery(key, did, verdict, runID string) {
+	if key == "" {
+		return
+	}
 	r := deliveryRecord{
 		DeliveryID: did,
 		Verdict:    verdict,
@@ -82,21 +90,22 @@ func (rec *Receiver) recordDelivery(name, did, verdict, runID string) {
 	if rec.recent == nil {
 		rec.recent = make(map[string]*recentRing)
 	}
-	ring := rec.recent[name]
+	ring := rec.recent[key]
 	if ring == nil {
 		ring = &recentRing{}
-		rec.recent[name] = ring
+		rec.recent[key] = ring
 	}
 	ring.add(r)
 }
 
-// recentSnapshot returns the recorded deliveries for a webhook name,
-// newest-first, capped at limit. ok=false when the name has never been seen
-// (so the endpoint can 404 rather than return an empty list for a typo).
-func (rec *Receiver) recentSnapshot(name string, limit int) ([]deliveryRecord, bool) {
+// recentSnapshot returns the recorded deliveries for the webhook def named by
+// key, newest-first, capped at limit. ok=false when that def has never been
+// invoked (so the endpoint can 404 rather than return an empty list for a
+// typo).
+func (rec *Receiver) recentSnapshot(key string, limit int) ([]deliveryRecord, bool) {
 	rec.recentMu.Lock()
 	defer rec.recentMu.Unlock()
-	ring := rec.recent[name]
+	ring := rec.recent[key]
 	if ring == nil {
 		return nil, false
 	}
