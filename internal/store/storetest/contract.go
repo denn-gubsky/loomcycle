@@ -543,6 +543,9 @@ func Run(t *testing.T, factory Factory) {
 		// defs: every column lands, the live rows stand, and a clash on
 		// (tenant, name, version) is an error.
 		{"SnapshotTriggerDefRestoreKeepsLiveRows", testSnapshotTriggerDefRestoreKeepsLiveRows},
+		// The same clash rule for the def tables snapshots carried first:
+		// agent, skill, team, hook and MCP server defs.
+		{"SnapshotExistingDefRestoreRefusesAVersionClash", testSnapshotExistingDefRestoreRefusesAVersionClash},
 		{"SessionArchiver", testSessionArchiver},
 		// RFC BM Phase 2: a PINNED session is exempt from PrunableAgedSessions
 		// (all automated retention). Fails on the pre-fix query (no exclusion).
@@ -2060,6 +2063,51 @@ func testSnapshotTriggerDefRestoreKeepsLiveRows(t *testing.T, s store.Store) {
 			want := [][4]string{{"", "n", shared.DefID, ""}, {"acme", "n", parent.DefID, "ag"}}
 			if !reflect.DeepEqual(actives, want) {
 				t.Errorf("active pointers = %v, want %v", actives, want)
+			}
+		})
+	}
+}
+
+// testSnapshotExistingDefRestoreRefusesAVersionClash: for each def table a
+// snapshot has carried since before the newer sections, a restore of a def is
+// idempotent on its def_id, and a DIFFERENT def on a live (tenant, name,
+// version) is an error — on sqlite as on postgres. An error is what the
+// restore turns into a warning; a silent "not inserted" reads as "already
+// here" and the operator never learns their definition was not restored.
+func testSnapshotExistingDefRestoreRefusesAVersionClash(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	created := time.Date(2026, 9, 30, 1, 2, 3, 0, time.UTC)
+	body := json.RawMessage(`{}`)
+	for _, tc := range []struct {
+		table   string
+		restore func(defID string) (bool, error)
+	}{
+		{"agent_defs", func(id string) (bool, error) {
+			return s.SnapshotRestoreAgentDef(ctx, store.AgentDefRow{DefID: id, TenantID: "acme", Name: "n", Version: 1, Definition: body, CreatedAt: created})
+		}},
+		{"skill_defs", func(id string) (bool, error) {
+			return s.SnapshotRestoreSkillDef(ctx, store.SkillDefRow{DefID: id, TenantID: "acme", Name: "n", Version: 1, Definition: body, CreatedAt: created})
+		}},
+		{"teamdefs", func(id string) (bool, error) {
+			return s.SnapshotRestoreTeamDef(ctx, store.TeamDefRow{DefID: id, TenantID: "acme", Name: "n", Version: 1, Definition: body, CreatedAt: created})
+		}},
+		{"hook_defs", func(id string) (bool, error) {
+			return s.SnapshotRestoreHookDef(ctx, store.HookDefRow{DefID: id, TenantID: "acme", Name: "n", Version: 1, Definition: body, CreatedAt: created})
+		}},
+		{"mcp_server_defs", func(id string) (bool, error) {
+			return s.SnapshotRestoreMCPServerDef(ctx, store.MCPServerDefRow{DefID: id, TenantID: "acme", Name: "n", Version: 1, Definition: body, CreatedAt: created})
+		}},
+	} {
+		t.Run(tc.table, func(t *testing.T) {
+			live := tc.table + "_live"
+			if inserted, err := tc.restore(live); err != nil || !inserted {
+				t.Fatalf("restore: inserted=%v err=%v, want inserted", inserted, err)
+			}
+			if inserted, err := tc.restore(live); err != nil || inserted {
+				t.Errorf("re-restore of the same def: inserted=%v err=%v, want a silent no-op", inserted, err)
+			}
+			if inserted, err := tc.restore(tc.table + "_clash"); err == nil || inserted {
+				t.Errorf("a different def on a live (tenant, name, version): inserted=%v err=%v, want an error", inserted, err)
 			}
 		})
 	}
