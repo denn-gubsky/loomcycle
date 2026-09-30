@@ -453,6 +453,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ScheduleRunStatePauseResume", testScheduleRunStatePauseResume},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
 		{"EvaluationAggregateWithLineage", testEvaluationAggregateWithLineage},
+		{"EvaluationTenantFilterKeepsOnlyThatTenantsRuns", testEvaluationTenantFilterKeepsOnlyThatTenantsRuns},
 		// v0.8.x Process-resource metrics sampler
 		{"MetricsWriteAndQuery", testMetricsWriteAndQuery},
 		{"MetricsSweep", testMetricsSweep},
@@ -10406,6 +10407,96 @@ func testEvaluationAggregateWithLineage(t *testing.T, s store.Store) {
 	}
 	if !agg.LineageIncluded {
 		t.Error("LineageIncluded flag not set")
+	}
+}
+
+// A shared def is scored from every tenant's runs. A confined read keeps only
+// the named tenant's evaluations, filters BEFORE the limit (so a page is not
+// short when the newest rows are another tenant's), treats a run without a
+// tenant as the "" tenant, and drops an evaluation whose run row is gone.
+func testEvaluationTenantFilterKeepsOnlyThatTenantsRuns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	def, err := s.AgentDefCreate(ctx, mkDef("tf-shared", "tfagent", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runIn := func(tenant string) string {
+		t.Helper()
+		sess, err := s.CreateSession(ctx, tenant, "tfagent", "u-"+tenant)
+		if err != nil {
+			t.Fatalf("CreateSession(%q): %v", tenant, err)
+		}
+		run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{TenantID: tenant, AgentDefID: def.DefID})
+		if err != nil {
+			t.Fatalf("CreateRun(%q): %v", tenant, err)
+		}
+		return run.ID
+	}
+	acme, globex, shared := runIn("acme"), runIn("globex"), runIn("")
+	// Oldest first: acme's two, then the rows a post-limit filter would let
+	// crowd acme's out of a two-row page.
+	for i, ev := range []struct {
+		runID string
+		score float64
+	}{
+		{acme, 0.2}, {acme, 0.4}, {shared, 0.6}, {globex, 0.8}, {"r-tf-gone", 1.0},
+	} {
+		if _, err := s.EvaluationSubmit(ctx, store.EvaluationRow{
+			EvalID: fmt.Sprintf("tf-%d", i), RunID: ev.runID, DefID: def.DefID,
+			Score: ev.score, EmitterRole: "self",
+		}); err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+		time.Sleep(time.Millisecond) // distinct created_at for the ordering
+	}
+
+	confined := func(tenant string) store.EvaluationTenantFilter {
+		return store.EvaluationTenantFilter{Confined: true, TenantID: tenant}
+	}
+	all, err := s.EvaluationListForDef(ctx, def.DefID, 0, store.EvaluationTenantFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 5 {
+		t.Errorf("unconfined list = %d rows, want 5", len(all))
+	}
+	page, err := s.EvaluationListForDef(ctx, def.DefID, 2, confined("acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("acme page of 2 = %d rows, want 2 (the filter must apply before the limit)", len(page))
+	}
+	for _, r := range page {
+		if r.RunID != acme {
+			t.Errorf("acme page holds %s of run %s", r.EvalID, r.RunID)
+		}
+	}
+	for _, tc := range []struct {
+		tenant string
+		count  int
+		mean   float64
+	}{
+		{"acme", 2, 0.3},
+		{"globex", 1, 0.8},
+		{"", 1, 0.6},
+		{"initech", 0, 0},
+	} {
+		agg, err := s.EvaluationAggregate(ctx, def.DefID, store.AggregateOpts{Tenant: confined(tc.tenant)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agg.Count != tc.count || agg.Score.Mean < tc.mean-0.001 || agg.Score.Mean > tc.mean+0.001 {
+			t.Errorf("aggregate confined to %q = count %d mean %f, want count %d mean %f",
+				tc.tenant, agg.Count, agg.Score.Mean, tc.count, tc.mean)
+		}
+	}
+	agg, err := s.EvaluationAggregate(ctx, def.DefID, store.AggregateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.Count != 5 {
+		t.Errorf("unconfined aggregate count = %d, want 5", agg.Count)
 	}
 }
 

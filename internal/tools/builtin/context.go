@@ -947,8 +947,10 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 	if err != nil || !defVisible(ctx, def) {
 		return errNotFound(fmt.Sprintf("evaluations: def_id %q not found", in.DefID), "Find def_ids with op=agents."), nil
 	}
+	// Seeing a shared def is not seeing every tenant's scores of it.
 	agg, err := c.Store.EvaluationAggregate(ctx, in.DefID, store.AggregateOpts{
 		IncludeLineage: in.IncludeLineage,
+		Tenant:         evalTenantFilter(ctx),
 	})
 	if err != nil {
 		return errFrom(fmt.Sprintf("evaluations: %s", err), err), nil

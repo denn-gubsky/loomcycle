@@ -3382,8 +3382,9 @@ type Store interface {
 
 	// EvaluationListForDef returns evaluations targeting one def
 	// (denormalised def_id column). Same ordering + limit semantics
-	// as ListForRun.
-	EvaluationListForDef(ctx context.Context, defID string, limit int) ([]EvaluationRow, error)
+	// as ListForRun. tenant confines the rows before the limit applies,
+	// so a confined page is never short.
+	EvaluationListForDef(ctx context.Context, defID string, limit int, tenant EvaluationTenantFilter) ([]EvaluationRow, error)
 
 	// EvaluationAggregate computes summary statistics for a def_id.
 	// When opts.IncludeLineage is true, recursively walks parent_def_id
@@ -5426,6 +5427,22 @@ type AggregateOpts struct {
 	// includes ancestors' evaluations in the aggregate. Retired
 	// ancestors are included; the caller can filter post-hoc.
 	IncludeLineage bool
+
+	// Tenant confines the aggregate to evaluations of one tenant's runs.
+	Tenant EvaluationTenantFilter
+}
+
+// EvaluationTenantFilter confines an evaluation read to the evaluations of
+// one tenant's runs. An evaluation has no tenant column: it belongs to the
+// tenant of the run it scores. A def_id does not confine on its own either,
+// because a shared ("") def is run, and so scored, from every tenant.
+//
+// The zero value reads every tenant's evaluations (the operator view). A
+// confined read skips an evaluation whose run row is gone: with no run there
+// is no owner to check, so it fails closed.
+type EvaluationTenantFilter struct {
+	Confined bool
+	TenantID string
 }
 
 // AggregateResult is the output of EvaluationAggregate.

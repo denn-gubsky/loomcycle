@@ -8997,11 +8997,18 @@ func (s *Store) EvaluationListForRun(ctx context.Context, runID string, limit in
 	return s.scanEvaluationRows(rows)
 }
 
-func (s *Store) EvaluationListForDef(ctx context.Context, defID string, limit int) ([]store.EvaluationRow, error) {
+func (s *Store) EvaluationListForDef(ctx context.Context, defID string, limit int, tenant store.EvaluationTenantFilter) ([]store.EvaluationRow, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, evaluationSelect+` WHERE def_id = $1 ORDER BY created_at DESC LIMIT $2`, defID, limit)
+	q := evaluationSelect + ` WHERE def_id = $1`
+	args := []any{defID}
+	if tenant.Confined {
+		q += evaluationRunTenantClause("$2")
+		args = append(args, tenant.TenantID)
+	}
+	args = append(args, limit)
+	rows, err := s.pool.Query(ctx, q+fmt.Sprintf(` ORDER BY created_at DESC LIMIT $%d`, len(args)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("evaluation list for def: %w", err)
 	}
@@ -9021,7 +9028,13 @@ func (s *Store) EvaluationAggregate(ctx context.Context, defID string, opts stor
 	if len(defIDs) > 1000 {
 		defIDs = defIDs[:1000]
 	}
-	rows, err := s.pool.Query(ctx, evaluationSelect+` WHERE def_id = ANY($1) ORDER BY created_at ASC`, defIDs)
+	q := evaluationSelect + ` WHERE def_id = ANY($1)`
+	args := []any{defIDs}
+	if opts.Tenant.Confined {
+		q += evaluationRunTenantClause("$2")
+		args = append(args, opts.Tenant.TenantID)
+	}
+	rows, err := s.pool.Query(ctx, q+` ORDER BY created_at ASC`, args...)
 	if err != nil {
 		return store.AggregateResult{}, fmt.Errorf("evaluation aggregate: %w", err)
 	}
@@ -9054,6 +9067,13 @@ func (s *Store) walkAncestors(ctx context.Context, defID string) ([]string, erro
 		cur = parent.String
 	}
 	return ancestors, nil
+}
+
+// evaluationRunTenantClause keeps an evaluation only when its run is in the
+// tenant bound to param (see store.EvaluationTenantFilter). A pre-tenant run
+// row has NULL tenant_id, which is the "" tenant.
+func evaluationRunTenantClause(param string) string {
+	return ` AND EXISTS (SELECT 1 FROM runs r WHERE r.id = evaluations.run_id AND COALESCE(r.tenant_id, '') = ` + param + `)`
 }
 
 const evaluationSelect = `SELECT

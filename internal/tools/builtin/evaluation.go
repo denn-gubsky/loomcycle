@@ -171,14 +171,15 @@ func (e *Evaluation) execSubmit(ctx context.Context, policy tools.EvaluationPoli
 		return errResult(fmt.Sprintf("submit: rationale (%d bytes) exceeds max %d", len(in.Rationale), e.MaxRationaleBytes)), nil
 	}
 
-	// Look up target run to derive emitter_role + capture def_id.
-	target, err := e.Store.GetRun(ctx, in.RunID)
+	// Look up target run to derive emitter_role + capture def_id. Another
+	// tenant's run is refused before the role check, whose refusal would
+	// otherwise tell a guessed run_id's existence apart from a missing one.
+	target, ok, err := e.visibleRun(ctx, in.RunID)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
-			return errResult(fmt.Sprintf("submit: run_id %q not found", in.RunID)), nil
-		}
 		return errResult(fmt.Sprintf("submit: %s", err)), nil
+	}
+	if !ok {
+		return errResult(fmt.Sprintf("submit: run_id %q not found", in.RunID)), nil
 	}
 	emitter := tools.RunIdentity(ctx)
 	role := deriveEmitterRole(emitter, target)
@@ -221,13 +222,21 @@ func (e *Evaluation) execGet(ctx context.Context, policy tools.EvaluationPolicyV
 	if in.EvalID == "" {
 		return errResult("get: missing required field: eval_id"), nil
 	}
+	notFound := errResult(fmt.Sprintf("get: eval_id %q not found", in.EvalID))
 	row, err := e.Store.EvaluationGet(ctx, in.EvalID)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			return errResult(fmt.Sprintf("get: eval_id %q not found", in.EvalID)), nil
+			return notFound, nil
 		}
 		return errResult(fmt.Sprintf("get: %s", err)), nil
+	}
+	if !defCallerIsAdmin(ctx) {
+		if _, ok, err := e.visibleRun(ctx, row.RunID); err != nil {
+			return errResult(fmt.Sprintf("get: %s", err)), nil
+		} else if !ok {
+			return notFound, nil
+		}
 	}
 	return okJSON(evalRowResponse(row))
 }
@@ -238,6 +247,14 @@ func (e *Evaluation) execListForRun(ctx context.Context, policy tools.Evaluation
 	}
 	if in.RunID == "" {
 		return errResult("list_for_run: missing required field: run_id"), nil
+	}
+	if !defCallerIsAdmin(ctx) {
+		if _, ok, err := e.visibleRun(ctx, in.RunID); err != nil {
+			return errResult(fmt.Sprintf("list_for_run: %s", err)), nil
+		} else if !ok {
+			// What an unknown run_id lists: nothing.
+			return okJSON(map[string]any{"run_id": in.RunID, "evaluations": evalRowsResponse(nil)})
+		}
 	}
 	rows, err := e.Store.EvaluationListForRun(ctx, in.RunID, in.Limit)
 	if err != nil {
@@ -253,7 +270,13 @@ func (e *Evaluation) execListForDef(ctx context.Context, policy tools.Evaluation
 	if in.DefID == "" {
 		return errResult("list_for_def: missing required field: def_id"), nil
 	}
-	rows, err := e.Store.EvaluationListForDef(ctx, in.DefID, in.Limit)
+	if ok, err := e.defReadable(ctx, in.DefID); err != nil {
+		return errResult(fmt.Sprintf("list_for_def: %s", err)), nil
+	} else if !ok {
+		// What an unknown def_id lists: nothing.
+		return okJSON(map[string]any{"def_id": in.DefID, "evaluations": evalRowsResponse(nil)})
+	}
+	rows, err := e.Store.EvaluationListForDef(ctx, in.DefID, in.Limit, evalTenantFilter(ctx))
 	if err != nil {
 		return errResult(fmt.Sprintf("list_for_def: %s", err)), nil
 	}
@@ -267,11 +290,78 @@ func (e *Evaluation) execAggregate(ctx context.Context, policy tools.EvaluationP
 	if in.DefID == "" {
 		return errResult("aggregate: missing required field: def_id"), nil
 	}
-	agg, err := e.Store.EvaluationAggregate(ctx, in.DefID, store.AggregateOpts{IncludeLineage: in.IncludeLineage})
+	// Resolve the def even though the confined aggregate below counts only
+	// this tenant's runs: with include_lineage it would still walk another
+	// tenant's def up to a shared ancestor and count this tenant's scores
+	// there, which an unknown def_id never does.
+	if ok, err := e.defReadable(ctx, in.DefID); err != nil {
+		return errResult(fmt.Sprintf("aggregate: %s", err)), nil
+	} else if !ok {
+		// What the store aggregates for an unknown def_id: no rows.
+		return okJSON(store.AggregateResult{DefID: in.DefID, LineageIncluded: in.IncludeLineage})
+	}
+	agg, err := e.Store.EvaluationAggregate(ctx, in.DefID, store.AggregateOpts{
+		IncludeLineage: in.IncludeLineage,
+		Tenant:         evalTenantFilter(ctx),
+	})
 	if err != nil {
 		return errResult(fmt.Sprintf("aggregate: %s", err)), nil
 	}
 	return okJSON(agg)
+}
+
+// ---- tenant boundary ----
+//
+// Run, eval and def ids are global handles, and read_any / submit_any are
+// capability grants, not tenant grants. An evaluation belongs to the tenant of
+// the run it scores, so every op re-applies the boundary the way AgentDef get
+// does: the caller's own tenant, or every tenant for a substrate:admin. What a
+// caller may not see reads exactly like what does not exist, so a guessed id
+// tells nothing across the boundary.
+
+// visibleRun reads a run for this caller. ok is false both for a run that does
+// not exist and for another tenant's.
+func (e *Evaluation) visibleRun(ctx context.Context, runID string) (store.Run, bool, error) {
+	run, err := e.Store.GetRun(ctx, runID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return store.Run{}, false, nil
+		}
+		return store.Run{}, false, err
+	}
+	if !defCallerIsAdmin(ctx) && run.TenantID != tools.RunIdentity(ctx).TenantID {
+		return store.Run{}, false, nil
+	}
+	return run, true, nil
+}
+
+// defReadable reports whether def_id names a def this caller may see: its own
+// tenant's or a shared one (defVisible). An unknown id is not readable either.
+// An admin sees every def, so its read goes straight to the store, as before.
+func (e *Evaluation) defReadable(ctx context.Context, defID string) (bool, error) {
+	if defCallerIsAdmin(ctx) {
+		return true, nil
+	}
+	def, err := e.Store.AgentDefGet(ctx, defID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return defVisible(ctx, def), nil
+}
+
+// evalTenantFilter confines a read by def to the caller's tenant's runs. A
+// shared def is scored from every tenant, so seeing the def is not seeing
+// every evaluation of it.
+func evalTenantFilter(ctx context.Context) store.EvaluationTenantFilter {
+	if defCallerIsAdmin(ctx) {
+		return store.EvaluationTenantFilter{}
+	}
+	return store.EvaluationTenantFilter{Confined: true, TenantID: tools.RunIdentity(ctx).TenantID}
 }
 
 // ---- helpers ----
