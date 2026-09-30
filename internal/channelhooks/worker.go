@@ -75,7 +75,8 @@ type Config struct {
 	Bus       *channels.Bus
 	Scheduler *channels.Scheduler
 
-	// Owner names this worker on its leases; unique per replica.
+	// Owner names this worker on its claims; unique per replica. Each claim
+	// gets a lease token of its own (store.NewChannelHookLease).
 	Owner string
 	// Concurrency bounds the messages this worker decides at once, PerChannel
 	// those of one channel. Defaults 16 and 4.
@@ -274,6 +275,7 @@ type job struct {
 	w        *Worker
 	msg      store.ChannelMessage
 	key      store.ChannelMessageKey
+	lease    string // the claim's lease token: what every renew and settle is checked against
 	progress store.ChannelHookProgress
 	deadline time.Time
 	jrnl     journal
@@ -290,6 +292,7 @@ func (w *Worker) process(ctx context.Context, it store.ChannelHookWork) {
 		w:        w,
 		msg:      m,
 		key:      store.ChannelMessageKey{TenantID: m.TenantID, Channel: m.Channel, Scope: m.Scope, ScopeID: m.ScopeID, ID: m.ID},
+		lease:    it.Lease,
 		progress: it.Progress,
 		deadline: w.deadlineFor(m),
 	}
@@ -345,7 +348,7 @@ func (j *job) renew(ctx context.Context, lost func()) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			ok, err := j.w.cfg.Store.ChannelHookRenew(ctx, j.key, j.w.cfg.Owner, j.w.now().Add(j.w.cfg.Lease))
+			ok, err := j.w.cfg.Store.ChannelHookRenew(ctx, j.key, j.lease, j.w.now().Add(j.w.cfg.Lease))
 			if err == nil && !ok {
 				lost()
 				return
@@ -601,7 +604,7 @@ func (j *job) saveProgress(ctx context.Context, pos int, body json.RawMessage, a
 		// Between hooks (or asks): keep the lease, the chain goes on.
 		leaseUntil = leaseUntil.Add(j.w.cfg.Lease)
 	}
-	ok, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.w.cfg.Owner, p, leaseUntil)
+	ok, err := j.w.cfg.Store.ChannelHookSaveProgress(ctx, j.key, j.lease, p, leaseUntil)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: save progress: %v", j.msg.Channel, j.msg.ID, err)
@@ -633,7 +636,7 @@ func (j *job) release(ctx context.Context, def *Def, body json.RawMessage, chang
 	case j.msg.RequestedVisibleAt.After(time.Now()):
 		to = j.msg.RequestedVisibleAt
 	}
-	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, j.w.cfg.Owner, bodyOrNil(body, changed), to)
+	ok, err := j.w.cfg.Store.ChannelReleaseHookHeld(ctx, j.key, j.lease, bodyOrNil(body, changed), to)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: release: %v", j.msg.Channel, j.msg.ID, err)
@@ -665,7 +668,7 @@ func (j *job) drop(ctx context.Context, def *Def, reason, by string) {
 		j.release(ctx, def, sinkError(j.msg.Payload, reason), true)
 		return
 	}
-	ok, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key, j.w.cfg.Owner)
+	ok, err := j.w.cfg.Store.ChannelDropHookHeld(ctx, j.key, j.lease)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("channelhooks: %s message %s: drop: %v", j.msg.Channel, j.msg.ID, err)

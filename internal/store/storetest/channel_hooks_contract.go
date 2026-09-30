@@ -34,13 +34,19 @@ func publishAwaitingHook(t *testing.T, s store.Store, ch string, payload string,
 }
 
 // leased takes the lease on every message awaiting hooks for owner "w", as
-// the worker that settles them would hold it.
-func leased(t *testing.T, s store.Store) {
+// the worker that settles them would hold it, and returns the claim's lease
+// token ("" when there was nothing to claim).
+func leased(t *testing.T, s store.Store) string {
 	t.Helper()
 	now := time.Now()
-	if _, err := s.ChannelHookClaim(context.Background(), "w", now, now.Add(time.Hour), 100); err != nil {
+	w, err := s.ChannelHookClaim(context.Background(), "w", now, now.Add(time.Hour), 100)
+	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
+	if len(w) == 0 {
+		return ""
+	}
+	return w[0].Lease
 }
 
 func readAll(t *testing.T, s store.Store, ch, cursor string) ([]store.ChannelMessage, string) {
@@ -92,7 +98,7 @@ func testChannelReleaseNeverTouchesHookHeld(t *testing.T, s store.Store) {
 func testChannelReleaseHookHeldLandsAfterAProgressedCursor(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-cur", `"late"`, nil)
-	leased(t, s)
+	lease := leased(t, s)
 	time.Sleep(time.Millisecond)
 	if _, _, err := s.ChannelPublish(ctx, store.ChannelMessage{
 		Channel: "hk-cur", Scope: store.MemoryScopeAgent, ScopeID: "x", Payload: json.RawMessage(`"early"`),
@@ -103,7 +109,7 @@ func testChannelReleaseHookHeldLandsAfterAProgressedCursor(t *testing.T, s store
 	if len(first) != 1 {
 		t.Fatalf("first read got %d, want 1", len(first))
 	}
-	ok, err := s.ChannelReleaseHookHeld(ctx, key, "w", nil, time.Unix(1, 0))
+	ok, err := s.ChannelReleaseHookHeld(ctx, key, lease, nil, time.Unix(1, 0))
 	if err != nil || !ok {
 		t.Fatalf("release: ok=%v err=%v", ok, err)
 	}
@@ -118,14 +124,14 @@ func testChannelReleaseHookHeldLandsAfterAProgressedCursor(t *testing.T, s store
 func testChannelReleaseHookHeldIsCompareAndSet(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-cas", `"x"`, nil)
-	leased(t, s)
+	lease := leased(t, s)
 	for i, want := range []bool{true, false} {
-		ok, err := s.ChannelReleaseHookHeld(ctx, key, "w", nil, time.Time{})
+		ok, err := s.ChannelReleaseHookHeld(ctx, key, lease, nil, time.Time{})
 		if err != nil || ok != want {
 			t.Fatalf("release %d: ok=%v err=%v, want %v", i, ok, err, want)
 		}
 	}
-	if ok, err := s.ChannelDropHookHeld(ctx, key, "w"); err != nil || ok {
+	if ok, err := s.ChannelDropHookHeld(ctx, key, lease); err != nil || ok {
 		t.Errorf("drop after release: ok=%v err=%v, want false", ok, err)
 	}
 	if msgs, _ := readAll(t, s, "hk-cas", ""); len(msgs) != 1 {
@@ -136,8 +142,8 @@ func testChannelReleaseHookHeldIsCompareAndSet(t *testing.T, s store.Store) {
 func testChannelReleaseHookHeldRewritesThePayload(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-rw", `{"secret":"s3"}`, nil)
-	leased(t, s)
-	if ok, err := s.ChannelReleaseHookHeld(ctx, key, "w", json.RawMessage(`{"secret":"***"}`), time.Time{}); err != nil || !ok {
+	lease := leased(t, s)
+	if ok, err := s.ChannelReleaseHookHeld(ctx, key, lease, json.RawMessage(`{"secret":"***"}`), time.Time{}); err != nil || !ok {
 		t.Fatalf("release: ok=%v err=%v", ok, err)
 	}
 	msgs, _ := readAll(t, s, "hk-rw", "")
@@ -155,8 +161,8 @@ func testChannelReleaseHookHeldRewritesThePayload(t *testing.T, s store.Store) {
 func testChannelReleaseHookHeldToTheHoldInstant(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-hold", `"x"`, nil)
-	leased(t, s)
-	if ok, err := s.ChannelReleaseHookHeld(ctx, key, "w", nil, store.ChannelHeldVisibleAt()); err != nil || !ok {
+	lease := leased(t, s)
+	if ok, err := s.ChannelReleaseHookHeld(ctx, key, lease, nil, store.ChannelHeldVisibleAt()); err != nil || !ok {
 		t.Fatalf("release: ok=%v err=%v", ok, err)
 	}
 	if msgs, _ := readAll(t, s, "hk-hold", ""); len(msgs) != 0 {
@@ -192,15 +198,15 @@ func testChannelDropHookHeldOnlyDropsUndecided(t *testing.T, s store.Store) {
 		t.Errorf("dropped a delivered message: ok=%v err=%v", ok, err)
 	}
 	key := publishAwaitingHook(t, s, "hk-drop", `"spam"`, nil)
-	leased(t, s)
-	if ok, err := s.ChannelDropHookHeld(ctx, key, "w"); err != nil || !ok {
+	lease := leased(t, s)
+	if ok, err := s.ChannelDropHookHeld(ctx, key, lease); err != nil || !ok {
 		t.Errorf("drop: ok=%v err=%v", ok, err)
 	}
 	msgs, _ := readAll(t, s, "hk-drop", "")
 	if len(msgs) != 1 || string(msgs[0].Payload) != `"delivered"` {
 		t.Errorf("after the drop: %v, want only the delivered message", msgs)
 	}
-	if ok, _ := s.ChannelReleaseHookHeld(ctx, key, "w", nil, time.Time{}); ok {
+	if ok, _ := s.ChannelReleaseHookHeld(ctx, key, lease, nil, time.Time{}); ok {
 		t.Errorf("released a dropped message")
 	}
 }
@@ -293,9 +299,11 @@ func testChannelHookProgressIsOwnerChecked(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-prog", `"x"`, nil)
 	now := time.Now()
-	if w, err := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Minute), 1); err != nil || len(w) != 1 {
-		t.Fatalf("claim: %d (err %v)", len(w), err)
+	claimed, err := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Minute), 1)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim: %d (err %v)", len(claimed), err)
 	}
+	lease := claimed[0].Lease
 	p := store.ChannelHookProgress{
 		RunID: "r_1", ChainPos: 2, Body: json.RawMessage(`{"b":1}`), Journal: json.RawMessage(`[{"q":"?"}]`),
 		Attempts: 1, LastError: "timeout",
@@ -306,11 +314,11 @@ func testChannelHookProgressIsOwnerChecked(t *testing.T, s store.Store) {
 	if ok, err := s.ChannelHookRenew(ctx, key, "b", now.Add(time.Hour)); err != nil || ok {
 		t.Errorf("a non-owner renewed: ok=%v err=%v", ok, err)
 	}
-	if ok, err := s.ChannelHookRenew(ctx, key, "a", now.Add(time.Hour)); err != nil || !ok {
+	if ok, err := s.ChannelHookRenew(ctx, key, lease, now.Add(time.Hour)); err != nil || !ok {
 		t.Errorf("the owner could not renew: ok=%v err=%v", ok, err)
 	}
 	// Saving with a lease already past gives it up.
-	if ok, err := s.ChannelHookSaveProgress(ctx, key, "a", p, now.Add(-time.Second)); err != nil || !ok {
+	if ok, err := s.ChannelHookSaveProgress(ctx, key, lease, p, now.Add(-time.Second)); err != nil || !ok {
 		t.Fatalf("the owner could not save progress: ok=%v err=%v", ok, err)
 	}
 	w, err := s.ChannelHookClaim(ctx, "b", now, now.Add(time.Minute), 1)
@@ -329,11 +337,12 @@ func testChannelHookClaimHonoursTheNextAttempt(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-next", `"x"`, nil)
 	now := time.Now()
-	if w, _ := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Minute), 1); len(w) != 1 {
-		t.Fatalf("claim: %d", len(w))
+	claimed, _ := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Minute), 1)
+	if len(claimed) != 1 {
+		t.Fatalf("claim: %d", len(claimed))
 	}
 	retryAt := now.Add(10 * time.Minute)
-	if ok, err := s.ChannelHookSaveProgress(ctx, key, "a", store.ChannelHookProgress{Attempts: 1, NextAttemptAt: retryAt}, now); err != nil || !ok {
+	if ok, err := s.ChannelHookSaveProgress(ctx, key, claimed[0].Lease, store.ChannelHookProgress{Attempts: 1, NextAttemptAt: retryAt}, now); err != nil || !ok {
 		t.Fatalf("save: ok=%v err=%v", ok, err)
 	}
 	soon := now.Add(time.Minute)
@@ -601,20 +610,66 @@ func testChannelSettleNeedsTheLease(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	key := publishAwaitingHook(t, s, "hk-own", `"x"`, nil)
 	now := time.Now()
-	if w, _ := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Millisecond), 1); len(w) != 1 {
+	a, _ := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Millisecond), 1)
+	if len(a) != 1 {
 		t.Fatal("claim a")
 	}
 	later := now.Add(time.Second)
-	if w, _ := s.ChannelHookClaim(ctx, "b", later, later.Add(time.Hour), 1); len(w) != 1 {
+	b, _ := s.ChannelHookClaim(ctx, "b", later, later.Add(time.Hour), 1)
+	if len(b) != 1 {
 		t.Fatal("claim b after a's lease ran out")
 	}
-	if ok, err := s.ChannelReleaseHookHeld(ctx, key, "a", nil, time.Time{}); err != nil || ok {
+	if ok, err := s.ChannelReleaseHookHeld(ctx, key, a[0].Lease, nil, time.Time{}); err != nil || ok {
 		t.Fatalf("the old owner released: ok=%v err=%v", ok, err)
 	}
-	if ok, err := s.ChannelDropHookHeld(ctx, key, "a"); err != nil || ok {
+	if ok, err := s.ChannelDropHookHeld(ctx, key, a[0].Lease); err != nil || ok {
 		t.Fatalf("the old owner dropped: ok=%v err=%v", ok, err)
 	}
-	if ok, err := s.ChannelReleaseHookHeld(ctx, key, "b", nil, time.Time{}); err != nil || !ok {
+	if ok, err := s.ChannelReleaseHookHeld(ctx, key, b[0].Lease, nil, time.Time{}); err != nil || !ok {
 		t.Fatalf("the owner's release: ok=%v err=%v", ok, err)
+	}
+}
+
+// A lease names one claim, not the claimer: when a lease lapses and the SAME
+// owner (one replica's worker) claims the message again, the first claim's
+// token is refused by every call the second claim's passes — renew, progress,
+// release and drop — and so is the bare owner. Two jobs of one replica then
+// never both pass a compare-and-set on one message.
+func testChannelHookReclaimBySameOwnerSupersedesTheLease(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	key := publishAwaitingHook(t, s, "hk-same", `"x"`, nil)
+	now := time.Now()
+	first, _ := s.ChannelHookClaim(ctx, "r1", now, now.Add(time.Millisecond), 1)
+	if len(first) != 1 {
+		t.Fatal("first claim")
+	}
+	later := now.Add(time.Second)
+	second, _ := s.ChannelHookClaim(ctx, "r1", later, later.Add(time.Hour), 1)
+	if len(second) != 1 {
+		t.Fatal("the same owner did not claim the message again after its lease ran out")
+	}
+	old, cur := first[0].Lease, second[0].Lease
+	if old == cur || old == "r1" || cur == "r1" {
+		t.Fatalf("lease tokens %q then %q: want two distinct tokens, neither the bare owner", old, cur)
+	}
+	for _, stale := range []string{old, "r1"} {
+		if ok, err := s.ChannelHookRenew(ctx, key, stale, later.Add(2*time.Hour)); err != nil || ok {
+			t.Errorf("renew with %q: ok=%v err=%v, want refused", stale, ok, err)
+		}
+		if ok, err := s.ChannelHookSaveProgress(ctx, key, stale, store.ChannelHookProgress{ChainPos: 9}, later.Add(2*time.Hour)); err != nil || ok {
+			t.Errorf("save progress with %q: ok=%v err=%v, want refused", stale, ok, err)
+		}
+		if ok, err := s.ChannelDropHookHeld(ctx, key, stale); err != nil || ok {
+			t.Errorf("drop with %q: ok=%v err=%v, want refused", stale, ok, err)
+		}
+		if ok, err := s.ChannelReleaseHookHeld(ctx, key, stale, nil, time.Time{}); err != nil || ok {
+			t.Errorf("release with %q: ok=%v err=%v, want refused", stale, ok, err)
+		}
+	}
+	if ok, err := s.ChannelHookRenew(ctx, key, cur, later.Add(time.Hour)); err != nil || !ok {
+		t.Errorf("the current claim could not renew: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.ChannelReleaseHookHeld(ctx, key, cur, nil, time.Time{}); err != nil || !ok {
+		t.Errorf("the current claim could not release: ok=%v err=%v", ok, err)
 	}
 }

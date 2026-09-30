@@ -34,7 +34,7 @@ const keyWhere = `tenant_id = $1 AND channel = $2 AND scope = $3 AND scope_id = 
 // never earlier than NOW() — the same clock a publish takes its visible_at
 // from — so a released message cannot sort behind a subscriber that has
 // already read past it.
-func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string, payload json.RawMessage, to time.Time) (bool, error) {
+func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMessageKey, lease string, payload json.RawMessage, to time.Time) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("channel hook release begin: %w", err)
@@ -53,7 +53,7 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 		    AND EXISTS (SELECT 1 FROM channel_hook_state h
 		                 WHERE h.tenant_id = $1 AND h.channel = $2 AND h.scope = $3 AND h.scope_id = $4 AND h.id = $5
 		                   AND h.lease_owner = $9)`,
-		append(keyArgs(key), timeOrNil(to), body, store.ChannelHookHeldVisibleAt(), owner)...)
+		append(keyArgs(key), timeOrNil(to), body, store.ChannelHookHeldVisibleAt(), lease)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook release: %w", err)
 	}
@@ -70,7 +70,7 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 }
 
 // ChannelDropHookHeld implements store.Store.
-func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey, owner string) (bool, error) {
+func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessageKey, lease string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop begin: %w", err)
@@ -80,7 +80,7 @@ func (s *Store) ChannelDropHookHeld(ctx context.Context, key store.ChannelMessag
 		AND EXISTS (SELECT 1 FROM channel_hook_state h
 		             WHERE h.tenant_id = $1 AND h.channel = $2 AND h.scope = $3 AND h.scope_id = $4 AND h.id = $5
 		               AND h.lease_owner = $7)`,
-		append(keyArgs(key), store.ChannelHookHeldVisibleAt(), owner)...)
+		append(keyArgs(key), store.ChannelHookHeldVisibleAt(), lease)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook drop: %w", err)
 	}
@@ -106,6 +106,9 @@ func (s *Store) ChannelHookClaim(ctx context.Context, owner string, now, leaseUn
 	if limit <= 0 {
 		limit = 1
 	}
+	// One token for this claim; a later claim of any of these messages, by
+	// any owner, writes another (see store.NewChannelHookLease).
+	lease := store.NewChannelHookLease(owner)
 	rows, err := s.pool.Query(ctx,
 		`WITH cand AS (
 		   SELECT m.tenant_id, m.channel, m.scope, m.scope_id, m.id
@@ -134,7 +137,7 @@ func (s *Store) ChannelHookClaim(ctx context.Context, owner string, now, leaseUn
 		     ON m.tenant_id = l.tenant_id AND m.channel = l.channel AND m.scope = l.scope
 		    AND m.scope_id = l.scope_id AND m.id = l.id
 		  ORDER BY m.id`,
-		store.ChannelHookHeldVisibleAt(), now.UTC(), limit, owner, leaseUntil.UTC())
+		store.ChannelHookHeldVisibleAt(), now.UTC(), limit, lease, leaseUntil.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("channel hook claim: %w", err)
 	}
@@ -145,6 +148,7 @@ func (s *Store) ChannelHookClaim(ctx context.Context, owner string, now, leaseUn
 		if err != nil {
 			return nil, err
 		}
+		w.Lease = lease
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -194,10 +198,10 @@ func scanHookWork(rows pgx.Rows) (store.ChannelHookWork, error) {
 }
 
 // ChannelHookRenew implements store.Store.
-func (s *Store) ChannelHookRenew(ctx context.Context, key store.ChannelMessageKey, owner string, leaseUntil time.Time) (bool, error) {
+func (s *Store) ChannelHookRenew(ctx context.Context, key store.ChannelMessageKey, lease string, leaseUntil time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE channel_hook_state SET lease_until = $6, updated_at = NOW() WHERE `+keyWhere+` AND lease_owner = $7`,
-		append(keyArgs(key), leaseUntil.UTC(), owner)...)
+		append(keyArgs(key), leaseUntil.UTC(), lease)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook renew: %w", err)
 	}
@@ -205,7 +209,7 @@ func (s *Store) ChannelHookRenew(ctx context.Context, key store.ChannelMessageKe
 }
 
 // ChannelHookSaveProgress implements store.Store.
-func (s *Store) ChannelHookSaveProgress(ctx context.Context, key store.ChannelMessageKey, owner string, p store.ChannelHookProgress, leaseUntil time.Time) (bool, error) {
+func (s *Store) ChannelHookSaveProgress(ctx context.Context, key store.ChannelMessageKey, lease string, p store.ChannelHookProgress, leaseUntil time.Time) (bool, error) {
 	var body, journal any
 	if p.Body != nil {
 		body = string(p.Body)
@@ -220,7 +224,7 @@ func (s *Store) ChannelHookSaveProgress(ctx context.Context, key store.ChannelMe
 		        lease_until = $13, updated_at = NOW()
 		  WHERE `+keyWhere+` AND lease_owner = $14`,
 		append(keyArgs(key), p.RunID, p.ChainPos, body, journal, p.Attempts, timeOrNil(p.NextAttemptAt), p.LastError,
-			leaseUntil.UTC(), owner)...)
+			leaseUntil.UTC(), lease)...)
 	if err != nil {
 		return false, fmt.Errorf("channel hook save progress: %w", err)
 	}

@@ -2793,30 +2793,34 @@ type Store interface {
 	// is deleted. A compare-and-set on the hook instant: false when the message
 	// no longer awaits a decision (already decided, expired, trimmed or
 	// purged), so a decision takes effect at most once whatever races it.
-	// Only owner — the worker holding the message's lease — may settle it:
-	// false too when the lease has passed to another worker, whose decision
-	// (on its own answers) is the one that counts.
-	ChannelReleaseHookHeld(ctx context.Context, key ChannelMessageKey, owner string, payload json.RawMessage, to time.Time) (bool, error)
+	// Only the holder of the message's lease — lease is the token its claim
+	// returned (ChannelHookWork.Lease) — may settle it: false too when the
+	// lease has passed to another claim, whose decision (on its own answers)
+	// is the one that counts.
+	ChannelReleaseHookHeld(ctx context.Context, key ChannelMessageKey, lease string, payload json.RawMessage, to time.Time) (bool, error)
 
 	// ChannelDropHookHeld deletes ONE message awaiting its channel's hooks,
 	// and its hook progress row. The same compare-and-set, and lease check,
 	// as the release.
-	ChannelDropHookHeld(ctx context.Context, key ChannelMessageKey, owner string) (bool, error)
+	ChannelDropHookHeld(ctx context.Context, key ChannelMessageKey, lease string) (bool, error)
 
 	// ChannelHookClaim leases up to `limit` messages awaiting hooks to owner
 	// until leaseUntil, oldest first: messages not expired, with no live lease
-	// and no retry scheduled after now. A message is leased to one owner at a
-	// time, across replicas. Returns each with its progress so far.
+	// and no retry scheduled after now. A message is leased to one claim at a
+	// time, across replicas. Returns each with its progress so far and the
+	// claim's lease token (NewChannelHookLease(owner), fresh on every call),
+	// which every later call on the message takes in place of owner.
 	ChannelHookClaim(ctx context.Context, owner string, now, leaseUntil time.Time, limit int) ([]ChannelHookWork, error)
 
-	// ChannelHookRenew extends owner's lease on one message. False when owner
+	// ChannelHookRenew extends a lease on one message. False when that lease
 	// no longer holds it.
-	ChannelHookRenew(ctx context.Context, key ChannelMessageKey, owner string, leaseUntil time.Time) (bool, error)
+	ChannelHookRenew(ctx context.Context, key ChannelMessageKey, lease string, leaseUntil time.Time) (bool, error)
 
-	// ChannelHookSaveProgress records owner's progress on one message and sets
-	// its lease to leaseUntil (a time already past gives the lease up, as a
-	// retry's backoff does). False when owner no longer holds the lease.
-	ChannelHookSaveProgress(ctx context.Context, key ChannelMessageKey, owner string, p ChannelHookProgress, leaseUntil time.Time) (bool, error)
+	// ChannelHookSaveProgress records a lease holder's progress on one
+	// message and sets its lease to leaseUntil (a time already past gives the
+	// lease up, as a retry's backoff does). False when that lease no longer
+	// holds it.
+	ChannelHookSaveProgress(ctx context.Context, key ChannelMessageKey, lease string, p ChannelHookProgress, leaseUntil time.Time) (bool, error)
 
 	// ChannelHookGC deletes up to `limit` hook progress rows whose message is
 	// gone or no longer awaits hooks. Returns how many it deleted.
@@ -4430,6 +4434,22 @@ type ChannelHookProgress struct {
 type ChannelHookWork struct {
 	Message  ChannelMessage
 	Progress ChannelHookProgress
+	// Lease is the claim's lease token, stored as the message's lease owner.
+	Lease string
+}
+
+// NewChannelHookLease returns a lease token for one claim by owner: owner
+// plus a random claim id. A lease names the claim, not the claimer, because
+// one replica's claims all share its owner: when a lease lapses under a job
+// that is still alive (renewals failing through a database failover, a
+// frozen process) and the same replica claims the message again, the old job
+// must fail every compare-and-set the new one passes. Otherwise it can drop
+// the message the new job is asking a person about, and the person's answer
+// then finds nothing to release.
+func NewChannelHookLease(owner string) string {
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	return owner + ":" + hex.EncodeToString(buf[:])
 }
 
 // ChannelStats is one row in the result of ChannelStats — the

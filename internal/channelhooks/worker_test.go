@@ -311,7 +311,7 @@ func TestWorker_FailModes(t *testing.T) {
 			t.Fatalf("progress = %+v, want one failed attempt kept for a retry", items)
 		}
 		// Past its deadline, the next failure drops it.
-		_, _ = f.st.ChannelHookSaveProgress(context.Background(), keyOf(items[0].Message), "x", items[0].Progress, time.Now())
+		_, _ = f.st.ChannelHookSaveProgress(context.Background(), keyOf(items[0].Message), items[0].Lease, items[0].Progress, time.Now())
 		f.w.now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 		f.drain()
 		if items, _ := f.st.ChannelHookClaim(context.Background(), "x", time.Now().Add(time.Hour), time.Now().Add(time.Hour), 10); len(items) != 0 {
