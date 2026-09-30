@@ -169,8 +169,18 @@ func ProvisionEphemeral(dynRoot, rootRunID, name string) (string, error) {
 // runtime-derived, it is verified to resolve strictly inside the dynamic root
 // before MkdirAll, which catches a future bug in the derivation (or a
 // symlinked dynamic root that escapes) rather than trusting the construction.
+//
+// The lexical fence alone is not enough: MkdirAll follows a symlink it finds
+// on the way, so a symlink already sitting at the tenant segment or the leaf
+// would create — and the row would then name — a directory outside the root.
+// Every existing component below the root is therefore refused if it is a
+// symlink, and the created path must resolve to itself afterwards, which
+// catches one swapped in between the check and the MkdirAll.
 func mkdirFenced(dynRoot, path string) (created bool, err error) {
 	if err := AssertInsideRoot(dynRoot, path); err != nil {
+		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)
+	}
+	if err := refuseSymlinkBelowRoot(dynRoot, path); err != nil {
 		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)
 	}
 	if _, statErr := os.Lstat(path); os.IsNotExist(statErr) {
@@ -179,5 +189,40 @@ func mkdirFenced(dynRoot, path string) (created bool, err error) {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return false, fmt.Errorf("mkdir %q: %s", path, err)
 	}
+	clean := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(clean); err != nil || resolved != clean {
+		return false, fmt.Errorf("refusing to provision outside the dynamic root: %q does not resolve to itself", clean)
+	}
 	return created, nil
+}
+
+// refuseSymlinkBelowRoot walks path's components below the (resolved) root
+// and refuses any that already exists as a symlink. It stops at the first
+// component that does not exist yet: MkdirAll creates the rest as real
+// directories. AssertInsideRoot has already placed path lexically inside the
+// resolved root.
+func refuseSymlinkBelowRoot(dynRoot, path string) error {
+	rootResolved, err := filepath.EvalSymlinks(dynRoot)
+	if err != nil {
+		return fmt.Errorf("dynamic root: %w", err)
+	}
+	rel, err := filepath.Rel(rootResolved, filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	cur := rootResolved
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%q is a symlink", cur)
+		}
+	}
+	return nil
 }

@@ -117,6 +117,31 @@ func TestVolumeDefTool_CreateRefusesBadName(t *testing.T) {
 	}
 }
 
+// create refuses a derived path that is already a symlink out of the dynamic
+// root: MkdirAll would follow it, and the row would bind an agent to the
+// directory it points at. No row is written.
+func TestVolumeDefTool_CreateRefusesASymlinkedDerivedPath(t *testing.T) {
+	tool, ctx, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "_shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "_shared", "planted")); err != nil {
+		t.Fatal(err)
+	}
+	_, res := vdExec(t, tool, ctx, `{"op":"create","name":"planted"}`)
+	if !res.IsError || !strings.Contains(res.Text, "symlink") {
+		t.Fatalf("create over a symlinked path should be refused, got: %s", res.Text)
+	}
+	if _, err := tool.Store.VolumeDefGetByName(ctx, "", "planted"); err == nil {
+		t.Error("a refused create still wrote a volume row")
+	}
+}
+
 // create refuses a name colliding with a static volume (yaml is ground truth).
 func TestVolumeDefTool_CreateRefusesStaticCollision(t *testing.T) {
 	tool, ctx, _, cleanup := volumeDefFixture(t)

@@ -90,6 +90,36 @@ func TestAssertInsideRoot_RefusesTheRootAndEscapes(t *testing.T) {
 	}
 }
 
+// A symlink planted at the tenant segment or at the leaf would have MkdirAll
+// create — and the caller store — a directory outside the root. Provision
+// refuses both, and creates nothing through the link.
+func TestProvision_RefusesASymlinkBelowTheRoot(t *testing.T) {
+	root := resolvedTempDir(t)
+	outside := resolvedTempDir(t)
+
+	// The leaf itself is a symlink to a directory outside the root.
+	if err := os.MkdirAll(filepath.Join(root, SharedTenantSegment), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, SharedTenantSegment, "leaf")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Provision(root, "", "leaf"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("Provision over a symlinked leaf: err = %v, want a symlink refusal", err)
+	}
+
+	// The tenant segment is a symlink; MkdirAll would create outside/data.
+	if err := os.Symlink(outside, filepath.Join(root, "acme")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Provision(root, "acme", "data"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("Provision under a symlinked tenant segment: err = %v, want a symlink refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "data")); !os.IsNotExist(err) {
+		t.Errorf("Provision created a directory through the symlink (err=%v)", err)
+	}
+}
+
 func TestProvisionEphemeral_DerivesUnderTheRunDir(t *testing.T) {
 	root := resolvedTempDir(t)
 	path, err := ProvisionEphemeral(root, "run-1", "scratch")
