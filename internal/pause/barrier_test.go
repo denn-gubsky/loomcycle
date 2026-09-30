@@ -139,3 +139,30 @@ func TestManager_PauseQuiescesImmediatelyWhenNoRuns(t *testing.T) {
 		t.Fatal("Pause with no in-flight runs did not quiesce within 3s — barrier did not short-circuit")
 	}
 }
+
+// TestManager_HoldsRunUntilDeregistered pins what the paused-run resume relies
+// on to leave a live parked run alone: a run is held from RegisterRun, parked
+// or not, until DeregisterRun — and a nil manager holds nothing.
+func TestManager_HoldsRunUntilDeregistered(t *testing.T) {
+	m, _, cleanup := newTestManager(t)
+	defer cleanup()
+	if m.HoldsRun("r1") {
+		t.Fatal("HoldsRun before RegisterRun = true, want false")
+	}
+	m.RegisterRun("r1")
+	if !m.HoldsRun("r1") {
+		t.Error("HoldsRun after RegisterRun = false, want true")
+	}
+	m.MarkParked("r1")
+	if !m.HoldsRun("r1") {
+		t.Error("HoldsRun while parked = false, want true")
+	}
+	m.DeregisterRun("r1")
+	if m.HoldsRun("r1") {
+		t.Error("HoldsRun after DeregisterRun = true, want false")
+	}
+	var nilM *Manager
+	if nilM.HoldsRun("r1") {
+		t.Error("nil Manager.HoldsRun = true, want false")
+	}
+}
