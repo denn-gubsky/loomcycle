@@ -49,3 +49,24 @@ func TestEngine_Substitute(t *testing.T) {
 		t.Errorf("multi-ref = %q", out)
 	}
 }
+
+// ParseRef accepts a value that is exactly one reference, and nothing that
+// merely contains one: a field holding a reference as its whole value has no
+// use for surrounding text, and an env-var name never matches.
+func TestParseRef_AcceptsOnlyAWholeReference(t *testing.T) {
+	for in, want := range map[string]string{
+		"$cred:peer_key":  "peer_key",
+		"$cred:a-b_C9":    "a-b_C9",
+		"Bearer $cred:x":  "",
+		"$cred:x trailer": "",
+		"$cred:":          "",
+		"$ghapp:x":        "",
+		"LOOMCYCLE_X":     "",
+		"$cred:a.b":       "",
+	} {
+		name, ok := ParseRef(in)
+		if ok != (want != "") || name != want {
+			t.Errorf("ParseRef(%q) = (%q, %v), want (%q, %v)", in, name, ok, want, want != "")
+		}
+	}
+}

@@ -42,6 +42,11 @@ type MemoryBackendDef struct {
 	// static-name-replace refusal and the bootstrap-from-yaml path.
 	Cfg *config.Config
 
+	// PeerCredentials checks that a "$cred:<name>" api_key_env names a
+	// credential in the author's tenant. Nil = none exists, so a non-admin
+	// author's reference is refused.
+	PeerCredentials *PeerCredentials
+
 	// MaxDefinitionBytes caps the serialised definition JSON. 0 = no cap.
 	MaxDefinitionBytes int
 
@@ -520,7 +525,7 @@ func (s *MemoryBackendDef) checkAuthorCredential(ctx context.Context, def merged
 			TenancyKind: st.TenancyStrategy.Kind, EnvPattern: st.TenancyStrategy.EnvPattern,
 		}
 	}
-	return requireAuthorBoundCredential(ctx, peer, static)
+	return requireAuthorBoundCredential(ctx, s.PeerCredentials, peer, static)
 }
 
 // MemoryBackendDefBodyValidator returns the check a snapshot restore runs over
@@ -584,10 +589,8 @@ func validateMemoryBackendDef(cfg *config.Config, def mergedMemoryBackendDef, op
 		// base_url they also control, `api_key_env: LOOMCYCLE_AUTH_TOKEN` is a
 		// one-request exfiltration of the operator bearer. The persisted shape must
 		// never hold that, whether or not anything reads it today.
-		if def.Config.APIKeyEnv != "" && !config.EnvNameCredentialSafe(def.Config.APIKeyEnv) {
-			return fmt.Errorf("config.api_key_env %q is not an allowed credential env var "+
-				"(must be LOOMCYCLE_-prefixed or a known third-party key, and must not be one "+
-				"of loomcycle's own infrastructure secrets)", def.Config.APIKeyEnv)
+		if err := requireAPIKeyEnvShape(def.Config.APIKeyEnv); err != nil {
+			return err
 		}
 	case "remote":
 		// A remote backend (RFC CD Part B) HTTP-proxies to a peer's
@@ -603,10 +606,8 @@ func validateMemoryBackendDef(cfg *config.Config, def mergedMemoryBackendDef, op
 		if err := requirePublicIPLiteral("config.base_url", def.Config.BaseURL); err != nil {
 			return err
 		}
-		if def.Config.APIKeyEnv != "" && !config.EnvNameCredentialSafe(def.Config.APIKeyEnv) {
-			return fmt.Errorf("config.api_key_env %q is not an allowed credential env var "+
-				"(must be LOOMCYCLE_-prefixed or a known third-party key, and must not be one "+
-				"of loomcycle's own infrastructure secrets)", def.Config.APIKeyEnv)
+		if err := requireAPIKeyEnvShape(def.Config.APIKeyEnv); err != nil {
+			return err
 		}
 		// The peer search API has no key-prefix parameter, so a namespaced
 		// search cannot be scoped to one tenant — refuse the combination at the

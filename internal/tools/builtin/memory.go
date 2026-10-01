@@ -107,6 +107,11 @@ type Memory struct {
 	// falls back to the operator-default backend — the pre-MR-3b behavior.
 	Cfg *config.Config
 
+	// PeerCredentials resolves a "$cred:<name>" api_key_env on a remote
+	// memory backend, in the backend def's owning tenant. Nil = such a
+	// reference resolves to nothing, so the peer call fails.
+	PeerCredentials *PeerCredentials
+
 	// SqlMem is the RFC AA SQL Memory manager backing sql_query / sql_exec.
 	// Nil = the SQL ops refuse with "SQL Memory is not enabled on this
 	// server" (the subsystem is off by default; main.go sets it only when
@@ -195,10 +200,11 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 const remoteBackendTimeout = 30 * time.Second
 
 // newRemoteBackend builds a remote memory backend from a resolved def. The
-// SSRF-guarded HTTP client and the credential-env allowlist are supplied here
-// (the remote package stays free of config/netguard/os coupling); the host
-// floor and the private-host allowlist depend on who authored the def
-// (requireDialablePeerHost, remotePeerPrivateHosts).
+// SSRF-guarded HTTP client and the credential resolver are supplied here (the
+// remote package stays free of config/netguard/os coupling); the host floor
+// and the private-host allowlist depend on who authored the def
+// (requireDialablePeerHost, remotePeerPrivateHosts), and a "$cred:" credential
+// resolves in the tenant the def was read in (peerKeyResolver).
 func (m *Memory) newRemoteBackend(def config.MemoryBackend, prov lookup.Provenance) (memrank.Backend, error) {
 	if err := requireDialablePeerHost(m.Cfg, def.Config.BaseURL, prov.Origin); err != nil {
 		return nil, err
@@ -210,7 +216,7 @@ func (m *Memory) newRemoteBackend(def config.MemoryBackend, prov lookup.Provenan
 		DefaultAPIKeyEnv: def.Config.APIKeyEnv,
 		TenancyKind:      def.TenancyStrategy.Kind,
 		EnvPattern:       def.TenancyStrategy.EnvPattern,
-		KeyResolver:      func(_ context.Context, name string) (string, error) { return resolveCredentialEnv(name) },
+		KeyResolver:      peerKeyResolver(m.PeerCredentials, prov.TenantID),
 		HTTPClient:       client,
 	})
 }

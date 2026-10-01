@@ -1517,6 +1517,12 @@ func main() {
 			}
 		}
 	}
+	// A remote memory backend or document source may name its peer bearer as
+	// api_key_env "$cred:<name>": a tenant-level credential resolved, through
+	// this same engine, in the tenant the def was read in.
+	peerCreds := builtin.NewPeerCredentials(credEngine, registerSecret)
+	memoryTool.PeerCredentials = peerCreds
+	documentTool.PeerCredentials = peerCreds
 	// Wire the $cred: header resolver the MCP http pool captured by reference
 	// above. Identity comes from the per-request ctx (tenant + user + agent), so
 	// a pooled client binds each request's own user-scoped token.
@@ -1910,6 +1916,7 @@ func main() {
 	srv.SetMemoryBackendDefTool(&builtin.MemoryBackendDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
+		PeerCredentials:     peerCreds,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})
@@ -1921,6 +1928,7 @@ func main() {
 	srv.SetDocumentSourceDefTool(&builtin.DocumentSourceDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
+		PeerCredentials:     peerCreds,
 		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
 	})

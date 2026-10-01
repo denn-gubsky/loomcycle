@@ -38,9 +38,10 @@ const remoteDocumentTimeout = 30 * time.Second
 // reusing the RFC CD Part B remote plumbing: the host floor for a def not
 // authored by the operator (requireDialablePeerHost), an SSRF-guarded client
 // whose private-host allowlist depends on who authored the def
-// (remotePeerPrivateHosts), and the credential-env allowlist gate
-// (resolveCredentialEnv) — the last two defined in memory.go.
-func newRemoteDocumentClient(cfg *config.Config, ds config.DocumentSource, prov lookup.Provenance) (*docremote.Client, error) {
+// (remotePeerPrivateHosts), and the credential resolver (peerKeyResolver: a
+// "$cred:" reference in the tenant the source was read in, else the
+// credential-env allowlist gate).
+func newRemoteDocumentClient(cfg *config.Config, creds *PeerCredentials, ds config.DocumentSource, prov lookup.Provenance) (*docremote.Client, error) {
 	if err := requireDialablePeerHost(cfg, ds.Config.BaseURL, prov.Origin); err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func newRemoteDocumentClient(cfg *config.Config, ds config.DocumentSource, prov 
 		DefaultAPIKeyEnv: ds.Config.APIKeyEnv,
 		TenancyKind:      ds.TenancyStrategy.Kind,
 		EnvPattern:       ds.TenancyStrategy.EnvPattern,
-		KeyResolver:      func(_ context.Context, name string) (string, error) { return resolveCredentialEnv(name) },
+		KeyResolver:      peerKeyResolver(creds, prov.TenantID),
 		HTTPClient:       client,
 	})
 }
@@ -170,7 +171,7 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	if !ok {
 		return fail(errBusiness, fmt.Sprintf("unknown document source %q (was it removed from document_sources: / retired?)", source), "Rebind the document to a declared source with op=set_remote, or ask an operator to restore the source.")
 	}
-	client, err := newRemoteDocumentClient(d.Cfg, ds, prov)
+	client, err := newRemoteDocumentClient(d.Cfg, d.PeerCredentials, ds, prov)
 	if err != nil {
 		return fail(errBusiness, err.Error(), "The document source is misconfigured; ask an operator to fix it.")
 	}

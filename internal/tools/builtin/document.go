@@ -81,6 +81,11 @@ type Document struct {
 	// (documentTool.Cfg = cfg); nil disables remote document sources.
 	Cfg *config.Config
 
+	// PeerCredentials resolves a "$cred:<name>" api_key_env on a document
+	// source, in the source def's owning tenant. Nil = such a reference
+	// resolves to nothing, so sync / diff_remote fail.
+	PeerCredentials *PeerCredentials
+
 	// reindexJobs tracks background subtree re-indexes (see reindexSubtree), so a test
 	// can wait for their end state. A Document is only ever used by pointer.
 	reindexJobs sync.WaitGroup
