@@ -137,6 +137,15 @@ func (rec *Receiver) Mount(reg Registrar) {
 	reg.Handle("POST /v1/_webhooks/{tenant}/{name}", http.HandlerFunc(rec.handle))
 }
 
+// webhookInert reports whether a resolved def must refuse every delivery. A
+// def a snapshot restored without its literal credentials is inert whatever
+// its `enabled` says: it must not run without them. The receiver and the
+// /test dry-run both gate on this, so the dry-run cannot promise a delivery
+// the receiver would refuse.
+func webhookInert(wd config.Webhook) bool {
+	return !wd.Enabled || wd.CaptureDisabled != nil
+}
+
 // handle is the shared front-half + delivery fork. The webhook NAME (and
 // optional tenant) come from the URL path (operator-addressable), never
 // from the body — the body is fully attacker-controlled until the
@@ -162,12 +171,10 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	whKey := webhookKey(owner, name)
-	if !wd.Enabled || wd.CaptureDisabled != nil {
+	if webhookInert(wd) {
 		// A disabled Def is addressable but inert. 404 (not 403) so a
 		// disabled webhook is indistinguishable from a never-registered one
-		// to an external caller — no enumeration signal. A def a snapshot
-		// restored without its literal credentials is disabled whatever its
-		// `enabled` says: it must not run without them.
+		// to an external caller — no enumeration signal.
 		rec.finish(span, whKey, "", "rejected_disabled", "")
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return

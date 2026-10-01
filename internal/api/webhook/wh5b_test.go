@@ -3,7 +3,6 @@ package webhook
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -200,12 +199,7 @@ func TestReceiver_RecentDeliveries_ReturnsVerdictsNewestFirstCapped(t *testing.T
 		t.Fatalf("bad delivery status = %d, want 401", w.Code)
 	}
 
-	// Pass-through adminAuth (gating is wired+tested at the http-server layer).
-	mux := http.NewServeMux()
-	rec.MountAdmin(mux, func(h http.Handler) http.Handler { return h })
-	req := httptest.NewRequest(http.MethodGet, "/v1/_webhooks/gh/recent-deliveries?limit=10", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	w := triageDo(triageServer(t, rec, triageTokens), http.MethodGet, "/v1/_webhooks/gh/recent-deliveries?limit=10", triageAdminBearer, nil, nil)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("recent-deliveries status = %d, want 200; body=%s", w.Code, w.Body.String())
@@ -238,11 +232,7 @@ func TestReceiver_RecentDeliveries_ReturnsVerdictsNewestFirstCapped(t *testing.T
 func TestReceiver_RecentDeliveries_UnknownName_404(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	rec := newTestReceiver(t, map[string]config.Webhook{}, &fakeRunner{}, nil, nil, nil, now)
-	mux := http.NewServeMux()
-	rec.MountAdmin(mux, func(h http.Handler) http.Handler { return h })
-	req := httptest.NewRequest(http.MethodGet, "/v1/_webhooks/never-seen/recent-deliveries", nil)
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	w := triageDo(triageServer(t, rec, triageTokens), http.MethodGet, "/v1/_webhooks/never-seen/recent-deliveries", triageAdminBearer, nil, nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
 	}
@@ -270,12 +260,9 @@ func TestReceiver_Test_ValidSig_ReturnsPreviewWithoutCredentialValuesAndNoRun(t 
 	rec := newTestReceiver(t, map[string]config.Webhook{"gh": wh}, fr, nil, env,
 		[]string{"WH_SECRET", "ENV_CRED"}, now)
 
-	mux := http.NewServeMux()
-	rec.MountAdmin(mux, func(h http.Handler) http.Handler { return h })
-	req := httptest.NewRequest(http.MethodPost, "/v1/_webhooks/gh/test", strings.NewReader(string(body)))
-	req.Header.Set("X-Hub-Signature-256", githubSig(secret, body))
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	sig := http.Header{}
+	sig.Set("X-Hub-Signature-256", githubSig(secret, body))
+	w := triageDo(triageServer(t, rec, triageTokens), http.MethodPost, "/v1/_webhooks/gh/test", triageAdminBearer, body, sig)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
@@ -328,12 +315,9 @@ func TestReceiver_Test_BadSig_WouldAcceptFalse(t *testing.T) {
 	rec := newTestReceiver(t, map[string]config.Webhook{"gh": wh}, fr, nil,
 		map[string]string{"WH_SECRET": secret}, []string{"WH_SECRET"}, now)
 
-	mux := http.NewServeMux()
-	rec.MountAdmin(mux, func(h http.Handler) http.Handler { return h })
-	req := httptest.NewRequest(http.MethodPost, "/v1/_webhooks/gh/test", strings.NewReader(string(tampered)))
-	req.Header.Set("X-Hub-Signature-256", githubSig(secret, signed)) // sig over the wrong body
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
+	sig := http.Header{}
+	sig.Set("X-Hub-Signature-256", githubSig(secret, signed)) // sig over the wrong body
+	w := triageDo(triageServer(t, rec, triageTokens), http.MethodPost, "/v1/_webhooks/gh/test", triageAdminBearer, tampered, sig)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)

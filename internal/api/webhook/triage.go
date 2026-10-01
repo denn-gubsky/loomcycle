@@ -27,13 +27,30 @@ func (rec *Receiver) MountAdmin(reg Registrar, adminAuth func(http.Handler) http
 		adminAuth(http.HandlerFunc(rec.handleTest)))
 }
 
+// triageTenant is the tenant a triage request resolves its webhook under: the
+// ?tenant= focus, or else the caller's own tenant. With the focus the webhook
+// is the def POST /v1/_webhooks/{tenant}/{name} resolves to.
+//
+// Both triage routes are substrate:admin-gated by the HTTP server's /v1/_*
+// catch-all, so every caller that reaches here is an admin, the legacy
+// bearer, or open mode (no principal), and each of those may focus any
+// tenant. The focus is still ignored from anyone else, so widening that gate
+// later cannot turn it into a cross-tenant read.
+func triageTenant(r *http.Request) string {
+	p, hasPrincipal := auth.PrincipalFromContext(r.Context())
+	if q := r.URL.Query().Get("tenant"); q != "" {
+		if !hasPrincipal || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+			return q
+		}
+	}
+	return p.TenantID // "" when there is no principal
+}
+
 // handleRecentDeliveries returns the recorded triage entries for a webhook,
 // newest-first, capped at min(limit, recentBufferCap, ring length). The
-// webhook is the def that POST /v1/_webhooks/{tenant}/{name} resolves to, with
-// tenant from ?tenant= or else the caller's own tenant; the ring is keyed the
-// same way as the rate-limit bucket (webhookKey), so two tenants' same-named
-// webhooks have separate lists. Only an admin (or legacy / open mode) may name
-// another tenant; anyone else gets the same 404 as an unknown webhook.
+// webhook is the one triageTenant resolves; the ring is keyed the same way as
+// the rate-limit bucket (webhookKey), so two tenants' same-named webhooks have
+// separate lists.
 //
 // 404 when the def does not resolve or has never been invoked (so a typo is
 // distinguishable from a quiet-but-real webhook). The entries carry ONLY
@@ -41,20 +58,7 @@ func (rec *Receiver) MountAdmin(reg Registrar, adminAuth func(http.Handler) http
 // credentials, no payloads.
 func (rec *Receiver) handleRecentDeliveries(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-
-	tenant := ""
-	p, hasPrincipal := auth.PrincipalFromContext(r.Context())
-	if hasPrincipal {
-		tenant = p.TenantID
-	}
-	if q := r.URL.Query().Get("tenant"); q != "" && q != tenant {
-		if hasPrincipal && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
-			writeError(w, http.StatusNotFound, "unknown_webhook", "")
-			return
-		}
-		tenant = q
-	}
-	_, owner, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, tenant, name)
+	_, owner, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, triageTenant(r), name)
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return
@@ -116,17 +120,13 @@ type runInputPreview struct {
 func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
-	// RFC N: this is a bearer-authed admin endpoint — resolve the webhook
-	// under the caller's own tenant so the dry-run validates the right def
-	// (a tenant testing its own webhook). "" for the legacy/default tenant.
-	tenant := ""
-	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
-		tenant = p.TenantID
-	}
-	wd, ok := lookup.Webhook(r.Context(), rec.store, rec.cfg, tenant, name)
-	if !ok || !wd.Enabled {
-		// Same 404 posture as the receiver: a disabled/unknown webhook is not
-		// addressable for a dry-run either.
+	// The same def recent-deliveries lists, so an admin dry-runs a
+	// tenant-owned webhook with the same ?tenant= focus.
+	wd, _, ok := lookup.ResolveWebhook(r.Context(), rec.store, rec.cfg, triageTenant(r), name)
+	if !ok || webhookInert(wd) {
+		// Same 404 posture as the receiver: an unknown or inert webhook is not
+		// addressable for a dry-run either, so the dry-run never reports
+		// would_accept for a def a real delivery would refuse.
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return
 	}
