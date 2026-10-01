@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Agent, listAgents } from "../api";
 import { useFocusTenant, useUserId } from "../components/Layout";
 import AgentsTreePanel, { type StatusFilter } from "../components/AgentsTreePanel";
-import AgentDetailPane from "../components/AgentDetailPane";
+import RunDetail from "../components/RunDetail";
 import { buildTree } from "../components/AgentsTree";
 import { breadcrumbAncestors, paneRunId, selectedRowKey, type RunSelection } from "../lib/runLineage";
 import Splitter from "../components/Splitter";
@@ -120,7 +120,8 @@ export default function AgentsView() {
           <p>Enter a <code>user_id</code> in the top bar to see runs.</p>
         </div>
         {hasSelection && (
-          <AgentDetailPane runId={detailRunId} agentId={selectedAgentId} onSelect={setSelected} />
+          <RunDetail agents={[]} runId={detailRunId} agentId={selectedAgentId} onSelect={setSelected} />
+
         )}
       </div>
     );
@@ -149,7 +150,9 @@ export default function AgentsView() {
       </div>
       <div className="right">
         {hasSelection ? (
-          <AgentDetailPane
+          <RunDetail
+            agents={agents}
+            selectedKey={selectedKey}
             runId={detailRunId}
             agentId={selectedAgentId}
             ancestors={ancestors}

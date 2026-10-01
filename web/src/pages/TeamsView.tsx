@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AGENT_HOOK_EVENTS, HookEventsControl, ToolHooksControl } from "@loomcycle/def-fields";
 import "@loomcycle/def-fields/styles.css";
 import {
@@ -14,6 +14,7 @@ import {
   renderTeamDiagram,
 } from "../api";
 import { useTheme } from "../hooks/useTheme";
+import { useMermaidSvg } from "../hooks/useMermaidSvg";
 import Splitter from "../components/Splitter";
 import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 
@@ -119,10 +120,7 @@ export default function TeamsView() {
 
   // Rendered diagram (mermaid → SVG), theme-aware, with a source toggle.
   const { theme } = useTheme();
-  const [svg, setSvg] = useState<string>("");
-  const [renderErr, setRenderErr] = useState<string>("");
   const [showSource, setShowSource] = useState(false);
-  const mmidRef = useRef(0);
 
   const fetchTeams = useCallback(async () => {
     setLoading(true);
@@ -211,39 +209,9 @@ export default function TeamsView() {
     };
   }, [diagramSource, highlight]);
 
-  // Render the Mermaid source to an SVG in-page. mermaid is lazy-imported (a
-  // big dep — kept out of the main bundle), initialized per the app theme so the
-  // edges/labels are legible on light or dark. On failure we fall back to the
-  // source view. Guard against a stale render winning a race.
-  useEffect(() => {
-    if (!diagram) {
-      setSvg("");
-      return;
-    }
-    let cancelled = false;
-    setRenderErr("");
-    void (async () => {
-      try {
-        const mermaid = (await import("mermaid")).default;
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: theme === "dark" ? "dark" : "default",
-          securityLevel: "strict",
-        });
-        const id = `team-mmd-${++mmidRef.current}`;
-        const out = await mermaid.render(id, diagram.diagram);
-        if (!cancelled) setSvg(out.svg);
-      } catch (e) {
-        if (!cancelled) {
-          setSvg("");
-          setRenderErr(msg(e));
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [diagram, theme]);
+  // Render the Mermaid source to an SVG in-page; on failure the pane falls
+  // back to the source view.
+  const { svg, renderErr } = useMermaidSvg(diagram?.diagram, theme, "team-mmd");
 
   function startCreate() {
     setCreating(true);
