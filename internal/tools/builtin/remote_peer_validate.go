@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -146,27 +147,46 @@ type remotePeerCredential struct {
 //     sent is the run's own. Refused for an author with no tenant: that def
 //     lands in the shared layer every tenant resolves, so each tenant's key
 //     would go to the author's host.
+//   - api_key_env "$cred:<name>", naming a tenant-level credential that
+//     exists in the author's tenant — the tenant the def is written in, and
+//     the one the reference resolves in at dial (PeerCredentials). Refused for
+//     an author with no tenant, whose def would resolve the shared layer's
+//     credentials.
 //
 // The operator's own pairing is kept: a fork that leaves base_url and the
 // credential exactly as the yaml entry for this name declares them (static)
 // sends the operator's key to the operator's host.
 //
 // An admin (substrate:admin) keeps free api_key_env, and so does an open-mode
-// or stdio operator (callerHasOperatorAuthority). Called by the def tools
-// only: a snapshot restore is an admin action, so its validators check the
-// shape and the host floor, not this.
-func requireAuthorBoundCredential(ctx context.Context, def remotePeerCredential, static *remotePeerCredential) error {
+// or stdio operator (callerHasOperatorAuthority); an admin's "$cred:" is not
+// checked for existence either, so a credential may be created after its def.
+// Called by the def tools only: a snapshot restore is an admin action, so its
+// validators check the shape and the host floor, not this.
+func requireAuthorBoundCredential(ctx context.Context, creds *PeerCredentials, def remotePeerCredential, static *remotePeerCredential) error {
 	if callerHasOperatorAuthority(ctx) {
 		return nil
 	}
 	if static != nil && def == *static {
 		return nil
 	}
-	if def.APIKeyEnv != "" {
+	tenantID := tools.RunIdentity(ctx).TenantID
+	if name, ok := credential.ParseRef(def.APIKeyEnv); ok {
+		if tenantID == "" {
+			return fmt.Errorf("config.api_key_env %q may not be set by an author with no tenant: the definition would be shared by every tenant", def.APIKeyEnv)
+		}
+		found, err := creds.Exists(ctx, tenantID, name)
+		if err != nil {
+			return fmt.Errorf("config.api_key_env %q: could not check the credential: %v", def.APIKeyEnv, err)
+		}
+		if !found {
+			return fmt.Errorf("config.api_key_env %q names no tenant-level credential in tenant %q. "+
+				"Create it first with CredentialDef (op=create, scope=tenant, name=%q)", def.APIKeyEnv, tenantID, name)
+		}
+	} else if def.APIKeyEnv != "" {
 		return fmt.Errorf("config.api_key_env %q may be set only by an admin: it names a credential this server holds, and the definition sends it to its own base_url. "+
-			"Leave it unset, or use tenancy_strategy {\"kind\":\"key_per_tenant\",\"env_pattern\":\"LOOMCYCLE_..._{tenant_id}\"} so each run sends its own tenant's key", def.APIKeyEnv)
+			"Leave it unset, name a credential of your own tenant as \"$cred:<name>\", or use tenancy_strategy {\"kind\":\"key_per_tenant\",\"env_pattern\":\"LOOMCYCLE_..._{tenant_id}\"} so each run sends its own tenant's key", def.APIKeyEnv)
 	}
-	if def.TenancyKind == "key_per_tenant" && def.EnvPattern != "" && tools.RunIdentity(ctx).TenantID == "" {
+	if def.TenancyKind == "key_per_tenant" && def.EnvPattern != "" && tenantID == "" {
 		return fmt.Errorf("tenancy_strategy.env_pattern %q may not be set by an author with no tenant: the definition would be shared by every tenant, "+
 			"and each tenant's key would be sent to its base_url", def.EnvPattern)
 	}

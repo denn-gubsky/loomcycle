@@ -33,19 +33,20 @@ type MemoryBackendStore interface {
 // persistence JSON also returns (zero, false) — defensive against
 // future-field churn or hand-edited rows.
 //
-// The Origin says who authored the resolved def (see Origin); a caller that
-// dials the def's base_url bases its network trust on it.
-func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Origin, bool) {
+// The Provenance says who authored the resolved def and which tenant's layer
+// holds it (see Provenance): a caller that dials the def's base_url bases its
+// network trust on the Origin, and resolves a credential reference in TenantID.
+func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Provenance, bool) {
 	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
 	if tenantID != "" {
-		if mb, origin, ok := resolveMemoryBackendSubstrate(ctx, s, cfg, tenantID, name); ok {
-			return mb, origin, true
+		if mb, prov, ok := resolveMemoryBackendSubstrate(ctx, s, cfg, tenantID, name); ok {
+			return mb, prov, true
 		}
 	}
 	// 2. Static cfg.MemoryBackends — the shared operator base.
 	if cfg != nil {
 		if mb, ok := cfg.MemoryBackends[name]; ok {
-			return mb, OriginOperator, true
+			return mb, Provenance{Origin: OriginOperator}, true
 		}
 	}
 	// 3. Shared substrate (tenant_id="").
@@ -56,17 +57,17 @@ func MemoryBackend(ctx context.Context, s MemoryBackendStore, cfg *config.Config
 // overlay for one tenant pass. Returns (zero, false) when the store is
 // nil, the name has no active pointer for that tenant, or the row's JSON
 // is malformed.
-func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Origin, bool) {
+func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, cfg *config.Config, tenantID, name string) (config.MemoryBackend, Provenance, bool) {
 	if s == nil {
-		return config.MemoryBackend{}, OriginRuntime, false
+		return config.MemoryBackend{}, Provenance{}, false
 	}
 	activeRow, err := s.MemoryBackendDefGetActive(ctx, tenantID, name)
 	if err != nil {
-		return config.MemoryBackend{}, OriginRuntime, false
+		return config.MemoryBackend{}, Provenance{}, false
 	}
 	var md SubstrateMemoryBackendDef
 	if uerr := json.Unmarshal(activeRow.Definition, &md); uerr != nil {
-		return config.MemoryBackend{}, OriginRuntime, false
+		return config.MemoryBackend{}, Provenance{}, false
 	}
 	def := md.ToConfigDef()
 	origin := OriginRuntime
@@ -75,7 +76,7 @@ func resolveMemoryBackendSubstrate(ctx context.Context, s MemoryBackendStore, cf
 			origin = OriginOperator
 		}
 	}
-	return def, origin, true
+	return def, Provenance{Origin: origin, TenantID: tenantID}, true
 }
 
 // SubstrateMemoryBackendDef mirrors the JSON shape `MemoryBackendDef`

@@ -49,10 +49,11 @@ type Options struct {
 	TenancyKind string
 	// EnvPattern is the key_per_tenant env-name template containing {tenant_id}.
 	EnvPattern string
-	// KeyResolver maps an env-var NAME to its value, allowlist-gated. The
-	// factory supplies config.EnvNameCredentialSafe + os.Getenv. A nil resolver
-	// (or an empty resolved env name) means "no auth" — an unauthenticated peer.
-	KeyResolver func(envName string) (string, error)
+	// KeyResolver maps the credential NAME (DefaultAPIKeyEnv, or EnvPattern
+	// completed for the run's tenant) to its value, per call. The factory
+	// supplies it, allowlist-gated. A nil resolver (or an empty resolved name)
+	// means "no auth" — an unauthenticated peer.
+	KeyResolver func(ctx context.Context, envName string) (string, error)
 	// HTTPClient is the SSRF-guarded client the factory built. Required.
 	HTTPClient *http.Client
 }
@@ -63,7 +64,7 @@ type Backend struct {
 	defAPIKeyEnv string
 	tenancyKind  string
 	envPattern   string
-	keyResolver  func(string) (string, error)
+	keyResolver  func(context.Context, string) (string, error)
 	http         *http.Client
 }
 
@@ -107,7 +108,7 @@ func (b *Backend) authHeader(ctx context.Context) (string, error) {
 	if envName == "" || b.keyResolver == nil {
 		return "", nil
 	}
-	tok, err := b.keyResolver(envName)
+	tok, err := b.keyResolver(ctx, envName)
 	if err != nil {
 		return "", err // contains only the env-var NAME, never the value
 	}

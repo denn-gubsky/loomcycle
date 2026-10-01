@@ -54,6 +54,10 @@ sending side's chunks that could not be carried.
   runtime and the operator does not list its host; nothing was sent. A retry
   will not help: ask the operator to list the host, or to declare the source
   in the server config.
+- `sync: fetch remote document: api_key_env "$cred:<name>": tenant "<tenant>"
+  has no tenant-level credential of that name` — the source names a stored
+  credential that the tenant owning the source does not hold; nothing was
+  sent. Create it with `CredentialDef` (`scope: tenant`) in that tenant.
 - `sync: direction must be "pull" (default) or "push" ...` — `up` and `down`
   belong to `reorder_chunk`.
 - The sync is not all-or-nothing: if it fails part-way, what was already

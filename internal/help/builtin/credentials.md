@@ -32,6 +32,12 @@ resolves named credentials into a child's env for `git`/`gh` (a per-tenant repo
 token). A tool that can't resolve a `$cred:` token drops it rather than sending a
 literal placeholder downstream.
 
+A remote memory backend or document source can name its peer key as
+`api_key_env: "$cred:<name>"`. That one works differently: it resolves only a
+**tenant**-scope credential, in the tenant that owns the definition, never a
+user's or agent's credential and never the calling run's tenant. If it does not
+resolve, the call to the peer fails and nothing is sent.
+
 ## Provider keys
 
 A stored credential named for a provider env var (e.g. `ANTHROPIC_API_KEY`,

@@ -186,7 +186,7 @@ func TestRemoteBackend_KeyPerTenantAuth(t *testing.T) {
 	b := newTestBackend(t, srv, Options{
 		TenancyKind: "key_per_tenant",
 		EnvPattern:  "LOOMCYCLE_PEER_{tenant_id}_KEY",
-		KeyResolver: func(name string) (string, error) { askedFor = name; return "tok-" + name, nil },
+		KeyResolver: func(_ context.Context, name string) (string, error) { askedFor = name; return "tok-" + name, nil },
 	})
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"})
 

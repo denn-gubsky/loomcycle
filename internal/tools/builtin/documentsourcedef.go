@@ -38,6 +38,11 @@ type DocumentSourceDef struct {
 	// static-name-replace refusal and the bootstrap-from-yaml path.
 	Cfg *config.Config
 
+	// PeerCredentials checks that a "$cred:<name>" api_key_env names a
+	// credential in the author's tenant. Nil = none exists, so a non-admin
+	// author's reference is refused.
+	PeerCredentials *PeerCredentials
+
 	// MaxDefinitionBytes caps the serialised definition JSON. 0 = no cap.
 	MaxDefinitionBytes int
 
@@ -52,7 +57,9 @@ const documentSourceDefDescription = `Author, fork, retire, and inspect named do
 	`A source authored here needs a config.base_url whose host the operator lists in ` +
 	`LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and may not name a private, ` +
 	`loopback, link-local or metadata IP (a yaml-declared source keeps its own host). ` +
-	`Only an admin may set config.api_key_env; anyone else leaves the credential unset or uses ` +
+	`Only an admin may set config.api_key_env to an env var name. Anyone else leaves the credential unset, ` +
+	`sets api_key_env to "$cred:<name>" naming a tenant-level credential that already exists in their own tenant ` +
+	`(create it with CredentialDef; it is resolved in the tenant that owns this definition, never the caller's), or uses ` +
 	`tenancy_strategy key_per_tenant with an env_pattern containing {tenant_id}, so each run sends its own tenant's key.`
 
 const documentSourceDefInputSchema = `{
@@ -514,7 +521,7 @@ func (s *DocumentSourceDef) checkAuthorCredential(ctx context.Context, def merge
 			TenancyKind: st.TenancyStrategy.Kind, EnvPattern: st.TenancyStrategy.EnvPattern,
 		}
 	}
-	return requireAuthorBoundCredential(ctx, peer, static)
+	return requireAuthorBoundCredential(ctx, s.PeerCredentials, peer, static)
 }
 
 // DocumentSourceDefBodyValidator returns the check a snapshot restore runs
@@ -564,10 +571,8 @@ func validateDocumentSourceDef(cfg *config.Config, def mergedDocumentSourceDef, 
 	// base_url the author controls, `api_key_env: LOOMCYCLE_AUTH_TOKEN` would
 	// ship the operator bearer to a peer. The persisted shape must never hold
 	// an infra secret or a non-allowlisted var. Only checked when set.
-	if def.Config.APIKeyEnv != "" && !config.EnvNameCredentialSafe(def.Config.APIKeyEnv) {
-		return fmt.Errorf("config.api_key_env %q is not an allowed credential env var "+
-			"(must be LOOMCYCLE_-prefixed or a known third-party key, and must not be one "+
-			"of loomcycle's own infrastructure secrets)", def.Config.APIKeyEnv)
+	if err := requireAPIKeyEnvShape(def.Config.APIKeyEnv); err != nil {
+		return err
 	}
 	// tenancy_strategy.kind ∈ {"", "key_per_tenant"}. shared_key_with_prefix
 	// is NOT supported (the document proxy has no key-prefix semantics).

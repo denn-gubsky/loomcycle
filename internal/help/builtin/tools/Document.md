@@ -128,6 +128,10 @@ operator lists in `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or
 fail with `... is not in LOOMCYCLE_HTTP_HOST_ALLOWLIST ...`, and nothing is
 sent. A peer on a private network needs the private list:
 without it they fail with `blocked: <host> has no public addresses`.
+A source whose `api_key_env` is `$cred:<name>` sends the tenant-level
+credential of the tenant that owns the source; if that tenant has no such
+credential, `sync` and `diff_remote` fail with `... has no tenant-level
+credential of that name`, and nothing is sent.
 
 **Facts**
 

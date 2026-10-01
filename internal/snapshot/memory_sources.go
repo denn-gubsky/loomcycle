@@ -125,8 +125,13 @@ func dialedKeyRefs(tenantID string, body json.RawMessage, dialed func(kind strin
 		return []credRef{{field: "tenancy_strategy.env_pattern",
 			env: strings.ReplaceAll(b.TenancyStrategy.EnvPattern, "{tenant_id}", tenantID)}}
 	}
-	if b.Config.APIKeyEnv != "" {
-		return []credRef{{field: "config.api_key_env", env: b.Config.APIKeyEnv}}
+	if v := b.Config.APIKeyEnv; v != "" {
+		// "$cred:<name>" as the whole value is a stored credential, resolved in
+		// the def's own tenant at tenant level only — what the scan checks.
+		if m := credRefRe.FindStringSubmatch(v); m != nil && m[0] == v && m[1] == "cred" {
+			return []credRef{{field: "config.api_key_env", cred: v, name: m[2], tenantOnly: true}}
+		}
+		return []credRef{{field: "config.api_key_env", env: v}}
 	}
 	return nil
 }

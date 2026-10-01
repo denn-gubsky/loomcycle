@@ -21,3 +21,16 @@ const (
 	// base_url still matches what the operator declares today.
 	OriginOperator
 )
+
+// Provenance is where a resolved definition was read: who authored it, and the
+// tenant whose layer holds it.
+//
+// TenantID is the tenant pass the definition was found in: the run's tenant
+// for a tenant-scoped row, "" for the static config and the shared layer. A
+// credential the definition names by reference resolves in THIS tenant, never
+// the calling run's: a shared definition is resolved by every tenant, and the
+// caller's own credential is not what the definition's author vouched for.
+type Provenance struct {
+	Origin   Origin
+	TenantID string
+}

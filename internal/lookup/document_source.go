@@ -33,19 +33,20 @@ type DocumentSourceStore interface {
 // also returns (zero, false) — defensive against future-field churn or
 // hand-edited rows.
 //
-// The Origin says who authored the resolved def (see Origin); a caller that
-// dials the def's base_url bases its network trust on it.
-func DocumentSource(ctx context.Context, s DocumentSourceStore, cfg *config.Config, tenantID, name string) (config.DocumentSource, Origin, bool) {
+// The Provenance says who authored the resolved def and which tenant's layer
+// holds it (see Provenance): a caller that dials the def's base_url bases its
+// network trust on the Origin, and resolves a credential reference in TenantID.
+func DocumentSource(ctx context.Context, s DocumentSourceStore, cfg *config.Config, tenantID, name string) (config.DocumentSource, Provenance, bool) {
 	// 1. Tenant-scoped substrate (skipped for the shared "" tenant).
 	if tenantID != "" {
-		if ds, origin, ok := resolveDocumentSourceSubstrate(ctx, s, cfg, tenantID, name); ok {
-			return ds, origin, true
+		if ds, prov, ok := resolveDocumentSourceSubstrate(ctx, s, cfg, tenantID, name); ok {
+			return ds, prov, true
 		}
 	}
 	// 2. Static cfg.DocumentSources — the shared operator base.
 	if cfg != nil {
 		if ds, ok := cfg.DocumentSources[name]; ok {
-			return ds, OriginOperator, true
+			return ds, Provenance{Origin: OriginOperator}, true
 		}
 	}
 	// 3. Shared substrate (tenant_id="").
@@ -55,13 +56,13 @@ func DocumentSource(ctx context.Context, s DocumentSourceStore, cfg *config.Conf
 // resolveDocumentSourceSubstrate reads the document_source_def_active overlay
 // for one tenant pass. Returns (zero, false) when the store is nil, the name has
 // no active pointer for that tenant, or the row's JSON is malformed.
-func resolveDocumentSourceSubstrate(ctx context.Context, s DocumentSourceStore, cfg *config.Config, tenantID, name string) (config.DocumentSource, Origin, bool) {
+func resolveDocumentSourceSubstrate(ctx context.Context, s DocumentSourceStore, cfg *config.Config, tenantID, name string) (config.DocumentSource, Provenance, bool) {
 	if s == nil {
-		return config.DocumentSource{}, OriginRuntime, false
+		return config.DocumentSource{}, Provenance{}, false
 	}
 	activeRow, err := s.DocumentSourceDefGetActive(ctx, tenantID, name)
 	if err != nil {
-		return config.DocumentSource{}, OriginRuntime, false
+		return config.DocumentSource{}, Provenance{}, false
 	}
 	// A retired def that is still the active pointer must NOT resolve — retiring
 	// the active source deactivates it (set_remote/sync then report "unknown
@@ -69,11 +70,11 @@ func resolveDocumentSourceSubstrate(ctx context.Context, s DocumentSourceStore, 
 	// peer the operator retired. (The store keeps the pointer for lineage; the
 	// resolver is where "retired means unusable" is enforced.)
 	if activeRow.Retired {
-		return config.DocumentSource{}, OriginRuntime, false
+		return config.DocumentSource{}, Provenance{}, false
 	}
 	var sd SubstrateDocumentSourceDef
 	if uerr := json.Unmarshal(activeRow.Definition, &sd); uerr != nil {
-		return config.DocumentSource{}, OriginRuntime, false
+		return config.DocumentSource{}, Provenance{}, false
 	}
 	def := sd.ToConfigDef()
 	origin := OriginRuntime
@@ -82,7 +83,7 @@ func resolveDocumentSourceSubstrate(ctx context.Context, s DocumentSourceStore, 
 			origin = OriginOperator
 		}
 	}
-	return def, origin, true
+	return def, Provenance{Origin: origin, TenantID: tenantID}, true
 }
 
 // SubstrateDocumentSourceDef mirrors the JSON shape `DocumentSourceDef`

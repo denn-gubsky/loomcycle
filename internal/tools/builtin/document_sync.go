@@ -38,20 +38,21 @@ const remoteDocumentTimeout = 30 * time.Second
 // reusing the RFC CD Part B remote plumbing: the host floor for a def not
 // authored by the operator (requireDialablePeerHost), an SSRF-guarded client
 // whose private-host allowlist depends on who authored the def
-// (remotePeerPrivateHosts), and the credential-env allowlist gate
-// (resolveCredentialEnv) — the last two defined in memory.go.
-func newRemoteDocumentClient(cfg *config.Config, ds config.DocumentSource, origin lookup.Origin) (*docremote.Client, error) {
-	if err := requireDialablePeerHost(cfg, ds.Config.BaseURL, origin); err != nil {
+// (remotePeerPrivateHosts), and the credential resolver (peerKeyResolver: a
+// "$cred:" reference in the tenant the source was read in, else the
+// credential-env allowlist gate).
+func newRemoteDocumentClient(cfg *config.Config, creds *PeerCredentials, ds config.DocumentSource, prov lookup.Provenance) (*docremote.Client, error) {
+	if err := requireDialablePeerHost(cfg, ds.Config.BaseURL, prov.Origin); err != nil {
 		return nil, err
 	}
-	client := netguard.NewGuardedClient(remoteDocumentTimeout, remotePeerPrivateHosts(cfg, ds.Config.BaseURL, origin))
+	client := netguard.NewGuardedClient(remoteDocumentTimeout, remotePeerPrivateHosts(cfg, ds.Config.BaseURL, prov.Origin))
 	return docremote.New(docremote.Options{
 		BaseURL:          ds.Config.BaseURL,
 		APIVersion:       ds.Config.APIVersion,
 		DefaultAPIKeyEnv: ds.Config.APIKeyEnv,
 		TenancyKind:      ds.TenancyStrategy.Kind,
 		EnvPattern:       ds.TenancyStrategy.EnvPattern,
-		KeyResolver:      resolveCredentialEnv,
+		KeyResolver:      peerKeyResolver(creds, prov.TenantID),
 		HTTPClient:       client,
 	})
 }
@@ -166,11 +167,11 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	// Resolve against BOTH static document_sources: yaml AND the tenant-scoped
 	// DocumentSourceDef substrate (dynamic, runtime-authored).
 	tenantID := tools.RunIdentity(ctx).TenantID
-	ds, origin, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, source)
+	ds, prov, ok := lookup.DocumentSource(ctx, d.Store, d.Cfg, tenantID, source)
 	if !ok {
 		return fail(errBusiness, fmt.Sprintf("unknown document source %q (was it removed from document_sources: / retired?)", source), "Rebind the document to a declared source with op=set_remote, or ask an operator to restore the source.")
 	}
-	client, err := newRemoteDocumentClient(d.Cfg, ds, origin)
+	client, err := newRemoteDocumentClient(d.Cfg, d.PeerCredentials, ds, prov)
 	if err != nil {
 		return fail(errBusiness, err.Error(), "The document source is misconfigured; ask an operator to fix it.")
 	}

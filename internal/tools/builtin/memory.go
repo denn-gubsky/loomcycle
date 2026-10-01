@@ -107,6 +107,11 @@ type Memory struct {
 	// falls back to the operator-default backend — the pre-MR-3b behavior.
 	Cfg *config.Config
 
+	// PeerCredentials resolves a "$cred:<name>" api_key_env on a remote
+	// memory backend, in the backend def's owning tenant. Nil = such a
+	// reference resolves to nothing, so the peer call fails.
+	PeerCredentials *PeerCredentials
+
 	// SqlMem is the RFC AA SQL Memory manager backing sql_query / sql_exec.
 	// Nil = the SQL ops refuse with "SQL Memory is not enabled on this
 	// server" (the subsystem is off by default; main.go sets it only when
@@ -163,7 +168,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	// RFC N: resolve under the run's tenant so a tenant-private backend
 	// shadows the shared base; "" tenant collapses to static→shared exactly
 	// as before.
-	def, origin, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, tools.RunIdentity(ctx).TenantID, name)
+	def, prov, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, tools.RunIdentity(ctx).TenantID, name)
 	if !ok {
 		log.Printf("memory: memory_backend %q not found — using operator-default backend", name)
 		return m.defaultBackend()
@@ -172,7 +177,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	case "", "inprocess":
 		return m.newInprocess()
 	case "remote":
-		rb, err := m.newRemoteBackend(def, origin)
+		rb, err := m.newRemoteBackend(def, prov)
 		if err != nil {
 			// A misconfigured remote def must not fail the agent's run: log and
 			// serve locally (same degrade posture as the unknown-kind arm).
@@ -195,22 +200,23 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 const remoteBackendTimeout = 30 * time.Second
 
 // newRemoteBackend builds a remote memory backend from a resolved def. The
-// SSRF-guarded HTTP client and the credential-env allowlist are supplied here
-// (the remote package stays free of config/netguard/os coupling); the host
-// floor and the private-host allowlist depend on who authored the def
-// (requireDialablePeerHost, remotePeerPrivateHosts).
-func (m *Memory) newRemoteBackend(def config.MemoryBackend, origin lookup.Origin) (memrank.Backend, error) {
-	if err := requireDialablePeerHost(m.Cfg, def.Config.BaseURL, origin); err != nil {
+// SSRF-guarded HTTP client and the credential resolver are supplied here (the
+// remote package stays free of config/netguard/os coupling); the host floor
+// and the private-host allowlist depend on who authored the def
+// (requireDialablePeerHost, remotePeerPrivateHosts), and a "$cred:" credential
+// resolves in the tenant the def was read in (peerKeyResolver).
+func (m *Memory) newRemoteBackend(def config.MemoryBackend, prov lookup.Provenance) (memrank.Backend, error) {
+	if err := requireDialablePeerHost(m.Cfg, def.Config.BaseURL, prov.Origin); err != nil {
 		return nil, err
 	}
-	client := netguard.NewGuardedClient(remoteBackendTimeout, remotePeerPrivateHosts(m.Cfg, def.Config.BaseURL, origin))
+	client := netguard.NewGuardedClient(remoteBackendTimeout, remotePeerPrivateHosts(m.Cfg, def.Config.BaseURL, prov.Origin))
 	return remote.New(remote.Options{
 		BaseURL:          def.Config.BaseURL,
 		APIVersion:       def.Config.APIVersion,
 		DefaultAPIKeyEnv: def.Config.APIKeyEnv,
 		TenancyKind:      def.TenancyStrategy.Kind,
 		EnvPattern:       def.TenancyStrategy.EnvPattern,
-		KeyResolver:      resolveCredentialEnv,
+		KeyResolver:      peerKeyResolver(m.PeerCredentials, prov.TenantID),
 		HTTPClient:       client,
 	})
 }

@@ -14,6 +14,20 @@ var credTokenRe = regexp.MustCompile(`\$cred:([A-Za-z0-9_-]{1,128})`)
 // so callers skip the resolve path entirely when there's nothing to bind).
 func HasRef(s string) bool { return credTokenRe.MatchString(s) }
 
+// wholeRefRe is credTokenRe anchored: the value IS one reference, nothing else.
+var wholeRefRe = regexp.MustCompile(`^\$cred:([A-Za-z0-9_-]{1,128})$`)
+
+// ParseRef returns the <name> when s is exactly one $cred:<name> reference —
+// for a field that holds a credential reference as its whole value (a remote
+// peer's api_key_env), where text around the token would be meaningless.
+func ParseRef(s string) (name string, ok bool) {
+	m := wholeRefRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // RefNames returns the <name> of every $cred:<name> token in s (nil when none).
 // The resolver fast-path uses it to report refs as unresolved WITHOUT a store
 // read when the engine can't resolve anything (CanResolve()==false) — so the

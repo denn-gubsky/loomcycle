@@ -95,9 +95,10 @@ persisted shape can never hold a state a backend would act on unsafely:
   link-local or metadata IP (`127.0.0.1`, `10.x`, `169.254.169.254`, `::1`,
   `fd00::/8`, `0.0.0.0`, …) as `config.base_url`. A `kind: remote` one also
   needs a host the operator lists, and only an admin may set its
-  `api_key_env` (see `kind: remote` below).
+  `api_key_env` to an env var name (see `kind: remote` below).
 
-`api_key_env` is an env-var **name**, never a plaintext key.
+`api_key_env` is an env-var **name**, or a `$cred:<name>` reference to a stored
+credential, never a plaintext key.
 
 ## `kind: remote` — a peer loomcycle (RFC CD Part B)
 
@@ -132,26 +133,48 @@ memory_backends:
     host is never dialed: memory falls back to in-process with a log line,
     and nothing — no Authorization header — is sent. It reaches a private
     address only when the operator lists that hostname in
-    `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise the call is refused
-    (`blocked: <host> has no public addresses`). This includes a fork of a
+    `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, or lists the hostname in
+    `LOOMCYCLE_HTTP_HOST_ALLOWLIST` and a CIDR range covering the address it
+    resolves to (`100.64.0.0/10` for a tailnet) in
+    `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`. Otherwise the call is refused
+    (`blocked: <host> has no public addresses`). A CIDR entry never stands
+    in for the host name: the floor matches names, so a CIDR entry alone
+    admits no runtime backend, and a literal IP `base_url` (`100.101.102.103`)
+    is refused at authoring whatever the lists say. This includes a fork of a
     yaml-declared backend, which is a runtime definition too.
 
   Either way a redirect to any *other* private address is refused.
-- **`config.api_key_env`** — the env-var **name** of the bearer minted on the
-  *peer* (a `substrate:tenant` or non-isolated member token). Credential-
-  allowlisted (`LOOMCYCLE_*`-prefixed or a known third-party key) and resolved
-  at use time, so it can never be pointed at one of loomcycle's own infra
-  secrets. Sent as `Authorization: Bearer`; never logged.
+- **`config.api_key_env`** — the bearer minted on the *peer* (a
+  `substrate:tenant` or non-isolated member token), as one of:
+  - an env-var **name**: credential-allowlisted (`LOOMCYCLE_*`-prefixed or a
+    known third-party key) and resolved at use time, so it can never be
+    pointed at one of loomcycle's own infra secrets;
+  - `"$cred:<name>"`, a credential stored with `CredentialDef`. It resolves
+    only a **tenant-scope** credential, and only in the tenant that **owns
+    the definition** (the layer it was read from). It never resolves in the
+    calling run's tenant, so a shared (operator-layer) definition sends the
+    operator layer's credential to every tenant's runs, never a tenant's own.
+    It never falls back to a user's or agent's credential of the same name
+    either. A missing credential fails the call before anything is sent.
+
+  Sent as `Authorization: Bearer`; never logged.
 
   In a definition authored at runtime, **only a `substrate:admin` may set
-  `api_key_env`**: it can name any credential this server holds (another
-  tenant's `LOOMCYCLE_PEER_KEY_<tenant>`, a `GITHUB_TOKEN`), and the
-  definition's author chooses where it is sent. Anyone else leaves the
-  credential unset or uses `tenancy_strategy.kind: key_per_tenant` with an
-  `env_pattern` containing `{tenant_id}`, which each run completes with its
-  own tenant — refused for an author with no tenant, whose definition every
+  `api_key_env` to an env var name**: it can name any credential this server
+  holds (another tenant's `LOOMCYCLE_PEER_KEY_<tenant>`, a `GITHUB_TOKEN`),
+  and the definition's author chooses where it is sent. Anyone else leaves
+  the credential unset, or uses one of:
+  - `api_key_env: "$cred:<name>"`, naming a tenant-level credential that
+    already exists in the author's own tenant. Authoring checks that it
+    exists, without reading its value;
+  - `tenancy_strategy.kind: key_per_tenant` with an `env_pattern` containing
+    `{tenant_id}`, which each run completes with its own tenant.
+
+  Both are refused for an author with no tenant, whose definition every
   tenant resolves. A fork that keeps a yaml backend's `base_url` and
-  credential exactly as declared is allowed.
+  credential exactly as declared is allowed. An admin's `$cred:` reference
+  is not checked at authoring, so the credential may be created afterwards.
+  A yaml-declared backend has no owning tenant; use an env var there.
 - **`fallback_on_error: inprocess`** — wrap the remote so an unreachable peer
   **degrades to local memory per-op** instead of failing the run. A genuine
   "key absent" from the peer is a valid answer and does *not* fall back (it
