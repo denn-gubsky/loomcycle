@@ -2,7 +2,10 @@ package scheduler
 
 import (
 	"errors"
+	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -55,12 +58,7 @@ func classifyFire(err error) fireClass {
 		errors.Is(err, runner.ErrPerUserQuotaExhausted),
 		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
 		return fireBackpressure
-	case errors.Is(err, runner.ErrTokenLimitExceeded),
-		// The operator-key restriction has two layers: routing finds no
-		// provider the tenant can key (resolve), or a pinned agent's driver
-		// refuses the operator's key mid-run (providers). Same refusal.
-		errors.Is(err, resolve.ErrOperatorKeyRestricted),
-		errors.Is(err, providers.ErrOperatorKeyForbidden):
+	case errors.Is(err, runner.ErrTokenLimitExceeded), isOperatorKeyErr(err):
 		return fireDeferred
 	case errors.Is(err, runner.ErrRuntimePaused):
 		return firePaused
@@ -88,4 +86,37 @@ func (c fireClass) status() string {
 // schedule's max_fires.
 func (c fireClass) countsAsFire() bool {
 	return c != fireUnknownAgent && c != firePaused
+}
+
+// isOperatorKeyErr reports whether err is the operator-key restriction. It has
+// two layers: routing finds no provider the tenant can key (resolve), or a
+// pinned agent's driver refuses the operator's key mid-run (providers). Same
+// refusal.
+func isOperatorKeyErr(err error) bool {
+	return errors.Is(err, resolve.ErrOperatorKeyRestricted) ||
+		errors.Is(err, providers.ErrOperatorKeyForbidden)
+}
+
+// errSubRunOperatorKeyRefused is what a pass that RAN reports when a call
+// inside it was refused the operator's key — most often its extractor
+// sub-agent. The pass itself completes (a code agent catches the refusal and
+// holds its watermark), so RunOnce returns nil; without this the schedule
+// read "completed" for a tenant that is never consolidated. It wraps the
+// routing sentinel so classifyFire defers it like an admission refusal.
+var errSubRunOperatorKeyRefused = fmt.Errorf("%w: a call inside the pass (its sub-agent) was refused the operator's provider key, so the pass consolidated nothing that needed it", resolve.ErrOperatorKeyRestricted)
+
+// isOperatorKeyRefusal reports whether a failed tool call's classification is
+// the operator-key refusal — the structured signal a pass's event stream
+// carries when a sub-agent spawn inside it was refused.
+//
+// Compared against the one classifier's own output for the sentinel, never
+// against error text: the category alone is not enough (permission also means
+// "a scope was not granted", which no key fixes), and the classifier is what
+// produced this Info in the first place, so the two cannot drift.
+func isOperatorKeyRefusal(info *errkind.Info) bool {
+	if info == nil {
+		return false
+	}
+	want, ok := errclassify.CategoryOf(resolve.ErrOperatorKeyRestricted)
+	return ok && info.Category == want.Category && info.Description == want.Description
 }

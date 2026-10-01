@@ -289,6 +289,15 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		return
 	}
 
+	// Fail closed: without the access modes an isolated member's pass would
+	// run with the whole tenant's reach, so a lookup fault skips the tick the
+	// way an enumeration fault does.
+	isolated, err := s.isolatedMembers(ctx, def, allTenants)
+	if err != nil {
+		s.recordFireFailure(ctx, row.DefID, "", "failed", fmt.Errorf("consolidation fan-out: look up member access modes: %w", err), now)
+		return
+	}
+
 	if len(def.UserCredentials)+len(def.UserCredentialsFromEnv) > 0 {
 		for _, target := range targets {
 			if target.TenantID != def.TenantID {
@@ -361,7 +370,8 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			defer func() { <-sem }()
 			targetCtx, cancelTarget := context.WithTimeout(ctx, perTarget)
 			defer cancelTarget()
-			runID, runErr := s.runConsolidationTarget(targetCtx, def, target)
+			runID, runErr := s.runConsolidationTarget(targetCtx, def, target,
+				isolated[memberKey{tenantID: target.TenantID, subject: target.UserID}])
 			mu.Lock()
 			defer mu.Unlock()
 			tb := byTenant[target.TenantID]
@@ -379,6 +389,12 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			tb.tally.classify(runErr)
 			if class == firePaused {
 				paused = true
+			}
+			if class == fireDeferred && isOperatorKeyErr(runErr) {
+				// Logged once per tenant below, not per target: the key is
+				// the tenant's, so every pass there is refused alike.
+				tb.operatorKey++
+				return
 			}
 			if runErr != nil {
 				// Per-target failures are logged and counted, never fatal to
@@ -399,6 +415,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		s.logf("scheduler: consolidation fan-out %q stopped: the runtime paused mid-sweep — %d target(s) not dispatched this tick, and this tick does not count toward max_fires",
 			row.Name, stoppedPaused)
 	}
+	s.logOperatorKeyDeferrals(row.Name, byTenant)
 
 	status, errStr, countAsFire := tally.outcome(def.Agent)
 	if tally.unknownAgent > 0 && tally.unknownAgent == tally.dispatched {
@@ -422,6 +439,27 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 type tenantBatch struct {
 	tally     fanoutTally
 	lastRunID string
+	// operatorKey counts the passes refused the operator's provider key, at
+	// admission or inside the run (errSubRunOperatorKeyRefused).
+	operatorKey int
+}
+
+// logOperatorKeyDeferrals names, once per tenant per tick, each tenant whose
+// passes were refused the operator's provider key. Without it the only trace
+// of a tenant that is never consolidated was a "watermark NOT advanced" line
+// in each pass's own transcript.
+func (s *Scheduler) logOperatorKeyDeferrals(scheduleName string, byTenant map[string]*tenantBatch) {
+	tenants := make([]string, 0, len(byTenant))
+	for tenant, b := range byTenant {
+		if b.operatorKey > 0 {
+			tenants = append(tenants, tenant)
+		}
+	}
+	sort.Strings(tenants)
+	for _, tenant := range tenants {
+		s.logf("scheduler: consolidation fan-out %q: tenant %q: %d pass(es) deferred (operator_key_restricted) — the operator's provider key is restricted and the tenant has no key of its own for the agents a pass runs; it is not consolidated until it adds one, or an admin gives it its own schedule",
+			scheduleName, tenant, byTenant[tenant].operatorKey)
+	}
 }
 
 // dispatchFanoutHooks fires the schedule's on_complete hooks once per tenant
@@ -961,6 +999,48 @@ func isLocalProvider(providerID string) bool {
 	return id == "ollama-local" || strings.HasSuffix(id, "-local") || strings.HasPrefix(id, "local-")
 }
 
+// memberKey names one user in one tenant: the same subject in two tenants is
+// two members, with two access modes.
+type memberKey struct{ tenantID, subject string }
+
+// isolatedMembers returns the users whose stored access_mode confines them —
+// the tenant operator's dial for an isolated member, which is what the tokens
+// minted for that member are derived from. A pass runs as its target user, so
+// without this an isolated member's consolidation ran with the whole tenant's
+// reach: the shared scope that member's own runs are refused.
+//
+// ONE read per tick, not one per target: the whole of the sweep's reach (every
+// tenant for the operator-layer sweep, else the def's tenant; "" lists every
+// tenant, so the key carries the tenant).
+//
+// A user with no row is not isolated: the row is how a member is registered,
+// and an operator, admin or legacy subject has none (the same reading the
+// runnable-agents view takes). Any mode other than "tenant" confines — the
+// store refuses values outside its enum, and confining is the safe reading of
+// one that got past it.
+//
+// What this cannot see: a subject with no row (or a "tenant" row) that holds a
+// substrate:user token minted outside the member surface. Its own runs are
+// confined by that token; its pass is not, because no token is present at fire
+// time.
+func (s *Scheduler) isolatedMembers(ctx context.Context, def scheduleDef, allTenants bool) (map[memberKey]bool, error) {
+	tenant := def.TenantID
+	if allTenants {
+		tenant = ""
+	}
+	rows, err := s.store.UserList(ctx, tenant)
+	if err != nil {
+		return nil, err
+	}
+	out := map[memberKey]bool{}
+	for _, r := range rows {
+		if r.AccessMode != "tenant" {
+			out[memberKey{tenantID: r.TenantID, subject: r.Subject}] = true
+		}
+	}
+	return out, nil
+}
+
 // runConsolidationTarget dispatches ONE target's pass and returns its run id.
 //
 // The run's identity IS the target: UserID is what the Memory tool's
@@ -970,10 +1050,17 @@ func isLocalProvider(providerID string) bool {
 //
 // This is also where the pass's telemetry is emitted — see observePass for why
 // here and not inside the run.
-func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef, target consolidationTarget) (string, error) {
+//
+// isolatedMember is the target user's stored access_mode (see
+// isolatedMembers): an isolated member's pass runs confined, as that member's
+// own runs do.
+func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef, target consolidationTarget, isolatedMember bool) (string, error) {
 	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
 	in.UserID = target.UserID
 	in.TenantID = target.TenantID
+	// Only ever narrows: the def's captured bit (an isolated author) still
+	// binds for a target that is not an isolated member.
+	in.Isolated = in.Isolated || isolatedMember
 	if target.TenantID != def.TenantID {
 		// The operator-layer sweep dispatching into another tenant. That run
 		// resolves its agent in the target's tenant, where a tenant's fork of the
@@ -994,14 +1081,6 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		if s.cfg.OperatorKeyRestriction {
 			in.OperatorKeyRestricted = true
 		}
-		// Isolated stays the def's bit. It confines a substrate:user member's
-		// OWN runs to its user/agent scopes; it says nothing about the target.
-		// This run's identity is the target user in the target tenant, so
-		// unconfined it can reach that tenant's shared scope (and global, if the
-		// agent's memory policy declares it) — what any run by a non-isolated
-		// author in that tenant can — but not another tenant's, since the run's
-		// tenant is the target's. Whether the TARGET user is an isolated member
-		// is not known here (membership lives on its token).
 	}
 	// Copy the metadata before adding to it: def.Metadata is shared across
 	// every child of this fan-out, and mutating it would leak one target's
@@ -1032,6 +1111,15 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		model    string
 	}
 	var usageMu sync.Mutex
+	// keyRefused records a call inside the pass that was refused the
+	// operator's provider key. With the restriction on, a pass in a tenant
+	// with no key of its own is refused not at admission but INSIDE the run:
+	// the bundled consolidator is code-js (it needs no key), and it is its
+	// extractor sub-agent that cannot be keyed. The code agent catches that,
+	// holds its watermark and completes, so RunOnce returns nil — and the
+	// tenant read as consolidated on every tick while it never was. The
+	// failed tool call's classification is the structured signal.
+	var keyRefused bool
 	cb := runner.RunCallbacks{
 		OnRegistered: func(_, id, _, _ string) { runID = id },
 		// The loop populates Usage.Provider/Model with the identity that ACTUALLY
@@ -1039,6 +1127,12 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		// them here is drift-free, unlike re-resolving at the dispatcher. OnEvent
 		// may fire from the loop's goroutine, hence the mutex.
 		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventToolResult && ev.IsError && isOperatorKeyRefusal(ev.ErrorInfo) {
+				usageMu.Lock()
+				keyRefused = true
+				usageMu.Unlock()
+				return
+			}
 			if ev.Usage == nil {
 				return
 			}
@@ -1053,6 +1147,12 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		},
 	}
 	runErr := s.runner.RunOnce(ctx, in, cb)
+	usageMu.Lock()
+	refused := keyRefused
+	usageMu.Unlock()
+	if runErr == nil && refused {
+		runErr = errSubRunOperatorKeyRefused
+	}
 
 	if span.IsRecording() {
 		after := s.observePass(ctx, target, def.Agent, true)
