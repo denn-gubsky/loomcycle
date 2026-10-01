@@ -210,6 +210,10 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 			writeJSONError(w, http.StatusNotFound, "no_live_walk", "no live team walk for that run_id")
 			return nil, "", false
 		}
+	} else if !runOwnershipOK(r.Context(), run) {
+		// No session to gate on: the run's own owner confines it instead.
+		writeJSONError(w, http.StatusNotFound, "no_live_walk", "no live team walk for that run_id")
+		return nil, "", false
 	}
 	set, ok := s.breakpointReg.Get(runID)
 	if !ok {

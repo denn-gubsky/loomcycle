@@ -68,6 +68,9 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 		if serr != nil || !sessionOwnershipOK(ctx, sess) {
 			return false, connector.ErrRunNotInFlight
 		}
+	} else if !runOwnershipOK(ctx, run) {
+		// No session to gate on: the run's own owner confines it instead.
+		return false, connector.ErrRunNotInFlight
 	}
 	if run.Status != store.RunRunning {
 		return false, connector.ErrRunNotInFlight
