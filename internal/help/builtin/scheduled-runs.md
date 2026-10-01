@@ -219,6 +219,18 @@ Mcp.call hook dispatch reuses the per-tool credentials map —
 the substituted credential value is whatever the schedule fork's
 `user_credentials[server]` resolves to.
 
+A hook writes into the tenant its run executed in. For an ordinary
+schedule that is the schedule's own tenant (`tenant_id`, or the operator
+layer when it has none). An operator's consolidation schedule runs each
+pass in its user's own tenant, so its hooks fire once per tenant whose
+passes all completed, in that tenant, naming that tenant's run — as one
+schedule per tenant would. See `memory-consolidation`.
+
+A `delivery: channel` tick starts no run, so it lands in the schedule's
+own tenant. On a `scope: global` channel a schedule with no `tenant_id`
+publishes into the operator layer, which every tenant reads; give the
+schedule a `tenant_id` to reach one tenant's channel instead.
+
 ## Cron syntax
 
 Standard 5-field cron expressions per

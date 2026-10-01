@@ -2,6 +2,10 @@ package snapshot
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +26,31 @@ func TestRedactURLSecrets_RemovesUserinfoQueryAndFragment(t *testing.T) {
 	for _, c := range cases {
 		if got := redactURLSecrets(c.in); got != c.want {
 			t.Errorf("redactURLSecrets(%q)\n got %q\nwant %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A URL a validator refuses is often refused BECAUSE of a space or a quote in
+// it, and a %q-quoted URL (a *url.Error, a validator's own message) ends at
+// the closing quote, not at that character. The whole quoted URL is
+// redacted, so no tail of a password survives.
+func TestRedactURLSecrets_QuotedURLWithQuoteOrSpaceInUserinfo(t *testing.T) {
+	for _, c := range []struct{ raw, want, secret string }{
+		{"https://svc:hunter 2secret@evil.example/x", "https://REDACTED@evil.example/x", "2secret"},
+		{`https://svc:pa"ss@evil.example/x`, "https://REDACTED@evil.example/x", "ss@"},
+		{"https://svc:it's-secret@10.0.0.1/x?token=t0k", "https://REDACTED@10.0.0.1/x?REDACTED", "s-secret"},
+	} {
+		for _, msg := range []string{
+			fmt.Sprintf("config.base_url %q is a private address", c.raw),
+			(&url.Error{Op: "parse", URL: c.raw, Err: errors.New("net/url: invalid userinfo")}).Error(),
+		} {
+			got := redactURLSecrets(msg)
+			if strings.Contains(got, c.secret) || strings.Contains(got, "svc") || strings.Contains(got, "t0k") {
+				t.Errorf("redactURLSecrets(%s)\n left a credential: %s", msg, got)
+			}
+			if !strings.Contains(got, strconv.Quote(c.want)) {
+				t.Errorf("redactURLSecrets(%s)\n = %s\n want it to quote %q", msg, got, c.want)
+			}
 		}
 	}
 }

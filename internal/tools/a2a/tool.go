@@ -49,12 +49,12 @@ var _ tools.Tool = (*Tool)(nil)
 // NewTool builds one synthetic A2A tool for a (peer, skill) pair. skill
 // is the remote skill id the tool targets; description is the
 // human/model-facing blurb (typically the expected-skill or resolved
-// card skill description). newPeer defaults to the production SDK
-// factory when nil so callers in tests can omit it only when they pass
-// their own.
+// card skill description). newPeer defaults, when nil, to the production
+// SDK factory with NO private-host exemptions; RegisterTools passes one
+// carrying the operator's private-host allowlist.
 func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerClientFactory, logf func(string, ...any)) *Tool {
 	if newPeer == nil {
-		newPeer = newSDKPeerClient
+		newPeer = sdkPeerClientFactory(nil)
 	}
 	return &Tool{
 		peer:        peer,

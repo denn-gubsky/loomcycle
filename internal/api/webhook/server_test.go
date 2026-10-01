@@ -692,7 +692,9 @@ func TestReceiver_Layer2Dedup_ConcurrentRaceResolvesToWinner(t *testing.T) {
 	// resolves it. (The BEFORE-check and the re-lookup both call the same
 	// fake; pre-seeding means the BEFORE-check would also hit — so instead
 	// we leave existing empty and flip it via a tiny indirection.)
-	st := &raceStore{winner: store.Run{ID: "run-winner", AgentID: "agent-winner"}, key: staticDedupKey("gh", did)}
+	// The winner persisted the body key: a GitHub signature covers the body
+	// only, so the body hash, not the unsigned delivery id, is the run's key.
+	st := &raceStore{winner: store.Run{ID: "run-winner", AgentID: "agent-winner"}, key: staticDedupKey("gh", bodyHashID(body))}
 	rec := New(Deps{
 		Cfg:          &config.Config{Webhooks: map[string]config.Webhook{"gh": wh}},
 		Store:        st,

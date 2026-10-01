@@ -163,6 +163,26 @@ func TestMCPServerDefTool_CreateAllowsPrivateAllowlistHost(t *testing.T) {
 	}
 }
 
+// TestMCPServerDefTool_CreateAllowsIPInPrivateAllowlistCIDR: an operator who
+// vouched for a whole tailnet with one CIDR entry can register an MCP server by
+// its tailnet IP, the same address the dial guard will admit; an IP outside the
+// range is still refused.
+func TestMCPServerDefTool_CreateAllowsIPInPrivateAllowlistCIDR(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Env.HTTPHostAllowlist = []string{"n8n.example.com"}
+	tool.Cfg.Env.HTTPPrivateHostAllowlist = []string{"100.64.0.0/10"}
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"tailnet","overlay":{"transport":"http","url":"http://100.101.102.103:3000/mcp"}}`))
+	if res.IsError {
+		t.Fatalf("tailnet IP inside the private CIDR entry should be allowed at create; got: %s", res.Text)
+	}
+	res2, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"outside","overlay":{"transport":"http","url":"http://10.0.0.5:9000/mcp"}}`))
+	if !res2.IsError {
+		t.Errorf("an IP outside the private CIDR entry must still be refused; got: %s", res2.Text)
+	}
+}
+
 // TestMCPServerDefTool_HostAllowlistMatchesCanonical pins the contract
 // that this tool's allowlist semantics MATCH the canonical hostAllowed
 // helper used by HTTP + WebFetch. Specifically: a bare allowlist entry

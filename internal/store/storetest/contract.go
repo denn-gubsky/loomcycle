@@ -531,6 +531,10 @@ func Run(t *testing.T, factory Factory) {
 		// The targets holding queued work: exact tenant + scope, undrained
 		// only, one id per target, longest-waiting first, bounded.
 		{"MemoryPendingTargets", testMemoryPendingTargets},
+		// The drained-row prune: only rows acked before the cutoff go, an
+		// undrained row survives however old, every tenant is swept, and a
+		// batch is bounded by its limit.
+		{"MemoryPendingPruneDrained_RemovesOnlyOldDrainedRows", testMemoryPendingPruneDrainedRemovesOnlyOldDrainedRows},
 		// The month-to-date usage a snapshot restore carries in: max-not-add,
 		// per month, per subject, and deletable for erasure.
 		{"UsageCarryKeepsTheMaximum", testUsageCarryKeepsTheMaximum},
@@ -1535,6 +1539,97 @@ func testSnapshotRestoreDirentKeepsLiveRow(t *testing.T, s store.Store) {
 		if r.Kind != w.Kind || !jsonEqual(r.ResourceRef, wantRef) || !r.CreatedAt.Equal(w.CreatedAt) || !r.UpdatedAt.Equal(w.UpdatedAt) {
 			t.Errorf("%s%s read back as %+v, want %+v", w.ParentPath, w.Name, r, w)
 		}
+	}
+}
+
+// testMemoryPendingPruneDrainedRemovesOnlyOldDrainedRows: three queued rows in
+// two tenants; one acked before the cutoff, one acked after it, one never acked.
+// The prune removes exactly the first. The undrained row is enqueued with the
+// OLDEST created_at, so a prune that keyed on created_at instead of drained_at
+// would take it.
+func testMemoryPendingPruneDrainedRemovesOnlyOldDrainedRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	enqueue := func(id, tenant, scopeID string, createdAt time.Time) {
+		t.Helper()
+		if err := s.MemoryPendingEnqueue(ctx, store.MemoryPendingRow{ID: id, TenantID: tenant,
+			Scope: store.MemoryScopeUser, ScopeID: scopeID, Payload: json.RawMessage(`{"m":"hi"}`),
+			CreatedAt: createdAt}); err != nil {
+			t.Fatalf("MemoryPendingEnqueue %s: %v", id, err)
+		}
+	}
+	enqueue("mp_undrained", "acme", "alice", old)
+	enqueue("mp_drained_early", "acme", "alice", old.Add(time.Minute))
+	enqueue("mp_drained_late", "globex", "bob", old.Add(2*time.Minute))
+
+	// drained_at is stamped by the ack from the clock, so the cutoff is taken
+	// between the two acks. The sleeps keep both stamps clear of the cutoff even
+	// after Postgres rounds them to microseconds.
+	if err := s.MemoryPendingAck(ctx, "acme", store.MemoryScopeUser, "alice", []string{"mp_drained_early"}); err != nil {
+		t.Fatalf("ack early: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	cutoff := time.Now()
+	time.Sleep(20 * time.Millisecond)
+	if err := s.MemoryPendingAck(ctx, "globex", store.MemoryScopeUser, "bob", []string{"mp_drained_late"}); err != nil {
+		t.Fatalf("ack late: %v", err)
+	}
+
+	n, err := s.MemoryPendingPruneDrained(ctx, cutoff, 100)
+	if err != nil {
+		t.Fatalf("MemoryPendingPruneDrained: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("pruned %d rows, want 1 (only the row drained before the cutoff)", n)
+	}
+	exists := func(tenant, scopeID, id string) bool {
+		t.Helper()
+		_, err := s.MemoryPendingGet(ctx, tenant, store.MemoryScopeUser, scopeID, id)
+		if err == nil {
+			return true
+		}
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			t.Fatalf("MemoryPendingGet %s: %v", id, err)
+		}
+		return false
+	}
+	if exists("acme", "alice", "mp_drained_early") {
+		t.Error("mp_drained_early survived: a row drained before the cutoff must be pruned")
+	}
+	if !exists("globex", "bob", "mp_drained_late") {
+		t.Error("mp_drained_late was pruned: a row drained after the cutoff must stay")
+	}
+	if !exists("acme", "alice", "mp_undrained") {
+		t.Error("mp_undrained was pruned: an undrained row must never be pruned")
+	}
+
+	// A cutoff in the future takes the remaining drained row (in another
+	// tenant, so the prune is not tenant-confined) and still spares the
+	// undrained one. limit bounds the batch.
+	enqueue("mp_drained_extra", "acme", "alice", old.Add(3*time.Minute))
+	if err := s.MemoryPendingAck(ctx, "acme", store.MemoryScopeUser, "alice", []string{"mp_drained_extra"}); err != nil {
+		t.Fatalf("ack extra: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if n, err := s.MemoryPendingPruneDrained(ctx, future, 1); err != nil || n != 1 {
+		t.Fatalf("prune(limit=1) = (%d, %v), want (1, nil): limit must bound the batch", n, err)
+	}
+	if n, err := s.MemoryPendingPruneDrained(ctx, future, 100); err != nil || n != 1 {
+		t.Fatalf("second prune = (%d, %v), want (1, nil)", n, err)
+	}
+	if n, err := s.MemoryPendingPruneDrained(ctx, future, 100); err != nil || n != 0 {
+		t.Fatalf("prune of an already-pruned queue = (%d, %v), want (0, nil)", n, err)
+	}
+	if !exists("acme", "alice", "mp_undrained") {
+		t.Error("mp_undrained was pruned by a future cutoff: an undrained row must never be pruned")
+	}
+	drain, err := s.MemoryPendingDrain(ctx, "acme", store.MemoryScopeUser, "alice", 10)
+	if err != nil {
+		t.Fatalf("MemoryPendingDrain: %v", err)
+	}
+	if len(drain) != 1 || drain[0].ID != "mp_undrained" {
+		t.Errorf("drain after prune = %v, want only mp_undrained", drain)
 	}
 }
 

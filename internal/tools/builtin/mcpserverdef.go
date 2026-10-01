@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/mcp"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -515,22 +516,31 @@ func (m *MCPServerDef) execRetire(ctx context.Context, in mcpServerDefInput) (to
 	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
-	if err := m.Store.MCPServerDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
-		return errResult(fmt.Sprintf("retire: %s", err)), nil
-	}
-	// Side-effect on the registry + pool ONLY if retiring the currently-
-	// active version. Otherwise the active row stays callable. RFC N: the
-	// active pointer + registry + pool entries are keyed by the def's OWN
-	// tenant, so eviction stays tenant-correct (retiring tenant A's server
-	// leaves tenant B's same-name server untouched).
-	if *in.Retired {
-		active, err := m.Store.MCPServerDefGetActive(ctx, row.TenantID, row.Name)
-		if err == nil && active.DefID == in.DefID {
-			m.Registry.Remove(row.TenantID, row.Name)
-			if m.Pool != nil {
-				m.Pool.Evict(row.TenantID, row.Name)
+	// The store write and the registry change are one step under the
+	// registry's write lock: a rehydrate that read this def as live before
+	// the flag landed would otherwise Set it back after the Remove below.
+	var retireErr error
+	m.Registry.Serialize(func() {
+		if retireErr = m.Store.MCPServerDefSetRetired(ctx, in.DefID, *in.Retired); retireErr != nil {
+			return
+		}
+		// Side-effect on the registry + pool ONLY if retiring the currently-
+		// active version. Otherwise the active row stays callable. RFC N: the
+		// active pointer + registry + pool entries are keyed by the def's OWN
+		// tenant, so eviction stays tenant-correct (retiring tenant A's server
+		// leaves tenant B's same-name server untouched).
+		if *in.Retired {
+			active, err := m.Store.MCPServerDefGetActive(ctx, row.TenantID, row.Name)
+			if err == nil && active.DefID == in.DefID {
+				m.Registry.Remove(row.TenantID, row.Name)
+				if m.Pool != nil {
+					m.Pool.Evict(row.TenantID, row.Name)
+				}
 			}
 		}
+	})
+	if retireErr != nil {
+		return errResult(fmt.Sprintf("retire: %s", retireErr)), nil
 	}
 	return okJSON(map[string]any{"def_id": in.DefID, "retired": *in.Retired})
 }
@@ -568,22 +578,29 @@ func (m *MCPServerDef) execPromote(ctx context.Context, in mcpServerDefInput) (t
 // name (which may be using the previous active row's URL / headers)
 // MUST be evicted so the next agent call gets a fresh client.
 func (m *MCPServerDef) promoteAndWireRegistry(ctx context.Context, row store.MCPServerDefRow, promotedByAgentID string) error {
-	// RFC N: promote within the def's OWN tenant. The store refuses a
-	// def whose tenant_id ≠ the passed tenant, so a caller can't point
-	// another tenant's active pointer at a def it owns.
-	if err := m.Store.MCPServerDefSetActive(ctx, row.TenantID, row.Name, row.DefID, promotedByAgentID); err != nil {
-		return err
-	}
-	// Parse the definition back into the in-memory spec for the registry.
-	var ov mcpServerOverlay
-	if err := json.Unmarshal(row.Definition, &ov); err != nil {
-		return fmt.Errorf("definition unmarshal: %w", err)
-	}
-	m.Registry.Set(specFromOverlay(row.TenantID, row.Name, ov))
-	if m.Pool != nil {
-		m.Pool.Evict(row.TenantID, row.Name) // existing cached client uses stale metadata; rebuild on next agent call
-	}
-	return nil
+	// The pointer move and the registry Set are one step under the
+	// registry's write lock, so a concurrent rehydrate cannot Set the
+	// version this promote just replaced.
+	var err error
+	m.Registry.Serialize(func() {
+		// RFC N: promote within the def's OWN tenant. The store refuses a
+		// def whose tenant_id ≠ the passed tenant, so a caller can't point
+		// another tenant's active pointer at a def it owns.
+		if err = m.Store.MCPServerDefSetActive(ctx, row.TenantID, row.Name, row.DefID, promotedByAgentID); err != nil {
+			return
+		}
+		// Parse the definition back into the in-memory spec for the registry.
+		var ov mcpServerOverlay
+		if uerr := json.Unmarshal(row.Definition, &ov); uerr != nil {
+			err = fmt.Errorf("definition unmarshal: %w", uerr)
+			return
+		}
+		m.Registry.Set(specFromOverlay(row.TenantID, row.Name, ov))
+		if m.Pool != nil {
+			m.Pool.Evict(row.TenantID, row.Name) // existing cached client uses stale metadata; rebuild on next agent call
+		}
+	})
+	return err
 }
 
 // specFromOverlay projects an overlay's connection fields onto the in-memory
@@ -805,9 +822,12 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 	// F32: the stored def keeps the ${ref}, but the host-allowlist gate must
 	// see the RESOLVED host. Expand transiently here (in-memory, validation
 	// only) — buildDefinition does not persist this expanded form.
-	u, err := url.Parse(config.ExpandEnv(ov.URL))
+	expanded := config.ExpandEnv(ov.URL)
+	u, err := url.Parse(expanded)
 	if err != nil {
-		return fmt.Errorf("url parse: %w", err)
+		// Not %w: a *url.Error embeds the URL, here with its ${...}
+		// references already expanded.
+		return fmt.Errorf("url parse: %s", urlForMessage(expanded))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("url scheme must be http or https; got %q", u.Scheme)
@@ -840,10 +860,13 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 // allowlist — forcing them to widen the GENERAL SSRF floor just to register
 // their own callback server. Both lists are operator-declared, so honouring
 // either never widens beyond operator intent; it aligns create-time with
-// dial-time.
+// dial-time. For the same reason an IP-literal host inside a CIDR entry of the
+// private allowlist (a whole tailnet, "100.64.0.0/10") passes here, as it does
+// at the dial guard.
 func (m *MCPServerDef) hostAllowed(host string) bool {
 	return hostAllowed(host, m.Cfg.Env.HTTPHostAllowlist) ||
-		hostAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist)
+		hostAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist) ||
+		netguard.IPLiteralAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist)
 }
 
 // buildDefinition merges parent JSON (or empty for create) with the

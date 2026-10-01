@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
@@ -500,7 +501,7 @@ type HooksConfig struct {
 	// (comma-separated, same `[tenant:]owner` syntax). Env appends to yaml.
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
 
-	// PrivateHostAllowlist names hosts (suffix-matched, like
+	// PrivateHostAllowlist names hosts (suffix-matched, or CIDR ranges, like
 	// http_private_host_allowlist) that a TENANT operator's hook callback
 	// may reach although they resolve to a private / loopback / link-local
 	// address. A tenant hook receives every matching tool input, so its
@@ -1122,6 +1123,13 @@ type AgentDef struct {
 	// it at start so a resume continues on this version, not on whatever
 	// version the name resolves to by then.
 	DefID string `json:"-" yaml:"-"`
+
+	// RegisteredSHA256 is a digest of the dynamic_agents row (a registered
+	// agent) this definition was read from, or "" for any other source.
+	// Registered agents have no versions — re-registering a name rewrites its
+	// row in place — so a run records this at start, and a resume refuses a
+	// row that changed since. Resolved like DefID, never authored.
+	RegisteredSHA256 string `json:"-" yaml:"-"`
 
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
@@ -2986,8 +2994,9 @@ type ChangeSubscription struct {
 	// carried as X-Loomcycle-Signature = hex(hmac-sha256(secret, body)), the
 	// same scheme loomcycle's inbound webhook verifier checks. Empty = unsigned.
 	SecretEnv string `json:"secret_env,omitempty" yaml:"secret_env"`
-	// TenantID is WHICH tenant's change feed to deliver. "" = the shared/default
-	// tenant. A subscription only ever sees its own tenant's changes.
+	// TenantID is WHICH tenant's change feed to deliver: a named tenant sees
+	// only that tenant's changes. "" = the operator's feed of EVERY tenant,
+	// each change naming its tenant (subscriptions are operator-declared only).
 	TenantID string `json:"tenant_id,omitempty" yaml:"tenant_id"`
 	// Scope, when set, filters to changes in that memory scope (agent/user/tenant).
 	Scope string `json:"scope,omitempty" yaml:"scope"`
@@ -3403,7 +3412,9 @@ type Env struct {
 	// HTTPPrivateHostAllowlist names hosts whose resolved private IPs
 	// are allowed at dial time. Suffix-matched. Use to permit agent
 	// callbacks to a localhost-bound application API. Default empty
-	// (no exception). Example: "localhost,127.0.0.1".
+	// (no exception). Example: "localhost,127.0.0.1". An entry may also
+	// be a CIDR range ("100.64.0.0/10" for a whole tailnet), matched
+	// against each resolved address; a malformed range fails validate.
 	HTTPPrivateHostAllowlist []string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
@@ -4065,6 +4076,13 @@ type Env struct {
 	// don't want background work, can opt out).
 	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
 	MemorySweepInterval time.Duration
+
+	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
+	// after a pass acks it. An hourly prune deletes older drained rows; an
+	// undrained row is never pruned. Default 7 days. 0 or negative disables the
+	// prune and keeps drained rows (and their raw chat payloads) forever.
+	// Env: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS.
+	MemoryPendingDrainedTTL time.Duration
 
 	// PgvectorEnabled opts in to v0.9.0 Vector Memory on the
 	// Postgres backend. When true, Open() probes the `vector`
@@ -5016,6 +5034,16 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 				cfg.Env.MemorySweepInterval = 0
 			} else {
 				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+	cfg.Env.MemoryPendingDrainedTTL = 7 * 24 * time.Hour
+	if v := os.Getenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryPendingDrainedTTL = 0
+			} else {
+				cfg.Env.MemoryPendingDrainedTTL = time.Duration(n) * time.Millisecond
 			}
 		}
 	}
@@ -7082,6 +7110,15 @@ func validate(c *Config) error {
 	}
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
+	}
+	// The private-host allowlists accept CIDR entries (a whole tailnet in one
+	// line). A malformed range would never match — fail-closed but invisible — so
+	// refuse it here where the operator sees it.
+	if err := netguard.ValidatePrivateHostAllowlist(c.Env.HTTPPrivateHostAllowlist); err != nil {
+		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST: %w", err)
+	}
+	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
+		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
 	}
 	// RFC BA: inline skill names (top-level `skills:` map keys) share the
 	// `/`-grouped grammar with SkillsRoot dir names + SkillDef create/fork

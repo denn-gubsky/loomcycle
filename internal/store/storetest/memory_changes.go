@@ -61,6 +61,30 @@ func testMemoryChangesFeed(t *testing.T, s store.Store) {
 		t.Errorf("since=%d returned %+v, want only the second row", acme[0].Seq, rest)
 	}
 
+	// The operator's all-tenant read: every tenant's rows in one seq order,
+	// each naming its tenant, and the same cursor semantics.
+	all, err := s.GetMemoryChangesSinceAllTenants(ctx, acme[0].Seq-1, 100)
+	if err != nil {
+		t.Fatalf("GetMemoryChangesSinceAllTenants: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all-tenant feed = %d rows, want 3: %+v", len(all), all)
+	}
+	for i, want := range []string{"acme", "acme", "globex"} {
+		if all[i].TenantID != want {
+			t.Errorf("all[%d].TenantID = %q, want %q", i, all[i].TenantID, want)
+		}
+		if i > 0 && !(all[i-1].Seq < all[i].Seq) {
+			t.Errorf("all-tenant feed not in seq order: %d then %d", all[i-1].Seq, all[i].Seq)
+		}
+	}
+	if tail, err := s.GetMemoryChangesSinceAllTenants(ctx, acme[1].Seq, 100); err != nil || len(tail) != 1 || tail[0].TenantID != "globex" {
+		t.Errorf("all-tenant since=%d = %+v (err %v), want only globex's row", acme[1].Seq, tail, err)
+	}
+	if capped, _ := s.GetMemoryChangesSinceAllTenants(ctx, acme[0].Seq-1, 2); len(capped) != 2 {
+		t.Errorf("all-tenant feed with limit 2 returned %d rows", len(capped))
+	}
+
 	// Prune removes rows older than a future cutoff (all of them).
 	n, err := s.PruneMemoryChanges(ctx, time.Now().Add(time.Hour))
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/channelhooks"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -180,6 +181,82 @@ func TestSteer_ARemoteAgentToolChildTakesOnlyAVerdict(t *testing.T) {
 	for _, id := range []string{member, parent} {
 		if rec := doJSON(t, srv, "POST", "/v1/runs/"+id+"/retune", `{"max_tokens":512}`); rec.Code != 200 {
 			t.Errorf("retune of %s on another replica: status %d, want 200: %s", id, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// clusterRunAs is clusterRun under a given agent label (and a session of the
+// given agent), for the runs filed under a label of their own.
+func clusterRunAs(t *testing.T, srv *Server, sessAgent, agentID, replica string, interactive bool) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", sessAgent, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{
+		AgentID: agentID, UserID: "alice", ReplicaID: replica, Interactive: interactive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.store.(*replicaStore).owner[run.ID] = replica
+	return run.ID
+}
+
+// A team walk's own run and a channel hook's run have no steer entry on the
+// replica that owns them, so the owner answers a steer, retune or config read
+// 404. Another replica must answer the same. A walk started from the substrate
+// plane has no parent run, so the verdicts-only derivation does not catch it;
+// the row's agent id does. A top-level interactive run stays reachable.
+//
+// These rows carry their owner's replica id; the walk and hook paths do not
+// stamp one today, which the remote gate refuses on its own. This pins the
+// refusal to what the run is, not to that omission.
+func TestSteer_ARemoteWalkOrHookRunIsRefusedLikeOnItsOwner(t *testing.T) {
+	srv, cleanup := clusterFixture(t)
+	defer cleanup()
+	reg := steer.NewRegistry(2)
+	cluster := &fakeCluster{}
+	reg.SetClusterSteerer(cluster)
+	srv.SetSteerRegistry(reg)
+	walk := clusterRunAs(t, srv, teamWalkAgentPrefix+"triage", teamWalkAgentPrefix+"triage", "r2", false)
+	hook := clusterRunAs(t, srv, channelhooks.HookAgentPrefix+"gate", channelhooks.HookAgentPrefix+"gate", "r2", false)
+
+	calls := func(id string) []struct{ method, path, body string } {
+		return []struct{ method, path, body string }{
+			{"POST", "/v1/runs/" + id + "/retune", `{"max_tokens":512}`},
+			{"POST", "/v1/runs/" + id + "/input", `{"text":"focus on auth"}`},
+			{"GET", "/v1/runs/" + id + "/config", ``},
+		}
+	}
+	for _, id := range []string{walk, hook} {
+		for _, c := range calls(id) {
+			if rec := doJSON(t, srv, c.method, c.path, c.body); rec.Code != 404 {
+				t.Errorf("%s %s from another replica: status %d, want 404: %s", c.method, c.path, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	cluster.mu.Lock()
+	sent := len(cluster.sent)
+	cluster.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("pushed %d message(s) to the owner of a walk or hook run, want 0", sent)
+	}
+
+	// Its owner: no entry in the registry, the row names this replica.
+	srv.replicaID = "r2"
+	for _, c := range calls(walk) {
+		if rec := doJSON(t, srv, c.method, c.path, c.body); rec.Code != 404 {
+			t.Errorf("%s %s on the owning replica: status %d, want 404", c.method, c.path, rec.Code)
+		}
+	}
+	srv.replicaID = "r1"
+
+	top := clusterRunAs(t, srv, "writer", "a_top", "r2", true)
+	for _, c := range calls(top) {
+		if rec := doJSON(t, srv, c.method, c.path, c.body); rec.Code != 200 {
+			t.Errorf("%s %s of a top-level interactive run on another replica: status %d, want 200: %s", c.method, c.path, rec.Code, rec.Body.String())
 		}
 	}
 }

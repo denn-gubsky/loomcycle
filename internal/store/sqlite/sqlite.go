@@ -336,6 +336,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			drained_at        INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS memory_pending_by_target ON memory_pending(tenant_id, scope, scope_id, drained_at)`,
+		// The operator-layer consolidation fan-out and the snapshot read ask for
+		// undrained rows under one scope with NO tenant, which the by-target index
+		// cannot serve. Partial, so it stays the size of the live queue, not of
+		// its history. Mirrors Postgres migration 0089. Every column it names is
+		// in the CREATE TABLE above, so it is safe in this block on an upgraded DB.
+		`CREATE INDEX IF NOT EXISTS memory_pending_undrained_by_scope ON memory_pending(scope, created_at) WHERE drained_at IS NULL`,
 		`CREATE TABLE IF NOT EXISTS memory_cursors (
 			tenant_id              TEXT    NOT NULL DEFAULT '',
 			scope                  TEXT    NOT NULL,
@@ -5787,6 +5793,29 @@ func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope sto
 		args...,
 	)
 	return err
+}
+
+// MemoryPendingPruneDrained deletes up to limit rows acked before `before`.
+// Undrained rows are never touched.
+func (s *Store) MemoryPendingPruneDrained(ctx context.Context, before time.Time, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory_pending WHERE rowid IN (
+		   SELECT rowid FROM memory_pending
+		    WHERE drained_at IS NOT NULL AND drained_at < ?
+		    LIMIT ?)`,
+		before.UnixNano(), limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("memory pending prune drained: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("memory pending prune drained: %w", err)
+	}
+	return int(n), nil
 }
 
 // MemoryPendingTargets returns the scope ids under (tenant, scope) with queued

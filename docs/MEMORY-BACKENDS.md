@@ -124,7 +124,8 @@ memory_backends:
   - **authored at runtime** (`MemoryBackendDef` create/fork, by a tenant
     operator or an agent granted the tool) — the peer's own host is *not*
     trusted. It reaches a private address only when the operator lists that
-    hostname in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise the call is
+    hostname, or a CIDR range covering its address (`100.64.0.0/10` for a
+    tailnet), in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; otherwise the call is
     refused (`blocked: <host> has no public addresses`). This includes a fork
     of a yaml-declared backend, which is a runtime definition too.
 

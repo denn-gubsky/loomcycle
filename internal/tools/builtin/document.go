@@ -2776,6 +2776,14 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
+	if hasType && in.Type != row.Type && !hasBody && !hasFields && d.Embedder != nil {
+		// The type decides the content half of the chunk's index text (a mermaid chunk is
+		// indexed under its labels, an image under its description), so a type change
+		// with no body write re-indexes the chunk. Only the chunk: descendants' headers
+		// carry titles, never a type. A body write above already embedded under the new
+		// type.
+		d.reindexChunk(ctx, direntTenant(ctx), key, mscope, in.ID, in.Type)
+	}
 	if _, has := present["title"]; has && in.Title != row.Title {
 		// A title is part of the index text of this chunk and of every chunk beneath it
 		// (their headers), so a rename re-indexes the subtree. A root rename is a

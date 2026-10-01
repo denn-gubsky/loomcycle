@@ -1,13 +1,12 @@
 package a2a
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"syscall"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 )
 
 // maxPeerResponseBytes caps any single response body loomcycle reads from
@@ -26,7 +25,8 @@ import (
 // A2A peer path was the lone exception.
 const maxPeerResponseBytes = 4 << 20 // 4 MiB
 
-// peerDialTimeout bounds the TCP connect to a peer address.
+// peerDialTimeout bounds the TLS handshake with a peer. The TCP connect is
+// bounded by the netguard dialer (also 10s).
 const peerDialTimeout = 10 * time.Second
 
 // hardenedPeerClient builds the *http.Client loomcycle hands to the A2A SDK
@@ -41,15 +41,19 @@ const peerDialTimeout = 10 * time.Second
 //     metadata-service addresses. A2AAgentDef agent_card_url / endpoint can
 //     be model-authored (via a granted def-scope fork overlay), so a peer
 //     URL must not be a lever to reach internal hosts. The block is
-//     re-checked at the socket layer (Control) to defeat DNS rebinding.
+//     re-checked at the socket layer (Control) to defeat DNS rebinding. It
+//     is the shared netguard dialer, so it refuses exactly what every other
+//     outbound caller refuses, and privateHosts (the operator's
+//     LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST: host names or CIDR ranges)
+//     exempts the same vouched peers, e.g. a tailnet.
 //   - redirect bound: redirects are capped and every hop's destination is
 //     re-validated, so a benign-looking public host cannot 302 into the
 //     metadata service.
 //
 // timeout bounds the whole request (connect + headers + body).
-func hardenedPeerClient(timeout time.Duration) *http.Client {
+func hardenedPeerClient(timeout time.Duration, privateHosts []string) *http.Client {
 	base := &http.Transport{
-		DialContext:           peerDialContext,
+		DialContext:           netguard.GuardedDialContext(false, privateHosts),
 		TLSHandshakeTimeout:   peerDialTimeout,
 		ResponseHeaderTimeout: timeout,
 		ExpectContinueTimeout: time.Second,
@@ -59,7 +63,7 @@ func hardenedPeerClient(timeout time.Duration) *http.Client {
 		Transport: &bodyLimitRoundTripper{base: base, limit: maxPeerResponseBytes},
 		// Bound redirects and re-validate each hop. The default client
 		// follows up to 10 redirects to attacker-chosen targets; the
-		// per-hop dial still passes through peerDialContext, so a redirect
+		// per-hop dial still passes through the guarded dialer, so a redirect
 		// to a private IP is already refused at dial — this also caps the
 		// hop count defensively.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -117,61 +121,3 @@ func (b *cappedBody) Read(p []byte) (int, error) {
 }
 
 func (b *cappedBody) Close() error { return b.rc.Close() }
-
-// peerDialContext is the SSRF-blocking dialer: it resolves the host, dials
-// only its public addresses, and re-checks the socket-level address to
-// defeat DNS rebinding. Mirrors the canonical guard in
-// internal/tools/builtin/httptool.go (isPrivateIP / dialContext) — kept as
-// a small local copy rather than a shared dependency so the A2A trust path
-// is self-contained; the predicates are stdlib net.IP classifiers, so
-// there is no algorithm to drift.
-func peerDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, err
-	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, err
-	}
-	public := ips[:0]
-	for _, ip := range ips {
-		if !isPrivatePeerIP(ip.IP) {
-			public = append(public, ip)
-		}
-	}
-	if len(public) == 0 {
-		return nil, fmt.Errorf("a2a: refusing to dial %q — no public addresses (got %d private)", host, len(ips))
-	}
-	d := net.Dialer{
-		Timeout: peerDialTimeout,
-		Control: func(network, address string, c syscall.RawConn) error {
-			ipStr, _, _ := net.SplitHostPort(address)
-			if parsed := net.ParseIP(ipStr); parsed != nil && isPrivatePeerIP(parsed) {
-				return fmt.Errorf("a2a: refusing to connect to private address %s", ipStr)
-			}
-			return nil
-		},
-	}
-	var lastErr error
-	for _, ip := range public {
-		conn, derr := d.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
-		if derr == nil {
-			return conn, nil
-		}
-		lastErr = derr
-	}
-	return nil, lastErr
-}
-
-// isPrivatePeerIP reports whether ip is one loomcycle must not let a peer
-// URL reach: loopback, link-local (169.254/16 + fe80::/10 — incl. the
-// cloud metadata service at 169.254.169.254), multicast, unspecified, or
-// RFC1918 / ULA private space. Same classifier set as httptool.isPrivateIP.
-func isPrivatePeerIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate()
-}

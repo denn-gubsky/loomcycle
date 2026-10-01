@@ -1,5 +1,5 @@
 // Package awaited derives what a running agent is currently blocked on — an
-// open Channel.subscribe, an open Interruption.ask, a hold for an operator's
+// open Channel.subscribe or long-polling Channel.await, an open Interruption.ask, a hold for an operator's
 // review verdict, or an interactive run parked for the operator's next turn —
 // from the run's persisted events.
 //
@@ -12,8 +12,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -53,8 +55,10 @@ type payloadToolCall struct {
 }
 
 type channelInput struct {
-	Op      string `json:"op"`
-	Channel string `json:"channel"`
+	Op       string   `json:"op"`
+	Channel  string   `json:"channel"`
+	Channels []string `json:"channels"`
+	WaitMS   int      `json:"wait_ms"`
 }
 
 type interruptionInput struct {
@@ -66,6 +70,7 @@ type interruptionInput struct {
 // starts, if any:
 //
 //	state="channel"     on=<channel name>   — a Channel.subscribe call
+//	state="channel"     on=<"a, b, c">      — a long-polling Channel.await call
 //	state="interrupted" on=<kind|op>        — an Interruption.ask call
 //	state="input"       on=""               — parked for the operator's turn
 //	state=""            on=""               — no wait
@@ -97,8 +102,13 @@ func FromToolUse(name string, input json.RawMessage) (state, on string) {
 		if err := json.Unmarshal(input, &ci); err != nil {
 			return "", ""
 		}
-		if ci.Op == "subscribe" {
+		switch {
+		case ci.Op == "subscribe":
 			return Channel, ci.Channel
+		case ci.Op == "await" && ci.WaitMS > 0:
+			// A fan-in await blocks only while it long-polls; with no wait_ms it
+			// reads once and returns.
+			return Channel, awaitedChannels(ci.Channels)
 		}
 	case "Interruption":
 		var ii interruptionInput
@@ -117,6 +127,41 @@ func FromToolUse(name string, input json.RawMessage) (state, on string) {
 		}
 	}
 	return "", ""
+}
+
+// awaitOnMax bounds the awaited_on of a fan-in await. It names up to 32
+// channels, taken from the model's tool input, and is carried on every run
+// read and run-state frame while the run waits.
+const awaitOnMax = 200
+
+// awaitedChannels renders an await's channel set as awaited_on: the distinct
+// names in call order, comma-separated, at most awaitOnMax bytes — the names
+// that fit, then "+N more" for the rest. N is at most 32, so the quadratic
+// search is nothing.
+func awaitedChannels(names []string) string {
+	seen := make(map[string]bool, len(names))
+	uniq := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			uniq = append(uniq, n)
+		}
+	}
+	if full := strings.Join(uniq, ", "); len(full) <= awaitOnMax {
+		return full
+	}
+	for k := len(uniq) - 1; k >= 1; k-- {
+		if s := strings.Join(uniq[:k], ", ") + fmt.Sprintf(", +%d more", len(uniq)-k); len(s) <= awaitOnMax {
+			return s
+		}
+	}
+	// Not even the first name fits: cut it, at a rune boundary.
+	more := ""
+	if len(uniq) > 1 {
+		more = fmt.Sprintf(", +%d more", len(uniq)-1)
+	}
+	cut := awaitOnMax - len(more) - len("…")
+	return strings.ToValidUTF8(uniq[0][:cut], "") + "…" + more
 }
 
 // HoldEndingEvents are what a run writes when it leaves a hold, whatever the

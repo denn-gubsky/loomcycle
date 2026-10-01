@@ -27,8 +27,10 @@ type breakpointsRequest struct {
 	// Breakpoints is the WHOLE desired set, not a delta. The caller holds the
 	// configuration and pushes it, so two operators cannot interleave a
 	// read-modify-write, and "turn Debug off" is the empty list rather than a
-	// second verb.
-	Breakpoints []string `json:"breakpoints"`
+	// second verb. OMITTED (or null) leaves the arming as it is: a PUT carrying
+	// only review_ttl_seconds used to decode as the empty list and disarm
+	// everything. A pointer because the two must not read the same.
+	Breakpoints *[]string `json:"breakpoints"`
 	// ReviewTTLSeconds, when present, replaces the walk's review deadline: a
 	// member hold nobody rules on within it ends rejected. 0 is no deadline,
 	// as it is when the walk starts; omitted leaves the deadline as it is.
@@ -95,12 +97,21 @@ func (s *Server) handlePutRunBreakpoints(w http.ResponseWriter, r *http.Request)
 		}
 		reviewTTL = &ttl
 	}
+	if req.Breakpoints == nil {
+		// Nothing about the arming was sent, so nothing is disarmed and no held
+		// member is released; only the deadline, if one came, changes.
+		if reviewTTL != nil {
+			set.SetReviewTTL(*reviewTTL)
+		}
+		writeJSON(w, http.StatusOK, breakpointsView(runID, set))
+		return
+	}
 	// Apply validates before it mutates — the syntax, and that each state is
 	// one the walk has and of a kind that phase can arm — so a rejected call
 	// leaves the previous arming exactly as it was, deadline included: an
 	// operator fixing a typo must not discover they have also disarmed
 	// everything that was working.
-	if err := set.Apply(req.Breakpoints, reviewTTL); err != nil {
+	if err := set.Apply(*req.Breakpoints, reviewTTL); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_breakpoint", err.Error())
 		return
 	}

@@ -2662,6 +2662,25 @@ func main() {
 		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
 
+	// Drained consolidation-queue rows. An ack only stamps drained_at, so
+	// without this the queue keeps every row ever enqueued, raw chat payload
+	// included. Hourly and advisory-gated like the change-feed prune below.
+	if ttl := cfg.Env.MemoryPendingDrainedTTL; ttl > 0 && storeIface != nil {
+		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryPendingSweeper, "memory_pending",
+			func(ctx context.Context) {
+				pruned, err := memory.PruneDrainedPending(ctx, storeIface, ttl, time.Now(), memory.PendingPruneBatch)
+				if err != nil {
+					log.Printf("memory_pending prune: %v", err)
+				}
+				if pruned > 0 {
+					log.Printf("memory_pending prune: deleted %d row(s) drained more than %s ago", pruned, ttl)
+				}
+			})
+		log.Printf("memory: drained-queue prune interval=1h ttl=%s", ttl)
+	} else if storeIface != nil {
+		log.Printf("memory: drained-queue prune disabled (LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS=0)")
+	}
+
 	// RFC CD Part C — prune the change-feed table so the opt-in feed stays
 	// bounded. Only when the feed is enabled; the DELETE is idempotent and
 	// advisory-gated so one replica prunes per tick.

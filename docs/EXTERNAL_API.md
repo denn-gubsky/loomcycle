@@ -86,10 +86,12 @@ change_subscriptions:
   my-consumer:
     callback_url: "https://consumer.example/loomcycle-changes"
     secret_env: LOOMCYCLE_CHANGE_SUB_SECRET   # env NAME of the HMAC key (allowlisted)
-    tenant_id: ""                             # which tenant's feed ("" = shared/default)
+    tenant_id: ""                             # which tenant's feed ("" = every tenant; each change names its own)
     kinds: [memory, document.chunk.updated]   # optional (scope, kinds) filter
     # allow_private_host: true                # to deliver to a private-network callback
 ```
+
+A subscription naming a `tenant_id` delivers that tenant's changes only. One with no `tenant_id` is the operator's feed of **every** tenant (including the legacy `LOOMCYCLE_AUTH_TOKEN`'s `default`), each change naming its `tenant`; subscriptions exist only in operator yaml, so no tenant can declare one. Declare one subscription per tenant when each tenant's changes belong at a different endpoint.
 
 Each POST carries `X-Loomcycle-Signature: hex(hmac-sha256(secret, body))` — verify it with the secret to authenticate the sender. Delivery is **at-least-once** (a persisted cursor resumes across restarts); dedupe on the `seq`.
 

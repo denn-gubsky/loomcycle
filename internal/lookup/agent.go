@@ -53,6 +53,8 @@ package lookup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -139,6 +141,7 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 		if uerr := json.Unmarshal(row.Definition, &def); uerr == nil {
 			NormalizeAgentDef(&def)
 			def.OwnerTenant = tenantID
+			def.RegisteredSHA256 = registeredDigest(row.Definition)
 			return def, true
 		}
 	}
@@ -163,6 +166,15 @@ func resolveDynamic(ctx context.Context, s AgentStore, tenantID, name string) (c
 	}
 	def.OwnerTenant = tenantID
 	return def, true
+}
+
+// registeredDigest identifies one dynamic_agents row's content. It is the
+// stored bytes, not agents.Sign: that hash deliberately leaves out authority
+// (scopes, the skills allowlist), and a registration changed to widen those is
+// exactly the change a resume must notice.
+func registeredDigest(definition []byte) string {
+	sum := sha256.Sum256(definition)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // AgentFromDefRow is the definition one agent_defs row holds, exactly as Agent

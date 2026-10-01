@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestResolvePrincipals_InfraSecretTokenEnvIsError(t *testing.T) {
 func TestResolvePrincipals_EmptyTokenEnvIsInert(t *testing.T) {
 	// LOOMCYCLE_TOKEN_ABSENT is deliberately NOT set → the principal is inert.
 	c := &Config{Principals: map[string]PrincipalDef{
-		"absent": {Subject: "absent", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_ABSENT"},
+		"absent": {Tenant: "acme", Subject: "absent", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_ABSENT"},
 	}}
 	if err := resolvePrincipals(c); err != nil {
 		t.Fatalf("an empty token_env must NOT fail load: %v", err)
@@ -96,8 +97,8 @@ func TestResolvePrincipals_DuplicateSecretIsError(t *testing.T) {
 	t.Setenv("LOOMCYCLE_TOKEN_A", "lct_same")
 	t.Setenv("LOOMCYCLE_TOKEN_B", "lct_same") // same value → ambiguous identity
 	c := &Config{Principals: map[string]PrincipalDef{
-		"a": {Subject: "a", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_A"},
-		"b": {Subject: "b", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_B"},
+		"a": {Tenant: "acme", Subject: "a", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_A"},
+		"b": {Tenant: "acme", Subject: "b", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_B"},
 	}}
 	if err := resolvePrincipals(c); err == nil || !strings.Contains(err.Error(), "same secret") {
 		t.Errorf("err = %v, want a duplicate-secret config error", err)
@@ -150,5 +151,28 @@ func TestResolvePrincipals_SameTenantSpelledIdenticallyIsAccepted(t *testing.T) 
 	}
 	if got := c.PrincipalTenants(); strings.Join(got, ",") != ",acme" {
 		t.Errorf("PrincipalTenants = %q, want [\"\" acme]", got)
+// TestResolvePrincipals_NonAdminWithoutTenantIsError: the store's list queries
+// read tenant "" as every tenant, so a tenant-confined principal declared with
+// no tenant was served every tenant's users and runs by GET /v1/_users. It must
+// not load; an admin — whose "" is the all-tenants view by design — still does.
+func TestResolvePrincipals_NonAdminWithoutTenantIsError(t *testing.T) {
+	// A distinct token_env per case: resolving one registers its name on the
+	// package's interpolation denylist, which a reused name would then trip.
+	for i, scopes := range [][]string{{auth.ScopeTenant}, {auth.ScopeRunsCreate, auth.ScopeRunsRead}, nil} {
+		env := "LOOMCYCLE_TOKEN_NOTENANT_" + strconv.Itoa(i)
+		t.Setenv(env, "lct_notenant_"+strconv.Itoa(i))
+		c := &Config{Principals: map[string]PrincipalDef{
+			"x": {Subject: "x", Scopes: scopes, TokenEnv: env},
+		}}
+		if err := resolvePrincipals(c); err == nil || !strings.Contains(err.Error(), "tenant is required") {
+			t.Errorf("scopes %v with no tenant: err = %v, want a 'tenant is required' error", scopes, err)
+		}
+	}
+	t.Setenv("LOOMCYCLE_TOKEN_NOTENANT_ADMIN", "lct_notenant_admin")
+	c := &Config{Principals: map[string]PrincipalDef{
+		"ops": {Subject: "ops", Scopes: []string{auth.ScopeAdmin}, TokenEnv: "LOOMCYCLE_TOKEN_NOTENANT_ADMIN"},
+	}}
+	if err := resolvePrincipals(c); err != nil || len(c.ResolvedPrincipals) != 1 {
+		t.Errorf("an admin principal with no tenant: err = %v, resolved %d — want it to load", err, len(c.ResolvedPrincipals))
 	}
 }
