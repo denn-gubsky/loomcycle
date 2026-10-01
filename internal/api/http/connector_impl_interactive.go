@@ -44,14 +44,8 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	// this replica does not have is gated as retune gates it: live on the
 	// replica that owns it, where the push below routes.
 	if entry, ok := s.steerReg.Get(runID); ok {
-		if entry.SessionID != "" && s.store != nil {
-			// Fail closed: a session that cannot be read cannot be shown to be
-			// the caller's, so a store fault or a vanished session is refused
-			// like a non-owner — skipping the gate let anyone steer the run.
-			sess, err := s.store.GetSession(ctx, entry.SessionID)
-			if err != nil || !sessionOwnershipOK(ctx, sess) {
-				return false, connector.ErrRunNotInFlight
-			}
+		if !s.liveRunOwnershipOK(ctx, entry) {
+			return false, connector.ErrRunNotInFlight
 		}
 	} else if s.store == nil {
 		return false, connector.ErrRunNotInFlight
@@ -70,6 +64,30 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 		return false, err
 	}
 	return delivered, nil
+}
+
+// liveRunOwnershipOK is the ownership gate for a run live in this replica's
+// steer registry, shared by SteerRun, CancelTurn and runForSteer. The entry's
+// session decides; an entry with no session is gated on the run's own row,
+// read through the tenant-scoped store. Both used to be skipped when the
+// entry carried no session (or the server had no store), so any caller could
+// steer, retune or stop such a run. No production path registers one today —
+// every run is created under a session, and no entry is registered without a
+// store — so this closes the gate for the next path that does.
+//
+// Fails closed: no store, an unreadable session or row, or one outside the
+// caller's reach all read as not owned. Callers fold a false into the opaque
+// not-in-flight, so the gate is no existence oracle.
+func (s *Server) liveRunOwnershipOK(ctx context.Context, entry steer.Entry) bool {
+	if s.store == nil {
+		return false
+	}
+	if entry.SessionID != "" {
+		sess, err := s.store.GetSession(ctx, entry.SessionID)
+		return err == nil && sessionOwnershipOK(ctx, sess)
+	}
+	run, err := s.tenantStore(ctx).GetRun(ctx, entry.RunID)
+	return err == nil && runOwnershipOK(ctx, run)
 }
 
 // StreamRunEvents implements connector.Connector — the transport-agnostic core
@@ -120,16 +138,11 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	}
 	reason = strings.TrimSpace(reason)
 
-	// Local fast path: the run is live on THIS replica. Gate on its session's
-	// tenant (mirrors SteerRun), then fire the local armed token.
+	// Local fast path: the run is live on THIS replica. Gate ownership as
+	// SteerRun does, then fire the local armed token.
 	if entry, ok := s.steerReg.Get(runID); ok {
-		if entry.SessionID != "" && s.store != nil {
-			// Fail closed, as SteerRun does: an unreadable session proves no
-			// ownership, so it gets the non-owner's refusal.
-			sess, err := s.store.GetSession(ctx, entry.SessionID)
-			if err != nil || !sessionOwnershipOK(ctx, sess) {
-				return false, false, connector.ErrRunNotInFlight
-			}
+		if !s.liveRunOwnershipOK(ctx, entry) {
+			return false, false, connector.ErrRunNotInFlight
 		}
 		// Only an armed run (interactive + in-flight) is turn-cancellable.
 		if !s.turnCancelReg.IsArmed(runID) {
@@ -157,7 +170,7 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 		return false, false, connector.ErrRunNotInFlight
 	}
 	// The tenant fold alone would let an isolated member stop another user's
-	// turn on another replica; the local path confines it via the session gate.
+	// turn on another replica; the local path confines it via liveRunOwnershipOK.
 	if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil || !runOwnershipOK(ctx, run) {
 		return false, false, connector.ErrRunNotInFlight
 	}

@@ -7,17 +7,15 @@ import (
 )
 
 // POST /v1/runs/{run_id}/input delivers an operator steering message to the
-// live run's queue (PR 2). Registers an entry with no SessionID so the
-// tenant-ownership branch is skipped — that gate reuses sessionOwnershipOK,
-// covered by its own tests.
+// live run's queue (PR 2). The caller is the legacy operator, so the
+// ownership gate admits it; the gate itself is covered by its own tests.
 func TestHandleRunInput_DeliversToInFlightRun(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	srv.SetSteerRegistry(steer.NewRegistry(2))
-	q, dereg := srv.steerReg.Register(steer.Entry{RunID: "run-1"})
-	defer dereg()
+	runID, q := liveInteractiveRun(t, srv)
 
-	rec := doJSON(t, srv, "POST", "/v1/runs/run-1/input", `{"text":"focus on auth"}`)
+	rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/input", `{"text":"focus on auth"}`)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -59,14 +57,13 @@ func TestHandleRunInput_429WhenQueueFull(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	srv.SetSteerRegistry(steer.NewRegistry(1)) // buffer depth 1
-	_, dereg := srv.steerReg.Register(steer.Entry{RunID: "run-1"})
-	defer dereg()
+	runID, _ := liveInteractiveRun(t, srv)
 
 	// Fill the single-slot buffer, then the next push overflows → 429.
-	if rec := doJSON(t, srv, "POST", "/v1/runs/run-1/input", `{"text":"1"}`); rec.Code != 200 {
+	if rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/input", `{"text":"1"}`); rec.Code != 200 {
 		t.Fatalf("first push status = %d, want 200", rec.Code)
 	}
-	rec := doJSON(t, srv, "POST", "/v1/runs/run-1/input", `{"text":"2"}`)
+	rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/input", `{"text":"2"}`)
 	if rec.Code != 429 {
 		t.Errorf("status = %d, want 429 (queue full)", rec.Code)
 	}
