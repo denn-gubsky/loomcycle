@@ -69,6 +69,9 @@ func Validate(d Definition) error {
 	if _, ok := states[d.Entry]; !ok {
 		return fmt.Errorf("team definition: entry %q does not resolve to a state", d.Entry)
 	}
+	if err := validateInputSourcePlacement(d); err != nil {
+		return err
+	}
 
 	// Transitions: endpoints resolve; `on` well-formed; per-state label uniqueness.
 	outbound := make(map[string]map[string]bool) // state -> set of `on` labels
@@ -216,8 +219,9 @@ func validateHandler(stateID string, h Handler) error {
 	if h.Kind != HandlerVars && len(h.Set) > 0 {
 		return fmt.Errorf("team definition: state %q sets `set` but is kind %q — assignment belongs on a `vars` state, where it is visible", stateID, h.Kind)
 	}
-	if h.Kind != HandlerInput && len(h.Schema) > 0 {
-		return fmt.Errorf("team definition: state %q sets `schema` but is kind %q (input only)", stateID, h.Kind)
+	if h.Kind != HandlerInput && len(h.Schema) > 0 && !h.Source.IsInput() {
+		return fmt.Errorf("team definition: state %q sets `schema` but is kind %q "+
+			"(an input state, or a starter whose source is the walk's input)", stateID, h.Kind)
 	}
 	if err := validateCapture(stateID, h.Capture); err != nil {
 		return err
@@ -296,8 +300,12 @@ func validateStarter(stateID string, h Handler) error {
 		if err := validateDocumentSource(stateID, h); err != nil {
 			return err
 		}
+	case h.Source.IsInput():
+		if err := validateInputSource(stateID, h); err != nil {
+			return err
+		}
 	case h.Source != nil && h.Source.Kind != "" && h.Source.Kind != SourceChannel:
-		return fmt.Errorf("team definition: state %q starter source has invalid kind %q (want channel|document)", stateID, h.Source.Kind)
+		return fmt.Errorf("team definition: state %q starter source has invalid kind %q (want channel|document|input)", stateID, h.Source.Kind)
 	default:
 		if err := validateChannelSource(stateID, h); err != nil {
 			return err
