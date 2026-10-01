@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -135,6 +138,11 @@ type mcpServerOverlay struct {
 	Env             map[string]string `json:"env,omitempty"`     // stdio (F31)
 	Description     string            `json:"description,omitempty"`
 	DiscoveredTools []toolDescriptor  `json:"discovered_tools,omitempty"`
+	// OperatorAuthored is server authority, set by bindOperatorEnv on every
+	// create and fork; applyOverlay never copies it, so an overlay can neither
+	// set nor clear it. Excluded from content_sha256 (signFromMCPServerOverlay
+	// lists its fields). Mirrored on lookup.SubstrateMCPServer.
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // toolDescriptor is the cached form of a single tool the upstream
@@ -245,6 +253,11 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	// Before validateOverlay: it expands the url to check its host, and its
+	// refusal quotes that host, so a non-operator's ${NAME} must not reach it.
+	if err := m.bindOperatorEnv(ctx, in.Name, &def, nil); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	if err := m.validateOverlay(def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
@@ -270,7 +283,12 @@ func (m *MCPServerDef) execCreate(ctx context.Context, in mcpServerDefInput) (to
 	// path dedups separately. Re-creating content that matches a NON-active
 	// version still mints + promotes (re-activation is a real state change),
 	// so we compare only against the active row.
-	if active, gerr := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA {
+	//
+	// The hash excludes operator_authored, so the bit is compared too: an admin
+	// re-saving a non-operator row's exact content is how that row gets its
+	// ${NAME} references expanded again, and must mint a version that says so.
+	if active, gerr := m.Store.MCPServerDefGetActive(ctx, tenantID, in.Name); gerr == nil && active.ContentSHA256 == contentSHA &&
+		definitionOperatorAuthored(active.Definition) == def.OperatorAuthored {
 		resp := mcpServerDefRowResponse(active, true)
 		resp["deduplicated"] = true
 		return okJSON(resp)
@@ -376,6 +394,14 @@ func (m *MCPServerDef) execFork(ctx context.Context, in mcpServerDefInput) (tool
 
 	def, err := m.buildDefinition(parentJSON, in.Overlay)
 	if err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	parent, err := m.buildDefinition(parentJSON, nil)
+	if err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	// Before validateOverlay, as in create.
+	if err := m.bindOperatorEnv(ctx, in.Name, &def, &parent); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := m.validateOverlay(def); err != nil {
@@ -617,6 +643,8 @@ func specFromOverlay(tenantID, name string, ov mcpServerOverlay) loommcp.Dynamic
 		Command:   ov.Command, // stdio (F31); empty for http
 		Args:      ov.Args,
 		Env:       ov.Env,
+
+		OperatorAuthored: ov.OperatorAuthored,
 	}
 }
 
@@ -729,6 +757,9 @@ func (m *MCPServerDef) execRediscover(ctx context.Context, in mcpServerDefInput)
 		return okJSON(resp)
 	}
 	ov.DiscoveredTools = newTools
+	// ov.OperatorAuthored is the active version's, kept as is: rediscover
+	// changes only the tool cache, so the connection fields stay the ones the
+	// bit was stamped for.
 	defJSON, _ := json.Marshal(ov)
 	ident := tools.RunIdentity(ctx)
 	row := store.MCPServerDefRow{
@@ -790,6 +821,71 @@ func (m *MCPServerDef) execVerify(ctx context.Context, in mcpServerDefInput) (to
 }
 
 // ---- helpers ----
+
+// bindOperatorEnv stamps def.OperatorAuthored and refuses a definition that
+// would read the server's environment for an author who may not.
+//
+// The pool expands every ${NAME} in url, headers, command, args and env from
+// this process's environment when it dials (config.ExpandEnv), so a ${NAME}
+// is a read of an operator secret: any credential-safe LOOMCYCLE_* name,
+// another tenant's key included, or GITHUB_TOKEN, SLACK_BOT_TOKEN. Paired
+// with a url the author picks on a broad host allowlist, it sends that value
+// to the author. So only an author with operator authority (admin, or the
+// open-mode / stdio operator) may store one. Everyone else may use ${run.*}
+// (the run's own credentials and identifiers) and $cred:<name> (resolved in
+// the run's tenant); a ${NAME} nested in a ${run.x:-...} default is still a
+// ${NAME}, expanded at dial before the default is chosen. MCP has no
+// per-tenant env-pattern form, so there is no {tenant_id} exception here.
+//
+// An operator's connection fields are kept: a definition whose transport,
+// url, headers, command, args and env equal the yaml entry for this name, or
+// the fork parent's when that parent is operator-authored, sends what the
+// operator chose to where the operator chose, and is stamped operator-authored
+// so it still dials. (yaml values are already expanded at config load, so
+// that pairing rarely holds a ${NAME} at all.)
+//
+// Set unconditionally: an overlay cannot set or clear the bit, and a fork
+// re-derives it from its own author. Not applied by snapshot restore, an
+// admin-only action that writes the source's bit as it was.
+func (m *MCPServerDef) bindOperatorEnv(ctx context.Context, name string, def, parent *mcpServerOverlay) error {
+	def.OperatorAuthored = callerHasOperatorAuthority(ctx) || m.keepsOperatorConnection(name, *def, parent)
+	if def.OperatorAuthored {
+		return nil
+	}
+	locs := loommcp.EnvRefLocations(def.URL, def.Headers, def.Command, def.Args, def.Env)
+	if len(locs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s holds a ${NAME} reference, which reads this server's environment and may be set only by an admin. "+
+		"Use ${run.credentials.<name>} for a credential the run supplies, or $cred:<name> for one stored for your tenant",
+		strings.Join(locs, ", "))
+}
+
+// keepsOperatorConnection reports whether def's connection fields are exactly
+// the operator's: the yaml entry for name, or an operator-authored parent's.
+func (m *MCPServerDef) keepsOperatorConnection(name string, def mcpServerOverlay, parent *mcpServerOverlay) bool {
+	if srv, ok := m.Cfg.MCPServers[name]; ok && sameMCPConnection(def, mcpServerOverlay{
+		Transport: srv.Transport, URL: srv.URL, Headers: srv.Headers,
+		Command: srv.Command, Args: srv.Args, Env: srv.Env,
+	}) {
+		return true
+	}
+	return parent != nil && parent.OperatorAuthored && sameMCPConnection(def, *parent)
+}
+
+// sameMCPConnection compares the fields a dial reads. An absent and an empty
+// map or slice are equal: neither sends anything.
+func sameMCPConnection(a, b mcpServerOverlay) bool {
+	return a.Transport == b.Transport && a.URL == b.URL && a.Command == b.Command &&
+		maps.Equal(a.Headers, b.Headers) && slices.Equal(a.Args, b.Args) && maps.Equal(a.Env, b.Env)
+}
+
+// definitionOperatorAuthored reads a stored definition's operator_authored
+// bit; a body that does not decode has none.
+func definitionOperatorAuthored(raw json.RawMessage) bool {
+	var ov mcpServerOverlay
+	return json.Unmarshal(raw, &ov) == nil && ov.OperatorAuthored
+}
 
 // validateOverlay enforces transport whitelist + URL parseability +
 // hostname allowlist. Called by create + fork before the row hits the
@@ -981,6 +1077,10 @@ func mintMCPServerDefID() string {
 // run before writing one: the transport, the dynamic-stdio opt-in, and for an
 // http transport the url's scheme and a host on THIS host's allowlists. So a
 // definition an author here could not register is not restored either.
+//
+// It does not apply the author rule (bindOperatorEnv): restore is an admin
+// action, and the body's operator_authored bit is restored as the source
+// wrote it.
 func MCPServerDefBodyValidator(cfg *config.Config) func(json.RawMessage) error {
 	m := &MCPServerDef{Cfg: cfg}
 	return func(body json.RawMessage) error {

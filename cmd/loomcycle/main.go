@@ -1611,6 +1611,15 @@ func main() {
 	} else if size := dynamicMCPRegistry.Size(); size > 0 {
 		log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)
 	}
+	// Read-only: name every stored version that reads the server environment
+	// without being operator-authored. The pool refuses to dial those.
+	if warns, err := mcpServerDefTool.OperatorEnvWarnings(context.Background()); err != nil {
+		log.Printf("mcp_server_defs: environment-reference audit: %v (continuing)", err)
+	} else {
+		for _, warn := range warns {
+			log.Printf("mcp_server_defs: WARNING: %s", warn)
+		}
+	}
 
 	// v1.x RFC G — outbound A2A: register one synthetic
 	// `a2a__<peer>__<skill>` tool per (operator-registered peer,
@@ -4075,6 +4084,7 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 	return lookup.MCPServerSpec{
 		Transport: s.Transport, URL: s.URL, Headers: s.Headers,
 		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
+		OperatorAuthored: s.OperatorAuthored,
 	}, true
 }
 
@@ -4097,6 +4107,17 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 		spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name)
 		if !ok {
 			return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry (tenant=%q)", name, tenant)
+		}
+		// The expansions below read this process's environment, so only an
+		// operator's definition may hold a ${NAME}: the yaml (static), or a
+		// dynamic version stamped operator_authored. Authoring refuses the
+		// rest, but a row stored before that rule never passed it, so the
+		// dial refuses it too, before any client exists or request is sent.
+		if spec.Source != "static" && !spec.OperatorAuthored {
+			if locs := mcp.EnvRefLocations(spec.URL, spec.Headers, spec.Command, spec.Args, spec.Env); len(locs) > 0 {
+				return nil, fmt.Errorf("mcp_servers.%s (tenant=%q): %s holds a ${NAME} reference to the server environment, but this definition was not saved by an admin; refusing to dial it (an admin re-save restores it)",
+					name, tenant, strings.Join(locs, ", "))
+			}
 		}
 		switch spec.Transport {
 		case "http", "streamable-http":

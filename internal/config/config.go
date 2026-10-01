@@ -5819,6 +5819,12 @@ func expandEnv(s string) string {
 // request-time substituter truncates on the nested brace.
 func ExpandEnv(s string) string { return expandEnv(s) }
 
+// HasEnvRef reports whether s holds a ${NAME} token, the form ExpandEnv reads
+// from this process's environment. ${run.*} late-bound tokens and $cred:
+// references do not match (a "." or ":" is not a NAME character), and neither
+// does the POSIX-default form ${NAME:-x}, which ExpandEnv does not expand.
+func HasEnvRef(s string) bool { return envVarRe.MatchString(s) }
+
 // parseHeaderList parses a comma-separated `key=value,key2=value2` string
 // into a map. Whitespace around keys, values, and separators is trimmed.
 // Entries without `=` are skipped. Returns nil for an empty input so the

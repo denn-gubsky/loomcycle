@@ -40,7 +40,10 @@ func mcpServerDefFixture(t *testing.T) (*MCPServerDef, context.Context, func()) 
 		MaxDefinitionBytes:  131072,
 		MaxDescriptionBytes: 8192,
 	}
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_admin"})
+	// The operator: an off-run call on a surface with no authentication (the
+	// open-mode / stdio marker), so an env reference in a header is allowed.
+	ctx := tools.WithUnauthenticatedOperator(
+		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_admin"}))
 	return tool, ctx, func() { _ = s.Close() }
 }
 
