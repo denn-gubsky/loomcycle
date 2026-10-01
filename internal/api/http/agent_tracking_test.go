@@ -252,6 +252,27 @@ func TestRuns_RejectsDuplicateActiveAgentID(t *testing.T) {
 	if !strings.Contains(string(body), "agent_id_in_use") {
 		t.Errorf("expected agent_id_in_use code, got: %s", body)
 	}
+	const inUse = `agent_id "a_dup" is already mapped to an active run`
+	assertErrorEnvelope(t, body, "agent_id_in_use", inUse)
+
+	// A continuation of another chat carrying the same agent_id is refused
+	// the same way.
+	sess, err := srv.store.CreateSession(context.Background(), "", "default", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgResp, err := http.Post(ts.URL+"/v1/sessions/"+sess.ID+"/messages", "application/json", strings.NewReader(
+		`{"agent_id":"a_dup","segments":[{"role":"user","content":[{"type":"trusted-text","text":"z"}]}]}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msgResp.Body.Close()
+	msgBody, _ := io.ReadAll(msgResp.Body)
+	if msgResp.StatusCode != http.StatusConflict {
+		t.Errorf("messages status = %d, want 409\nbody: %s", msgResp.StatusCode, msgBody)
+	}
+	assertErrorEnvelope(t, msgBody, "agent_id_in_use", inUse)
 
 	// Release the first run so the test exits cleanly.
 	close(prov.release)

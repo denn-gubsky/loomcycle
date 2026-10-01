@@ -892,6 +892,7 @@ func TestPerSessionLockRejectsConcurrentMessages(t *testing.T) {
 		<-first
 		t.Fatalf("second body missing session_busy code: %s", string(body2))
 	}
+	assertErrorEnvelope(t, body2, "session_busy", fmt.Sprintf("another request is in flight on session %q", sessionID))
 
 	// Let the first complete, then verify a follow-up succeeds (lock released).
 	close(release2)
@@ -1139,6 +1140,7 @@ func TestPerSessionLockAppliesToRunsWithSessionID(t *testing.T) {
 		<-first
 		t.Fatalf("second body missing session_busy: %s", string(body2))
 	}
+	assertErrorEnvelope(t, body2, "session_busy", fmt.Sprintf("another request is in flight on session %q", sessionID))
 	close(release)
 	if got := <-first; got != 200 {
 		t.Errorf("first status = %d, want 200", got)
