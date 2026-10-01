@@ -113,8 +113,12 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 	// would let a persistent volume's <root>/_ephemeral/<name> tree collide
 	// with the run-scoped <root>/_ephemeral/<run_id>/ subtree, blurring the
 	// two purge fences. Reject it up front.
-	if tid := tools.RunIdentity(ctx).TenantID; dynvol.ReservedTenant(tid) {
-		return errResult(fmt.Sprintf("VolumeDef tool: tenant id %q is reserved", tid)), nil
+	//
+	// The same check refuses a tenant id that is not one charset-clean path
+	// segment ("x/.." derives another tenant's tree), before ANY op — the
+	// ephemeral ops record the tenant too, and purge derives its path from it.
+	if err := dynvol.ValidTenant(tools.RunIdentity(ctx).TenantID); err != nil {
+		return errResult(fmt.Sprintf("VolumeDef tool: %s", err)), nil
 	}
 	var in volumeDefInput
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -393,6 +397,12 @@ func (v *VolumeDef) execPurge(ctx context.Context, in volumeDefInput) (tools.Res
 		return errResult(fmt.Sprintf("purge: %s", err)), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
+	// Re-validated here, as Provision does on create: Execute already refused a
+	// bad tenant, but this op is the one that DELETES a derived path, so it must
+	// not depend on its caller for that.
+	if err := dynvol.ValidTenant(tenantID); err != nil {
+		return errResult(fmt.Sprintf("purge: %s", err)), nil
+	}
 
 	// Fence (1): tenant ownership. The tenant-scoped read returns
 	// *ErrNotFound for a name this tenant doesn't own → opaque-404.
@@ -445,7 +455,9 @@ func (v *VolumeDef) validateName(name string) error {
 
 // ValidateVolumeDefBody re-runs the create-time checks over a volume a
 // snapshot restore is about to provision: the name charset, the access mode
-// and the reserved tenant segments. body is the snapshot's volume entry
+// and the tenant segment (one charset-clean, non-reserved path segment — a
+// hand-edited tenant_id like "x/.." would otherwise derive another tenant's
+// tree). body is the snapshot's volume entry
 // ({tenant_id, name, mode}); it carries no path, which restore derives on
 // this host. The restore call sites inject this, as they do the other
 // sections' authoring validators, since the snapshot package cannot import

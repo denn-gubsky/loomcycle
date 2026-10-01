@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -59,6 +60,11 @@ type OperatorTokenDef struct {
 	// exists, retiring the last admin merely re-enables it (recoverable), so
 	// the guard does not fire.
 	LegacyTokenSet bool
+
+	// ConfigTenants are the tenant ids the config `principals:` block declares
+	// (config.PrincipalTenants, captured at boot like the principals themselves).
+	// create refuses a tenant that differs from one of these only by case.
+	ConfigTenants []string
 }
 
 // operatorTokenNameRe constrains name / tenant_id / subject. RFC L:
@@ -188,6 +194,9 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if !operatorTokenNameRe.MatchString(in.TenantID) {
 		return errResult(fmt.Sprintf("create: tenant_id %q invalid (must match [a-zA-Z0-9_-]{1,64})", in.TenantID)), nil
 	}
+	if err := s.checkTenantCaseFold(ctx, in.TenantID); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
 	// Hoisted above the scope check: the migration path is the one place an
 	// omitted scope list still means admin.
 	imported := in.ImportToken != ""
@@ -295,6 +304,76 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return okJSON(m)
 	}
 	return okJSON(operatorTokenCreateResponse(created, plaintext, suffix))
+}
+
+// checkTenantCaseFold refuses a tenant id that would share an on-disk volume
+// tree with another tenant on a case-insensitive filesystem (the macOS
+// default, a ZFS dataset with casesensitivity=insensitive): a reserved
+// segment in any case ("_Shared"), or an id that differs only by case from a
+// tenant that already exists ("Acme" beside "acme").
+//
+// "Already exists" means: named by any token row, retired ones included (a
+// retired tenant's volumes stay on disk), or declared by a config principal.
+// Those are the two registries of tenants; there is no tenants table, and a
+// principal-bearing run / user / def carries a tenant one of them issued. (A
+// legacy-token or open-mode caller may name any wire tenant; that is the
+// operator's own choice, not a registry, so it is not consulted — and the
+// volume tool still refuses a reserved or non-charset one at use.)
+// A tenant spelled exactly as an existing one is that tenant and passes.
+// A store fault refuses the mint rather than skipping the check.
+func (s *OperatorTokenDef) checkTenantCaseFold(ctx context.Context, tenantID string) error {
+	if dynvol.ReservedTenant(tenantID) {
+		return fmt.Errorf("tenant_id %q is reserved", tenantID)
+	}
+	known, err := tokenTenants(ctx, s.Store)
+	if err != nil {
+		return fmt.Errorf("listing existing tenants: %w", err)
+	}
+	known = append(known, s.ConfigTenants...)
+	for _, k := range known {
+		if k == tenantID {
+			return nil
+		}
+	}
+	if other, clash := dynvol.CaseFoldCollision(tenantID, known); clash {
+		return fmt.Errorf("tenant_id %q differs only by case from existing tenant %q — they would share one volume directory on a case-insensitive filesystem; use %q or a distinct name", tenantID, other, other)
+	}
+	return nil
+}
+
+// tokenTenants returns the tenant id of every token name, retired history
+// included.
+func tokenTenants(ctx context.Context, st store.Store) ([]string, error) {
+	names, err := st.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, n.TenantID)
+	}
+	return out, nil
+}
+
+// CheckPrincipalTenantsAgainstTokens is the boot-time half of the case-fold
+// rule for config principals. Config load compares principals only with each
+// other (it has no store); a principal added to the config AFTER a token was
+// minted for a tenant differing only by case is caught here instead. A
+// principal tenant spelled exactly as a token's tenant is the same tenant.
+func CheckPrincipalTenantsAgainstTokens(ctx context.Context, st store.Store, principalTenants []string) error {
+	if len(principalTenants) == 0 {
+		return nil
+	}
+	known, err := tokenTenants(ctx, st)
+	if err != nil {
+		return fmt.Errorf("listing token tenants: %w", err)
+	}
+	for _, pt := range principalTenants {
+		if other, clash := dynvol.CaseFoldCollision(pt, known); clash {
+			return fmt.Errorf("config principal tenant %q differs only by case from minted token tenant %q — they would share one volume directory on a case-insensitive filesystem; spell the principal's tenant %q", pt, other, other)
+		}
+	}
+	return nil
 }
 
 // ---- rotate ----

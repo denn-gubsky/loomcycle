@@ -167,6 +167,47 @@ func TestValidateVolumeDefBody_RefusesWhatCreateRefuses(t *testing.T) {
 	}
 }
 
+// A hand-edited snapshot entry's tenant_id is used verbatim as a path segment
+// on restore, so one carrying path components (or a reserved name in another
+// case) would derive another tenant's tree.
+func TestValidateVolumeDefBody_RefusesSlashTenant(t *testing.T) {
+	for _, tenant := range []string{"x/..", "a/b", "..", ".", "acme/work", "_Shared", "_EPHEMERAL"} {
+		body, _ := json.Marshal(map[string]string{"tenant_id": tenant, "name": "data", "mode": "rw"})
+		if err := ValidateVolumeDefBody(body); err == nil {
+			t.Errorf("ValidateVolumeDefBody accepted tenant_id %q", tenant)
+		}
+	}
+}
+
+// Purge derives <root>/<tenant>/<name> and deletes it. For a run whose tenant
+// id is "x/.." that is <root>/acme — the whole of tenant acme's volume tree —
+// so the tool must refuse the tenant before deriving anything.
+func TestVolumeDefTool_PurgeRefusesTenantWithPathComponents(t *testing.T) {
+	tool, _, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	precious := filepath.Join(root, "acme", "data", "precious.txt")
+	if err := os.MkdirAll(filepath.Dir(precious), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(precious, []byte("tenant acme's data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x", TenantID: "x/.."})
+	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	def, _ := json.Marshal(dynvol.Body{Path: filepath.Join(root, "acme"), Mode: "rw"})
+	if _, err := tool.Store.VolumeDefCreate(ctx, store.VolumeDefRow{TenantID: "x/..", Name: "acme", Definition: def}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, res := vdExec(t, tool, ctx, `{"op":"purge","name":"acme"}`)
+	if !res.IsError || !strings.Contains(res.Text, "tenant id") {
+		t.Errorf("purge under tenant %q = %s, want a tenant-id refusal", "x/..", res.Text)
+	}
+	if _, err := os.Stat(precious); err != nil {
+		t.Errorf("purge under tenant \"x/..\" deleted tenant acme's tree: %v", err)
+	}
+}
+
 // create refuses a name colliding with a static volume (yaml is ground truth).
 func TestVolumeDefTool_CreateRefusesStaticCollision(t *testing.T) {
 	tool, ctx, _, cleanup := volumeDefFixture(t)

@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 )
 
 // PrincipalDef is one config-declared principal (RFC AO). `tenant` MAY be empty
@@ -36,6 +37,9 @@ type PrincipalDef struct {
 //   - a token_env that is EMPTY at boot → the principal is INERT (skipped, no
 //     entry in the table) + a startup warning. Fail-safe: a missing secret means
 //     "no token resolves to this identity", never an open door.
+//   - tenant must be "" or one charset-clean path segment, not reserved, and not
+//     differ only by case from another principal's tenant → else config-load
+//     error (the tenant id names a directory under the dynamic volume root).
 //   - two declared principals whose token_env values resolve to the SAME secret
 //     → config-load error (a bearer must not map to two identities). Resolution
 //     order (minted OperatorTokenDef → declared → legacy) handles a
@@ -53,10 +57,28 @@ func resolvePrincipals(c *Config) error {
 	sort.Strings(names)
 
 	secretOwner := make(map[string]string, len(names)) // secret value → first declaring name
+	tenantOwner := make(map[string]string, len(names)) // tenant id → first declaring name
+	var tenants []string
 	for _, name := range names {
 		def := c.Principals[name]
 		if def.Subject == "" {
 			return fmt.Errorf("principals.%s: subject is required", name)
+		}
+		// The tenant becomes a path segment under the dynamic volume root, so it
+		// gets the charset a minted token's tenant gets: "x/.." here would alias
+		// tenant acme's volume tree. Checked for inert principals too — adding the
+		// secret later must not be what turns a bad tenant live.
+		if err := dynvol.ValidTenant(def.Tenant); err != nil {
+			return fmt.Errorf("principals.%s: %s", name, err)
+		}
+		// "Acme" and "acme" are two tenants to loomcycle but ONE directory on a
+		// case-insensitive filesystem, so they would share a volume tree.
+		if other, clash := dynvol.CaseFoldCollision(def.Tenant, tenants); clash {
+			return fmt.Errorf("principals.%s: tenant %q differs only by case from tenant %q (principals.%s) — they would share one volume directory on a case-insensitive filesystem; spell them identically or pick distinct names", name, def.Tenant, other, tenantOwner[other])
+		}
+		if _, seen := tenantOwner[def.Tenant]; !seen {
+			tenantOwner[def.Tenant] = name
+			tenants = append(tenants, def.Tenant)
 		}
 		if def.TokenEnv == "" {
 			return fmt.Errorf("principals.%s: token_env is required", name)
@@ -116,4 +138,20 @@ func resolvePrincipals(c *Config) error {
 		})
 	}
 	return nil
+}
+
+// PrincipalTenants returns the distinct tenant ids the `principals:` block
+// declares, inert principals included, sorted. Token minting checks a new
+// tenant against these so a minted "Acme" cannot join a declared "acme".
+func (c *Config) PrincipalTenants() []string {
+	seen := make(map[string]bool, len(c.Principals))
+	var out []string
+	for _, def := range c.Principals {
+		if !seen[def.Tenant] {
+			seen[def.Tenant] = true
+			out = append(out, def.Tenant)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

@@ -1957,12 +1957,20 @@ func main() {
 			graceSecs = n
 		}
 	}
+	// A config principal whose tenant differs only by case from a minted token's
+	// tenant would share its volume directory on a case-insensitive filesystem.
+	// Config load already compared principals with each other; the token side
+	// needs the store, so it is checked here, fatally, like a config error.
+	if err := builtin.CheckPrincipalTenantsAgainstTokens(context.Background(), storeIface, cfg.PrincipalTenants()); err != nil {
+		log.Fatalf("config: principals: %v", err)
+	}
 	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
 		Store:                storeIface,
 		Pepper:               cfg.Env.OperatorTokenPepper,
 		Audit:                tokenAudit,
 		RotationGraceSeconds: graceSecs,
 		LegacyTokenSet:       cfg.Env.AuthToken != "",
+		ConfigTenants:        cfg.PrincipalTenants(),
 	})
 	// RFC L Decision 11: per-replica auth-token resolution cache. Default
 	// 30s TTL; LOOMCYCLE_AUTH_CACHE_TTL_SECONDS=0 disables it (direct
