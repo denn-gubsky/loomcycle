@@ -61,7 +61,9 @@ const memoryBackendDefDescription = `Author, fork, retire, and inspect named mem
 	`A kind:remote backend authored here needs a config.base_url whose host the operator lists in ` +
 	`LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and may not name a private, ` +
 	`loopback, link-local or metadata IP (a yaml-declared backend keeps its own host). ` +
-	`Only an admin may set config.api_key_env; anyone else leaves the credential unset or uses ` +
+	`Only an admin may set config.api_key_env to an env var name. Anyone else leaves the credential unset, ` +
+	`sets api_key_env to "$cred:<name>" naming a tenant-level credential that already exists in their own tenant ` +
+	`(create it with CredentialDef; it is resolved in the tenant that owns this definition, never the caller's), or uses ` +
 	`tenancy_strategy key_per_tenant with an env_pattern containing {tenant_id}, so each run sends its own tenant's key.`
 
 const memoryBackendDefInputSchema = `{

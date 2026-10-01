@@ -266,13 +266,14 @@ definition already on the target stands, as above. A restored definition
 is live at once: nothing needs a restart.
 
 `config.api_key_env` and `tenancy_strategy.env_pattern` are env-var
-**names**. They travel as written and are never resolved, so the key's
+**names**, or for `api_key_env` a `$cred:<name>` reference to a stored
+credential. They travel as written and are never resolved, so the key's
 value never enters the snapshot. But the host sends that key to
 `config.base_url`, so **every restored memory backend and document
 source is re-validated** with the rules an author faces: `base_url` must
 be an http(s) URL with a host, and `api_key_env` must be an allowed
-credential name, never one of loomcycle's own secrets such as
-`LOOMCYCLE_AUTH_TOKEN`. A peer that dials (a remote backend, every
+credential name or a `$cred:<name>` reference, never one of loomcycle's
+own secrets such as `LOOMCYCLE_AUTH_TOKEN`. A peer that dials (a remote backend, every
 source) must also be at a host **this host** lists in
 `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`,
 unless its `base_url` is exactly the one this host's yaml declares under
@@ -402,9 +403,11 @@ credential the definition's tenant does not have. A warning names the
 definition and the reference, never a value.
 
 For a memory backend that dials a peer (`kind: remote`) and for every
-document source, the restore checks the env var a call would send: a
+document source, the restore checks the key a call would send: a
 tenant's own `key_per_tenant` pattern with its tenant filled in, else
-`api_key_env`. An operator-layer pattern names a different variable for
+`api_key_env`. A `$cred:<name>` in `api_key_env` is checked as a
+tenant-level credential in the definition's own tenant, the only place
+it is resolved. An operator-layer pattern names a different variable for
 each calling tenant, so it is not checked; an in-process backend sends
 no key, so nothing it names is checked.
 

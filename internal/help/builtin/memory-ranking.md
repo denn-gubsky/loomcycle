@@ -152,13 +152,21 @@ less network trust than one declared in yaml:
   lists that hostname in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` — otherwise
   the call fails with `blocked: <host> has no public addresses`. A fork of a
   yaml backend is authored here too, so it follows the same rules;
-- only an admin may set `config.api_key_env`, which can name any credential
-  the server holds. Anyone else leaves the credential unset, or uses
-  `tenancy_strategy: {kind: key_per_tenant, env_pattern:
-  LOOMCYCLE_<NAME>_{tenant_id}}`: each run then sends its own tenant's key.
-  An author with no tenant may not use a pattern, since every tenant would
-  resolve that backend. A fork that keeps a yaml backend's `base_url` and
-  credential unchanged is allowed;
+- only an admin may set `config.api_key_env` to an env var name, which can
+  name any credential the server holds. Anyone else leaves the credential
+  unset, or uses one of these:
+  - `api_key_env: "$cred:<name>"`, a stored credential. It must be a
+    tenant-level credential that already exists in your own tenant (create it
+    with `CredentialDef`, `scope: tenant`). The backend sends the credential
+    of the tenant that owns the backend, never the calling run's tenant, and
+    never a user's own credential of the same name. If the credential is
+    deleted later, calls fail without sending anything.
+  - `tenancy_strategy: {kind: key_per_tenant, env_pattern:
+    LOOMCYCLE_<NAME>_{tenant_id}}`: each run then sends its own tenant's key.
+
+  An author with no tenant may use neither, since every tenant would resolve
+  that backend. A fork that keeps a yaml backend's `base_url` and credential
+  unchanged is allowed;
 - a `key_per_tenant` `env_pattern` must produce a `LOOMCYCLE_*` name that is
   not one of loomcycle's own secrets.
 

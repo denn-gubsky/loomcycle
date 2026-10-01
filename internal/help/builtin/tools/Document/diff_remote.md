@@ -45,6 +45,10 @@ edges_only_remote, excluded_unkeyed_local, excluded_unkeyed_remote}`.
   or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST ...` — the source was authored at
   runtime and the operator does not list its host; nothing was sent. Ask the
   operator to list the host.
+- `diff_remote: fetch remote document: api_key_env "$cred:<name>": tenant
+  "<tenant>" has no tenant-level credential of that name` — the tenant that
+  owns the source does not hold the stored credential it names; nothing was
+  sent. Create it with `CredentialDef` (`scope: tenant`) in that tenant.
 
 ## Examples
 
