@@ -56,6 +56,9 @@ func ChannelRefs(d Definition) []ChannelRef {
 		if h.Channel != "" {
 			out = append(out, ChannelRef{h.Channel, SidePublish, s.ID, "channel"})
 		}
+		if h.Publish != nil && h.Publish.Channel != "" {
+			out = append(out, ChannelRef{h.Publish.Channel, SidePublish, s.ID, "publish"})
+		}
 	}
 	return out
 }
