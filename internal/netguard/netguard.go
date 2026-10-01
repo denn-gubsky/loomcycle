@@ -27,18 +27,39 @@ import (
 // is carrier-grade NAT space, which is where Tailscale puts every tailnet peer
 // and where Alibaba Cloud serves its metadata endpoint (100.100.100.200).
 var nonPublicV4 = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),     // "this network": 0.x.y.z reaches the local host on Linux
-	netip.MustParsePrefix("100.64.0.0/10"), // CGNAT shared address space
-	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
-	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking
-	netip.MustParsePrefix("240.0.0.0/4"),   // reserved, incl. broadcast 255.255.255.255
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network": 0.x.y.z reaches the local host on Linux
+	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT shared address space
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // documentation (TEST-NET-1)
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // documentation (TEST-NET-2)
+	netip.MustParsePrefix("203.0.113.0/24"),  // documentation (TEST-NET-3)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, incl. broadcast 255.255.255.255
 }
 
-// nonPublicV6 lists IPv6 ranges refused outright rather than unwrapped. The
-// local-use NAT64 prefix is operator-chosen in length (/48 to /96), so where the
-// IPv4 sits inside it is not knowable here; it is never globally routed anyway.
+// nonPublicV6 lists IPv6 ranges refused outright rather than unwrapped: the
+// special-purpose ranges that are not globally reachable but that the stdlib
+// classifiers miss (they call every one of them global unicast).
+//
+// The local-use NAT64 prefix is operator-chosen in length (/48 to /96), so where
+// the IPv4 sits inside it is not knowable here; it is never globally routed.
+//
+// Teredo is refused as a whole rather than unwrapped. An address carries two
+// IPv4s, the relay server's (bits 32-63) and the client's, XOR-obfuscated, behind
+// a NAT (bits 96-127), so a "public" verdict would have to judge both, and a
+// public server with a private client still delivers into a private network.
+// Nothing legitimate is served from Teredo space any more: the public servers
+// were retired and current systems ship with it off.
 var nonPublicV6 = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use IPv4/IPv6 translation
+	netip.MustParsePrefix("100::/64"),       // discard-only
+	netip.MustParsePrefix("2001::/32"),      // Teredo
+	netip.MustParsePrefix("2001:2::/48"),    // benchmarking
+	netip.MustParsePrefix("2001:10::/28"),   // ORCHID (deprecated)
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation
+	netip.MustParsePrefix("3fff::/20"),      // documentation
+	netip.MustParsePrefix("5f00::/16"),      // segment-routing SIDs, domain-internal
+	netip.MustParsePrefix("fec0::/10"),      // site-local (deprecated, still routed on-site)
 }
 
 // embeddingV6 lists the IPv6 forms that carry an IPv4 address a gateway or the
@@ -58,8 +79,9 @@ var embeddingV6 = []struct {
 // IsPrivateIP reports whether ip is an address an outbound call must not reach
 // unless the operator vouched for it: loopback, link-local (incl. the cloud
 // metadata service 169.254.169.254), multicast, unspecified, RFC1918 / ULA, the
-// other IPv4 ranges that are not globally reachable (CGNAT, benchmarking, "this
-// network", reserved), and any IPv6 form that embeds such an IPv4. A nil or
+// other IPv4 and IPv6 ranges that are not globally reachable (CGNAT,
+// benchmarking, documentation, "this network", reserved, Teredo, site-local,
+// discard-only, ORCHID), and any IPv6 form that embeds such an IPv4. A nil or
 // malformed ip is treated as private (fail-closed).
 func IsPrivateIP(ip net.IP) bool {
 	addr, ok := netip.AddrFromSlice(ip)
