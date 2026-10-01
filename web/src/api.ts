@@ -831,6 +831,126 @@ export function listRunInterrupts(
   );
 }
 
+// ---- Team walks ----------------------------------------------------
+//
+// A team walk is a run (agent_id "team:<name>"); every run it starts carries
+// parent_context.walk_id = the walk's run id. These wrap the run-id-addressed
+// surfaces the walk view reads and drives.
+
+export interface WalkRunsPage {
+  // The walk's own run and its members, oldest first.
+  agents: Agent[];
+  // "" on the last page.
+  next_cursor: string;
+}
+
+// listWalkRuns reads one page of a walk's runs (GET /v1/runs?walk_id=).
+export function listWalkRuns(walkId: string, cursor?: string, signal?: AbortSignal): Promise<WalkRunsPage> {
+  const params = new URLSearchParams({ walk_id: walkId });
+  if (cursor) params.set("cursor", cursor);
+  return jsonFetch<WalkRunsPage>(`/v1/runs?${params.toString()}`, { signal });
+}
+
+// RunStateEvent mirrors connector.RunStateEvent — one run-state transition on
+// GET /v1/users/{user_id}/agents/stream.
+export interface RunStateEvent {
+  run_id: string;
+  agent_id: string;
+  agent: string;
+  user_id: string;
+  parent_agent_id?: string;
+  parent_run_id?: string;
+  status: string;
+  stop_reason?: string;
+  error?: string;
+  ts: string; // RFC3339
+  parent_context?: RunParentContext;
+  awaited_state?: "channel" | "interrupted" | "review" | "input" | "";
+  awaited_on?: string;
+  // When an unruled review hold ends as rejected. Only the stream carries it.
+  hold_expires_at?: string;
+}
+
+// streamWalkRunStates follows one walk's member runs live
+// (GET /v1/users/{user_id}/agents/stream?walk_id=), calling onEvent per
+// run_state frame. It resolves when the server closes the stream (it caps a
+// connection at about 30 minutes) and rejects on a transport error, so the
+// caller owns reconnecting. The walk's OWN run is never on this stream.
+export async function streamWalkRunStates(
+  userId: string,
+  walkId: string,
+  onEvent: (e: RunStateEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await fetch(
+    `${baseURL}/v1/users/${encodeURIComponent(userId)}/agents/stream?walk_id=${encodeURIComponent(walkId)}`,
+    { method: "GET", credentials: "same-origin", signal, headers: { Accept: "text/event-stream" } },
+  );
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) {
+      return new Promise<void>(() => {});
+    }
+    const text = await resp.text();
+    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+  }
+  if (!resp.body) {
+    throw new Error("stream response had no body");
+  }
+  await pumpSSE(resp.body, (f) => {
+    if (f.event !== "run_state") return;
+    try {
+      onEvent(JSON.parse(f.data) as RunStateEvent);
+    } catch {
+      // A malformed frame is skipped; the next hydration repairs the view.
+    }
+  });
+}
+
+// RunBreakpoints mirrors breakpointsResponse: a live walk's armed set.
+export interface RunBreakpoints {
+  run_id: string;
+  // Canonical: phase-qualified ("<state>:before_dispatch", "<state>:review").
+  armed: string[];
+  // Deadline a member hold beginning now gets; 0 = none.
+  review_ttl_seconds: number;
+}
+
+// getRunBreakpoints reads a LIVE walk's armed set. 404 when the walk is not
+// live on this replica (the set lives in memory on the walk's replica).
+export function getRunBreakpoints(runId: string): Promise<RunBreakpoints> {
+  return jsonFetch<RunBreakpoints>(`/v1/runs/${encodeURIComponent(runId)}/breakpoints`);
+}
+
+// setRunBreakpoints REPLACES a live walk's armed set (breakpoints is the whole
+// set, not a delta; omitted leaves the arming as it is) and, when sent, the
+// review deadline. Disarming a state's review releases its held members.
+export function setRunBreakpoints(
+  runId: string,
+  body: { breakpoints?: string[]; review_ttl_seconds?: number },
+): Promise<RunBreakpoints> {
+  return jsonFetch<RunBreakpoints>(`/v1/runs/${encodeURIComponent(runId)}/breakpoints`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// reviewRun rules on a run held for review: approve, or reject — with
+// feedback the run revises its answer, without it the run ends rejected.
+export function reviewRun(
+  runId: string,
+  decision: "approve" | "reject",
+  feedback?: string,
+): Promise<{ run_id: string; decision: string; delivered: boolean }> {
+  const body: Record<string, unknown> = { decision };
+  if (feedback) body.feedback = feedback;
+  return jsonFetch(`/v1/runs/${encodeURIComponent(runId)}/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // v0.8.17 — runtime pause / resume / state + snapshot admin.
 
 export interface RuntimeStateResponse {
