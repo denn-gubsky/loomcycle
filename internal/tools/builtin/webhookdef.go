@@ -57,7 +57,12 @@ const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook
 	`and only an admin may set it to another tenant (a fork that would inherit another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
 	`it answers every delivery with 404 until a fork, or a create on the same name, re-supplies EVERY key listed ` +
-	`there (in user_credentials or user_credentials_from_env) and sets enabled: true.`
+	`there and sets enabled: true. A key counts as a non-blank user_credentials value, or a ` +
+	`user_credentials_from_env variable that is allowlisted (LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST or ` +
+	`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST) and set (the receiver skips any other). While keys are missing, the ` +
+	`create/fork result lists them in disabled_until_credentials_supplied, and unusable_credentials says why a ` +
+	`key you named did not count. A fork merges user_credentials and user_credentials_from_env key by key with ` +
+	`the parent's; an empty value removes a key.`
 
 const webhookDefInputSchema = `{
   "type": "object",

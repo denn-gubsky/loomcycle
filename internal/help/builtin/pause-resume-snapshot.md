@@ -208,7 +208,9 @@ schedule is restored **disabled** with a `capture_disabled` marker. A
 warning names it and its keys, and `defs_disabled_for_credentials`
 counts it. Re-enable it with a ScheduleDef `fork` that supplies every
 listed key and `enabled: true`; the fork keeps the fire count already
-spent. A `create` on the same name counts as a new version: it keeps the
+spent. An env-sourced key counts only when its variable is on
+`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST` and set; the fork's result lists the
+keys still missing in `disabled_until_credentials_supplied`. A `create` on the same name counts as a new version: it keeps the
 marker unless it supplies every key, and keeps the fire count. References (`$cred:<name>`, `${...}`, `user_credentials_from_env`
 names) travel as written.
 
@@ -233,7 +235,9 @@ schedule's are. The webhook is restored **disabled** with a
 every delivery with `404` — even if its body says `enabled: true` — until
 a WebhookDef `fork` whose own overlay supplies **every** listed key (in
 `user_credentials` or `user_credentials_from_env`) and sets
-`enabled: true`. A key the parent already sources does not count. A fork
+`enabled: true`. A key the parent already sources does not count, nor does
+an env variable the receiver would not read (not allowlisted, or unset). A
+fork keeps the parent's other credentials. A fork
 that supplies only some of them stays disabled, and its marker lists the
 keys still missing. A `create` on the same name follows the same rules.
 It also counts in `defs_disabled_for_credentials`.

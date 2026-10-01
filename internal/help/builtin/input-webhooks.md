@@ -226,7 +226,15 @@ stripped keys, and it answers every delivery with `404` whatever its
 `enabled` flag says. Re-enable it with a `fork` whose own overlay supplies
 every listed key (in `user_credentials` or `user_credentials_from_env`) and
 sets `enabled: true`; a fork that supplies only some keeps the marker for
-the rest. A `create` on the same name writes a new version and follows the
+the rest. A key counts only when the receiver will use it: a
+`user_credentials` value that is not blank, or a `user_credentials_from_env`
+variable that is allowlisted (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` or
+`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`) and set. While keys are missing the
+result lists them in `disabled_until_credentials_supplied`, and
+`unusable_credentials` says why a key you did name did not count. A fork
+merges both credential maps key by key with the parent's, so re-supplying
+the stripped keys keeps every other credential; an empty value removes a
+key. A `create` on the same name writes a new version and follows the
 same rules. An overlay can neither set nor clear the marker.
 
 ## `tenant_id` — which tenant the spawned run executes as
