@@ -1184,63 +1184,7 @@ func main() {
 	// resolved straight from cfg (lookup.MCPServerSpec omits stdio fields).
 	mcpDynView := mcpLookupView{dynamicMCPRegistry}
 	mcpPool := mcp.NewPool(
-		func(tenant, name string) (mcp.Caller, error) {
-			// Static stdio entries are yaml-only ground truth (lookup's
-			// spec can't carry Command/Args/Env). A tenant never overrides
-			// a stdio server — resolve it directly at the shared base.
-			if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
-				return spawnStdioMCP(name, srv)
-			}
-			// http / streamable-http: tenant-dynamic → static yaml →
-			// shared-dynamic, via the shared resolver.
-			spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name)
-			if !ok {
-				return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry (tenant=%q)", name, tenant)
-			}
-			switch spec.Transport {
-			case "http", "streamable-http":
-				// F32: resolve ${LOOMCYCLE_*} at DIAL time, not persist time —
-				// the stored def (and the registry spec) carry only the ${ref};
-				// the live client gets the value. This mirrors yaml-load's
-				// config.Load expansion at exactly the boundary that flattens any
-				// inner ${LOOMCYCLE_*} before the request-time ${run.*}
-				// substituter runs (see mcpserverdef.go buildDefinition). For a
-				// yaml-static spec the values are already flat, so ExpandEnv is an
-				// idempotent no-op; a pre-F32 baked row (resolved value, no ${})
-				// is likewise a no-op → backward-compatible.
-				hdrs := spec.Headers
-				if len(hdrs) > 0 {
-					hdrs = make(map[string]string, len(spec.Headers))
-					for k, v := range spec.Headers {
-						hdrs[k] = config.ExpandEnv(v)
-					}
-				}
-				return mcphttp.New(mcphttp.Config{
-					URL:     config.ExpandEnv(spec.URL),
-					Headers: hdrs,
-					// DNS-rebinding guard: OFF by default (MCP servers are commonly
-					// on localhost/private-net), opt in via
-					// LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. HTTPPrivateHostAllowlist
-					// exempts specific internal MCP hosts when the block is on.
-					BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs,
-					PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
-					// RFC AR — resolve $cred:<name> header tokens per-request from
-					// the tenant credential store (per-user tokens bind correctly on
-					// this pooled client). credSubstitute is set below once the
-					// credential engine exists (captured by ref; dials are post-boot).
-					CredSubstitute: credSubstitute,
-				})
-			case "stdio":
-				// F31: a runtime-registered stdio server. The substrate only
-				// admits a stdio row when LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO is
-				// set, so reaching here already means the operator opted in.
-				// Spawned + lifecycle-managed (respawn on crash, teardown on
-				// retire) by the same pool path as a yaml stdio server.
-				return spawnStdio(name, spec.Command, spec.Args, spec.Env)
-			default:
-				return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q (data corruption?)", name, spec.Transport)
-			}
-		},
+		mcpPoolBuild(cfg, mcpDynView, &credSubstitute),
 		func(c mcp.Caller) {
 			// Both stdio.Client and http.Client implement Close() error.
 			// A future transport that doesn't gets logged so the leak is
@@ -4132,6 +4076,72 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		Transport: s.Transport, URL: s.URL, Headers: s.Headers,
 		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
 	}, true
+}
+
+// mcpPoolBuild returns the MCP pool's build callback: it resolves a server
+// NAME for a tenant (static stdio first, then lookup.MCPServer's tenant-dynamic
+// → static yaml → shared-dynamic order) and builds its client. credSubstitute
+// is read at dial, not here: main assigns it once the credential engine exists,
+// after the pool is built, and dials happen only after boot.
+func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
+	credSubstitute *func(ctx context.Context, s string) (string, []string, error)) func(tenant, name string) (mcp.Caller, error) {
+	return func(tenant, name string) (mcp.Caller, error) {
+		// Static stdio entries are yaml-only ground truth (lookup's
+		// spec can't carry Command/Args/Env). A tenant never overrides
+		// a stdio server — resolve it directly at the shared base.
+		if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
+			return spawnStdioMCP(name, srv)
+		}
+		// http / streamable-http: tenant-dynamic → static yaml →
+		// shared-dynamic, via the shared resolver.
+		spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name)
+		if !ok {
+			return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry (tenant=%q)", name, tenant)
+		}
+		switch spec.Transport {
+		case "http", "streamable-http":
+			// F32: resolve ${LOOMCYCLE_*} at DIAL time, not persist time —
+			// the stored def (and the registry spec) carry only the ${ref};
+			// the live client gets the value. This mirrors yaml-load's
+			// config.Load expansion at exactly the boundary that flattens any
+			// inner ${LOOMCYCLE_*} before the request-time ${run.*}
+			// substituter runs (see mcpserverdef.go buildDefinition). For a
+			// yaml-static spec the values are already flat, so ExpandEnv is an
+			// idempotent no-op; a pre-F32 baked row (resolved value, no ${})
+			// is likewise a no-op → backward-compatible.
+			hdrs := spec.Headers
+			if len(hdrs) > 0 {
+				hdrs = make(map[string]string, len(spec.Headers))
+				for k, v := range spec.Headers {
+					hdrs[k] = config.ExpandEnv(v)
+				}
+			}
+			return mcphttp.New(mcphttp.Config{
+				URL:     config.ExpandEnv(spec.URL),
+				Headers: hdrs,
+				// DNS-rebinding guard: OFF by default (MCP servers are commonly
+				// on localhost/private-net), opt in via
+				// LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. HTTPPrivateHostAllowlist
+				// exempts specific internal MCP hosts when the block is on.
+				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs,
+				PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+				// RFC AR — resolve $cred:<name> header tokens per-request from
+				// the tenant credential store (per-user tokens bind correctly on
+				// this pooled client). credSubstitute is set below once the
+				// credential engine exists (captured by ref; dials are post-boot).
+				CredSubstitute: *credSubstitute,
+			})
+		case "stdio":
+			// F31: a runtime-registered stdio server. The substrate only
+			// admits a stdio row when LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO is
+			// set, so reaching here already means the operator opted in.
+			// Spawned + lifecycle-managed (respawn on crash, teardown on
+			// retire) by the same pool path as a yaml stdio server.
+			return spawnStdio(name, spec.Command, spec.Args, spec.Env)
+		default:
+			return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q (data corruption?)", name, spec.Transport)
+		}
+	}
 }
 
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
