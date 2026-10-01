@@ -540,13 +540,21 @@ A pass dispatched into a tenant other than its schedule's own carries none of
 the schedule's credentials: it resolves its agent in that tenant, where the
 tenant's own version of the consolidator would run.
 
+A pass for an isolated member — a user whose access mode is `isolated` — runs
+isolated, as that member's own runs do: it reads and writes that user's memory,
+never the tenant's shared scope. A fact the tenant's ontology would place in
+the shared scope stays with the user.
+
 The schedule's `on_complete` hooks follow the passes: they fire once per tenant
 where at least one pass completed and none failed, in that tenant, and report
 that tenant's run. One tenant's failed pass does not withhold another tenant's
 hooks. A pass that was only deferred — the runtime was at load, the user's
 token budget was spent, the tenant has no provider key it may use, or the
 runtime paused — does not withhold its own tenant's hooks either, and the
-schedule reads `skipped` rather than `failed`.
+schedule reads `skipped` rather than `failed`. The missing provider key counts
+whether the pass itself was refused or a sub-agent it started (the extractor)
+was: either way the pass consolidated nothing that needed a model. The log
+names each such tenant once per tick, with `operator_key_restricted`.
 
 A sweep does not visit targets in a fixed order. It takes one target from each
 tenant in turn, alternating users found through their chats with users found
