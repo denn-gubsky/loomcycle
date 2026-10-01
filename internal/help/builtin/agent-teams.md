@@ -70,6 +70,50 @@ document item is `{document_id, chunk_id, index, title, markdown}`, where
 `{{…}}` written inside it is never expanded. `binds` project fields of the item
 into variables, e.g. `binds: {title: "$.title"}` → `${var.title}`.
 
+## When to use a Starter — and when an agent state is enough
+
+A Starter is not the default first state. Use one when at least one of these
+holds:
+
+1. **Each run needs data from the item it works on.** A Starter puts the
+   message or section into the run's prompt (`{{starter.message}}`), and
+   `binds` lift its fields into variables — a document id, a chunk id, a ticket
+   number. Data the whole walk shares needs no Starter: an `agent` state's
+   `system_prompt` and `input_template` expand `${var.*}`, `${now.*}`,
+   `{{document:…}}` and `{{tool:…}}` too, and `{{memory:key|search:…}}` when the
+   TeamDef is operator-authored. (`binds` read the FIRST message of a wave;
+   what differs per run reaches it only through `{{starter.message}}`.)
+2. **The number of runs depends on the input.** `per: "message"` runs one
+   agent per message read; a document source with `per: "chunk"` runs one per
+   top-level section, so a spec with 3 sections gets 3 runs and one with 12
+   gets 12 — up to `max` (at most 32), 4 at a time. `parallel` cannot do this:
+   its agent list is fixed when the team is written.
+3. **Nothing should run until there is work.** A Starter waits for its
+   channel inside the walk: no agent is started, no model is called and no
+   provider slot is taken until a message arrives. An agent told to wait on a
+   channel is a live run while it waits. It holds its provider slot and a
+   place in its wave, and every empty `subscribe` (each capped at the long-poll
+   limit, 30 s by default) ends a model turn, spending tokens and one of its
+   `max_iterations`. Only a team whose entry state is a Starter can be armed to
+   start itself when a message arrives (team subscriptions).
+
+Otherwise an `agent` state can read the channel itself. List the `Channel`
+tool and grant the channel in the AgentDef's `channels.subscribe` (the
+TeamDef's `channels` ACL covers Starters and `channel` nodes only), and say in
+its prompt what to read. This fits an agent that is already running and
+consumes a stream as part of its work.
+
+Without a Starter you also give up:
+
+- **the sink's guarantee** — a Starter publishes exactly one message per run
+  (`ok`, `error`, `timeout` or `rejected`), even for a run that crashed or was
+  cancelled; an agent told to publish may not;
+- **redelivery** — with `ack: "after_results"` (the default) a failed wave
+  leaves its input on the channel for the next walk; an agent's own
+  `subscribe` commits the previous batch when it reads the next;
+- **the `before_dispatch` breakpoint**, which only a Starter has (a
+  `<state>:review` hold works on `agent` and `parallel` states too).
+
 ## The task board
 
 Live work rides on a **Document** used as a task board: one chunk per work-item,
