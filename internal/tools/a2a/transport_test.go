@@ -152,3 +152,23 @@ func (s *stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 		Header:     make(http.Header),
 	}, nil
 }
+
+// TestNewSDKPeerClient_GRPCBindingIsNeverDialed pins why a gRPC peer needs no
+// dial-time SSRF guard today: no gRPC client transport is registered (the SDK
+// defaults are JSON-RPC and REST, and only those two get the guarded client),
+// so a grpc binding fails at transport selection, before any connection. The
+// card path selects transports the same way, so a card advertising only gRPC
+// fails the same. If this starts building a client, a gRPC transport was
+// wired: route its dial through the guard (grpc.WithContextDialer over
+// netguard.GuardedDialContext with the operator's private-host allowlist)
+// before shipping it, and replace this test with one that proves the refusal.
+func TestNewSDKPeerClient_GRPCBindingIsNeverDialed(t *testing.T) {
+	cl, err := newSDKPeerClient(context.Background(), config.A2AAgent{Endpoint: "169.254.169.254:443", Binding: "grpc"}, "", nil)
+	if err == nil {
+		_ = cl.Close()
+		t.Fatal("a grpc binding built a peer client: a gRPC transport is wired, and it does not dial through the SSRF guard")
+	}
+	if !strings.Contains(err.Error(), "no compatible transports") {
+		t.Fatalf("err = %v, want the SDK's transport-selection refusal (anything else may mean a dial was attempted)", err)
+	}
+}
