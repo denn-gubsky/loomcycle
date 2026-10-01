@@ -3021,6 +3021,10 @@ func main() {
 			// sessions as evidence of new work nor hands them to a pass. Passed
 			// as names because internal/scheduler takes no config dependency.
 			InternalAgents: cfg.InternalAgentNames(),
+			// The same gate the runtime enforces: while it is on, an
+			// operator-layer sweep's runs in other tenants may not spend the
+			// operator's provider key.
+			OperatorKeyRestriction: cfg.Env.OperatorKeyRestriction,
 		}
 		// Materialize static yaml `scheduled_runs:` into the substrate so
 		// they fire autonomously — symmetric with dynamically-created

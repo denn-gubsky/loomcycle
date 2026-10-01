@@ -70,6 +70,14 @@ type Config struct {
 	// Empty is the pre-feature behaviour: only the schedule's own agent is
 	// excluded, which is what let the extractor children pile up.
 	InternalAgents []string
+
+	// OperatorKeyRestriction mirrors the deployment's operator-key gate
+	// (LOOMCYCLE_OPERATOR_KEY_RESTRICTION). While it is on, an operator-layer
+	// consolidation sweep's runs in OTHER tenants are restricted from the
+	// operator's provider key — see runConsolidationTarget. A plain bool for the
+	// same reason as InternalAgents: no config dependency here. The value is an
+	// env var, which a config reload does not change.
+	OperatorKeyRestriction bool
 }
 
 // defaults applies the documented defaults to a zero-value Config.
