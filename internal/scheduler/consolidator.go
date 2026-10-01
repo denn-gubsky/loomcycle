@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -170,6 +171,10 @@ func fanoutScope(def scheduleDef) (store.MemoryScope, error) {
 // tenant early in the alphabet starved every later tenant on every tick. So
 // targets are interleaved across tenants from a start that moves each tick
 // (fairTargetOrder), and each pass gets a slice of the budget (targetBudget).
+//
+// A slice alone looped, though: a pass that needs more than its slice is cut
+// at the same point every tick and never finishes. So a pass the slice cut
+// goes first next tick with the whole remaining budget (notePassBudget).
 func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
 	scope, err := fanoutScope(def)
 	if err != nil {
@@ -191,7 +196,9 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	s.logf("scheduler: schedule %q (def %s) carries the consolidation fan-out marker — dispatching up to %d run(s) per tick %s, each under a discovered user's identity; retire the def if you did not author this",
 		row.Name, row.DefID, s.cfg.MaxConsolidationTargets, reach)
 
-	batchCtx, cancel := context.WithTimeout(ctx, s.cfg.FireTimeout)
+	// The cause is how a pass tells "the fire budget ran out" from "my own
+	// slice of it ran out" (see notePassBudget).
+	batchCtx, cancel := context.WithTimeoutCause(ctx, s.cfg.FireTimeout, errBatchBudgetCut)
 	defer cancel()
 
 	// Cluster singleton: without this every replica would dispatch a full
@@ -270,7 +277,8 @@ func (s *Scheduler) operatorLayerFanout(row store.ScheduleDueRow, def scheduleDe
 // per cluster. It records the schedule's result itself so the advisory-lock
 // wrapper stays a thin gate.
 func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, scope store.MemoryScope, allTenants bool, now time.Time) {
-	targets, dropped, err := s.consolidationTargets(ctx, def, scope, allTenants, s.nextFanoutRotation(row.DefID))
+	escalated := s.escalatedTargets(row.DefID)
+	targets, dropped, err := s.consolidationTargets(ctx, def, scope, allTenants, s.nextFanoutRotation(row.DefID), escalated)
 	if err != nil {
 		s.recordFireFailure(ctx, row.DefID, "", "failed", fmt.Errorf("consolidation fan-out: enumerate targets: %w", err), now)
 		return
@@ -368,10 +376,14 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		go func(target consolidationTarget) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			targetCtx, cancelTarget := context.WithTimeout(ctx, perTarget)
+			wasEscalated := escalated[target]
+			targetCtx, cancelTarget := passContext(ctx, perTarget, wasEscalated)
 			defer cancelTarget()
 			runID, runErr := s.runConsolidationTarget(targetCtx, def, target,
 				isolated[memberKey{tenantID: target.TenantID, subject: target.UserID}])
+			// Read before cancelTarget runs, which would make it read Canceled.
+			cause := context.Cause(targetCtx)
+			s.notePassBudget(row, target, wasEscalated, runErr, cause, perTarget)
 			mu.Lock()
 			defer mu.Unlock()
 			tb := byTenant[target.TenantID]
@@ -610,8 +622,11 @@ func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire b
 // dispatched run use that tenant — never the def's.
 //
 // The targets with work are put in fairTargetOrder (rotation picks the starting
-// tenant) BEFORE the cap trims them, and are dispatched in that order.
-func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope, allTenants bool, rotation int) ([]consolidationTarget, int, error) {
+// tenant) BEFORE the cap trims them, and are dispatched in that order — except
+// that the escalated ones (a pass cut by its budget slice last tick) are moved
+// to the front first, so neither the rotation nor the cap can put them behind
+// a budget that has already run out.
+func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope, allTenants bool, rotation int, escalated map[consolidationTarget]bool) ([]consolidationTarget, int, error) {
 	// The exclusion is pushed into the QUERY rather than applied to the result:
 	// the scan window is a fixed 500 rows ordered most-recently-active first, and
 	// a pass's own children are by construction the most recent sessions there
@@ -696,7 +711,7 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		}
 		return out
 	}
-	ordered := fairTargetOrder(withWork(fromSessions), withWork(fromQueue), rotation)
+	ordered := escalatedFirst(fairTargetOrder(withWork(fromSessions), withWork(fromQueue), rotation), escalated)
 
 	maxTargets := s.cfg.MaxConsolidationTargets
 	if len(ordered) <= maxTargets {
@@ -810,10 +825,131 @@ func (s *Scheduler) nextFanoutRotation(defID string) int {
 // budget, which would cut healthy passes. A quarter (2.5 minutes at the
 // default) still bounds what one slow or wedged pass can take, so in a serial
 // sweep at least four passes get a turn every tick — and with the start tenant
-// rotating (fairTargetOrder), every tenant's turn comes round. Assumes a healthy
-// pass fits in a quarter of the budget; an operator whose passes do not can
-// raise LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
+// rotating (fairTargetOrder), every tenant's turn comes round.
+//
+// A healthy pass does NOT always fit its slice: two users and a slow local
+// extractor put a pass over half the budget, and a cut pass keeps no progress
+// it had not yet recorded, so it was cut at the same point every tick, forever.
+// That is what escalation is for (notePassBudget): a pass the slice cut gets the
+// whole remaining budget on its next turn.
 const fanoutBudgetSlices = 4
+
+// The causes the fan-out stamps on the deadlines it sets, so a finished pass
+// can be told which budget, if any, ended it. Compared by identity through
+// context.Cause, never by message.
+var (
+	errBatchBudgetCut = errors.New("consolidation fan-out: the fire budget ran out")
+	errPassBudgetCut  = errors.New("consolidation fan-out: the pass used up its share of the fire budget")
+)
+
+// passContext is the ctx one pass runs under. A normal pass gets its slice of
+// the budget, with errPassBudgetCut as the cause when the slice is what ends
+// it. An escalated pass gets no deadline of its own, so it may spend whatever
+// is left of the batch's.
+//
+// When the batch has less left than the slice, the slice's deadline is never
+// the earlier one, and the pass's cause on expiry is the batch's — so a pass
+// that simply came last in a spent budget is not escalated for it.
+func passContext(batch context.Context, slice time.Duration, escalated bool) (context.Context, context.CancelFunc) {
+	if escalated {
+		return context.WithCancel(batch)
+	}
+	return context.WithTimeoutCause(batch, slice, errPassBudgetCut)
+}
+
+// escalatedTargets returns a copy of this def's escalated targets, for one
+// tick to order and budget by.
+func (s *Scheduler) escalatedTargets(defID string) map[consolidationTarget]bool {
+	s.fanoutEscalatedMu.Lock()
+	defer s.fanoutEscalatedMu.Unlock()
+	out := make(map[consolidationTarget]bool, len(s.fanoutEscalated[defID]))
+	for t := range s.fanoutEscalated[defID] {
+		out[t] = true
+	}
+	return out
+}
+
+// setEscalated marks or clears one target, and reports whether that changed
+// anything, so each transition is logged once.
+func (s *Scheduler) setEscalated(defID string, target consolidationTarget, on bool) bool {
+	s.fanoutEscalatedMu.Lock()
+	defer s.fanoutEscalatedMu.Unlock()
+	if s.fanoutEscalated[defID][target] == on {
+		return false
+	}
+	if on {
+		if s.fanoutEscalated == nil {
+			s.fanoutEscalated = map[string]map[consolidationTarget]bool{}
+		}
+		if s.fanoutEscalated[defID] == nil {
+			s.fanoutEscalated[defID] = map[consolidationTarget]bool{}
+		}
+		s.fanoutEscalated[defID][target] = true
+		return true
+	}
+	delete(s.fanoutEscalated[defID], target)
+	if len(s.fanoutEscalated[defID]) == 0 {
+		delete(s.fanoutEscalated, defID)
+	}
+	return true
+}
+
+// notePassBudget moves one target between normal and escalated budgeting
+// after its pass.
+//
+//   - A normal pass the SLICE cut is escalated: next tick it goes first and may
+//     spend the whole remaining budget. Its own slice is what stopped it, so
+//     without this it is stopped at the same point on every tick — the bundled
+//     consolidator records a chat's progress only once that chat is done, and a
+//     chat longer than the slice never is.
+//   - An escalated pass that COMPLETES drops the escalation.
+//   - An escalated pass the BATCH budget cut drops it too: it could not finish
+//     in the whole budget, and kept escalated it would hold every tick and
+//     starve every other target. Its next cut by the slice escalates it again,
+//     so a wedged target holds at most every other tick.
+//
+// Anything else — a refusal, an ordinary failure, the scheduler stopping —
+// leaves the target as it was. "Cut" needs the run to have failed: a pass that
+// returned cleanly as its deadline fired did finish.
+func (s *Scheduler) notePassBudget(row store.ScheduleDueRow, target consolidationTarget, wasEscalated bool, runErr, cause error, slice time.Duration) {
+	switch {
+	case !wasEscalated && runErr != nil && errors.Is(cause, errPassBudgetCut):
+		if s.setEscalated(row.DefID, target, true) {
+			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass cut by its %s share of the %s fire budget before it finished — it goes first next tick with the whole remaining budget",
+				row.Name, target.TenantID, target.UserID, slice, s.cfg.FireTimeout)
+		}
+	case wasEscalated && runErr == nil:
+		if s.setEscalated(row.DefID, target, false) {
+			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): completed on its whole-budget turn — back to normal budgeting",
+				row.Name, target.TenantID, target.UserID)
+		}
+	case wasEscalated && errors.Is(cause, errBatchBudgetCut):
+		if s.setEscalated(row.DefID, target, false) {
+			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass did not finish even with the whole %s fire budget — dropping it back to normal budgeting so it cannot hold every tick; raise LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS if its passes need longer",
+				row.Name, target.TenantID, target.UserID, s.cfg.FireTimeout)
+		}
+	}
+}
+
+// escalatedFirst moves the escalated targets to the front, each group keeping
+// its order.
+func escalatedFirst(ordered []consolidationTarget, escalated map[consolidationTarget]bool) []consolidationTarget {
+	if len(escalated) == 0 {
+		return ordered
+	}
+	out := make([]consolidationTarget, 0, len(ordered))
+	for _, t := range ordered {
+		if escalated[t] {
+			out = append(out, t)
+		}
+	}
+	for _, t := range ordered {
+		if !escalated[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 // targetBudget is the wall-clock one target's pass may spend. The pass's ctx is
 // derived from the batch's, so it also never outlives what is left of the
