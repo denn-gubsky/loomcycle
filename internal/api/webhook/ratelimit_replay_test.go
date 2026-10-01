@@ -36,11 +36,12 @@ func TestReceiver_RateLimitedDeliveryNotRecordedAsReplay(t *testing.T) {
 	fr := &fakeRunner{runID: "r", agentID: "a"}
 	rec := newTestReceiver(t, map[string]config.Webhook{"gh": wh}, fr, nil, map[string]string{"WH_SECRET": secret}, []string{"WH_SECRET"}, now)
 
-	body := []byte(`{"goal":"g"}`)
-	sig := githubSig(secret, body)
+	// Each delivery has its own body: under a body-only signature a second
+	// id on the same body is a duplicate, not a new delivery.
 	post := func(id string) int {
+		body := []byte(`{"goal":"g-` + id + `"}`)
 		h := http.Header{}
-		h.Set("X-Hub-Signature-256", sig)
+		h.Set("X-Hub-Signature-256", githubSig(secret, body))
 		h.Set("X-Delivery-Id", id)
 		return doPost(rec, "gh", body, h).Code
 	}
