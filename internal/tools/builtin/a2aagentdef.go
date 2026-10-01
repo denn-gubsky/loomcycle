@@ -539,11 +539,11 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 		}
 	}
 	// The gRPC binding dials via grpc-go, OUTSIDE the SSRF-blocking
-	// peerDialContext that guards the jsonrpc/rest transports. Block the
+	// netguard dialer that guards the jsonrpc/rest transports. Block the
 	// common direct-IP SSRF (e.g. grpc://169.254.169.254 → cloud metadata) at
 	// registration/fork time. This does NOT cover a hostname that resolves to
 	// a private address, nor DNS-rebinding at dial time — closing those needs
-	// the gRPC dial routed through peerDialContext, which is deferred because
+	// the gRPC dial routed through that dialer, which is deferred because
 	// the SDK's WithGRPCTransport replaces the whole transport and would
 	// require replicating its default credentials (TLS-downgrade risk).
 	if def.Endpoint != "" && def.Binding == "grpc" {
@@ -580,7 +580,7 @@ func requireHTTPURL(field, raw string) error {
 // requireSafeGRPCEndpoint rejects a gRPC endpoint whose host is a LITERAL
 // private / loopback / link-local IP (notably the cloud metadata service at
 // 169.254.169.254). The gRPC binding dials via grpc-go, outside the
-// SSRF-blocking peerDialContext in internal/tools/a2a, so this is the
+// SSRF-blocking netguard dialer internal/tools/a2a uses, so this is the
 // registration-time defense-in-depth against the common direct-IP SSRF when
 // the endpoint is model-authored via a fork overlay. It deliberately does NOT
 // resolve hostnames (no DNS at registration time, and a resolved answer can

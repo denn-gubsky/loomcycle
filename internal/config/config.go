@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
@@ -500,7 +501,7 @@ type HooksConfig struct {
 	// (comma-separated, same `[tenant:]owner` syntax). Env appends to yaml.
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
 
-	// PrivateHostAllowlist names hosts (suffix-matched, like
+	// PrivateHostAllowlist names hosts (suffix-matched, or CIDR ranges, like
 	// http_private_host_allowlist) that a TENANT operator's hook callback
 	// may reach although they resolve to a private / loopback / link-local
 	// address. A tenant hook receives every matching tool input, so its
@@ -3411,7 +3412,9 @@ type Env struct {
 	// HTTPPrivateHostAllowlist names hosts whose resolved private IPs
 	// are allowed at dial time. Suffix-matched. Use to permit agent
 	// callbacks to a localhost-bound application API. Default empty
-	// (no exception). Example: "localhost,127.0.0.1".
+	// (no exception). Example: "localhost,127.0.0.1". An entry may also
+	// be a CIDR range ("100.64.0.0/10" for a whole tailnet), matched
+	// against each resolved address; a malformed range fails validate.
 	HTTPPrivateHostAllowlist []string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
@@ -7090,6 +7093,15 @@ func validate(c *Config) error {
 	}
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
+	}
+	// The private-host allowlists accept CIDR entries (a whole tailnet in one
+	// line). A malformed range would never match — fail-closed but invisible — so
+	// refuse it here where the operator sees it.
+	if err := netguard.ValidatePrivateHostAllowlist(c.Env.HTTPPrivateHostAllowlist); err != nil {
+		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST: %w", err)
+	}
+	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
+		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
 	}
 	// RFC BA: inline skill names (top-level `skills:` map keys) share the
 	// `/`-grouped grammar with SkillsRoot dir names + SkillDef create/fork

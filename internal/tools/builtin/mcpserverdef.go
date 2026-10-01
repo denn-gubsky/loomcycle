@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/mcp"
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -840,10 +841,13 @@ func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 // allowlist — forcing them to widen the GENERAL SSRF floor just to register
 // their own callback server. Both lists are operator-declared, so honouring
 // either never widens beyond operator intent; it aligns create-time with
-// dial-time.
+// dial-time. For the same reason an IP-literal host inside a CIDR entry of the
+// private allowlist (a whole tailnet, "100.64.0.0/10") passes here, as it does
+// at the dial guard.
 func (m *MCPServerDef) hostAllowed(host string) bool {
 	return hostAllowed(host, m.Cfg.Env.HTTPHostAllowlist) ||
-		hostAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist)
+		hostAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist) ||
+		netguard.IPLiteralAllowed(host, m.Cfg.Env.HTTPPrivateHostAllowlist)
 }
 
 // buildDefinition merges parent JSON (or empty for create) with the

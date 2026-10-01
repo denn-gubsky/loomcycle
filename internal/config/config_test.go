@@ -2829,6 +2829,38 @@ hooks:
 	}
 }
 
+// TestLoad_PrivateHostAllowlistRefusesMalformedCIDR: both private-host vouch
+// lists take CIDR entries, and a malformed range fails the load loudly instead
+// of silently never matching at dial time.
+func TestLoad_PrivateHostAllowlistRefusesMalformedCIDR(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "localhost,100.64.0.0/10,100.101.102.103/32")
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "fd7a:115c:a1e0::/48")
+	if _, err := Load(yamlPath); err != nil {
+		t.Fatalf("valid CIDR entries refused: %v", err)
+	}
+
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "localhost,100.64.0.0/33")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST") {
+		t.Fatalf("malformed HTTP private CIDR: err = %v, want a load error naming the var", err)
+	}
+
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "")
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0/8")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "private_host_allowlist") {
+		t.Fatalf("malformed hooks private CIDR: err = %v, want a load error", err)
+	}
+}
+
 // A `tools:` entry may carry that tool's hooks; it becomes the tool's name in
 // Tools and its hooks in ToolHooks, beside the agent's own hooks.
 func TestAgentDef_YAMLToolEntryCarriesItsHooks(t *testing.T) {
