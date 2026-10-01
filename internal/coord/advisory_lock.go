@@ -161,6 +161,11 @@ var (
 	// subsystem: retention deletes REACHABLE data because an operator asked, and is
 	// off by default; this deletes only the unreachable, and is always on.
 	LockKeyDeadLinkGC int64
+	// LockKeyMemoryPendingSweeper gates the prune of drained consolidation-queue
+	// rows, so one replica per tick deletes them. Its own key rather than
+	// LockKeyMemorySweeper's: sharing a key makes each subsystem's tick starve
+	// the other's (see LockKeyDeadLinkGC).
+	LockKeyMemoryPendingSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -220,6 +225,7 @@ func init() {
 	LockKeyRetentionSweeper = fnvKey("retention_sweeper")
 	LockKeyHelpIndexReconcile = fnvKey("help_index_reconcile")
 	LockKeyDeadLinkGC = fnvKey("deadlink_gc")
+	LockKeyMemoryPendingSweeper = fnvKey("memory_pending_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

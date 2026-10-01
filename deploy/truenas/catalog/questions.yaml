@@ -455,6 +455,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS
+            label: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS
+            description: 'Drained consolidation-queue rows are deleted once they have been drained longer than this. A queued row keeps the raw chat it was banked from, so this is also how long that text outlives its consolidation. Undrained rows are never pruned. Default 7 days (604800000). 0 disables the prune. (example: 604800000)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SQLMEM_ENABLED
             label: LOOMCYCLE_SQLMEM_ENABLED
             description: 'A per-scope SQL database the runtime hosts as a third Memory facet (agents query arbitrary SQL via the Memory tool''s sql_* ops). It also BACKS the Document primitive (RFC AK) — the chunk-structure tables live here, so **Documents and the Web UI Document viewer/assistant require this enabled.** Default OFF. (example: 1)'

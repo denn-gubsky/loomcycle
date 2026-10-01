@@ -4077,6 +4077,13 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
 	MemorySweepInterval time.Duration
 
+	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
+	// after a pass acks it. An hourly prune deletes older drained rows; an
+	// undrained row is never pruned. Default 7 days. 0 or negative disables the
+	// prune and keeps drained rows (and their raw chat payloads) forever.
+	// Env: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS.
+	MemoryPendingDrainedTTL time.Duration
+
 	// PgvectorEnabled opts in to v0.9.0 Vector Memory on the
 	// Postgres backend. When true, Open() probes the `vector`
 	// extension and refuses to start if it's not loaded; Memory's
@@ -5027,6 +5034,16 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 				cfg.Env.MemorySweepInterval = 0
 			} else {
 				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
+			}
+		}
+	}
+	cfg.Env.MemoryPendingDrainedTTL = 7 * 24 * time.Hour
+	if v := os.Getenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			if n <= 0 {
+				cfg.Env.MemoryPendingDrainedTTL = 0
+			} else {
+				cfg.Env.MemoryPendingDrainedTTL = time.Duration(n) * time.Millisecond
 			}
 		}
 	}

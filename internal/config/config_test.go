@@ -805,6 +805,9 @@ agents:
 	if cfg.Env.MemorySweepInterval == 0 {
 		t.Errorf("MemorySweepInterval default should be non-zero")
 	}
+	if cfg.Env.MemoryPendingDrainedTTL != 7*24*time.Hour {
+		t.Errorf("MemoryPendingDrainedTTL default = %v, want 168h", cfg.Env.MemoryPendingDrainedTTL)
+	}
 }
 
 func TestMemoryEnvDisable(t *testing.T) {
@@ -817,6 +820,7 @@ agents:
 `), 0o600)
 	t.Setenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES", "0")
 	t.Setenv("LOOMCYCLE_MEMORY_SWEEP_MS", "-1")
+	t.Setenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS", "0")
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatal(err)
@@ -826,6 +830,9 @@ agents:
 	}
 	if cfg.Env.MemorySweepInterval != 0 {
 		t.Errorf("negative should disable; got %v", cfg.Env.MemorySweepInterval)
+	}
+	if cfg.Env.MemoryPendingDrainedTTL != 0 {
+		t.Errorf("0 should disable the drained-queue prune; got %v", cfg.Env.MemoryPendingDrainedTTL)
 	}
 }
 

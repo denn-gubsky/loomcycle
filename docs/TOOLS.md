@@ -533,6 +533,7 @@ agents:
 | `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` | `65536` | Per-write cap on the `value` payload. 0 disables. |
 | `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | `1048576` | Default per-(scope, scope_id) cap. 0 disables. |
 | `LOOMCYCLE_MEMORY_SWEEP_MS` | `900000` (15 min) | TTL reaper goroutine cadence. 0 disables. |
+| `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | `604800000` (7 days) | How long a consolidation-queue row is kept after a pass acks it; an hourly prune deletes older drained rows (and the raw chat they hold). Undrained rows are never pruned. 0 disables. |
 | `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | `1` | Create the tenant-root and user-root Documents when a principal is **established** — at token mint, and at boot for config-declared principals — instead of only on the first run that references them. They are templates a person fills in (the user-root `## Identity` section is what lets memory placement tell a fact about the user from a fact about a colleague), so arriving on first reference is too late. `0` keeps the older lazy-only behaviour. |
 
 ### Atomic increment
