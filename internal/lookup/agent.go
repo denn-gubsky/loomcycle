@@ -111,15 +111,28 @@ func Agent(ctx context.Context, s AgentStore, cfg *config.Config, tenantID, name
 		}
 	}
 	// 2. Static cfg.Agents — the shared operator base.
-	if cfg != nil {
-		if def, ok := cfg.Agents[name]; ok {
-			// The operator's own yaml, by construction.
-			def.OperatorAuthored = true
-			return def, true
-		}
+	if def, ok := StaticAgent(cfg, name); ok {
+		return def, true
 	}
 	// 3. Shared dynamic (tenant_id="").
 	return resolveDynamic(ctx, s, "", name)
+}
+
+// StaticAgent is the static cfg.Agents entry for name, exactly as Agent serves
+// it when no tenant definition shadows it. A resume of a run that started on a
+// static agent reads it here, past any shadow that has appeared since.
+func StaticAgent(cfg *config.Config, name string) (config.AgentDef, bool) {
+	if cfg == nil {
+		return config.AgentDef{}, false
+	}
+	def, ok := cfg.Agents[name]
+	if !ok {
+		return config.AgentDef{}, false
+	}
+	// The operator's own yaml, by construction.
+	def.OperatorAuthored = true
+	def.Static = true
+	return def, true
 }
 
 // resolveDynamic runs the two dynamic tiers for one tenant pass:

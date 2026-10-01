@@ -167,6 +167,9 @@ var agentDefOverridability = map[string]overridability{
 	// The same for a registered agent, which has no versions: the digest of
 	// the row it started on, which a resume compares against.
 	"RegisteredSHA256": notOverridable,
+	// And for the operator's static config: that the run started on it, so a
+	// resume reads it again past any shadow.
+	"Static": notOverridable,
 
 	// --- operator configuration (D6): the declarations themselves are the
 	// operator's; an override selects WITHIN them and may not change them. ---

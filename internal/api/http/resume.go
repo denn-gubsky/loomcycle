@@ -48,11 +48,13 @@ import (
 // mode, budgets, run timeout, routing, interactive / review state, interruption
 // narrowing, caller host narrowing, added and pinned hooks, a sub-run's spawn
 // ceiling (its parent's volumes and fan-out width), and the definition it
-// started on — an AgentDef version by id, or a registered agent's row by
-// digest; one gone or changed since fails the run, one in another tenant is
-// refused. A row recorded before a piece of the record existed resumes that
-// piece from the definition, as before — except a sub-run's inherited
-// ceilings, which fail closed (no caller hosts, no volumes, serial fan-out).
+// started on — an AgentDef version by id, a registered agent's row by digest,
+// or the operator's static definition, read past any registered agent or
+// AgentDef that has shadowed its name since; one gone or changed since fails
+// the run, one in another tenant is refused. A row recorded before a piece of
+// the record existed resumes that piece from the definition, as before —
+// except a sub-run's inherited ceilings, which fail closed (no caller hosts,
+// no volumes, serial fan-out).
 //
 // LIMITATIONS:
 //   - Per-run SECRETS (UserBearer / named UserCredentials) are never persisted
@@ -66,6 +68,13 @@ import (
 //   - The MODEL restored is the one the run STARTED on. A mid-run provider
 //     fallback is not recorded on the row, so a resumed run does not continue
 //     on the fallback target.
+//   - A STATIC agent is pinned by kind, not by content. A run that started on
+//     one resumes on the static definition as the operator's configuration
+//     holds it at resume — an edit applied by a config reload in between is
+//     followed, as every run of it follows the operator's yaml — and fails if
+//     it was removed. A run recorded before the static marker existed resumes
+//     by name, so a registered agent that has shadowed its name since takes
+//     it over (an AgentDef shadow still fails it).
 //   - Registered agents (dynamic_agents) are not carried by snapshots, so a
 //     paused run of one restored on another instance fails unless the same
 //     registration exists there, as stored.
@@ -861,13 +870,18 @@ func (s *Server) resumePausedRun(run store.Run) error {
 //
 //   - A recorded version is read by its id, retired or not (the rule a pinned
 //     HookDef follows, see pinnedLookup).
-//   - A record naming no version started on a definition that has none: the
-//     operator's yaml, which only the operator changes and every run of it
-//     follows, or a registered agent. It resolves by name — unless the name now
-//     resolves to an AgentDef version, which is not the definition it started
-//     on but one that has shadowed it since, or the run started on a
-//     registered agent whose row has changed or gone since (its recorded
-//     digest no longer matches).
+//   - A record marking the operator's static configuration reads the static
+//     definition again, by name but past the tiers that shadow it — a
+//     registered agent or a tenant's AgentDef of the same name that appeared
+//     since did not start the run. Static definitions are the operator's yaml,
+//     which only the operator changes and every run of it follows; one removed
+//     since fails the run.
+//   - Any other record naming no version started on a registered agent — or on
+//     the operator's yaml, recorded before the static marker was. It resolves
+//     by name — unless the name now resolves to an AgentDef version, which is
+//     not the definition it started on but one that has shadowed it since, or
+//     the run started on a registered agent whose row has changed or gone
+//     since (its recorded digest no longer matches).
 //   - A run recorded before versions were resolves by name, as it always did.
 //
 // A child its parent pinned by def_id (runs.agent_def_id) ran on that version
@@ -887,6 +901,12 @@ func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentV
 		d, ok := lookup.AgentFromDefRow(row)
 		if !ok {
 			return config.AgentDef{}, true, fmt.Errorf("agent %q: the version it started on (%s) is unreadable", run.Agent, ver.DefID)
+		}
+		def = d
+	} else if ver != nil && ver.Static {
+		d, ok := lookup.StaticAgent(s.cfg(), run.Agent)
+		if !ok {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q: the static agent the run started on was removed from the configuration since it started", run.Agent)
 		}
 		def = d
 	} else {

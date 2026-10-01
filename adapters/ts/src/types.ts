@@ -1415,9 +1415,11 @@ export interface RunSpec {
    *  the AgentDef version its agent name resolved to (`def_id` absent for an
    *  agent with no versions — the operator's yaml or a registered agent). For
    *  a registered agent, `registered_sha256` is a digest of the registration
-   *  the run started on; a resume refuses one changed since.
+   *  the run started on; a resume refuses one changed since. `static` marks a
+   *  run that started on the operator's static configuration, which a resume
+   *  reads again rather than a same-named agent registered or forked since.
    *  Written by the server only. */
-  agent_version?: { def_id?: string; registered_sha256?: string };
+  agent_version?: { def_id?: string; registered_sha256?: string; static?: boolean };
 }
 
 /** A finished run's answer (RFC DI). */
