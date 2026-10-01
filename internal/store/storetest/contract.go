@@ -91,6 +91,9 @@ func Run(t *testing.T, factory Factory) {
 		{"CreateRunIdempotencyKeyRoundTrip", testCreateRunIdempotencyKeyRoundTrip},
 		{"CreateRunDuplicateIdempotencyKeyRefused", testCreateRunDuplicateIdempotencyKeyRefused},
 		{"RunByIdempotencyKeyHitAndMiss", testRunByIdempotencyKeyHitAndMiss},
+		{"CreateRunDeliveryAltKeyRoundTrip", testCreateRunDeliveryAltKeyRoundTrip},
+		{"CreateRunDuplicateDeliveryAltKeyRefused", testCreateRunDuplicateDeliveryAltKeyRefused},
+		{"RunByDeliveryKeysMatchesEitherColumn", testRunByDeliveryKeysMatchesEitherColumn},
 		{"CreateRunModelVisibleMidFlight", testCreateRunModelVisibleMidFlight},
 		{"CreateRunModelEmptyStaysEmpty", testCreateRunModelEmptyStaysEmpty},
 		{"GetRunByAgentIDNotFound", testGetRunByAgentIDNotFound},
@@ -3042,6 +3045,104 @@ func testRunByIdempotencyKeyHitAndMiss(t *testing.T, s store.Store) {
 	_, ok, err = s.RunByIdempotencyKey(ctx, "")
 	if err != nil || ok {
 		t.Errorf("empty key: got (ok=%v err=%v), want (false, nil)", ok, err)
+	}
+}
+
+// testCreateRunDeliveryAltKeyRoundTrip: a run created with a second
+// durable dedup key persists it beside idempotency_key and reads both back;
+// a run created without one reads back empty.
+func testCreateRunDeliveryAltKeyRoundTrip(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	run, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_alt", UserID: "user-1", IdempotencyKey: "key-1", DeliveryAltKey: "alt-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.DeliveryAltKey != "alt-1" {
+		t.Errorf("CreateRun did not return DeliveryAltKey: got %q", run.DeliveryAltKey)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IdempotencyKey != "key-1" || got.DeliveryAltKey != "alt-1" {
+		t.Errorf("keys not preserved through GetRun: got (%q, %q) want (key-1, alt-1)", got.IdempotencyKey, got.DeliveryAltKey)
+	}
+
+	bare, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_noalt", UserID: "user-1", IdempotencyKey: "key-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBare, err := s.GetRun(ctx, bare.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotBare.DeliveryAltKey != "" {
+		t.Errorf("run without an alt key should read back empty DeliveryAltKey, got %q", gotBare.DeliveryAltKey)
+	}
+}
+
+// testCreateRunDuplicateDeliveryAltKeyRefused: delivery_alt_key is unique
+// like idempotency_key, so two replicas racing on one delivery cannot both
+// insert. A collision returns ErrDuplicateIdempotencyKey; distinct alt keys
+// and runs with none coexist.
+func testCreateRunDuplicateDeliveryAltKeyRefused(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a1", UserID: "user-1", IdempotencyKey: "k1", DeliveryAltKey: "dup-alt"}); err != nil {
+		t.Fatalf("first CreateRun: %v", err)
+	}
+	_, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a2", UserID: "user-1", IdempotencyKey: "k2", DeliveryAltKey: "dup-alt"})
+	if !errors.Is(err, store.ErrDuplicateIdempotencyKey) {
+		t.Fatalf("second CreateRun with the same alt key: got err %v, want ErrDuplicateIdempotencyKey", err)
+	}
+	if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a3", UserID: "user-1", IdempotencyKey: "k3", DeliveryAltKey: "other-alt"}); err != nil {
+		t.Errorf("CreateRun with a distinct alt key should succeed, got %v", err)
+	}
+	for _, id := range []string{"a4", "a5"} {
+		if _, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: id, UserID: "user-1", IdempotencyKey: "k-" + id}); err != nil {
+			t.Errorf("CreateRun without an alt key (%s) should not collide on NULL: %v", id, err)
+		}
+	}
+}
+
+// testRunByDeliveryKeysMatchesEitherColumn: a key matches a run under
+// idempotency_key OR delivery_alt_key; the earliest-started match wins;
+// unknown, empty and no keys are a miss without an error.
+func testRunByDeliveryKeysMatchesEitherColumn(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "agent-x", "user-1")
+
+	first, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_first", UserID: "user-1", IdempotencyKey: "k-first", DeliveryAltKey: "alt-first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_second", UserID: "user-1", IdempotencyKey: "k-second", DeliveryAltKey: "alt-second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		keys []string
+		want string
+	}{
+		{[]string{"k-first"}, first.ID},
+		{[]string{"alt-first"}, first.ID},
+		{[]string{"absent", "alt-second"}, second.ID},
+		{[]string{"", "k-second"}, second.ID},
+		{[]string{"alt-second", "k-first"}, first.ID}, // both match: the earlier run
+	} {
+		got, ok, err := s.RunByDeliveryKeys(ctx, tc.keys)
+		if err != nil || !ok || got.ID != tc.want {
+			t.Errorf("RunByDeliveryKeys(%q) = (%s, %v, %v), want %s", tc.keys, got.ID, ok, err, tc.want)
+		}
+	}
+	for _, keys := range [][]string{{"absent"}, {""}, nil} {
+		if _, ok, err := s.RunByDeliveryKeys(ctx, keys); err != nil || ok {
+			t.Errorf("RunByDeliveryKeys(%q) = (ok=%v, err=%v), want a miss", keys, ok, err)
+		}
 	}
 }
 
