@@ -163,6 +163,7 @@ export type {
   AgentUsage,
   RunResult,
   RunSpec,
+  RunSpecTeam,
   ConfiguredRun,
   ConfiguredRunPatch,
   ToolChoiceOptions,

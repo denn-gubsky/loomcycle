@@ -7,12 +7,15 @@ import (
 	"log"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // runConfigRecord is the run's OWN resolved configuration: the values the run
@@ -129,6 +132,105 @@ type runConfigRecord struct {
 	// to. A pinned sub-run's definition is this version with the pinned one laid
 	// over it, so resume needs both.
 	AgentVersion *agentVersionRecord `json:"agent_version,omitempty"`
+
+	// Team is what a team walk's own run started with: the TeamDef version
+	// its name or def_id resolved to, its input and its run arguments. Present
+	// only on a walk's run, written once when the row is created and never
+	// changed — a walk runs no loop, so nothing retunes or resumes it. Absent
+	// on a walk recorded before it existed: its version was not recorded and
+	// is not inferred.
+	//
+	// Not runs.agent_def_id, for the reason AgentVersion is not: that column
+	// names an AgentDef version, and the Evaluation tool reads it as one.
+	Team *teamWalkRecord `json:"team,omitempty"`
+}
+
+// teamWalkRecord is a walk's start, as its run records it. Nothing in it is
+// secret: the input is masked and bounded before it is stored (teamWalkRecordOf).
+// No copy of the definition body is kept; content_sha256 still identifies it
+// after the row is deleted.
+type teamWalkRecord struct {
+	Name          string `json:"name"`
+	DefID         string `json:"def_id"`
+	Version       int    `json:"version"`
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+	DefTenant     string `json:"def_tenant,omitempty"`
+	// ResolvedBy is "def_id" (the caller pinned a version) or "name" (it
+	// took the active one).
+	ResolvedBy string `json:"resolved_by"`
+	// Input is the walk's input, masked and cut at teamWalkInputCap bytes.
+	// InputBytes is the length of the input as given, so a reader can tell
+	// how much a truncated input lost.
+	Input          string         `json:"input,omitempty"`
+	InputBytes     int            `json:"input_bytes,omitempty"`
+	InputTruncated bool           `json:"input_truncated,omitempty"`
+	Mode           string         `json:"mode"`
+	Board          *teamWalkBoard `json:"board,omitempty"`
+	Breakpoints    []string       `json:"breakpoints,omitempty"`
+	Review         []string       `json:"review,omitempty"`
+	ReviewTTL      int            `json:"review_ttl_seconds,omitempty"`
+	InterruptOnCap bool           `json:"interrupt_on_cap,omitempty"`
+}
+
+// teamWalkBoard is the walk's board binding at start. Breakpoints and review
+// above are the start seed only: arming a live walk changes an in-memory set,
+// not this record.
+type teamWalkBoard struct {
+	Scope       string `json:"scope"`
+	ChunkID     string `json:"chunk_id"`
+	ResumedFrom string `json:"resumed_from,omitempty"`
+}
+
+// teamWalkInputCap bounds the walk input a run record keeps. Walk input is
+// usually a task line; where a member received the full text it stays in that
+// member's own transcript.
+const teamWalkInputCap = 16 << 10
+
+// teamWalkRecordOf records spec, masking its input with r before cutting it,
+// so a secret in a walk's input is not put at rest unmasked on the run row,
+// and a cut never splits the mask.
+func teamWalkRecordOf(r *redact.Redactor, spec builtin.WalkRunSpec) *teamWalkRecord {
+	mode := "sync"
+	if spec.Detach {
+		mode = "detach"
+	}
+	input := r.String(spec.Input)
+	truncated := false
+	if len(input) > teamWalkInputCap {
+		input, truncated = cutUTF8(input, teamWalkInputCap), true
+	}
+	rec := &teamWalkRecord{
+		Name:           spec.Name,
+		DefID:          spec.DefID,
+		Version:        spec.Version,
+		ContentSHA256:  spec.ContentSHA256,
+		DefTenant:      spec.DefTenant,
+		ResolvedBy:     spec.ResolvedBy,
+		Input:          input,
+		InputBytes:     len(spec.Input),
+		InputTruncated: truncated,
+		Mode:           mode,
+		Breakpoints:    spec.Breakpoints,
+		Review:         spec.Review,
+		ReviewTTL:      spec.ReviewTTLSeconds,
+		InterruptOnCap: spec.InterruptOnCap,
+	}
+	if spec.Board != nil {
+		rec.Board = &teamWalkBoard{Scope: spec.Board.Scope, ChunkID: spec.Board.ChunkID, ResumedFrom: spec.Board.ResumedFrom}
+	}
+	return rec
+}
+
+// cutUTF8 returns at most n bytes of s, ending on a rune boundary so the cut
+// never leaves half a character that JSON would turn into U+FFFD.
+func cutUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // agentVersionRecord names the version a run started on. DefID "" means the

@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // setAgentHooks gives a harness agent its hooks, as its yaml would.
@@ -304,7 +305,7 @@ func TestTeamHooks_TheWalksRunEndHookFires(t *testing.T) {
 	ctx := teamrun.WithWalkHooks(context.Background(), teamrun.WalkHooks{
 		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "log", URL: end.srv.URL}}}},
 	})
-	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +324,7 @@ func TestTeamHooks_TheWalksRunEndHookNamesTheCallingRun(t *testing.T) {
 	ctx := teamrun.WithWalkHooks(tools.WithRunID(context.Background(), "r_caller"), teamrun.WalkHooks{
 		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "log", URL: end.srv.URL}}}},
 	})
-	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +340,7 @@ func TestTeamHooks_AWalkWhoseHooksCannotResolveDoesNotStart(t *testing.T) {
 	ctx := teamrun.WithWalkHooks(context.Background(), teamrun.WalkHooks{
 		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "no-such-hook"}}},
 	})
-	_, runID, _, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	_, runID, _, err := h.srv.openTeamWalkRun(ctx, builtin.WalkRunSpec{Name: "triage"})
 	if err == nil || !strings.Contains(err.Error(), "no-such-hook") || runID != "" {
 		t.Fatalf("err = %v, run = %q; want refused before a run exists", err, runID)
 	}
@@ -374,7 +375,7 @@ func TestTeamHooks_TheWalksHooksResolveInTheTeamsTenant(t *testing.T) {
 	putHookDef(t, h.srv.store, "globex", "audit", hooks.Def{Event: hooks.PhaseRunEnd, Body: hooks.DefBody{Kind: hooks.BodyKindHTTP, URL: callers.srv.URL}})
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "root", TenantID: "globex"})
 	ctx = teamrun.WithWalkHooks(ctx, teamrun.WalkHooks{Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Ref: "audit"}}}, Tenant: "acme"})
-	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, "triage", false)
+	_, runID, finish, err := h.srv.openTeamWalkRun(ctx, builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatal(err)
 	}
