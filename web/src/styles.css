@@ -7141,3 +7141,100 @@ button.primary:disabled {
   margin-bottom: 16px;
   overflow-x: auto;
 }
+
+/* Team-walk detail pane (TeamWalkPane): header, graph, visits, controls. */
+.team-walk-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-soft);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.team-walk-section h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.team-walk-muted {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.team-walk-svg {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.team-walk-source,
+.team-walk-question,
+.team-walk-result pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12px;
+  max-height: 320px;
+  overflow: auto;
+}
+.team-walk-result {
+  margin-top: 8px;
+}
+.team-walk-visit + .team-walk-visit {
+  margin-top: 10px;
+}
+.team-walk-visit-head {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.team-walk-visit-n {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+}
+.team-walk-members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.team-walk-member {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.team-walk-member-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.team-walk-countdown {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--running);
+}
+.team-walk-review textarea {
+  width: 100%;
+  margin-top: 6px;
+  box-sizing: border-box;
+}
+.team-walk-buttons,
+.team-walk-bp,
+.team-walk-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.team-walk-buttons .cancel-btn,
+.team-walk-buttons .resume-btn,
+.team-walk-confirm .cancel-btn {
+  margin-left: 0;
+}
+.team-walk-bp input[type="text"]:first-child {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.team-walk-n {
+  width: 64px;
+}
+.team-walk-pause + .team-walk-pause {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
