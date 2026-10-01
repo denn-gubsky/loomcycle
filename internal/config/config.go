@@ -1131,6 +1131,13 @@ type AgentDef struct {
 	// row that changed since. Resolved like DefID, never authored.
 	RegisteredSHA256 string `json:"-" yaml:"-"`
 
+	// Static reports that this definition was read from the operator's static
+	// configuration (cfg.Agents: yaml, presets, bundles), which a registered
+	// agent or an AgentDef of the same name can shadow. A run records it at
+	// start so a resume reads the static definition again instead of whatever
+	// the name resolves to by then. Resolved like DefID, never authored.
+	Static bool `json:"-" yaml:"-"`
+
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
 	// Code is the inline code-js orchestrator source (RFC J). When set

@@ -289,7 +289,9 @@ func TestResumedRun_OfAYamlAgentResumesByName(t *testing.T) {
 
 // A run that started on a definition with no versions, whose name a tenant's
 // AgentDef has shadowed since, did not start on that AgentDef: it fails
-// rather than resuming on it.
+// rather than resuming on it. (A run recorded as static reads the static
+// definition instead, see resume_static_agent_test.go; this record predates
+// that marker.)
 func TestResumedRun_WhoseYamlAgentWasShadowedFails(t *testing.T) {
 	cfg := versionConfig()
 	cfg.Agents = map[string]config.AgentDef{
@@ -301,7 +303,7 @@ func TestResumedRun_WhoseYamlAgentWasShadowedFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := runConfigRecord{AgentVersion: &agentVersionRecord{}} // started on the yaml
+	rec := runConfigRecord{AgentVersion: &agentVersionRecord{}} // started on the yaml, before the static marker
 	run, err := f.st.CreateRun(ctx, sess.ID, store.RunIdentity{
 		AgentID: "a_shadowed", UserID: "alice", TenantID: "acme", Model: "stub-model", RunConfig: rec.marshal(),
 	})

@@ -33,6 +33,7 @@ func TestSubstrateAgentDef_ConfigRoundTripCoversEveryField(t *testing.T) {
 		"OwnerTenant":      "RESOLVED, not content: the tenant the definition was read from, stamped by lookup like OperatorAuthored — a def body cannot claim another tenant",
 		"DefID":            "RESOLVED, not content: the agent_defs row the definition was read from, stamped by lookup — a def body cannot name its own version",
 		"RegisteredSHA256": "RESOLVED, not content: a digest of the dynamic_agents row the definition was read from, stamped by lookup — an AgentDef version has no such row",
+		"Static":           "RESOLVED, not content: that the definition was read from the operator's static config, stamped by lookup — an AgentDef version is never static",
 		"OperatorAuthored": "AUTHORITY, not content. It lives on the agent_defs ROW and is stamped from the ctx at the write site; carrying it through the definition body would let a def claim its own authorship — and would put it in the content hash, forking every existing row",
 	}
 
