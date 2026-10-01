@@ -462,6 +462,7 @@ func Run(t *testing.T, factory Factory) {
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
 		{"ScheduleRunStateSeedAndGet", testScheduleRunStateSeedAndGet},
 		{"ScheduleRunStateListDueRespectsRetiredAndPaused", testScheduleRunStateListDueRespectsRetiredAndPaused},
+		{"ScheduleRunStateListDueCarriesOwnerAndProvenance", testScheduleRunStateListDueCarriesOwnerAndProvenance},
 		{"ScheduleRunStateRecordResult", testScheduleRunStateRecordResult},
 		{"ScheduleRunStatePauseResume", testScheduleRunStatePauseResume},
 		{"EvaluationSubmitAndAggregate", testEvaluationSubmitAndAggregate},
@@ -11478,6 +11479,49 @@ func testScheduleRunStateListDueRespectsRetiredAndPaused(t *testing.T, s store.S
 	}
 	if names[pausedID] {
 		t.Errorf("paused schedule should not appear in due list")
+	}
+}
+
+// testScheduleRunStateListDueCarriesOwnerAndProvenance: the sweeper decides
+// where a due row executes, and whether a tenant-less consolidation fan-out may
+// sweep every tenant, from the row's OWNING tenant and its
+// bootstrapped_from_static flag — neither of which is in the definition body.
+func testScheduleRunStateListDueCarriesOwnerAndProvenance(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Microsecond)
+	for _, r := range []struct {
+		id, name, owner string
+		bootstrapped    bool
+	}{
+		{"sd-due-owned", "due-owned", "acme", false},
+		{"sd-due-yaml", "due-yaml", "", true},
+	} {
+		row := mkScheduleDef(r.id, r.name, "")
+		row.TenantID = r.owner
+		row.BootstrappedFromStatic = r.bootstrapped
+		if _, err := s.ScheduleDefCreate(ctx, row); err != nil {
+			t.Fatalf("create %s: %v", r.id, err)
+		}
+		if err := s.ScheduleDefSetActive(ctx, r.owner, r.name, r.id, "test"); err != nil {
+			t.Fatalf("set active %s: %v", r.id, err)
+		}
+		if err := s.ScheduleRunStateSeed(ctx, r.id, now.Add(-time.Minute)); err != nil {
+			t.Fatalf("seed %s: %v", r.id, err)
+		}
+	}
+	due, err := s.ScheduleRunStateListDue(ctx, now)
+	if err != nil {
+		t.Fatalf("list due: %v", err)
+	}
+	got := map[string]store.ScheduleDueRow{}
+	for _, d := range due {
+		got[d.DefID] = d
+	}
+	if d, ok := got["sd-due-owned"]; !ok || d.OwnerTenantID != "acme" || d.BootstrappedFromStatic {
+		t.Errorf("tenant-owned row (listed %v): owner %q bootstrapped %v, want acme false", ok, d.OwnerTenantID, d.BootstrappedFromStatic)
+	}
+	if d, ok := got["sd-due-yaml"]; !ok || d.OwnerTenantID != "" || !d.BootstrappedFromStatic {
+		t.Errorf("yaml row (listed %v): owner %q bootstrapped %v, want empty owner, bootstrapped", ok, d.OwnerTenantID, d.BootstrappedFromStatic)
 	}
 }
 

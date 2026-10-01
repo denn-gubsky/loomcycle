@@ -54,6 +54,11 @@ type scheduleDef struct {
 	// says otherwise: a schedule must not fire without the credentials it was
 	// authored with, whichever path wrote the body.
 	CaptureDisabled *scheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// OperatorLayer is the server-stamped bit saying the def was written, with
+	// no tenant, by a caller holding operator authority. Only such a def (or a
+	// row bootstrapped from the operator's yaml) may run a consolidation fan-out
+	// across every tenant — see operatorLayerFanout.
+	OperatorLayer bool `json:"operator_layer,omitempty"`
 }
 
 // scheduleCaptureDisabled mirrors mergedScheduleCaptureDisabled.

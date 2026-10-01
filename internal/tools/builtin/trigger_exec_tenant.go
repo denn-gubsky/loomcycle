@@ -29,9 +29,13 @@ import (
 // An empty execTenant passes: create and fork stamp the author's tenant over
 // it before this check, so it reaches here only on a schedule hook edit of a
 // row written before that stamp existed, which the edit carries over as is.
+//
+// "Admin" here is operator authority (callerHasOperatorAuthority): an open-mode
+// or stdio operator authenticates nobody, so it has no principal to carry
+// substrate:admin, and is still the operator.
 func refuseForeignExecTenant(ctx context.Context, op, execTenant string) (tools.Result, bool) {
 	own := tools.RunIdentity(ctx).TenantID
-	if execTenant == "" || execTenant == own || defCallerIsAdmin(ctx) {
+	if execTenant == "" || execTenant == own || callerHasOperatorAuthority(ctx) {
 		return tools.Result{}, false
 	}
 	// The foreign tenant's name is deliberately not echoed: on an inherited

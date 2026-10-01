@@ -207,6 +207,10 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	stampOperatorLayer(ctx, &def, ident.TenantID)
+	if res, refused := refuseNonOperatorLayerFanout("create", def); refused {
+		return res, nil
+	}
 	// A create on a name whose current def was restored without its literal
 	// credentials writes a new version of it: the marker carries over unless
 	// this create supplies every stripped key, and the fire count carries
@@ -447,6 +451,10 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	stampOperatorLayer(ctx, &def, tenantID)
+	if res, refused := refuseNonOperatorLayerFanout("fork", def); refused {
+		return res, nil
+	}
 	// A parent restored without its literal credentials carries a marker;
 	// this fork clears it only by re-supplying every stripped key, and
 	// inherits the parent's fire count either way.
@@ -706,6 +714,7 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	// not widen a confined author's schedule by editing a hook.
 	def.OperatorKeyRestricted = def.OperatorKeyRestricted || operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	def.Isolated = def.Isolated || tools.AuthorIsolated(ctx)
+	stampOperatorLayer(ctx, &def, parent.TenantID)
 	if err := validateScheduleDef(def); err != nil {
 		return errResult(fmt.Sprintf("%s: %s", opLabel, err)), nil
 	}
@@ -764,6 +773,32 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 }
 
 // ---- helpers ----
+
+// stampOperatorLayer sets def.OperatorLayer from who is writing it — server
+// authority, applied after the overlay on every write path. It is true only for
+// a version that executes in the operator layer (no tenant), is stored there
+// (owningTenant ""), and is written by a caller with operator authority. A hook
+// edit re-derives it from the EDITOR, not the parent: the editor is the one
+// adding hooks that would fire in every tenant, and an admin's edit is the
+// "re-save as an admin" that restores a runtime def's reach.
+func stampOperatorLayer(ctx context.Context, def *mergedScheduleDef, owningTenant string) {
+	def.OperatorLayer = def.TenantID == "" && owningTenant == "" && callerHasOperatorAuthority(ctx)
+}
+
+// refuseNonOperatorLayerFanout refuses a create or fork of a consolidation
+// fan-out def that would execute in the operator layer without operator
+// authority. Such a def would never sweep (the scheduler confines a fan-out
+// without the operator_layer bit to tenant ""), so storing it would only hand
+// the author a schedule that silently does less than it says. Call after
+// stampOperatorLayer.
+func refuseNonOperatorLayerFanout(op string, def mergedScheduleDef) (tools.Result, bool) {
+	if def.TenantID != "" || def.OperatorLayer || !config.IsConsolidationFanout(def.Metadata) {
+		return tools.Result{}, false
+	}
+	return errValidation(
+		fmt.Sprintf("%s: a memory consolidation fan-out with no tenant sweeps every tenant's users, so only an admin can author one", op),
+		"ask an admin to author it; a fan-out authored in a tenant consolidates only that tenant's users"), true
+}
 
 func (s *ScheduleDef) checkScopeForName(policy tools.ScheduleDefPolicyValue, name string) error {
 	if len(policy.Scopes) == 0 {
@@ -1357,6 +1392,16 @@ type mergedScheduleDef struct {
 	// disabled, so no trigger fires without the credentials it was authored
 	// with, and re-enabling never hands a max_fires budget back.
 	CaptureDisabled *mergedScheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// OperatorLayer records that this version was written with no tenant by a
+	// caller holding operator authority (callerHasOperatorAuthority). A
+	// consolidation fan-out with no tenant sweeps EVERY tenant, running its
+	// agent and prompt as each discovered user, so tenant "" alone cannot be
+	// the test: a tenant-less config principal, or an agent in a run that
+	// executes in "", can write such a def too. Server authority: create, fork
+	// and the hook edits stamp it unconditionally after the overlay, and
+	// applyOverlay never copies it, so an overlay can neither set nor clear it.
+	// omitempty keeps every other def body byte-identical.
+	OperatorLayer bool `json:"operator_layer,omitempty"`
 }
 
 // mergedScheduleCaptureDisabled lists the credential keys a snapshot stripped

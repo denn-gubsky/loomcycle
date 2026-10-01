@@ -14,10 +14,21 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
-// These tests pin WHICH tenants a consolidation fan-out reaches. The rule: a
-// def in the operator layer (tenant "" — a yaml `scheduled_runs:` entry with no
-// `tenant_id`) reaches every tenant, and each dispatched run executes in its
-// target's own tenant; a tenant's def reaches only that tenant.
+// These tests pin WHICH tenants a consolidation fan-out reaches. The rule: an
+// OPERATOR's def in the operator layer (tenant "" — a yaml `scheduled_runs:`
+// entry with no `tenant_id`, or a version an admin wrote, which carries
+// operator_layer) reaches every tenant, and each dispatched run executes in its
+// target's own tenant; a tenant's def reaches only that tenant, and so does a
+// tenant-less def nobody with operator authority wrote.
+
+// operatorFanoutDef is fanoutDef as the operator's: the ScheduleDef tool stamps
+// operator_layer on a tenant-less version an admin (or an open-mode / stdio
+// operator) writes.
+func operatorFanoutDef(extraMeta map[string]any) scheduleDef {
+	def := fanoutDef(extraMeta)
+	def.OperatorLayer = true
+	return def
+}
 
 // enqueuePending banks one undrained queue row for a user-scope target.
 func enqueuePending(t *testing.T, st store.Store, id, tenantID, userID string) {
@@ -48,7 +59,7 @@ func dispatched(fr *fakeRunner) []string {
 // Fails-before: zero runs — alice's session and bob's queue are both in
 // "default", and the fan-out only looked in "".
 func TestFanout_OperatorScheduleConsolidatesLegacyBearerUsers(t *testing.T) {
-	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
+	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), nil)
 	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 
 	seedSettledSession(t, st, "default", "alice")
@@ -71,7 +82,7 @@ func TestFanout_OperatorScheduleConsolidatesLegacyBearerUsers(t *testing.T) {
 //
 // Fails-before: only the operator layer's own target is dispatched.
 func TestFanout_OperatorScheduleRunsEachTargetInItsOwnTenant(t *testing.T) {
-	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
+	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), nil)
 	// No provider resolver: the batch runs serially, so dispatch order is the
 	// target order and can be asserted.
 
@@ -98,7 +109,7 @@ func TestFanout_OperatorScheduleRunsEachTargetInItsOwnTenant(t *testing.T) {
 //
 // Fails-before: zero runs (no target is in "").
 func TestFanout_OperatorScheduleHonoursCapAcrossTenants(t *testing.T) {
-	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), func(c *Config) {
+	sched, fr, st, logs := fanoutFixture(t, operatorFanoutDef(nil), func(c *Config) {
 		c.MaxConsolidationTargets = 2
 	})
 
@@ -129,7 +140,7 @@ func TestFanout_OperatorScheduleHonoursCapAcrossTenants(t *testing.T) {
 // Fails-before: the "default" target is never dispatched, so there is no run to
 // withhold from. Fails without the strip: that run carries the credential.
 func TestFanout_OperatorScheduleWithholdsItsCredentialsFromOtherTenants(t *testing.T) {
-	def := fanoutDef(nil)
+	def := operatorFanoutDef(nil)
 	def.UserCredentials = map[string]string{"svc": "operator-literal"}
 	sched, fr, st, logs := fanoutFixture(t, def, nil)
 
@@ -157,15 +168,14 @@ func TestFanout_OperatorScheduleWithholdsItsCredentialsFromOtherTenants(t *testi
 	}
 }
 
-// TestFanout_TenantOwnedDefWithEmptyBodyTenantStaysConfined: a row a tenant
-// wrote before create stamped the author's tenant into the body has an EMPTY
-// body tenant but a real owner. Only the body tenant was ever read at fire time,
-// so reading "" as the operator layer from the body alone would turn that
-// tenant's schedule into a sweep of every tenant. The owner must be "" too.
+// TestFanout_LegacyEmptyBodyTenantRunsInOwningTenant: a row a tenant wrote
+// before create stamped the author's tenant into the body has an EMPTY body
+// tenant but a real owner. It is that tenant's schedule: it must neither sweep
+// every tenant nor consolidate the operator layer's users — it consolidates its
+// owner's.
 //
-// Passes on the code before the operator-layer sweep (it never widened);
-// fails if operatorLayerFanout checks the body tenant alone.
-func TestFanout_TenantOwnedDefWithEmptyBodyTenantStaysConfined(t *testing.T) {
+// Fails-before: dispatched "/olga" (confined to the operator layer "").
+func TestFanout_LegacyEmptyBodyTenantRunsInOwningTenant(t *testing.T) {
 	sched, fr, st := fanoutFixtureOwnedBy(t, fanoutDef(nil), "acme")
 
 	seedSettledSession(t, st, "", "olga")
@@ -174,14 +184,69 @@ func TestFanout_TenantOwnedDefWithEmptyBodyTenantStaysConfined(t *testing.T) {
 
 	fireT(t, sched)
 
+	if got, want := strings.Join(dispatched(fr), ","), "acme/sam"; got != want {
+		t.Fatalf("dispatched = %s, want %s — a tenant-owned def runs in its owner's tenant and nowhere else", got, want)
+	}
+}
+
+// TestFanout_EmptyTenantDefWithoutOperatorAuthorityStaysConfined is sched-1:
+// a tenant-less fan-out that nobody with operator authority wrote — a config
+// principal with no tenant, or an agent in a run executing in "" — must not run
+// its agent and prompt as every user of every tenant. It stays in "", and the
+// log says why.
+//
+// Fails-before: dispatched "/olga,acme/sam" — the whole deployment.
+func TestFanout_EmptyTenantDefWithoutOperatorAuthorityStaysConfined(t *testing.T) {
+	sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
+
+	seedSettledSession(t, st, "", "olga")
+	seedSettledSession(t, st, "acme", "sam")
+
+	fireT(t, sched)
+
 	if got, want := strings.Join(dispatched(fr), ","), "/olga"; got != want {
-		t.Fatalf("dispatched = %s, want %s — a tenant-owned def must not sweep other tenants", got, want)
+		t.Fatalf("dispatched = %s, want %s — a tenant-less def without operator authority swept other tenants; logs:\n%s", got, want, logs.all())
+	}
+	if !logs.contains("not authored with operator authority") {
+		t.Errorf("confining the fan-out must say why; logs:\n%s", logs.all())
+	}
+}
+
+// TestFanout_AdminAuthoredFanoutStillSweeps: the operator's own tenant-less
+// fan-out — an admin's version (operator_layer) or the row bootstrapped from
+// the yaml — keeps its reach across every tenant.
+func TestFanout_AdminAuthoredFanoutStillSweeps(t *testing.T) {
+	sched, fr, st, _ := fanoutFixture(t, operatorFanoutDef(nil), nil)
+	seedSettledSession(t, st, "acme", "sam")
+
+	fireT(t, sched)
+
+	if got, want := strings.Join(dispatched(fr), ","), "acme/sam"; got != want {
+		t.Fatalf("dispatched = %s, want %s — an admin's fan-out must sweep every tenant", got, want)
+	}
+}
+
+func TestFanout_BootstrappedYamlFanoutStillSweeps(t *testing.T) {
+	sched, fr, st := fanoutFixtureRow(t, fanoutDef(nil), "", true)
+	seedSettledSession(t, st, "acme", "sam")
+
+	fireT(t, sched)
+
+	if got, want := strings.Join(dispatched(fr), ","), "acme/sam"; got != want {
+		t.Fatalf("dispatched = %s, want %s — the yaml's fan-out must sweep every tenant", got, want)
 	}
 }
 
 // fanoutFixtureOwnedBy is fanoutFixture with the schedule row OWNED by a given
 // tenant (schedulerFixture's row is owned by "").
 func fanoutFixtureOwnedBy(t *testing.T, def scheduleDef, owner string) (*Scheduler, *fakeRunner, store.Store) {
+	t.Helper()
+	return fanoutFixtureRow(t, def, owner, false)
+}
+
+// fanoutFixtureRow is fanoutFixtureOwnedBy with the row's
+// bootstrapped_from_static flag set as given.
+func fanoutFixtureRow(t *testing.T, def scheduleDef, owner string, bootstrapped bool) (*Scheduler, *fakeRunner, store.Store) {
 	t.Helper()
 	st, err := sqlite.Open(":memory:")
 	if err != nil {
@@ -196,6 +261,7 @@ func fanoutFixtureOwnedBy(t *testing.T, def scheduleDef, owner string) (*Schedul
 	const defID = "sd-owned"
 	if _, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{
 		DefID: defID, Name: "sched-owned", Definition: defJSON, TenantID: owner,
+		BootstrappedFromStatic: bootstrapped,
 	}); err != nil {
 		t.Fatalf("def create: %v", err)
 	}

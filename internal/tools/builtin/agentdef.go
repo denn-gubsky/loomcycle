@@ -174,6 +174,24 @@ func defCallerIsAdmin(ctx context.Context) bool {
 	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
 }
 
+// callerHasOperatorAuthority reports whether the caller may do what only the
+// operator may: a substrate:admin principal, or an off-run call on a surface
+// with no authentication at all (open-mode HTTP/gRPC, the stdio `loomcycle
+// mcp`), which the transport marks with tools.WithUnauthenticatedOperator.
+//
+// It is narrower than "no principal": a run, a sub-agent and a trigger-fired
+// context carry no principal either — in open mode, or for a yaml schedule or
+// webhook fed external input — and none of them is the operator. And a
+// principal with no tenant is not the operator either: a config `principals:`
+// entry may omit its tenant, and admin is still explicit (substrate:admin).
+func callerHasOperatorAuthority(ctx context.Context) bool {
+	if defCallerIsAdmin(ctx) {
+		return true
+	}
+	_, hasPrincipal := auth.PrincipalFromContext(ctx)
+	return !hasPrincipal && tools.IsUnauthenticatedOperator(ctx)
+}
+
 // forkParentVisible reports whether a caller in callerTenant may fork a
 // parent_def_id owned by rowTenant: its own tenant's, the shared ("") base, or
 // any tenant's for a substrate:admin. A def_id is a global handle, so a fork

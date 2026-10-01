@@ -760,6 +760,31 @@ func TestMergedScheduleDef_DriftDetection_CaptureDisabledMarker(t *testing.T) {
 	}
 }
 
+// TestMergedScheduleDef_DriftDetection_OperatorLayerBit pins the authority bit
+// the scheduler reads to let a tenant-less consolidation fan-out sweep every
+// tenant. The tag-set tests above catch it going missing from ONE mirror; this
+// one also catches it leaving all three at once — which would silently confine
+// every operator fan-out the tool wrote to tenant "".
+func TestMergedScheduleDef_DriftDetection_OperatorLayerBit(t *testing.T) {
+	for name, tags := range map[string]map[string]bool{
+		"builtin.mergedScheduleDef":   scheduleJsonTagsOf(reflect.TypeOf(mergedScheduleDef{})),
+		"lookup.SubstrateScheduleDef": scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{})),
+		"scheduler.scheduleDef":       scheduler.ScheduleDefJSONTagsForDrift(),
+	} {
+		if !tags["operator_layer"] {
+			t.Errorf("%s has no operator_layer field; an operator-authored fan-out would lose its reach there", name)
+		}
+	}
+	raw, err := json.Marshal(mergedScheduleDef{Agent: "a", OperatorLayer: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var read lookup.SubstrateScheduleDef
+	if err := json.Unmarshal(raw, &read); err != nil || !read.OperatorLayer {
+		t.Errorf("operator_layer did not round-trip write → lookup (err %v): %s", err, raw)
+	}
+}
+
 // scheduleJsonTagsOf mirrors jsonTagsOfFields in agentdef_test.go;
 // duplicated here because that helper is package-private and reusing
 // it would require widening test-helper visibility.
