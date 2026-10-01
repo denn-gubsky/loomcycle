@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,5 +252,85 @@ func TestPercentile_Nearest(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("percentile(%v, %d) = %d, want %d", tc.in, tc.p, got, tc.want)
 		}
+	}
+}
+
+// TestMetricsEndpoints_ErrorsAreJSONWithCode — every error path writes the
+// API's JSON error envelope (application/json, {"code","error"}, no trailing
+// newline) rather than a JSON-looking text/plain body from http.Error.
+func TestMetricsEndpoints_ErrorsAreJSONWithCode(t *testing.T) {
+	enabled, _ := metricsFixture(t, true)
+	disabled, _ := metricsFixture(t, false)
+	broken, brokenStore := metricsFixture(t, true)
+	// A closed store makes every query fail, reaching the 500 branches.
+	_ = brokenStore.Close()
+
+	cases := []struct {
+		name       string
+		fn         http.HandlerFunc
+		path       string
+		runID      string
+		wantStatus int
+		wantCode   string
+		wantError  string
+	}{
+		{"samples missing since", enabled.handleMetricsSamples, "/v1/_metrics/samples", "", http.StatusBadRequest, "missing_since", "missing required query param: since (RFC3339)"},
+		{"samples bad since", enabled.handleMetricsSamples, "/v1/_metrics/samples?since=yesterday", "", http.StatusBadRequest, "invalid_since", "invalid since: must be RFC3339"},
+		{"samples bad until", enabled.handleMetricsSamples, "/v1/_metrics/samples?since=2026-05-13T00:00:00Z&until=later", "", http.StatusBadRequest, "invalid_until", "invalid until: must be RFC3339"},
+		{"samples bad limit", enabled.handleMetricsSamples, "/v1/_metrics/samples?since=2026-05-13T00:00:00Z&limit=-3", "", http.StatusBadRequest, "invalid_limit", "invalid limit: must be positive integer (1..1000)"},
+		{"samples store failure", broken.handleMetricsSamples, "/v1/_metrics/samples?since=2026-05-13T00:00:00Z", "", http.StatusInternalServerError, "metrics_query_failed", "failed to query samples"},
+		{"run missing id", enabled.handleMetricsRunSummary, "/v1/_metrics/runs/", "", http.StatusBadRequest, "missing_run_id", "missing run_id"},
+		{"run unknown", enabled.handleMetricsRunSummary, "/v1/_metrics/runs/r_nope", "r_nope", http.StatusNotFound, "run_not_found", "run not found"},
+		{"run store failure", broken.handleMetricsRunSummary, "/v1/_metrics/runs/r_nope", "r_nope", http.StatusInternalServerError, "metrics_query_failed", "failed to compute run summary"},
+		{"summary bad period", enabled.handleMetricsSummary, "/v1/_metrics/summary?period=42h", "", http.StatusBadRequest, "invalid_period", "invalid period: must be 1h | 24h | 7d"},
+		{"summary store failure", broken.handleMetricsSummary, "/v1/_metrics/summary?period=1h", "", http.StatusInternalServerError, "metrics_query_failed", "failed to query samples"},
+		{"disabled", disabled.handleMetricsSummary, "/v1/_metrics/summary?period=1h", "", http.StatusServiceUnavailable, "metrics_disabled", "metrics sampler not enabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			if tc.runID != "" {
+				req.SetPathValue("run_id", tc.runID)
+			}
+			rec := httptest.NewRecorder()
+			tc.fn(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", ct)
+			}
+			raw := rec.Body.String()
+			if strings.HasSuffix(raw, "\n") {
+				t.Errorf("body has a trailing newline: %q", raw)
+			}
+			var body struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(raw), &body); err != nil {
+				t.Fatalf("decode %q: %v", raw, err)
+			}
+			if body.Code != tc.wantCode || body.Error != tc.wantError {
+				t.Errorf("body = {code:%q error:%q}, want {code:%q error:%q}", body.Code, body.Error, tc.wantCode, tc.wantError)
+			}
+		})
+	}
+}
+
+// TestMetricsEndpoints_DisabledKeepsEnableHint — the 503 envelope still
+// carries the enable_hint the Web UI's Activity Monitor renders.
+func TestMetricsEndpoints_DisabledKeepsEnableHint(t *testing.T) {
+	srv, _ := metricsFixture(t, false)
+	rec := httptest.NewRecorder()
+	srv.handleMetricsSamples(rec, httptest.NewRequest("GET", "/v1/_metrics/samples", nil))
+	var body struct {
+		EnableHint string `json:"enable_hint"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.EnableHint != "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle" {
+		t.Errorf("enable_hint = %q", body.EnableHint)
 	}
 }
