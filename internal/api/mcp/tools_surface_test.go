@@ -88,6 +88,20 @@ func TestToolSurface_NoDesignDocCitationsInModelVisibleText(t *testing.T) {
 	}
 }
 
+// The create_snapshot description is what a model reads to act on a capture's
+// `warnings`. It once described them as header-only, after the capture had
+// started reporting stdio env literals (where a $cred: reference does not
+// resolve) and paused runs parked on a pending interrupt. Match whole phrases:
+// a bare "env" is inside "envelope".
+func TestToolSurface_CreateSnapshotDescribesEveryWarningKind(t *testing.T) {
+	desc := toolDescription(t, "create_snapshot")
+	for _, want := range []string{"stdio env", "pending interrupt", "only a ${LOOMCYCLE_*} reference resolves"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("the create_snapshot description does not mention %q", want)
+		}
+	}
+}
+
 func truncateForMsg(s string) string {
 	if len(s) > 120 {
 		return s[:120] + "…"

@@ -283,17 +283,33 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(out.Restored) > 0 {
 		// Same key=value form and the same names as the typed line below, so
-		// a script reading memory=N still does; the map adds the rest.
+		// a script reading memory=N still does; the map adds the rest. The
+		// counts of rows a restore held back print on their own line, and only
+		// when there is one: under "restored" they read as successes.
 		keys := make([]string, 0, len(out.Restored))
 		for k := range out.Restored {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		fmt.Fprint(stdout, "restored")
+		var held []string
 		for _, k := range keys {
+			if heldBackCounter(k) {
+				if out.Restored[k] > 0 {
+					held = append(held, k)
+				}
+				continue
+			}
 			fmt.Fprintf(stdout, " %s=%d", k, out.Restored[k])
 		}
 		fmt.Fprintln(stdout)
+		if len(held) > 0 {
+			fmt.Fprint(stdout, "not restored")
+			for _, k := range held {
+				fmt.Fprintf(stdout, " %s=%d", k, out.Restored[k])
+			}
+			fmt.Fprintln(stdout)
+		}
 	} else {
 		fmt.Fprintf(stdout, "restored agent_defs=%d agent_def_active=%d memory=%d channel_messages=%d channel_cursors=%d evaluations=%d paused_runs=%d transcript_events=%d synthesized_sessions=%d\n",
 			out.AgentDefsRestored, out.AgentDefActiveRestored, out.MemoryRestored,
@@ -304,4 +320,13 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "warning: %s\n", w)
 	}
 	return 0
+}
+
+// heldBackCounter reports whether a `restored` map key counts rows the restore
+// held back rather than wrote live: a refused definition or active pointer
+// (`*_refused`), or a trigger written disabled because the snapshot stripped
+// its literal credentials. The web UI's restoreSummary.ts splits the map the
+// same way.
+func heldBackCounter(key string) bool {
+	return strings.HasSuffix(key, "_refused") || key == "defs_disabled_for_credentials"
 }

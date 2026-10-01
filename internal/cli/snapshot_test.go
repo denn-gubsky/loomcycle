@@ -192,6 +192,44 @@ func TestRunRestore_PrintsEveryCounterFromTheRestoredMap(t *testing.T) {
 	}
 }
 
+// A refused or credential-disabled count under the "restored" label reads as a
+// success. It gets its own line, only when one is above zero, and the exit
+// code stays 0: the restore itself succeeded.
+func TestRunRestore_PrintsRefusedCountsSeparately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snap.json")
+	_ = os.WriteFile(path, []byte(`{"schema_version":1,"sections":{}}`), 0o644)
+	cases := []struct {
+		name, body, want string
+	}{
+		{
+			name: "held back",
+			body: `{"restored":{"memory":3,"mcp_server_defs":1,"mcp_server_defs_refused":2,"active_pointers_refused":1,"hook_defs_refused":0,"defs_disabled_for_credentials":1}}`,
+			want: "restored mcp_server_defs=1 memory=3\n" +
+				"not restored active_pointers_refused=1 defs_disabled_for_credentials=1 mcp_server_defs_refused=2\n",
+		},
+		{
+			name: "nothing held back",
+			body: `{"restored":{"memory":3,"mcp_server_defs_refused":0,"defs_disabled_for_credentials":0}}`,
+			want: "restored memory=3\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			var stdout, stderr bytes.Buffer
+			if rc := RunRestore([]string{"--target", srv.URL, path}, &stdout, &stderr); rc != 0 {
+				t.Fatalf("rc = %d, stderr = %q", rc, stderr.String())
+			}
+			if got := stdout.String(); got != tc.want {
+				t.Errorf("stdout = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunSnapshot_PrintsCaptureWarnings(t *testing.T) {
 	srv := stubServer(t, "POST", "/v1/_snapshots", 201,
 		`{"id":"snap_w","created_at":"2026-09-29T00:00:00Z","schema_version":1,"byte_size":10,"warnings":["mcp_server_defs x: headers.Authorization holds a literal value"]}`,

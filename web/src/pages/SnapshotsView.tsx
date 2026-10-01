@@ -6,8 +6,8 @@ import {
   listSnapshots,
   restoreSnapshotFromText,
   SnapshotListEntry,
-  SnapshotRestoreResponse,
 } from "../api";
+import { summarizeRestore } from "../lib/restoreSummary";
 
 // v0.8.17 PR 5 — Snapshots admin view. Shows the captured snapshots,
 // supports capture / restore-from-file / export-as-download / delete.
@@ -16,9 +16,16 @@ import {
 const POLL_MS = 10_000;
 
 interface RestoreFlash {
-  ok: boolean;
   message: string;
-  details?: SnapshotRestoreResponse;
+  // Counts of rows a restore held back (refused, or written disabled).
+  notRestored?: string;
+  warnings?: string[];
+}
+
+// A flash the operator has to act on: it renders as a warning and stays up
+// until dismissed or replaced, instead of fading after 8 s.
+function needsAttention(f: RestoreFlash): boolean {
+  return !!f.notRestored || (f.warnings?.length ?? 0) > 0;
 }
 
 export default function SnapshotsView() {
@@ -52,9 +59,9 @@ export default function SnapshotsView() {
 
   // Auto-dismiss restore flash after 8s — long enough to read the
   // per-section counts but short enough that the next refresh shows
-  // clean state.
+  // clean state. A flash that needs attention stays.
   useEffect(() => {
-    if (!restoreFlash) return;
+    if (!restoreFlash || needsAttention(restoreFlash)) return;
     const t = setTimeout(() => setRestoreFlash(null), 8_000);
     return () => clearTimeout(t);
   }, [restoreFlash]);
@@ -75,12 +82,12 @@ export default function SnapshotsView() {
         ...prev,
       ]);
       setCaptureLabel("");
-      // The capture's warnings (a literal credential in a captured header)
-      // render in the same list a restore's warnings do.
+      // The capture's warnings (a literal-looking credential in a captured
+      // definition, a paused run parked on a pending interrupt) render in the
+      // same list a restore's warnings do.
       setRestoreFlash({
-        ok: true,
         message: `captured ${created.id} (${formatBytes(created.byte_size)})`,
-        details: created.warnings?.length ? { warnings: created.warnings } : undefined,
+        warnings: created.warnings,
       });
       setErr(null);
     } catch (e) {
@@ -118,10 +125,11 @@ export default function SnapshotsView() {
     try {
       const text = await file.text();
       const resp = await restoreSnapshotFromText(text);
+      const summary = summarizeRestore(resp.restored);
       setRestoreFlash({
-        ok: true,
-        message: summarizeRestore(resp),
-        details: resp,
+        message: summary.restored,
+        notRestored: summary.notRestored,
+        warnings: resp.warnings,
       });
       setErr(null);
       // The restored data may include agent_defs etc. — refresh
@@ -181,14 +189,20 @@ export default function SnapshotsView() {
       </div>
 
       {restoreFlash && (
-        <div className={restoreFlash.ok ? "flash flash-ok" : "flash flash-err"}>
+        <div className={needsAttention(restoreFlash) ? "flash flash-warn" : "flash flash-ok"}>
           <strong>{restoreFlash.message}</strong>
-          {restoreFlash.details?.warnings && restoreFlash.details.warnings.length > 0 && (
+          {restoreFlash.notRestored && <div>{restoreFlash.notRestored}</div>}
+          {restoreFlash.warnings && restoreFlash.warnings.length > 0 && (
             <ul className="restore-warnings">
-              {restoreFlash.details.warnings.map((w, i) => (
+              {restoreFlash.warnings.map((w, i) => (
                 <li key={i}>{w}</li>
               ))}
             </ul>
+          )}
+          {needsAttention(restoreFlash) && (
+            <button type="button" className="link-btn" onClick={() => setRestoreFlash(null)}>
+              dismiss
+            </button>
           )}
         </div>
       )}
@@ -245,32 +259,4 @@ function formatBytes(n: number): string {
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MiB`;
   if (n < 1024 ** 4) return `${(n / 1024 ** 3).toFixed(2)} GiB`;
   return `${(n / 1024 ** 4).toFixed(2)} TiB`;
-}
-
-function summarizeRestore(r: SnapshotRestoreResponse): string {
-  const parts: string[] = [];
-  const add = (label: string, n?: number) => {
-    if (n && n > 0) parts.push(`${label}=${n}`);
-  };
-  // The map carries every counter, including the ones the typed fields
-  // never did; a server predating it falls back to the typed subset.
-  if (r.restored) {
-    for (const k of Object.keys(r.restored).sort()) add(k, r.restored[k]);
-    return parts.length === 0
-      ? "restored (0 new rows — every section was already in the store)"
-      : `restored: ${parts.join(", ")}`;
-  }
-  add("agent_defs", r.agent_defs_restored);
-  add("agent_def_active", r.agent_def_active_restored);
-  add("memory", r.memory_restored);
-  add("channel_messages", r.channel_messages_restored);
-  add("channel_cursors", r.channel_cursors_restored);
-  add("evaluations", r.evaluations_restored);
-  add("paused_runs", r.paused_runs_restored);
-  add("transcript_events", r.transcript_events_restored);
-  add("synthesized_sessions", r.synthesized_sessions);
-  if (parts.length === 0) {
-    return "restored (0 new rows — every section was already in the store)";
-  }
-  return `restored: ${parts.join(", ")}`;
 }

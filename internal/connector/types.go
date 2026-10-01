@@ -514,9 +514,11 @@ type SnapshotDescriptor struct {
 	FormatVersion   string     `json:"format_version"`
 	FeatureStatus   string     `json:"feature_status,omitempty"`
 	// Warnings names what the capture carried that the operator should act on
-	// (a header value that looks like a literal credential), by location,
-	// never by value. Set on the CreateSnapshot response only; a listing
-	// leaves it empty — the envelope's capture_findings section keeps them.
+	// (a literal-looking credential in a captured definition — headers, URLs,
+	// stdio env/command/args — or a paused run parked on a pending interrupt),
+	// by location, never by value. Set on the CreateSnapshot response only; a
+	// listing leaves it empty — the envelope's capture_findings section keeps
+	// them.
 	Warnings []string `json:"warnings,omitempty"`
 }
 

@@ -222,9 +222,12 @@ func (r RestoreResult) Counts() map[string]int {
 //	                   volume restored above, and is skipped when its target
 //	                   is not here)
 //
-// Idempotent: a second Restore call on the same envelope is a clean
-// no-op (every SnapshotRestore* method uses ON CONFLICT DO NOTHING /
-// INSERT OR IGNORE).
+// Idempotent: a second Restore of the same envelope writes nothing. Every
+// row is keyed so a re-insert is a no-op and the live row stands. For a
+// definition the key is its def_id alone, so a DIFFERENT definition on a
+// (tenant, name, version) the target already holds is a conflict: the
+// section reports it as a warning and the live row stands. A usage carry
+// keeps the larger of the stored and the incoming month-to-date total.
 //
 // Critical correctness detail (the architect's catch in PR 3
 // planning): the snapshot's paused_runs section references

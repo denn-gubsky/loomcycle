@@ -7880,10 +7880,12 @@ type SnapshotDescriptor struct {
 	SinceTs         *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=since_ts,json=sinceTs,proto3" json:"since_ts,omitempty"`
 	Description     string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
 	FormatVersion   string                 `protobuf:"bytes,7,opt,name=format_version,json=formatVersion,proto3" json:"format_version,omitempty"`
-	// What the capture carried that the operator should act on — a header
-	// value that looks like a literal credential — named by location, never
-	// by value. Set on the CreateSnapshot response only; ListSnapshots leaves
-	// it empty (the envelope's capture_findings section keeps the findings).
+	// What the capture carried that the operator should act on: every
+	// literal-looking credential in a captured definition (headers, URLs,
+	// stdio env/command/args), and every paused run parked on a pending
+	// interrupt. Named by location, never by value. Set on the CreateSnapshot
+	// response only; ListSnapshots leaves it empty (the envelope's
+	// capture_findings section keeps the findings).
 	Warnings      []string `protobuf:"bytes,8,rep,name=warnings,proto3" json:"warnings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -1877,10 +1877,13 @@ export interface SnapshotCreateResponse {
   label?: string;
   schema_version: number;
   byte_size: number;
-  /** What the capture carried that you should act on — a header value that
-   *  looks like a literal credential — named by location, never by value.
-   *  The value travels in the snapshot as written; replace it with a
-   *  `$cred:` or `${LOOMCYCLE_*}` reference. Omitted when there are none. */
+  /** What the capture carried that you should act on, named by location,
+   *  never by value: every literal-looking credential in a captured
+   *  definition (headers, URLs, stdio env/command/args), and every paused
+   *  run parked on a pending interrupt. A literal travels in the snapshot as
+   *  written; replace it with a `$cred:` or `${LOOMCYCLE_*}` reference (in a
+   *  stdio server's env, command or args only `${LOOMCYCLE_*}` resolves).
+   *  Omitted when there are none. */
   warnings?: string[];
 }
 

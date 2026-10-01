@@ -138,8 +138,9 @@ type Sections struct {
 	// whose target did not arrive is recognised and not restored.
 	Dirents DirentsSection `json:"dirents"`
 	// CaptureFindings reports what the capture carried that an operator should
-	// act on — header values that look like literal credentials, and a paused
-	// run found parked on a pending interrupt, which travels without it. Inside
+	// act on — a literal-looking credential in a definition (headers, URLs,
+	// stdio env/command/args), and a paused run found parked on a pending
+	// interrupt, which travels without it. Inside
 	// Sections so the integrity checksum covers it. Present only when there is
 	// at least one finding (omitempty), so a capture with none is byte-identical
 	// to one taken before the section existed; an older reader ignores it.
@@ -166,12 +167,12 @@ type CaptureFindingEntry struct {
 	// Field is the path to the value inside the row, e.g.
 	// "body.headers.Authorization".
 	Field string `json:"field"`
-	// Detector says which rule matched: "secret-pattern" or
-	// "credential-header-name" for a header value, "credential-env-name" for
-	// a stdio env entry, "secret-pattern" for a stdio command or args
-	// element, "url-userinfo" or "url-credential-query" for a URL-shaped
-	// field, or "pending-interrupt" for a paused run with a pending interrupt
-	// (Field "interrupts").
+	// Detector says which rule matched: a credential rule for a literal value
+	// ("secret-pattern" for a secret-shaped value, "credential-header-name" /
+	// "credential-env-name" for a header or stdio env entry whose name marks
+	// it as a credential, and the like), or "pending-interrupt" for a paused
+	// run with a pending interrupt (Field "interrupts"). findings.go holds the
+	// full list.
 	Detector string `json:"detector"`
 }
 

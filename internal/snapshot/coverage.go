@@ -107,7 +107,7 @@ var tableCoverageMap = map[string]tableCoverage{
 	"mcp_server_def_active": {Kind: coverSection, Section: "mcp_server_def_active", Secrets: "none", Backends: onBoth,
 		Cache: "mcp.DynamicRegistry (filled from the active defs at boot)"},
 	"mcp_server_defs": {Kind: coverSection, Section: "mcp_server_defs", Backends: onBoth,
-		Secrets: "reported: a literal header value (capture_findings)",
+		Secrets: "reported: a literal header or stdio env value (capture_findings)",
 		Cache:   "mcp.DynamicRegistry (filled from the active defs at boot)"},
 	"memory":                    {Kind: coverSection, Section: "memory", Secrets: "none", Backends: onBoth},
 	"memory_backend_def_active": {Kind: coverSection, Section: "memory_backend_def_active", Secrets: "none", Backends: onBoth},

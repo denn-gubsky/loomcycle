@@ -918,26 +918,18 @@ export interface SnapshotCreateResponse {
   label?: string;
   schema_version: number;
   byte_size: number;
-  // Header values in captured definitions that look like literal credentials,
-  // named by location only.
+  // Literal-looking credentials in captured definitions (headers, URLs, stdio
+  // env/command/args) and paused runs parked on a pending interrupt, named by
+  // location only.
   warnings?: string[];
 }
 
+// The server also sends the older typed `*_restored` fields; the UI reads
+// only the map, which carries every counter by name. The SPA is served by the
+// same binary, so there is no older server to fall back for.
 export interface SnapshotRestoreResponse {
-  agent_defs_restored?: number;
-  agent_def_active_restored?: number;
-  memory_restored?: number;
-  channel_messages_restored?: number;
-  channel_cursors_restored?: number;
-  evaluations_restored?: number;
-  paused_runs_restored?: number;
-  synthesized_sessions?: number;
-  transcript_events_restored?: number;
-  interaction_history_restored?: number;
+  restored: Record<string, number>;
   warnings?: string[];
-  // Every restore counter keyed by name, including the ones the typed fields
-  // above never carried.
-  restored?: Record<string, number>;
 }
 
 export function listSnapshots(limit = 200, labelContains = ""): Promise<SnapshotListResponse> {
