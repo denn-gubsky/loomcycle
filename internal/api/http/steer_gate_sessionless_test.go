@@ -31,13 +31,15 @@ type namedCtx struct {
 // tenant; an isolated member of the run's tenant who does not own it) and
 // those that must pass (the run's owner; a super-admin of another tenant).
 func sessionlessGateCallers() (refused, admitted []namedCtx) {
-	return []namedCtx{
+	refused = []namedCtx{
 		{"other tenant", tenantPrincipalCtx("globex", "mallory", auth.ScopeTenant)},
 		{"isolated peer", tenantPrincipalCtx("acme", "bob", auth.ScopeUser)},
-	}, []namedCtx{
+	}
+	admitted = []namedCtx{
 		{"owner", tenantPrincipalCtx("acme", "alice", auth.ScopeUser)},
 		{"admin", tenantPrincipalCtx("globex", "root", auth.ScopeAdmin)},
 	}
+	return refused, admitted
 }
 
 // A live entry with no session skipped the ownership gate, so a token from any
