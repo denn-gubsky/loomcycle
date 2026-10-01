@@ -354,9 +354,10 @@ func TestFanout_SerialForSyntheticOrchestrator(t *testing.T) {
 		{"a genuinely remote provider still parallelizes", "anthropic", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), func(c *Config) {
-				c.MaxConsolidationConcurrency = 4
-			})
+			// The concurrency is left UNSET (default width 4): an explicit
+			// setting lifts the synthetic serial default, see
+			// TestFanout_ExplicitConcurrencyOverridesCodeJSSerialisation.
+			sched, fr, st, logs := fanoutFixture(t, fanoutDef(nil), nil)
 			sched.SetProviderResolver(stubProviderResolver{provider: tc.provider})
 
 			for _, u := range []string{"u1", "u2", "u3", "u4"} {

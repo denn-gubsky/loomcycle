@@ -541,15 +541,28 @@ the schedule's credentials: it resolves its agent in that tenant, where the
 tenant's own version of the consolidator would run.
 
 The schedule's `on_complete` hooks follow the passes: they fire once per tenant
-whose passes all completed, in that tenant, and report that tenant's run. One
-tenant's failed pass does not withhold another tenant's hooks.
+where at least one pass completed and none failed, in that tenant, and report
+that tenant's run. One tenant's failed pass does not withhold another tenant's
+hooks. A pass that was only deferred — the runtime was at load, the user's
+token budget was spent, the tenant has no provider key it may use, or the
+runtime paused — does not withhold its own tenant's hooks either, and the
+schedule reads `skipped` rather than `failed`.
+
+A sweep does not visit targets in a fixed order. It takes one target from each
+tenant in turn, alternating users found through their chats with users found
+only through queued work, and starts with a different tenant on each tick. Each
+pass may use at most a quarter of the fire budget (all of it for a lone
+target, half for two), so one slow pass cannot spend a tick that other users
+were waiting for. A pass cut off this way resumes from its watermark later. If
+the runtime pauses mid-sweep, the sweep stops; that tick does not count toward
+the schedule's `max_fires`.
 
 ## Operator knobs
 
 | Setting | Effect |
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). Targets beyond it wait for the next tick; the watermark makes that safe. |
-| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local model runtime **or to an in-process provider** (`code-js`, `mock`) — for the latter the resolved id says nothing about where the load goes, since it is all in sub-agents. The bundled consolidator is a code agent, so it dispatches serially; raise this only if you know its extractor children are not all on one box. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Always 1 when the scheduled agent resolves to a local model runtime. Also 1 by default when it resolves to an **in-process provider** (`code-js`, `mock`), whose id says nothing about where the load goes, since it is all in sub-agents. The bundled consolidator is a code agent, so it dispatches serially unless you set this variable explicitly — do that only if you know its extractor children are not all on one box. |
 | `LOOMCYCLE_CODE_AGENTS_ENABLED` | Required — the consolidator is a code agent, and selecting the bundle without this fails boot by design rather than shipping a silently idle pass. |
 | `memory_quota_bytes` / `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | Per-scope byte cap. A consolidation write over budget is **refused, loudly** — it does not silently drop the fact. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts count as the same fact reworded and get merged (default `0.95`). Necessary but no longer sufficient — see *A merge needs more than a similarity score*. |

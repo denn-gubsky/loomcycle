@@ -55,6 +55,12 @@ type Config struct {
 	// always dispatched serially regardless of this value (one shared box).
 	// Each child is a full LLM run, so this is deliberately small; the
 	// per-provider concurrency cap is the real throttle downstream.
+	//
+	// A value set EXPLICITLY (> 0) also lifts the serial default for an
+	// in-process (code-js / mock) consolidator — see dispatchSerially. That is
+	// why defaults() leaves this field alone: filling in 4 there would make
+	// "unset" indistinguishable from "the operator asked for 4". Read it via
+	// consolidationConcurrency.
 	MaxConsolidationConcurrency int
 
 	// InternalAgents names the agents the operator declared `internal:` —
@@ -94,10 +100,16 @@ func (c Config) defaults() Config {
 	if c.MaxConsolidationTargets <= 0 {
 		c.MaxConsolidationTargets = defaultMaxFanoutTargets
 	}
-	if c.MaxConsolidationConcurrency <= 0 {
-		c.MaxConsolidationConcurrency = defaultMaxFanoutConcurrency
-	}
 	return c
+}
+
+// consolidationConcurrency is the fan-out's parallel width, and whether the
+// operator set it rather than inheriting the default.
+func (c Config) consolidationConcurrency() (n int, explicit bool) {
+	if c.MaxConsolidationConcurrency > 0 {
+		return c.MaxConsolidationConcurrency, true
+	}
+	return defaultMaxFanoutConcurrency, false
 }
 
 // Scheduler is the sweeper runtime. One instance per loomcycle
@@ -125,6 +137,15 @@ type Scheduler struct {
 	fanoutLock       AdvisoryLocker
 	fanoutLockKeyFn  func(defID string) int64
 	providerResolver ProviderResolver
+
+	// fanoutRotation is each fan-out def's tick counter, which picks the
+	// tenant its next sweep starts with (see fairTargetOrder). In memory and
+	// per replica on purpose: it only has to differ from tick to tick, and a
+	// replica that wins the cluster lock advances its own counter, so the
+	// start still moves. Starts at 0, so the first tick is in tenant order and
+	// a test can predict every later one. One int per fan-out def ever fired.
+	fanoutRotationMu sync.Mutex
+	fanoutRotation   map[string]int
 
 	wg     sync.WaitGroup
 	stopCh chan struct{}
@@ -422,32 +443,21 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	status := "completed"
 	errStr := ""
 	// F36: every real fire counts toward max_fires (a wedged/always-failing
-	// schedule still retires). F38 exception: a fire that fails AGENT
-	// RESOLUTION never started a run — it's a config error (the agent isn't
-	// resolvable in the run's tenant), identical on every fire. Counting it
-	// would silently burn the cap and retire the schedule after N failures,
-	// masking the misconfig as N normal runs. Don't count it; log loudly.
+	// schedule still retires). The exceptions — an agent that cannot be
+	// resolved (F38) and a paused runtime — never started a run; see
+	// classifyFire, which the fan-out shares.
 	countAsFire := true
 	if runErr != nil {
-		status = "failed"
+		class := classifyFire(runErr)
+		status = class.status()
 		errStr = runErr.Error()
-		// Domain-typed sentinels get a friendlier status label.
-		if errors.Is(runErr, runner.ErrBackpressure) {
-			status = "skipped"
-		}
-		if errors.Is(runErr, runner.ErrPerUserQuotaExhausted) {
-			status = "skipped"
-		}
-		// RFC BF P2b: a per-provider cap refusal is transient load, not a run
-		// failure — label it "skipped" like the other backpressure flavors so a
-		// saturated provider doesn't burn the schedule's max_fires budget.
-		if errors.Is(runErr, runner.ErrProviderConcurrencyExhausted) {
-			status = "skipped"
-		}
-		if errors.Is(runErr, runner.ErrUnknownAgent) {
-			countAsFire = false
+		countAsFire = class.countsAsFire()
+		switch class {
+		case fireUnknownAgent:
 			s.logf("scheduler: schedule %q could not resolve agent %q in tenant %q — not counting toward max_fires; check the agent exists in this tenant (F38)",
 				row.Name, def.Agent, def.TenantID)
+		case firePaused:
+			s.logf("scheduler: schedule %q was refused because the runtime paused after this tick began — not counting toward max_fires", row.Name)
 		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
 			// Disambiguate fireCtx (per-fire timeout) from parent ctx
