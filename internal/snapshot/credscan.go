@@ -170,6 +170,9 @@ type credRef struct {
 	env   string // an env var name, or
 	cred  string // "$cred:<name>" / "$ghapp:<name>" as written
 	name  string // the credential name inside cred
+	// tenantOnly marks a reference that resolves only at tenant level (a
+	// remote peer's api_key_env), so no per-user credential could supply it.
+	tenantOnly bool
 }
 
 // refsOf lists a body's references in a stable order.
@@ -253,6 +256,12 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 					continue
 				}
 				if opts.CredentialExists(ctx, tenant, agent, b.UserID, r.name) {
+					continue
+				}
+				if r.tenantOnly {
+					result.Warnings = append(result.Warnings, fmt.Sprintf(
+						"missing credential: %s: %s references %s, which no tenant-level credential for tenant %q provides on this host",
+						t.where, r.field, r.cred, tenant))
 					continue
 				}
 				if b.UserID != "" {

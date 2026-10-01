@@ -344,6 +344,58 @@ func TestMemorySourceDefs_MissingKeyScanNamesTheReference(t *testing.T) {
 	}
 }
 
+// A "$cred:<name>" api_key_env is a stored credential, not an env var: the
+// scan asks for it in the def's own tenant at tenant level — the only place it
+// resolves at dial — and its warning does not hedge about per-user credentials.
+func TestMemorySourceDefs_MissingKeyScanChecksACredRefInTheDefsTenant(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	base := triggerBase()
+	plantMemoryBackend(t, src, store.MemoryBackendDefRow{DefID: "mbd_cred", TenantID: "acme", Name: "mb", Version: 1, CreatedAt: base},
+		remoteBackendBody("https://peer.example", "$cred:peer_key"), true)
+	plantDocSource(t, src, store.DocumentSourceDefRow{DefID: "dsd_cred", TenantID: "acme", Name: "ds", Version: 1, CreatedAt: base},
+		docSourceBody("https://docs.example", "$cred:doc_key"), true)
+	plantDocSource(t, src, store.DocumentSourceDefRow{DefID: "dsd_have", TenantID: "acme", Name: "ds-have", Version: 1, CreatedAt: base},
+		docSourceBody("https://docs.example", "$cred:present"), true)
+
+	type ask struct{ tenant, agent, user, name string }
+	var asked []ask
+	var envAsked []string
+	res := mustRestore(t, dst, mustCapture(t, src), RestoreOptions{
+		Validators: authoringValidators(),
+		EnvSet:     func(n string) bool { envAsked = append(envAsked, n); return false },
+		CredentialExists: func(_ context.Context, tenant, agent, user, name string) bool {
+			asked = append(asked, ask{tenant, agent, user, name})
+			return name == "present"
+		},
+	})
+	for _, w := range []struct{ where, ref string }{
+		{"memory_backend_def acme/mb:", "$cred:peer_key"},
+		{"document_source_def acme/ds:", "$cred:doc_key"},
+	} {
+		if !hasWarning(res, "missing credential", w.where, "config.api_key_env", w.ref, `no tenant-level credential for tenant "acme"`) {
+			t.Errorf("no tenant-level warning for %s %s: %v", w.where, w.ref, res.Warnings)
+		}
+	}
+	if hasWarning(res, "per-user credentials were not checked") || hasWarning(res, "$cred:present") {
+		t.Errorf("a warning hedged about per-user credentials or named a present one: %v", res.Warnings)
+	}
+	if len(envAsked) != 0 {
+		t.Errorf("a credential reference was checked as an env var: %v", envAsked)
+	}
+	want := map[ask]bool{{"acme", "", "", "peer_key"}: true, {"acme", "", "", "doc_key"}: true, {"acme", "", "", "present"}: true}
+	if len(asked) != len(want) {
+		t.Fatalf("credential checks asked = %v, want %d in tenant acme at tenant level", asked, len(want))
+	}
+	for _, a := range asked {
+		if !want[a] {
+			t.Errorf("credential check %+v; want each in tenant acme with no agent or user", a)
+		}
+	}
+}
+
 // The live row stands: a different def already on the target's (tenant,
 // name, version) — its own yaml bootstrap — is a per-row warning, not an
 // overwrite, and the pointer at the refused def is not written.
