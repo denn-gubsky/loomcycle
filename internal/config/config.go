@@ -1123,6 +1123,13 @@ type AgentDef struct {
 	// version the name resolves to by then.
 	DefID string `json:"-" yaml:"-"`
 
+	// RegisteredSHA256 is a digest of the dynamic_agents row (a registered
+	// agent) this definition was read from, or "" for any other source.
+	// Registered agents have no versions — re-registering a name rewrites its
+	// row in place — so a run records this at start, and a resume refuses a
+	// row that changed since. Resolved like DefID, never authored.
+	RegisteredSHA256 string `json:"-" yaml:"-"`
+
 	Provider string `yaml:"provider"` // optional override of Defaults
 	Model    string `yaml:"model"`    // alias or full model ID
 	// Code is the inline code-js orchestrator source (RFC J). When set
