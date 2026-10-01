@@ -31,7 +31,7 @@ func (m *MCPServerDef) OperatorEnvWarnings(ctx context.Context) ([]string, error
 	}
 	consequence := "it still dials this release, but a future release will refuse it (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1 refuses it now)"
 	if m.Cfg != nil && m.Cfg.Env.MCPRefuseUnattributedEnv {
-		consequence = "so it is not dialed (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1)"
+		consequence = "it is not dialed (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1)"
 	}
 	for _, n := range names {
 		if seen[n.Name] {

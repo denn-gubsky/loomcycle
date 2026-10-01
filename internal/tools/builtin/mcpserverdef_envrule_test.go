@@ -279,7 +279,7 @@ func TestMCPServerDefOperatorEnvWarnings_ListsAStoredNonOperatorReference(t *tes
 		t.Errorf("the default-mode warning does not say the def still dials: %s", w)
 	}
 	tool.Cfg.Env.MCPRefuseUnattributedEnv = true
-	if warns, _ = tool.OperatorEnvWarnings(context.Background()); len(warns) != 1 || !strings.Contains(warns[0], "so it is not dialed") {
+	if warns, _ = tool.OperatorEnvWarnings(context.Background()); len(warns) != 1 || !strings.Contains(warns[0], "it is not dialed") {
 		t.Errorf("the strict-mode warning does not say the def is not dialed: %q", warns)
 	}
 }
