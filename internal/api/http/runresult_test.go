@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 func readResult(t *testing.T, st store.Store, runID string) runResultRecord {
@@ -60,7 +61,7 @@ func TestFinishPaths_WriteTheRunResult(t *testing.T) {
 func TestTeamWalkRun_ResultIsTheWalksFinalOutput(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
-	_, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), "triage", false)
+	_, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestFinishPaths_RedactTheRunResult(t *testing.T) {
 	srv.finishRun(context.Background(), done.ID, res, nil, runStateMeta{})
 	cancelled := seedTenantRun(t, srv.store, "acme", "u1", "a_redact_cancelled")
 	srv.finishRunCancelled(context.Background(), cancelled.ID, res, "stop", runStateMeta{})
-	_, walkID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), "triage", false)
+	_, walkID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}

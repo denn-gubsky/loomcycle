@@ -156,7 +156,7 @@ type TeamDef struct {
 	// nil = the walk runs under the caller's own ctx (an in-band agent run
 	// already has a run id; a direct API call gets none, and its breakpoints
 	// are unaddressable — the behaviour before this existed).
-	WalkRun func(ctx context.Context, teamName string, detach bool) (walkCtx context.Context, runID string, finish func(finalText string, err error), err error)
+	WalkRun func(ctx context.Context, spec WalkRunSpec) (walkCtx context.Context, runID string, finish func(finalText string, err error), err error)
 
 	// LiveBreakpoints, if set, opens the MUTABLE armed set for this run's walk,
 	// seeded with the run argument, and returns it plus the release to call when
@@ -266,6 +266,44 @@ const teamDefInputSchema = `{
   },
   "required": ["op"]
 }`
+
+// WalkRunSpec is what one op=run walk started with: the definition version it
+// resolved to, the caller's input and the run arguments. WalkRun records it on
+// the walk's run when it creates the row, so a viewer can tell which version
+// ran and what it was given after the team is forked, promoted or deleted —
+// the name alone resolves to whatever is active NOW.
+//
+// The input is the caller's raw text; whatever persists it decides how much
+// of it to keep and masks it first.
+type WalkRunSpec struct {
+	Name          string
+	DefID         string
+	Version       int
+	ContentSHA256 string
+	// DefTenant is the definition row's tenant ("" = shared), which can differ
+	// from the walk's own when an admin runs another tenant's def by id.
+	DefTenant string
+	// ResolvedBy is "def_id" when the caller pinned a version and "name" when
+	// it took the active one.
+	ResolvedBy string
+	Input      string
+	// Detach is the run's mode: the caller got the run id back at once.
+	Detach bool
+	// Board is the Document-board binding, nil when the walk has none.
+	Board            *WalkBoard
+	Breakpoints      []string
+	Review           []string
+	ReviewTTLSeconds int
+	InterruptOnCap   bool
+}
+
+// WalkBoard is a walk's board binding as it started. ResumedFrom is the state
+// the board's persisted status resumed it from; "" when it started at entry.
+type WalkBoard struct {
+	Scope       string
+	ChunkID     string
+	ResumedFrom string
+}
 
 type teamDefInput struct {
 	Op             string          `json:"op"`
@@ -936,6 +974,24 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if in.Mode != "" && !detach {
 		return errResult(fmt.Sprintf("run: unknown mode %q (only \"detach\")", in.Mode)), nil
 	}
+	// Where a board-bound walk resumes is read BEFORE its run exists: the run
+	// records it when the row is created, and a board that cannot be read
+	// refuses the walk before a row is minted. Resume continues from the
+	// chunk's persisted status when it names a state still in the current
+	// graph (a graph edit that dropped that state falls back to the entry —
+	// start over rather than resume into a hole).
+	resumedFrom := ""
+	if boardBound {
+		status, ok, gerr := t.Board.GetChunkStatus(walkCtx, boardScope, in.BoardChunkID)
+		if gerr != nil {
+			return errResult(fmt.Sprintf("run: board: %s", gerr)), nil
+		}
+		if ok && status != "" {
+			if _, known := teamgraph.StateByID(def, status); known {
+				resumedFrom = status
+			}
+		}
+	}
 	// The walk becomes a RUN — after admission, so a refused request never
 	// mints a row. From here on walkCtx carries the run id, which is what makes
 	// the walk addressable: breakpoints, the Interruption ask a pause is
@@ -947,7 +1003,27 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		// The walk's own hooks go to whatever opens its run; an operator's
 		// definition is what may let them count as the operator's.
 		walkCtx = teamrun.WithWalkHooks(walkCtx, teamrun.WalkHooks{Hooks: def.Hooks, OperatorAuthored: row.OperatorAuthored, Tenant: row.TenantID})
-		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, row.Name, detach)
+		spec := WalkRunSpec{
+			Name:             row.Name,
+			DefID:            row.DefID,
+			Version:          row.Version,
+			ContentSHA256:    row.ContentSHA256,
+			DefTenant:        row.TenantID,
+			ResolvedBy:       "name",
+			Input:            in.Input,
+			Detach:           detach,
+			Breakpoints:      in.Breakpoints,
+			Review:           in.Review,
+			ReviewTTLSeconds: in.ReviewTTL,
+			InterruptOnCap:   in.InterruptOnCap,
+		}
+		if in.DefID != "" {
+			spec.ResolvedBy = "def_id"
+		}
+		if boardBound {
+			spec.Board = &WalkBoard{Scope: boardScope, ChunkID: in.BoardChunkID, ResumedFrom: resumedFrom}
+		}
+		walkCtx, runID, finishRun, werr = t.WalkRun(walkCtx, spec)
 		if werr != nil {
 			return errResult(fmt.Sprintf("run: %s", werr)), nil
 		}
@@ -975,25 +1051,14 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// Assemble walk options. When neither feature is used, opts is empty and Walk
 	// runs with no options → the ephemeral Phase-1 behaviour is byte-identical.
 	var opts []teamrun.Option
-	resumedFrom := ""
 	if boardBound {
 		// Tag every handler run this walk spawns with the board task, so a client
 		// folding the run-state stream can pin the live agent to this chunk's card
 		// (RFC BT P4). Only the DIRECT handler run is tagged — the sub-agent spawn
 		// path clears it so a handler's own sub-agents aren't pinned onto the card.
 		walkCtx = store.WithBoardTask(walkCtx, store.BoardTask{Scope: boardScope, ChunkID: in.BoardChunkID})
-		// Resume: continue from the chunk's persisted status when it names a state
-		// still in the current graph (a graph edit that dropped that state falls
-		// back to the entry — start over rather than resume into a hole).
-		status, ok, gerr := t.Board.GetChunkStatus(walkCtx, boardScope, in.BoardChunkID)
-		if gerr != nil {
-			return errResult(fmt.Sprintf("run: board: %s", gerr)), nil
-		}
-		if ok && status != "" {
-			if _, known := teamgraph.StateByID(def, status); known {
-				task.State = status
-				resumedFrom = status
-			}
+		if resumedFrom != "" {
+			task.State = resumedFrom
 		}
 		opts = append(opts, teamrun.OnEnterState(func(c context.Context, state string) error {
 			if serr := t.Board.SetChunkStatus(c, boardScope, in.BoardChunkID, state); serr != nil {

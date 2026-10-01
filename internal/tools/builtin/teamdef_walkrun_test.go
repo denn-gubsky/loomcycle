@@ -22,12 +22,15 @@ type walkRunRecorder struct {
 	lastErr    error
 	lastOutput string
 	detach     bool
+	spec       WalkRunSpec
 }
 
-func (w *walkRunRecorder) open(ctx context.Context, _ string, detach bool) (context.Context, string, func(string, error), error) {
+func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.Context, string, func(string, error), error) {
+	detach := spec.Detach
 	w.mu.Lock()
 	w.opened++
 	w.detach = detach
+	w.spec = spec
 	w.mu.Unlock()
 	// Detached in the same way the server does it, so a test that outlives the
 	// caller's ctx behaves like production.
@@ -366,9 +369,9 @@ func TestTeamDefTool_Run_HandsTheWalkItsHooks(t *testing.T) {
 			tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
 			var got teamrun.WalkHooks
 			rec := &walkRunRecorder{}
-			tool.WalkRun = func(c context.Context, name string, detach bool) (context.Context, string, func(string, error), error) {
+			tool.WalkRun = func(c context.Context, spec WalkRunSpec) (context.Context, string, func(string, error), error) {
 				got = teamrun.WalkHooksFrom(c)
-				return rec.open(c, name, detach)
+				return rec.open(c, spec)
 			}
 			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"hooked","input":"x"}`))
 			if res.IsError {
@@ -404,9 +407,9 @@ func TestTeamDefTool_Run_HandsTheWalkTheTeamsTenant(t *testing.T) {
 	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
 	var got teamrun.WalkHooks
 	rec := &walkRunRecorder{}
-	tool.WalkRun = func(c context.Context, name string, detach bool) (context.Context, string, func(string, error), error) {
+	tool.WalkRun = func(c context.Context, spec WalkRunSpec) (context.Context, string, func(string, error), error) {
 		got = teamrun.WalkHooksFrom(c)
-		return rec.open(c, name, detach)
+		return rec.open(c, spec)
 	}
 	admin := auth.WithPrincipal(tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a_root", TenantID: "globex"}),
 		auth.Principal{TenantID: "globex", Subject: "root", Scopes: []string{auth.ScopeAdmin}})
@@ -416,5 +419,37 @@ func TestTeamDefTool_Run_HandsTheWalkTheTeamsTenant(t *testing.T) {
 	}
 	if got.Tenant != "acme" {
 		t.Fatalf("walk hooks tenant = %q, want the team's (acme)", got.Tenant)
+	}
+}
+
+// The run is opened with what the walk resolved to — the version, how it was
+// chosen, and where a board resumes it — so the walk's run can record it when
+// the row is created rather than after the walk has already moved.
+func TestTeamDefTool_Run_OpensTheRunWithTheResolvedVersionAndBoardResume(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = textSpawn(func(_ context.Context, agent string, _ teamrun.Prompt, _ string) (string, error) {
+		return agent + "!", nil
+	})
+	tool.Board = &fakeBoard{exists: true, status: "b"} // a prior run left off at b
+	rec := &walkRunRecorder{}
+	tool.WalkRun = rec.open
+	createTeam(t, tool, ctx, "board-walk", linearBoardTeam)
+
+	res, _ := tool.Execute(ctx, json.RawMessage(
+		`{"op":"run","name":"board-walk","input":"seed","board_chunk_id":"chunk-1","interrupt_on_cap":true}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	defID, _ := decodeResult(t, res.Text)["def_id"].(string)
+	rec.mu.Lock()
+	spec := rec.spec
+	rec.mu.Unlock()
+	if spec.Name != "board-walk" || spec.DefID == "" || spec.DefID != defID || spec.Version != 1 ||
+		spec.ContentSHA256 == "" || spec.ResolvedBy != "name" || spec.Input != "seed" || !spec.InterruptOnCap {
+		t.Errorf("walk opened with %+v, want the active v1 (%s) resolved by name", spec, defID)
+	}
+	if spec.Board == nil || spec.Board.ChunkID != "chunk-1" || spec.Board.Scope != "user" || spec.Board.ResumedFrom != "b" {
+		t.Errorf("walk opened with board %+v, want chunk-1 in user, resumed from b", spec.Board)
 	}
 }

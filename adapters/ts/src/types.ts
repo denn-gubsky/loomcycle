@@ -1420,6 +1420,42 @@ export interface RunSpec {
    *  reads again rather than a same-named agent registered or forked since.
    *  Written by the server only. */
   agent_version?: { def_id?: string; registered_sha256?: string; static?: boolean };
+  /** On a team walk's own run: the team version it ran, its input and the
+   *  arguments it was started with. Written once when the walk starts and
+   *  never changed. Absent on any other run, and on a walk recorded before
+   *  versions were: read that as "version not recorded", never as the
+   *  team's current version. Written by the server only. */
+  team?: RunSpecTeam;
+}
+
+/** What a team walk started with (`RunSpec.team`). */
+export interface RunSpecTeam {
+  name: string;
+  def_id: string;
+  version: number;
+  content_sha256?: string;
+  /** The team definition's tenant; absent for a shared definition. */
+  def_tenant?: string;
+  /** `def_id` when the caller pinned a version, `name` when it ran the
+   *  active one. */
+  resolved_by: "def_id" | "name";
+  /** The walk's input, with secrets masked, cut at 16 KiB. */
+  input?: string;
+  /** The input's length in bytes as given. */
+  input_bytes?: number;
+  /** Set when `input` was cut. */
+  input_truncated?: boolean;
+  mode: "sync" | "detach";
+  /** The board binding; `resumed_from` names the state a persisted board
+   *  resumed the walk from. */
+  board?: { scope: string; chunk_id: string; resumed_from?: string };
+  /** Breakpoints armed at start. Arming the live walk later does not change
+   *  this record. */
+  breakpoints?: string[];
+  /** States armed for review at start. */
+  review?: string[];
+  review_ttl_seconds?: number;
+  interrupt_on_cap?: boolean;
 }
 
 /** A finished run's answer (RFC DI). */

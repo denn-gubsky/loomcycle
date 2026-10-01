@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 )
 
@@ -39,7 +40,7 @@ func TestOpenTeamWalkRun_GrantsWhatThePauseMachineryNeeds(t *testing.T) {
 		t.Fatal("the substrate plane already granted Interruption — this test no longer covers the gap")
 	}
 
-	walkCtx, runID, finish, err := srv.openTeamWalkRun(base, "triage", false)
+	walkCtx, runID, finish, err := srv.openTeamWalkRun(base, builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestOpenTeamWalkRun_DetachSurvivesTheRequestCtx(t *testing.T) {
 	defer cleanup()
 
 	reqCtx, cancel := context.WithCancel(substrateAdminCtx(context.Background()))
-	walkCtx, _, _, err := srv.openTeamWalkRun(reqCtx, "triage", true)
+	walkCtx, _, _, err := srv.openTeamWalkRun(reqCtx, builtin.WalkRunSpec{Name: "triage", Detach: true})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestOpenTeamWalkRun_DetachSurvivesTheRequestCtx(t *testing.T) {
 	// A NON-detached walk keeps the request's lifetime, so a disconnect still
 	// tears it down.
 	reqCtx2, cancel2 := context.WithCancel(substrateAdminCtx(context.Background()))
-	walkCtx2, _, _, err := srv.openTeamWalkRun(reqCtx2, "triage", false)
+	walkCtx2, _, _, err := srv.openTeamWalkRun(reqCtx2, builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestCancelTurn_StopsALiveTeamWalk(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 
-	walkCtx, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), "triage", true)
+	walkCtx, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), builtin.WalkRunSpec{Name: "triage", Detach: true})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -179,7 +180,7 @@ func TestCancelTurn_AnotherTenantCannotStopAWalk(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 
-	walkCtx, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), "triage", true)
+	walkCtx, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), builtin.WalkRunSpec{Name: "triage", Detach: true})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestHandleCancelTurn_StopsATeamWalk(t *testing.T) {
 	srv.turnCancelReg = turncancel.NewRegistry()
 	srv.steerReg = steer.NewRegistry(8)
 
-	walkCtx, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), "triage", true)
+	walkCtx, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(tenantOperatorCtx("acme")), builtin.WalkRunSpec{Name: "triage", Detach: true})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestOpenTeamWalkRun_HeartbeatsTheWalkRunUntilItFinishes(t *testing.T) {
 	defer cleanup()
 	srv.walkHeartbeatEvery = 10 * time.Millisecond
 
-	_, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(context.Background()), "triage", false)
+	_, runID, finish, err := srv.openTeamWalkRun(substrateAdminCtx(context.Background()), builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}

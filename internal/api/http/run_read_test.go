@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // GET /v1/runs/{run_id} is the run read addressed by the run itself. The agent
@@ -50,7 +51,7 @@ func walkAs(t *testing.T, srv *Server, tenant, user, team string) (string, func(
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
 		UserID: user, TenantID: tenant, AgentID: "caller",
 	})
-	_, runID, finish, err := srv.openTeamWalkRun(ctx, team, true)
+	_, runID, finish, err := srv.openTeamWalkRun(ctx, builtin.WalkRunSpec{Name: team, Detach: true})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // A sub-run's row names the run that spawned it. Before, no live path wrote
@@ -186,7 +187,7 @@ func TestOpenTeamWalkRun_RecordsTheCallingRunAsParent(t *testing.T) {
 	srv, cleanup := channelFanFixture(t)
 	defer cleanup()
 	caller := tools.WithRunID(substrateAdminCtx(context.Background()), "r_caller")
-	walkCtx, runID, finish, err := srv.openTeamWalkRun(caller, "triage", false)
+	walkCtx, runID, finish, err := srv.openTeamWalkRun(caller, builtin.WalkRunSpec{Name: "triage"})
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}

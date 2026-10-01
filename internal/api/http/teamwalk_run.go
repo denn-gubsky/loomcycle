@@ -46,12 +46,16 @@ const teamWalkAgentPrefix = "team:"
 // keeps the request's ctx VALUES (auth principal, tenant, admission) but is not
 // cancelled when the handler returns, mirroring how an interactive run survives
 // the client navigating away.
-func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bool) (context.Context, string, func(string, error), error) {
+//
+// spec is recorded on the row as its run_config `team` by the same CreateRun
+// that makes it, so there is no moment at which a live walk lacks it.
+func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) (context.Context, string, func(string, error), error) {
 	if s.store == nil {
 		return ctx, "", func(string, error) {}, fmt.Errorf("run tracking requires a store")
 	}
 	ident := tools.RunIdentity(ctx)
-	agent := teamWalkAgentPrefix + teamName
+	agent := teamWalkAgentPrefix + spec.Name
+	detach := spec.Detach
 	// The walk is a run and carries the definition's own hooks. Resolved before
 	// the run exists, so a walk whose hooks cannot be resolved never starts: a
 	// gate its definition names must not quietly be missing.
@@ -79,6 +83,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 		TenantID:              ident.TenantID,
 		OperatorKeyRestricted: ident.OperatorKeyRestricted,
 		Isolated:              ident.Isolated,
+		RunConfig:             runConfigRecord{Team: teamWalkRecordOf(s.redactor, spec)}.marshal(),
 	})
 	if err != nil {
 		return ctx, "", func(string, error) {}, err
