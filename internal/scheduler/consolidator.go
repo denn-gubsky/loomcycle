@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -164,6 +163,13 @@ func fanoutScope(def scheduleDef) (store.MemoryScope, error) {
 // consolidation schedule never consumes more wall-clock than any other fire and
 // can never wedge the tick. Targets left undispatched when the budget runs out
 // are picked up next tick — the per-target watermark makes that resumable.
+//
+// That resumability is only fair if the order changes and no one target can
+// spend the whole budget: a cut pass does not advance its watermark, so it is
+// re-selected next tick, and in a fixed order it went first again — one slow
+// tenant early in the alphabet starved every later tenant on every tick. So
+// targets are interleaved across tenants from a start that moves each tick
+// (fairTargetOrder), and each pass gets a slice of the budget (targetBudget).
 func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
 	scope, err := fanoutScope(def)
 	if err != nil {
@@ -264,7 +270,7 @@ func (s *Scheduler) operatorLayerFanout(row store.ScheduleDueRow, def scheduleDe
 // per cluster. It records the schedule's result itself so the advisory-lock
 // wrapper stays a thin gate.
 func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, scope store.MemoryScope, allTenants bool, now time.Time) {
-	targets, dropped, err := s.consolidationTargets(ctx, def, scope, allTenants)
+	targets, dropped, err := s.consolidationTargets(ctx, def, scope, allTenants, s.nextFanoutRotation(row.DefID))
 	if err != nil {
 		s.recordFireFailure(ctx, row.DefID, "", "failed", fmt.Errorf("consolidation fan-out: enumerate targets: %w", err), now)
 		return
@@ -294,17 +300,25 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 	}
 
 	serial, reason := s.dispatchSerially(ctx, def, targets)
-	concurrency := s.cfg.MaxConsolidationConcurrency
+	concurrency, _ := s.cfg.consolidationConcurrency()
 	if serial {
 		concurrency = 1
 		s.logf("scheduler: consolidation fan-out %q running SERIALLY over %d target(s): %s", row.Name, len(targets), reason)
+	} else if reason != "" {
+		s.logf("scheduler: consolidation fan-out %q running up to %d-wide over %d target(s): %s", row.Name, concurrency, len(targets), reason)
 	}
+	perTarget := targetBudget(s.cfg.FireTimeout, len(targets))
 
 	var (
 		mu        sync.Mutex
 		lastRunID string
 		tally     fanoutTally
 		skipped   int
+		// paused is set by the first target the runtime pause refused. A
+		// pause is runtime-wide, so every later target would be refused the
+		// same way: stop dispatching rather than log N copies of one refusal.
+		paused        bool
+		stoppedPaused int
 		// Per tenant as well as overall: hooks fire per tenant (see
 		// dispatchFanoutHooks), the schedule's result is recorded overall.
 		byTenant = map[string]*tenantBatch{}
@@ -328,11 +342,26 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			continue
 		case sem <- struct{}{}:
 		}
+		// Checked AFTER the slot is held: a serial batch's previous target
+		// releases the slot only once it has recorded its outcome, so a pause
+		// refusal is always seen before the next dispatch.
+		mu.Lock()
+		stop := paused
+		if stop {
+			stoppedPaused++
+		}
+		mu.Unlock()
+		if stop {
+			<-sem
+			continue
+		}
 		wg.Add(1)
 		go func(target consolidationTarget) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			runID, runErr := s.runConsolidationTarget(ctx, def, target)
+			targetCtx, cancelTarget := context.WithTimeout(ctx, perTarget)
+			defer cancelTarget()
+			runID, runErr := s.runConsolidationTarget(targetCtx, def, target)
 			mu.Lock()
 			defer mu.Unlock()
 			tb := byTenant[target.TenantID]
@@ -346,9 +375,12 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 				lastRunID = runID
 				tb.lastRunID = runID
 			}
+			class := tally.classify(runErr)
+			tb.tally.classify(runErr)
+			if class == firePaused {
+				paused = true
+			}
 			if runErr != nil {
-				tally.classify(runErr)
-				tb.tally.classify(runErr)
 				// Per-target failures are logged and counted, never fatal to
 				// the batch: one user's wedged consolidation must not stop
 				// everyone else's.
@@ -363,9 +395,13 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		s.logf("scheduler: consolidation fan-out %q ran out of its %s budget — %d target(s) not dispatched this tick",
 			row.Name, s.cfg.FireTimeout, skipped)
 	}
+	if stoppedPaused > 0 {
+		s.logf("scheduler: consolidation fan-out %q stopped: the runtime paused mid-sweep — %d target(s) not dispatched this tick, and this tick does not count toward max_fires",
+			row.Name, stoppedPaused)
+	}
 
 	status, errStr, countAsFire := tally.outcome(def.Agent)
-	if tally.unknownAgent > 0 && !countAsFire {
+	if tally.unknownAgent > 0 && tally.unknownAgent == tally.dispatched {
 		// F38, mirrored: agent resolution failed for EVERY target, so no run ever
 		// started. That is one config error repeating, not N fires — counting it
 		// would burn max_fires and retire the schedule, hiding the misconfig
@@ -399,8 +435,13 @@ type tenantBatch struct {
 // is the equivalence the operator-layer sweep rests on (operatorLayerFanout) —
 // including that one tenant's failed pass does not withhold another's hooks.
 //
-// A tenant's fan-out has one tenant, its own, so it fires exactly as before:
-// once, in its tenant, when the whole batch completed.
+// A tenant's fan-out has one tenant, its own, so it fires once, in its tenant.
+//
+// Which tenants fire is fanoutTally.hooksFire: none of the tenant's passes
+// broke, and at least one ran. A DEFERRED pass — load, an exhausted token
+// budget, no usable provider key, a pause — does not withhold the tenant's
+// hooks: nothing broke, and the passes that did run are what the hooks report.
+// One user over budget used to silence their whole tenant's completion.
 func (s *Scheduler) dispatchFanoutHooks(ctx context.Context, scheduleName string, def scheduleDef, byTenant map[string]*tenantBatch) {
 	if len(def.OnComplete) == 0 {
 		return
@@ -412,7 +453,7 @@ func (s *Scheduler) dispatchFanoutHooks(ctx context.Context, scheduleName string
 	sort.Strings(tenants)
 	for _, tenant := range tenants {
 		b := byTenant[tenant]
-		if status, _, _ := b.tally.outcome(def.Agent); status != "completed" {
+		if !b.tally.hooksFire() {
 			continue
 		}
 		hookDef := def
@@ -421,49 +462,78 @@ func (s *Scheduler) dispatchFanoutHooks(ctx context.Context, scheduleName string
 	}
 }
 
-// fanoutTally classifies per-target outcomes the way fireOne classifies a single
-// fire. Without this the fan-out labelled every error "failed" and counted every
-// tick as a fire, so it lost two behaviours fireOne has deliberately:
-//
-//   - runner.ErrUnknownAgent is a CONFIG error — no run started, and it will fail
-//     identically on every fire. fireOne does not count it toward max_fires (F38)
-//     because doing so retires the schedule after N ticks and presents a misconfig
-//     as N normal runs.
-//   - the backpressure family (ErrBackpressure, ErrPerUserQuotaExhausted,
-//     ErrProviderConcurrencyExhausted) is transient LOAD, not failure. fireOne
-//     labels it "skipped"; a saturated provider must not read as a broken
-//     schedule, and must not be summed into a failure count an operator alerts on.
+// fanoutTally counts per-target outcomes, each classified by classifyFire — the
+// same classifier fireOne uses, so a sentinel one path reads correctly cannot be
+// misread by the other. Without it the fan-out labelled every error "failed"
+// and counted every tick as a fire.
 type fanoutTally struct {
 	dispatched   int
+	completed    int // ran without error
 	failures     int // genuine per-target failures
 	backpressure int // transient load — deferred, not broken
+	deferred     int // token budget or operator-key restriction — deferred, not broken
+	paused       int // refused by a runtime pause — deferred, and the sweep stopped
 	unknownAgent int // config error — no run started
 }
 
-// classify buckets one per-target error through the same errors.Is ladder fireOne
-// uses, so the two paths cannot drift.
-func (t *fanoutTally) classify(err error) {
-	switch {
-	case errors.Is(err, runner.ErrUnknownAgent):
+// classify counts one target's outcome (nil = it ran) and returns its class.
+func (t *fanoutTally) classify(err error) fireClass {
+	class := classifyFire(err)
+	switch class {
+	case fireRan:
+		t.completed++
+	case fireUnknownAgent:
 		t.unknownAgent++
-	case errors.Is(err, runner.ErrBackpressure),
-		errors.Is(err, runner.ErrPerUserQuotaExhausted),
-		errors.Is(err, runner.ErrProviderConcurrencyExhausted):
+	case fireBackpressure:
 		t.backpressure++
+	case fireDeferred:
+		t.deferred++
+	case firePaused:
+		t.paused++
 	default:
 		t.failures++
 	}
+	return class
+}
+
+// hooksFire reports whether this tally's on_complete hooks fire: none of its
+// passes broke, and at least one ran. See dispatchFanoutHooks.
+func (t fanoutTally) hooksFire() bool {
+	return t.failures+t.unknownAgent == 0 && t.completed > 0
+}
+
+// deferredNotes names each deferral class present, for the error summary. Kept
+// separate from the failure count: an operator sizing an incident needs to
+// know which targets broke and which only waited.
+func (t fanoutTally) deferredNotes() []string {
+	var notes []string
+	if t.backpressure > 0 {
+		notes = append(notes, fmt.Sprintf("%d deferred under load", t.backpressure))
+	}
+	if t.deferred > 0 {
+		notes = append(notes, fmt.Sprintf("%d deferred by a token budget or the operator-key restriction", t.deferred))
+	}
+	if t.paused > 0 {
+		notes = append(notes, fmt.Sprintf("%d deferred by a runtime pause", t.paused))
+	}
+	return notes
 }
 
 // outcome renders the schedule's status, error summary, and whether this tick
 // counts toward max_fires.
 //
-// countAsFire is false only when EVERY dispatched target failed agent resolution
-// — the whole tick was one config error. A tick where some targets ran is a real
-// fire regardless of what the others did.
+// countAsFire is false in two cases. When EVERY dispatched target failed agent
+// resolution, the whole tick was one config error (F38). When the runtime pause
+// refused any target, the sweep stopped part-way: the operator paused the
+// runtime, so the tick must not use up one of the schedule's fires, and the
+// first fire after resume finishes the sweep (targets that already ran have no
+// new work left). Otherwise a tick where some targets ran is a real fire
+// regardless of what the others did — including a target refused by its token
+// budget, which counts (the refusal repeats until the period rolls over).
 func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire bool) {
-	countAsFire = !(t.unknownAgent > 0 && t.unknownAgent == t.dispatched)
+	countAsFire = t.paused == 0 && !(t.unknownAgent > 0 && t.unknownAgent == t.dispatched)
 	broken := t.failures + t.unknownAgent
+	notes := t.deferredNotes()
 	switch {
 	case broken > 0:
 		status = "failed"
@@ -471,15 +541,15 @@ func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire b
 		if t.unknownAgent > 0 {
 			errStr += fmt.Sprintf(" (%d could not resolve agent %q)", t.unknownAgent, agent)
 		}
-		if t.backpressure > 0 {
-			errStr += fmt.Sprintf("; %d deferred under load", t.backpressure)
+		if len(notes) > 0 {
+			errStr += "; " + strings.Join(notes, "; ")
 		}
-	case t.backpressure > 0:
-		// Nothing broke — the batch was throttled. Deliberately not "failed", so
-		// this does not page anyone, and not "completed", so on_complete hooks do
-		// not fire for a batch that largely did not run.
+	case len(notes) > 0:
+		// Nothing broke — targets waited. Deliberately not "failed", so this
+		// does not page anyone, and not "completed", so the summary still
+		// says the sweep was not whole. Hooks are decided per tenant.
 		status = "skipped"
-		errStr = fmt.Sprintf("%d of %d consolidation target(s) deferred under load", t.backpressure, t.dispatched)
+		errStr = fmt.Sprintf("%s — of %d consolidation target(s) dispatched", strings.Join(notes, "; "), t.dispatched)
 	default:
 		status = "completed"
 	}
@@ -500,7 +570,10 @@ func (t fanoutTally) outcome(agent string) (status, errStr string, countAsFire b
 // tenant; otherwise it is confined to the def's tenant. Either way a target
 // carries the tenant its session or queue row lives in, and every read and the
 // dispatched run use that tenant — never the def's.
-func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope, allTenants bool) ([]consolidationTarget, int, error) {
+//
+// The targets with work are put in fairTargetOrder (rotation picks the starting
+// tenant) BEFORE the cap trims them, and are dispatched in that order.
+func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, scope store.MemoryScope, allTenants bool, rotation int) ([]consolidationTarget, int, error) {
 	// The exclusion is pushed into the QUERY rather than applied to the result:
 	// the scan window is a fixed 500 rows ordered most-recently-active first, and
 	// a pass's own children are by construction the most recent sessions there
@@ -515,18 +588,20 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		return nil, 0, fmt.Errorf("list sessions: %w", err)
 	}
 
-	// Distinct candidates, in first-seen (most-recently-active) order so the cap
-	// below trims the least-recently-active candidates. Keyed by tenant AND user:
-	// the same user id in two tenants is two targets.
+	// Distinct candidates, each list in first-seen order: sessions most recently
+	// active first, queues longest-waiting first, so within a tenant the cap
+	// trims the least-recently-active. Keyed by tenant AND user: the same user
+	// id in two tenants is two targets. A target in both lists stays in the
+	// session list.
 	seen := map[consolidationTarget]bool{}
-	var candidates []consolidationTarget
-	add := func(tenantID, userID string) {
+	var fromSessions, fromQueue []consolidationTarget
+	addTo := func(list *[]consolidationTarget, tenantID, userID string) {
 		c := consolidationTarget{TenantID: tenantID, Scope: scope, UserID: userID}
 		if userID == "" || seen[c] {
 			return // no user id ⇒ no user-scope memory target
 		}
 		seen[c] = true
-		candidates = append(candidates, c)
+		*list = append(*list, c)
 	}
 	for _, sess := range sessions {
 		// An empty TenantID filter means "all tenants" at the store layer, so
@@ -539,10 +614,10 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 		if !allTenants && sess.TenantID != def.TenantID {
 			continue
 		}
-		add(sess.TenantID, sess.UserID)
+		addTo(&fromSessions, sess.TenantID, sess.UserID)
 	}
 
-	// Targets whose queue holds work, after the session-derived ones. A queue
+	// Targets whose queue holds work, in their own list. A queue
 	// can outlive every session the scan sees: a snapshot restore brings the
 	// queue but not the sessions, and a user whose chats have aged out of the
 	// scan window can still have rows banked by a compaction. Sessions alone
@@ -555,7 +630,7 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 			return nil, 0, fmt.Errorf("list queued targets: %w", err)
 		}
 		for _, q := range queued {
-			add(q.TenantID, q.ScopeID)
+			addTo(&fromQueue, q.TenantID, q.ScopeID)
 		}
 	} else {
 		queued, err := s.store.MemoryPendingTargets(ctx, def.TenantID, scope, candidateScanLimit)
@@ -563,38 +638,157 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 			return nil, 0, fmt.Errorf("list queued targets: %w", err)
 		}
 		for _, userID := range queued {
-			add(def.TenantID, userID)
+			addTo(&fromQueue, def.TenantID, userID)
 		}
 	}
 
-	maxTargets := s.cfg.MaxConsolidationTargets
-	var targets []consolidationTarget
-	dropped := 0
-	for _, c := range candidates {
-		hasWork, err := s.targetHasNewWork(ctx, c.TenantID, scope, c.UserID, def.Agent)
-		if err != nil {
-			// A per-candidate read fault must not abort the whole fan-out;
-			// log it and let the next tick retry that candidate.
-			s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q): %v", c.TenantID, c.UserID, err)
-			continue
+	withWork := func(candidates []consolidationTarget) []consolidationTarget {
+		var out []consolidationTarget
+		for _, c := range candidates {
+			hasWork, err := s.targetHasNewWork(ctx, c.TenantID, scope, c.UserID, def.Agent)
+			if err != nil {
+				// A per-candidate read fault must not abort the whole fan-out;
+				// log it and let the next tick retry that candidate.
+				s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q): %v", c.TenantID, c.UserID, err)
+				continue
+			}
+			if hasWork {
+				out = append(out, c)
+			}
 		}
-		if !hasWork {
-			continue
-		}
-		if len(targets) >= maxTargets {
-			dropped++
-			continue
-		}
-		targets = append(targets, c)
+		return out
 	}
-	// Stable order so a capped fan-out is reproducible and testable.
-	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].TenantID != targets[j].TenantID {
-			return targets[i].TenantID < targets[j].TenantID
+	ordered := fairTargetOrder(withWork(fromSessions), withWork(fromQueue), rotation)
+
+	maxTargets := s.cfg.MaxConsolidationTargets
+	if len(ordered) <= maxTargets {
+		return ordered, 0, nil
+	}
+	return ordered[:maxTargets], len(ordered) - maxTargets, nil
+}
+
+// fairTargetOrder is the order a fan-out dispatches in, and so also what its
+// cap keeps.
+//
+// Round-robin across tenants: one target from each tenant, then a second from
+// each, and so on. Within a tenant it alternates a session-derived target with
+// a queue-derived one. Tenants are taken in sorted order starting at
+// rotation (mod the tenant count), which the caller advances every tick.
+//
+// Each part closes a starvation path the old (tenant, user) sort had:
+//   - A cut pass keeps its watermark, so it is selected again next tick. In a
+//     fixed order it also went FIRST again, and a slow tenant early in the
+//     alphabet spent the budget every tick while later tenants never ran. The
+//     moving start puts each tenant first in turn.
+//   - Session candidates were appended before queue-only ones and the cap kept
+//     the head of that list, so under sustained session load a queue-only
+//     target (one restored from a snapshot, or whose chats aged out of the
+//     scan) was cut on every tick. Alternating gives queues every other slot.
+//   - One tenant with many targets no longer fills the cap ahead of the rest.
+//
+// Deterministic for a given input and rotation, so a capped fan-out stays
+// reproducible and testable.
+func fairTargetOrder(fromSessions, fromQueue []consolidationTarget, rotation int) []consolidationTarget {
+	type lanes struct{ sessions, queued []consolidationTarget }
+	byTenant := map[string]*lanes{}
+	var tenants []string
+	lane := func(tenant string) *lanes {
+		l := byTenant[tenant]
+		if l == nil {
+			l = &lanes{}
+			byTenant[tenant] = l
+			tenants = append(tenants, tenant)
 		}
-		return targets[i].UserID < targets[j].UserID
-	})
-	return targets, dropped, nil
+		return l
+	}
+	for _, c := range fromSessions {
+		l := lane(c.TenantID)
+		l.sessions = append(l.sessions, c)
+	}
+	for _, c := range fromQueue {
+		l := lane(c.TenantID)
+		l.queued = append(l.queued, c)
+	}
+	if len(tenants) == 0 {
+		return nil
+	}
+	sort.Strings(tenants)
+
+	perTenant := make([][]consolidationTarget, len(tenants))
+	for i, tenant := range tenants {
+		l := byTenant[tenant]
+		var mixed []consolidationTarget
+		for j := 0; j < len(l.sessions) || j < len(l.queued); j++ {
+			if j < len(l.sessions) {
+				mixed = append(mixed, l.sessions[j])
+			}
+			if j < len(l.queued) {
+				mixed = append(mixed, l.queued[j])
+			}
+		}
+		perTenant[i] = mixed
+	}
+
+	start := rotation % len(tenants)
+	if start < 0 {
+		start += len(tenants)
+	}
+	var out []consolidationTarget
+	for round := 0; ; round++ {
+		added := false
+		for k := range tenants {
+			mixed := perTenant[(start+k)%len(tenants)]
+			if round < len(mixed) {
+				out = append(out, mixed[round])
+				added = true
+			}
+		}
+		if !added {
+			return out
+		}
+	}
+}
+
+// nextFanoutRotation returns this fan-out def's rotation for the tick being
+// dispatched and advances it. See the fanoutRotation field.
+func (s *Scheduler) nextFanoutRotation(defID string) int {
+	s.fanoutRotationMu.Lock()
+	defer s.fanoutRotationMu.Unlock()
+	if s.fanoutRotation == nil {
+		s.fanoutRotation = map[string]int{}
+	}
+	r := s.fanoutRotation[defID]
+	s.fanoutRotation[defID] = r + 1
+	return r
+}
+
+// fanoutBudgetSlices is the most ways a fan-out fire's budget is split. Each
+// pass may spend at most FireTimeout / min(targets, fanoutBudgetSlices) — the
+// whole budget for one target, half for two, a quarter from four up.
+//
+// Why a fixed fraction and not an even share per target: a consolidation pass
+// is several model calls deep (one extractor child per chat it reads), and an
+// even share of the 32-target cap is under 19 seconds at the default 10-minute
+// budget, which would cut healthy passes. A quarter (2.5 minutes at the
+// default) still bounds what one slow or wedged pass can take, so in a serial
+// sweep at least four passes get a turn every tick — and with the start tenant
+// rotating (fairTargetOrder), every tenant's turn comes round. Assumes a healthy
+// pass fits in a quarter of the budget; an operator whose passes do not can
+// raise LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS.
+const fanoutBudgetSlices = 4
+
+// targetBudget is the wall-clock one target's pass may spend. The pass's ctx is
+// derived from the batch's, so it also never outlives what is left of the
+// batch budget.
+func targetBudget(fireTimeout time.Duration, targets int) time.Duration {
+	slices := targets
+	if slices > fanoutBudgetSlices {
+		slices = fanoutBudgetSlices
+	}
+	if slices < 1 {
+		slices = 1
+	}
+	return fireTimeout / time.Duration(slices)
 }
 
 // excludedAgents is the set of agent names whose sessions the fan-out must look
@@ -652,7 +846,9 @@ func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope
 	return len(pending) > 0, nil
 }
 
-// dispatchSerially decides whether the batch runs one-at-a-time, and why.
+// dispatchSerially decides whether the batch runs one-at-a-time, and why. When
+// it answers parallel, the reason is empty unless an explicit setting lifted a
+// serial default (see gap 1 below), so the log can say so.
 //
 // A LOCAL model runtime is a single shared box: firing four concurrent runs at
 // it queues them behind one another at best and thrashes VRAM at worst. So any
@@ -675,9 +871,13 @@ func (s *Scheduler) targetHasNewWork(ctx context.Context, tenantID string, scope
 //     scheduled agent's children would use and decide on those — which needs a
 //     way to enumerate reachable sub-agents from a def and is its own change.
 //     Until then a code-agent orchestrator whose children are all cloud-hosted
-//     is serialized unnecessarily; that costs throughput, where the inverse
-//     error costs an operator's GPU box. LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY
-//     is the escape hatch for anyone who knows their children are parallel-safe.
+//     is serialized by default; that costs throughput, where the inverse
+//     error costs an operator's GPU box. Setting
+//     LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY explicitly is the escape hatch
+//     for anyone who knows their children are parallel-safe: it lifts this
+//     serial default (only this one — a target that resolves to a local
+//     runtime, or cannot be resolved, still serializes). Unset, the default
+//     width of 4 does not lift it.
 //  2. The probe resolves with the operator-key restriction OFF while the fire
 //     passes the def's actual restriction bit (see
 //     (*http.Server).ResolveAgentProvider). With
@@ -688,6 +888,8 @@ func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targe
 	if s.providerResolver == nil {
 		return true, "no provider resolver wired — defaulting to serial"
 	}
+	width, explicit := s.cfg.consolidationConcurrency()
+	overridden := ""
 	for _, target := range targets {
 		providerID, err := s.providerResolver.ResolveAgentProvider(ctx, target.TenantID, target.UserID, def.Agent, def.UserTier)
 		if err != nil {
@@ -697,6 +899,14 @@ func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targe
 		// reason: "this probe cannot see where the load goes" is actionable,
 		// "provider is not local" would not have been.
 		if isSyntheticProvider(providerID) {
+			if explicit {
+				// Keep probing: another target (a tenant's fork of the agent)
+				// may still resolve to a local runtime, which no setting lifts.
+				overridden = fmt.Sprintf(
+					"agent %q resolves to the in-process provider %q, which is serial by default; LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY=%d is set explicitly, which lifts that",
+					def.Agent, providerID, width)
+				continue
+			}
 			return true, fmt.Sprintf(
 				"agent %q resolves to the in-process provider %q, which makes no model call itself — this batch's real model load is in sub-agents this probe cannot see, so parallel-safety is unknown. Set LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY if you know those children are not all on one box",
 				def.Agent, providerID)
@@ -705,7 +915,7 @@ func (s *Scheduler) dispatchSerially(ctx context.Context, def scheduleDef, targe
 			return true, fmt.Sprintf("provider %q is a local runtime", providerID)
 		}
 	}
-	return false, ""
+	return false, overridden
 }
 
 // isSyntheticProvider reports whether a provider id names an IN-PROCESS
