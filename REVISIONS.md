@@ -8,6 +8,163 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.101.0
+
+*A snapshot now carries the whole deployment (users and budgets, schedules, webhooks, peers, memory backends, document sources, volumes, the Path tree and the consolidation queue), strips literal trigger credentials, and re-checks every definition it restores against the target's own rules. A paused run resumes as the run that paused: on the agent version it started on, in its own tenant, and no wider than its parent allowed. A security review closed cross-tenant and isolated-member gaps in webhooks, triggers, remote peers, the private-address guard and volume paths. Also: team walks hold agent and parallel members for review, enforce `timeout_ms` and can fan out over a document's sections, and a run can be read by its run id on every transport.*
+
+127 PRs, #1439 to #1565:
+- #1483, #1487, #1489, #1492, #1493, #1499, #1503, #1512, #1516, #1527, #1530 and #1531 are snapshot coverage (RFC DP P0–P8); #1472, #1473, #1476, #1477, #1498, #1509, #1545, #1548, #1552, #1554 and #1557 fix what a restore carries and reports;
+- #1480, #1481, #1484, #1486, #1491, #1496, #1497, #1504, #1511, #1520, #1541, #1543 and #1559 make a resumed run the run that paused;
+- #1442, #1443, #1444, #1446, #1457, #1461, #1462, #1465, #1470, #1474, #1488, #1490 and #1515 are team walks and review;
+- #1456, #1466, #1469, #1471, #1482, #1518 and #1522 are run reads and the run-state stream; #1445, #1447, #1448, #1451 and #1529 are live-run controls;
+- #1452, #1454, #1455, #1458, #1459, #1460, #1464, #1485, #1494, #1500, #1502, #1506, #1523, #1528, #1535, #1536, #1538 and #1556 confine tenants and isolated members;
+- #1501, #1507, #1532, #1540, #1549 and #1563 are webhooks; #1508, #1533, #1546, #1547 and #1550 are outbound requests and volumes; #1525, #1539, #1553, #1562, #1564 and #1565 are schedules and consolidation;
+- #1467, #1468, #1505, #1514 and #1551 are stateful runs and the repeat guard;
+- #1439, #1440, #1441, #1475, #1510, #1513, #1517, #1519, #1521, #1524, #1526, #1534, #1537, #1542, #1555 and #1560 are other fixes and docs;
+- #1453, #1495 and #1544 are bench-only; #1449 and #1450 publish `@loomcycle/def-fields` 0.3.0 and `@loomcycle/library` 0.7.0; #1463, #1478, #1479, #1558 and #1561 are CI and test fixes.
+
+### Snapshots carry the whole deployment (RFC DP)
+
+A restore used to bring back agents, memory and paused runs, and little of what they depend on. Every store table now has a decided classification, and a test fails on a table or entry field nobody classified (#1483).
+
+- **New sections:**
+  - users, token budgets and month-to-date usage (#1492): an isolated user stays isolated, a budget stays enforced, and a nearly spent month does not restart at zero. Restored budgets are live in the tracker at once (Postgres migration 0088, `usage_carry`);
+  - schedules with their fire counts (#1493), so a `max_fires` schedule does not get its budget back;
+  - webhooks, A2A agents and A2A server cards (#1499);
+  - memory backends and document sources (#1503), restored before the memory routed through them;
+  - dynamic volumes (#1512). The section carries no path: restore derives it under the target's dynamic root and creates the directory;
+  - the undrained consolidation queue (#1516), captured before memory, so an add is at worst consolidated twice, never lost. The consolidation sweep now also finds users who have queued rows and no session on the target;
+  - the Path tree (#1527), restored last and checked against what the target holds;
+  - runtime channel definitions (#1477), so a held or hooked channel keeps holding and keeps its hooks.
+- **Credentials:**
+  - schedules and webhooks travel with literal `user_credentials` values stripped and their keys listed as `stripped_credentials`; references (`$cred:`, `$ghapp:`, `${…}`) travel as written;
+  - a trigger restored without a value comes back **disabled**, with a `capture_disabled` marker. A fork or create that re-supplies every stripped key, with a value the fire path will use, re-enables it (#1493, #1499, #1557);
+  - a literal in a header (#1487), a stdio `env` map (#1531), URL userinfo, a credential query parameter, or a stdio `command`/`args` (#1548) travels as authored and is reported in the capture's `warnings` by location, never by value;
+  - credential, token and usage-ledger tables never travel.
+- **Every restored definition is re-validated** by its authoring rules on the target (#1499, #1503, #1530): MCP servers against this host's allowlists, hooks (a code-js body only where code hooks are on), channels, agents, teams, skills, webhooks, peers, memory backends, document sources, volumes and Path entries. A refused row is skipped with a warning and counted in `<section>_refused`. An active pointer at another tenant's definition is refused (#1498).
+- **What a restore reports:** an extensible `restored` map (section → count) on every transport (#1487), including `paused_runs_resumed`. A section this reader does not know is warned about rather than dropped silently (#1483).
+- **After a restore:** restored MCP server defs go live without a restart (#1487), and restored paused runs resume on a gRPC or MCP restore too, not only HTTP (#1489).
+
+### What a restore carries and reports, fixed (#1472, #1473, #1476, #1509, #1545, #1548, #1552, #1554)
+
+- A paused run restores under its own tenant, operator-key restriction and isolation (#1472), with its parent run id (#1476). Channel cursors restore under their own tenant (#1473).
+- Restored transcript events get new seqs on the target (#1509). A target with history used to skip the colliding events, and on Postgres the sequence fell behind until every `AppendEvent` failed.
+- Section versions are checked before anything is written (#1545). A restore that fails partway still enforces the budgets it wrote, and a budget changed through `/v1/_limits` during a restore keeps its stored value.
+- A refused URL's userinfo, query and fragment are kept out of warnings, and an agent- or user-scoped `$cred:` is no longer reported missing (#1548).
+- Rehydrating the MCP registry after a restore is serialized with MCPServerDef retire and promote, so it cannot undo either (#1552).
+- `loomcycle restore` and the Snapshots page show refused and disabled counts apart from restored ones (#1554).
+
+### A resumed run is the run that paused (#1480, #1481, #1484, #1486, #1491, #1496, #1497, #1504, #1511, #1520, #1541, #1543, #1559)
+
+A paused run comes back after a pause, a snapshot restore or a restart. It used to come back on whatever was current, sometimes with more access than it had.
+
+- **On the agent version it started on (#1486).** Each run records `agent_version` in its `run_config`. A registered agent changed since fails the run instead of running it on something else (#1543). A static agent is read from the configuration again, so a same-named agent that appeared meanwhile cannot take the run over; a static agent since removed fails it (#1559). Runs recorded before this release resolve by name, as before.
+- **As its row, not as the restorer (#1504).** A restore no longer lends its admin principal to the runs it resumes.
+- **As its parent's child (#1480, #1481).** Every sub-run row now records `parent_run_id`, and every run read carries it. A resumed child keeps its parent, its spawn tree's root and the parent's cancel cascade.
+- **No wider than its parent allowed (#1484).** A child's volumes and fan-out width are recorded at spawn (`run_config.spawn`) and re-applied. A child with no record resumes without volumes and serial (#1520).
+- **Hook pins stay in the run's tenant (#1496, #1497).** A pin or lookup in another tenant fails the run as a deleted pin would. A `def_id` pin to another tenant's AgentDef is refused at spawn, as an unknown id (#1491).
+- **An Agent-tool child still takes only a verdict (#1541).** Compacting one is refused 409 `run_takes_only_verdicts`.
+- **A run a live loop still owns is left alone (#1511).** A restore or boot no longer re-dispatches a parked run that this process, or another live replica, still holds.
+
+### Team walks and review (#1442, #1443, #1444, #1446, #1457, #1461, #1462, #1465, #1470, #1474, #1488, #1490, #1515)
+
+- **Review holds agent and parallel members (#1462)**, not only a Starter's. A consolidator is refused as a review target, since its answer is the walk's verdict.
+- **A held Agent-tool child waits for a verdict, and its parent sees it (#1442).** The parent's stream gets a `subagent_hold` event (`held` / `released`) on SSE, gRPC, TS and Python.
+- **`timeout_ms` is enforced (#1444)**, excluding time held for review. A Starter run that runs out publishes `status: "timeout"` to the sink.
+- **A Starter can fan out over a document's sections (#1474):** `source: {kind: "document", path, scope, select: "chunks"}` with `fanout: {per: "chunk", max}`.
+- **The live breakpoint set** (`PUT /v1/runs/{run_id}/breakpoints`) refuses a state the team does not have with 400 (#1461), releases held members at once when review is disarmed (#1443), and takes `review_ttl_seconds` (#1465).
+- **A walk runs as its caller (#1457)**, not as the synthetic `http-admin` / `grpc-admin`: its members' memory, budgets, usage and pauses are the caller's.
+- **Every walk member is stamped** with its walk, state and visit in `parent_context` (#1470).
+- **A subscription walk runs as confined as the team's promoter (#1488, #1490)**, captured at promote (Postgres migration 0087).
+- **A TeamDef state's hooks carry the team as their source (#1446)**, so an operator-authored team's hook may widen hosts where permitted. A nested walk does not inherit the outer walk's review arming (#1515).
+
+### Reading runs (#1456, #1466, #1469, #1471, #1482, #1518, #1522)
+
+- **A run by its run id (#1466):** `GET /v1/runs/{run_id}`, gRPC `GetRun`, MCP `get_run {run_id}`, TS `getRun`, Python `get_run`. An agent id can name many runs; every walk of a team shares one.
+- **One walk's runs (#1471):** `GET /v1/runs?walk_id=`, gRPC `ListWalkRuns`, MCP `list_runs {walk_id}`, TS `listWalkRuns`, Python `list_walk_runs`, paged by cursor (Postgres migration 0086, `runs.walk_id`).
+- **Every transport's run read carries what the HTTP read carries (#1456):** agent name, `parent_context`, provider, interactive, replica, and what a running run waits on.
+- **The run-state stream announces waits (#1469):** a `running` transition with `awaited_state` (`review`, `input`, `channel`, `interrupted`), `awaited_on` and `hold_expires_at`. The status stays `running`. A run with several open waits stays held until the last ends (#1522). The stream carries `parent_run_id` (#1482).
+- The Web UI runs tree keys each node by run, not agent id (#1518).
+
+### Live-run controls (#1445, #1447, #1448, #1451, #1529)
+
+- Retune takes `tool_choice` and `output_format`, applied at the next operator turn, and `Context op=self` reports both (#1448).
+- A run's own `interruption` block is applied, narrowing only, on every start path (#1451); `POST /v1/runs` accepts it.
+- A started interactive or review draft outlives its starter, like a `POST /v1/runs` interactive run (#1445).
+- Retune keeps every record field it does not change (#1447), and `run_config` writes are compare-and-set (#1529), so concurrent writers no longer erase each other's fields.
+
+### Tenant and isolated-member confinement (#1452, #1454, #1455, #1458, #1459, #1460, #1464, #1485, #1494, #1500, #1502, #1506, #1523, #1528, #1535, #1536, #1538, #1556)
+
+- **Trigger execution tenant (#1502):** a non-admin may only store a webhook or schedule whose runs execute in its own tenant.
+- **Trigger and team-walk authors' restrictions** are captured from the run as well as the principal; the stricter side wins (#1485).
+- **Evaluation** reads and submits are confined to the caller's tenant (#1494), and an isolated run to its own user (#1523).
+- **A fork parent or promote target in another tenant** reads as not found, naming nothing (#1500).
+- **Run mutations:** whole-run cancel, compaction and routed turn-cancel check the run's owner (#1506); steer and turn-cancel fail closed on a session read error (#1535) or a missing session (#1556); the remote steer gate refuses an Agent-tool child (#1528) and a walk or hook run (#1538).
+- **Run lists and streams:** an isolated member cannot list or stream another user's runs over gRPC or the connector (#1452, #1459, #1460); MCP `stream_user_run_states` is confined to the session's tenant (#1458); the list-by-user bound applies after the tenant filter (#1454).
+- **Caller input:** runtime-owned `parent_context` fields (walk, wave, board) are dropped (#1455), and caller fields are length-bounded on every transport (#1464). An unowned `session_id` on `POST /v1/runs` is a plain 404 (#1536).
+
+### Webhooks (#1501, #1507, #1532, #1540, #1549, #1563)
+
+- **Dedup is scoped to the webhook (#1501, #1507).** It keyed on the bare delivery id across the whole database, so a byte-identical body to another webhook, in any tenant, was taken as a replay. It now keys on the resolved definition's owner, never the URL segment, and so do rate limits and the recent-deliveries list (#1532).
+- **A signed delivery dedups on both identities, durably (#1540, #1563):** its delivery id and what its signature covers. A captured delivery can no longer be replayed into new runs by changing its delivery-id header (Postgres migration 0090, `runs.delivery_alt_key`).
+- **Triage (#1549):** an admin's `/test` takes `?tenant=`, and `/test` refuses a def the receiver would refuse.
+
+### Outbound requests and volumes (#1508, #1533, #1546, #1547, #1550)
+
+- **Runtime remote memory backends and document sources** cannot reach private hosts (#1508) and must name an allowlisted host; a non-admin author can name only a credential bound to its own tenant (#1550). Before, a tenant operator could aim one at any public host with any credential-safe env var attached.
+- **The private-address guard refuses every non-public range (#1547):** CGNAT `100.64.0.0/10` (Tailscale, a cloud metadata address), `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`, and IPv6 forms that embed a private IPv4. The private-host allowlists accept CIDR entries. The A2A client uses the same guard and now honours `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
+- **Volume paths:** a tenant id used as a path segment must be one `[a-zA-Z0-9_-]{1,64}` segment, and tenants differing only by case are refused (#1546). A symlink below the dynamic root is refused (#1512), and a symlinked root itself now works (#1533).
+
+### Schedules and consolidation (#1525, #1539, #1553, #1562, #1564, #1565)
+
+- **An operator-layer consolidation schedule reaches every tenant (#1525)**, each pass in its target's own tenant. Before, a `""` schedule saw only tenant `""`, so it never consolidated anyone signed in with the legacy token (`default`). Its `on_complete` hooks fire per tenant, and an operator change subscription sweeps every tenant (#1539).
+- **That reach needs operator authority (#1562):** the def was saved by an admin (or in open mode / over stdio), or bootstrapped from the operator's yaml. A `""` def is not proof that the operator wrote it, since a run executing in `""` could author one.
+- **The operator key is not spent in another tenant's sweep run** while `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` is on (#1564).
+- **The sweep is fair (#1565):** tenants are interleaved, each pass gets a slice of the fire budget, and a budget, operator-key or pause deferral reads `skipped`, not `failed`.
+- **Drained queue rows are pruned (#1553)** after 7 days.
+
+### Stateful runs and the repeat guard (#1467, #1468, #1505, #1514, #1551)
+
+- The kept memo also keeps the last action's result beside a Context result (#1468), shows a failed action as failed, and keeps only reference Context results, not live ones such as `time` or `state` (#1514). A kept failure drops its help hint once the help is read, and is capped at 8,000 bytes (#1551).
+- A cut id ending in U+FFFD is refused as cut (#1467).
+- **The repeat guard refuses a repeated call only when its result repeats too (#1505).** Polls and queue drains that return something new keep running; identical calls sent in one turn all run; every operator turn resets the count.
+
+### Other fixes (#1439, #1440, #1441, #1475, #1510, #1513, #1517, #1519, #1521, #1524, #1526, #1534, #1537, #1542, #1555, #1560)
+
+- **SQLite: tables that kept a tenant-blind key on upgrade are rebuilt (#1475).** On a database created before the tenant migrations, a second tenant writing the same old key failed with `UNIQUE constraint failed`, and a restore dropped its rows.
+- **Hooks:** retention sweeps retired HookDef versions (#1439) but keeps those a live run pins (#1519); a manual compaction records its `pre_compact` decisions (#1440); the Web UI renders `hook_decision` as a readable line (#1441).
+- **Channel hooks:** each claim has its own lease token, and a job whose lease ran out stops (#1510); a replica with hooks off delivers what waits for hooks instead of stranding it (#1513).
+- **Global channels:** delete and purge take only the layers a channel owns (#1521); a tenant's first read gets its own messages from before the operator's cursor (#1526), and may repeat one (#1534).
+- **Documents:** a subtree is re-indexed only when its header changes, one pass per document (#1517); a partial derived-unit set never reads as current (#1524); a body write racing a re-index no longer loses, and a type-only change re-indexes (#1542).
+- **`PUT …/breakpoints` with only `review_ttl_seconds` keeps the arming**, and a long-poll `Channel op=await` reads as a channel wait (#1542).
+- **Error bodies:** JSON error bodies are encoded, not `%q`-formatted, so every one decodes (#1537); `/v1/_metrics` errors are JSON with a `code` (#1555).
+- `docs/TOOLS.md` is re-exported from the doc store (#1560).
+
+**Bench (no runtime change):** derived search units show no measured benefit on PolicyQA (#1453); the shipped header and rerank hold on ConditionalQA, R@5 0.768 → 0.860 → 0.933 (#1495); a decision-model rerank is non-inferior at R@5 and faster, but its probabilities cannot gate (#1544).
+
+### Behaviour changes / upgrade notes
+
+- **Runtime remote memory backends and document sources need an allowlisted host.** A runtime-authored `kind: remote` MemoryBackendDef or DocumentSourceDef must have its `base_url` host on `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, for every author. An existing runtime def at an unlisted host stops dialing (memory falls back to in-process; Document `sync` fails), and so does a runtime fork of a yaml peer. A runtime def cannot name a literal private IP. Yaml-declared peers are unchanged (#1508, #1550).
+- **Tenant authors lose free-form `api_key_env`.** A non-admin may name no credential, or a `key_per_tenant` `env_pattern` containing `{tenant_id}`, or fork a yaml peer with its `base_url` and credential unchanged. Open mode and the stdio `loomcycle mcp` count as the operator (#1550, #1562). Stored rows keep their `api_key_env`; review runtime defs that name one.
+- **Tailnet / CGNAT (`100.64.0.0/10`) and the other non-public ranges are private now.** List them in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, which accepts CIDR (`100.64.0.0/10` admits the whole tailnet). Tenant hooks use `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST`; a change subscription to a tailnet callback needs `allow_private_host: true`. A malformed CIDR fails startup (#1547).
+- **Config `principals:` tenants must match `[a-zA-Z0-9_-]{1,64}`.** A dotted tenant such as `acme.corp` now fails config load. Case-only tenant collisions are refused at mint, at config load and at boot, and so is a reserved `_shared` / `_ephemeral` tenant in any case (#1546).
+- **A non-admin principal with no `tenant:` fails config load** (#1542). Set the tenant, or grant `substrate:admin`.
+- **Runtime-authored `""` consolidation fan-outs lose their all-tenant reach until an admin re-saves them** (a fork or a hook edit); until then they consolidate tenant `""` only, and each fire logs why. Yaml schedules are unaffected. **Legacy schedule and webhook rows whose body names no tenant but tenant X owns now run in X** (#1562).
+- **With `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` on, the operator-layer sweep does not spend the operator's key in other tenants.** A tenant with no key of its own and a keyed consolidator is not consolidated until it adds one (#1564).
+- **Consolidation outcomes:** an over-budget, operator-key-refused or paused fire reads `skipped`, and a paused fire does not count toward `max_fires`. An explicit `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` now applies to code-js consolidators (#1565).
+- **Webhook forks merge `user_credentials` and `user_credentials_from_env` key by key**, like schedule forks; an empty value removes a key. **A re-supply through an env var that is not allowlisted, or not set, leaves a restored def disabled** (named in `unusable_credentials`) (#1557).
+- **Webhook triage:** an admin passes `?tenant=` to `POST /v1/_webhooks/{name}/test` and `GET …/recent-deliveries` to reach a tenant's webhook (#1532, #1549).
+- **Drained `memory_pending` rows are deleted after 7 days**, hourly, on one replica (`LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS`; `0` disables). **Postgres migration 0089** builds a partial index once at upgrade, blocking writes to `memory_pending` while it builds (#1553).
+- **`loomcycle restore` prints a separate `not restored …` line** for refused definitions and pointers and triggers disabled for credentials; the `restored …` line no longer carries those keys (#1554).
+- **Snapshots carry many more sections.** Credentials are stripped from triggers, and a restored trigger without its credentials comes back disabled. A restored enabled schedule is active on the target: a snapshot is a copy, not a lease. A definition that restored before may now be skipped by re-validation, with a warning (#1493, #1499, #1530).
+- **A resumed run stops rather than continue on something else:** its agent version deleted, its registered agent changed, its static agent removed, or a hook pin in another tenant. A resumed member of an admin's walk over another tenant's team fails closed, and a resumed resident child takes only a verdict (#1486, #1496, #1541, #1543, #1559).
+- **Team walks:** a stored `timeout_ms` is now enforced (#1444). Walks started over `/v1/_teamdef` or gRPC run as the caller, so new walks' data lands under the caller, not `http-admin` (#1457). Teams promoted before this release run their subscription walks isolated (and, with the operator-key gate on, without the operator key) until promoted again (#1488, #1490).
+- **Caller-sent `parent_context` walk, wave and board fields are dropped** (#1455).
+- **SQLite:** on a database from before the tenant migrations, the first boot rebuilds 21 tables once, in one transaction; expect a longer first boot on a large `memory` table (#1475).
+- **Postgres migrations 0086 to 0090** are additive: `runs.walk_id`, the team promoter columns, `usage_carry`, the `memory_pending` index and `runs.delivery_alt_key`.
+
+**Adapters:** `@loomcycle/client` 1.101.0 adds `getRun`, `listWalkRuns` (`WalkRunsPage`), `reviewTtlSeconds` on `setRunBreakpoints`, `toolChoice` / `outputFormat` on retune, the `subagent_hold` event (`SubagentHoldInfo`), the run read fields (`interactive`, `awaited_state` with `input`, `awaited_on`, `replica_id`, `resident`, `resident_state`, `parent_run_id`), `state` / `state_visit` on `parent_context`, the run-state wait fields and `parent_run_id`, `RunSpec`'s `sourced_hooks` / `spawn` / `agent_version`, and `warnings`, `restored` and `paused_runs_resumed` on the snapshot responses. gRPC adds `GetRun` and `ListWalkRuns`, `Agent` fields 17–23, `AgentUsage.provider = 6`, `Event.subagent_hold = 18`, the retune fields (`RunInputRequest` 19/20, `RetuneRunRequest` 17/18), `SnapshotDescriptor.warnings = 8`, `RestoreSnapshotResponse.restored = 13` and `paused_runs_resumed = 14`, `RunStateEvent` 11–14 and `ParentContext` 10/11. The Python adapter's version is 1.101.0, with `get_run`, `list_walk_runs`, the retune fields, `SubagentHold` and the same read and snapshot fields.
+
 ## What's in v1.100.0
 
 *Documents can carry derived search units, short texts about each chunk that a question can match; they are written by an operator pass and never returned in place of the chunk. A stateful run keeps what Context returned across its steps. Also: a run keeps the hooks it started with across a pause, a cut document id or a malformed path is refused instead of creating a second document, and steering works from any replica.*
