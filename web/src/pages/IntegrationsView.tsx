@@ -13,6 +13,7 @@ import {
   retireDef,
 } from "../api";
 import LineagePanel from "../components/LineagePanel";
+import CaptureDisabledBadge from "../components/CaptureDisabledBadge";
 import IntegrationEditModal, {
   type IntegrationKind,
   type ModalMode,
@@ -251,7 +252,7 @@ const TAB_CONFIG: Record<SubKey, TabCfg> = {
 
 // ---- per-family Definition renderers ----
 
-function renderWebhook(row: DefRow) {
+export function renderWebhook(row: DefRow) {
   const d = (row.definition as Record<string, unknown>) ?? {};
   const auth = obj(d.auth);
   const rl = obj(d.rate_limit);
@@ -260,6 +261,7 @@ function renderWebhook(row: DefRow) {
   const onComplete = Array.isArray(d.on_complete) ? d.on_complete.length : 0;
   return (
     <div className="def-body">
+      <CaptureDisabledBadge def={d} />
       {str(d.description) && <Field label="description" value={str(d.description)} />}
       <MetaRow
         items={[

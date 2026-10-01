@@ -3827,6 +3827,21 @@ button.primary:disabled {
   border-radius: 3px;
 }
 
+.capture-disabled-badge {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn, #b8860b);
+  border-radius: 4px;
+  background: rgba(200, 150, 50, 0.1);
+  color: var(--fg);
+  font-size: 13px;
+}
+.capture-disabled-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
 .schedule-detail-paused {
   margin-top: 8px;
   padding: 6px 10px;

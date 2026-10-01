@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { SourceChip } from "../pages/SchedulesView";
 import ScheduleHookList from "./ScheduleHookList";
+import CaptureDisabledBadge from "./CaptureDisabledBadge";
 
 interface Props {
   entry: ScheduleListEntry;
@@ -157,6 +158,8 @@ export default function ScheduleDetailPane({ entry, onMutated, onForkTemplate }:
       </div>
 
       {err && <div className="schedule-detail-err">Error: {err}</div>}
+
+      <CaptureDisabledBadge def={def} />
 
       {/* Identity block */}
       <section className="schedule-detail-block">
