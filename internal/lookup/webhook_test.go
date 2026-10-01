@@ -217,3 +217,33 @@ func TestWebhook_DriftDetection(t *testing.T) {
 	have := a2aJSONTagsOf(reflect.TypeOf(lookup.SubstrateWebhookDef{}))
 	assertTagSetsEqual(t, "SubstrateWebhookDef", want, have)
 }
+
+// TestResolveWebhook_LegacyEmptyBodyTenantRunsInOwningTenant: a row a tenant
+// wrote before create stamped the author's tenant into the body names no
+// tenant, and the receiver reads only the body — so tenant acme's webhook ran,
+// published and fired its hooks in the operator layer "". It executes in the
+// tenant that owns the row. A row bootstrapped from the yaml keeps its empty
+// tenant, and so does the shared layer's own row.
+//
+// Fails-before: the legacy row resolves with TenantID "".
+func TestResolveWebhook_LegacyEmptyBodyTenantRunsInOwningTenant(t *testing.T) {
+	body := json.RawMessage(`{"delivery":"spawn","agent":"intake"}`)
+	ss := &tenantWebhookStore{active: map[string]store.WebhookDefRow{
+		"acme/legacy": {TenantID: "acme", Definition: body},
+		"acme/boot":   {TenantID: "acme", Definition: body, BootstrappedFromStatic: true},
+		"/shared":     {Definition: body},
+	}}
+	for _, tc := range []struct{ tenant, name, want string }{
+		{"acme", "legacy", "acme"},
+		{"acme", "boot", ""},
+		{"", "shared", ""},
+	} {
+		got, _, ok := lookup.ResolveWebhook(context.Background(), ss, nil, tc.tenant, tc.name)
+		if !ok {
+			t.Fatalf("%s/%s did not resolve", tc.tenant, tc.name)
+		}
+		if got.TenantID != tc.want {
+			t.Errorf("%s/%s executes in %q, want %q", tc.tenant, tc.name, got.TenantID, tc.want)
+		}
+	}
+}
