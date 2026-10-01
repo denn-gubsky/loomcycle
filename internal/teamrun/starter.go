@@ -99,6 +99,9 @@ func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *
 	if h.Source.IsDocument() {
 		return r.runDocumentStarter(ctx, st, task)
 	}
+	if h.Source.IsInput() {
+		return r.runInputStarter(ctx, st, task)
+	}
 	if r.channels == nil {
 		return Outcome{}, fmt.Errorf("state %q is a starter but no channel executor is wired", st.ID)
 	}
