@@ -111,6 +111,91 @@ func TestRun_Stateful_OneHelpTopicReadTwiceIsKeptOnce(t *testing.T) {
 	}
 }
 
+// badSetMemory fails every call as a shape error, the failure a help hint is
+// attached to.
+type badSetMemory struct{}
+
+func (badSetMemory) Name() string                 { return "Memory" }
+func (badSetMemory) Description() string          { return "stores things" }
+func (badSetMemory) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (badSetMemory) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: "set: missing required field: value", IsError: true}, nil
+}
+
+// The crossing: the real dispatcher attaches the Memory/set article to a failed
+// set as its hint, the stateful loop keeps that failure, and the real Context
+// names the article it serves. After the model reads the help, the next step
+// shows the article once (the observation) and no longer says it is unread.
+func TestRun_Stateful_AKeptFailureDropsItsHintOnceTheHelpIsRead(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	art, ok := set.Get("Memory/set")
+	if !ok {
+		t.Fatal("no Memory/set article")
+	}
+	// The article is JSON-encoded in both the hint and the help result, so
+	// probe with its longest stretch that no encoder rewrites.
+	probe := ""
+	for _, part := range strings.FieldsFunc(art.Content, func(r rune) bool {
+		return strings.ContainsRune("\n`\"\\<>&", r)
+	}) {
+		if len(part) > len(probe) {
+			probe = part
+		}
+	}
+	if len(probe) < 20 {
+		t.Fatalf("probe %q is too short to identify the article", probe)
+	}
+
+	prov := &stepScript{steps: []string{
+		`{"patch":{},"action":{"tool":"Memory","input":{"op":"set","key":"k"}}}`,
+		`{"patch":{},"action":{"tool":"Context","input":{"op":"help","topic":"Memory/set"}}}`,
+		`{"patch":{},"done":true,"final":"ok"}`,
+	}}
+	order := []tools.Tool{badSetMemory{}, &builtin.Context{Help: set}}
+	d := tools.NewDispatcher(order)
+	d.EnableHelpHints()
+	mode := config.ContextModeStateful
+	if _, err := loop.Run(context.Background(), loop.RunOptions{
+		Provider:   prov,
+		Model:      "x",
+		Tools:      order,
+		Dispatcher: d,
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{
+			{Type: "trusted-text", Text: "save a note"}}}},
+		Context: &config.Context{Mode: &mode},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prov.requests) < 3 {
+		t.Fatalf("%d model calls, want 3", len(prov.requests))
+	}
+	stepText := func(i int) string {
+		msgs := prov.requests[i]
+		var b strings.Builder
+		for _, c := range msgs[len(msgs)-1].Content {
+			b.WriteString(c.Text)
+		}
+		return b.String()
+	}
+	// Not vacuous: the failure the model saw did carry the hint.
+	if s := stepText(1); !strings.Contains(s, "You have not read the help for Memory/set") {
+		t.Fatalf("step 2 shows no help hint on the failed set, so there is nothing to drop:\n%s", s)
+	}
+	s := stepText(2)
+	if strings.Contains(s, "You have not read the help") {
+		t.Errorf("step 3 still says the help is unread after reading it:\n%s", s)
+	}
+	if n := strings.Count(s, probe); n != 1 {
+		t.Errorf("the Memory/set article appears %d times on step 3, want 1:\n%s", n, s)
+	}
+	if !strings.Contains(s, "missing required field: value") {
+		t.Errorf("step 3 lost the kept failure's error:\n%s", s)
+	}
+}
+
 // The stateful memo keeps a Context result only when its op is classified
 // static, so every op the real Context tool offers must be classified: a new op
 // left out is silently never kept, and a new live op classified by habit as

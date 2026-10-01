@@ -3930,14 +3930,24 @@ func renderToolResultText(res tools.Result) string {
 		out.CorrectCallFormat = info.CallFormat
 		out.Hint = info.Hint
 	}
+	text, err := encodeInband(out)
+	if err != nil {
+		return res.Text // unreachable for these field types; never lose the message
+	}
+	return text
+}
+
+// encodeInband renders a failure's in-band JSON: one spelling for the tool
+// result a model reads and for the stateful memo's hint-stripped copy of it.
+func encodeInband(out inbandError) (string, error) {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	// Readable as written: a model reads "<" and "&", not "<".
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(out); err != nil {
-		return res.Text // unreachable for these field types; never lose the message
+		return "", err
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n"), nil
 }
 
 // splitSegments separates "system" segments (which become provider System
