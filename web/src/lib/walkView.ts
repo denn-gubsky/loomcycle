@@ -132,10 +132,11 @@ export function belongsToWalk(e: RunStateEvent, walkRunId: string): boolean {
   return e.run_id === walkRunId || e.parent_context?.walk_id === walkRunId;
 }
 
-// Instants are compared as times, not strings: the listing and the stream
-// format fractional seconds independently, and "…:05Z" sorts after
-// "…:05.5Z" as a string. An unparseable instant falls back to the string
-// order loomboard uses.
+// Instants are compared as times, not strings. The listing writes the server's
+// local offset with microseconds ("…12:37:14.827396+03:00"), the stream UTC
+// whole seconds ("…09:37:48Z"), so as strings a listing row east of UTC always
+// looks newer and would roll every stream transition back. An unparseable
+// instant falls back to the string order loomboard uses.
 function notOlder(next: string, prev: string): boolean {
   const a = Date.parse(next);
   const b = Date.parse(prev);

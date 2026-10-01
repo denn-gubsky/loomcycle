@@ -108,6 +108,16 @@ describe("foldWalk", () => {
     expect(v.members.get("m1")?.status).toBe("completed");
   });
 
+  it("orders a listing's local-offset instant against the stream's UTC one", () => {
+    // As served: the listing writes "+03:00" with microseconds, the stream
+    // UTC whole seconds. As strings the 12:… listing row always looks newer.
+    let v = foldWalk(emptyWalk(WALK), [
+      rowFromAgent(agent({ run_id: "m1", awaited_state: "review", last_heartbeat_at: "2026-10-01T12:37:14.827396+03:00" })),
+    ]);
+    v = foldWalk(v, [rowFromEvent(event({ run_id: "m1", ts: "2026-10-01T09:37:48Z" }))]);
+    expect(v.members.get("m1")?.awaited).toBeUndefined();
+  });
+
   it("carries the graph place and listing-only facts a stream frame omits", () => {
     const listed = rowFromAgent(
       agent({
@@ -199,6 +209,14 @@ describe("currentState", () => {
 describe("parseBreakpointPause", () => {
   it("reads the state, wave and counts from the walk's question", () => {
     expect(parseBreakpointPause(pauseQuestion("draft", 2, 5))).toEqual({ state: "draft", wave: "wv_1", waveSize: 5, pending: 2 });
+  });
+
+  it("reads the question exactly as a live walk asked it", () => {
+    const live =
+      'Team "uiwalk": state "fan" paused BEFORE dispatching wave wav_0bb3a3aae3a6b6c1 (1 runs in the wave, 1 pending).\n' +
+      '[0] worker ← {"task":"one"}\n' +
+      "Reply `continue` to dispatch all 1, `release:<n>` to dispatch the first n and pause again, or `abort` to stop the walk.";
+    expect(parseBreakpointPause(live)).toEqual({ state: "fan", wave: "wav_0bb3a3aae3a6b6c1", waveSize: 1, pending: 1 });
   });
 
   it("unquotes a state id with an escaped quote", () => {
