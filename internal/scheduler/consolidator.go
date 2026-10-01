@@ -776,8 +776,10 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		// operator or admin author is never restricted, so it is false, and
 		// copying it would run tenant code on the operator's key every tick. A
 		// tenant with its own provider credential still consolidates on that
-		// key; one without is refused (operator_key_restricted) until it adds
-		// one or an admin gives it its own schedule. Gate off: unchanged.
+		// key, and a provider that needs no key (a local model, code-js) still
+		// runs; anything else is refused (operator_key_restricted) until the
+		// tenant adds a key or an admin gives it its own schedule. Gate off:
+		// unchanged.
 		in.UserCredentials = nil
 		if s.cfg.OperatorKeyRestriction {
 			in.OperatorKeyRestricted = true
