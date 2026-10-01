@@ -538,14 +538,15 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 			return err
 		}
 	}
-	// The gRPC binding dials via grpc-go, OUTSIDE the SSRF-blocking
-	// netguard dialer that guards the jsonrpc/rest transports. Block the
-	// common direct-IP SSRF (e.g. grpc://169.254.169.254 → cloud metadata) at
-	// registration/fork time. This does NOT cover a hostname that resolves to
-	// a private address, nor DNS-rebinding at dial time — closing those needs
-	// the gRPC dial routed through that dialer, which is deferred because
-	// the SDK's WithGRPCTransport replaces the whole transport and would
-	// require replicating its default credentials (TLS-downgrade risk).
+	// The gRPC binding has no SSRF-blocking dialer behind it: the A2A client
+	// registers only the jsonrpc/rest transports (both on the netguard
+	// client), so a grpc peer is not dialed at all today
+	// (TestNewSDKPeerClient_GRPCBindingIsNeverDialed). Block the direct-IP
+	// SSRF (e.g. grpc://169.254.169.254 → cloud metadata) at
+	// registration/fork time anyway, so wiring a gRPC transport later does
+	// not open it. This does NOT cover a hostname that resolves to a private
+	// address, nor DNS-rebinding; whoever wires the transport must route its
+	// dial through netguard for those.
 	if def.Endpoint != "" && def.Binding == "grpc" {
 		if err := requireSafeGRPCEndpoint("endpoint", def.Endpoint); err != nil {
 			return err
@@ -577,33 +578,80 @@ func requireHTTPURL(field, raw string) error {
 	return nil
 }
 
-// requireSafeGRPCEndpoint rejects a gRPC endpoint whose host is a LITERAL
-// private / loopback / link-local IP (notably the cloud metadata service at
-// 169.254.169.254). The gRPC binding dials via grpc-go, outside the
-// SSRF-blocking netguard dialer internal/tools/a2a uses, so this is the
-// registration-time defense-in-depth against the common direct-IP SSRF when
-// the endpoint is model-authored via a fork overlay. It deliberately does NOT
-// resolve hostnames (no DNS at registration time, and a resolved answer can
-// change before dial — that TOCTOU is the dialer's job, deferred for gRPC).
+// requireSafeGRPCEndpoint rejects a gRPC endpoint that names a LITERAL private
+// / loopback / link-local IP (notably the cloud metadata service at
+// 169.254.169.254) anywhere a gRPC target can put an address, carries userinfo,
+// or is a unix socket. A gRPC target is not a URL: grpc-go reads
+// "scheme:[//authority/]endpoint" and falls back to the dns scheme for a bare
+// "host:port". The endpoint can be model-authored via a fork overlay, so this is
+// the registration-time defense. It deliberately does NOT resolve hostnames (no
+// DNS at registration time, and an answer can change before dial; that TOCTOU
+// belongs to a dial-time guard).
 func requireSafeGRPCEndpoint(field, raw string) error {
-	host := raw
-	// gRPC targets may carry a scheme/authority ("dns:///h:p",
-	// "passthrough:///h:p", "grpc://h:p"); take the segment after the last
-	// '/', then strip an optional :port and IPv6 brackets.
-	if i := strings.LastIndex(host, "/"); i >= 0 {
-		host = host[i+1:]
+	targets := []string{raw}
+	// grpc-go percent-decodes the target, so "%31%30.0.0.1" must be judged as
+	// "10.0.0.1" too. An undecodable target is judged as written.
+	if dec, err := url.PathUnescape(raw); err == nil && dec != raw {
+		targets = append(targets, dec)
 	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.Trim(host, "[]")
-	if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
-		// Name the address, not the endpoint: a gRPC target is often not a
-		// URL at all ("10.0.0.1:443"), and whatever precedes the host can
-		// carry a credential ("dns:///u:p@10.0.0.1").
-		return fmt.Errorf("%s host %s is a private/loopback/link-local address — refusing (the gRPC binding dials outside the SSRF guard)", field, ip)
+	for _, t := range targets {
+		// Userinfo has no meaning in a gRPC target and only hides the host
+		// ("dns:///u:p@10.0.0.1:443" left no host:port for the IP check).
+		// Refuse it outright, without echoing it: it is usually a credential.
+		if strings.Contains(t, "@") {
+			return fmt.Errorf("%s must not carry userinfo (user@ or user:password@ before the host): a gRPC target has no use for it", field)
+		}
+		rest := t
+		if i := strings.IndexByte(t, ':'); i > 0 {
+			switch strings.ToLower(t[:i]) {
+			case "dns", "ipv4", "ipv6", "passthrough":
+				rest = t[i+1:]
+			}
+		}
+		// Every place an address can sit: a dns authority (the resolver it
+		// queries), the endpoint, each entry of an ipv4:/ipv6: list. Splitting
+		// on '/' also covers a URL-style "grpc://host:port".
+		for _, piece := range grpcTargetPieces(rest) {
+			if isUnixSocketTarget(piece) {
+				// A unix: target, or one behind passthrough, which hands its
+				// endpoint to the dialer as written: the dialer reads a
+				// "unix:" prefix as a socket path.
+				return fmt.Errorf("%s is a unix socket target — refusing (it reaches a service on this host)", field)
+			}
+			if ip := grpcPieceIP(piece); ip != nil && isPrivateIP(ip) {
+				// Name the address, not the endpoint: what surrounds the
+				// host can carry a credential ("?token=").
+				return fmt.Errorf("%s host %s is a private/loopback/link-local address — refusing (the gRPC binding is not dialed through the SSRF guard)", field, ip)
+			}
+		}
 	}
 	return nil
+}
+
+func grpcTargetPieces(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool { return r == '/' || r == ',' })
+}
+
+func isUnixSocketTarget(s string) bool {
+	s = strings.ToLower(s)
+	return strings.HasPrefix(s, "unix:") || strings.HasPrefix(s, "unix-abstract:")
+}
+
+// grpcPieceIP returns the IP literal in one address slot of a gRPC target
+// ("10.0.0.1:443", "[::1]:443", "::1", "fe80::1%eth0"), or nil when the slot
+// names a host or is not an address at all.
+func grpcPieceIP(piece string) net.IP {
+	if i := strings.IndexAny(piece, "?#"); i >= 0 {
+		piece = piece[:i]
+	}
+	if h, _, err := net.SplitHostPort(piece); err == nil {
+		piece = h
+	}
+	piece = strings.Trim(piece, "[]")
+	if i := strings.IndexByte(piece, '%'); i >= 0 {
+		piece = piece[:i]
+	}
+	return net.ParseIP(piece)
 }
 
 // ---- response shape ----

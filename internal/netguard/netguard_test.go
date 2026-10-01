@@ -93,6 +93,71 @@ func TestIsPrivateIP_CoversCGNATBenchmarkAndEmbeddedIPv4(t *testing.T) {
 	}
 }
 
+// TestIsPrivateIP_CoversReservedIPv6AndDocumentationRanges pins the
+// special-purpose ranges that are not globally reachable but that the stdlib
+// calls global unicast. Each range has a row at both edges and a public
+// neighbour just outside it, so a too-narrow or too-wide prefix fails.
+func TestIsPrivateIP_CoversReservedIPv6AndDocumentationRanges(t *testing.T) {
+	cases := []struct {
+		ip      string
+		private bool
+	}{
+		// Teredo, refused as a whole: a public relay with a private client
+		// (here 10.0.0.1, XORed into the last 32 bits) still lands in a LAN.
+		{"2001::1", true},
+		{"2001:0:4136:e378:8000:63bf:f5ff:fffe", true},
+		{"2001:0:ffff:ffff:ffff:ffff:ffff:ffff", true},
+		{"2001:1::1", false}, // the next /32: port control anycast, public
+		{"2000:ffff:ffff:ffff::1", false},
+
+		// Site-local. Its neighbours are link-local below and multicast above,
+		// both already private, so only the edges are pinned here.
+		{"fec0::1", true},
+		{"feff:ffff:ffff:ffff::1", true},
+
+		{"100::1", true}, // discard-only
+		{"100::ffff:ffff:ffff:ffff", true},
+		{"100:0:0:1::1", false},
+
+		{"2001:db8::1", true}, // documentation
+		{"2001:db8:ffff:ffff::1", true},
+		{"2001:db7:ffff::1", false},
+		{"2001:db9::1", false},
+		{"3fff::1", true},
+		{"3fff:fff:ffff::1", true},
+		{"3fff:1000::1", false},
+
+		{"2001:2::1", true}, // benchmarking
+		{"2001:2:0:ffff::1", true},
+		{"2001:2:1::1", false},
+		{"2001:10::1", true}, // ORCHID
+		{"2001:1f:ffff::1", true},
+		{"2001:20::1", false}, // ORCHIDv2 is globally reachable
+
+		{"5f00::1", true}, // segment-routing SIDs
+		{"5f00:ffff::1", true},
+		{"5f01::1", false},
+
+		{"192.0.2.1", true}, // documentation IPv4
+		{"198.51.100.1", true},
+		{"203.0.113.255", true},
+		{"192.0.3.0", false},
+		{"198.51.101.0", false},
+		{"203.0.112.255", false},
+		{"2002:cb00:7101::1", true}, // 6to4 of 203.0.113.1
+		{"64:ff9b::c000:201", true}, // NAT64 of 192.0.2.1
+	}
+	for _, c := range cases {
+		ip := net.ParseIP(c.ip)
+		if ip == nil {
+			t.Fatalf("bad fixture %q", c.ip)
+		}
+		if got := IsPrivateIP(ip); got != c.private {
+			t.Errorf("IsPrivateIP(%s) = %v, want %v", c.ip, got, c.private)
+		}
+	}
+}
+
 // guardedDialErr dials addr through the guard with a short deadline. The caller
 // tells a guard refusal ("blocked: …") from an ordinary network failure, which
 // is all an address outside this machine can produce in a test.

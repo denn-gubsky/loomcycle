@@ -115,6 +115,69 @@ func TestA2AAgentDefTool_CreateRefusesPrivateGRPCEndpoint(t *testing.T) {
 	}
 }
 
+// A gRPC target is not a URL, so the check has to find the address wherever
+// grpc-go reads one: behind userinfo, as a dns resolver authority, in an
+// ipv4:/ipv6: list, behind passthrough, percent-encoded. All but three refusal
+// rows were accepted when the check took only the text after the last '/'; the
+// three (upper-case scheme, passthrough, CGNAT) pin that the reshaped parser
+// still refuses what the old one did.
+func TestRequireSafeGRPCEndpoint_RefusesUserinfoSocketsAndHiddenPrivateAddresses(t *testing.T) {
+	for _, c := range []struct {
+		target string
+		reason string // what the refusal must say
+	}{
+		{"dns:///u:p@10.0.0.1:443", "userinfo"},
+		{"dns:///user@169.254.169.254:443", "userinfo"},
+		{"dns:///svc:it's-secret@peer.example:443", "userinfo"}, // a public host does not excuse it
+		{"svc@10.0.0.1:443", "userinfo"},
+		{"dns://svc:qtok@8.8.8.8/peer.example:443", "userinfo"},
+		{"dns:///u%40169.254.169.254:443", "userinfo"},       // grpc-go decodes %40 to @
+		{"dns://10.0.0.53/peer.example:443", "10.0.0.53"},    // private resolver authority
+		{"dns:10.0.0.1:443", "10.0.0.1"},                     // opaque dns form
+		{"DNS:///169.254.169.254:443", "169.254.169.254"},    // scheme is case-insensitive
+		{"ipv4:8.8.8.8:443,10.0.0.1:443", "10.0.0.1"},        // any list entry
+		{"ipv6:[2001:4860::1]:443,[fe80::1]:443", "fe80::1"}, // any list entry
+		{"ipv6:::1", "::1"},
+		{"passthrough:///169.254.169.254:80", "169.254.169.254"},
+		{"dns:///%31%30.0.0.1:443", "10.0.0.1"}, // percent-encoded literal
+		{"[fe80::1%25eth0]:443", "fe80::1"},
+		{"100.100.100.200:80", "100.100.100.200"}, // Alibaba metadata, CGNAT
+		{"unix:///var/run/docker.sock", "unix socket"},
+		{"unix:relative.sock", "unix socket"},
+		{"unix-abstract:name", "unix socket"},
+		{"passthrough:///unix:/var/run/docker.sock", "unix socket"},
+	} {
+		err := requireSafeGRPCEndpoint("endpoint", c.target)
+		if err == nil {
+			t.Errorf("%q: accepted, want a refusal naming %q", c.target, c.reason)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.reason) {
+			t.Errorf("%q: refusal %q does not name %q", c.target, err, c.reason)
+		}
+		assertNoURLSecret(t, c.target, err.Error())
+		if strings.Contains(c.reason, "userinfo") && strings.Contains(err.Error(), "u:p") {
+			t.Errorf("%q: refusal echoes the userinfo: %s", c.target, err)
+		}
+	}
+
+	for _, target := range []string{
+		"peer.example:50051",
+		"dns:///peer.example:443",
+		"dns://8.8.8.8/peer.example:443",
+		"passthrough:///peer.example:443",
+		"ipv4:8.8.8.8:443,1.1.1.1:443",
+		"ipv6:[2001:4860:4860::8888]:443",
+		"8.8.8.8:443",
+		"https://peer.example/a2a",
+		"myunix.example:443",
+	} {
+		if err := requireSafeGRPCEndpoint("endpoint", target); err != nil {
+			t.Errorf("%q: refused a public target: %v", target, err)
+		}
+	}
+}
+
 func TestA2AAgentDefTool_CreateRefusesBothReachabilityModes(t *testing.T) {
 	tool, ctx, cleanup := a2aAgentDefFixture(t)
 	defer cleanup()

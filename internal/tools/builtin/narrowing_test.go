@@ -308,6 +308,24 @@ func TestStripLocalhostAliasesExempt(t *testing.T) {
 			[]string{"127.0.0.1"},
 			[]string{"real.example"},
 		},
+		{
+			"a CIDR exempt covering loopback keeps every alias it reaches",
+			[]string{"localhost", "127.0.0.1", "app.localhost", "::1", "real.example"},
+			[]string{"127.0.0.0/8"},
+			[]string{"localhost", "127.0.0.1", "app.localhost", "real.example"},
+		},
+		{
+			"an IPv6 CIDR exempt keeps the IPv6 aliases and localhost",
+			[]string{"localhost", "127.0.0.1", "::1", "[::1]"},
+			[]string{"::1/128"},
+			[]string{"localhost", "::1", "[::1]"},
+		},
+		{
+			"a CIDR exempt that misses loopback strips as before",
+			[]string{"localhost", "127.0.0.1", "0.0.0.0", "real.example"},
+			[]string{"100.64.0.0/10", "10.0.0.0/8"},
+			[]string{"real.example"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
