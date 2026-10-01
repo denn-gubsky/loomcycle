@@ -94,6 +94,10 @@ func operatorCtx(ctx context.Context) context.Context {
 		AgentID: operatorAgentID,
 	})
 	ctx = tools.WithAgentName(ctx, operatorAgentName)
+	// No principal reaches here (mcpPrincipalCtx routes an authenticated
+	// caller elsewhere): this is the stdio launcher or an open-mode session,
+	// i.e. the operator, so the def tools grant it operator authority.
+	ctx = tools.WithUnauthenticatedOperator(ctx)
 	return grantOperatorPolicies(ctx, operatorAgentName, true)
 }
 

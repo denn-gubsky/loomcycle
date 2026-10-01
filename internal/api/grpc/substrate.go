@@ -44,6 +44,12 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	// every gRPC-admin-registered def into the shared "" tenant. Zero
 	// value "" when no principal → shared tenant (correct single-tenant).
 	principal, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		// No principal: open mode, or the legacy shared-secret fallback when no
+		// principal resolver is wired — either way the operator (mirrors the
+		// HTTP substrateAdminCtx).
+		ctx = tools.WithUnauthenticatedOperator(ctx)
+	}
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		UserID:   grpcSubstrateAdminUserID,
 		AgentID:  grpcSubstrateAdminAgentID,

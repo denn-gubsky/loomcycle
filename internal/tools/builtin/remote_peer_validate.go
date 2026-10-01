@@ -151,11 +151,12 @@ type remotePeerCredential struct {
 // credential exactly as the yaml entry for this name declares them (static)
 // sends the operator's key to the operator's host.
 //
-// An admin (substrate:admin) keeps free api_key_env. Called by the def tools
+// An admin (substrate:admin) keeps free api_key_env, and so does an open-mode
+// or stdio operator (callerHasOperatorAuthority). Called by the def tools
 // only: a snapshot restore is an admin action, so its validators check the
 // shape and the host floor, not this.
 func requireAuthorBoundCredential(ctx context.Context, def remotePeerCredential, static *remotePeerCredential) error {
-	if defCallerIsAdmin(ctx) {
+	if callerHasOperatorAuthority(ctx) {
 		return nil
 	}
 	if static != nil && def == *static {

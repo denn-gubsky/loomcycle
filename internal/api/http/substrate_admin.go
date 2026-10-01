@@ -389,7 +389,12 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	// lands in the shared "" tenant regardless of the caller. Zero value
 	// "" when no principal (legacy LOOMCYCLE_AUTH_TOKEN / open mode) →
 	// shared tenant, which is the correct single-tenant behavior.
-	principal, _ := auth.PrincipalFromContext(ctx)
+	principal, hasPrincipal := auth.PrincipalFromContext(ctx)
+	if !hasPrincipal {
+		// Open mode: the auth middleware stamps no principal only when no
+		// bearer is configured at all, so whoever is calling is the operator.
+		ctx = tools.WithUnauthenticatedOperator(ctx)
+	}
 	// RFC CA: mark this as the OPERATOR's own off-run call. Stamped here, at the single
 	// root of every substrate admin dispatch, so no route can forget it; and it is a
 	// dedicated marker rather than the synthetic agent id below, because that id is

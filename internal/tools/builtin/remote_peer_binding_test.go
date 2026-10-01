@@ -169,6 +169,35 @@ func TestRemoteDocumentSourceAuthoring_TenantAuthorCannotNameForeignEnvCredentia
 		credentialCases(``))
 }
 
+// An open-mode or stdio operator authenticates nobody, so it carries no
+// principal to hold substrate:admin — and is still the operator, so it keeps
+// free api_key_env like an admin. The in-run shape (no principal, no operator
+// marker) does not.
+func TestRemoteDefAuthoring_UnauthenticatedOperatorKeepsFreeCredential(t *testing.T) {
+	for kind, fixture := range map[string]func(t *testing.T) (tools.Tool, context.Context, func()){
+		"memory backend":  func(t *testing.T) (tools.Tool, context.Context, func()) { return memoryBackendDefFixture(t) },
+		"document source": func(t *testing.T) (tools.Tool, context.Context, func()) { return documentSourceDefFixture(t) },
+	} {
+		t.Run(kind, func(t *testing.T) {
+			remoteKind := ``
+			if kind == "memory backend" {
+				remoteKind = `"kind":"remote",`
+			}
+			input := `{"op":"create","name":"peer","overlay":{` + remoteKind + `"config":{"base_url":"https://peer.example.com","api_key_env":"LOOMCYCLE_PEER_KEY_GLOBEX"}}}`
+			tool, base, done := fixture(t)
+			defer done()
+			if res := execDef(t, tool, tools.WithUnauthenticatedOperator(asTenant(base, "")), input); res.IsError {
+				t.Errorf("an unauthenticated operator was refused a free api_key_env: %s", res.Text)
+			}
+			tool, base, done2 := fixture(t)
+			defer done2()
+			if res := execDef(t, tool, asTenant(base, ""), input); !res.IsError || !strings.Contains(res.Text, "may be set only by an admin") {
+				t.Errorf("an in-run author with no principal was not refused the free api_key_env: %s", res.Text)
+			}
+		})
+	}
+}
+
 // ---- host floor at dial ----
 
 // authPeer is an httptest peer that counts requests and records whether any

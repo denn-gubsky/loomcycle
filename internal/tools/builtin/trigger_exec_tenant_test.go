@@ -270,3 +270,23 @@ func TestScheduleDefTool_NonAdminHookEditOfDefExecutingElsewhereIsRefused(t *tes
 		}
 	}
 }
+
+// An open-mode or stdio operator authenticates nobody, so it carries no
+// principal — and is still the operator. It may point a trigger at any tenant,
+// like an admin. The in-run shape (no principal, no marker) may not, and the
+// marker grants nothing to an authenticated caller.
+func TestScheduleDef_UnauthenticatedOperatorMayAuthorForeignExecTenant(t *testing.T) {
+	for _, h := range triggerHarnesses(t) {
+		operator := tools.WithUnauthenticatedOperator(asTenant(h.base, ""))
+		if res := h.call(operator, "create", "remote-run", "acme"); res.IsError {
+			t.Fatalf("%s: an unauthenticated operator was refused a foreign exec tenant: %s", h.kind, res.Text)
+		}
+		if got, _ := h.execTenant(t, "", "remote-run"); got != "acme" {
+			t.Errorf("%s: stored exec tenant %q, want acme", h.kind, got)
+		}
+
+		requireRefusedAsValidation(t, h.kind, h.call(asTenant(h.base, ""), "create", "in-run", "acme"))
+		withPrincipal := auth.WithPrincipal(operator, auth.Principal{Subject: "svc", Scopes: []string{auth.ScopeTenant}})
+		requireRefusedAsValidation(t, h.kind, h.call(withPrincipal, "create", "marked-principal", "acme"))
+	}
+}

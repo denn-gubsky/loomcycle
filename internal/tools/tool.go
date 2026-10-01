@@ -1171,6 +1171,31 @@ func IsSubstrateOperator(ctx context.Context) bool {
 	return v
 }
 
+type ctxKeyUnauthenticatedOperator struct{}
+
+// WithUnauthenticatedOperator marks ctx as the operator's own off-run call on a
+// surface with NO authentication: open mode (no bearer configured) on HTTP or
+// gRPC, and the in-process stdio `loomcycle mcp`. Whoever reaches those is the
+// operator — there is no lesser principal to tell apart — so the def tools treat
+// such a call as having operator authority, like substrate:admin.
+//
+// Distinct from WithSubstrateOperator on purpose: that marker is on every
+// off-run call, a tenant operator's included, so reading authority off it would
+// make every tenant token an admin. Stamp this one ONLY where no principal can
+// exist; never on a run, a sub-agent, or a trigger-fired context. Readers must
+// still check that no auth.Principal is on ctx (see the builtin
+// callerHasOperatorAuthority), so a marker that leaked onto an authenticated
+// call grants nothing.
+func WithUnauthenticatedOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, true)
+}
+
+// IsUnauthenticatedOperator reports whether ctx carries the marker above.
+func IsUnauthenticatedOperator(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyUnauthenticatedOperator{}).(bool)
+	return v
+}
+
 func WithDispatcher(ctx context.Context, d *Dispatcher) context.Context {
 	if d == nil {
 		return ctx
