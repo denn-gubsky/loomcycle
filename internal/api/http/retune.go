@@ -110,7 +110,7 @@ func (w *runOverridesWire) split() runOverrides {
 
 // runForSteer returns the run a steer/retune is addressed to — the one gate
 // SteerRun, retune and the run-config reads share: the run must be live, and
-// its session must pass the tenant-ownership check.
+// the caller must own it (liveRunOwnershipOK).
 //
 // Live means in this replica's steer registry, or — in a cluster — running on
 // the replica that owns it: its row says running and names another replica,
@@ -137,11 +137,8 @@ func (s *Server) runForSteer(ctx context.Context, runID string) (store.Run, erro
 		// A sub-agent its parent drives: it takes a verdict, nothing else.
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
-	if entry.SessionID != "" {
-		sess, err := s.store.GetSession(ctx, entry.SessionID)
-		if err != nil || !sessionOwnershipOK(ctx, sess) {
-			return store.Run{}, connector.ErrRunNotInFlight
-		}
+	if !s.liveRunOwnershipOK(ctx, entry) {
+		return store.Run{}, connector.ErrRunNotInFlight
 	}
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {

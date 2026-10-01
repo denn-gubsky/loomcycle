@@ -28,19 +28,37 @@ func turnCancelFixture(t *testing.T) (*Server, func()) {
 	return srv, cleanup
 }
 
+// liveInteractiveRun seeds an interactive run and registers it live on this
+// replica the way a run start does — with its session on the entry, so the
+// ownership gate runs. Returns the run id and the steer queue its loop drains.
+func liveInteractiveRun(t *testing.T, srv *Server) (string, <-chan steer.Message) {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "agent-x", "alice")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "agent-x", UserID: "alice", Interactive: true})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	q, dereg := srv.steerReg.Register(steer.Entry{RunID: run.ID, SessionID: sess.ID, UserID: "alice"})
+	t.Cleanup(dereg)
+	return run.ID, q
+}
+
 // POST /v1/runs/{id}/cancel fires the run's armed per-turn token (delivering the
 // operator reason via the cancel cause) and reports stopped/parked.
 func TestHandleCancelTurn_FiresArmedTokenAndParks(t *testing.T) {
 	srv, cleanup := turnCancelFixture(t)
 	defer cleanup()
-	_, dereg := srv.steerReg.Register(steer.Entry{RunID: "run-1"}) // no SessionID → ownership gate skipped
-	defer dereg()
+	runID, _ := liveInteractiveRun(t, srv)
 
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	srv.turnCancelReg.Arm("run-1", cancel)
+	srv.turnCancelReg.Arm(runID, cancel)
 
-	rec := doJSON(t, srv, "POST", "/v1/runs/run-1/cancel", `{"reason":"too slow"}`)
+	rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/cancel", `{"reason":"too slow"}`)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -52,8 +70,8 @@ func TestHandleCancelTurn_FiresArmedTokenAndParks(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !out.Stopped || !out.Parked || out.RunID != "run-1" {
-		t.Errorf("response = %+v, want {run-1, stopped, parked}", out)
+	if !out.Stopped || !out.Parked || out.RunID != runID {
+		t.Errorf("response = %+v, want {%s, stopped, parked}", out, runID)
 	}
 
 	// The armed turn ctx was cancelled with the turn-cancel cause + the reason.
@@ -68,7 +86,7 @@ func TestHandleCancelTurn_FiresArmedTokenAndParks(t *testing.T) {
 		t.Errorf("cause %q did not carry the operator reason", cause.Error())
 	}
 	// Token consumed → no longer armed.
-	if srv.turnCancelReg.IsArmed("run-1") {
+	if srv.turnCancelReg.IsArmed(runID) {
 		t.Error("token still armed after a successful cancel")
 	}
 }
@@ -77,16 +95,15 @@ func TestHandleCancelTurn_FiresArmedTokenAndParks(t *testing.T) {
 func TestHandleCancelTurn_SecondCallIs409(t *testing.T) {
 	srv, cleanup := turnCancelFixture(t)
 	defer cleanup()
-	_, dereg := srv.steerReg.Register(steer.Entry{RunID: "run-1"})
-	defer dereg()
+	runID, _ := liveInteractiveRun(t, srv)
 	_, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
-	srv.turnCancelReg.Arm("run-1", cancel)
+	srv.turnCancelReg.Arm(runID, cancel)
 
-	if rec := doJSON(t, srv, "POST", "/v1/runs/run-1/cancel", `{}`); rec.Code != 200 {
+	if rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/cancel", `{}`); rec.Code != 200 {
 		t.Fatalf("first cancel status = %d, want 200", rec.Code)
 	}
-	rec := doJSON(t, srv, "POST", "/v1/runs/run-1/cancel", `{}`)
+	rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/cancel", `{}`)
 	if rec.Code != 409 {
 		t.Fatalf("second cancel status = %d, want 409; body=%s", rec.Code, rec.Body.String())
 	}
@@ -95,14 +112,13 @@ func TestHandleCancelTurn_SecondCallIs409(t *testing.T) {
 	}
 }
 
-// A live but NOT-mid-turn run (registered, unarmed, no run row) → 409 not_mid_turn.
+// A live interactive run that is NOT mid-turn (registered, unarmed) → 409 not_mid_turn.
 func TestHandleCancelTurn_409WhenNotMidTurn(t *testing.T) {
 	srv, cleanup := turnCancelFixture(t)
 	defer cleanup()
-	_, dereg := srv.steerReg.Register(steer.Entry{RunID: "run-1"})
-	defer dereg()
+	runID, _ := liveInteractiveRun(t, srv)
 
-	rec := doJSON(t, srv, "POST", "/v1/runs/run-1/cancel", `{}`)
+	rec := doJSON(t, srv, "POST", "/v1/runs/"+runID+"/cancel", `{}`)
 	if rec.Code != 409 {
 		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
 	}
