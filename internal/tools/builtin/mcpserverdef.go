@@ -85,7 +85,10 @@ const mcpServerDefDescription = `Register, fork, promote, retire, rediscover, an
 	`streamable-http (stdio stays yaml-only). URL hostname must be in the operator's HTTP host ` +
 	`allowlist. create/fork auto-discover the upstream's tools (tools/list) at ingestion ` +
 	`(best-effort; opt out with discover:false), so a separate rediscover is only needed to ` +
-	`refresh a changed tool surface. Operations: create, fork, get, list, retire, promote, rediscover, verify.`
+	`refresh a changed tool surface. A ${NAME} reference in url, headers or a stdio command/args/env ` +
+	`reads the server's environment when it dials, so only an admin may store one; anyone else uses ` +
+	`${run.credentials.<name>} or $cred:<name>, and a stored definition holding one that an admin did ` +
+	`not save is not dialed. Operations: create, fork, get, list, retire, promote, rediscover, verify.`
 
 const mcpServerDefInputSchema = `{
   "type": "object",
