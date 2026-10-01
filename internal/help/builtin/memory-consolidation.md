@@ -137,7 +137,7 @@ fixed sequence:
 5. **Recall what is already stored**, so it can update instead of duplicating.
 6. **Write** the facts: `set` for new or refined ones, `supersede` for ones
    the conversation contradicts.
-7. **Advance the watermark** to the newest chat it consolidated, and
+7. **Advance the watermark** past each chat as soon as that chat is done, and
    **release the lease**.
 
 Two properties fall out of that shape and are worth relying on:
