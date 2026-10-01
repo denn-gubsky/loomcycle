@@ -237,6 +237,12 @@ type RunInput struct {
 	// agent loop, so the run never double-executes.
 	IdempotencyKey string
 
+	// DeliveryAltKey is an optional second durable dedup key, persisted to
+	// runs.delivery_alt_key with the same duplicate-refusal semantics as
+	// IdempotencyKey. Set by the webhook spawn path when a delivery has two
+	// identities. Empty for every other run.
+	DeliveryAltKey string
+
 	// Metadata is the optional NON-SECRET structured blob a trigger
 	// (WebHook/Schedule def, or a first-party /v1/runs caller) passes to
 	// the agent — repo name, review policy, preferred skills, etc. It is

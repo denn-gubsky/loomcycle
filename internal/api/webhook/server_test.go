@@ -532,6 +532,19 @@ func (f *fakeWebhookStore) RunByIdempotencyKey(_ context.Context, key string) (s
 	return r, ok, nil
 }
 
+// RunByDeliveryKeys models both persisted columns with the one existing map.
+func (f *fakeWebhookStore) RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run, bool, error) {
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		if r, ok, err := f.RunByIdempotencyKey(ctx, k); err != nil || ok {
+			return r, ok, err
+		}
+	}
+	return store.Run{}, false, nil
+}
+
 func (f *fakeWebhookStore) ChannelPublish(_ context.Context, msg store.ChannelMessage, _ int) (string, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -748,6 +761,21 @@ func (s *raceStore) RunByIdempotencyKey(_ context.Context, key string) (store.Ru
 	}
 	if key == s.key {
 		return s.winner, true, nil // re-lookup after the dup error
+	}
+	return store.Run{}, false, nil
+}
+
+// RunByDeliveryKeys shares the call count, so the BEFORE-spawn check (now
+// this lookup) is still the one that misses.
+func (s *raceStore) RunByDeliveryKeys(_ context.Context, keys []string) (store.Run, bool, error) {
+	s.calls++
+	if s.calls == 1 {
+		return store.Run{}, false, nil
+	}
+	for _, k := range keys {
+		if k != "" && k == s.key {
+			return s.winner, true, nil
+		}
 	}
 	return store.Run{}, false, nil
 }

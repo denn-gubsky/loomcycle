@@ -498,6 +498,12 @@ type Run struct {
 	// and confirm the key. Not a secret.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 
+	// DeliveryAltKey is the run's second durable dedup key
+	// (runs.delivery_alt_key): a webhook delivery that has two identities
+	// persists the one not in IdempotencyKey here. Empty on runs created
+	// without one and on pre-migration rows. Not a secret.
+	DeliveryAltKey string `json:"delivery_alt_key,omitempty"`
+
 	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2):
 	// it parks at end_turn (awaiting_input) instead of terminating. Stamped
 	// at CreateRun from the run request's `interactive` flag and persisted
@@ -898,6 +904,14 @@ type RunIdentity struct {
 	// Layer-1 TTL — or lands on a different replica — still dedups.
 	// Not a secret (safe to persist + echo).
 	IdempotencyKey string
+
+	// DeliveryAltKey is an optional second durable dedup key, persisted to
+	// runs.delivery_alt_key (its own partial unique index): a second
+	// CreateRun with the same value also returns ErrDuplicateIdempotencyKey.
+	// The webhook receiver sets it when a delivery has two identities (its
+	// delivery id and what its signature covers), so a duplicate under
+	// EITHER is found by RunByDeliveryKeys on any replica. Not a secret.
+	DeliveryAltKey string
 
 	// Interactive marks a persistent interactive run (F42 / RFC X Phase 2).
 	// Persisted to runs.interactive so a snapshotted + restored paused run
@@ -1758,6 +1772,13 @@ type Store interface {
 	// nil) — callers don't have to pre-check. Used by the webhook
 	// receiver to resolve a deduped delivery to its already-spawned run.
 	RunByIdempotencyKey(ctx context.Context, key string) (Run, bool, error)
+
+	// RunByDeliveryKeys returns the earliest-started run whose
+	// idempotency_key OR delivery_alt_key equals any of keys. Empty keys
+	// are ignored; ok=false (with a nil error) when none is non-empty or
+	// no run matches. The webhook receiver's Layer-2 lookup: a delivery is
+	// a duplicate when any of its keys was persisted under either column.
+	RunByDeliveryKeys(ctx context.Context, keys []string) (Run, bool, error)
 
 	// GetRun returns one row by run_id (the primary key on runs).
 	// Distinct from GetRunByAgentID which queries by the caller-
@@ -5865,7 +5886,8 @@ func (e *ErrConflict) Error() string { return e.Kind + " already exists: " + e.I
 
 // ErrDuplicateIdempotencyKey is returned by CreateRun when the supplied
 // RunIdentity.IdempotencyKey collides with an existing run's key (RFC H
-// Decision 10 "Layer 2" durable dedup). The caller is expected to look
+// Decision 10 "Layer 2" durable dedup), or its DeliveryAltKey with an
+// existing run's delivery_alt_key. The caller is expected to look
 // the existing run up via RunByIdempotencyKey and return it rather than
 // treating this as a failure. It is a sentinel (errors.Is-comparable),
 // distinct from *ErrConflict whose Kind/ID vary per call.

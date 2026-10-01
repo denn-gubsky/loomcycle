@@ -135,19 +135,25 @@ A shared front-half runs for every request, then forks on `delivery`:
      (Linear and many custom sources).
    Plus a **bearer** fallback (`kind: bearer`) for systems that can't sign.
 4. **Replay/dedup** (Layer 1, in-memory, per `delivery_id`) + **idempotency**
-   (Layer 2, durable `runs.idempotency_key`) so a re-delivered event lands
+   (Layer 2, durable on the run row) so a re-delivered event lands
    on the same run instead of spawning twice. Both are scoped to the webhook
    def the URL resolves to (its owning tenant, or the static yaml config,
    plus its name): the same `delivery_id`, or a byte-identical body, sent to
    a different webhook or to a same-named webhook in another tenant is a
    separate delivery with its own run. A tenant-prefixed URL that falls
    through to a static or shared webhook is the same webhook as the bare
-   URL, so a re-send through any prefix is deduped. When the signature
-   covers the body only (GitHub `sha256=` or bare hex), the
-   `delivery_id_header` is not signed, so the delivery dedups on its body
-   too: a repeat of either the id or the byte-identical body is a duplicate
-   (a Stripe-signed delivery, whose timestamp is signed, keys on the id
-   alone).
+   URL, so a re-send through any prefix is deduped. No HMAC signature
+   covers the `delivery_id_header`, so a signed delivery also dedups on
+   what its signature does cover, and a repeat of either is a duplicate —
+   on every replica and after a restart:
+   - **GitHub `sha256=` / bare hex** sign the body alone: a repeat of the
+     id, or of the byte-identical body, is a duplicate.
+   - **Stripe `t=,v1=`** signs the timestamp plus the body: a repeat of the
+     id, or of the same signed timestamp and body, is a duplicate. A retry
+     re-signed with a new timestamp keeps its id, so it lands on the
+     original run; a sender that posts the same body as separate deliveries,
+     each with its own id and timestamp, gets a run for each.
+   - **Bearer** and **`none`** sign nothing and key on the id alone.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure.

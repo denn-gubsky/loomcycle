@@ -38,6 +38,10 @@ func (s *stubWebhookStore) RunByIdempotencyKey(_ context.Context, _ string) (sto
 	return store.Run{}, false, nil
 }
 
+func (s *stubWebhookStore) RunByDeliveryKeys(_ context.Context, _ []string) (store.Run, bool, error) {
+	return store.Run{}, false, nil
+}
+
 // ChannelPublish + MemorySet satisfy lookup.WebhookStore (WH-5b
 // on_complete hooks). The resolver tests never fire hooks, so no-ops
 // suffice.

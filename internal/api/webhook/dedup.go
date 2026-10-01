@@ -120,16 +120,17 @@ func (c *dedupCache) seenAny(k deliveryKeys) bool {
 }
 
 // recordAccepted records every key of a delivery this receiver ACCEPTED.
-//
-// A delivery answered as a duplicate records only k.key (via record): in the
-// body-only modes its alt is a header value the signature does not cover, so
-// recording it would let a replay burn an id a genuine later delivery has yet
-// to use.
 func (c *dedupCache) recordAccepted(k deliveryKeys) {
 	c.record(k.key)
 	if k.alt != "" {
 		c.record(k.alt)
 	}
+}
+
+// recordDuplicate records a delivery answered as a duplicate: only k.dup, the
+// identity its signature covers (see deliveryKeys).
+func (c *dedupCache) recordDuplicate(k deliveryKeys) {
+	c.record(k.dup)
 }
 
 // sweep evicts all expired entries. Optional — lazy expiry on seen
@@ -169,40 +170,68 @@ func bodyDeliveryID(body []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// signedPayloadID is the identity of a Stripe-style delivery's signed payload,
+// `<t>.<body>` — exactly what its v1 MAC covers. Its own prefix keeps it apart
+// from bodyDeliveryID values.
+func signedPayloadID(timestamp string, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte(timestamp + "."))
+	h.Write(body)
+	return "signed:sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
 // deliveryKeys are the dedup keys of one delivery (dedupKey values).
 type deliveryKeys struct {
-	// key is persisted as the run's runs.idempotency_key (Layer 2) and is a
-	// Layer-1 key.
+	// key is persisted as the run's runs.idempotency_key and is a Layer-1
+	// key.
 	key string
-	// alt is a second Layer-1 key, and a Layer-2 lookup, never persisted. ""
-	// unless the delivery has two identities (see newDeliveryKeys).
+	// alt is persisted as the run's runs.delivery_alt_key and is a Layer-1
+	// key. "" unless the delivery has two identities (see newDeliveryKeys).
 	alt string
+	// dup is the one key a delivery answered as a duplicate records in
+	// Layer 1: the identity its signature covers, when it has two. The other
+	// is a header value the signature does not cover; recording it would let
+	// a replay burn an id a genuine later delivery has yet to use.
+	dup string
 }
 
 // newDeliveryKeys derives the keys a delivery to the webhook named by whKey
-// dedups on. did is deliveryID's value.
+// dedups on. did is deliveryID's value; env is what its signature covers.
 //
-// Normally that is the one key dedupKey(whKey, did). But when the signature
-// covers the body only (bodyOnly: GitHub `sha256=` / bare hex), the
-// delivery-id header is outside it and there is no timestamp window: whoever
-// captured one signed delivery could replay the body with a new header value
-// each time, each a fresh key in both layers and a new run. So such a
-// delivery also dedups on its body hash, and it is a duplicate when EITHER
-// identity was seen. The body key is the one persisted (runs.idempotency_key
-// holds a single value per run, and only the body is signed); the sender's id
-// rides along as alt, so a redelivery under the same id still matches a run
-// an earlier release keyed on it.
+// Normally that is the one key dedupKey(whKey, did). But no HMAC envelope
+// signs the delivery-id header, so whoever captured one signed delivery could
+// replay it with a new header value each time, each a fresh key and a new
+// run. So an HMAC-signed delivery also has the identity of what its signature
+// covers, and it is a duplicate when EITHER identity was seen; both are
+// persisted, so that holds after a restart and on every replica:
 //
-// The cost: two distinct deliveries with byte-identical bodies are one
-// delivery — already the rule for a def without delivery_id_header.
-func newDeliveryKeys(whKey, did string, body []byte, bodyOnly bool) deliveryKeys {
+//   - GitHub `sha256=` / bare hex sign the body alone, with no time limit:
+//     key is the body, alt the sender's id. A replay under a new id, and a
+//     seen id under a new body, are both duplicates. Two distinct deliveries
+//     with byte-identical bodies are one — already the rule for a def without
+//     delivery_id_header.
+//   - Stripe `t=,v1=` signs `<t>.<body>`, valid for ±signatureTolerance: key
+//     is the sender's id, alt the signed payload. A replay must reuse the
+//     signed timestamp (it cannot re-sign), so it matches alt; a genuine retry
+//     re-signs under a new timestamp but keeps its id, so it matches key, days
+//     later too. A sender posting the same body as separate deliveries signs
+//     a fresh timestamp each time and is not deduped — unless two share a
+//     second.
+//
+// Without a delivery-id header did IS the body hash, which already covers
+// every one of these cases: one key.
+func newDeliveryKeys(whKey, did string, body []byte, env envelope) deliveryKeys {
 	key := dedupKey(whKey, did)
-	if !bodyOnly {
-		return deliveryKeys{key: key}
+	if !env.signsBody {
+		return deliveryKeys{key: key, dup: key}
 	}
 	bodyKey := dedupKey(whKey, bodyDeliveryID(body))
 	if bodyKey == key {
-		return deliveryKeys{key: key} // no delivery-id header: did IS the body hash
+		return deliveryKeys{key: key, dup: key}
 	}
-	return deliveryKeys{key: bodyKey, alt: key}
+	if env.timestamp != "" {
+		signed := dedupKey(whKey, signedPayloadID(env.timestamp, body))
+		return deliveryKeys{key: key, alt: signed, dup: signed}
+	}
+	return deliveryKeys{key: bodyKey, alt: key, dup: bodyKey}
 }

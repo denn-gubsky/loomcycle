@@ -1262,6 +1262,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// indexable column, backfilled below. See
 		// internal/store/postgres/migrations/0086_runs_walk_id.
 		`ALTER TABLE runs ADD COLUMN walk_id TEXT`,
+		// A webhook delivery's second durable dedup key, beside
+		// idempotency_key. NULL on legacy rows + runs with one key. Its
+		// partial unique index is created in addIndexes. See
+		// internal/store/postgres/migrations/0090_runs_delivery_alt_key.
+		`ALTER TABLE runs ADD COLUMN delivery_alt_key TEXT`,
 		// RFC BE — human/organizational chat metadata on the session row (the
 		// History tool's browse/search/annotate surface). All additive + nullable
 		// so legacy rows read the zero value. tags is a JSON array (NULL = never
@@ -1444,6 +1449,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// unconstrained and the index stays small. Mirrors the postgres
 		// 0033 migration.
 		`CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency_key ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL`,
+		// The second durable dedup key — unique for the same reason: two
+		// replicas racing on one delivery both miss the lookup, and the
+		// index lets only one CreateRun win.
+		`CREATE UNIQUE INDEX IF NOT EXISTS runs_delivery_alt_key ON runs(delivery_alt_key) WHERE delivery_alt_key IS NOT NULL`,
 		// RFC N — ON CONFLICT(tenant_id, name) targets for the def plane.
 		// On a FRESH DB these are redundant with the composite PRIMARY KEY /
 		// UNIQUE declared in the CREATE TABLE block above (harmless). On an
@@ -1673,8 +1682,8 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, string(status), now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1692,6 +1701,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmptyRaw(identity.RunConfig),
 		nilIfEmptyRaw(draft),
 		nilIfEmpty(store.RunWalkID(identity.ParentContext)),
+		nilIfEmpty(identity.DeliveryAltKey),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -1703,6 +1713,11 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		if identity.IdempotencyKey != "" &&
 			strings.Contains(err.Error(), "UNIQUE constraint failed") &&
 			strings.Contains(err.Error(), "runs.idempotency_key") {
+			return store.Run{}, store.ErrDuplicateIdempotencyKey
+		}
+		if identity.DeliveryAltKey != "" &&
+			strings.Contains(err.Error(), "UNIQUE constraint failed") &&
+			strings.Contains(err.Error(), "runs.delivery_alt_key") {
 			return store.Run{}, store.ErrDuplicateIdempotencyKey
 		}
 		return store.Run{}, err
@@ -1722,6 +1737,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		Model:                 identity.Model,
 		ParentContext:         identity.ParentContext.Clone(),
 		IdempotencyKey:        identity.IdempotencyKey,
+		DeliveryAltKey:        identity.DeliveryAltKey,
 		Interactive:           identity.Interactive,
 		OperatorKeyRestricted: identity.OperatorKeyRestricted,
 		Isolated:              identity.Isolated,
@@ -2911,7 +2927,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	var agentDefID sql.NullString
 	var pauseState sql.NullString
 	var parentContext sql.NullString
-	var idempotencyKey sql.NullString
+	var idempotencyKey, deliveryAltKey sql.NullString
 	var tenantID sql.NullString
 	var interactive sql.NullInt64
 	var operatorKeyRestricted sql.NullInt64
@@ -2929,7 +2945,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&model, &provider, &errMsg,
 		&agentID, &parentAgentID, &parentRunID, &userID, &lastHbNs,
 		&userTier,
-		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &tenantID,
+		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &deliveryAltKey, &tenantID,
 		&interactive, &operatorKeyRestricted, &isolated,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
 		&runConfig,
@@ -2991,6 +3007,9 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 	if idempotencyKey.Valid {
 		r.IdempotencyKey = idempotencyKey.String
 	}
+	if deliveryAltKey.Valid {
+		r.DeliveryAltKey = deliveryAltKey.String
+	}
 	if tenantID.Valid {
 		r.TenantID = tenantID.String
 	}
@@ -3038,7 +3057,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.model, r.provider, r.error,
 		r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at,
 		r.user_tier,
-		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.tenant_id,
+		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id,
 		r.interactive, r.operator_key_restricted, r.isolated,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
 		r.run_config,
@@ -3088,6 +3107,36 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run,
 	}
 	if err != nil {
 		return store.Run{}, false, fmt.Errorf("run by idempotency_key: %w", err)
+	}
+	return r, true, nil
+}
+
+// RunByDeliveryKeys returns the earliest-started run whose idempotency_key
+// or delivery_alt_key is one of keys (see store.Store). Each column has a
+// partial unique index the IN terms can use.
+func (s *Store) RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run, bool, error) {
+	args := make([]any, 0, len(keys))
+	for _, k := range keys {
+		if k != "" {
+			args = append(args, k)
+		}
+	}
+	if len(args) == 0 {
+		return store.Run{}, false, nil
+	}
+	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+runColumns+` FROM `+runFromTable+`
+		 WHERE r.idempotency_key IN `+in+` OR r.delivery_alt_key IN `+in+`
+		 ORDER BY r.started_at ASC, r.id ASC LIMIT 1`,
+		append(args, args...)...,
+	)
+	r, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Run{}, false, nil
+	}
+	if err != nil {
+		return store.Run{}, false, fmt.Errorf("run by delivery keys: %w", err)
 	}
 	return r, true, nil
 }

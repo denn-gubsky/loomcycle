@@ -2,7 +2,10 @@ package webhook
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,10 +16,13 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// A GitHub `sha256=` or bare-hex signature covers the raw body only: the
-// delivery-id header is outside it and there is no timestamp window. These
-// tests pin that such a delivery dedups on its body as well as its id, so a
-// captured delivery cannot be replayed into new runs by changing that header.
+// No HMAC envelope signs the delivery-id header. GitHub `sha256=` and bare
+// hex sign the raw body alone, with no time limit; Stripe `t=,v1=` signs a
+// timestamp plus the body, valid for ±5 min. These tests pin that a signed
+// delivery also dedups on what its signature covers, durably, so a captured
+// delivery cannot be replayed into new runs by changing that header — while
+// a genuine retry still lands on its run and a sender's distinct deliveries
+// still start their own.
 
 // sigMode is one HMAC envelope: the header it travels in and how to sign.
 type sigMode struct {
@@ -31,11 +37,18 @@ var (
 		return strings.TrimPrefix(githubSig(scopeSecret, b), "sha256=")
 	}}
 	// Signed at the scope receiver's fixed clock, so inside the ±5 min window.
-	stripeMode = sigMode{"stripe", "X-Loomcycle-Signature", func(b []byte) string {
-		return stripeSig(scopeSecret, b, time.Unix(1_700_000_000, 0))
-	}}
-	bodyOnlyModes = []sigMode{githubMode, bareHexMode}
+	stripeMode = stripeAt(stripeTS)
+	hmacModes  = []sigMode{githubMode, bareHexMode, stripeMode}
 )
+
+const stripeTS = 1_700_000_000
+
+// stripeAt signs the Stripe envelope with timestamp ts.
+func stripeAt(ts int64) sigMode {
+	return sigMode{"stripe", "X-Loomcycle-Signature", func(b []byte) string {
+		return stripeSig(scopeSecret, b, time.Unix(ts, 0))
+	}}
+}
 
 func modeWebhook(m sigMode, deliveryIDHeader string) config.Webhook {
 	return config.Webhook{
@@ -77,17 +90,32 @@ func assertDeduped(t *testing.T, label string, wantCode, code int, got map[strin
 	}
 }
 
-// assertPersistedKey requires the run stored under idempotency key k to be runID.
-func assertPersistedKey(t *testing.T, st store.Store, k, runID string) {
+// assertPersistedKeys requires run runID to carry the durable dedup keys
+// (key, alt) — computed here, independently of the receiver.
+func assertPersistedKeys(t *testing.T, st store.Store, runID, key, alt string) {
 	t.Helper()
-	r, ok, err := st.RunByIdempotencyKey(context.Background(), k)
-	if err != nil || !ok || r.ID != runID {
-		t.Errorf("run under idempotency key %q = (%q, %v, %v), want %q", k, r.ID, ok, err, runID)
+	r, err := st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRun %s: %v", runID, err)
+	}
+	if r.IdempotencyKey != key || r.DeliveryAltKey != alt {
+		t.Errorf("run %s keys = (%q, %q), want (%q, %q)", runID, r.IdempotencyKey, r.DeliveryAltKey, key, alt)
 	}
 }
 
-func TestReceiver_BodyOnlySignedBodyReplayedWithNewDeliveryIDs_StartsOneRun(t *testing.T) {
-	for _, m := range bodyOnlyModes {
+// wantKeys is the (idempotency_key, delivery_alt_key) a delivery of body
+// under id, signed in mode m at stripeTS, persists on webhook "gh".
+func wantKeys(m sigMode, body []byte, id string) (key, alt string) {
+	idKey := staticDedupKey("gh", id)
+	if m.name == "stripe" {
+		h := sha256.Sum256(append([]byte(fmt.Sprintf("%d.", stripeTS)), body...))
+		return idKey, staticDedupKey("gh", "signed:sha256:"+hex.EncodeToString(h[:]))
+	}
+	return staticDedupKey("gh", bodyHashID(body)), idKey
+}
+
+func TestReceiver_HMACSignedBodyReplayedWithNewDeliveryIDs_StartsOneRun(t *testing.T) {
+	for _, m := range hmacModes {
 		t.Run(m.name, func(t *testing.T) {
 			st := openScopeStore(t)
 			fr := &storeRunner{st: st}
@@ -95,6 +123,7 @@ func TestReceiver_BodyOnlySignedBodyReplayedWithNewDeliveryIDs_StartsOneRun(t *t
 			body := []byte(`{"goal":"deploy prod"}`)
 
 			rec := newScopeReceiver(st, fr, hooks)
+			replica := newScopeReceiver(st, fr, hooks) // a second replica, up all along
 			code, got := postMode(t, rec, m, body, "evt-1")
 			original := assertFreshRun(t, "evt-1", code, got)
 
@@ -107,22 +136,23 @@ func TestReceiver_BodyOnlySignedBodyReplayedWithNewDeliveryIDs_StartsOneRun(t *t
 				}
 			}
 
-			// Layer 2 on its own: a fresh receiver (restart / other replica).
-			fresh := newScopeReceiver(st, fr, hooks)
-			code, got = postMode(t, fresh, m, body, "evt-4")
-			assertDeduped(t, "layer-2 replay evt-4", http.StatusAccepted, code, got, original)
+			// Layer 2 on its own: the other replica, and a restart.
+			code, got = postMode(t, replica, m, body, "evt-4")
+			assertDeduped(t, "other-replica replay evt-4", http.StatusAccepted, code, got, original)
+			code, got = postMode(t, newScopeReceiver(st, fr, hooks), m, body, "evt-5")
+			assertDeduped(t, "after-restart replay evt-5", http.StatusAccepted, code, got, original)
 
 			if n := fr.callCount(); n != 1 {
-				t.Errorf("one signed body started %d runs, want 1", n)
+				t.Errorf("one signed delivery started %d runs, want 1", n)
 			}
-			// The signed body, not the unsigned header, is the durable key.
-			assertPersistedKey(t, st, staticDedupKey("gh", bodyHashID(body)), original)
+			key, alt := wantKeys(m, body, "evt-1")
+			assertPersistedKeys(t, st, original, key, alt)
 		})
 	}
 }
 
-func TestReceiver_BodyOnlySignedRedeliverySameID_ReturnsOriginalRun(t *testing.T) {
-	for _, m := range bodyOnlyModes {
+func TestReceiver_HMACSignedRedeliverySameID_ReturnsOriginalRun(t *testing.T) {
+	for _, m := range hmacModes {
 		t.Run(m.name, func(t *testing.T) {
 			st := openScopeStore(t)
 			fr := &storeRunner{st: st}
@@ -149,8 +179,8 @@ func TestReceiver_BodyOnlySignedRedeliverySameID_ReturnsOriginalRun(t *testing.T
 	}
 }
 
-func TestReceiver_BodyOnlySignedDistinctBodies_StartTwoRuns(t *testing.T) {
-	for _, m := range bodyOnlyModes {
+func TestReceiver_HMACSignedDistinctBodies_StartTwoRuns(t *testing.T) {
+	for _, m := range hmacModes {
 		t.Run(m.name, func(t *testing.T) {
 			st := openScopeStore(t)
 			fr := &storeRunner{st: st}
@@ -168,21 +198,21 @@ func TestReceiver_BodyOnlySignedDistinctBodies_StartTwoRuns(t *testing.T) {
 }
 
 // Either identity makes a duplicate: a seen delivery id is one even under a
-// new body. Only Layer 1 can see this — runs.idempotency_key holds the body
-// key alone — so the check runs on the receiver that accepted the first one.
-func TestReceiver_BodyOnlySignedSeenDeliveryIDNewBody_DedupedInLayer1(t *testing.T) {
-	for _, m := range bodyOnlyModes {
+// new body, in Layer 1 and — both keys being persisted — after a restart.
+func TestReceiver_HMACSignedSeenDeliveryIDNewBody_Deduped(t *testing.T) {
+	for _, m := range hmacModes {
 		t.Run(m.name, func(t *testing.T) {
 			st := openScopeStore(t)
 			fr := &storeRunner{st: st}
-			rec := newScopeReceiver(st, fr, map[string]config.Webhook{"gh": modeWebhook(m, "X-Delivery-Id")})
+			hooks := map[string]config.Webhook{"gh": modeWebhook(m, "X-Delivery-Id")}
+			rec := newScopeReceiver(st, fr, hooks)
 
 			code, got := postMode(t, rec, m, []byte(`{"goal":"a"}`), "evt-1")
-			assertFreshRun(t, "evt-1", code, got)
+			original := assertFreshRun(t, "evt-1", code, got)
 			code, got = postMode(t, rec, m, []byte(`{"goal":"b"}`), "evt-1")
-			if code != http.StatusOK || got["deduped"] != "true" {
-				t.Errorf("seen evt-1 under a new body = %d %v, want 200 deduped", code, got)
-			}
+			assertDeduped(t, "layer-1 seen evt-1 under a new body", http.StatusOK, code, got, original)
+			code, got = postMode(t, newScopeReceiver(st, fr, hooks), m, []byte(`{"goal":"c"}`), "evt-1")
+			assertDeduped(t, "layer-2 seen evt-1 under a new body", http.StatusAccepted, code, got, original)
 			if n := fr.callCount(); n != 1 {
 				t.Errorf("runner invoked %d times, want 1", n)
 			}
@@ -193,8 +223,8 @@ func TestReceiver_BodyOnlySignedSeenDeliveryIDNewBody_DedupedInLayer1(t *testing
 // A replay answered as a duplicate must not record its unsigned header value:
 // that would let whoever holds a captured delivery burn an id the sender has
 // yet to use, and the genuine delivery carrying it would be dropped.
-func TestReceiver_BodyOnlySignedReplay_LeavesItsNewDeliveryIDUsable(t *testing.T) {
-	for _, m := range bodyOnlyModes {
+func TestReceiver_HMACSignedReplay_LeavesItsNewDeliveryIDUsable(t *testing.T) {
+	for _, m := range hmacModes {
 		t.Run(m.name, func(t *testing.T) {
 			st := openScopeStore(t)
 			fr := &storeRunner{st: st}
@@ -218,7 +248,7 @@ func TestReceiver_BodyOnlySignedReplay_LeavesItsNewDeliveryIDUsable(t *testing.T
 	}
 }
 
-func TestReceiver_BodyOnlySignedChannelReplayWithNewDeliveryID_PublishesOnce(t *testing.T) {
+func TestReceiver_HMACSignedChannelReplayWithNewDeliveryID_PublishesOnce(t *testing.T) {
 	fp := &fakePublisher{}
 	wh := modeWebhook(githubMode, "X-Delivery-Id")
 	wh.Delivery, wh.Channel = "channel", "events"
@@ -243,29 +273,128 @@ func TestReceiver_BodyOnlySignedChannelReplayWithNewDeliveryID_PublishesOnce(t *
 	}
 }
 
-// The Stripe envelope signs a timestamp checked against a ±5 min window, so
-// it keeps keying on the delivery id alone: a second id on the same body
-// inside the window is a separate delivery, as before.
-func TestReceiver_StripeSignedSameBodyNewDeliveryID_KeysOnDeliveryIDOnly(t *testing.T) {
+// A genuine Stripe retry re-signs under a NEW timestamp and keeps its
+// delivery id, so it is answered with the original run by both layers —
+// after a restart through the persisted id key.
+func TestReceiver_StripeSignedRetryNewTimestamp_ReturnsOriginalRun(t *testing.T) {
 	st := openScopeStore(t)
 	fr := &storeRunner{st: st}
 	hooks := map[string]config.Webhook{"gh": modeWebhook(stripeMode, "X-Delivery-Id")}
-	body := []byte(`{"goal":"charge"}`)
-	rec := newScopeReceiver(st, fr, hooks)
+	body := []byte(`{"id":"evt_1","type":"invoice.paid"}`)
+	retry := stripeAt(stripeTS + 90) // still inside the window
 
+	rec := newScopeReceiver(st, fr, hooks)
 	code, got := postMode(t, rec, stripeMode, body, "evt-1")
-	first := assertFreshRun(t, "evt-1", code, got)
-	code, got = postMode(t, rec, stripeMode, body, "evt-2")
-	if second := assertFreshRun(t, "evt-2", code, got); second == first {
-		t.Errorf("evt-2 answered evt-1's run %s", first)
+	original := assertFreshRun(t, "first delivery", code, got)
+
+	code, got = postMode(t, rec, retry, body, "evt-1")
+	assertDeduped(t, "layer-1 retry", http.StatusOK, code, got, original)
+	code, got = postMode(t, newScopeReceiver(st, fr, hooks), retry, body, "evt-1")
+	assertDeduped(t, "layer-2 retry", http.StatusAccepted, code, got, original)
+
+	if n := fr.callCount(); n != 1 {
+		t.Errorf("runner invoked %d times, want 1", n)
 	}
-	code, got = postMode(t, rec, stripeMode, body, "evt-1")
-	assertDeduped(t, "evt-1 redelivery", http.StatusOK, code, got, first)
+	key, alt := wantKeys(stripeMode, body, "evt-1")
+	assertPersistedKeys(t, st, original, key, alt)
+}
+
+// A custom sender on the default envelope (X-Loomcycle-Signature, Stripe
+// shaped) may post the same body as separate deliveries — a nightly trigger,
+// say. Each carries its own id and a freshly signed timestamp, so each is a
+// delivery of its own, on the receiver that saw the others and after a
+// restart; only a redelivery under a seen id is a duplicate.
+func TestReceiver_TimestampSignedConstantBodyDistinctIDs_StartsARunEach(t *testing.T) {
+	st := openScopeStore(t)
+	fr := &storeRunner{st: st}
+	wh := modeWebhook(stripeMode, "X-Delivery-Id")
+	wh.Auth.Header = "" // the default envelope header
+	hooks := map[string]config.Webhook{"gh": wh}
+	body := []byte(`{"goal":"nightly"}`)
+
+	rec := newScopeReceiver(st, fr, hooks)
+	runs := map[string]string{}
+	for i, id := range []string{"n-1", "n-2", "n-3"} {
+		code, got := postMode(t, rec, stripeAt(stripeTS+int64(60*i)), body, id)
+		runs[id] = assertFreshRun(t, id, code, got)
+	}
 
 	fresh := newScopeReceiver(st, fr, hooks)
-	code, got = postMode(t, fresh, stripeMode, body, "evt-1")
-	assertDeduped(t, "layer-2 evt-1 redelivery", http.StatusAccepted, code, got, first)
-	assertPersistedKey(t, st, staticDedupKey("gh", "evt-1"), first)
+	code, got := postMode(t, fresh, stripeAt(stripeTS+180), body, "n-4")
+	if runID := assertFreshRun(t, "n-4 after restart", code, got); runID == runs["n-3"] {
+		t.Errorf("n-4 answered n-3's run %s", runID)
+	}
+	code, got = postMode(t, fresh, stripeAt(stripeTS+60), body, "n-2")
+	assertDeduped(t, "redelivery of n-2", http.StatusAccepted, code, got, runs["n-2"])
+
+	if n := fr.callCount(); n != 4 {
+		t.Errorf("four deliveries started %d runs, want 4", n)
+	}
+}
+
+// Bearer and none sign nothing, so the delivery id stays their only key: a
+// second id on the same body is a separate delivery, as before.
+func TestReceiver_UnsignedAuthSameBodyNewDeliveryID_KeysOnDeliveryIDOnly(t *testing.T) {
+	bearer := sigMode{"bearer", "Authorization", func([]byte) string { return "Bearer " + scopeSecret }}
+	none := sigMode{"none", "X-Unused", func([]byte) string { return "" }}
+	for _, tc := range []struct {
+		m    sigMode
+		auth config.WebhookAuth
+	}{
+		{bearer, config.WebhookAuth{Kind: "bearer", BearerTokenEnv: "WH_SECRET", DeliveryIDHeader: "X-Delivery-Id"}},
+		{none, config.WebhookAuth{Kind: "none", DeliveryIDHeader: "X-Delivery-Id"}},
+	} {
+		t.Run(tc.m.name, func(t *testing.T) {
+			st := openScopeStore(t)
+			fr := &storeRunner{st: st}
+			hooks := map[string]config.Webhook{"gh": {Enabled: true, Delivery: "spawn", Agent: "x", Auth: tc.auth}}
+			newRec := func() *Receiver {
+				return New(Deps{
+					Cfg:                  &config.Config{Webhooks: hooks},
+					Store:                st,
+					Runner:               fr,
+					EnvAllowlist:         map[string]bool{"WH_SECRET": true},
+					Now:                  fixedClock(time.Unix(1_700_000_000, 0)),
+					Getenv:               mapGetenv(map[string]string{"WH_SECRET": scopeSecret}),
+					AllowUnauthenticated: true,
+				})
+			}
+			body := []byte(`{"goal":"same"}`)
+			rec := newRec()
+
+			code, got := postMode(t, rec, tc.m, body, "evt-1")
+			first := assertFreshRun(t, "evt-1", code, got)
+			code, got = postMode(t, rec, tc.m, body, "evt-2")
+			if second := assertFreshRun(t, "evt-2", code, got); second == first {
+				t.Errorf("evt-2 answered evt-1's run %s", first)
+			}
+			code, got = postMode(t, newRec(), tc.m, body, "evt-1")
+			assertDeduped(t, "layer-2 evt-1 redelivery", http.StatusAccepted, code, got, first)
+			assertPersistedKeys(t, st, first, staticDedupKey("gh", "evt-1"), "")
+		})
+	}
+}
+
+func TestSignedEnvelope_ReportsWhatTheSignatureCovers(t *testing.T) {
+	body := []byte(`{"goal":"x"}`)
+	for _, tc := range []struct {
+		name string
+		auth config.WebhookAuth
+		m    sigMode
+		want envelope
+	}{
+		{"github", config.WebhookAuth{Kind: "hmac", Header: githubMode.header}, githubMode, envelope{signsBody: true}},
+		{"bare hex", config.WebhookAuth{Header: bareHexMode.header}, bareHexMode, envelope{signsBody: true}},
+		{"stripe", config.WebhookAuth{Kind: " HMAC "}, stripeMode, envelope{signsBody: true, timestamp: "1700000000"}},
+		{"bearer", config.WebhookAuth{Kind: "bearer"}, stripeMode, envelope{}},
+		{"none", config.WebhookAuth{Kind: "none"}, stripeMode, envelope{}},
+	} {
+		h := http.Header{}
+		h.Set(tc.m.header, tc.m.sign(body))
+		if got := signedEnvelope(tc.auth, h.Get); got != tc.want {
+			t.Errorf("%s: signedEnvelope = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
 }
 
 // Without delivery_id_header the delivery id already IS the body hash, in
@@ -287,7 +416,7 @@ func TestReceiver_NoDeliveryIDHeaderDef_KeysOnBodyHashAsBefore(t *testing.T) {
 			if runID := assertFreshRun(t, "other body", code, got); runID == original {
 				t.Errorf("a different body answered run %s", original)
 			}
-			assertPersistedKey(t, st, staticDedupKey("gh", bodyHashID(body)), original)
+			assertPersistedKeys(t, st, original, staticDedupKey("gh", bodyHashID(body)), "")
 		})
 	}
 }

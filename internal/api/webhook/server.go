@@ -238,17 +238,18 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//    on a dedup. Changed to an idempotent ack.)
 	//    did is the sender's id and goes back in every response; dk scopes
 	//    it to the resolved webhook def and is what BOTH dedup layers key on
-	//    — plus the body hash when the signature covers the body only.
+	//    — plus what an HMAC signature covers (newDeliveryKeys).
 	did := deliveryID(wd.Auth, body, r.Header.Get)
-	dk := newDeliveryKeys(whKey, did, body, signsBodyOnly(wd.Auth, r.Header.Get))
+	dk := newDeliveryKeys(whKey, did, body, signedEnvelope(wd.Auth, r.Header.Get))
 	if rec.dedup.seenAny(dk) {
 		rec.finish(span, whKey, did, verdictAcceptedReplay, "")
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
 		resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
 		// Best-effort: surface the original run for the spawn path, which set
-		// idempotency_key = dk.key (RFC H Decision 10) — or, for a delivery an
-		// earlier release accepted, dk.alt or the bare did. Channel-delivery
-		// has no run row, so run_id is simply omitted.
+		// idempotency_key = dk.key and delivery_alt_key = dk.alt (RFC H
+		// Decision 10) — or, for a delivery an earlier release accepted, the
+		// bare did. Channel-delivery has no run row, so run_id is simply
+		// omitted.
 		if rec.store != nil {
 			if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
 				resp["run_id"] = existing.ID
@@ -352,8 +353,10 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 
 	// RFC H Decision 10 "Layer 2" durable dedup: stamp the run with the
 	// webhook-scoped delivery key so CreateRun persists it to
-	// runs.idempotency_key. Never the bare did — that index is global.
+	// runs.idempotency_key, and its second identity to delivery_alt_key.
+	// Never the bare did — those indexes are global.
 	in.IdempotencyKey = dk.key
+	in.DeliveryAltKey = dk.alt
 
 	// Layer-2 BEFORE-spawn check: if a run already carries this delivery
 	// key (a redelivery that survived past the in-memory Layer-1 TTL, or
@@ -363,7 +366,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// spawn path — the unique index is the real backstop).
 	if rec.store != nil && did != "" {
 		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
-			rec.dedup.record(dk.key)
+			rec.dedup.recordDuplicate(dk)
 			rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,
@@ -390,9 +393,10 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 }
 
 // priorDeliveryRun is the Layer-2 lookup: the run already started for this
-// delivery, if any, under either of its keys (dk.alt matches a run an earlier
-// release keyed on the sender's id). A lookup error reads as "none" (the
-// unique index is the real backstop).
+// delivery, if any — a run whose idempotency_key or delivery_alt_key is
+// either of its keys (dk.alt also matches a run an earlier release keyed on
+// the sender's id). A lookup error reads as "none" (the unique indexes are
+// the real backstop).
 //
 // Transitional — remove in the release after this one. Runs accepted by
 // earlier releases carry the BARE delivery id as their idempotency_key, so a
@@ -402,13 +406,8 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 // global, and matching it unconditionally would bring back the dedup against
 // another webhook's (or tenant's) delivery that scoping the key removed.
 func (rec *Receiver) priorDeliveryRun(ctx context.Context, dk deliveryKeys, did string, wd config.Webhook) (store.Run, bool) {
-	for _, k := range []string{dk.key, dk.alt} {
-		if k == "" {
-			continue
-		}
-		if existing, ok, err := rec.store.RunByIdempotencyKey(ctx, k); err == nil && ok {
-			return existing, true
-		}
+	if existing, ok, err := rec.store.RunByDeliveryKeys(ctx, []string{dk.key, dk.alt}); err == nil && ok {
+		return existing, true
 	}
 	existing, ok, err := rec.store.RunByIdempotencyKey(ctx, did)
 	if err != nil || !ok || existing.TenantID != wd.TenantID || existing.Agent != wd.Agent {
@@ -502,8 +501,8 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		// the racing request.
 		if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
 			if rec.store != nil && did != "" {
-				if existing, ok, lerr := rec.store.RunByIdempotencyKey(context.Background(), dk.key); lerr == nil && ok {
-					rec.dedup.record(dk.key)
+				if existing, ok, lerr := rec.store.RunByDeliveryKeys(context.Background(), []string{dk.key, dk.alt}); lerr == nil && ok {
+					rec.dedup.recordDuplicate(dk)
 					rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 					writeJSON(w, http.StatusAccepted, map[string]string{
 						"webhook_name": name,
@@ -517,7 +516,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 			// Winner's row not visible yet (replication lag / nil store):
 			// still accepted — the delivery was handled by the racing
 			// request. Record so a retry doesn't re-spawn.
-			rec.dedup.record(dk.key)
+			rec.dedup.recordDuplicate(dk)
 			rec.finish(span, whKey, did, verdictAccepted, "")
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,

@@ -200,16 +200,7 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 	}
 
 	// Stripe envelope: `t=<unix>, v1=<hexmac>` over `<t>.<rawbody>`.
-	var tsStr, macHex string
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		switch {
-		case strings.HasPrefix(part, "t="):
-			tsStr = strings.TrimPrefix(part, "t=")
-		case strings.HasPrefix(part, "v1="):
-			macHex = strings.TrimPrefix(part, "v1=")
-		}
-	}
+	tsStr, macHex := stripeFields(raw)
 	if tsStr == "" || macHex == "" {
 		return errSignatureMismatch
 	}
@@ -249,20 +240,47 @@ func hmacSignatureHeader(a config.WebhookAuth, headerGet func(string) string) st
 	return raw
 }
 
-// signsBodyOnly reports whether a request that PASSED verifySignature was
-// authenticated by a MAC over the raw body alone — the GitHub `sha256=` or
-// bare-hex envelope. Such a signature covers no other header and carries no
-// timestamp, so the delivery-id header is unsigned and a captured delivery
-// stays valid forever; dedup must not trust that header alone (see
-// newDeliveryKeys). The Stripe envelope (timestamp window) and bearer / none
-// auth return false.
-func signsBodyOnly(a config.WebhookAuth, headerGet func(string) string) bool {
+// stripeFields returns the `t=` and `v1=` values of a Stripe-style
+// `t=<unix>, v1=<hexmac>` signature header ("" when absent).
+func stripeFields(raw string) (ts, mac string) {
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		switch {
+		case strings.HasPrefix(part, "t="):
+			ts = strings.TrimPrefix(part, "t=")
+		case strings.HasPrefix(part, "v1="):
+			mac = strings.TrimPrefix(part, "v1=")
+		}
+	}
+	return ts, mac
+}
+
+// envelope is what the signature of a request that PASSED verifySignature
+// covers, as dedup needs it (see newDeliveryKeys).
+type envelope struct {
+	// signsBody: an HMAC over the raw body authenticated the request. False
+	// for bearer and none auth, which sign nothing.
+	signsBody bool
+	// timestamp is the signed `t=` of a Stripe-style envelope, whose MAC
+	// covers `<t>.<body>`; "" for the GitHub `sha256=` and bare-hex
+	// envelopes, whose MAC covers the body alone.
+	timestamp string
+}
+
+// signedEnvelope reports what a verified request's signature covers. No
+// envelope signs the delivery-id header. It reads the header verifyHMAC
+// checked, so the two agree on the envelope.
+func signedEnvelope(a config.WebhookAuth, headerGet func(string) string) envelope {
 	kind := strings.ToLower(strings.TrimSpace(a.Kind))
 	if kind != "" && kind != "hmac" {
-		return false
+		return envelope{}
 	}
 	raw := hmacSignatureHeader(a, headerGet)
-	return strings.HasPrefix(raw, "sha256=") || isHexString(raw)
+	if strings.HasPrefix(raw, "sha256=") || isHexString(raw) {
+		return envelope{signsBody: true}
+	}
+	ts, _ := stripeFields(raw)
+	return envelope{signsBody: true, timestamp: ts}
 }
 
 // isHexString reports whether s is a non-empty run of only hex digits — the
