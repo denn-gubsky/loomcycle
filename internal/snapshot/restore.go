@@ -376,7 +376,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			if inserted {
 				result.AgentDefsRestored++
 				if !e.Retired {
-					scan.addRefs("agent_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition))
+					scan.addAgentRefs("agent_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, e.Name, defRefs("", e.Definition))
 				}
 			}
 		}

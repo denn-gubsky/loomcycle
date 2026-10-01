@@ -47,7 +47,11 @@ type credScan struct {
 type credScanTarget struct {
 	where    string // "webhook_def acme/gh" — no version, so a lineage warns once
 	tenantID string // the row's owning tenant; the body's tenant_id wins
-	body     json.RawMessage
+	// agent is the agent a run of this definition resolves credentials
+	// for, when the section knows it (an agent def's own name); the body's
+	// agent wins.
+	agent string
+	body  json.RawMessage
 	// refs, when set, are the references the section already derived from
 	// the body; the body is then not decoded as a trigger.
 	refs []credRef
@@ -63,10 +67,16 @@ func (c *credScan) add(where, tenantID string, body json.RawMessage) {
 // addRefs queues references a section derived itself: a body whose
 // credential fields are not a trigger's (a memory backend's api_key_env).
 func (c *credScan) addRefs(where, tenantID string, refs []credRef) {
+	c.addAgentRefs(where, tenantID, "", refs)
+}
+
+// addAgentRefs is addRefs for a body whose $cred: references resolve for a
+// known agent — an agent def's own — so an agent-scoped credential is found.
+func (c *credScan) addAgentRefs(where, tenantID, agent string, refs []credRef) {
 	if c == nil || len(refs) == 0 {
 		return
 	}
-	c.targets = append(c.targets, credScanTarget{where: where, tenantID: tenantID, refs: refs})
+	c.targets = append(c.targets, credScanTarget{where: where, tenantID: tenantID, agent: agent, refs: refs})
 }
 
 // credScanBody is the subset of a schedule, webhook or server-card body that
@@ -217,6 +227,10 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 		if tenant == "" {
 			tenant = t.tenantID
 		}
+		agent := b.Agent
+		if agent == "" {
+			agent = t.agent
+		}
 		for _, r := range refs {
 			key := t.where + "|" + r.field + "|" + r.env + r.cred
 			if seen[key] {
@@ -238,11 +252,26 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 					uncheckedCred++
 					continue
 				}
-				if !opts.CredentialExists(ctx, tenant, b.Agent, b.UserID, r.name) {
+				if opts.CredentialExists(ctx, tenant, agent, b.UserID, r.name) {
+					continue
+				}
+				if b.UserID != "" {
 					result.Warnings = append(result.Warnings, fmt.Sprintf(
 						"missing credential: %s: %s references %s, which no credential on this host provides for tenant %q",
 						t.where, r.field, r.cred, tenant))
+					continue
 				}
+				// Most definitions run for whichever user starts the run, so
+				// a per-user credential can be the one that resolves — and
+				// there is no user to ask about. Say what was checked rather
+				// than calling the reference missing.
+				levels := "tenant-level"
+				if agent != "" {
+					levels = "tenant-level or agent-level"
+				}
+				result.Warnings = append(result.Warnings, fmt.Sprintf(
+					"missing credential: %s: %s references %s; no %s credential for tenant %q provides it on this host; per-user credentials were not checked",
+					t.where, r.field, r.cred, levels, tenant))
 			}
 		}
 	}

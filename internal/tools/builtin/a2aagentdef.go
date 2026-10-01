@@ -566,13 +566,13 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 func requireHTTPURL(field, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s %q is not a valid URL: %v", field, raw, err)
+		return fmt.Errorf("%s is not a valid URL: %s", field, urlForMessage(raw))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("%s must be an http or https URL (got scheme %q)", field, u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("%s %q has no host", field, raw)
+		return fmt.Errorf("%s %q has no host", field, urlForMessage(raw))
 	}
 	return nil
 }
@@ -598,7 +598,10 @@ func requireSafeGRPCEndpoint(field, raw string) error {
 	}
 	host = strings.Trim(host, "[]")
 	if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
-		return fmt.Errorf("%s %q is a private/loopback/link-local address — refusing (the gRPC binding dials outside the SSRF guard)", field, raw)
+		// Name the address, not the endpoint: a gRPC target is often not a
+		// URL at all ("10.0.0.1:443"), and whatever precedes the host can
+		// carry a credential ("dns:///u:p@10.0.0.1").
+		return fmt.Errorf("%s host %s is a private/loopback/link-local address — refusing (the gRPC binding dials outside the SSRF guard)", field, ip)
 	}
 	return nil
 }

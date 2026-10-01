@@ -139,7 +139,7 @@ func TestRestore_EveryCallSiteRevalidatesAndScansTriggerDefs(t *testing.T) {
 				!has("missing credential", "webhook_def gh", "$cred:p3-jobs") {
 				t.Errorf("the scan did not name the unset env var and the unresolved $cred: %v", warnings)
 			}
-			if has("not checked") {
+			if has("missing-credential scan:", "not checked") {
 				t.Errorf("a call site left a scan check unwired: %v", warnings)
 			}
 			for _, w := range warnings {
