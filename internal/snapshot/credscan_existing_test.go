@@ -71,7 +71,7 @@ func TestCredentialScan_CoversTheOlderDefSections(t *testing.T) {
 	if !strings.Contains(strings.Join(checks.asked, " "), "acme///chan-hook") {
 		t.Errorf("the channel hook's credential was not checked (asked %v)", checks.asked)
 	}
-	if hasWarning(res, "not checked") {
+	if hasWarning(res, "missing-credential scan:", "not checked") {
 		t.Errorf("a wired check reported references it did not check: %v", res.Warnings)
 	}
 }

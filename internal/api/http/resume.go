@@ -19,6 +19,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -34,17 +35,40 @@ import (
 // transcript and re-enters loop.Run mid-conversation, so a mid-run experiment
 // genuinely continues after a snapshot→restore or a process restart.
 //
-// Called from two places (see the restore handler + boot wiring):
-//   - after snapshot.Restore writes the rows (the explicit migration path), and
+// Called from two places (see finishRestore + the boot wiring):
+//   - after a snapshot restore writes the rows, on every transport that
+//     restores (HTTP, gRPC, MCP), and
 //   - at boot, scanning the store for any paused runs (crash recovery).
 //
-// LIMITATIONS (documented; the snapshot deliberately omits these):
-//   - Per-run SECRETS (UserBearer / named UserCredentials) are never
-//     snapshotted, so a resumed run can't restore them; a tool call that needs
+// WHAT A RESUMED RUN IS BUILT FROM: its own row and its run_config record
+// (runConfigRecord), not from the definition as it stands now and not from
+// whoever triggered the resume. The row gives its tenant, user, tier, starting
+// model, interactive flag, parent run and operator-key / isolation bits. The
+// record gives its sampling, tool choice, output format, compaction, context
+// mode, budgets, run timeout, routing, interactive / review state, interruption
+// narrowing, caller host narrowing, added and pinned hooks, a sub-run's spawn
+// ceiling (its parent's volumes and fan-out width), and the definition it
+// started on — an AgentDef version by id, or a registered agent's row by
+// digest; one gone or changed since fails the run, one in another tenant is
+// refused. A row recorded before a piece of the record existed resumes that
+// piece from the definition, as before — except a sub-run's inherited
+// ceilings, which fail closed (no caller hosts, no volumes, serial fan-out).
+//
+// LIMITATIONS:
+//   - Per-run SECRETS (UserBearer / named UserCredentials) are never persisted
+//     with the run, so a resumed run can't restore them; a tool call that needs
 //     ${run.user_bearer} / ${run.credentials.*} in an MCP header degrades.
-//   - Per-run CALL-TIME OVERRIDES (allowed_hosts narrowing, per-run sampling,
-//     metadata, run-timeout) aren't persisted — resume re-derives everything
-//     from the agent definition (the operator's static floor applies for hosts).
+//   - Run METADATA is not recorded: the loop is re-entered with none, so a
+//     code-js orchestrator reads no metadata on its resumed turns.
+//   - SKILLS are not pinned. The Skill tool loads the SkillDef version active
+//     when it is called, for a live run and a resumed one alike; a skill loaded
+//     before the pause stays as loaded, in the replayed transcript.
+//   - The MODEL restored is the one the run STARTED on. A mid-run provider
+//     fallback is not recorded on the row, so a resumed run does not continue
+//     on the fallback target.
+//   - Registered agents (dynamic_agents) are not carried by snapshots, so a
+//     paused run of one restored on another instance fails unless the same
+//     registration exists there, as stored.
 //   - A run that was IDLE when paused (its conversation ends on an assistant
 //     turn, not a pending user/tool_result) cannot re-enter the loop directly —
 //     that would send the provider a trailing assistant turn. It is restored to
@@ -554,7 +578,18 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
 	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, func(providers.Event) {})
-	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, run.AgentID, run.SessionID, run.UserID, emit)
+	// A child the Agent tool started takes a verdict and nothing else, live
+	// (runSubRun registers it VerdictsOnly) and so after a resume: its parent
+	// drives it, and a full entry here handed an operator its steer, retune and
+	// compaction the moment it came back. The row carries no kind, so it is
+	// derived as the remote gate derives it. That also makes a resumed resident
+	// child verdicts-only, though its live entry was full — the side a gate may
+	// err on. No sub-run row is interactive, so none is parked on a queue that
+	// would refuse its next turn.
+	steerQ, onSteer, deregSteer := s.makeSteerEntry(runCtx, steer.Entry{
+		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID, UserID: run.UserID,
+		VerdictsOnly: takesOnlyVerdicts(run),
+	}, emit)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
@@ -830,7 +865,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 //     operator's yaml, which only the operator changes and every run of it
 //     follows, or a registered agent. It resolves by name — unless the name now
 //     resolves to an AgentDef version, which is not the definition it started
-//     on but one that has shadowed it since.
+//     on but one that has shadowed it since, or the run started on a
+//     registered agent whose row has changed or gone since (its recorded
+//     digest no longer matches).
 //   - A run recorded before versions were resolves by name, as it always did.
 //
 // A child its parent pinned by def_id (runs.agent_def_id) ran on that version
@@ -859,6 +896,12 @@ func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentV
 		}
 		if ver != nil && d.DefID != "" {
 			return config.AgentDef{}, true, fmt.Errorf("agent %q now resolves to AgentDef version %s, not the definition the run started on", run.Agent, d.DefID)
+		}
+		// A registered agent is re-registered in place, so its name resolving
+		// is not enough: the row must still be the one the run started on. A
+		// run recorded before the digest was carries none and is not checked.
+		if ver != nil && ver.RegisteredSHA256 != "" && d.RegisteredSHA256 != ver.RegisteredSHA256 {
+			return config.AgentDef{}, true, fmt.Errorf("agent %q: the registered agent the run started on was changed or removed since it started", run.Agent)
 		}
 		def = d
 	}

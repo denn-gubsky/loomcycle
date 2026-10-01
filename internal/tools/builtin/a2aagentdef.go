@@ -539,11 +539,11 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 		}
 	}
 	// The gRPC binding dials via grpc-go, OUTSIDE the SSRF-blocking
-	// peerDialContext that guards the jsonrpc/rest transports. Block the
+	// netguard dialer that guards the jsonrpc/rest transports. Block the
 	// common direct-IP SSRF (e.g. grpc://169.254.169.254 → cloud metadata) at
 	// registration/fork time. This does NOT cover a hostname that resolves to
 	// a private address, nor DNS-rebinding at dial time — closing those needs
-	// the gRPC dial routed through peerDialContext, which is deferred because
+	// the gRPC dial routed through that dialer, which is deferred because
 	// the SDK's WithGRPCTransport replaces the whole transport and would
 	// require replicating its default credentials (TLS-downgrade risk).
 	if def.Endpoint != "" && def.Binding == "grpc" {
@@ -566,13 +566,13 @@ func validateA2AAgentDef(def mergedA2AAgentDef) error {
 func requireHTTPURL(field, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s %q is not a valid URL: %v", field, raw, err)
+		return fmt.Errorf("%s is not a valid URL: %s", field, urlForMessage(raw))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("%s must be an http or https URL (got scheme %q)", field, u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("%s %q has no host", field, raw)
+		return fmt.Errorf("%s %q has no host", field, urlForMessage(raw))
 	}
 	return nil
 }
@@ -580,7 +580,7 @@ func requireHTTPURL(field, raw string) error {
 // requireSafeGRPCEndpoint rejects a gRPC endpoint whose host is a LITERAL
 // private / loopback / link-local IP (notably the cloud metadata service at
 // 169.254.169.254). The gRPC binding dials via grpc-go, outside the
-// SSRF-blocking peerDialContext in internal/tools/a2a, so this is the
+// SSRF-blocking netguard dialer internal/tools/a2a uses, so this is the
 // registration-time defense-in-depth against the common direct-IP SSRF when
 // the endpoint is model-authored via a fork overlay. It deliberately does NOT
 // resolve hostnames (no DNS at registration time, and a resolved answer can
@@ -598,7 +598,10 @@ func requireSafeGRPCEndpoint(field, raw string) error {
 	}
 	host = strings.Trim(host, "[]")
 	if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
-		return fmt.Errorf("%s %q is a private/loopback/link-local address — refusing (the gRPC binding dials outside the SSRF guard)", field, raw)
+		// Name the address, not the endpoint: a gRPC target is often not a
+		// URL at all ("10.0.0.1:443"), and whatever precedes the host can
+		// carry a credential ("dns:///u:p@10.0.0.1").
+		return fmt.Errorf("%s host %s is a private/loopback/link-local address — refusing (the gRPC binding dials outside the SSRF guard)", field, ip)
 	}
 	return nil
 }

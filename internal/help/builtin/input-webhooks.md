@@ -142,7 +142,12 @@ A shared front-half runs for every request, then forks on `delivery`:
    a different webhook or to a same-named webhook in another tenant is a
    separate delivery with its own run. A tenant-prefixed URL that falls
    through to a static or shared webhook is the same webhook as the bare
-   URL, so a re-send through any prefix is deduped.
+   URL, so a re-send through any prefix is deduped. When the signature
+   covers the body only (GitHub `sha256=` or bare hex), the
+   `delivery_id_header` is not signed, so the delivery dedups on its body
+   too: a repeat of either the id or the byte-identical body is a duplicate
+   (a Stripe-signed delivery, whose timestamp is signed, keys on the id
+   alone).
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure.
@@ -289,20 +294,27 @@ scheduler). A hook failure is logged and never affects the run.
 
 ## Triage (admin-gated)
 
-Two bearer-authed endpoints help debug a webhook that's silently failing
-(the receiver POST itself is unauthed — it uses the per-Def secret):
+Two endpoints help debug a webhook that's silently failing (the receiver
+POST itself is unauthed — it uses the per-Def secret). Both need an
+**admin** bearer (`substrate:admin` or the shared `LOOMCYCLE_AUTH_TOKEN`);
+a `substrate:tenant` token gets 403, even for its own tenant's webhook.
+
+Both act on the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves
+to, with `{tenant}` taken from `?tenant=`. Without it they use the
+bearer's own tenant, so to reach a tenant-owned webhook pass
+`?tenant=<that tenant>`.
 
 - `GET /v1/_webhooks/{name}/recent-deliveries?limit=50&tenant=acme` — the
   last N invocations with `delivery_id`, `verdict`
   (`accepted`/`accepted_replay`/`rejected_sig`/`rejected_rate`/
-  `unresolvable_secret`/…), `received_at`, `run_id`. The list belongs to
-  the webhook that `POST /v1/_webhooks/{tenant}/{name}` resolves to, so two
-  tenants' same-named webhooks have separate lists. `tenant` defaults to
-  your own; only an admin can name another. A POST to a name that resolves
+  `unresolvable_secret`/…), `received_at`, `run_id`. Two tenants'
+  same-named webhooks have separate lists. A POST to a name that resolves
   to no webhook is not listed.
-- `POST /v1/_webhooks/{name}/test` — dry-run: POST a sample body + signature
-  and get back `{would_accept, verdict, run_input_preview}` (credential
-  **key names** only, never values). No run is created.
+- `POST /v1/_webhooks/{name}/test?tenant=acme` — dry-run: POST a sample
+  body + signature and get back `{would_accept, verdict, run_input_preview}`
+  (credential **key names** only, never values). No run is created. A
+  disabled webhook, or one restored from a snapshot without its
+  credentials, is a 404 here just as it is to a real delivery.
 
 ## Provider recipes
 

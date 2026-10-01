@@ -1413,25 +1413,27 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 		// `provider`/`cap` fields so an adapter can retry a different tier
 		// immediately rather than backing off operator-wide.
 		w.Header().Set("Retry-After", "5")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"code":"provider_concurrency_exhausted","error":%q,"provider":%q,"cap":%d}`,
-			pce.Error(), pce.Provider, pce.Cap)
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			Provider string `json:"provider"`
+			Cap      int    `json:"cap"`
+		}{"provider_concurrency_exhausted", pce.Error(), pce.Provider, pce.Cap})
 		return
 	}
 	var pue *concurrency.ErrPerUserQuotaExhausted
 	if errors.As(err, &pue) {
 		w.Header().Set("Retry-After", "5")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"code":"per_user_quota_exhausted","error":%q,"user_id":%q,"cap":%d}`,
-			pue.Error(), pue.UserID, pue.Cap)
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code   string `json:"code"`
+			Error  string `json:"error"`
+			UserID string `json:"user_id"`
+			Cap    int    `json:"cap"`
+		}{"per_user_quota_exhausted", pue.Error(), pue.UserID, pue.Cap})
 		return
 	}
 	if concurrency.IsBackpressure(err) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"code":"backpressure","error":%q}`, err.Error())
+		writeJSONError(w, http.StatusTooManyRequests, "backpressure", err.Error())
 		return
 	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -4581,12 +4583,19 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// CRITICAL: validate the session exists BEFORE taking the lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
 	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
+	//
+	// The read goes through the tenant-scoped accessor so a session the caller
+	// may not continue (another tenant's, or another user's for an isolated
+	// member) is the same opaque 404 as a missing one HERE, before the lock and
+	// the admission gates. A raw read let such a session through to the lock, so
+	// its owner's in-flight run answered 409 session_busy where an unknown id
+	// answered 404 — an existence oracle for other users' sessions.
 	if req.SessionID != "" {
 		if s.store == nil {
 			http.Error(w, "session_id requires persistence (Store not configured)", http.StatusBadRequest)
 			return
 		}
-		if _, err := s.store.GetSession(r.Context(), req.SessionID); err != nil {
+		if _, err := s.tenantStore(r.Context()).GetSession(r.Context(), req.SessionID); err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
 				http.Error(w, err.Error(), http.StatusNotFound)
@@ -4597,9 +4606,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		releaseSess, ok := s.trySessionLock(req.SessionID)
 		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			fmt.Fprintf(w, `{"code":"session_busy","error":"another request is in flight on session %q"}`, req.SessionID)
+			writeJSONError(w, http.StatusConflict, "session_busy",
+				fmt.Sprintf("another request is in flight on session %q", req.SessionID))
 			return
 		}
 		defer releaseSess()
@@ -4821,9 +4829,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		// ListActiveRunsByUser. Mark it failed with a clear reason
 		// so the row is terminal from this exit path.
 		s.finishRunFailedReason(runID, "agent_id collision; run never started", meta)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use",
+			fmt.Sprintf("agent_id %q is already mapped to an active run", agentID))
 		return
 	}
 	if regErr != nil {
@@ -5337,9 +5344,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// for the full length of the in-flight run.
 	releaseSess, ok := s.trySessionLock(id)
 	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		fmt.Fprintf(w, `{"code":"session_busy","error":"another request is in flight on session %q"}`, id)
+		writeJSONError(w, http.StatusConflict, "session_busy",
+			fmt.Sprintf("another request is in flight on session %q", id))
 		return
 	}
 	defer releaseSess()
@@ -5615,9 +5621,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Same orphan-row mitigation as handleRuns — the run was
 		// already inserted at status=running.
 		s.finishRunFailedReason(run.ID, "agent_id collision; run never started", meta)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		fmt.Fprintf(w, `{"code":"agent_id_in_use","error":"agent_id %q is already mapped to an active run"}`, agentID)
+		writeJSONError(w, http.StatusConflict, "agent_id_in_use",
+			fmt.Sprintf("agent_id %q is already mapped to an active run", agentID))
 		return
 	}
 	if regErr != nil {
@@ -7865,9 +7870,8 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		// half-populated entry.
 		entry, ok := s.cancelReg.Get(agentID)
 		if !ok {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no live run for %q (no store configured)"}`, agentID)
+			writeJSONError(w, http.StatusNotFound, "unknown_agent_id",
+				fmt.Sprintf("no live run for %q (no store configured)", agentID))
 			return
 		}
 		writeJSON(w, http.StatusOK, agentResponse{
@@ -7898,9 +7902,8 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+			writeJSONError(w, http.StatusNotFound, "unknown_agent_id",
+				fmt.Sprintf("no run found for agent_id %q", agentID))
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -8033,9 +8036,8 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusNotFound)
-				fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+				writeJSONError(w, http.StatusNotFound, "unknown_agent_id",
+					fmt.Sprintf("no run found for agent_id %q", agentID))
 				return
 			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -8063,18 +8065,16 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	// Distinguish via the store: a row exists → terminated (idempotent
 	// 200); no row → 404.
 	if s.store == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no live or terminated run for %q (no store configured)"}`, agentID)
+		writeJSONError(w, http.StatusNotFound, "unknown_agent_id",
+			fmt.Sprintf("no live or terminated run for %q (no store configured)", agentID))
 		return
 	}
 	run, err := s.store.GetRunByAgentID(r.Context(), agentID)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"code":"unknown_agent_id","error":"no run found for agent_id %q"}`, agentID)
+			writeJSONError(w, http.StatusNotFound, "unknown_agent_id",
+				fmt.Sprintf("no run found for agent_id %q", agentID))
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -8520,6 +8520,22 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	}
 	terminal := isTerminalRunStatus(run.Status)
 	live := s.steerReg != nil && func() bool { _, ok := s.steerReg.Get(runID); return ok }()
+	// A child the Agent tool started takes a verdict and nothing else while it
+	// runs. Its queue refuses the compact push below, and that refusal reads as
+	// "raced to terminal": the summary was billed and written as a marker its
+	// next replay applies — a compaction of a child its parent drives. Its own
+	// entry decides where it is registered; elsewhere the row does, as the
+	// remote steer gate reads it.
+	verdictsOnly := takesOnlyVerdicts(run)
+	if s.steerReg != nil {
+		if entry, ok := s.steerReg.Get(runID); ok {
+			verdictsOnly = entry.VerdictsOnly
+		}
+	}
+	if !terminal && verdictsOnly {
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "run_takes_only_verdicts",
+			msg: "a sub-agent its parent drives takes only a review verdict; it cannot be compacted while it runs"}
+	}
 	// Boundary gate (user-chosen: safe boundary only). A LOCAL live run must be
 	// parked; refuse mid-turn so compaction applies at the boundary the agent is
 	// already at rather than being deferred into the current turn.

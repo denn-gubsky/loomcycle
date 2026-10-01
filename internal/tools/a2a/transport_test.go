@@ -4,47 +4,90 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
-// TestIsPrivatePeerIP table-checks the SSRF classifier, including the cloud
-// metadata service address that is the highest-value SSRF target.
-func TestIsPrivatePeerIP(t *testing.T) {
-	cases := []struct {
-		ip      string
-		private bool
-	}{
-		{"127.0.0.1", true},
-		{"::1", true},
-		{"169.254.169.254", true}, // AWS/GCP metadata service
-		{"10.1.2.3", true},
-		{"192.168.0.1", true},
-		{"172.16.5.5", true},
-		{"0.0.0.0", true},
-		{"8.8.8.8", false},
-		{"1.1.1.1", false},
-	}
-	for _, c := range cases {
-		got := isPrivatePeerIP(net.ParseIP(c.ip))
-		if got != c.private {
-			t.Errorf("isPrivatePeerIP(%s) = %v, want %v", c.ip, got, c.private)
+// TestHardenedPeerClient_RefusesEveryPrivateRangeTheGuardRefuses: the peer
+// client dials through the shared guard, so it refuses the ranges a local
+// classifier copy used to miss: CGNAT (tailnet peers, Alibaba metadata) and
+// the metadata service spelled as NAT64. The refusal must be the guard's, not
+// a timeout from actually trying.
+func TestHardenedPeerClient_RefusesEveryPrivateRangeTheGuardRefuses(t *testing.T) {
+	for _, target := range []string{
+		"http://127.0.0.1:9/",
+		"http://169.254.169.254:9/",
+		"http://100.100.100.200:9/",
+		"http://[64:ff9b::a9fe:a9fe]:9/",
+	} {
+		resp, err := hardenedPeerClient(2*time.Second, nil).Get(target)
+		if err == nil {
+			_ = resp.Body.Close()
+			t.Errorf("%s: peer client connected; SSRF block missing", target)
+			continue
+		}
+		if !strings.Contains(err.Error(), "blocked:") {
+			t.Errorf("%s: err = %v, want the guard's refusal", target, err)
 		}
 	}
 }
 
-// TestPeerDialContext_RefusesPrivateAddress proves the dialer refuses a
-// loopback/private target before connecting — the SSRF block.
-func TestPeerDialContext_RefusesPrivateAddress(t *testing.T) {
-	_, err := peerDialContext(context.Background(), "tcp", "127.0.0.1:9")
-	if err == nil {
-		t.Fatal("peerDialContext dialed a loopback address; SSRF block missing")
+// TestFetchPeerCard_PrivateAllowlistAdmitsVouchedPeer: a peer on a private
+// network is reachable once the operator vouches for it, by host or CIDR range,
+// exactly as for the HTTP tool; a range entry does not admit other addresses.
+func TestFetchPeerCard_PrivateAllowlistAdmitsVouchedPeer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"sibling","version":"1.0.0"}`))
+	}))
+	defer srv.Close()
+
+	if _, err := fetchPeerCard(context.Background(), srv.URL, []string{"100.64.0.0/10"}); err == nil {
+		t.Fatal("a CIDR entry for another range admitted a loopback peer")
 	}
-	if !strings.Contains(err.Error(), "no public addresses") && !strings.Contains(err.Error(), "private") {
-		t.Errorf("unexpected error %v, want an SSRF-refusal", err)
+	card, err := fetchPeerCard(context.Background(), srv.URL, []string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("vouched loopback peer refused: %v", err)
+	}
+	if card.Name != "sibling" {
+		t.Fatalf("card name = %q, want sibling", card.Name)
+	}
+}
+
+// TestRegisterTools_PeerFactoryCarriesOperatorPrivateAllowlist: the production
+// wiring hands the operator's private-host allowlist to the peer client.
+func TestRegisterTools_PeerFactoryCarriesOperatorPrivateAllowlist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"sibling","version":"1.0.0"}`))
+	}))
+	defer srv.Close()
+
+	def := config.A2AAgent{AgentCardURL: srv.URL, ExpectedSkills: []config.A2AExpectedSkill{{ID: "ping"}}}
+	// newPeer builds the client from the fetched card; this minimal card has no
+	// interfaces, so building may fail after the fetch. Only a guard refusal
+	// says whether the allowlist reached the dialer.
+	newPeerErr := func(allow []string) error {
+		cfg := &config.Config{A2AAgents: map[string]config.A2AAgent{"sib": {}}}
+		cfg.Env.HTTPPrivateHostAllowlist = allow
+		got := RegisterTools(context.Background(), cfg, nil, staticResolver(def), nil, nil)
+		if len(got) != 1 {
+			t.Fatalf("registered %d tools, want 1", len(got))
+		}
+		peer, err := got[0].(*Tool).newPeer(context.Background(), def, "")
+		if err == nil {
+			_ = peer.Close()
+		}
+		return err
+	}
+	if err := newPeerErr(nil); err == nil || !strings.Contains(err.Error(), "blocked:") {
+		t.Fatalf("no allowlist: err = %v, want the guard's refusal", err)
+	}
+	if err := newPeerErr([]string{"127.0.0.0/8"}); err != nil && strings.Contains(err.Error(), "blocked:") {
+		t.Fatalf("operator allowlist did not reach the peer dialer: %v", err)
 	}
 }
 
@@ -59,7 +102,7 @@ func TestFetchPeerCard_SSRFBlocksLoopbackPeer(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchPeerCard(context.Background(), srv.URL)
+	_, err := fetchPeerCard(context.Background(), srv.URL, nil)
 	if err == nil {
 		t.Fatal("fetchPeerCard reached a loopback peer; SSRF block missing")
 	}

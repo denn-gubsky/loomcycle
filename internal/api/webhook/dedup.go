@@ -63,8 +63,9 @@ func webhookKey(owner lookup.WebhookOwner, name string) string {
 // staticWebhookOwner marks a yaml cfg.Webhooks def in webhookKey.
 const staticWebhookOwner = "static:"
 
-// dedupKey composes the ONE key both dedup layers use: the Layer-1 cache key
-// here AND the durable runs.idempotency_key (Layer 2). webhook is webhookKey's
+// dedupKey composes a key both dedup layers use: the Layer-1 cache key here
+// AND the durable runs.idempotency_key (Layer 2); newDeliveryKeys picks which
+// of a delivery's keys is persisted. webhook is webhookKey's
 // value, so a delivery id only dedups against deliveries to the SAME webhook
 // def. The idempotency_key unique index spans the whole database, so a bare
 // delivery id (a body hash, or a sender-chosen header) made a byte-identical
@@ -113,6 +114,24 @@ func (c *dedupCache) record(key string) {
 	c.m.Store(key, c.now().Add(dedupTTL))
 }
 
+// seenAny reports whether either of a delivery's keys was recorded (seen).
+func (c *dedupCache) seenAny(k deliveryKeys) bool {
+	return c.seen(k.key) || (k.alt != "" && c.seen(k.alt))
+}
+
+// recordAccepted records every key of a delivery this receiver ACCEPTED.
+//
+// A delivery answered as a duplicate records only k.key (via record): in the
+// body-only modes its alt is a header value the signature does not cover, so
+// recording it would let a replay burn an id a genuine later delivery has yet
+// to use.
+func (c *dedupCache) recordAccepted(k deliveryKeys) {
+	c.record(k.key)
+	if k.alt != "" {
+		c.record(k.alt)
+	}
+}
+
 // sweep evicts all expired entries. Optional — lazy expiry on seen
 // keeps correctness; a periodic sweep bounds memory for delivery ids that
 // are never seen again. Safe to call concurrently with seen/record.
@@ -140,6 +159,50 @@ func deliveryID(a config.WebhookAuth, body []byte, headerGet func(string) string
 			return v
 		}
 	}
+	return bodyDeliveryID(body)
+}
+
+// bodyDeliveryID is the body-hash delivery id: deliveryID's fallback, and the
+// second identity of a body-only-signed delivery (newDeliveryKeys).
+func bodyDeliveryID(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// deliveryKeys are the dedup keys of one delivery (dedupKey values).
+type deliveryKeys struct {
+	// key is persisted as the run's runs.idempotency_key (Layer 2) and is a
+	// Layer-1 key.
+	key string
+	// alt is a second Layer-1 key, and a Layer-2 lookup, never persisted. ""
+	// unless the delivery has two identities (see newDeliveryKeys).
+	alt string
+}
+
+// newDeliveryKeys derives the keys a delivery to the webhook named by whKey
+// dedups on. did is deliveryID's value.
+//
+// Normally that is the one key dedupKey(whKey, did). But when the signature
+// covers the body only (bodyOnly: GitHub `sha256=` / bare hex), the
+// delivery-id header is outside it and there is no timestamp window: whoever
+// captured one signed delivery could replay the body with a new header value
+// each time, each a fresh key in both layers and a new run. So such a
+// delivery also dedups on its body hash, and it is a duplicate when EITHER
+// identity was seen. The body key is the one persisted (runs.idempotency_key
+// holds a single value per run, and only the body is signed); the sender's id
+// rides along as alt, so a redelivery under the same id still matches a run
+// an earlier release keyed on it.
+//
+// The cost: two distinct deliveries with byte-identical bodies are one
+// delivery — already the rule for a def without delivery_id_header.
+func newDeliveryKeys(whKey, did string, body []byte, bodyOnly bool) deliveryKeys {
+	key := dedupKey(whKey, did)
+	if !bodyOnly {
+		return deliveryKeys{key: key}
+	}
+	bodyKey := dedupKey(whKey, bodyDeliveryID(body))
+	if bodyKey == key {
+		return deliveryKeys{key: key} // no delivery-id header: did IS the body hash
+	}
+	return deliveryKeys{key: bodyKey, alt: key}
 }

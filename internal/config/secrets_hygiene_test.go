@@ -36,7 +36,7 @@ func TestResolvePrincipals_DeniesTokenEnvInterpolation(t *testing.T) {
 
 	c := &Config{
 		Principals: map[string]PrincipalDef{
-			"alice": {Subject: "alice", TokenEnv: envName, Scopes: []string{"runs:read"}},
+			"alice": {Tenant: "acme", Subject: "alice", TokenEnv: envName, Scopes: []string{"runs:read"}},
 		},
 	}
 	if err := resolvePrincipals(c); err != nil {

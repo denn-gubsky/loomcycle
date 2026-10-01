@@ -531,6 +531,10 @@ A pass dispatched into a tenant other than its schedule's own carries none of
 the schedule's credentials: it resolves its agent in that tenant, where the
 tenant's own version of the consolidator would run.
 
+The schedule's `on_complete` hooks follow the passes: they fire once per tenant
+whose passes all completed, in that tenant, and report that tenant's run. One
+tenant's failed pass does not withhold another tenant's hooks.
+
 ## Operator knobs
 
 | Setting | Effect |

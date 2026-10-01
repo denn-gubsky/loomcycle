@@ -3,9 +3,12 @@ package changesub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -21,6 +24,19 @@ func (f *fakeStore) GetMemoryChangesSince(_ context.Context, tenantID string, af
 	var out []store.MemoryChange
 	for _, ch := range f.changes {
 		if ch.TenantID == tenantID && ch.Seq > afterSeq {
+			out = append(out, ch)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetMemoryChangesSinceAllTenants(_ context.Context, afterSeq int64, limit int) ([]store.MemoryChange, error) {
+	var out []store.MemoryChange
+	for _, ch := range f.changes {
+		if ch.Seq > afterSeq {
 			out = append(out, ch)
 			if len(out) == limit {
 				break
@@ -155,5 +171,89 @@ func TestDeliver_FailureLeavesCursor(t *testing.T) {
 	// At-least-once: a failed delivery must NOT advance the cursor.
 	if fs.cursors["s1"] != 0 {
 		t.Errorf("cursor = %d, want 0 (delivery failed, must retry next tick)", fs.cursors["s1"])
+	}
+}
+
+// collector is a callback that records every delivered change.
+func collector(t *testing.T) (*httptest.Server, func() []store.MemoryChange) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []store.MemoryChange
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b deliveryBatch
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		got = append(got, b.Changes...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []store.MemoryChange {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]store.MemoryChange(nil), got...)
+	}
+}
+
+// TestDeliver_OperatorSubscriptionDeliversEveryTenantsChanges is the reported
+// bug. A subscription with no tenant_id is the operator's (only yaml declares
+// subscriptions), but it read tenant "" exactly — and nobody who signs in writes
+// there: the legacy bearer writes to "default", minted tokens to their own
+// tenants. It delivered nothing. It is now the operator's feed of every tenant,
+// each change naming its tenant.
+//
+// Fails-before: zero changes delivered, cursor stays 0.
+func TestDeliver_OperatorSubscriptionDeliversEveryTenantsChanges(t *testing.T) {
+	fs := seeded()
+	fs.changes = append(fs.changes, store.MemoryChange{Seq: 4, TenantID: "default", Type: store.MemoryChangeSet, Scope: store.MemoryScopeUser, ScopeID: "alice", Key: "tea"})
+	srv, delivered := collector(t)
+
+	d := New(fs, testSecretFor, nil)
+	d.RunOnce(context.Background(), []Subscription{{Name: "ops", CallbackURL: srv.URL, Client: srv.Client()}})
+
+	var got []string
+	for _, ch := range delivered() {
+		got = append(got, fmt.Sprintf("%d:%s", ch.Seq, ch.TenantID))
+	}
+	if want := "1:acme,2:acme,3:globex,4:default"; strings.Join(got, ",") != want {
+		t.Fatalf("operator subscription delivered %v, want %s", got, want)
+	}
+	if fs.cursors["ops"] != 4 {
+		t.Errorf("cursor = %d, want 4", fs.cursors["ops"])
+	}
+}
+
+// TestDeliver_OperatorSubscriptionKeepsItsFilters: sweeping every tenant widens
+// WHICH tenants, not what the scope/kinds filter lets through.
+func TestDeliver_OperatorSubscriptionKeepsItsFilters(t *testing.T) {
+	fs := seeded()
+	srv, delivered := collector(t)
+
+	d := New(fs, testSecretFor, nil)
+	d.RunOnce(context.Background(), []Subscription{{Name: "ops", CallbackURL: srv.URL, Scope: "user", Client: srv.Client()}})
+
+	got := delivered()
+	if len(got) != 1 || got[0].TenantID != "globex" || got[0].Scope != store.MemoryScopeUser {
+		t.Fatalf("delivered %+v, want only globex's user-scope change", got)
+	}
+}
+
+// TestDeliver_TenantSubscriptionNeverSeesAnotherTenant: a subscription naming a
+// tenant is confined to it, whatever other tenants write.
+func TestDeliver_TenantSubscriptionNeverSeesAnotherTenant(t *testing.T) {
+	fs := seeded()
+	fs.changes = append(fs.changes, store.MemoryChange{Seq: 4, TenantID: "", Type: store.MemoryChangeSet, Scope: store.MemoryScopeAgent, ScopeID: "op", Key: "k"})
+	srv, delivered := collector(t)
+
+	d := New(fs, testSecretFor, nil)
+	d.RunOnce(context.Background(), []Subscription{{Name: "g", CallbackURL: srv.URL, TenantID: "globex", Client: srv.Client()}})
+
+	for _, ch := range delivered() {
+		if ch.TenantID != "globex" {
+			t.Errorf("globex's subscription delivered tenant %q's change %+v", ch.TenantID, ch)
+		}
+	}
+	if n := len(delivered()); n != 1 {
+		t.Errorf("delivered %d change(s), want globex's 1", n)
 	}
 }

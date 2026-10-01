@@ -31,8 +31,9 @@ CREATE TABLE IF NOT EXISTS memory_pending (
     drained_at        TIMESTAMPTZ
 );
 
--- The consolidator drains un-drained rows for one target oldest-first; the TTL
--- sweeper reaps drained rows. Both key on (tenant, scope, scope_id, drained_at).
+-- The consolidator drains un-drained rows for one target oldest-first, keyed on
+-- (tenant, scope, scope_id, drained_at). The drained-row prune and the
+-- tenant-less undrained lookups do not use this index (see 0089).
 CREATE INDEX IF NOT EXISTS memory_pending_by_target
     ON memory_pending(tenant_id, scope, scope_id, drained_at);
 

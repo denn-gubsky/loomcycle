@@ -34,13 +34,18 @@ type peerLister interface {
 // resolve is the per-call DefResolver each tool re-runs at Execute time
 // (so a substrate fork of an already-registered peer is picked up
 // without re-registering); newPeer is the client factory (nil ⇒ the
-// production SDK factory); logf emits one triage line per skipped peer
+// production SDK factory, exempting the operator's private-host allowlist); logf emits one triage line per skipped peer
 // (no credentials/secrets — CLAUDE.md rule 4). Boot-time enumeration
 // failures are logged and skipped, never fatal: a transient store error
 // must not block loomcycle start.
 func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resolve DefResolver, newPeer peerClientFactory, logf func(string, ...any)) []tools.Tool {
 	if cfg == nil {
 		return nil
+	}
+	if newPeer == nil {
+		// A peer dials through the same guard, with the same operator vouch
+		// list, as every other outbound caller.
+		newPeer = sdkPeerClientFactory(cfg.Env.HTTPPrivateHostAllowlist)
 	}
 
 	// Peer name set: yaml entries plus active-substrate names. A yaml

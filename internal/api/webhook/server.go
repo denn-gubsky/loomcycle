@@ -137,6 +137,15 @@ func (rec *Receiver) Mount(reg Registrar) {
 	reg.Handle("POST /v1/_webhooks/{tenant}/{name}", http.HandlerFunc(rec.handle))
 }
 
+// webhookInert reports whether a resolved def must refuse every delivery. A
+// def a snapshot restored without its literal credentials is inert whatever
+// its `enabled` says: it must not run without them. The receiver and the
+// /test dry-run both gate on this, so the dry-run cannot promise a delivery
+// the receiver would refuse.
+func webhookInert(wd config.Webhook) bool {
+	return !wd.Enabled || wd.CaptureDisabled != nil
+}
+
 // handle is the shared front-half + delivery fork. The webhook NAME (and
 // optional tenant) come from the URL path (operator-addressable), never
 // from the body — the body is fully attacker-controlled until the
@@ -162,12 +171,10 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	whKey := webhookKey(owner, name)
-	if !wd.Enabled || wd.CaptureDisabled != nil {
+	if webhookInert(wd) {
 		// A disabled Def is addressable but inert. 404 (not 403) so a
 		// disabled webhook is indistinguishable from a never-registered one
-		// to an external caller — no enumeration signal. A def a snapshot
-		// restored without its literal credentials is disabled whatever its
-		// `enabled` says: it must not run without them.
+		// to an external caller — no enumeration signal.
 		rec.finish(span, whKey, "", "rejected_disabled", "")
 		writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		return
@@ -229,20 +236,21 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//    sig failure", which shielded no attacker — the signature already
 	//    verified — and misled legitimate senders into rotating their secret
 	//    on a dedup. Changed to an idempotent ack.)
-	//    did is the sender's id and goes back in every response; dkey scopes
-	//    it to the resolved webhook def and is what BOTH dedup layers key on.
+	//    did is the sender's id and goes back in every response; dk scopes
+	//    it to the resolved webhook def and is what BOTH dedup layers key on
+	//    — plus the body hash when the signature covers the body only.
 	did := deliveryID(wd.Auth, body, r.Header.Get)
-	dkey := dedupKey(whKey, did)
-	if rec.dedup.seen(dkey) {
+	dk := newDeliveryKeys(whKey, did, body, signsBodyOnly(wd.Auth, r.Header.Get))
+	if rec.dedup.seenAny(dk) {
 		rec.finish(span, whKey, did, verdictAcceptedReplay, "")
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
 		resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
 		// Best-effort: surface the original run for the spawn path, which set
-		// idempotency_key = dkey (RFC H Decision 10) — or, for a delivery an
-		// earlier release accepted, the bare did. Channel-delivery has no run
-		// row, so run_id is simply omitted.
+		// idempotency_key = dk.key (RFC H Decision 10) — or, for a delivery an
+		// earlier release accepted, dk.alt or the bare did. Channel-delivery
+		// has no run row, so run_id is simply omitted.
 		if rec.store != nil {
-			if existing, ok := rec.priorDeliveryRun(ctx, dkey, did, wd); ok {
+			if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
 				resp["run_id"] = existing.ID
 			}
 		}
@@ -274,9 +282,9 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// Accepted at the trust boundary — fork on delivery mode.
 	switch wd.Delivery {
 	case "channel":
-		rec.deliverChannel(ctx, w, span, name, whKey, did, dkey, wd, body)
+		rec.deliverChannel(ctx, w, span, name, whKey, did, dk, wd, body)
 	case "spawn", "":
-		rec.deliverSpawn(ctx, w, span, name, whKey, did, dkey, wd, proj, r)
+		rec.deliverSpawn(ctx, w, span, name, whKey, did, dk, wd, proj, r)
 	default:
 		rec.finish(span, whKey, did, "rejected_delivery", "")
 		rec.logf("webhook %q: unknown delivery mode %q", name, wd.Delivery)
@@ -286,7 +294,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 
 // deliverChannel publishes the RAW payload to the Def's channel. No
 // RunInput, no credential resolution — channel delivery is a pure relay.
-func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did, dkey string, wd config.Webhook, body []byte) {
+func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, body []byte) {
 	if rec.publisher == nil {
 		rec.finish(span, whKey, did, "rejected_no_publisher", "")
 		writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
@@ -307,7 +315,7 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 	}
 	// Accepted — record the delivery id now (not at the guard) so a publish
 	// failure above stays retryable.
-	rec.dedup.record(dkey)
+	rec.dedup.recordAccepted(dk)
 	rec.finish(span, whKey, did, verdictAccepted, "")
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"webhook_name": name,
@@ -320,7 +328,7 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 // (202 with the run id captured via OnRegistered). When ?sync=true AND the
 // Def's sync_response is enabled, the request blocks on the run-state bus
 // until this run reaches a terminal state or sync_response.timeout_ms.
-func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did, dkey string, wd config.Webhook, proj projectResult, r *http.Request) {
+func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, proj projectResult, r *http.Request) {
 	if rec.runner == nil {
 		rec.finish(span, whKey, did, "rejected_no_runner", "")
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")
@@ -345,7 +353,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// RFC H Decision 10 "Layer 2" durable dedup: stamp the run with the
 	// webhook-scoped delivery key so CreateRun persists it to
 	// runs.idempotency_key. Never the bare did — that index is global.
-	in.IdempotencyKey = dkey
+	in.IdempotencyKey = dk.key
 
 	// Layer-2 BEFORE-spawn check: if a run already carries this delivery
 	// key (a redelivery that survived past the in-memory Layer-1 TTL, or
@@ -354,8 +362,8 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	// deployments; treat a lookup error as "not found" (fail open to the
 	// spawn path — the unique index is the real backstop).
 	if rec.store != nil && did != "" {
-		if existing, ok := rec.priorDeliveryRun(ctx, dkey, did, wd); ok {
-			rec.dedup.record(dkey)
+		if existing, ok := rec.priorDeliveryRun(ctx, dk, did, wd); ok {
+			rec.dedup.record(dk.key)
 			rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,
@@ -375,15 +383,16 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	userID := proj.Fields["user_id"]
 
 	if !wantSync {
-		rec.spawnAsync(w, span, name, whKey, did, dkey, wd, in, userID)
+		rec.spawnAsync(w, span, name, whKey, did, dk, wd, in, userID)
 		return
 	}
-	rec.spawnSync(ctx, w, span, name, whKey, did, dkey, wd, in, userID)
+	rec.spawnSync(ctx, w, span, name, whKey, did, dk, wd, in, userID)
 }
 
 // priorDeliveryRun is the Layer-2 lookup: the run already started for this
-// delivery, if any. A lookup error reads as "none" (the unique index is the
-// real backstop).
+// delivery, if any, under either of its keys (dk.alt matches a run an earlier
+// release keyed on the sender's id). A lookup error reads as "none" (the
+// unique index is the real backstop).
 //
 // Transitional — remove in the release after this one. Runs accepted by
 // earlier releases carry the BARE delivery id as their idempotency_key, so a
@@ -392,9 +401,14 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 // that row only when it ran as this def's tenant and agent: a bare id is
 // global, and matching it unconditionally would bring back the dedup against
 // another webhook's (or tenant's) delivery that scoping the key removed.
-func (rec *Receiver) priorDeliveryRun(ctx context.Context, dkey, did string, wd config.Webhook) (store.Run, bool) {
-	if existing, ok, err := rec.store.RunByIdempotencyKey(ctx, dkey); err == nil && ok {
-		return existing, true
+func (rec *Receiver) priorDeliveryRun(ctx context.Context, dk deliveryKeys, did string, wd config.Webhook) (store.Run, bool) {
+	for _, k := range []string{dk.key, dk.alt} {
+		if k == "" {
+			continue
+		}
+		if existing, ok, err := rec.store.RunByIdempotencyKey(ctx, k); err == nil && ok {
+			return existing, true
+		}
 	}
 	existing, ok, err := rec.store.RunByIdempotencyKey(ctx, did)
 	if err != nil || !ok || existing.TenantID != wd.TenantID || existing.Agent != wd.Agent {
@@ -415,7 +429,7 @@ func (rec *Receiver) priorDeliveryRun(ctx context.Context, dkey, did string, wd 
 // the loop starts, so on the happy path it always precedes any meaningful
 // work — the 202 carries a real id. The select also guards a (rare) hung
 // setup with a timeout that surfaces 503 rather than hanging the request.
-func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, whKey, did, dkey string, wd config.Webhook, in runner.RunInput, userID string) {
+func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, in runner.RunInput, userID string) {
 	registered := make(chan string, 1)
 	setupErr := make(chan error, 1)
 	var spawnedRunID, spawnedAgentID string
@@ -452,7 +466,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 	case runID := <-registered:
 		// Run admitted = delivery accepted. Record the id now (not at the
 		// guard) so a setup-time rejection below stays retryable.
-		rec.dedup.record(dkey)
+		rec.dedup.recordAccepted(dk)
 		rec.finish(span, whKey, did, verdictAccepted, runID)
 		writeJSON(w, http.StatusAccepted, map[string]string{
 			"webhook_name": name,
@@ -470,7 +484,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		// reporting an empty run_id. Only a genuine setup rejection (err
 		// returned BEFORE OnRegistered) leaves spawnedRunID empty.
 		if err == nil {
-			rec.dedup.record(dkey)
+			rec.dedup.recordAccepted(dk)
 			rec.finish(span, whKey, did, verdictAccepted, spawnedRunID)
 			resp := map[string]string{"webhook_name": name, "delivery_id": did}
 			if spawnedRunID != "" {
@@ -488,8 +502,8 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		// the racing request.
 		if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
 			if rec.store != nil && did != "" {
-				if existing, ok, lerr := rec.store.RunByIdempotencyKey(context.Background(), dkey); lerr == nil && ok {
-					rec.dedup.record(dkey)
+				if existing, ok, lerr := rec.store.RunByIdempotencyKey(context.Background(), dk.key); lerr == nil && ok {
+					rec.dedup.record(dk.key)
 					rec.finish(span, whKey, did, verdictAccepted, existing.ID)
 					writeJSON(w, http.StatusAccepted, map[string]string{
 						"webhook_name": name,
@@ -503,7 +517,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 			// Winner's row not visible yet (replication lag / nil store):
 			// still accepted — the delivery was handled by the racing
 			// request. Record so a retry doesn't re-spawn.
-			rec.dedup.record(dkey)
+			rec.dedup.record(dk.key)
 			rec.finish(span, whKey, did, verdictAccepted, "")
 			writeJSON(w, http.StatusAccepted, map[string]string{
 				"webhook_name": name,
@@ -548,7 +562,7 @@ func (rec *Receiver) spawnSetupErrorResponse(w http.ResponseWriter, err error) {
 
 // spawnSync subscribes to the run-state bus BEFORE starting the run, then
 // blocks until this run's agent reaches a terminal state or the timeout.
-func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did, dkey string, wd config.Webhook, in runner.RunInput, userID string) {
+func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, wd config.Webhook, in runner.RunInput, userID string) {
 	if rec.runStateBus == nil {
 		// Def asked for sync but the runtime has no bus — fail closed (503)
 		// rather than silently degrade to async (Decision 9: never silently
@@ -604,7 +618,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		ourAgentID, ourRunID = reg.agentID, reg.runID
 		// Run admitted = delivery accepted; record so a later terminal-wait
 		// timeout does not leave the (now-running) delivery retryable.
-		rec.dedup.record(dkey)
+		rec.dedup.recordAccepted(dk)
 	case <-deadline.C:
 		rec.finish(span, whKey, did, "timeout", "")
 		writeError(w, http.StatusGatewayTimeout, "sync_timeout", "")

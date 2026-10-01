@@ -68,11 +68,17 @@ func (s *Server) openTeamWalkRun(ctx context.Context, teamName string, detach bo
 	// record the walk itself: they spawn under walkCtx, whose run id is the
 	// walk's.
 	parentRunID := tools.RunID(ctx)
+	// The walk's row carries the confinement its members run under: admission
+	// (admitTeamRun) has already put the caller's, or a subscription's
+	// promoter's, on ident. Without them the walk's own row read as
+	// unrestricted to anything that reads runs by their row.
 	sessionID, runID, err := s.openOrCreateSessionAndRun(ctx, "", agent, ident.TenantID, ident.UserID, store.RunIdentity{
-		AgentID:     agent,
-		ParentRunID: parentRunID,
-		UserID:      ident.UserID,
-		TenantID:    ident.TenantID,
+		AgentID:               agent,
+		ParentRunID:           parentRunID,
+		UserID:                ident.UserID,
+		TenantID:              ident.TenantID,
+		OperatorKeyRestricted: ident.OperatorKeyRestricted,
+		Isolated:              ident.Isolated,
 	})
 	if err != nil {
 		return ctx, "", func(string, error) {}, err

@@ -167,8 +167,11 @@ type CaptureFindingEntry struct {
 	// "body.headers.Authorization".
 	Field string `json:"field"`
 	// Detector says which rule matched: "secret-pattern" or
-	// "credential-header-name" for a header value, or "pending-interrupt" for
-	// a paused run with a pending interrupt (Field "interrupts").
+	// "credential-header-name" for a header value, "credential-env-name" for
+	// a stdio env entry, "secret-pattern" for a stdio command or args
+	// element, "url-userinfo" or "url-credential-query" for a URL-shaped
+	// field, or "pending-interrupt" for a paused run with a pending interrupt
+	// (Field "interrupts").
 	Detector string `json:"detector"`
 }
 

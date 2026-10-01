@@ -45,10 +45,12 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	// replica that owns it, where the push below routes.
 	if entry, ok := s.steerReg.Get(runID); ok {
 		if entry.SessionID != "" && s.store != nil {
-			if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
-				if !sessionOwnershipOK(ctx, sess) {
-					return false, connector.ErrRunNotInFlight
-				}
+			// Fail closed: a session that cannot be read cannot be shown to be
+			// the caller's, so a store fault or a vanished session is refused
+			// like a non-owner — skipping the gate let anyone steer the run.
+			sess, err := s.store.GetSession(ctx, entry.SessionID)
+			if err != nil || !sessionOwnershipOK(ctx, sess) {
+				return false, connector.ErrRunNotInFlight
 			}
 		}
 	} else if s.store == nil {
@@ -122,10 +124,11 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	// tenant (mirrors SteerRun), then fire the local armed token.
 	if entry, ok := s.steerReg.Get(runID); ok {
 		if entry.SessionID != "" && s.store != nil {
-			if sess, err := s.store.GetSession(ctx, entry.SessionID); err == nil {
-				if !sessionOwnershipOK(ctx, sess) {
-					return false, false, connector.ErrRunNotInFlight
-				}
+			// Fail closed, as SteerRun does: an unreadable session proves no
+			// ownership, so it gets the non-owner's refusal.
+			sess, err := s.store.GetSession(ctx, entry.SessionID)
+			if err != nil || !sessionOwnershipOK(ctx, sess) {
+				return false, false, connector.ErrRunNotInFlight
 			}
 		}
 		// Only an armed run (interactive + in-flight) is turn-cancellable.

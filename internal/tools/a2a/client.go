@@ -64,7 +64,7 @@ type peerClient interface {
 
 // peerClientFactory builds a peerClient for a resolved A2AAgentDef +
 // bearer. Injected into the Tool so tests substitute a fake; production
-// uses newSDKPeerClient. bearer is the already-resolved Authorization
+// uses sdkPeerClientFactory. bearer is the already-resolved Authorization
 // credential ("" when the def declares no auth) — this factory never
 // reads credentials itself, keeping the secret-resolution seam in one
 // place (the Tool).
@@ -123,8 +123,16 @@ func (c *sdkPeerClient) SendMessage(ctx context.Context, req *a2asdk.SendMessage
 
 func (c *sdkPeerClient) Close() error { return c.cl.Destroy() }
 
-// newSDKPeerClient is the production peerClientFactory. It builds an SDK
-// client from the def's discovery shape:
+// sdkPeerClientFactory returns the production peerClientFactory. privateHosts
+// is the operator's private-host allowlist, the only way a peer on a private
+// network (a tailnet, a sibling host) is reachable past the SSRF guard.
+func sdkPeerClientFactory(privateHosts []string) peerClientFactory {
+	return func(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error) {
+		return newSDKPeerClient(ctx, def, bearer, privateHosts)
+	}
+}
+
+// newSDKPeerClient builds an SDK client from the def's discovery shape:
 //
 //   - agent_card_url set → fetch + parse the peer's AgentCard, optionally
 //     verify its JWS signature (verify_signed_card), and build the client
@@ -133,13 +141,13 @@ func (c *sdkPeerClient) Close() error { return c.cl.Destroy() }
 //     declared interface, skipping card discovery.
 //
 // The bearer is wired via bearerInterceptor so it rides every call.
-func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer string) (peerClient, error) {
+func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer string, privateHosts []string) (peerClient, error) {
 	// Inject loomcycle's hardened http.Client into the JSON-RPC + REST
 	// transports so peer responses are body-capped (no OOM from a hostile
 	// peer's giant SendMessage response) and SSRF-blocked at the dial layer.
 	// gRPC carries its own default 4 MiB recv cap, so only the two HTTP
 	// transports need the override.
-	hc := hardenedPeerClient(peerCallTimeout)
+	hc := hardenedPeerClient(peerCallTimeout, privateHosts)
 	opts := []a2aclient.FactoryOption{
 		a2aclient.WithCallInterceptors(&bearerInterceptor{bearer: bearer}),
 		a2aclient.WithJSONRPCTransport(hc),
@@ -147,7 +155,7 @@ func newSDKPeerClient(ctx context.Context, def config.A2AAgent, bearer string) (
 	}
 
 	if def.AgentCardURL != "" {
-		card, err := fetchPeerCard(ctx, def.AgentCardURL)
+		card, err := fetchPeerCard(ctx, def.AgentCardURL, privateHosts)
 		if err != nil {
 			return nil, fmt.Errorf("fetch peer card: %w", err)
 		}
@@ -192,11 +200,11 @@ const peerCallTimeout = 5 * time.Minute
 // well-known path when given a bare origin, so we pass the URL as the
 // base and strip a trailing well-known suffix the operator may have
 // included to avoid double-appending.
-func fetchPeerCard(ctx context.Context, agentCardURL string) (*a2asdk.AgentCard, error) {
+func fetchPeerCard(ctx context.Context, agentCardURL string, privateHosts []string) (*a2asdk.AgentCard, error) {
 	// Hardened client: caps the card body (the SDK resolver does an
 	// unbounded io.ReadAll) and SSRF-blocks the dial, since agent_card_url
 	// can be model-authored via a def-scope fork overlay.
-	hc := hardenedPeerClient(peerCardFetchTimeout)
+	hc := hardenedPeerClient(peerCardFetchTimeout, privateHosts)
 	resolver := agentcard.NewResolver(hc)
 
 	const wellKnown = "/.well-known/agent-card.json"

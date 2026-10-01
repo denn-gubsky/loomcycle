@@ -38,7 +38,7 @@ func requirePublicIPLiteral(field, raw string) error {
 	}
 	if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
 		return fmt.Errorf("%s %q is a private, loopback, link-local or metadata address — a definition authored at runtime may not name one. "+
-			"Use a hostname the operator lists in LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, or ask the operator to declare this peer in the server config", field, raw)
+			"Use a hostname the operator lists in LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, or ask the operator to declare this peer in the server config", field, urlForMessage(raw))
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/channelhooks"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -166,6 +167,12 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 		// parking of a child its parent drives, which the owner answers 404.
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
+	if runsNoLoop(run) {
+		// The owner never registers a steer entry for it, so it answers 404;
+		// this replica must too, or a retune from here rewrites the config of
+		// a run nothing reads it from.
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
 	if run.SessionID != "" {
 		sess, serr := s.store.GetSession(ctx, run.SessionID)
 		if serr != nil || !sessionOwnershipOK(ctx, sess) {
@@ -187,6 +194,21 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 // on; carrying the kind on the row would make the two agree.
 func takesOnlyVerdicts(run store.Run) bool {
 	return run.ParentRunID != "" && (run.ParentContext == nil || run.ParentContext.WalkID == "")
+}
+
+// runsNoLoop reports a run that is a record, not an agent loop: a team walk's
+// own run and a channel hook's run. Neither has a steer entry on its owner, so
+// the owner refuses a steer, retune or config read of it. It is read off the
+// agent id those runs alone carry: any other run's is a generated handle or a
+// caller's, and a caller's may not hold a colon.
+//
+// takesOnlyVerdicts does not catch a walk started from the substrate plane: it
+// has no parent run. Today such a row also carries no replica id, which the
+// gate above already refuses; this does not lean on that omission, so stamping
+// the owner on those rows later does not open them to a remote retune.
+func runsNoLoop(run store.Run) bool {
+	return strings.HasPrefix(run.AgentID, teamWalkAgentPrefix) ||
+		strings.HasPrefix(run.AgentID, channelhooks.HookAgentPrefix)
 }
 
 // retuneRun merges an override into a live run's stored configuration.

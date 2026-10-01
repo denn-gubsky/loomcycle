@@ -114,6 +114,16 @@ func TestRecordingEmit_AnnouncesEachWaitOnceAndItsEnd(t *testing.T) {
 				holdToolResult("tu_sub_2", "Channel"),
 			},
 			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings"}, {at: 1}, {at: 2, state: awaited.Channel, on: "findings"}, {at: 3}}},
+		// A fan-in await blocks the run while it long-polls, on every channel it
+		// names; one that reads once and returns is not a wait.
+		{"channel_await_waits_on_its_channels_until_its_result",
+			[]providers.Event{
+				holdToolCall("tu_aw", "Channel", `{"op":"await","channels":["findings","reviews","findings"],"wait_ms":30000}`),
+				holdToolResult("tu_aw", "Channel"),
+				holdToolCall("tu_peek", "Channel", `{"op":"await","channels":["findings"]}`),
+				holdToolResult("tu_peek", "Channel"),
+			},
+			[]holdSeen{{at: 0, state: awaited.Channel, on: "findings, reviews"}, {at: 1}}},
 		{"interruption_ask_waits_until_answered",
 			[]providers.Event{holdToolCall("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`), holdToolResult("tu_ask", "Interruption")},
 			[]holdSeen{{at: 0, state: awaited.Interrupted, on: "approval"}, {at: 1}}},
