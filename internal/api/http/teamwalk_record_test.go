@@ -198,8 +198,13 @@ func TestTeamWalkRecord_TheInputIsMaskedAndBounded(t *testing.T) {
 	h.srv.redactor = redact.New(map[string]string{"LOOMCYCLE_GITEA_TOKEN": secret}, true)
 	seedTenantTeam(t, h.st, "acme", "solo", agentOnlyTeam)
 
-	// Two-byte runes, so a byte cut at the cap would land inside one.
-	input := "token is " + secret + " " + strings.Repeat("é", teamWalkInputCap)
+	// Two-byte runes after a prefix whose MASKED length puts the cap inside
+	// one, so a plain byte cut would split it.
+	prefix := "token is " + secret + " "
+	if (teamWalkInputCap-len(h.srv.redactor.String(prefix)))%2 == 0 {
+		prefix += "x"
+	}
+	input := prefix + strings.Repeat("é", teamWalkInputCap)
 	body, _ := json.Marshal(map[string]string{"op": "run", "name": "solo", "input": input})
 	walkID := h.postTeamDef(alicePrincipal, string(body))
 
@@ -219,7 +224,9 @@ func TestTeamWalkRecord_TheInputIsMaskedAndBounded(t *testing.T) {
 	if len(got.Input) > teamWalkInputCap || len(got.Input) < teamWalkInputCap-1 {
 		t.Errorf("stored input is %d bytes, want the cap (%d) less at most a partial rune", len(got.Input), teamWalkInputCap)
 	}
-	if !utf8.ValidString(got.Input) {
+	// JSON encodes a split rune as U+FFFD, so the decoded text is valid UTF-8
+	// either way; the replacement character is what a split leaves behind.
+	if !utf8.ValidString(got.Input) || strings.ContainsRune(got.Input, utf8.RuneError) {
 		t.Error("the cut split a rune")
 	}
 }
