@@ -540,7 +540,7 @@ change_subscriptions: {}
   # my-consumer:
   #   callback_url: "https://consumer.example/loomcycle-changes"
   #   secret_env: LOOMCYCLE_CHANGE_SUB_SECRET    # env NAME of the HMAC key (allowlisted); omit = unsigned
-  #   tenant_id: ""                              # which tenant's feed ("" = shared/default)
+  #   tenant_id: ""                              # which tenant's feed ("" = every tenant; each change names its own)
   #   scope: user                                # optional filter: agent | user | tenant
   #   kinds: [memory, document.chunk.updated]    # optional; family "memory"/"document" or exact types
   #   allow_private_host: false                  # true to deliver to a private-network callback (SSRF opt-in)

@@ -30,6 +30,9 @@ type fakeRunner struct {
 	// callbacks a real loop would fire (usage events carrying the serving
 	// provider/model, and store writes the pass would have made).
 	onCallbacks func(in runner.RunInput, cb runner.RunCallbacks)
+	// resultFor, when set, gives each call its own run id and error — for
+	// fan-out tests that tell one child's run from another's.
+	resultFor func(in runner.RunInput) (runID string, err error)
 }
 
 func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
@@ -42,10 +45,14 @@ func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.Ru
 	if f.onCallbacks != nil {
 		f.onCallbacks(in, cb)
 	}
-	if cb.OnRegistered != nil {
-		cb.OnRegistered("a_test", "r_test", "", "")
+	runID, runErr := "r_test", f.runErr
+	if f.resultFor != nil {
+		runID, runErr = f.resultFor(in)
 	}
-	return f.runErr
+	if cb.OnRegistered != nil {
+		cb.OnRegistered("a_test", runID, "", "")
+	}
+	return runErr
 }
 
 func (f *fakeRunner) Calls() []runner.RunInput {

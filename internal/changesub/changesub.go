@@ -47,6 +47,7 @@ type Subscription struct {
 // Store is the subset of store.Store the deliverer needs.
 type Store interface {
 	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]store.MemoryChange, error)
+	GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]store.MemoryChange, error)
 	GetChangeSubscriptionCursor(ctx context.Context, name string) (int64, error)
 	SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error
 }
@@ -96,7 +97,7 @@ func (d *Deliverer) deliverOnce(ctx context.Context, sub Subscription) (int, err
 	if err != nil {
 		return 0, fmt.Errorf("read cursor: %w", err)
 	}
-	changes, err := d.store.GetMemoryChangesSince(ctx, sub.TenantID, cursor, d.batchLimit)
+	changes, err := d.readChanges(ctx, sub, cursor)
 	if err != nil {
 		return 0, fmt.Errorf("read changes: %w", err)
 	}
@@ -124,6 +125,26 @@ func (d *Deliverer) deliverOnce(ctx context.Context, sub Subscription) (int, err
 		return 0, fmt.Errorf("advance cursor: %w", err)
 	}
 	return len(changes), nil
+}
+
+// readChanges reads the next window of a subscription's feed.
+//
+// A subscription with no tenant_id is the OPERATOR's feed of every tenant. Read
+// as tenant "" exactly, it delivered nothing to anyone who signs in: the legacy
+// bearer writes to "default" and minted tokens to their own tenants, so "" only
+// ever holds the operator's own and open-mode writes. Sweeping every tenant to
+// one endpoint is safe because only the operator declares subscriptions — they
+// exist in the yaml alone, with no API, tool or tenant-authored path — and it
+// grants nothing the operator lacks: one subscription per tenant naming that
+// tenant reaches the same changes. Each change names its tenant, and the
+// payload stays value-free coordinates.
+//
+// A subscription that names a tenant is unchanged: that tenant only.
+func (d *Deliverer) readChanges(ctx context.Context, sub Subscription, cursor int64) ([]store.MemoryChange, error) {
+	if sub.TenantID == "" {
+		return d.store.GetMemoryChangesSinceAllTenants(ctx, cursor, d.batchLimit)
+	}
+	return d.store.GetMemoryChangesSince(ctx, sub.TenantID, cursor, d.batchLimit)
 }
 
 // deliveryBatch is the POST body — value-free (each MemoryChange is a coordinate,

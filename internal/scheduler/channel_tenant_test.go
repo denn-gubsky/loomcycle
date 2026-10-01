@@ -84,3 +84,50 @@ func TestScheduler_PublishesToATenantScopedChannel(t *testing.T) {
 		t.Fatalf("t1's tenant-scoped channel holds %d messages, want 1", len(msgs))
 	}
 }
+
+// A channel tick starts no run, so it lands in the schedule's own tenant. For an
+// operator-layer schedule (a yaml entry with no tenant_id) that is the operator
+// layer of a global channel, which every tenant reads merged with its own: a
+// legacy-bearer reader in "default" and a minted-token reader in "acme" both
+// receive the tick. Pinned because "the tick lands in tenant \"\"" reads like
+// the same bug as the fan-out's hooks and is not: the operator layer IS where an
+// operator's writer publishes to reach every tenant.
+func TestScheduler_OperatorChannelTickReachesEveryTenantsReader(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Delivery: "channel", Channel: "clock", Schedule: "0 * * * *", Enabled: &enabled}
+	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	sched.SetChannelScope((&tenantRecorder{scope: "global"}).resolve)
+
+	fireT(t, sched)
+
+	for _, reader := range []string{"default", "acme"} {
+		msgs, _, err := st.ChannelSubscribe(context.Background(), reader, "clock", store.MemoryScopeGlobal, "", "", 10)
+		if err != nil {
+			t.Fatalf("subscribe as %q: %v", reader, err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("a reader in tenant %q received %d tick(s), want 1", reader, len(msgs))
+		}
+	}
+}
+
+// A tenant's channel tick stays in that tenant: another tenant's reader of the
+// same global channel never sees it.
+func TestScheduler_TenantChannelTickStaysInItsTenant(t *testing.T) {
+	enabled := true
+	def := scheduleDef{Delivery: "channel", Channel: "clock", Schedule: "0 * * * *", Enabled: &enabled, TenantID: "acme"}
+	sched, _, _, _, st := schedulerFixture(t, def, time.Now().Add(-1*time.Minute))
+	sched.SetChannelScope((&tenantRecorder{scope: "global"}).resolve)
+
+	fireT(t, sched)
+
+	for reader, want := range map[string]int{"acme": 1, "default": 0, "": 0} {
+		msgs, err := st.ChannelPeek(context.Background(), reader, "clock", store.MemoryScopeGlobal, "", "", 10)
+		if err != nil {
+			t.Fatalf("peek as %q: %v", reader, err)
+		}
+		if len(msgs) != want {
+			t.Errorf("a reader in tenant %q sees %d of acme's ticks, want %d", reader, len(msgs), want)
+		}
+	}
+}
