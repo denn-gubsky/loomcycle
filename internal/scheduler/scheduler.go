@@ -360,6 +360,11 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 		s.recordFireFailure(ctx, row.DefID, "", "decode_def", err, now)
 		return
 	}
+	if rehomed, ok := rehomeToOwningTenant(row, def); ok {
+		s.logf("scheduler: schedule %q (def %s) names no tenant in its definition but is owned by tenant %q — executing in %q; re-save it to record the tenant",
+			row.Name, row.DefID, row.OwnerTenantID, row.OwnerTenantID)
+		def = rehomed
+	}
 	if (def.Enabled != nil && !*def.Enabled) || def.CaptureDisabled != nil {
 		// Skip-but-advance: the operator disabled this schedule via the
 		// substrate (or the yaml template set enabled:false). Bump
@@ -469,6 +474,25 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	if status == "completed" {
 		s.dispatchHooks(recordCtx, row.Name, def, registeredRunID, registeredAgentID)
 	}
+}
+
+// rehomeToOwningTenant returns def executing in its row's owning tenant when the
+// body names no tenant but a real tenant owns the row, and ok=false otherwise.
+//
+// Every write path stamps the author's tenant into the body now, but a row a
+// tenant wrote before that stamp existed has an empty body tenant — and the
+// whole fire path (the run, the channel tick, the consolidation fan-out, the
+// on_complete hooks) reads only the body. Left alone, tenant X's schedule
+// would run and publish in the operator layer "" instead of X. Its owner is
+// the tenant that wrote it, so that is where it runs. A row bootstrapped from
+// the operator's yaml keeps its empty tenant: the yaml said "operator layer",
+// whoever's fork materialised it.
+func rehomeToOwningTenant(row store.ScheduleDueRow, def scheduleDef) (scheduleDef, bool) {
+	if def.TenantID != "" || row.OwnerTenantID == "" || row.BootstrappedFromStatic {
+		return def, false
+	}
+	def.TenantID = row.OwnerTenantID
+	return def, true
 }
 
 // fireChannelDelivery is the RFC CY tick that publishes instead of running.

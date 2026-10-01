@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -43,22 +44,21 @@ const (
 	// Metadata wholesale, so any principal with schedule_def_scopes — including a
 	// runtime meta-agent — can set this key, turning one def into up to
 	// MaxConsolidationTargets runs per tick, each executing under a DISCOVERED
-	// user's identity. There is no discriminator for "materialised from static
-	// yaml" (a bootstrapped static schedule and a runtime-authored one produce
-	// identical substrate rows, and a fork of a static name is indistinguishable
-	// from either), so honouring the marker only for yaml-sourced defs is not
-	// something this layer can implement today. What it does instead is refuse to
-	// be silent: every fan-out fire logs that it is fanning out and how wide,
-	// so a def nobody meant to author is visible in the log rather than only in
-	// the bill. Closing the gap properly needs a provenance column on
-	// schedule_defs — deferred, tracked as the follow-up to this note.
+	// user's identity — within the author's own tenant. That is allowed (a
+	// tenant may consolidate its own users), so this layer refuses to be silent
+	// instead: every fan-out fire logs that it is fanning out and how wide, so a
+	// def nobody meant to author is visible in the log rather than only in the
+	// bill.
 	//
 	// Reach follows the def's tenant: a tenant's def fans out within that
 	// tenant; a def in the operator layer (tenant "") fans out across every
-	// tenant — see operatorLayerFanout. Only the operator can author the
-	// latter: the yaml, a principal the operator's config declares without a
-	// tenant, or open mode. Minted tokens and the legacy bearer carry a tenant.
-	fanoutMetadataKey = "memory_consolidation_fanout"
+	// tenant — but only when the OPERATOR wrote it: a row bootstrapped from the
+	// yaml, or a version carrying the server-stamped operator_layer bit (written
+	// by an admin, or an open-mode / stdio operator). Tenant "" alone is not
+	// proof: a config principal with no tenant and no substrate:admin, or an
+	// agent in a run that executes in "", writes there too. See
+	// operatorLayerFanout.
+	fanoutMetadataKey = config.ConsolidationFanoutMetadataKey
 	// fanoutScopeKey optionally names the target scope. Only "user" is
 	// supported (see the scope note above); an empty value defaults to it.
 	fanoutScopeKey = "memory_consolidation_scope"
@@ -136,20 +136,7 @@ type consolidationTarget struct {
 // The marker lives in the def's metadata — see fanoutMetadataKey for why that is
 // NOT the same as operator-authored.
 func isConsolidationFanout(def scheduleDef) bool {
-	v, ok := def.Metadata[fanoutMetadataKey]
-	if !ok {
-		return false
-	}
-	// YAML/JSON round-trips a bool as bool; accept the string spellings too so
-	// a hand-edited substrate def does not silently disable the fan-out.
-	switch t := v.(type) {
-	case bool:
-		return t
-	case string:
-		return t == "true" || t == "1"
-	default:
-		return false
-	}
+	return config.IsConsolidationFanout(def.Metadata)
 }
 
 // fanoutScope returns the target scope for this schedule. Only `user` is
@@ -190,7 +177,7 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	// expensive metadata key in the system. An operator must be able to find out
 	// from the log that a def is fanning out, and how wide, without waiting for
 	// the bill. At an hourly cadence this is one line per hour per def.
-	allTenants := s.operatorLayerFanout(ctx, row.DefID, def)
+	allTenants := s.operatorLayerFanout(row, def)
 	reach := fmt.Sprintf("in tenant %q", def.TenantID)
 	if allTenants {
 		reach = "across every tenant, each run in its target's own tenant"
@@ -249,20 +236,28 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 // with `tenant_id`. Each target's run still executes in that target's tenant.
 //
 // BOTH tenants must be "": the def body's (where its runs execute) and the
-// owning row's. A row a tenant wrote before create stamped the author's tenant
-// into the body has an empty body tenant but a real owner, and must not become
-// a cross-tenant sweep. The owner is read per fire (one point read per tick);
-// a read fault fails closed to the def's own tenant.
-func (s *Scheduler) operatorLayerFanout(ctx context.Context, defID string, def scheduleDef) bool {
-	if def.TenantID != "" {
+// owning row's. (A row a tenant wrote before create stamped the author's tenant
+// into the body has an empty body tenant but a real owner; fireOne has already
+// re-homed it to that owner, so it arrives here with a tenant.)
+//
+// And the OPERATOR must have written it, because tenant "" is not proof: a
+// config principal with no tenant and no substrate:admin, or an agent in a run
+// that executes in "" (a yaml schedule or webhook with no tenant_id, an
+// open-mode run), stores its defs there too, and would otherwise run its own
+// agent and prompt as every user of every tenant. The operator's are the rows
+// bootstrapped from the yaml and the versions the ScheduleDef tool stamped
+// operator_layer (written by an admin, or an open-mode / stdio operator). Any
+// other "" fan-out stays in "" and says why.
+func (s *Scheduler) operatorLayerFanout(row store.ScheduleDueRow, def scheduleDef) bool {
+	if def.TenantID != "" || row.OwnerTenantID != "" {
 		return false
 	}
-	owner, err := s.store.ScheduleDefGet(ctx, defID)
-	if err != nil {
-		s.logf("scheduler: consolidation fan-out def %s: read owning tenant: %v — confining this tick to tenant \"\"", defID, err)
-		return false
+	if def.OperatorLayer || row.BootstrappedFromStatic {
+		return true
 	}
-	return owner.TenantID == ""
+	s.logf("scheduler: consolidation fan-out %q (def %s) has no tenant but was not authored with operator authority — confining it to tenant \"\" instead of sweeping every tenant; re-save it as an admin to sweep",
+		row.Name, row.DefID)
+	return false
 }
 
 // dispatchConsolidationTargets is the fan-out body, run at most once per tick

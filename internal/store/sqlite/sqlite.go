@@ -10074,7 +10074,8 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 	// retired-via-flag rows; CASCADE on DELETE handles delete-retired.
 	// The paused_until filter drops paused-until-future rows.
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT srs.def_id, sd.name, sd.definition, srs.next_run_at
+		`SELECT srs.def_id, sd.name, sd.definition, srs.next_run_at,
+		        sd.tenant_id, sd.bootstrapped_from_static
 		 FROM schedule_run_state srs
 		 JOIN schedule_def_active sda ON sda.def_id = srs.def_id
 		 JOIN schedule_defs sd ON sd.def_id = srs.def_id
@@ -10091,15 +10092,17 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 	var out []store.ScheduleDueRow
 	for rows.Next() {
 		var (
-			r          store.ScheduleDueRow
-			definition string
-			nextRunAt  int64
+			r            store.ScheduleDueRow
+			definition   string
+			nextRunAt    int64
+			bootstrapped int
 		)
-		if err := rows.Scan(&r.DefID, &r.Name, &definition, &nextRunAt); err != nil {
+		if err := rows.Scan(&r.DefID, &r.Name, &definition, &nextRunAt, &r.OwnerTenantID, &bootstrapped); err != nil {
 			return nil, err
 		}
 		r.Definition = json.RawMessage(definition)
 		r.NextRunAt = time.Unix(0, nextRunAt)
+		r.BootstrappedFromStatic = bootstrapped != 0
 		out = append(out, r)
 	}
 	return out, rows.Err()

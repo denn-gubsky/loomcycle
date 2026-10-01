@@ -216,6 +216,10 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		// literal credentials. Deliberately NOT on config.ScheduledRun: the
 		// body's enabled:false is what stops it firing on every read path.
 		"capture_disabled": true,
+		// Server-stamped operator authority on a tenant-less def. Deliberately
+		// NOT on config.ScheduledRun: a yaml entry is the operator's by
+		// construction, and the scheduler reads the bit via scheduler.scheduleDef.
+		"operator_layer": true,
 	}
 	have := scheduleJsonTagsOf(reflect.TypeOf(lookup.SubstrateScheduleDef{}))
 	for tag := range want {

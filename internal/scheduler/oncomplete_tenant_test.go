@@ -23,7 +23,7 @@ import (
 // hookedFanoutDef is an operator-layer fan-out with a channel.publish hook on a
 // global channel and an agent-scoped memory.set hook.
 func hookedFanoutDef() scheduleDef {
-	def := fanoutDef(nil)
+	def := operatorFanoutDef(nil)
 	def.OnComplete = []scheduleHook{
 		{Kind: "channel.publish", Channel: "passes", Payload: map[string]any{"note": "done"}},
 		{Kind: "memory.set", Scope: "agent", Key: "last-pass", Payload: map[string]any{"ok": true}},
@@ -181,6 +181,7 @@ func TestFanoutHooks_ChannelResolvesInTheRunsTenant(t *testing.T) {
 func TestFanoutHooks_TenantScheduleWritesOnlyIntoItsOwnTenant(t *testing.T) {
 	def := hookedFanoutDef()
 	def.TenantID = "acme"
+	def.OperatorLayer = false // never stamped on a def with a tenant
 	sched, fr, st, _ := fanoutFixture(t, def, nil)
 	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
 	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
@@ -210,26 +211,33 @@ func TestFanoutHooks_TenantScheduleWritesOnlyIntoItsOwnTenant(t *testing.T) {
 	}
 }
 
-// TestFanoutHooks_TenantOwnedDefWithEmptyBodyTenantWritesOnlyIntoTheOperatorLayer:
-// a row a tenant wrote before create stamped the body's tenant stays confined
-// to "" (see operatorLayerFanout) — and so do its hooks. It must not become a
-// way for a tenant's schedule to write into other tenants.
-func TestFanoutHooks_TenantOwnedDefWithEmptyBodyTenantWritesOnlyIntoTheOperatorLayer(t *testing.T) {
-	sched, _, st := fanoutFixtureOwnedBy(t, hookedFanoutDef(), "acme")
+// TestFanoutHooks_LegacyEmptyBodyTenantWritesIntoItsOwningTenant: a row a
+// tenant wrote before create stamped the body's tenant runs in its owner's
+// tenant (see rehomeToOwningTenant) — and so do its hooks. Neither the operator
+// layer, which every tenant reads, nor another tenant receives them.
+//
+// Fails-before: the message lands in the operator layer "".
+func TestFanoutHooks_LegacyEmptyBodyTenantWritesIntoItsOwningTenant(t *testing.T) {
+	def := hookedFanoutDef()
+	def.OperatorLayer = false // a tenant's row, as it was written
+	sched, _, st := fanoutFixtureOwnedBy(t, def, "acme")
 	sched.SetChannelScope(func(context.Context, string, string) (DeclaredChannel, bool) {
 		return DeclaredChannel{Scope: "global"}, true
 	})
 
 	seedSettledSession(t, st, "", "olga")
+	seedSettledSession(t, st, "acme", "sam")
 	seedSettledSession(t, st, "default", "alice")
 
 	fireT(t, sched)
 
-	if n := len(globalLayer(t, st, "default", "passes")); n != 0 {
-		t.Errorf("a tenant-owned def published %d message(s) into tenant default", n)
+	if n := len(globalLayer(t, st, "acme", "passes")); n != 1 {
+		t.Errorf("the owner's layer holds %d completion message(s), want 1", n)
 	}
-	if n := len(globalLayer(t, st, "", "passes")); n != 1 {
-		t.Errorf("the confined def published %d message(s) in its own layer, want 1", n)
+	for _, other := range []string{"", "default"} {
+		if n := len(globalLayer(t, st, other, "passes")); n != 0 {
+			t.Errorf("a tenant-owned def published %d message(s) into tenant %q", n, other)
+		}
 	}
 }
 

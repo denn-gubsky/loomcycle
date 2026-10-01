@@ -5583,6 +5583,15 @@ type ScheduleDueRow struct {
 	Name       string          `json:"name"`
 	Definition json.RawMessage `json:"definition"`
 	NextRunAt  time.Time       `json:"next_run_at"`
+	// OwnerTenantID is the def row's OWNING tenant (schedule_defs.tenant_id),
+	// which can differ from the body's execution tenant. The scheduler needs it
+	// for a row whose body tenant is empty: that is the operator layer only when
+	// the owner is empty too; a row a tenant wrote before create stamped the
+	// author's tenant into the body executes in its owner's tenant.
+	OwnerTenantID string `json:"owner_tenant_id,omitempty"`
+	// BootstrappedFromStatic is schedule_defs.bootstrapped_from_static: the row
+	// was materialised from the operator's yaml, so its body is the operator's.
+	BootstrappedFromStatic bool `json:"bootstrapped_from_static,omitempty"`
 }
 
 // ScheduleRunResult is the input to ScheduleRunStateRecordResult.

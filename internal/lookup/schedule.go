@@ -135,6 +135,12 @@ type SubstrateScheduleDef struct {
 	// losslessly. The def body's `enabled: false` is what keeps it from
 	// firing; config.ScheduledRun carries no such field.
 	CaptureDisabled *SubstrateScheduleCaptureDisabled `json:"capture_disabled,omitempty"`
+	// OperatorLayer mirrors mergedScheduleDef's server-stamped authority bit:
+	// the def was written, with no tenant, by a caller holding operator
+	// authority. The scheduler reads it via scheduler.scheduleDef to decide
+	// whether a consolidation fan-out may sweep every tenant; config.ScheduledRun
+	// carries no such field (a yaml entry is the operator's by construction).
+	OperatorLayer bool `json:"operator_layer,omitempty"`
 }
 
 // SubstrateScheduleCaptureDisabled mirrors mergedScheduleCaptureDisabled.

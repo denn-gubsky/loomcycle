@@ -8957,7 +8957,8 @@ func (s *Store) ScheduleRunStateGet(ctx context.Context, defID string) (store.Sc
 
 func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]store.ScheduleDueRow, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT srs.def_id, sd.name, sd.definition::text, srs.next_run_at
+		`SELECT srs.def_id, sd.name, sd.definition::text, srs.next_run_at,
+		        sd.tenant_id, sd.bootstrapped_from_static
 		 FROM schedule_run_state srs
 		 JOIN schedule_def_active sda ON sda.def_id = srs.def_id
 		 JOIN schedule_defs sd ON sd.def_id = srs.def_id
@@ -8977,7 +8978,7 @@ func (s *Store) ScheduleRunStateListDue(ctx context.Context, now time.Time) ([]s
 			r          store.ScheduleDueRow
 			definition string
 		)
-		if err := rows.Scan(&r.DefID, &r.Name, &definition, &r.NextRunAt); err != nil {
+		if err := rows.Scan(&r.DefID, &r.Name, &definition, &r.NextRunAt, &r.OwnerTenantID, &r.BootstrappedFromStatic); err != nil {
 			return nil, err
 		}
 		r.Definition = json.RawMessage(definition)
