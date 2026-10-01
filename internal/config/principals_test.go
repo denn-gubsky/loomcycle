@@ -151,6 +151,9 @@ func TestResolvePrincipals_SameTenantSpelledIdenticallyIsAccepted(t *testing.T) 
 	}
 	if got := c.PrincipalTenants(); strings.Join(got, ",") != ",acme" {
 		t.Errorf("PrincipalTenants = %q, want [\"\" acme]", got)
+	}
+}
+
 // TestResolvePrincipals_NonAdminWithoutTenantIsError: the store's list queries
 // read tenant "" as every tenant, so a tenant-confined principal declared with
 // no tenant was served every tenant's users and runs by GET /v1/_users. It must
