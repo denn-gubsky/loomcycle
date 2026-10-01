@@ -336,7 +336,7 @@ op-level reference and the operator knobs.
 | Setting | Effect |
 |---|---|
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | Most targets one tick may dispatch (default 32). The rest wait for the next tick; the watermark makes that safe. |
-| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Forced to 1 when the scheduled agent resolves to a local runtime **or to an in-process provider** (`code-js`, `mock`), whose id carries no information about where the load lands. The bundled consolidator is a code agent, so it is serial unless you raise this. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | Parallel passes per tick (default 4). Always 1 when the scheduled agent resolves to a local runtime. Also 1 by default when it resolves to an **in-process provider** (`code-js`, `mock`), whose id carries no information about where the load lands. The bundled consolidator is a code agent, so it is serial unless you set this explicitly. |
 | `memory.consolidation.merge_threshold` | Similarity at or above which two facts are the same fact reworded, and get merged (default `0.95`). |
 | `memory.consolidation.related_threshold` | Lower edge of "overlapping subject, different claim", which is added rather than merged (default `0.85`). |
 
