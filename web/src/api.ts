@@ -201,7 +201,8 @@ export interface Agent {
   interactive?: boolean;
   // v0.8.21 awaited-state surface. Empty/absent for non-running
   // runs AND for running runs making normal progress. When set,
-  // `awaited_state` is "channel" (open Channel.subscribe),
+  // `awaited_state` is "channel" (open Channel.subscribe, or a long-polling
+  // Channel.await — `awaited_on` then lists its channels comma-separated),
   // "interrupted" (open Interruption.ask), "review" (held for an
   // operator's verdict) or "input" (an interactive run parked for the
   // operator's next turn), and `awaited_on` carries the channel name,

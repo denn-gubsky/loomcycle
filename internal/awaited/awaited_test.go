@@ -2,8 +2,12 @@ package awaited
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -31,6 +35,29 @@ func TestFromEvent_ReportsWhatTheOpenToolCallBlocksOn(t *testing.T) {
 			},
 			wantState: "channel",
 			wantOn:    "findings",
+		},
+		{
+			name: "channel_await_long_poll_yields_channel_state_with_its_channels",
+			ev: store.Event{
+				Type: "tool_call",
+				Payload: []byte(`{
+					"type":"tool_call",
+					"tool_use":{"id":"tu_1","name":"Channel","input":{"op":"await","channels":["a","b","a"],"mode":"all","wait_ms":5000}}
+				}`),
+			},
+			wantState: "channel",
+			wantOn:    "a, b",
+		},
+		{
+			name: "channel_await_without_wait_does_not_block_yields_running",
+			ev: store.Event{
+				Type: "tool_call",
+				Payload: []byte(`{
+					"type":"tool_call",
+					"tool_use":{"id":"tu_1","name":"Channel","input":{"op":"await","channels":["a","b"]}}
+				}`),
+			},
+			wantState: "",
 		},
 		{
 			name: "channel_publish_does_not_block_yields_running",
@@ -182,6 +209,7 @@ func TestForRun_ReportsTheNewestToolCallStillOpen(t *testing.T) {
 	sub := call("tu_sub", "Channel", `{"op":"subscribe","channel":"findings"}`)
 	ask := call("tu_ask", "Interruption", `{"op":"ask","kind":"approval"}`)
 	read := call("tu_read", "Read", `{"path":"/x"}`)
+	await := call("tu_await", "Channel", `{"op":"await","channels":["findings","reviews"],"wait_ms":60000}`)
 	usage := ev("usage", `{"type":"usage"}`)
 	retry := ev("retry", `{"type":"retry"}`)
 	text := ev("text", `{"type":"text","text":"."}`)
@@ -198,6 +226,8 @@ func TestForRun_ReportsTheNewestToolCallStillOpen(t *testing.T) {
 		{"the_later_calls_result_leaves_the_other_open", fakeEvents{sub, ask, usage, result("tu_ask")}, Channel, "findings"},
 		{"the_earlier_calls_result_leaves_the_later_open", fakeEvents{sub, ask, usage, result("tu_sub")}, Interrupted, "approval"},
 		{"all_returned", fakeEvents{sub, ask, usage, result("tu_ask"), result("tu_sub"), text}, "", ""},
+		{"an_open_fan_in_await", fakeEvents{text, await, usage}, Channel, "findings, reviews"},
+		{"a_fan_in_await_that_returned", fakeEvents{text, await, usage, result("tu_await"), text}, "", ""},
 		{"an_earlier_turns_call_that_never_returned", fakeEvents{sub, usage, text, read, usage, result("tu_read")}, "", ""},
 		{"an_earlier_turns_call_has_returned", fakeEvents{sub, usage, result("tu_sub"), text, read, usage}, "", ""},
 		{"a_park_after_the_turn_returned", fakeEvents{sub, usage, result("tu_sub"), text, usage, parked}, Input, ""},
@@ -215,6 +245,39 @@ func TestForRun_ReportsTheNewestToolCallStillOpen(t *testing.T) {
 			gotS, gotO := ForRun(context.Background(), tc.events, "r")
 			if gotS != tc.wantState || gotO != tc.wantOn {
 				t.Errorf("ForRun = (%q,%q), want (%q,%q)", gotS, gotO, tc.wantState, tc.wantOn)
+			}
+		})
+	}
+}
+
+// An await names up to 32 channels from the model's input, and its awaited_on
+// rides every run read and run-state frame: it is bounded, and says how many
+// channels it left out.
+func TestFromToolUse_BoundsAFanInAwaitsChannelList(t *testing.T) {
+	var names []string
+	for i := range 32 {
+		names = append(names, strings.Repeat("c", 20)+strconv.Itoa(i))
+	}
+	long := strings.Repeat("é", 300)
+	for _, tc := range []struct {
+		name     string
+		channels []string
+		wantEnd  string
+	}{
+		{"many_channels", names, "+" + strconv.Itoa(32-8) + " more"},
+		{"one_very_long_name", []string{long, "b"}, "…, +1 more"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, _ := json.Marshal(map[string]any{"op": "await", "channels": tc.channels, "wait_ms": 1000})
+			state, on := FromToolUse("Channel", in)
+			if state != Channel {
+				t.Fatalf("state = %q, want %q", state, Channel)
+			}
+			if len(on) > awaitOnMax || !utf8.ValidString(on) {
+				t.Errorf("awaited_on is %d bytes (valid UTF-8: %v), want at most %d: %q", len(on), utf8.ValidString(on), awaitOnMax, on)
+			}
+			if !strings.HasSuffix(on, tc.wantEnd) {
+				t.Errorf("awaited_on = %q, want it to end %q", on, tc.wantEnd)
 			}
 		})
 	}

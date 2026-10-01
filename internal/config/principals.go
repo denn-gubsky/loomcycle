@@ -9,7 +9,8 @@ import (
 )
 
 // PrincipalDef is one config-declared principal (RFC AO). `tenant` MAY be empty
-// (the shared/operator tenant — where an admin identity lives); `subject` is
+// only for a substrate:admin principal (the shared/operator tenant — where an
+// admin identity lives); every other principal must name one. `subject` is
 // required (it is the authoritative user id, and the scope_id for user-scoped
 // tools). `scopes` is the granted set, validated against the closed catalog;
 // empty means a principal that can authenticate but is gated out of everything
@@ -28,7 +29,8 @@ type PrincipalDef struct {
 // populated; it reads each token_env from the process environment directly
 // (mirroring how Load reads every other secret).
 //
-//   - subject required; token_env required + LOOMCYCLE_*-allowlisted; scopes ∈
+//   - subject required; tenant required unless substrate:admin; token_env
+//     required + LOOMCYCLE_*-allowlisted; scopes ∈
 //     the closed catalog — a violation FAILS config load (a typo in a scope or
 //     env name must not silently ship a mis-scoped or inert identity).
 //   - a token_env that is EMPTY at boot → the principal is INERT (skipped, no
@@ -82,6 +84,17 @@ func resolvePrincipals(c *Config) error {
 		expandDenyNames[def.TokenEnv] = true
 		if bad := auth.UnknownScopes(def.Scopes); len(bad) > 0 {
 			return fmt.Errorf("principals.%s: unknown scope(s) %v (not in the closed catalog)", name, bad)
+		}
+		// A tenant-confined principal must NAME its tenant. The store's list
+		// queries (ListUsers, UserList, the run and audit lists) read tenant ""
+		// as EVERY tenant — the admin all-tenants view — so a non-admin whose
+		// tenant is "" is served every tenant's rows by any handler that passes
+		// its tenant straight through, GET /v1/_users among them. A minted token
+		// cannot carry an empty tenant (the store refuses the row) and the legacy
+		// bearer is tenant "default", so this block is the one place such a
+		// principal could come from. An admin's "" is its all-tenants view anyway.
+		if def.Tenant == "" && !auth.HasScope(def.Scopes, auth.ScopeAdmin) {
+			return fmt.Errorf("principals.%s: tenant is required unless the principal is %s — an empty tenant reads as every tenant in the store's list queries", name, auth.ScopeAdmin)
 		}
 		secret := os.Getenv(def.TokenEnv)
 		if secret == "" {
