@@ -178,6 +178,15 @@ func (s *Set) Apply(specs []string, reviewTTL *time.Duration) error {
 	return nil
 }
 
+// SetReviewTTL replaces the review deadline alone and leaves the armed set as it
+// is — a call that names only a deadline has not asked to change the arming.
+// ttl must be non-negative (ReviewTTLFromSeconds).
+func (s *Set) SetReviewTTL(ttl time.Duration) {
+	s.mu.Lock()
+	s.reviewTTL = ttl
+	s.mu.Unlock()
+}
+
 // checkTargets accepts a spec when ANY walk on the set can arm it: two walks
 // sharing one run's set come from different definitions, and a state in either
 // is a real target. A spec neither can arm reports the first walk's reason.

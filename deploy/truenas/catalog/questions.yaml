@@ -379,7 +379,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             label: LOOMCYCLE_HTTP_HOST_ALLOWLIST
-            description: HTTP + WebFetch tools — comma-separated suffix-match host allowlist. Entry "example.com" matches "example.com" and "api.example.com" but not "evilexample.com". Private IPs (RFC1918, loopback, link-local incl. 169.254.169.254) are HARD-blocked at connect regardless of allowlist. Loopback aliases on the list (localhost, 127.0.0.1, ::1, *.localhost) are silently stripped at startup — use LOOMCYC…
+            description: HTTP + WebFetch tools — comma-separated suffix-match host allowlist. Entry "example.com" matches "example.com" and "api.example.com" but not "evilexample.com". Private IPs (RFC1918, loopback, link-local incl. 169.254.169.254, CGNAT 100.64.0.0/10 and other non-public ranges) are HARD-blocked at connect regardless of allowlist. Loopback aliases on the list (localhost, 127.0.0.1, ::1, *.localhost)…
             schema:
               type: string
               default: ""
@@ -452,6 +452,12 @@ questions:
           - variable: LOOMCYCLE_MEMORY_SWEEP_MS
             label: LOOMCYCLE_MEMORY_SWEEP_MS
             description: 'TTL reaper goroutine cadence — periodic DELETE of expired rows. Default 15 minutes. 0 disables (operators with an external reaper, or dev/test runs that don''t want background work, can opt out). Read paths filter expired entries even when the reaper is off, so agents never see stale values regardless. (example: 900000)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS
+            label: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS
+            description: 'Drained consolidation-queue rows are deleted once they have been drained longer than this. A queued row keeps the raw chat it was banked from, so this is also how long that text outlives its consolidation. Undrained rows are never pruned. Default 7 days (604800000). 0 disables the prune. (example: 604800000)'
             schema:
               type: string
               default: ""

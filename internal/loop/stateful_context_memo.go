@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -76,17 +77,78 @@ type contextMemo struct {
 	// failed, not as done: the usual sequence is fail → read help → retry, and
 	// at the retry step the failed call would otherwise read "do not repeat it".
 	workFailed bool
+	// workNoHint is workText without its help hint, "" when it carries none. A
+	// stateful run's failure carries the whole help article in its hint, with
+	// "You have not read the help for X" (see tools/helphint.go). Once the
+	// model reads that help, the kept failure would show the article a second
+	// time beside an instruction that is no longer true; render shows this
+	// copy instead.
+	workNoHint string
 }
+
+// workTextCap bounds the kept action result, in bytes: a tool's output
+// is not bounded by the memo's own budget, and the stateful prompt is meant to
+// stay flat.
+const workTextCap = contextMemoBudget / 2
 
 // addWork keeps the latest result of an action that was not a Context call;
 // failed is whether that result is an error.
 func (m *contextMemo) addWork(tool string, input json.RawMessage, text string, failed bool) {
 	m.workTool, m.workCall, m.workText, m.workFailed = tool, compactCall(input), text, failed
+	m.workNoHint = ""
+	if failed {
+		m.workNoHint = withoutHint(text)
+	}
 }
 
 // clearWork forgets the kept action result, for a new operator turn.
 func (m *contextMemo) clearWork() {
-	m.workTool, m.workCall, m.workText, m.workFailed = "", "", "", false
+	m.workTool, m.workCall, m.workText, m.workFailed, m.workNoHint = "", "", "", false, ""
+}
+
+// withoutHint is a failure's in-band JSON (see renderToolResultText) with its
+// hint removed and every other field as it was; "" when text is not that JSON
+// or has no hint.
+func withoutHint(text string) string {
+	var e inbandError
+	if json.Unmarshal([]byte(text), &e) != nil || !e.IsError || e.Hint == "" {
+		return ""
+	}
+	e.Hint = ""
+	out, err := encodeInband(e)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// hasHelpFor reports whether a help article of tool — the tool's own or one
+// of its operations' — is kept.
+func (m *contextMemo) hasHelpFor(tool string) bool {
+	for _, e := range m.entries {
+		name, ok := strings.CutPrefix(e.key, "help:")
+		if !ok {
+			continue
+		}
+		// Exact or "<Tool>/<op>": a bare prefix would count AgentDef's help
+		// as Agent's.
+		if name == tool || strings.HasPrefix(name, tool+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// capText cuts s to at most n bytes, at a rune boundary, and says so.
+func capText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("\n[truncated: %d more bytes not shown]", len(s)-cut)
 }
 
 func compactCall(input json.RawMessage) string {
@@ -177,7 +239,11 @@ func (m *contextMemo) render(tool, obs string) string {
 		if m.workFailed {
 			status = "it FAILED and is not done; fix what its error names before retrying"
 		}
-		out += fmt.Sprintf("Your last action (%s), %s %s, returned:\n%s\n\n", status, m.workTool, m.workCall, m.workText)
+		text := m.workText
+		if m.workNoHint != "" && m.hasHelpFor(m.workTool) {
+			text = m.workNoHint
+		}
+		out += fmt.Sprintf("Your last action (%s), %s %s, returned:\n%s\n\n", status, m.workTool, m.workCall, capText(text, workTextCap))
 	}
 	return out
 }

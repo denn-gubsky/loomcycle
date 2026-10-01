@@ -1,0 +1,47 @@
+# Decision-model rerank probe — an isolated loomcycle that rebuilds phase M's pooled
+# ConditionalQA header store and returns each question's 20-candidate rerank pool.
+# The embedder is phase M's model (bge-m3; OLLAMA_BASE_URL — the same digest on the Spark and TrueNAS).
+models:
+  local-embedding: { provider: ollama-local, model: bge-m3:latest }
+  local-reader:    { provider: ollama-local, model: qwen3.8:latest }
+memory:
+  embedder: { model: local-embedding }
+  # The baseline: the shipped listwise rerank with phase M's settings (qwen3.8, effort low,
+  # 16K context, 120 s timeout), on the Spark (amendment 2).
+  reranker: { model: local-reader, effort: low, context_tokens: 16384, timeout_ms: 120000,
+              base_url: "http://100.112.7.68:11434" }
+
+agents:
+  cqa/writer:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    code: |
+      function run(input) {
+        return { final_text: Document(JSON.parse(input.prompt)) };
+      }
+  cqa/pool:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    code: |
+      function run(input) {
+        var r = JSON.parse(Document({ op: "search", scope: "user", query: input.prompt, limit: 20 }));
+        return { final_text: JSON.stringify(r) };
+      }
+  cqa/pool-rr:
+    provider: code-js
+    tools: [Document]
+    skills: ["-*"]
+    memory_scopes: [user]
+    sql_scopes: [user]
+    memory_rerank: { enabled: true }        # the shipped defaults: 20 candidates x 1,200 chars
+    code: |
+      function run(input) {
+        var r = JSON.parse(Document({ op: "search", scope: "user", query: input.prompt, limit: 20 }));
+        return { final_text: JSON.stringify(r) };
+      }

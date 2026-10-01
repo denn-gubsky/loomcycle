@@ -805,6 +805,9 @@ agents:
 	if cfg.Env.MemorySweepInterval == 0 {
 		t.Errorf("MemorySweepInterval default should be non-zero")
 	}
+	if cfg.Env.MemoryPendingDrainedTTL != 7*24*time.Hour {
+		t.Errorf("MemoryPendingDrainedTTL default = %v, want 168h", cfg.Env.MemoryPendingDrainedTTL)
+	}
 }
 
 func TestMemoryEnvDisable(t *testing.T) {
@@ -817,6 +820,7 @@ agents:
 `), 0o600)
 	t.Setenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES", "0")
 	t.Setenv("LOOMCYCLE_MEMORY_SWEEP_MS", "-1")
+	t.Setenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS", "0")
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatal(err)
@@ -826,6 +830,9 @@ agents:
 	}
 	if cfg.Env.MemorySweepInterval != 0 {
 		t.Errorf("negative should disable; got %v", cfg.Env.MemorySweepInterval)
+	}
+	if cfg.Env.MemoryPendingDrainedTTL != 0 {
+		t.Errorf("0 should disable the drained-queue prune; got %v", cfg.Env.MemoryPendingDrainedTTL)
 	}
 }
 
@@ -2826,6 +2833,38 @@ hooks:
 	want := []string{"hooks.internal", "sidecar.local", "gate.svc"}
 	if got := cfg.Hooks.PrivateHostAllowlist; !equalStrings(got, want) {
 		t.Fatalf("PrivateHostAllowlist = %v, want %v (env should append to yaml)", got, want)
+	}
+}
+
+// TestLoad_PrivateHostAllowlistRefusesMalformedCIDR: both private-host vouch
+// lists take CIDR entries, and a malformed range fails the load loudly instead
+// of silently never matching at dial time.
+func TestLoad_PrivateHostAllowlistRefusesMalformedCIDR(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "localhost,100.64.0.0/10,100.101.102.103/32")
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "fd7a:115c:a1e0::/48")
+	if _, err := Load(yamlPath); err != nil {
+		t.Fatalf("valid CIDR entries refused: %v", err)
+	}
+
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "localhost,100.64.0.0/33")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST") {
+		t.Fatalf("malformed HTTP private CIDR: err = %v, want a load error naming the var", err)
+	}
+
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "")
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0/8")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "private_host_allowlist") {
+		t.Fatalf("malformed hooks private CIDR: err = %v, want a load error", err)
 	}
 }
 

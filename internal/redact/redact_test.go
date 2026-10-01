@@ -227,3 +227,27 @@ func TestRedactor_RegisterConcurrent(t *testing.T) {
 	}
 	<-done
 }
+
+// MatchesPattern answers exactly what a patterns-only Redactor would change:
+// a value it would mask matches, a value it would leave alone does not.
+func TestMatchesPattern_AgreesWithPatternsOnlyRedactor(t *testing.T) {
+	r := New(nil, true)
+	for _, s := range []string{
+		`Authorization: Bearer sk-abc123def456ghi789jkl`,
+		`--api-key=sk-proj-abcdefghij1234567890`,
+		`token=abcdef`,
+		`pat ghp_abcdefghijklmnopqrstuvwxyz0123456789 ok`,
+		`AKIAABCDEFGHIJKLMNOP`,
+		`stdio`,
+		`--log-level=debug`,
+		`commit 0123456789abcdef0123456789abcdef01234567`,
+		``,
+	} {
+		if got, want := MatchesPattern(s), r.String(s) != s; got != want {
+			t.Errorf("MatchesPattern(%q) = %v, but the redactor changes it: %v", s, got, want)
+		}
+	}
+	if !MatchesPattern(`token=abcdef`) || MatchesPattern(`stdio`) {
+		t.Error("MatchesPattern lost its positive or negative case")
+	}
+}

@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -15,8 +16,15 @@ import (
 // fragment. The scheme, host and path stay, so the warning still says which
 // endpoint it means.
 
+// quotedURLRe finds a Go %q-quoted string that starts with scheme://. The
+// quotes, not white space, bound such a URL: the URLs validators refuse are
+// exactly the ones holding a space, a ' or an escaped " — in the userinfo,
+// say — and urlInTextRe alone would stop there and leave the rest of the
+// credential in the message.
+var quotedURLRe = regexp.MustCompile(`"[A-Za-z][A-Za-z0-9+.-]*://(?:[^"\\]|\\.)*"`)
+
 // urlInTextRe finds scheme://... runs in free text. The run ends at white
-// space or a quote, which is where a %q- or %v-formatted URL ends in an error
+// space or a quote, which is where a %v-formatted URL ends in an error
 // message.
 var urlInTextRe = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>` + "`" + `]*`)
 
@@ -24,11 +32,19 @@ var urlInTextRe = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>` + "`" 
 const redactedURLPart = "REDACTED"
 
 // redactURLSecrets returns msg with the userinfo, query and fragment of every
-// URL in it replaced by REDACTED.
+// URL in it replaced by REDACTED. A quoted URL is redacted whole first; the
+// unquoted pass then leaves it as it is, since redactURL is idempotent.
 func redactURLSecrets(msg string) string {
 	if !strings.Contains(msg, "://") {
 		return msg
 	}
+	msg = quotedURLRe.ReplaceAllStringFunc(msg, func(q string) string {
+		u, err := strconv.Unquote(q)
+		if err != nil {
+			return q // not a Go-quoted string after all; the unquoted pass takes it
+		}
+		return strconv.Quote(redactURL(u))
+	})
 	return urlInTextRe.ReplaceAllStringFunc(msg, redactURL)
 }
 

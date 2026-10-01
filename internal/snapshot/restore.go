@@ -241,7 +241,9 @@ func (r RestoreResult) Counts() map[string]int {
 // version is newer than the reader's CurrentVersion. Returns
 // *migrations.ErrUnknownSectionVersion for corrupted / unsupported
 // snapshots. Both errors carry the section + version strings for
-// operator-actionable messaging.
+// operator-actionable messaging, and both are returned before anything is
+// written. Any other error can leave the sections before it written; the
+// result it returns alongside still carries their Refresh and Warnings.
 func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions) (out RestoreResult, err error) {
 	// Every warning, on every return path, leaves without a URL credential:
 	// the ones that quote a refused body (a validator's error repeats the
@@ -308,6 +310,12 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			"section %s present but not understood by this reader; upgrade loomcycle to restore it", name))
 	}
 
+	// Stage 1.5: every section's version, before anything is written, so a
+	// version this reader cannot read aborts with nothing written.
+	if err := checkSectionVersions(sections, opts); err != nil {
+		return result, err
+	}
+
 	// Stage 2: per-section migration + decode + insert. Order
 	// matters for FK reasons (agent_defs before agent_def_active;
 	// sessions before paused_runs).
@@ -371,7 +379,7 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			if inserted {
 				result.AgentDefsRestored++
 				if !e.Retired {
-					scan.addRefs("agent_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, defRefs("", e.Definition))
+					scan.addAgentRefs("agent_def "+qualifiedName(e.TenantID, e.Name), e.TenantID, e.Name, defRefs("", e.Definition))
 				}
 			}
 		}
@@ -1222,18 +1230,51 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 	return result, nil
 }
 
-// decodeWithMigration runs the raw section bytes through the
-// per-section migration registry then JSON-decodes into the typed
-// destination. Returns the migration error verbatim (operator gets
-// the version + section + suggested action).
-func decodeWithMigration(section string, raw json.RawMessage, dst any) error {
+// checkSectionVersions runs every section this restore will decode through its
+// migration, discarding the output, so a section this reader cannot read
+// refuses the whole restore before its first write. Without it a too-new
+// later section failed after users, token_limits and usage_carry were
+// already written, and a retry of the fixed envelope then found them present
+// and reported nothing to refresh, leaving the restored budgets unenforced
+// until a restart.
+//
+// The skips mirror the decode sites in Restore: a section it never decodes (an
+// unknown one, history not asked for, SQL Memory not wired here) is not
+// checked, so a section it skips cannot refuse a restore it never refused.
+// Sorted, so the section named in the error is stable.
+func checkSectionVersions(sections map[string]json.RawMessage, opts RestoreOptions) error {
+	names := make([]string, 0, len(sections))
+	for name := range sections {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		switch {
+		case !migrations.KnownSection(name):
+			continue
+		case name == migrations.SectionInteractionHistory && !opts.IncludeHistory:
+			continue
+		case name == migrations.SectionSqlMem && opts.SqlMem == nil:
+			continue
+		}
+		if _, err := migrateSection(name, sections[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateSection peeks at a section's version and runs its raw bytes through
+// the per-section migration registry. Returns the migration error verbatim
+// (operator gets the version + section + suggested action).
+func migrateSection(section string, raw json.RawMessage) (json.RawMessage, error) {
 	// Peek at the section's version. The section wrapper has
 	// {"version": "1.0", ...} as its outer shape.
 	var versioned struct {
 		Version string `json:"version"`
 	}
 	if err := json.Unmarshal(raw, &versioned); err != nil {
-		return fmt.Errorf("snapshot section %s: parse version: %w", section, err)
+		return nil, fmt.Errorf("snapshot section %s: parse version: %w", section, err)
 	}
 	if versioned.Version == "" {
 		// Tolerant default — pre-versioned sections (corrupted /
@@ -1241,7 +1282,14 @@ func decodeWithMigration(section string, raw json.RawMessage, dst any) error {
 		// readers may flip this to refuse.
 		versioned.Version = migrations.CurrentVersion
 	}
-	migrated, err := migrations.Migrate(section, versioned.Version, raw)
+	return migrations.Migrate(section, versioned.Version, raw)
+}
+
+// decodeWithMigration runs the raw section bytes through the
+// per-section migration registry then JSON-decodes into the typed
+// destination.
+func decodeWithMigration(section string, raw json.RawMessage, dst any) error {
+	migrated, err := migrateSection(section, raw)
 	if err != nil {
 		return err
 	}

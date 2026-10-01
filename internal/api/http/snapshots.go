@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -302,6 +303,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	// the periodic probe.
 	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, s.snapshotRestoreOptions(r.Context(), req.IncludeHistory))
 	if err != nil {
+		err = s.restoreFailed(r.Context(), &result, err)
 		// Migration / version errors map to 422 (semantically valid
 		// JSON, semantically invalid state). The error message
 		// carries the section + version strings so operators see
@@ -525,15 +527,64 @@ func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.Restor
 	// Restored budgets and carried usage are enforced at once, not at the next
 	// boot's Seed. Only what the restore wrote is pushed: a budget it left
 	// alone is already cached, and a carry is added by how much it GREW, so
-	// the counters stay ledger + stored carry across a re-restore. Both are
-	// in-memory writes that cannot fail — no store re-read that could leave a
-	// persisted budget unenforced.
-	for _, row := range result.Refresh.TokenLimits {
-		s.limits.PutLimit(row)
-	}
+	// the counters stay ledger + stored carry across a re-restore.
+	s.refreshRestoredLimits(ctx, result.Refresh.TokenLimits)
 	for _, c := range result.Refresh.UsageCarried {
 		s.limits.AddCarried(c.Month, c.TenantID, c.UserID, c.Tokens)
 	}
+}
+
+// refreshRestoredLimits pushes each budget the restore wrote as the store
+// holds it NOW, not as the envelope carried it: a PUT or DELETE /v1/_limits
+// that landed between Restore's insert and this refresh is the operator's
+// newer word, and pushing the envelope row would cache a ceiling the store no
+// longer has (PUT hard=10 over a restored 1000 left the tracker at 1000; a
+// DELETE left a phantom ceiling). A key the store no longer holds is dropped.
+//
+// If the read fails, the envelope rows are pushed as before, so a restored
+// budget is never left unenforced by a transient store fault. A PUT landing
+// between this read and the push can still be overwritten, the same window
+// two concurrent PUTs already have; the read narrows it from the whole
+// restore to that moment.
+func (s *Server) refreshRestoredLimits(ctx context.Context, restored []store.TokenLimitRow) {
+	if len(restored) == 0 {
+		return
+	}
+	type limitKey struct{ scope, tenantID, scopeID string }
+	rows, err := s.store.TokenLimitsAll(ctx)
+	if err != nil {
+		log.Printf("snapshot restore: re-reading token_limits for the refresh failed, pushing the restored rows as written: %v", err)
+		for _, row := range restored {
+			s.limits.PutLimit(row)
+		}
+		return
+	}
+	stored := make(map[limitKey]store.TokenLimitRow, len(rows))
+	for _, r := range rows {
+		stored[limitKey{r.Scope, r.TenantID, r.ScopeID}] = r
+	}
+	for _, row := range restored {
+		if cur, ok := stored[limitKey{row.Scope, row.TenantID, row.ScopeID}]; ok {
+			s.limits.PutLimit(cur)
+		} else {
+			s.limits.DeleteLimit(row.Scope, row.TenantID, row.ScopeID)
+		}
+	}
+}
+
+// restoreFailed is the error path both restore call sites take when Restore
+// returns an error. A version error comes back before anything is written,
+// but any other error can stop a restore after earlier sections landed, and
+// a retry finds those present and has nothing to refresh — so what did land
+// is pushed into the caches now. Paused runs are NOT resumed from a partial
+// restore. The warnings gathered before the stop are appended to the error,
+// which otherwise dropped them; the error stays unwrappable to its cause.
+func (s *Server) restoreFailed(ctx context.Context, result *snapshot.RestoreResult, err error) error {
+	s.postRestoreRefresh(ctx, result)
+	if len(result.Warnings) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w (warnings before the restore stopped: %s)", err, strings.Join(result.Warnings, "; "))
 }
 
 func (s *Server) handleExportSnapshot(w http.ResponseWriter, r *http.Request) {

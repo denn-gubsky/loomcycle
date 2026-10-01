@@ -19,6 +19,12 @@
 // build callback runs under the pool mutex; the registry is consulted
 // from there. Set/Remove from the substrate-tool goroutine; the
 // registry's RWMutex serializes both.
+//
+// That per-call lock does not make a store read followed by a Set atomic.
+// A writer that derives an entry from the store (read the active def, then
+// Set it) and a writer that changes the store and then the entry (retire,
+// promote) must not interleave, or the registry keeps a spec the store no
+// longer says is live. Both sides run that sequence inside Serialize.
 package mcp
 
 import "sync"
@@ -64,6 +70,11 @@ type DynamicMCPServerSpec struct {
 // Empty registry behaves the same as no registry at all — the pool's
 // build callback falls back to the yaml-static map.
 type DynamicRegistry struct {
+	// writeMu orders whole store-then-registry sequences (see Serialize).
+	// Lock order: writeMu before mu. mu is only ever held inside the short
+	// methods below, which never call Serialize, so the order cannot invert.
+	writeMu sync.Mutex
+
 	mu sync.RWMutex
 	// RFC N: keyed by (tenant, name). Two tenants register the same name
 	// with distinct connection metadata without colliding. The shared/
@@ -80,6 +91,20 @@ type regKey struct {
 // NewDynamicRegistry returns an empty registry.
 func NewDynamicRegistry() *DynamicRegistry {
 	return &DynamicRegistry{entries: make(map[regKey]DynamicMCPServerSpec)}
+}
+
+// Serialize runs fn while holding the registry's write-sequence lock, so fn
+// can read the store and change the registry as one step against every other
+// Serialize caller. fn may call Get / Set / Remove; it must not call
+// Serialize (the lock is not reentrant).
+//
+// It orders only callers that use it: MCPServerDef's retire and promote, and
+// the store-to-registry rehydrate. Hold it for the store write and the
+// registry change together, and never across a network dial.
+func (r *DynamicRegistry) Serialize(fn func()) {
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	fn()
 }
 
 // Set installs (or replaces) the entry for (spec.TenantID, spec.Name).

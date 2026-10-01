@@ -2382,6 +2382,15 @@ type Store interface {
 	// caller only ever sees its OWN tenant's changes.
 	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]MemoryChange, error)
 
+	// GetMemoryChangesSinceAllTenants is GetMemoryChangesSince across EVERY
+	// tenant, the operator layer included, in one seq order. Each row carries
+	// its tenant.
+	//
+	// Only an operator-declared change subscription with no tenant_id calls it
+	// — subscriptions are declared in the operator's yaml and nowhere else. A
+	// caller acting for a principal must use GetMemoryChangesSince.
+	GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]MemoryChange, error)
+
 	// PruneMemoryChanges deletes change rows recorded before olderThan and
 	// returns the count removed — keeps the opt-in feed table bounded.
 	PruneMemoryChanges(ctx context.Context, olderThan time.Time) (int, error)
@@ -2559,6 +2568,18 @@ type Store interface {
 	// not move drained_at; an unknown or out-of-scope id is silently skipped. An
 	// empty slice is a no-op.
 	MemoryPendingAck(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, ids []string) error
+
+	// MemoryPendingPruneDrained deletes up to limit queue rows that were acked
+	// (drained_at set) strictly before `before`, across every tenant and target,
+	// and returns how many it deleted (limit <= 0 is a default batch). An
+	// undrained row is never touched, however old. The caller loops until a
+	// batch comes back short.
+	//
+	// A drained row still holds its raw payload (chat messages), so keeping it
+	// forever is a retention cost as well as a scan cost. Nothing reads a drained
+	// row after its own consolidation pass: MemoryPendingGet resolves provenance
+	// in the pass that drained it, and a snapshot carries only undrained rows.
+	MemoryPendingPruneDrained(ctx context.Context, before time.Time, limit int) (int, error)
 
 	// MemoryPendingGet is a point lookup by id, scoped to (tenant, scope,
 	// scopeID) — which IS the authorization check: a row belonging to another
@@ -4308,8 +4329,9 @@ func (p MemoryProvenance) IsZero() bool {
 // Add enqueues the raw messages + metadata to consolidate; the consolidator
 // drains oldest-first and acks after folding them into consolidated memory.
 // DrainedAt is the zero time until MemoryPendingAck stamps it (soft-drain — the
-// row is retained for TTL sweeping, never re-drained). Payload is opaque to the
-// store (JSONB on Postgres, TEXT-encoded JSON on sqlite).
+// row is never re-drained; MemoryPendingPruneDrained deletes it once it has been
+// drained longer than LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS). Payload is
+// opaque to the store (JSONB on Postgres, TEXT-encoded JSON on sqlite).
 type MemoryPendingRow struct {
 	ID       string
 	TenantID string

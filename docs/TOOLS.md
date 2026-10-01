@@ -164,6 +164,8 @@ Use cases:
 
 The operator's `LOOMCYCLE_HTTP_HOST_ALLOWLIST` is a security floor — every host the agent might ever need to reach. It is a comma-separated suffix list (`example.com` matches `example.com` and `api.example.com`). A single `*` entry (`LOOMCYCLE_HTTP_HOST_ALLOWLIST=*`) is the operator's explicit **allow-all**: any hostname passes the name check. This lifts only the name layer — the dial-time IP guard still blocks private/loopback/link-local/metadata addresses, so `*` means "all **public** websites", never "all addresses"; expose specific internal hosts via `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`. A caller cannot use `*` to widen a narrower operator floor — the intersection below still applies.
 
+"Private" here means every address that is not globally reachable: loopback, link-local (incl. the metadata service `169.254.169.254`), RFC1918 / ULA, CGNAT `100.64.0.0/10` (where Tailscale puts tailnet peers, and where Alibaba Cloud serves its metadata), `0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`, `240.0.0.0/4`, and any IPv6 form that carries one of those IPv4 addresses (NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, IPv4-translated / -compatible). An entry of `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` is either a host name (suffix-matched, exempts that host whatever it resolves to) or a CIDR range such as `100.64.0.0/10` or `100.101.102.103/32` (exempts only the resolved addresses inside the range, for any host name, so one entry admits a whole tailnet including its MagicDNS names). A malformed range fails startup. The same list, with the same meaning, exempts private peers for MCP servers (when `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0` turns the MCP guard on), runtime remote memory backends and document sources, and A2A peers; tenant hooks use `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST`, which takes the same entries.
+
 For a single run, callers usually want to constrain further: this run is about scraping job listings from `linkedin.com` and `indeed.com`, that one is about reading from `bbc.co.uk`. Per-request narrowing exists for exactly this.
 
 ```http
@@ -531,6 +533,7 @@ agents:
 | `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` | `65536` | Per-write cap on the `value` payload. 0 disables. |
 | `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | `1048576` | Default per-(scope, scope_id) cap. 0 disables. |
 | `LOOMCYCLE_MEMORY_SWEEP_MS` | `900000` (15 min) | TTL reaper goroutine cadence. 0 disables. |
+| `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | `604800000` (7 days) | How long a consolidation-queue row is kept after a pass acks it; an hourly prune deletes older drained rows (and the raw chat they hold). Undrained rows are never pruned. 0 disables. |
 | `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | `1` | Create the tenant-root and user-root Documents when a principal is **established** — at token mint, and at boot for config-declared principals — instead of only on the first run that references them. They are templates a person fills in (the user-root `## Identity` section is what lets memory placement tell a fact about the user from a fact about a colleague), so arriving on first reference is too late. `0` keeps the older lazy-only behaviour. |
 
 ### Atomic increment

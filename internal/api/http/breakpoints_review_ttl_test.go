@@ -180,3 +180,40 @@ func TestBreakpoints_AHoldInProgressKeepsItsDeadlineAfterAPut(t *testing.T) {
 		t.Fatal("the hold did not expire on the deadline it announced")
 	}
 }
+
+// TestHandleBreakpoints_PutWithOnlyADeadlineKeepsTheArming: a PUT that names
+// only review_ttl_seconds changes the deadline and nothing else. The omitted
+// `breakpoints` used to decode as the empty list and disarm every breakpoint;
+// an explicit `[]` is still the off switch.
+func TestHandleBreakpoints_PutWithOnlyADeadlineKeepsTheArming(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	set, release := openWalkOnTargetsTeamWithTTL(t, srv, runID, []string{"wave", "wave:review"}, 90*time.Second)
+	defer release()
+	want := set.List()
+
+	for _, body := range []string{`{"review_ttl_seconds":60}`, `{"breakpoints":null,"review_ttl_seconds":60}`} {
+		rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", body)
+		if rec.Code != 200 {
+			t.Fatalf("PUT %s = %d; body=%s", body, rec.Code, rec.Body.String())
+		}
+		if got := set.List(); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("PUT %s changed the arming to %v, want %v kept", body, got, want)
+		}
+		if set.ReviewTTL() != 60*time.Second || reviewTTLFrom(t, rec.Body.String()) != 60 {
+			t.Errorf("PUT %s: deadline %v, want 60s", body, set.ReviewTTL())
+		}
+	}
+
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":[]}`)
+	if rec.Code != 200 {
+		t.Fatalf("PUT [] = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := set.List(); len(got) != 0 {
+		t.Errorf("an explicit empty list left %v armed, want everything disarmed", got)
+	}
+	if set.ReviewTTL() != 60*time.Second {
+		t.Errorf("PUT [] changed the deadline to %v", set.ReviewTTL())
+	}
+}

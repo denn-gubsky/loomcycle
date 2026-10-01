@@ -179,19 +179,7 @@ func verifySignature(a config.WebhookAuth, body []byte, headerGet func(string) s
 // vs bare hex) is detected from the header VALUE, not just its name, so an
 // operator who points a.Header at a custom name still gets correct parsing.
 func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func(string) string, now func() time.Time) error {
-	headerName := a.Header
-	if headerName == "" {
-		headerName = "X-Loomcycle-Signature"
-	}
-	raw := strings.TrimSpace(headerGet(headerName))
-	if raw == "" {
-		// Fall back to probing the GitHub header by its canonical name when
-		// the configured header is absent — lets a Def declare GitHub auth
-		// purely via header name without a separate envelope flag.
-		if alt := strings.TrimSpace(headerGet("X-Hub-Signature-256")); alt != "" {
-			raw = alt
-		}
-	}
+	raw := hmacSignatureHeader(a, headerGet)
 	if raw == "" {
 		return errSignatureMismatch
 	}
@@ -241,6 +229,40 @@ func verifyHMAC(a config.WebhookAuth, secret string, body []byte, headerGet func
 	}
 	signedPayload := append([]byte(tsStr+"."), body...)
 	return compareHMAC(secret, signedPayload, macHex)
+}
+
+// hmacSignatureHeader returns the signature header value verifyHMAC checks:
+// the configured header (default X-Loomcycle-Signature), else the GitHub
+// header by its canonical name.
+func hmacSignatureHeader(a config.WebhookAuth, headerGet func(string) string) string {
+	headerName := a.Header
+	if headerName == "" {
+		headerName = "X-Loomcycle-Signature"
+	}
+	raw := strings.TrimSpace(headerGet(headerName))
+	if raw == "" {
+		// Fall back to probing the GitHub header by its canonical name when
+		// the configured header is absent — lets a Def declare GitHub auth
+		// purely via header name without a separate envelope flag.
+		raw = strings.TrimSpace(headerGet("X-Hub-Signature-256"))
+	}
+	return raw
+}
+
+// signsBodyOnly reports whether a request that PASSED verifySignature was
+// authenticated by a MAC over the raw body alone — the GitHub `sha256=` or
+// bare-hex envelope. Such a signature covers no other header and carries no
+// timestamp, so the delivery-id header is unsigned and a captured delivery
+// stays valid forever; dedup must not trust that header alone (see
+// newDeliveryKeys). The Stripe envelope (timestamp window) and bearer / none
+// auth return false.
+func signsBodyOnly(a config.WebhookAuth, headerGet func(string) string) bool {
+	kind := strings.ToLower(strings.TrimSpace(a.Kind))
+	if kind != "" && kind != "hmac" {
+		return false
+	}
+	raw := hmacSignatureHeader(a, headerGet)
+	return strings.HasPrefix(raw, "sha256=") || isHexString(raw)
 }
 
 // isHexString reports whether s is a non-empty run of only hex digits — the

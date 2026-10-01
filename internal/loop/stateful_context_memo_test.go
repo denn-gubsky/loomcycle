@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -295,5 +296,83 @@ func TestRun_Stateful_AFailedLastActionIsNotShownAsDone(t *testing.T) {
 	}
 	if !strings.Contains(s, "FAILED") || strings.Contains(s, "do not repeat it") {
 		t.Errorf("step 3 shows the failed action as done:\n%s", s)
+	}
+}
+
+// hintedFailure is a failed call's result as a stateful run renders it: the
+// in-band JSON whose hint carries the whole help article.
+func hintedFailure(article string) string {
+	return renderToolResultText(tools.Result{
+		Text:    "set: missing required field: value",
+		IsError: true,
+		Error: &tools.ErrorInfo{
+			CallFormat: &tools.CallFormat{Tool: "Memory", Op: "set"},
+			Hint:       "You have not read the help for Memory/set in this run. Its article follows — read it before your next call to Memory.\n\n" + article,
+		},
+	})
+}
+
+// Once the model reads the help a kept failure's hint pointed at, the kept
+// failure must not show the article a second time, nor still say the help is
+// unread. The rest of the error stays.
+func TestContextMemo_KeptFailureDropsHintOnceHelpIsRead(t *testing.T) {
+	const article = "ARTICLE-MARKER how to call Memory set"
+	m := &contextMemo{}
+	m.addWork("Memory", json.RawMessage(`{"op":"set","key":"k"}`), hintedFailure(article), true)
+	helpObs := `{"name":"Memory/set","content":"` + article + `"}`
+	m.add(json.RawMessage(`{"op":"help","topic":"Memory/set"}`), helpObs)
+
+	got := m.render("Context", helpObs)
+	if strings.Contains(got, "You have not read the help") {
+		t.Errorf("the kept failure still says the help is unread:\n%s", got)
+	}
+	if strings.Contains(got, "ARTICLE-MARKER") {
+		t.Errorf("the article appears beside the observation that already is it:\n%s", got)
+	}
+	if !strings.Contains(got, "FAILED") || !strings.Contains(got, "missing required field: value") || !strings.Contains(got, "correctCallFormat") {
+		t.Errorf("the kept failure lost its error:\n%s", got)
+	}
+}
+
+// Before the help is read, the hint is the one place the model sees the
+// article, so the kept failure keeps it. Help for another tool whose name
+// merely starts with this one's does not count as read.
+func TestContextMemo_KeptFailureKeepsHintUntilHelpIsRead(t *testing.T) {
+	const article = "ARTICLE-MARKER how to call Memory set"
+	m := &contextMemo{}
+	m.addWork("Memory", json.RawMessage(`{"op":"set","key":"k"}`), hintedFailure(article), true)
+	m.add(json.RawMessage(`{"op":"help","topic":"MemoryBackendDef"}`), `{"name":"MemoryBackendDef","content":"other"}`)
+
+	got := m.render("Context", "some other observation")
+	if !strings.Contains(got, "You have not read the help for Memory/set") || !strings.Contains(got, "ARTICLE-MARKER") {
+		t.Errorf("the hint is gone before the help was read:\n%s", got)
+	}
+}
+
+// A kept action's result is capped, so one huge tool output cannot carry the
+// stateful prompt past the memo's budget.
+func TestContextMemo_CapsAnOversizedLastActionResult(t *testing.T) {
+	m := &contextMemo{}
+	huge := strings.Repeat("x", 3*contextMemoBudget)
+	m.addWork("Read", json.RawMessage(`{"path":"big"}`), huge, false)
+
+	got := m.render("Context", "")
+	if len(got) > workTextCap+500 {
+		t.Errorf("rendered %d bytes for a %d-byte result, want at most about %d", len(got), len(huge), workTextCap)
+	}
+	if !strings.Contains(got, "[truncated: ") {
+		t.Errorf("a cut result does not say it was cut:\n%.300s", got)
+	}
+}
+
+func TestCapText_CutsAtARuneBoundary(t *testing.T) {
+	s := strings.Repeat("é", 10) // 2 bytes each
+	got := capText(s, 5)
+	cut, _, _ := strings.Cut(got, "\n[truncated: ")
+	if cut != "éé" || !utf8.ValidString(got) {
+		t.Errorf("capText = %q, want two whole runes and a marker", got)
+	}
+	if capText("short", 5) != "short" {
+		t.Error("a result within the cap was changed")
 	}
 }
