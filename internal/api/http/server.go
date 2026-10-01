@@ -4581,12 +4581,19 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// CRITICAL: validate the session exists BEFORE taking the lock.
 	// Otherwise an attacker can spam unknown IDs and each LoadOrStore
 	// grows sessionLocks permanently (entries are never GC'd at v0.3.2).
+	//
+	// The read goes through the tenant-scoped accessor so a session the caller
+	// may not continue (another tenant's, or another user's for an isolated
+	// member) is the same opaque 404 as a missing one HERE, before the lock and
+	// the admission gates. A raw read let such a session through to the lock, so
+	// its owner's in-flight run answered 409 session_busy where an unknown id
+	// answered 404 — an existence oracle for other users' sessions.
 	if req.SessionID != "" {
 		if s.store == nil {
 			http.Error(w, "session_id requires persistence (Store not configured)", http.StatusBadRequest)
 			return
 		}
-		if _, err := s.store.GetSession(r.Context(), req.SessionID); err != nil {
+		if _, err := s.tenantStore(r.Context()).GetSession(r.Context(), req.SessionID); err != nil {
 			var nf *store.ErrNotFound
 			if errors.As(err, &nf) {
 				http.Error(w, err.Error(), http.StatusNotFound)
