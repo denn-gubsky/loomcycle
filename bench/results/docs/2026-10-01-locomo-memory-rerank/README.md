@@ -89,8 +89,10 @@ the table.
 **On both corpora:** one `nimble` `choice` call matches the 27B listwise rerank at the
 depth an agent reads, is about 3× faster, and gives up a little at rank 1.
 - **Pointwise:** worse than `choice` on both corpora, and no faster.
-- **`tev1:4b`:** helps memory (+13pp) but did not help documents. Its short
-  ~2,000-token-per-question budget fits a turn but not a document section.
+- **`tev1:4b`:** helps memory (+13pp) but did not help documents. The budget is not the
+  reason: both corpora's pointwise inputs (one passage of ≤ 1,200 characters) fit its
+  ~2,000-token budget. Why it fails on government guidance but not on chat turns is not
+  established here.
 
 ## Files
 
