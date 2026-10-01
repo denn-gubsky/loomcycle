@@ -45,6 +45,7 @@ func (r *storeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner
 		UserID:         in.UserID,
 		TenantID:       in.TenantID,
 		IdempotencyKey: in.IdempotencyKey,
+		DeliveryAltKey: in.DeliveryAltKey,
 	})
 	if err != nil {
 		return err

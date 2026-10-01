@@ -23,6 +23,11 @@ type WebhookStore interface {
 	// means no prior run — proceed with the spawn.
 	RunByIdempotencyKey(ctx context.Context, key string) (store.Run, bool, error)
 
+	// RunByDeliveryKeys is the receiver's Layer-2 lookup for a delivery
+	// with two identities: a run whose idempotency_key or delivery_alt_key
+	// is any of keys.
+	RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run, bool, error)
+
 	// MemorySet backs the WH-5b on_complete memory.set hook (the receiver
 	// MIRRORS the scheduler's dispatch rather than importing it). Its
 	// signature matches store.Store exactly so store.Store satisfies this
