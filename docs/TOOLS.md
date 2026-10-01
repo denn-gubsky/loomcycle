@@ -1,3 +1,8 @@
+<!--
+  This file is an MD-EXPORT of the loomcycle document store — the store is the
+  source of truth (/loomcycle/docs/tools). Re-export it after editing the
+  store; do not hand-edit here as the primary copy.
+-->
 # Tools and tool policy
 
 loomcycle exposes tools to agents through a **two-layer default-deny model**: every tool is disabled at the operator layer until env-configured, and every agent gets zero tools at the agent layer until `tools` is set in YAML. Both layers must say "yes" before a tool reaches the model.
@@ -383,9 +388,24 @@ Every field is read from **live runtime state**, not asserted:
   reaches means merging can never fire, and nothing else makes that visible.
   Measure yours with [`loomcycle memory-calibrate`](#calibrating-the-bands--loomcycle-memory-calibrate).
 
-**Security posture.** This surface is readable by every agent and every MCP
-client, so two rules are absolute and CI-enforced by tests driven with planted
-values:
+The shape is **always complete**. Absent-vs-false is the one distinction a
+discovery API must not have: an absent key deserializes as undefined, which is
+falsy in some clients and a `KeyError` in others. With no config every key
+still reports `available: false` — "can't confirm" reads as "unavailable",
+which is the fail-safe direction, so a caller declines to attempt rather than
+attempting something that will refuse. (`storage` is the exception:
+admin-gated infrastructure with no honest zero value, and nothing branches on
+it.)
+
+Available in-band to any agent holding `Context`, and over MCP as
+`context {"op":"capabilities"}`.
+
+### Security posture
+
+This surface is readable by every agent and every MCP client, so two rules are
+absolute and CI-enforced by tests driven with **planted** values (a Brave key,
+a `postgres://…@db.internal:5432/…` DSN, a SearXNG `base_url`, an
+`api_key_env` name):
 
 1. **No secrets** — no API keys, tokens, DSNs or credential values, and no
    `api_key_env` **names** either (the variable an operator chose is itself a
@@ -394,16 +414,14 @@ values:
    paths or container detail. `provider: ollama-local` is a capability;
    `http://192.168.0.77:11434` is a map of the operator's network. This is why
    the `search` block emits only the configured provider **names**: the config
-   value behind each carries a SearXNG `base_url`.
+   value behind each carries a SearXNG `base_url`, and marshalling it would
+   hand every agent a SearXNG address.
 
 **Tenant posture** mirrors the routing view: availability reaches **every**
 caller — a tenant needs it to branch — and only `storage`, which is pure
 operator infrastructure and never needed to decide whether a call will work, is
 admin-gated. A `substrate:tenant` caller's output is therefore always a subset
 of an admin's.
-
-Available in-band to any agent holding `Context`, and over MCP as
-`context {"op":"capabilities"}`.
 
 ## The `Memory` tool — persistent agent-scoped storage (v0.8.0)
 
@@ -775,7 +793,7 @@ Snapshots round-trip embeddings: `Capture()` packs the float32 vector as base64 
 - Automatic eviction / LRU — quota exceeded → the write fails with `quota_exceeded`. Agents call `delete` explicitly.
 - Encryption-at-rest — disk encryption is operator-config-wide, not Memory-specific. Revisit alongside v0.9.x HA work.
 - Server-side schema validation — values are JSON; agents own their schemas.
-- v0.9.0 vector-specific deferrals: SQLite vector backend (v0.9.1), Anthropic native embedder (v0.9.1, via Voyage), HNSW index on `memory_embeddings` (v0.9.x perf pass — requires single-dim scope), per-agent embedder override (v0.10.x), hybrid search + rerankers (post-v1).
+- v0.9.0 vector-specific deferrals: SQLite vector backend (v0.9.1), Anthropic native embedder (v0.9.1, via Voyage), HNSW index on `memory_embeddings` (v0.9.x perf pass — requires single-dim scope), per-agent embedder override (v0.10.x), hybrid search + rerankers (post-v1). **Both have since shipped:** hybrid search (vector + full-text fused by RRF) is the default wherever the store has a word index, and an opt-in listwise reranker ships as the operator's `memory.reranker` plus a per-agent `memory_rerank` — see the Documents guide, "Search: indexing, re-indexing and reranking".
 
 References: `internal/store/store.go` (interface), `internal/store/sqlite/sqlite.go` + `internal/store/postgres/postgres.go` (adapters), `internal/tools/builtin/memory.go` (tool), `internal/providers/embedder.go` (embedder substrate), `internal/api/http/memory_admin.go` (admin endpoints).
 
@@ -882,9 +900,9 @@ It long-polls up to `wait_ms` (clamped to the operator's `LOOMCYCLE_CHANNELS_LON
 
 > **`await` vs `Agent.parallel_spawn`:** both are barriers, but over different things. `parallel_spawn` joins the **sub-agents this agent spawned** (`wg.Wait()`). `await` joins **independent producers** — scheduler-fired runs, inbound webhooks, separately-spawned agents — that `parallel_spawn` can't reach. A scheduler-driven fan-out (N collectors) → consolidator pipeline uses `await`; an in-agent fan-out uses `parallel_spawn`. (`on_complete: channel.publish` on a `ScheduledRun` stamps `schedule_name` per fire — the distinct-producer key an `at_least`/`all` consolidator counts.)
 
-### Breakpoints (`hold` + `release`)
+### Holding a channel (`hold` + `release`)
 
-A channel declared `hold: true` **stores a publish without delivering it**. Nothing is handed to a subscriber and no long-poll wakes; the message waits until someone releases it — `Channel op=release` for an agent, `POST /v1/_channels/{name}/release` for an operator, the **Release** control on the channel page in the Web UI. `count` defaults to 1, oldest first, so a workflow wired through the channel can be **single-stepped**: the wave upstream runs, its results queue, and nothing downstream starts until a human says go.
+A channel declared `hold: true` **stores a publish without delivering it**. Nothing is handed to a subscriber and no long-poll wakes; the message waits until someone releases it — `Channel op=release` for an agent, `POST /v1/_channels/{name}/release` for an operator, the **Release** control on the channel page in the Web UI. `count` defaults to 1, oldest first.
 
 ```
 POST /v1/_channels/review-queue/release   { "count": 1 }
@@ -893,19 +911,23 @@ POST /v1/_channels/review-queue/release   { "count": 1 }
 
 A bad `count` (above the cap of 1000, or negative) is a 400; `0` means one. An undeclared channel is a 404, as on every other channel route.
 
+**What this is for: operator control of a wire.** Stop a channel now — a misbehaving producer, an incident, a consumer you need to keep away from a backlog while you look at it — without deleting anything, and without editing the producer. A hold applies to **every** reader of that channel, which is the point: it is a property of the wire, not of any one consumer.
+
+**What this is NOT: a workflow debugger.** Stepping an agent workflow wave by wave is a different job, and a hold is the wrong tool for it on three counts — it stalls the channel for every other consumer in the tenant, not just the workflow you are debugging; it cannot show you the *prompt* an agent received, because a prompt never travels on a channel; and a held message is unreadable by design, so you would be releasing blind. The workflow debugger belongs on the node that *reads* a channel and dispatches work, where the messages, the composed prompts and the results are all in hand at once. Do not build one on this.
+
 What a hold does **not** change:
 
 - **TTL still counts from publish time.** An expired held message is never released and never delivered — holding is not a way to outlive the retention its publisher declared.
 - **Overflow still trims the oldest**, reporting `dropped_oldest`, exactly as on any other channel. A hold buffers; it does not make the buffer unbounded.
-- **The hold wins over `deliver_at`.** A held message waits for a release, not for a clock, so a caller cannot schedule its way past the breakpoint. The publish result says `"held": true` instead of a `visible_at`.
+- **The hold wins over `deliver_at`.** A held message waits for a release, not for a clock, so a caller cannot schedule its way past the gate. The publish result says `"held": true` instead of a `visible_at`.
 
 `release` is gated by the **publish** allowlist rather than subscribe: releasing is the act of making a message deliverable — the half of a publish the hold deferred — so the question is whether the agent may put messages on this channel, not whether it may read them. `_system/` channels are released through the admin endpoint, like every other write to one.
 
-Releasing a channel with nothing held reports zero rather than failing, and a channel switched back to `hold: false` can still release what it holds — turning the breakpoint off does not flush the queue.
+Releasing a channel with nothing held reports zero rather than failing, and a channel switched back to `hold: false` can still release what it holds — turning the gate off does not flush the queue.
 
-**Every writer that resolves the channel definition honours the hold**, which is more than the in-band tool: the admin/connector publish path, the scheduler's `delivery: channel` tick and its `on_complete: channel.publish` hook, and a webhook's `on_complete` hook. Internal publishers that go through the system publisher (heartbeats, interrupts, the inbound webhook relay) are covered by one check inside it. The rule that decides new cases: *a writer either resolves the channel definition or honours nothing from it.*
+**Every writer that resolves the channel definition honours the hold**: the admin/connector publish path, the scheduler's `delivery: channel` tick and its `on_complete: channel.publish` hook, and a webhook's `on_complete` hook. Internal publishers that go through the system publisher (heartbeats, interrupts, the inbound webhook relay) are covered by one check inside it. The rule that decides new cases: *a writer either resolves the channel definition or honours nothing from it.*
 
-A held message is marked by a reserved far-future `visible_at`, so it survives a snapshot round trip still held — restoring a snapshotted workflow does not open its breakpoints. The channel listing reports `hold: true` and suppresses that reserved instant rather than printing it as a delivery time.
+A held message is marked by a reserved far-future `visible_at`, so it survives a snapshot round trip still held — restoring a snapshotted deployment does not open its gates. The channel listing reports `hold: true` and suppresses that reserved instant rather than printing it as a delivery time.
 
 ### Delivery semantics
 
@@ -1265,4 +1287,3 @@ New `interrupts` table (migration 0011). Columns: `interrupt_id`, `run_id`, `kin
 - `internal/tools/builtin/interruption.go` — tool implementation (Bus.Wait blocking + heartbeat ticker + ACL gate)
 - `internal/api/http/server.go::handleResolveInterrupt` — resolve endpoint
 - `internal/api/mcp/handlers.go::handleInterruptionResolve` — 21st MCP meta-tool
-
