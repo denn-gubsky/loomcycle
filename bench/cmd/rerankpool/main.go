@@ -22,9 +22,22 @@ import (
 	"os"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+
+	// Every driver the default-providers layer names must be registered, as in
+	// cmd/loomcycle: the config refuses a provider whose driver is not compiled in.
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/codejs"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/llamacpp"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/mock"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
 )
 
 type pool struct {
@@ -58,7 +71,16 @@ func run() error {
 	if *cfgPath == "" || *in == "" || *out == "" {
 		return fmt.Errorf("-config, -in and -out are required")
 	}
-	cfg, err := config.Load(*cfgPath)
+	// The server's provider floor first (the embedded default providers, which declare
+	// ollama-local), then the file, as cmd/loomcycle assembles its own config.
+	data, err := os.ReadFile(*cfgPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.LoadLayers(
+		config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()},
+		config.Layer{Name: *cfgPath, Data: data},
+	)
 	if err != nil {
 		return err
 	}
