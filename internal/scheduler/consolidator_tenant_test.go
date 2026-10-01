@@ -168,6 +168,53 @@ func TestFanout_OperatorScheduleWithholdsItsCredentialsFromOtherTenants(t *testi
 	}
 }
 
+// TestFanout_OperatorScheduleRestrictsOperatorKeyInOtherTenants: for the same
+// reason the credentials are withheld — a run in another tenant resolves that
+// tenant's fork of the consolidator and of what it spawns — such a run must not
+// spend the operator's provider key while the deployment restricts it. The
+// def's captured bit is false for any operator or admin author, so copying it
+// ran tenant code unrestricted. The schedule's own tenant keeps the def's bit,
+// and with the gate off nothing changes.
+//
+// Fails-before: the acme run carries OperatorKeyRestricted=false with the gate on.
+func TestFanout_OperatorScheduleRestrictsOperatorKeyInOtherTenants(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		gateOn      bool
+		wantForeign bool
+	}{
+		{name: "gate on", gateOn: true, wantForeign: true},
+		{name: "gate off", gateOn: false, wantForeign: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			def := operatorFanoutDef(nil)
+			def.OperatorKeyRestricted = false // an operator or admin author
+			sched, fr, st, logs := fanoutFixture(t, def, func(c *Config) {
+				c.OperatorKeyRestriction = tc.gateOn
+			})
+
+			seedSettledSession(t, st, "", "olga")
+			enqueuePending(t, st, "p_sam", "acme", "sam")
+
+			fireT(t, sched)
+
+			restricted := map[string]bool{}
+			for _, c := range fr.Calls() {
+				restricted[c.TenantID] = c.OperatorKeyRestricted
+			}
+			if got, want := strings.Join(dispatched(fr), ","), "/olga,acme/sam"; got != want {
+				t.Fatalf("dispatched = %s, want %s; logs:\n%s", got, want, logs.all())
+			}
+			if got := restricted["acme"]; got != tc.wantForeign {
+				t.Errorf("run in tenant acme: OperatorKeyRestricted = %v, want %v", got, tc.wantForeign)
+			}
+			if restricted[""] {
+				t.Errorf("run in the schedule's own tenant became restricted; it must keep the def's bit (false)")
+			}
+		})
+	}
+}
+
 // TestFanout_LegacyEmptyBodyTenantRunsInOwningTenant: a row a tenant wrote
 // before create stamped the author's tenant into the body has an EMPTY body
 // tenant but a real owner. It is that tenant's schedule: it must neither sweep

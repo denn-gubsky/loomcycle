@@ -766,12 +766,30 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	in.TenantID = target.TenantID
 	if target.TenantID != def.TenantID {
 		// The operator-layer sweep dispatching into another tenant. That run
-		// resolves its agent in the target's tenant, where a tenant fork of the
-		// consolidator wins, so the schedule's literal credentials would be handed
-		// to code the operator did not author. The schedule's other captured bits
-		// (user tier, operator-key restriction, isolation) still apply, exactly as
-		// they would to a yaml schedule naming this tenant with `tenant_id`.
+		// resolves its agent in the target's tenant, where a tenant's fork of the
+		// consolidator (and of every agent it spawns) wins over the static one —
+		// code the operator did not author.
+		//
+		// So the schedule's literal credentials are withheld from it, and, while
+		// the deployment restricts the operator's provider key, the run is
+		// restricted too. The def's captured bit cannot be trusted here: an
+		// operator or admin author is never restricted, so it is false, and
+		// copying it would run tenant code on the operator's key every tick. A
+		// tenant with its own provider credential still consolidates on that
+		// key; one without is refused (operator_key_restricted) until it adds
+		// one or an admin gives it its own schedule. Gate off: unchanged.
 		in.UserCredentials = nil
+		if s.cfg.OperatorKeyRestriction {
+			in.OperatorKeyRestricted = true
+		}
+		// Isolated stays the def's bit. It confines a substrate:user member's
+		// OWN runs to its user/agent scopes; it says nothing about the target.
+		// This run's identity is the target user in the target tenant, so
+		// unconfined it can reach that tenant's shared scope (and global, if the
+		// agent's memory policy declares it) — what any run by a non-isolated
+		// author in that tenant can — but not another tenant's, since the run's
+		// tenant is the target's. Whether the TARGET user is an isolated member
+		// is not known here (membership lives on its token).
 	}
 	// Copy the metadata before adding to it: def.Metadata is shared across
 	// every child of this fan-out, and mutating it would leak one target's
