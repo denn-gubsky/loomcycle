@@ -87,8 +87,9 @@ const mcpServerDefDescription = `Register, fork, promote, retire, rediscover, an
 	`(best-effort; opt out with discover:false), so a separate rediscover is only needed to ` +
 	`refresh a changed tool surface. A ${NAME} reference in url, headers or a stdio command/args/env ` +
 	`reads the server's environment when it dials, so only an admin may store one; anyone else uses ` +
-	`${run.credentials.<name>} or $cred:<name>, and a stored definition holding one that an admin did ` +
-	`not save is not dialed. Operations: create, fork, get, list, retire, promote, rediscover, verify.`
+	`${run.credentials.<name>} or $cred:<name>. A stored definition holding one that an admin did not ` +
+	`save is logged as a warning, and the server may be set to refuse to dial it. ` +
+	`Operations: create, fork, get, list, retire, promote, rediscover, verify.`
 
 const mcpServerDefInputSchema = `{
   "type": "object",
@@ -624,7 +625,9 @@ func (m *MCPServerDef) promoteAndWireRegistry(ctx context.Context, row store.MCP
 			err = fmt.Errorf("definition unmarshal: %w", uerr)
 			return
 		}
-		m.Registry.Set(specFromOverlay(row.TenantID, row.Name, ov))
+		spec := specFromOverlay(row.TenantID, row.Name, ov)
+		spec.DefID, spec.Version = row.DefID, row.Version
+		m.Registry.Set(spec)
 		if m.Pool != nil {
 			m.Pool.Evict(row.TenantID, row.Name) // existing cached client uses stale metadata; rebuild on next agent call
 		}

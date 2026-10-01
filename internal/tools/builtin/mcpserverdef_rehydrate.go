@@ -93,6 +93,7 @@ func rehydrateOne(ctx context.Context, st MCPServerDefStore, ns store.MCPServerD
 	// RFC N: keyed by the def's own (tenant, name), so only that tenant's
 	// runs resolve it.
 	spec := specFromOverlay(active.TenantID, active.Name, ov)
+	spec.DefID, spec.Version = active.DefID, active.Version
 	changed := false
 	if prev, ok := reg.Get(spec.TenantID, spec.Name); !ok || !reflect.DeepEqual(prev, spec) {
 		changed = true

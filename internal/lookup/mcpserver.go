@@ -47,6 +47,10 @@ type MCPServerSpec struct {
 	// SubstrateMCPServer.OperatorAuthored). False for a static spec, which is
 	// the operator's by Source: the dial decides on Source == "static" || this.
 	OperatorAuthored bool
+	// DefID / Version identify a dynamic spec's stored version (log lines
+	// only); empty / 0 for a static spec.
+	DefID   string
+	Version int
 }
 
 // MCPServer resolves an MCP server NAME to its effective runtime spec

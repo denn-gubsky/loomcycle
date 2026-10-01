@@ -1184,7 +1184,7 @@ func main() {
 	// resolved straight from cfg (lookup.MCPServerSpec omits stdio fields).
 	mcpDynView := mcpLookupView{dynamicMCPRegistry}
 	mcpPool := mcp.NewPool(
-		mcpPoolBuild(cfg, mcpDynView, &credSubstitute),
+		mcpPoolBuild(cfg, mcpDynView, &credSubstitute, log.Printf),
 		func(c mcp.Caller) {
 			// Both stdio.Client and http.Client implement Close() error.
 			// A future transport that doesn't gets logged so the leak is
@@ -4085,6 +4085,7 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		Transport: s.Transport, URL: s.URL, Headers: s.Headers,
 		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
 		OperatorAuthored: s.OperatorAuthored,
+		DefID:            s.DefID, Version: s.Version,
 	}, true
 }
 
@@ -4094,7 +4095,12 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 // is read at dial, not here: main assigns it once the credential engine exists,
 // after the pool is built, and dials happen only after boot.
 func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
-	credSubstitute *func(ctx context.Context, s string) (string, []string, error)) func(tenant, name string) (mcp.Caller, error) {
+	credSubstitute *func(ctx context.Context, s string) (string, []string, error),
+	logf func(format string, args ...any)) func(tenant, name string) (mcp.Caller, error) {
+	// One warning per stored version per process: the pool rebuilds a client
+	// on every evict and respawn, and a line per dial would bury the log.
+	var warnedMu sync.Mutex
+	warned := map[string]bool{}
 	return func(tenant, name string) (mcp.Caller, error) {
 		// Static stdio entries are yaml-only ground truth (lookup's
 		// spec can't carry Command/Args/Env). A tenant never overrides
@@ -4109,14 +4115,33 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 			return nil, fmt.Errorf("mcp_servers.%s: not in static yaml or dynamic registry (tenant=%q)", name, tenant)
 		}
 		// The expansions below read this process's environment, so only an
-		// operator's definition may hold a ${NAME}: the yaml (static), or a
+		// operator's definition should hold a ${NAME}: the yaml (static), or a
 		// dynamic version stamped operator_authored. Authoring refuses the
-		// rest, but a row stored before that rule never passed it, so the
-		// dial refuses it too, before any client exists or request is sent.
+		// rest; what reaches here unstamped is a row stored before that rule,
+		// a restored older snapshot, or a hand edit.
+		//
+		// This release warns and still dials it, so an upgrade does not cut
+		// off a server an admin wrote before authority was recorded.
+		// LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1 refuses it now, before any
+		// client exists or request is sent. The default flips to refuse in
+		// the next release.
 		if spec.Source != "static" && !spec.OperatorAuthored {
 			if locs := mcp.EnvRefLocations(spec.URL, spec.Headers, spec.Command, spec.Args, spec.Env); len(locs) > 0 {
-				return nil, fmt.Errorf("mcp_servers.%s (tenant=%q): %s holds a ${NAME} reference to the server environment, but this definition was not saved by an admin; refusing to dial it (an admin re-save restores it)",
-					name, tenant, strings.Join(locs, ", "))
+				fields := strings.Join(locs, ", ")
+				if cfg.Env.MCPRefuseUnattributedEnv {
+					return nil, fmt.Errorf("mcp_servers.%s (tenant=%q): %s holds a ${NAME} reference to the server environment, but this definition was not saved by an admin; refusing to dial it (an admin re-save restores it)",
+						name, tenant, fields)
+				}
+				key := tenant + "\x00" + name + "\x00" + spec.DefID
+				warnedMu.Lock()
+				first := !warned[key]
+				warned[key] = true
+				warnedMu.Unlock()
+				if first {
+					logf("mcp_servers: WARNING: %q v%d (def_id %s, tenant %q) expands %s from the server environment but was not saved by an admin; "+
+						"a future release will refuse to dial it unless an admin re-saves it (LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1 refuses it now)",
+						name, spec.Version, spec.DefID, tenant, fields)
+				}
 			}
 		}
 		switch spec.Transport {
