@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -212,9 +213,10 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	fireCount := 0
+	var resupply credentialResupply
 	if marked {
 		def.CaptureDisabled = &mergedScheduleCaptureDisabled{StrippedCredentials: pred.stripped}
-		if _, err := resolveCaptureDisabled(&def, in.Overlay); err != nil {
+		if resupply, err = resolveCaptureDisabled(&def, in.Overlay, scheduleEnvGate(s.Cfg)); err != nil {
 			return errResult(fmt.Sprintf("create: %s", err)), nil
 		}
 		if fireCount, err = s.parentFireCount(ctx, pred.defID); err != nil {
@@ -274,7 +276,9 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 		// the state row is missing.
 		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	}
-	return okJSON(scheduleRowResponse(created, promote))
+	resp := scheduleRowResponse(created, promote)
+	resupply.annotate(resp)
+	return okJSON(resp)
 }
 
 // markedPredecessorRef names the def a create on an existing name supersedes,
@@ -443,10 +447,11 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// A parent restored without its literal credentials carries a marker;
 	// this fork clears it only by re-supplying every stripped key, and
 	// inherits the parent's fire count either way.
-	parentMarked, err := resolveCaptureDisabled(&def, in.Overlay)
+	resupply, err := resolveCaptureDisabled(&def, in.Overlay, scheduleEnvGate(s.Cfg))
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	parentMarked := resupply.Marked
 	fireCount := 0
 	if parentMarked {
 		if fireCount, err = s.parentFireCount(ctx, parentDefID); err != nil {
@@ -511,7 +516,9 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		// Seed schedule_run_state — see commentary in execCreate.
 		_ = s.Store.ScheduleRunStateSeed(ctx, created.DefID, computeInitialNextRunAt(def, time.Now()))
 	}
-	return okJSON(scheduleRowResponse(created, promote))
+	resp := scheduleRowResponse(created, promote)
+	resupply.annotate(resp)
+	return okJSON(resp)
 }
 
 // ---- get / list ----
@@ -1118,54 +1125,114 @@ func assertRequiredCredentials(def mergedScheduleDef) error {
 
 // resolveCaptureDisabled applies a fork's overlay to the capture_disabled
 // marker the def inherited from its parent. A key counts as re-supplied when
-// the OVERLAY gives it a non-empty value in user_credentials or
-// user_credentials_from_env — not when the parent happens to hold an env
-// source for it already, since the parent's literal was what it was authored
-// to fire with. Every key re-supplied: the marker is dropped and the overlay's
+// the OVERLAY gives it a value the fire path will use (see
+// credentialsStillMissing) — not when the parent happens to hold an env source
+// for it already, since the parent's literal was what it was authored to fire
+// with. Every key re-supplied: the marker is dropped and the overlay's
 // `enabled` stands. Otherwise the marker keeps the keys still missing and the
-// def stays disabled whatever the overlay says. Reports whether the parent was
-// marked — which is what makes the fork inherit the parent's fire count.
-func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage) (bool, error) {
+// def stays disabled whatever the overlay says. The result's Marked reports
+// whether the parent was marked — which is what makes the fork inherit the
+// parent's fire count.
+func resolveCaptureDisabled(def *mergedScheduleDef, overlay json.RawMessage, gate credentialEnvGate) (credentialResupply, error) {
 	if def.CaptureDisabled == nil {
-		return false, nil
+		return credentialResupply{}, nil
 	}
-	missing, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay)
+	r, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay, gate)
 	if err != nil {
-		return true, err
+		return r, err
 	}
-	if len(missing) == 0 {
+	if len(r.Missing) == 0 {
 		def.CaptureDisabled = nil
-		return true, nil
+		return r, nil
 	}
-	def.CaptureDisabled = &mergedScheduleCaptureDisabled{StrippedCredentials: missing}
+	def.CaptureDisabled = &mergedScheduleCaptureDisabled{StrippedCredentials: r.Missing}
 	off := false
 	def.Enabled = &off
-	return true, nil
+	return r, nil
+}
+
+// credentialEnvGate is what a trigger's fire path will actually read through
+// user_credentials_from_env: a name on its allowlist whose variable is set.
+// The fire path skips any other name with only a log line, so counting one as
+// a re-supply would re-enable a def that then fires without the credential —
+// and, for a schedule, spends its max_fires on those fires.
+type credentialEnvGate struct {
+	allowlist map[string]bool
+	// knobs names the operator setting(s) that allowlist a name, for the
+	// reason a re-supply did not count.
+	knobs string
+}
+
+func (g credentialEnvGate) resolves(envName string) bool {
+	return g.allowlist[envName] && os.Getenv(envName) != ""
+}
+
+// scheduleEnvGate mirrors the scheduler's fire path, which main wires with
+// the same SchedulerCredentialEnvAllowlist.
+func scheduleEnvGate(cfg *config.Config) credentialEnvGate {
+	return credentialEnvGate{
+		allowlist: cfg.SchedulerCredentialEnvAllowlist(),
+		knobs:     "LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST",
+	}
+}
+
+// credentialResupply is how an overlay fared against a capture_disabled
+// marker.
+type credentialResupply struct {
+	// Marked: the def carried a marker before the overlay.
+	Marked bool
+	// Missing: the stripped keys still not re-supplied, in listed order.
+	Missing []string
+	// Unusable: one "key: reason" line per Missing key the overlay DID name,
+	// with a value the fire path will not use.
+	Unusable []string
+}
+
+// annotate adds the still-missing keys, and why a named one did not count, to
+// a create/fork result. Both tools use the same result keys.
+func (r credentialResupply) annotate(resp map[string]any) {
+	if len(r.Missing) > 0 {
+		resp["disabled_until_credentials_supplied"] = r.Missing
+	}
+	if len(r.Unusable) > 0 {
+		resp["unusable_credentials"] = r.Unusable
+	}
 }
 
 // credentialsStillMissing returns the stripped credential keys a fork's
-// overlay does NOT re-supply, in their listed order. Only the overlay counts:
-// a key is re-supplied when the overlay gives it a non-empty value in
-// user_credentials or user_credentials_from_env. The ScheduleDef and
-// WebhookDef forks share it, so a marker clears on the same rule for both.
-func credentialsStillMissing(stripped []string, overlay json.RawMessage) ([]string, error) {
+// overlay does NOT re-supply, in their listed order. Only the overlay counts,
+// and only a value the fire path will use: a user_credentials value that is
+// not blank, or a user_credentials_from_env name the gate resolves. A key the
+// overlay named with an unusable value gets a reason. The reason names the
+// env variable, never its value, and deliberately does not say which of "not
+// allowlisted" or "unset" applies. The ScheduleDef and WebhookDef forks share
+// it, so a marker clears on the same rule for both.
+func credentialsStillMissing(stripped []string, overlay json.RawMessage, gate credentialEnvGate) (credentialResupply, error) {
+	r := credentialResupply{Marked: true}
 	var ov struct {
 		UserCredentials        map[string]string `json:"user_credentials"`
 		UserCredentialsFromEnv map[string]string `json:"user_credentials_from_env"`
 	}
 	if len(overlay) > 0 {
 		if err := json.Unmarshal(overlay, &ov); err != nil {
-			return nil, fmt.Errorf("parse overlay: %w", err)
+			return r, fmt.Errorf("parse overlay: %w", err)
 		}
 	}
-	var missing []string
 	for _, k := range stripped {
-		if ov.UserCredentials[k] != "" || ov.UserCredentialsFromEnv[k] != "" {
+		literal, hasLiteral := ov.UserCredentials[k]
+		envName := ov.UserCredentialsFromEnv[k]
+		if strings.TrimSpace(literal) != "" || (envName != "" && gate.resolves(envName)) {
 			continue
 		}
-		missing = append(missing, k)
+		r.Missing = append(r.Missing, k)
+		switch {
+		case envName != "":
+			r.Unusable = append(r.Unusable, fmt.Sprintf("%s: env var %s is not in %s, or is unset", k, envName, gate.knobs))
+		case hasLiteral:
+			r.Unusable = append(r.Unusable, fmt.Sprintf("%s: the user_credentials value is blank", k))
+		}
 	}
-	return missing, nil
+	return r, nil
 }
 
 // parentFireCount reads the fire count a new version of a marked def must

@@ -3007,10 +3007,7 @@ func main() {
 	// MCPCaller is passed because mcp.call hook dispatch is wired in
 	// a follow-up PR — channel.publish + memory.set hooks work today.
 	if cfg.Env.SchedulerEnabled && storeIface != nil && srv != nil {
-		envAllowlist := make(map[string]bool, len(cfg.Env.SchedulerEnvAllowlist))
-		for _, name := range cfg.Env.SchedulerEnvAllowlist {
-			envAllowlist[name] = true
-		}
+		envAllowlist := cfg.SchedulerCredentialEnvAllowlist()
 		schedCfg := scheduler.Config{
 			TickInterval: time.Duration(cfg.Env.SchedulerTickSeconds) * time.Second,
 			FireTimeout:  time.Duration(cfg.Env.SchedulerFireTimeoutSeconds) * time.Second,

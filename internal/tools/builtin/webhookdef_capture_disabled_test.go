@@ -80,6 +80,7 @@ func TestWebhookDefTool_ForkClearsCaptureDisabledOnFullResupply(t *testing.T) {
 	tool, ctx, cleanup := webhookDefFixture(t)
 	defer cleanup()
 	plantCaptureDisabledWebhook(t, tool.Store, "restored", []string{"jobs", "slack"})
+	allowEnvCredential(t, tool.Cfg, "LOOMCYCLE_SLACK")
 
 	out, def := webhookForkResult(t, tool, ctx, `{"op":"fork","name":"restored","overlay":{"enabled":true,
 		"user_credentials":{"jobs":"j-new"},"user_credentials_from_env":{"slack":"LOOMCYCLE_SLACK"}}}`)
@@ -103,6 +104,7 @@ func TestWebhookDefTool_ForkWithPartialResupplyStaysDisabled(t *testing.T) {
 	tool, ctx, cleanup := webhookDefFixture(t)
 	defer cleanup()
 	plantCaptureDisabledWebhook(t, tool.Store, "restored", []string{"jobs", "slack"})
+	allowEnvCredential(t, tool.Cfg, "LOOMCYCLE_SLACK")
 
 	out, def := webhookForkResult(t, tool, ctx, `{"op":"fork","name":"restored","overlay":{"enabled":true,
 		"user_credentials":{"jobs":"j-new"}}}`)
@@ -239,6 +241,7 @@ func TestWebhookDefTool_CreateOverCaptureDisabledFullClears(t *testing.T) {
 	tool, ctx, cleanup := webhookDefFixture(t)
 	defer cleanup()
 	plantCaptureDisabledWebhook(t, tool.Store, "restored", []string{"jobs", "slack"})
+	allowEnvCredential(t, tool.Cfg, "LOOMCYCLE_SLACK")
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"restored","overlay":{"enabled":true,"delivery":"spawn",
 		"agent":"intake","auth":{"signing_secret_env":"LOOMCYCLE_WH_SECRET"},

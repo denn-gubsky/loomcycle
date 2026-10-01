@@ -81,6 +81,7 @@ func TestScheduleDefTool_ForkOfCaptureDisabledDefInheritsFireCount(t *testing.T)
 	tool, ctx, cleanup := scheduleDefFixture(t)
 	defer cleanup()
 	plantCaptureDisabled(t, tool.Store, "digest", []string{"jobs", "slack"}, 3)
+	allowEnvCredential(t, tool.Cfg, "LOOMCYCLE_SLACK")
 
 	_, def, count := forkResult(t, tool, ctx, `{"op":"fork","name":"digest","overlay":{"enabled":true,
 		"user_credentials":{"jobs":"j-new"},"user_credentials_from_env":{"slack":"LOOMCYCLE_SLACK"}}}`)
@@ -302,6 +303,7 @@ func TestScheduleDefTool_CreateOverCaptureDisabledFullClearsAndKeepsCount(t *tes
 	tool, ctx, cleanup := scheduleDefFixture(t)
 	defer cleanup()
 	plantCaptureDisabled(t, tool.Store, "digest", []string{"jobs", "slack"}, 3)
+	allowEnvCredential(t, tool.Cfg, "LOOMCYCLE_SLACK")
 
 	_, def, count := forkResult(t, tool, ctx, `{"op":"create","name":"digest","overlay":{"agent":"job-search-batch",
 		"schedule":"0 6 * * *","max_fires":5,"enabled":true,

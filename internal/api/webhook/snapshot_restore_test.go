@@ -75,7 +75,12 @@ func TestReceiver_RestoredCredentialStrippedWebhook404sUntilAForkReSuppliesEvery
 		t.Fatalf("restored credential-stripped webhook answered %d, want 404", code)
 	}
 
-	tool := &builtin.WebhookDef{Store: dst, Cfg: &config.Config{}}
+	// The env re-supply below must be one the receiver resolves, or the fork
+	// rightly keeps the def disabled.
+	t.Setenv("LOOMCYCLE_SLACK", "slack-from-env")
+	toolCfg := &config.Config{}
+	toolCfg.Env.WebhooksEnvAllowlist = []string{"LOOMCYCLE_SLACK"}
+	tool := &builtin.WebhookDef{Store: dst, Cfg: toolCfg}
 	tctx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "operator"})
 	tctx = tools.WithWebhookDefPolicy(tctx, tools.WebhookDefPolicyValue{Scopes: []string{"any"}})
 	fork := func(overlay string) {
