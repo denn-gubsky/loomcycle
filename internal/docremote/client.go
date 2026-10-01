@@ -29,7 +29,7 @@ type Options struct {
 	DefaultAPIKeyEnv string // env-var NAME of the peer bearer (tenancy "")
 	TenancyKind      string // "" (one shared credential) or "key_per_tenant"
 	EnvPattern       string // key_per_tenant env-name template containing {tenant_id}
-	KeyResolver      func(envName string) (string, error)
+	KeyResolver      func(ctx context.Context, envName string) (string, error)
 	HTTPClient       *http.Client // SSRF-guarded; required
 }
 
@@ -39,7 +39,7 @@ type Client struct {
 	defAPIKeyEnv string
 	tenancyKind  string
 	envPattern   string
-	keyResolver  func(string) (string, error)
+	keyResolver  func(context.Context, string) (string, error)
 	http         *http.Client
 }
 
@@ -89,7 +89,7 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if envName == "" || c.keyResolver == nil {
 		return "", nil
 	}
-	tok, err := c.keyResolver(envName)
+	tok, err := c.keyResolver(ctx, envName)
 	if err != nil {
 		return "", err // contains only the env-var NAME, never the value
 	}
