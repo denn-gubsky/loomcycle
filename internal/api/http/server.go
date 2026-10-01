@@ -2848,7 +2848,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, RunConfig: runCfg.marshal()}
 	var sessionID, runID string
 	var sessErr error
 	if startingDraft {
