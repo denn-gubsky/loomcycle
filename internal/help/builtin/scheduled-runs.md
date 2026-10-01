@@ -130,7 +130,18 @@ non-admin `create` or `fork` whose `tenant_id` names another tenant is
 refused, and so is a `fork` or hook edit of a definition whose runs
 already execute in another tenant — set `tenant_id` to your own tenant in
 the fork's overlay to re-home it. The operator's yaml may still name any
-tenant.
+tenant, and so may the operator on an unauthenticated deployment or through
+the local stdio MCP server, which has no token to carry the admin scope.
+
+A schedule with no tenant runs in the shared operator layer, but writing one
+there does not make it the operator's. Only a schedule an admin wrote with no
+tenant — or the yaml's own — may run a memory consolidation fan-out across
+every tenant; see `memory-consolidation`.
+
+A stored schedule whose definition names no tenant but that a tenant owns —
+written before definitions recorded the tenant — runs, publishes and fires its
+hooks in the tenant that owns it. Re-save it to record the tenant. Webhooks
+follow the same rule.
 
 ## Schedules restored from a snapshot
 

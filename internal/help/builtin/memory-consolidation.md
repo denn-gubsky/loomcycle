@@ -518,14 +518,23 @@ are enforced by the server rather than left to you:
 
 A consolidation schedule's reach follows its tenant:
 
-- **A schedule with no tenant** — a yaml `scheduled_runs:` entry without
-  `tenant_id`, like the bundled one — belongs to the operator and consolidates
-  users in **every tenant**, including `default`, where the legacy
-  `LOOMCYCLE_AUTH_TOKEN` writes. Each pass runs in its user's own tenant, so it
-  reads and writes that tenant's memory and no other. The per-tick target cap
-  covers the whole sweep, not each tenant.
+- **The operator's schedule with no tenant** — a yaml `scheduled_runs:` entry
+  without `tenant_id`, like the bundled one, or a `ScheduleDef` with no tenant
+  that an admin wrote — consolidates users in **every tenant**, including
+  `default`, where the legacy `LOOMCYCLE_AUTH_TOKEN` writes. Each pass runs in
+  its user's own tenant, so it reads and writes that tenant's memory and no
+  other. The per-tick target cap covers the whole sweep, not each tenant.
 - **A schedule in a tenant** — a yaml entry with `tenant_id`, or a
   `ScheduleDef` a tenant created — consolidates only that tenant's users.
+
+Only the operator sweeps every tenant. A `ScheduleDef` with no tenant counts as
+the operator's only when an admin (or the operator on an unauthenticated
+deployment or the local stdio MCP server) wrote that version; anyone else's
+create or fork of such a fan-out is refused. A no-tenant fan-out written before
+this rule, by someone without that authority, consolidates only the no-tenant
+layer's own users until an admin re-saves it (a `fork` or a hook edit), and
+the log says so on every fire. A hook edit by anyone else takes the reach away
+again.
 
 A pass dispatched into a tenant other than its schedule's own carries none of
 the schedule's credentials: it resolves its agent in that tenant, where the
