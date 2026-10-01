@@ -221,7 +221,12 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`section with fanout.per:"chunk" (max required; more sections than max fails the walk) or one run holding them all ` +
 	`with per:"once". Each run gets {document_id, chunk_id, index, title, markdown} in {{starter.message}} ` +
 	`({{starter.messages}} for once), as data that is never expanded. A document source takes no ack, wait, n, wait_ms ` +
-	`or batch, and is never started automatically. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
+	`or batch, and is never started automatically. The entry starter may instead read the walk's own input ` +
+	`(source: {kind:"input"}): a JSON array is one item per element, any other JSON value one item, and text that is ` +
+	`not JSON the item {"text": <input>}; per:"message" (max required; more items than max fails the walk) or per:"once". ` +
+	`It takes no channel, path, scope, select, ack, wait, n, wait_ms or batch, may carry the run form's schema, is ` +
+	`never started automatically, and nothing may lead back into it (no transition, no cap reroute): route a retry to ` +
+	`a later state. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
@@ -242,7 +247,7 @@ const teamDefInputSchema = `{
       "properties": {
         "entry":          {"type": "string", "description": "The entry state id."},
         "max_iterations": {"type": "integer", "description": "Per-state cycle cap (0 = default)."},
-        "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. A starter handler instead carries source ({channel} or {kind:\"document\", path, scope?}), fanout ({agent|agents, per: message|chunk|once, max}), prompt, sink and binds. Replaces the parent's states wholesale."},
+        "states":         {"type": "array", "items": {"type": "object"}, "description": "State nodes: each is {state, handler:{kind, agent|agents, wait?, consolidator?, ...}}. A starter handler instead carries source ({channel}, {kind:\"document\", path, scope?} or, on the entry only, {kind:\"input\"}), fanout ({agent|agents, per: message|chunk|once, max}), prompt, sink and binds. Replaces the parent's states wholesale."},
         "transitions":    {"type": "array", "items": {"type": "object"}, "description": "Edges: each is {from, to, on}. Replaces the parent's transitions wholesale."},
         "colors":         {"type": "object", "description": "Presentation-only fills/edge colours. Excluded from the content hash."},
         "hooks":          {"type": "object", "description": "The walk's own hooks: {run_end: [entry, ...]}, fired when the walk ends. A state's handler may also carry hooks / tool_hooks, added to every run it starts."}

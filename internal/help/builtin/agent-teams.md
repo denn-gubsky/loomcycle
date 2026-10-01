@@ -62,6 +62,25 @@ says where the items come from:
     a document has no cursor and nothing to wait for;
   - a team whose entry state reads a document is never started automatically;
     run it with `op=run`.
+- **The walk's input** — `source: {kind: "input"}`. The value the walk is
+  run with is read once, when the wave dispatches, so a team starts from its
+  own input in one `op=run` and processes exactly that input:
+  - a JSON array is one item per element, in order; any other JSON value
+    (an object, a string, a number) is one item, the value itself; text that
+    is not JSON, or no input at all, is the item `{"text": "<input>"}`;
+  - `fanout.per: "message"` runs one agent per item and requires `max`;
+    `"once"` runs one agent holding every item. More items than `max` fails
+    the walk (both numbers are named), and so does an empty array;
+  - it must be the definition's `entry` state, and nothing may lead back into
+    it — no transition (a pushback or conditional retry, a self-loop) and no
+    cap `reroute`: its items are the input the walk was started with, so
+    route a retry to a later state;
+  - it may carry `schema`, the run form a client renders, as an `input`
+    state does (no `input` state can come before the entry);
+  - `source.channel`, `path`, `scope`, `select`, `wait`, `n`, `wait_ms`,
+    `batch`, `ack` and `per: "chunk"` are refused — it reads no store and
+    has no cursor;
+  - it is never started automatically: there is nothing to watch.
 
 Each run receives its item in `{{starter.message}}` (`{{starter.messages}}`, a
 JSON array, for `per: "once"`); put the placeholder in `prompt.input`. A
