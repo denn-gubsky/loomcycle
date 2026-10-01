@@ -8520,6 +8520,22 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	}
 	terminal := isTerminalRunStatus(run.Status)
 	live := s.steerReg != nil && func() bool { _, ok := s.steerReg.Get(runID); return ok }()
+	// A child the Agent tool started takes a verdict and nothing else while it
+	// runs. Its queue refuses the compact push below, and that refusal reads as
+	// "raced to terminal": the summary was billed and written as a marker its
+	// next replay applies — a compaction of a child its parent drives. Its own
+	// entry decides where it is registered; elsewhere the row does, as the
+	// remote steer gate reads it.
+	verdictsOnly := takesOnlyVerdicts(run)
+	if s.steerReg != nil {
+		if entry, ok := s.steerReg.Get(runID); ok {
+			verdictsOnly = entry.VerdictsOnly
+		}
+	}
+	if !terminal && verdictsOnly {
+		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "run_takes_only_verdicts",
+			msg: "a sub-agent its parent drives takes only a review verdict; it cannot be compacted while it runs"}
+	}
 	// Boundary gate (user-chosen: safe boundary only). A LOCAL live run must be
 	// parked; refuse mid-turn so compaction applies at the boundary the agent is
 	// already at rather than being deferred into the current turn.

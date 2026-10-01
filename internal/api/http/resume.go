@@ -19,6 +19,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -554,7 +555,18 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// Store-only emit (no live client to forward to) — the resumed turns
 	// append to the same run's transcript so a re-attaching operator tails them.
 	emit := s.makeRecordingEmit(runCtx, run.ID, rid, run.SessionID, meta, func(providers.Event) {})
-	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, run.AgentID, run.SessionID, run.UserID, emit)
+	// A child the Agent tool started takes a verdict and nothing else, live
+	// (runSubRun registers it VerdictsOnly) and so after a resume: its parent
+	// drives it, and a full entry here handed an operator its steer, retune and
+	// compaction the moment it came back. The row carries no kind, so it is
+	// derived as the remote gate derives it. That also makes a resumed resident
+	// child verdicts-only, though its live entry was full — the side a gate may
+	// err on. No sub-run row is interactive, so none is parked on a queue that
+	// would refuse its next turn.
+	steerQ, onSteer, deregSteer := s.makeSteerEntry(runCtx, steer.Entry{
+		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID, UserID: run.UserID,
+		VerdictsOnly: takesOnlyVerdicts(run),
+	}, emit)
 
 	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
 	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
