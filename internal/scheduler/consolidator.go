@@ -909,16 +909,22 @@ func (s *Scheduler) setEscalated(defID string, target consolidationTarget, on bo
 //     so a wedged target holds at most every other tick.
 //
 // Anything else — a refusal, an ordinary failure, the scheduler stopping —
-// leaves the target as it was. "Cut" needs the run to have failed: a pass that
-// returned cleanly as its deadline fired did finish.
+// leaves the target as it was.
+//
+// A CUT IS READ FROM THE CTX, NEVER FROM runErr. RunOnce returns nil whenever
+// the loop ran, including a loop that ended failed (the runner.Runner
+// contract), and a code agent stopped by its deadline is exactly that: the
+// cut pass reports nil here. So "the deadline had fired when the pass came
+// back" is the signal. A pass that finished in the same instant its deadline
+// fired reads as cut, which costs it one escalated turn and nothing more.
 func (s *Scheduler) notePassBudget(row store.ScheduleDueRow, target consolidationTarget, wasEscalated bool, runErr, cause error, slice time.Duration) {
 	switch {
-	case !wasEscalated && runErr != nil && errors.Is(cause, errPassBudgetCut):
+	case !wasEscalated && errors.Is(cause, errPassBudgetCut):
 		if s.setEscalated(row.DefID, target, true) {
 			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass cut by its %s share of the %s fire budget before it finished — it goes first next tick with the whole remaining budget",
 				row.Name, target.TenantID, target.UserID, slice, s.cfg.FireTimeout)
 		}
-	case wasEscalated && runErr == nil:
+	case wasEscalated && runErr == nil && cause == nil:
 		if s.setEscalated(row.DefID, target, false) {
 			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): completed on its whole-budget turn — back to normal budgeting",
 				row.Name, target.TenantID, target.UserID)

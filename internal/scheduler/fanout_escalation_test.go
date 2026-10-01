@@ -12,9 +12,14 @@ import (
 
 // timedRunner is a fakeRunner whose passes take a fixed wall-clock time, the
 // way a pass that reads a few chats through a slow local extractor does. A pass
-// whose ctx ends first is cut and returns the ctx error, as a real run does; one
-// that outlasts its duration completes. forever makes a pass run until its ctx
-// ends, which is a wedged pass.
+// whose ctx ends first is cut; one that outlasts its duration completes.
+// forever makes a pass run until its ctx ends, which is a wedged pass.
+//
+// A cut pass returns NIL, because the real runner does: RunOnce returns nil
+// whenever the loop ran, including when it ended with status=failed (see the
+// runner.Runner contract), and a code agent cut by its deadline is exactly
+// that. A double returning ctx.Err() here let a cut detector keyed on the
+// error pass every test and never fire on a live server.
 type timedRunner struct {
 	*fakeRunner
 	take func(in runner.RunInput) (d time.Duration, forever bool)
@@ -30,7 +35,7 @@ func (r *timedRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner
 	d, forever := r.take(in)
 	if forever {
 		<-ctx.Done()
-		return ctx.Err()
+		return nil // the run ended failed; RunOnce still returns nil
 	}
 	if d > 0 {
 		timer := time.NewTimer(d)
@@ -38,7 +43,7 @@ func (r *timedRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner
 		select {
 		case <-timer.C:
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil // as above
 		}
 	}
 	r.mu.Lock()
