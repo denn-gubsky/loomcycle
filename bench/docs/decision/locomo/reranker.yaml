@@ -1,0 +1,7 @@
+# The shipped listwise rerank, as the LoCoMo baseline (bench/cmd/rerankpool): phase M's
+# settings — qwen3.8, thinking off, 16K context, 120 s timeout — on the Spark.
+models:
+  local-reader: { provider: ollama-local, model: qwen3.8:latest }
+memory:
+  reranker: { model: local-reader, effort: low, context_tokens: 16384, timeout_ms: 120000,
+              base_url: "http://100.112.7.68:11434" }
