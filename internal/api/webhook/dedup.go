@@ -122,7 +122,7 @@ func (c *dedupCache) seenAny(k deliveryKeys) bool {
 // recordAccepted records every key of a delivery this receiver ACCEPTED.
 //
 // A delivery answered as a duplicate records only k.key (via record): in the
-// body-only modes its alt is a header value the signature does not cover, so
+// HMAC-signed modes its alt is a header value the signature does not cover, so
 // recording it would let a replay burn an id a genuine later delivery has yet
 // to use.
 func (c *dedupCache) recordAccepted(k deliveryKeys) {
@@ -163,7 +163,7 @@ func deliveryID(a config.WebhookAuth, body []byte, headerGet func(string) string
 }
 
 // bodyDeliveryID is the body-hash delivery id: deliveryID's fallback, and the
-// second identity of a body-only-signed delivery (newDeliveryKeys).
+// second identity of an HMAC-signed delivery (newDeliveryKeys).
 func bodyDeliveryID(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -182,22 +182,25 @@ type deliveryKeys struct {
 // newDeliveryKeys derives the keys a delivery to the webhook named by whKey
 // dedups on. did is deliveryID's value.
 //
-// Normally that is the one key dedupKey(whKey, did). But when the signature
-// covers the body only (bodyOnly: GitHub `sha256=` / bare hex), the
-// delivery-id header is outside it and there is no timestamp window: whoever
-// captured one signed delivery could replay the body with a new header value
-// each time, each a fresh key in both layers and a new run. So such a
+// Normally that is the one key dedupKey(whKey, did). But when an HMAC
+// signature covers the body (bodySigned: GitHub `sha256=`, bare hex, Stripe
+// `t=,v1=`), the delivery-id header is outside it: whoever captured one
+// signed delivery could replay the body with a new header value each time
+// (with no time limit in the body-only envelopes, inside the ±5 min window
+// under Stripe), each a fresh key in both layers and a new run. So such a
 // delivery also dedups on its body hash, and it is a duplicate when EITHER
 // identity was seen. The body key is the one persisted (runs.idempotency_key
-// holds a single value per run, and only the body is signed); the sender's id
-// rides along as alt, so a redelivery under the same id still matches a run
-// an earlier release keyed on it.
+// holds a single value per run, and the body is what is signed); the
+// sender's id rides along as alt, so a redelivery under the same id still
+// matches a run an earlier release keyed on it. A genuine Stripe retry
+// re-signs under a new timestamp but carries the same event body, so the
+// persisted body key still answers it after a restart.
 //
 // The cost: two distinct deliveries with byte-identical bodies are one
 // delivery — already the rule for a def without delivery_id_header.
-func newDeliveryKeys(whKey, did string, body []byte, bodyOnly bool) deliveryKeys {
+func newDeliveryKeys(whKey, did string, body []byte, bodySigned bool) deliveryKeys {
 	key := dedupKey(whKey, did)
-	if !bodyOnly {
+	if !bodySigned {
 		return deliveryKeys{key: key}
 	}
 	bodyKey := dedupKey(whKey, bodyDeliveryID(body))

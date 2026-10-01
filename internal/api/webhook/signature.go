@@ -249,20 +249,19 @@ func hmacSignatureHeader(a config.WebhookAuth, headerGet func(string) string) st
 	return raw
 }
 
-// signsBodyOnly reports whether a request that PASSED verifySignature was
-// authenticated by a MAC over the raw body alone — the GitHub `sha256=` or
-// bare-hex envelope. Such a signature covers no other header and carries no
-// timestamp, so the delivery-id header is unsigned and a captured delivery
-// stays valid forever; dedup must not trust that header alone (see
-// newDeliveryKeys). The Stripe envelope (timestamp window) and bearer / none
-// auth return false.
-func signsBodyOnly(a config.WebhookAuth, headerGet func(string) string) bool {
+// signsBody reports whether a request that PASSED verifySignature was
+// authenticated by an HMAC over its raw body. Every hmac envelope signs the
+// body (GitHub `sha256=` and bare hex the body alone, Stripe `t=,v1=` the
+// body after a timestamp) and none signs the delivery-id header, so that
+// header cannot be trusted alone: a captured delivery replayed under fresh
+// header values passes the signature each time — forever in the body-only
+// envelopes, and for the ±signatureTolerance window under Stripe, which is
+// ample to start runs. Dedup therefore also keys on the signed body (see
+// newDeliveryKeys). Bearer and none auth sign nothing; they return false and
+// keep keying on the delivery id.
+func signsBody(a config.WebhookAuth) bool {
 	kind := strings.ToLower(strings.TrimSpace(a.Kind))
-	if kind != "" && kind != "hmac" {
-		return false
-	}
-	raw := hmacSignatureHeader(a, headerGet)
-	return strings.HasPrefix(raw, "sha256=") || isHexString(raw)
+	return kind == "" || kind == "hmac"
 }
 
 // isHexString reports whether s is a non-empty run of only hex digits — the

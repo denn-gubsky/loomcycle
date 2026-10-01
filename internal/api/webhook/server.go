@@ -238,9 +238,9 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	//    on a dedup. Changed to an idempotent ack.)
 	//    did is the sender's id and goes back in every response; dk scopes
 	//    it to the resolved webhook def and is what BOTH dedup layers key on
-	//    — plus the body hash when the signature covers the body only.
+	//    — plus the body hash when an HMAC signature covers the body.
 	did := deliveryID(wd.Auth, body, r.Header.Get)
-	dk := newDeliveryKeys(whKey, did, body, signsBodyOnly(wd.Auth, r.Header.Get))
+	dk := newDeliveryKeys(whKey, did, body, signsBody(wd.Auth))
 	if rec.dedup.seenAny(dk) {
 		rec.finish(span, whKey, did, verdictAcceptedReplay, "")
 		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
