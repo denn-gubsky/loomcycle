@@ -5,7 +5,7 @@ import { useFocusTenant, useUserId } from "../components/Layout";
 import AgentsTreePanel, { type StatusFilter } from "../components/AgentsTreePanel";
 import AgentDetailPane from "../components/AgentDetailPane";
 import { buildTree } from "../components/AgentsTree";
-import { breadcrumbAncestors, selectedRowKey, type RunSelection } from "../lib/runLineage";
+import { breadcrumbAncestors, paneRunId, selectedRowKey, type RunSelection } from "../lib/runLineage";
 import Splitter from "../components/Splitter";
 
 // AgentsView is the v0.8.20 split-view replacement for the
@@ -83,6 +83,10 @@ export default function AgentsView() {
     [agents, selectedRunId, selectedAgentId],
   );
   const ancestors = useMemo(() => breadcrumbAncestors(agents, selectedKey), [agents, selectedKey]);
+  const detailRunId = useMemo(
+    () => paneRunId(agents, selectedRunId, selectedAgentId),
+    [agents, selectedRunId, selectedAgentId],
+  );
 
   const setSelected = useCallback(
     (sel: RunSelection) => {
@@ -116,7 +120,7 @@ export default function AgentsView() {
           <p>Enter a <code>user_id</code> in the top bar to see runs.</p>
         </div>
         {hasSelection && (
-          <AgentDetailPane runId={selectedRunId} agentId={selectedAgentId} onSelect={setSelected} />
+          <AgentDetailPane runId={detailRunId} agentId={selectedAgentId} onSelect={setSelected} />
         )}
       </div>
     );
@@ -146,7 +150,7 @@ export default function AgentsView() {
       <div className="right">
         {hasSelection ? (
           <AgentDetailPane
-            runId={selectedRunId}
+            runId={detailRunId}
             agentId={selectedAgentId}
             ancestors={ancestors}
             onSelect={setSelected}

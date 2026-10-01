@@ -57,6 +57,29 @@ export function selectedRowKey(
   return newest ? rowKey(newest) : agentId;
 }
 
+// isTeamWalkAgentId reports whether an agent id is a team walk's. A walk's run
+// is filed under "team:<name>", shared by every walk of that team, and the
+// agent-id routes (/v1/agents/{id}, its cancel and channels) reject the colon.
+// Such a run is read and cancelled by its run id.
+export function isTeamWalkAgentId(agentId: string | null | undefined): boolean {
+  return Boolean(agentId?.startsWith("team:"));
+}
+
+// paneRunId is the run the detail pane reads for the view's URL selection.
+// ?run= names it. A ?agent= team walk id cannot be read by agent id, so it
+// resolves to the run id of the newest listed walk (the row selectedRowKey
+// highlights); undefined when none is listed, and the pane then asks for a
+// specific walk. Other ?agent= ids stay agent ids, which the server resolves.
+export function paneRunId(
+  agents: Agent[],
+  runId: string | undefined,
+  agentId: string | undefined,
+): string | undefined {
+  if (runId) return runId;
+  if (!agentId || !isTeamWalkAgentId(agentId)) return undefined;
+  return newestRunOf(agents, agentId)?.run_id || undefined;
+}
+
 function newestRunOf(agents: Agent[], agentId: string): Agent | undefined {
   let newest: Agent | undefined;
   for (const a of agents) {

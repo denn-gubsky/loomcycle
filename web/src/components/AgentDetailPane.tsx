@@ -8,6 +8,7 @@ import {
   UserInputPayload,
   cancelAgent,
   cancelResidentChildTurn,
+  cancelRun,
   closeResidentChild,
   getAgent,
   getRun,
@@ -16,10 +17,11 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
-import { parentRunHref, type RunSelection } from "../lib/runLineage";
+import { isTeamWalkAgentId, parentRunHref, runRowHref, type RunSelection } from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
+  type AgentTab,
   AgentTabStrip,
   ChannelsTab,
   InterruptsTab,
@@ -58,7 +60,42 @@ export interface AgentDetailPaneProps {
   onSelect?: (sel: RunSelection) => void;
 }
 
-export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }: AgentDetailPaneProps) {
+// A team walk files its run under the team's agent id, which agent-scoped
+// memory and channel cursors are not kept for.
+const WALK_HIDDEN_TABS: readonly AgentTab[] = ["memory", "channels"];
+
+// stopRun is the header's cancel. A team walk is stopped by its run id: its
+// agent id is shared by every walk of the team and the agent cancel route
+// rejects it. Every other run keeps whole-run cancel by agent id, since the
+// run-id route only stops the current turn of an interactive run.
+export function stopRun(run: Pick<Agent, "agent_id" | "run_id">, reason: string): Promise<unknown> {
+  if (isTeamWalkAgentId(run.agent_id)) {
+    if (!run.run_id) return Promise.reject(new Error("this team walk has no run id to cancel"));
+    return cancelRun(run.run_id, reason);
+  }
+  return cancelAgent(run.agent_id, reason);
+}
+
+export default function AgentDetailPane(props: AgentDetailPaneProps) {
+  const { agentId, runId } = props;
+  // A team walk id alone names no run (every walk of the team shares it) and
+  // GET /v1/agents/{id} rejects it, so ask for one walk instead of reading it.
+  if (!runId && isTeamWalkAgentId(agentId)) {
+    return (
+      <div className="agent-detail">
+        <div className="empty">
+          <code>{agentId}</code> is a team walk. Pick a specific walk run in the list to see it.
+        </div>
+      </div>
+    );
+  }
+  // Keyed on the selection: a new selection mounts fresh state, so the
+  // previous run's header, transcript and error never show under the new one,
+  // and the previous run's poll stops with its unmount.
+  return <AgentDetailPaneBody key={runId ? `run:${runId}` : `agent:${agentId ?? ""}`} {...props} />;
+}
+
+function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetailPaneProps) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [events, setEvents] = useState<TranscriptEvent[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -68,7 +105,6 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
   // A draft discarded from this pane no longer exists: say so instead of
   // showing (or re-fetching into an error) the run that was just deleted.
   const [discarded, setDiscarded] = useState(false);
-  useEffect(() => setDiscarded(false), [agentId, runId]);
   const tailRef = useRef<HTMLDivElement | null>(null);
 
   // Initial fetch + auto-refresh while running.
@@ -121,7 +157,9 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
   // agent's runs, not necessarily the one that spawned this run.
   useEffect(() => {
     if (ancestors !== undefined) return;
-    if (!agent?.parent_agent_id) {
+    // A walk parent with no run id names no one run, and the agent read
+    // rejects its id.
+    if (!agent?.parent_agent_id || (!agent.parent_run_id && isTeamWalkAgentId(agent.parent_agent_id))) {
       setParentAgent(null);
       return;
     }
@@ -158,6 +196,9 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
   // v0.9.x — sub-tab strip above the transcript. Default "transcript"
   // shows the existing event-card stream + view toggle.
   const [activeTab, setActiveTab] = useAgentTab();
+  const hiddenTabs = isTeamWalkAgentId(agent?.agent_id ?? agentId) ? WALK_HIDDEN_TABS : [];
+  // A ?tab= deep link to a hidden tab shows the transcript.
+  const tab: AgentTab = hiddenTabs.includes(activeTab) ? "transcript" : activeTab;
 
   if (discarded) {
     return (
@@ -190,14 +231,14 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
             )}
             <strong>{agent.agent || "(unknown agent)"}</strong>
             <code className="agent-id">{agent.agent_id}</code>
-            {agent.status === "running" && (
+            {agent.status === "running" && (!isTeamWalkAgentId(agent.agent_id) || agent.run_id) && (
               <button
                 className="cancel-btn"
                 disabled={cancelInFlight}
                 onClick={async () => {
                   setCancelInFlight(true);
                   try {
-                    await cancelAgent(agent.agent_id, "cancelled from UI");
+                    await stopRun(agent, "cancelled from UI");
                   } catch (e) {
                     setErr(e instanceof Error ? e.message : String(e));
                   } finally {
@@ -269,7 +310,13 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
             {agent.parent_agent_id && (
               <span>
                 parent:{" "}
-                <Link to={`/agents/${agent.parent_agent_id}`}>
+                <Link
+                  to={runRowHref(
+                    agent.parent_run_id
+                      ? { runId: agent.parent_run_id, agentId: agent.parent_agent_id }
+                      : { agentId: agent.parent_agent_id },
+                  )}
+                >
                   <code>{agent.parent_agent_id.slice(0, 12)}…</code>
                 </Link>
               </span>
@@ -302,8 +349,8 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
       ) : (
         <div className="empty">loading…</div>
       )}
-      <AgentTabStrip tab={activeTab} onChange={setActiveTab} />
-      {activeTab === "transcript" && (
+      <AgentTabStrip tab={tab} onChange={setActiveTab} hidden={hiddenTabs} />
+      {tab === "transcript" && (
         <>
           <ViewToggle mode={viewMode} onChange={setViewMode} />
           {viewMode === "panels" ? (
@@ -318,9 +365,9 @@ export default function AgentDetailPane({ agentId, runId, ancestors, onSelect }:
           )}
         </>
       )}
-      {activeTab === "memory" && <MemoryTab agentName={agent?.agent ?? ""} />}
-      {activeTab === "interrupts" && <InterruptsTab runID={agent?.run_id ?? ""} />}
-      {activeTab === "channels" && <ChannelsTab agentName={agent?.agent ?? ""} />}
+      {tab === "memory" && <MemoryTab agentName={agent?.agent ?? ""} />}
+      {tab === "interrupts" && <InterruptsTab runID={agent?.run_id ?? ""} />}
+      {tab === "channels" && <ChannelsTab agentName={agent?.agent ?? ""} />}
     </div>
   );
 }

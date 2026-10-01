@@ -41,15 +41,18 @@ export function useAgentTab(): [AgentTab, (t: AgentTab) => void] {
 export interface AgentTabStripProps {
   tab: AgentTab;
   onChange: (t: AgentTab) => void;
+  // Tabs that do not apply to this run and are left out of the strip.
+  hidden?: readonly AgentTab[];
 }
 
-export function AgentTabStrip({ tab, onChange }: AgentTabStripProps) {
+const TABS: readonly AgentTab[] = ["transcript", "memory", "interrupts", "channels"];
+
+export function AgentTabStrip({ tab, onChange, hidden = [] }: AgentTabStripProps) {
   return (
     <div className="agent-tabs" role="tablist" aria-label="agent detail tabs">
-      <TabBtn label="transcript" tab="transcript" current={tab} onChange={onChange} />
-      <TabBtn label="memory" tab="memory" current={tab} onChange={onChange} />
-      <TabBtn label="interrupts" tab="interrupts" current={tab} onChange={onChange} />
-      <TabBtn label="channels" tab="channels" current={tab} onChange={onChange} />
+      {TABS.filter((t) => !hidden.includes(t)).map((t) => (
+        <TabBtn key={t} label={t} tab={t} current={tab} onChange={onChange} />
+      ))}
     </div>
   );
 }
