@@ -23,12 +23,11 @@ func (s *Server) metricsEndpointsEnabled() bool {
 // enabled. The body's `enable_hint` points operators at the env var
 // so the failure mode is self-explanatory.
 func writeMetricsDisabled(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error":       "metrics sampler not enabled",
-		"enable_hint": "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle",
-	})
+	writeJSONErrorBody(w, http.StatusServiceUnavailable, struct {
+		Code       string `json:"code"`
+		Error      string `json:"error"`
+		EnableHint string `json:"enable_hint"`
+	}{"metrics_disabled", "metrics sampler not enabled", "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle"})
 }
 
 // handleMetricsSamples implements `GET /v1/_metrics/samples` —
@@ -47,19 +46,19 @@ func (s *Server) handleMetricsSamples(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	sinceStr := q.Get("since")
 	if sinceStr == "" {
-		http.Error(w, `{"error":"missing required query param: since (RFC3339)"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "missing_since", "missing required query param: since (RFC3339)")
 		return
 	}
 	since, err := time.Parse(time.RFC3339, sinceStr)
 	if err != nil {
-		http.Error(w, `{"error":"invalid since: must be RFC3339"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_since", "invalid since: must be RFC3339")
 		return
 	}
 	until := time.Now().UTC()
 	if v := q.Get("until"); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
-			http.Error(w, `{"error":"invalid until: must be RFC3339"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid_until", "invalid until: must be RFC3339")
 			return
 		}
 		until = t
@@ -68,7 +67,7 @@ func (s *Server) handleMetricsSamples(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
-			http.Error(w, `{"error":"invalid limit: must be positive integer (1..1000)"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid_limit", "invalid limit: must be positive integer (1..1000)")
 			return
 		}
 		limit = n
@@ -77,7 +76,7 @@ func (s *Server) handleMetricsSamples(w http.ResponseWriter, r *http.Request) {
 
 	samples, nextCursor, err := s.store.MetricsSampleWindow(r.Context(), since, until, limit, cursor)
 	if err != nil {
-		http.Error(w, `{"error":"failed to query samples"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "metrics_query_failed", "failed to query samples")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -101,17 +100,17 @@ func (s *Server) handleMetricsRunSummary(w http.ResponseWriter, r *http.Request)
 	}
 	runID := r.PathValue("run_id")
 	if runID == "" {
-		http.Error(w, `{"error":"missing run_id"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "missing_run_id", "missing run_id")
 		return
 	}
 	summary, err := s.store.MetricsRunSummary(r.Context(), runID)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			http.Error(w, `{"error":"run not found"}`, http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "unknown_run", "run not found")
 			return
 		}
-		http.Error(w, `{"error":"failed to compute run summary"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "metrics_query_failed", "failed to compute run summary")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -161,7 +160,7 @@ func (s *Server) handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
 	case "7d":
 		windowDur, bucketSize = 7*24*time.Hour, 6*time.Hour
 	default:
-		http.Error(w, `{"error":"invalid period: must be 1h | 24h | 7d"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid_period", "invalid period: must be 1h | 24h | 7d")
 		return
 	}
 
@@ -174,7 +173,7 @@ func (s *Server) handleMetricsSummary(w http.ResponseWriter, r *http.Request) {
 	for {
 		batch, next, err := s.store.MetricsSampleWindow(r.Context(), since, now, 1000, cursor)
 		if err != nil {
-			http.Error(w, `{"error":"failed to query samples"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, "metrics_query_failed", "failed to query samples")
 			return
 		}
 		all = append(all, batch...)
