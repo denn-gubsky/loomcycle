@@ -57,7 +57,12 @@ const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook
 	`and only an admin may set it to another tenant (a fork that would inherit another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
 	`it answers every delivery with 404 until a fork, or a create on the same name, re-supplies EVERY key listed ` +
-	`there (in user_credentials or user_credentials_from_env) and sets enabled: true.`
+	`there and sets enabled: true. A key counts as a non-blank user_credentials value, or a ` +
+	`user_credentials_from_env variable that is allowlisted (LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST or ` +
+	`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST) and set (the receiver skips any other). While keys are missing, the ` +
+	`create/fork result lists them in disabled_until_credentials_supplied, and unusable_credentials says why a ` +
+	`key you named did not count. A fork merges user_credentials and user_credentials_from_env key by key with ` +
+	`the parent's; an empty value removes a key.`
 
 const webhookDefInputSchema = `{
   "type": "object",
@@ -177,13 +182,13 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	// A create on a name whose current def was restored without its literal
 	// credentials writes a new version of it: the marker carries over unless
 	// this create supplies every stripped key, as a fork's would.
-	stillMissing, err := s.inheritCaptureDisabled(ctx, ident.TenantID, in.Name, &def, in.Overlay)
+	resupply, err := s.inheritCaptureDisabled(ctx, ident.TenantID, in.Name, &def, in.Overlay)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	if len(stillMissing) > 0 {
+	if len(resupply.Missing) > 0 {
 		log.Printf("webhookdef %q: create stays disabled — it did not supply the credential keys a snapshot stripped: %s",
-			in.Name, strings.Join(stillMissing, ", "))
+			in.Name, strings.Join(resupply.Missing, ", "))
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
@@ -223,18 +228,16 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		}
 	}
 	resp := webhookRowResponse(created, promote)
-	if len(stillMissing) > 0 {
-		resp["disabled_until_credentials_supplied"] = stillMissing
-	}
+	resupply.annotate(resp)
 	return okJSON(resp)
 }
 
 // inheritCaptureDisabled gives a create the capture_disabled marker of the def
 // it supersedes — the caller's tenant's active version of the name, else its
 // latest — and resolves it against the create's own overlay exactly as a fork
-// does. Returns the keys still missing (nil when there was no marker or the
-// create supplied every key).
-func (s *WebhookDef) inheritCaptureDisabled(ctx context.Context, tenantID, name string, def *mergedWebhookDef, overlay json.RawMessage) ([]string, error) {
+// does. The result's Missing is nil when there was no marker or the create
+// supplied every key.
+func (s *WebhookDef) inheritCaptureDisabled(ctx context.Context, tenantID, name string, def *mergedWebhookDef, overlay json.RawMessage) (credentialResupply, error) {
 	var body json.RawMessage
 	row, err := s.Store.WebhookDefGetActive(ctx, tenantID, name)
 	switch {
@@ -243,7 +246,7 @@ func (s *WebhookDef) inheritCaptureDisabled(ctx context.Context, tenantID, name 
 	case isNotFound(err):
 		rows, lerr := s.Store.WebhookDefListByName(ctx, name)
 		if lerr != nil {
-			return nil, lerr
+			return credentialResupply{}, lerr
 		}
 		best := -1
 		for i, r := range rows {
@@ -252,18 +255,18 @@ func (s *WebhookDef) inheritCaptureDisabled(ctx context.Context, tenantID, name 
 			}
 		}
 		if best < 0 {
-			return nil, nil
+			return credentialResupply{}, nil
 		}
 		body = rows[best].Definition
 	default:
-		return nil, err
+		return credentialResupply{}, err
 	}
 	stripped, marked := captureDisabledKeys(body)
 	if !marked {
-		return nil, nil
+		return credentialResupply{}, nil
 	}
 	def.CaptureDisabled = &mergedWebhookCaptureDisabled{StrippedCredentials: stripped}
-	return resolveWebhookCaptureDisabled(def, overlay)
+	return resolveWebhookCaptureDisabled(def, overlay, webhookEnvGate(s.Cfg))
 }
 
 // ---- fork ----
@@ -359,13 +362,13 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	}
 	// A parent restored without its literal credentials carries a marker;
 	// this fork clears it only by re-supplying every stripped key.
-	stillMissing, err := resolveWebhookCaptureDisabled(&def, in.Overlay)
+	resupply, err := resolveWebhookCaptureDisabled(&def, in.Overlay, webhookEnvGate(s.Cfg))
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	if len(stillMissing) > 0 {
+	if len(resupply.Missing) > 0 {
 		log.Printf("webhookdef %q: fork stays disabled — it did not re-supply the credential keys a snapshot stripped: %s",
-			in.Name, strings.Join(stillMissing, ", "))
+			in.Name, strings.Join(resupply.Missing, ", "))
 	}
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
@@ -420,9 +423,7 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		}
 	}
 	resp := webhookRowResponse(created, promote)
-	if len(stillMissing) > 0 {
-		resp["disabled_until_credentials_supplied"] = stillMissing
-	}
+	resupply.annotate(resp)
 	return okJSON(resp)
 }
 
@@ -844,23 +845,58 @@ type mergedWebhookCaptureDisabled struct {
 // def inherited from its parent (same rule as the ScheduleDef fork). Every
 // key re-supplied by the overlay: the marker is dropped and the overlay's
 // `enabled` stands. Otherwise the marker keeps the keys still missing and the
-// def stays disabled whatever the overlay says. Returns the keys still
-// missing (nil when the marker cleared or was never there).
-func resolveWebhookCaptureDisabled(def *mergedWebhookDef, overlay json.RawMessage) ([]string, error) {
+// def stays disabled whatever the overlay says. The result's Missing is nil
+// when the marker cleared or was never there.
+func resolveWebhookCaptureDisabled(def *mergedWebhookDef, overlay json.RawMessage, gate credentialEnvGate) (credentialResupply, error) {
 	if def.CaptureDisabled == nil {
-		return nil, nil
+		return credentialResupply{}, nil
 	}
-	missing, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay)
+	r, err := credentialsStillMissing(def.CaptureDisabled.StrippedCredentials, overlay, gate)
 	if err != nil {
-		return nil, err
+		return credentialResupply{}, err
 	}
-	if len(missing) == 0 {
+	if len(r.Missing) == 0 {
 		def.CaptureDisabled = nil
-		return nil, nil
+		return r, nil
 	}
-	def.CaptureDisabled = &mergedWebhookCaptureDisabled{StrippedCredentials: missing}
+	def.CaptureDisabled = &mergedWebhookCaptureDisabled{StrippedCredentials: r.Missing}
 	def.Enabled = false
-	return missing, nil
+	return r, nil
+}
+
+// webhookEnvGate mirrors the webhook receiver, which main wires with the same
+// WebhookEnvAllowlist (via webhook.BuildEnvAllowlist).
+func webhookEnvGate(cfg *config.Config) credentialEnvGate {
+	return credentialEnvGate{
+		allowlist: cfg.WebhookEnvAllowlist(),
+		knobs:     "LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST or LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST",
+	}
+}
+
+// mergeCredentialMap returns base with overlay's keys laid over it, key by
+// key, as a fresh map (base may alias a static config map). An empty overlay
+// value removes the key: the receiver skips an empty literal anyway, and an
+// empty env-var name would fail validation, so removing it is the only way a
+// fork can drop a key now that a smaller map no longer replaces the parent's.
+func mergeCredentialMap(base, overlay map[string]string) map[string]string {
+	if len(overlay) == 0 {
+		return base
+	}
+	merged := make(map[string]string, len(base)+len(overlay))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range overlay {
+		if v == "" {
+			delete(merged, k)
+			continue
+		}
+		merged[k] = v
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 // mergedWebhookAuth mirrors config.WebhookAuth.
@@ -946,12 +982,11 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	if ov.BodySizeLimitBytes != 0 {
 		d.BodySizeLimitBytes = ov.BodySizeLimitBytes
 	}
-	if ov.UserCredentialsFromEnv != nil {
-		d.UserCredentialsFromEnv = ov.UserCredentialsFromEnv
-	}
-	if ov.UserCredentials != nil {
-		d.UserCredentials = ov.UserCredentials
-	}
+	// Credentials maps merge key by key, as ScheduleDef's do: a fork that
+	// re-supplies the keys a snapshot stripped must not drop the parent's
+	// other credentials by restating a smaller map.
+	d.UserCredentialsFromEnv = mergeCredentialMap(d.UserCredentialsFromEnv, ov.UserCredentialsFromEnv)
+	d.UserCredentials = mergeCredentialMap(d.UserCredentials, ov.UserCredentials)
 	if ov.Metadata != nil {
 		d.Metadata = ov.Metadata
 	}

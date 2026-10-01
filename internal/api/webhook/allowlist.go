@@ -8,50 +8,12 @@ import (
 )
 
 // BuildEnvAllowlist computes the env-var-NAME allowlist the receiver uses to
-// gate secret + credential resolution. It is the union of:
-//
-//   - the explicit operator knobs: cfg.Env.SchedulerEnvAllowlist
-//     (LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST) and cfg.Env.WebhooksEnvAllowlist
-//     (LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST);
-//   - every env-var NAME declared by a STATIC (operator-authored) webhook in
-//     cfg.Webhooks: the HMAC signing secret, the bearer token, and every value
-//     in user_credentials_from_env.
-//
-// Static-declared names are auto-trusted because the operator wrote the yaml.
-// Requiring them to ALSO appear in the allowlist env var was the F23 trap: a
-// static webhook's own signing_secret_env silently never resolved (the
-// allowlist stayed at 0 names) and every signed delivery 503'd.
-//
-// Runtime (webhookdef-authored) defs are deliberately NOT scanned here. Their
-// secret/cred env names still need an explicit allowlist entry — except a
-// LOOMCYCLE_*-named VERIFY secret, which resolveSecret admits via the namespace
-// auto-allow (a verify secret never reaches the agent). This keeps a
-// less-trusted authoring path from naming an arbitrary env var as an
-// agent-reachable credential source.
+// gate secret + credential resolution: the operator knobs plus every name a
+// STATIC webhook declares. The rule lives in config.(*Config).WebhookEnvAllowlist
+// so the WebhookDef tool can ask whether a user_credentials_from_env re-supply
+// will resolve here before it re-enables a def — see there for the rationale.
 func BuildEnvAllowlist(cfg *config.Config) map[string]bool {
-	allow := make(map[string]bool)
-	if cfg == nil {
-		return allow
-	}
-	add := func(name string) {
-		if name != "" {
-			allow[name] = true
-		}
-	}
-	for _, name := range cfg.Env.SchedulerEnvAllowlist {
-		add(name)
-	}
-	for _, name := range cfg.Env.WebhooksEnvAllowlist {
-		add(name)
-	}
-	for _, w := range cfg.Webhooks {
-		add(w.Auth.SigningSecretEnv)
-		add(w.Auth.BearerTokenEnv)
-		for _, envName := range w.UserCredentialsFromEnv {
-			add(envName)
-		}
-	}
-	return allow
+	return cfg.WebhookEnvAllowlist()
 }
 
 // UnresolvableStaticSecrets returns one human-readable warning per STATIC

@@ -149,10 +149,15 @@ server-set marker:
 ```
 
 To re-enable it, `fork` it with every listed key in `user_credentials` or
-`user_credentials_from_env` and `enabled: true`. A fork that supplies only
-some of the keys stays disabled and keeps the marker with the keys still
-missing. Either way the fork starts from the fire count already spent,
-never from zero. A `create` on the same name writes a new version of it
+`user_credentials_from_env` and `enabled: true`. A key counts only when the
+scheduler will use it: a `user_credentials` value that is not blank, or a
+`user_credentials_from_env` variable that is on
+`LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST` (empty by default) and set. A fork that
+supplies only some of the keys stays disabled and keeps the marker with the
+keys still missing; its result lists them in
+`disabled_until_credentials_supplied`, and `unusable_credentials` says why a
+key you did name did not count. Either way the fork starts from the fire
+count already spent, never from zero. A `create` on the same name writes a new version of it
 and follows the same rules: it keeps the marker unless it supplies every
 listed key, and it keeps the fire count. The marker cannot be set or
 cleared through an overlay.
