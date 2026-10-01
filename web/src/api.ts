@@ -747,6 +747,19 @@ export async function cancelAgent(agentId: string, reason?: string): Promise<unk
   return resp.json();
 }
 
+// cancelRun stops ONE run by its run id. A team walk is cancelled this way:
+// its agent id ("team:<name>") is shared by every walk of the team and is not
+// a valid id for the agent routes. For an ordinary run the server stops only
+// the current turn of an interactive run and answers 409 not_interactive for
+// the rest, so whole-run cancel of those stays on cancelAgent.
+export function cancelRun(runId: string, reason?: string): Promise<unknown> {
+  return jsonFetch<unknown>(`/v1/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason: reason ?? "" }),
+  });
+}
+
 // ---- Resident interactive sub-agents (RFC BK P3) -------------------
 
 export async function listResidentChildren(): Promise<{ resident: ResidentChild[] }> {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "../api";
-import { breadcrumbAncestors, parentRunHref, runRowHref, selectedRowKey } from "./runLineage";
+import { breadcrumbAncestors, isTeamWalkAgentId, paneRunId, parentRunHref, runRowHref, selectedRowKey } from "./runLineage";
 
 const run = (over: Partial<Agent> & Pick<Agent, "agent_id" | "run_id">): Agent => ({
   session_id: "s",
@@ -48,6 +48,34 @@ describe("selectedRowKey", () => {
 
   it("keeps the agent id when no listed row carries it", () => {
     expect(selectedRowKey(twoWalks, undefined, "a_gone")).toBe("a_gone");
+  });
+});
+
+describe("paneRunId", () => {
+  it("reads the named run for ?run=", () => {
+    expect(paneRunId(twoWalks, "r_old", "team:triage")).toBe("r_old");
+  });
+
+  it("resolves a ?agent= team walk id to the newest listed walk's run id", () => {
+    expect(paneRunId(twoWalks, undefined, "team:triage")).toBe("r_new");
+  });
+
+  it("names no run for a team walk id with no listed walk", () => {
+    expect(paneRunId([], undefined, "team:triage")).toBeUndefined();
+    expect(paneRunId(twoWalks, undefined, "team:other")).toBeUndefined();
+  });
+
+  it("leaves an ordinary ?agent= id to the server", () => {
+    expect(paneRunId(twoWalks, undefined, "a_co")).toBeUndefined();
+  });
+});
+
+describe("isTeamWalkAgentId", () => {
+  it("matches only the team: prefix", () => {
+    expect(isTeamWalkAgentId("team:triage")).toBe(true);
+    expect(isTeamWalkAgentId("a_team:x")).toBe(false);
+    expect(isTeamWalkAgentId(null)).toBe(false);
+    expect(isTeamWalkAgentId(undefined)).toBe(false);
   });
 });
 

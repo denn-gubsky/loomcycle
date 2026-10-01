@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import type { Agent } from "../api";
-import type { RunSelection } from "../lib/runLineage";
+import { runRowHref, type RunSelection } from "../lib/runLineage";
 
 // BreadcrumbAncestor is one node in the ancestor chain from root
 // down to (but not including) the currently-selected agent.
@@ -50,7 +50,10 @@ export default function Breadcrumbs({ ancestors, selected, onSelect }: Breadcrum
                 {a.agent || a.agent_id.slice(0, 8)}
               </button>
             ) : (
-              <Link to={`/agents/${a.agent_id}`} className="crumb-link">
+              <Link
+                to={runRowHref(a.run_id ? { runId: a.run_id, agentId: a.agent_id } : { agentId: a.agent_id })}
+                className="crumb-link"
+              >
                 {a.agent || a.agent_id.slice(0, 8)}
               </Link>
             )
