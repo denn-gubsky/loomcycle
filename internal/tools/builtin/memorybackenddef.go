@@ -53,9 +53,11 @@ const memoryBackendDefDescription = `Author, fork, retire, and inspect named mem
 	`Static memory_backends.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
 	`Operations: create, fork, get, list, retire. ` +
-	`A backend authored here may not name a private, loopback, link-local or metadata IP as config.base_url, ` +
-	`and reaches a host on a private network only when the operator lists that hostname in ` +
-	`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST (a yaml-declared backend keeps its own host).`
+	`A kind:remote backend authored here needs a config.base_url whose host the operator lists in ` +
+	`LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and may not name a private, ` +
+	`loopback, link-local or metadata IP (a yaml-declared backend keeps its own host). ` +
+	`Only an admin may set config.api_key_env; anyone else leaves the credential unset or uses ` +
+	`tenancy_strategy key_per_tenant with an env_pattern containing {tenant_id}, so each run sends its own tenant's key.`
 
 const memoryBackendDefInputSchema = `{
   "type": "object",
@@ -147,7 +149,10 @@ func (s *MemoryBackendDef) execCreate(ctx context.Context, policy tools.MemoryBa
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	if err := validateMemoryBackendDef(def); err != nil {
+	if err := validateMemoryBackendDef(s.Cfg, def, ""); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := s.checkAuthorCredential(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -282,7 +287,10 @@ func (s *MemoryBackendDef) execFork(ctx context.Context, policy tools.MemoryBack
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	if err := validateMemoryBackendDef(def); err != nil {
+	if err := validateMemoryBackendDef(s.Cfg, def, ""); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := s.checkAuthorCredential(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -498,25 +506,52 @@ func (s *MemoryBackendDef) bootstrapStatic(ctx context.Context, name string, sta
 	return created, nil
 }
 
-// ValidateMemoryBackendDefBody re-runs the authoring validation over a stored
-// memory-backend def body. A snapshot restore calls it (injected by the
-// restore call sites) before writing a body: base_url is dialed and the
-// api_key_env it names is sent there, so a restored pair must be one an author
-// could have created on this host.
-func ValidateMemoryBackendDefBody(body json.RawMessage) error {
-	var def mergedMemoryBackendDef
-	if err := json.Unmarshal(body, &def); err != nil {
-		return fmt.Errorf("definition does not decode as a memory backend def: %w", err)
+// checkAuthorCredential applies requireAuthorBoundCredential to a merged def,
+// against the yaml entry of the same name when there is one.
+func (s *MemoryBackendDef) checkAuthorCredential(ctx context.Context, def mergedMemoryBackendDef) error {
+	peer := remotePeerCredential{
+		BaseURL: def.Config.BaseURL, APIKeyEnv: def.Config.APIKeyEnv,
+		TenancyKind: def.TenancyStrategy.Kind, EnvPattern: def.TenancyStrategy.EnvPattern,
 	}
-	return validateMemoryBackendDef(def)
+	var static *remotePeerCredential
+	if st, ok := s.Cfg.MemoryBackends[def.Name]; ok {
+		static = &remotePeerCredential{
+			BaseURL: st.Config.BaseURL, APIKeyEnv: st.Config.APIKeyEnv,
+			TenancyKind: st.TenancyStrategy.Kind, EnvPattern: st.TenancyStrategy.EnvPattern,
+		}
+	}
+	return requireAuthorBoundCredential(ctx, peer, static)
 }
 
-// validateMemoryBackendDef enforces the runtime-supplied overlay shape.
-// STRUCTURAL validation only.
+// MemoryBackendDefBodyValidator returns the check a snapshot restore runs over
+// a stored memory-backend def body before writing it (injected by the restore
+// call sites): base_url is dialed and the api_key_env it names is sent there,
+// so a restored def must be one an author could have created on THIS host —
+// its host floor included. The one exemption is a remote def at exactly the
+// base_url cfg declares for its name, which a row bootstrapped from yaml
+// carries and which dials as operator-authored. A nil cfg lists no host.
+func MemoryBackendDefBodyValidator(cfg *config.Config) func(json.RawMessage) error {
+	return func(body json.RawMessage) error {
+		var def mergedMemoryBackendDef
+		if err := json.Unmarshal(body, &def); err != nil {
+			return fmt.Errorf("definition does not decode as a memory backend def: %w", err)
+		}
+		operatorBaseURL := ""
+		if cfg != nil {
+			operatorBaseURL = cfg.MemoryBackends[def.Name].Config.BaseURL
+		}
+		return validateMemoryBackendDef(cfg, def, operatorBaseURL)
+	}
+}
+
+// validateMemoryBackendDef enforces the runtime-supplied overlay shape, and
+// for kind remote the host floor (requireListedPeerHost; operatorBaseURL as
+// documented there). What the def may SEND is the author's to check
+// (requireAuthorBoundCredential), since it depends on who is authoring.
 //
 // RFC I MR-3a / mirrors WebhookDef's structure-only posture. Runs on
 // create AND fork.
-func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
+func validateMemoryBackendDef(cfg *config.Config, def mergedMemoryBackendDef, operatorBaseURL string) error {
 	// kind ∈ {"", "inprocess"} ("" treated as inprocess). The external
 	// `mem9` kind was removed once the in-process backend became a native
 	// memory layer, so authoring it is now refused here — while a def
@@ -622,6 +657,11 @@ func validateMemoryBackendDef(def mergedMemoryBackendDef) error {
 
 	if def.HealthCheckIntervalSeconds < 0 {
 		return fmt.Errorf("health_check_interval_seconds must be >= 0")
+	}
+	// Last, so a malformed def is told what is wrong with its shape first. Only
+	// kind remote dials base_url.
+	if def.Kind == "remote" {
+		return requireListedPeerHost(cfg, "config.base_url", def.Config.BaseURL, operatorBaseURL)
 	}
 	return nil
 }

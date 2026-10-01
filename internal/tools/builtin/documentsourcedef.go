@@ -49,9 +49,11 @@ const documentSourceDefDescription = `Author, fork, retire, and inspect named do
 	`Static document_sources.<name>: yaml entries remain the operator's immutable ground truth; this tool ` +
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
 	`Operations: create, fork, get, list, retire. ` +
-	`A source authored here may not name a private, loopback, link-local or metadata IP as config.base_url, ` +
-	`and reaches a host on a private network only when the operator lists that hostname in ` +
-	`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST (a yaml-declared source keeps its own host).`
+	`A source authored here needs a config.base_url whose host the operator lists in ` +
+	`LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and may not name a private, ` +
+	`loopback, link-local or metadata IP (a yaml-declared source keeps its own host). ` +
+	`Only an admin may set config.api_key_env; anyone else leaves the credential unset or uses ` +
+	`tenancy_strategy key_per_tenant with an env_pattern containing {tenant_id}, so each run sends its own tenant's key.`
 
 const documentSourceDefInputSchema = `{
   "type": "object",
@@ -143,7 +145,10 @@ func (s *DocumentSourceDef) execCreate(ctx context.Context, policy tools.Documen
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	if err := validateDocumentSourceDef(def); err != nil {
+	if err := validateDocumentSourceDef(s.Cfg, def, ""); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := s.checkAuthorCredential(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -278,7 +283,10 @@ func (s *DocumentSourceDef) execFork(ctx context.Context, policy tools.DocumentS
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
-	if err := validateDocumentSourceDef(def); err != nil {
+	if err := validateDocumentSourceDef(s.Cfg, def, ""); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := s.checkAuthorCredential(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -492,25 +500,54 @@ func (s *DocumentSourceDef) bootstrapStatic(ctx context.Context, name string, st
 	return created, nil
 }
 
-// ValidateDocumentSourceDefBody re-runs the authoring validation over a
-// stored document-source def body. A snapshot restore calls it (injected by
-// the restore call sites) before writing a body: base_url is dialed and the
-// api_key_env it names is sent there.
-func ValidateDocumentSourceDefBody(body json.RawMessage) error {
-	var def mergedDocumentSourceDef
-	if err := json.Unmarshal(body, &def); err != nil {
-		return fmt.Errorf("definition does not decode as a document source def: %w", err)
+// checkAuthorCredential applies requireAuthorBoundCredential to a merged def,
+// against the yaml entry of the same name when there is one.
+func (s *DocumentSourceDef) checkAuthorCredential(ctx context.Context, def mergedDocumentSourceDef) error {
+	peer := remotePeerCredential{
+		BaseURL: def.Config.BaseURL, APIKeyEnv: def.Config.APIKeyEnv,
+		TenancyKind: def.TenancyStrategy.Kind, EnvPattern: def.TenancyStrategy.EnvPattern,
 	}
-	return validateDocumentSourceDef(def)
+	var static *remotePeerCredential
+	if st, ok := s.Cfg.DocumentSources[def.Name]; ok {
+		static = &remotePeerCredential{
+			BaseURL: st.Config.BaseURL, APIKeyEnv: st.Config.APIKeyEnv,
+			TenancyKind: st.TenancyStrategy.Kind, EnvPattern: st.TenancyStrategy.EnvPattern,
+		}
+	}
+	return requireAuthorBoundCredential(ctx, peer, static)
+}
+
+// DocumentSourceDefBodyValidator returns the check a snapshot restore runs
+// over a stored document-source def body before writing it (injected by the
+// restore call sites): base_url is dialed and the api_key_env it names is sent
+// there, so a restored def must be one an author could have created on THIS
+// host — its host floor included. The one exemption is a def at exactly the
+// base_url cfg declares for its name, which a row bootstrapped from yaml
+// carries and which dials as operator-authored. A nil cfg lists no host.
+func DocumentSourceDefBodyValidator(cfg *config.Config) func(json.RawMessage) error {
+	return func(body json.RawMessage) error {
+		var def mergedDocumentSourceDef
+		if err := json.Unmarshal(body, &def); err != nil {
+			return fmt.Errorf("definition does not decode as a document source def: %w", err)
+		}
+		operatorBaseURL := ""
+		if cfg != nil {
+			operatorBaseURL = cfg.DocumentSources[def.Name].Config.BaseURL
+		}
+		return validateDocumentSourceDef(cfg, def, operatorBaseURL)
+	}
 }
 
 // validateDocumentSourceDef enforces the runtime-supplied overlay shape,
 // mirroring the static `document_sources.<name>:` validation in
-// config.Validate. A document source is dialed (base_url) and its
-// api_key_env is SENT to that peer, so both are load-bearing at the door.
+// config.Validate, plus the host floor (requireListedPeerHost;
+// operatorBaseURL as documented there). A document source is dialed
+// (base_url) and its api_key_env is SENT to that peer, so both are
+// load-bearing at the door; what the def may send is the author's to check
+// (requireAuthorBoundCredential).
 //
 // Runs on create AND fork.
-func validateDocumentSourceDef(def mergedDocumentSourceDef) error {
+func validateDocumentSourceDef(cfg *config.Config, def mergedDocumentSourceDef, operatorBaseURL string) error {
 	// base_url is required and dialed. Unlike MemoryBackend's optional
 	// inprocess base_url, a document source has no meaning without a peer.
 	if def.Config.BaseURL == "" {
@@ -549,7 +586,8 @@ func validateDocumentSourceDef(def mergedDocumentSourceDef) error {
 	default:
 		return fmt.Errorf("tenancy_strategy.kind %q must be \"\" or key_per_tenant", def.TenancyStrategy.Kind)
 	}
-	return nil
+	// Last, so a malformed def is told what is wrong with its shape first.
+	return requireListedPeerHost(cfg, "config.base_url", def.Config.BaseURL, operatorBaseURL)
 }
 
 // ---- response shape ----

@@ -25,6 +25,9 @@ func memoryBackendDefFixture(t *testing.T) (*MemoryBackendDef, context.Context, 
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	cfg := &config.Config{
+		// The hosts these tests author remote peers at; a runtime-authored
+		// remote peer is refused at any other host.
+		Env: config.Env{HTTPHostAllowlist: remotePeerTestHosts},
 		MemoryBackends: map[string]config.MemoryBackend{
 			"primary": {
 				Kind: "inprocess",
@@ -136,12 +139,13 @@ func TestMemoryBackendDefTool_CreateRefusesUnknownKind(t *testing.T) {
 }
 
 // TestMemoryBackendDefTool_CreateRemote pins that kind:remote (RFC CD Part B)
-// is now an accepted, authorable backend kind with a base_url + api_key_env.
+// is now an accepted, authorable backend kind with a base_url + api_key_env
+// (an admin's to name).
 func TestMemoryBackendDefTool_CreateRemote(t *testing.T) {
 	tool, ctx, cleanup := memoryBackendDefFixture(t)
 	defer cleanup()
 
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"peerb","overlay":{"kind":"remote","config":{"base_url":"https://peer.example:8787","api_key_env":"LOOMCYCLE_PEER_KEY"},"fallback_on_error":"inprocess"}}`))
+	res, _ := tool.Execute(asAdmin(ctx), json.RawMessage(`{"op":"create","name":"peerb","overlay":{"kind":"remote","config":{"base_url":"https://peer.example:8787","api_key_env":"LOOMCYCLE_PEER_KEY"},"fallback_on_error":"inprocess"}}`))
 	if res.IsError {
 		t.Fatalf("create kind=remote should succeed; got %s", res.Text)
 	}
@@ -388,7 +392,9 @@ func TestMemoryBackendDefTool_RefusesUnsafeAPIKeyEnv(t *testing.T) {
 			defer cleanup()
 			body := `{"op":"create","name":"b_` + tc.name[:3] + `","overlay":{"kind":"inprocess",` +
 				`"config":{"api_key_env":"` + tc.env + `"}}}`
-			res, _ := tool.Execute(ctx, json.RawMessage(body))
+			// As an admin, the one author who may name api_key_env at all: this
+			// is the name allowlist every api_key_env must pass.
+			res, _ := tool.Execute(asAdmin(ctx), json.RawMessage(body))
 			if tc.refuse && !res.IsError {
 				t.Fatalf("api_key_env=%s was accepted (%s); got %s", tc.env, tc.why, res.Text)
 			}

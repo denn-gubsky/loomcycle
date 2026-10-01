@@ -141,12 +141,24 @@ A `kind: remote` backend dials its `config.base_url` with the operator
 credential named by `api_key_env`, so a backend authored with this tool gets
 less network trust than one declared in yaml:
 
+- its `base_url` host must be one the operator lists in
+  `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`.
+  Anything else is refused when you create or fork the backend, and a stored
+  backend at an unlisted host is never dialed: the agent's memory falls back
+  to the local store, and a log line names the host;
 - its `base_url` may not be a literal private, loopback, link-local or
   metadata IP (`127.0.0.1`, `10.0.0.5`, `169.254.169.254`, `::1`, …);
 - it reaches a host that resolves to a private address only when the operator
   lists that hostname in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` — otherwise
   the call fails with `blocked: <host> has no public addresses`. A fork of a
-  yaml backend is authored here too, so it follows the same rule;
+  yaml backend is authored here too, so it follows the same rules;
+- only an admin may set `config.api_key_env`, which can name any credential
+  the server holds. Anyone else leaves the credential unset, or uses
+  `tenancy_strategy: {kind: key_per_tenant, env_pattern:
+  LOOMCYCLE_<NAME>_{tenant_id}}`: each run then sends its own tenant's key.
+  An author with no tenant may not use a pattern, since every tenant would
+  resolve that backend. A fork that keeps a yaml backend's `base_url` and
+  credential unchanged is allowed;
 - a `key_per_tenant` `env_pattern` must produce a `LOOMCYCLE_*` name that is
   not one of loomcycle's own secrets.
 
