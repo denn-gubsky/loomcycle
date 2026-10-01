@@ -182,16 +182,23 @@ func (s *Server) remoteRunForSteer(ctx context.Context, runID string) (store.Run
 	return run, nil
 }
 
-// takesOnlyVerdicts is the steer entry's VerdictsOnly read off the run's row,
-// for a replica that does not have the entry. The row carries no such flag, so
-// it is derived: a sub-run (it has a parent) that is not a team-walk member
-// (every member row carries its walk's id; a member's own sub-agents do not).
-// That is the Agent tool's child, which its owner registers verdicts-only.
+// takesOnlyVerdicts is the steer entry's VerdictsOnly read off the run's row.
+// The row carries no such flag, so it is derived: a sub-run (it has a parent)
+// that is not a team-walk member (every member row carries its walk's id; a
+// member's own sub-agents do not). That is the Agent tool's child, which its
+// owner registers verdicts-only.
 //
-// It also covers a resident child and a resumed sub-run, whose rows are
-// indistinguishable but whose owner registers a full entry: the owner admits a
-// retune, a non-owning replica refuses it. Refusing is the side a gate may err
-// on; carrying the kind on the row would make the two agree.
+// Read where no entry decides: by a replica that does not have the run, by the
+// compaction gate when the run is not live here, and by a resume, which
+// registers the resumed sub-run's entry from it — so a resumed child is
+// verdicts-only on its owner as on every other replica.
+//
+// A resident child shares the row shape and is where the two still disagree:
+// while it runs its owner registers a full entry and admits a retune a
+// non-owning replica refuses; resumed, it comes back verdicts-only. Refusing is
+// the side a gate may err on; carrying the kind on the row would make them
+// agree. A walk's or hook's run has no entry at all and is refused apart from
+// this, by runsNoLoop.
 func takesOnlyVerdicts(run store.Run) bool {
 	return run.ParentRunID != "" && (run.ParentContext == nil || run.ParentContext.WalkID == "")
 }
