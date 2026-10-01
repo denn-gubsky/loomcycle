@@ -280,7 +280,7 @@ func TestMetricsEndpoints_ErrorsAreJSONWithCode(t *testing.T) {
 		{"samples bad limit", enabled.handleMetricsSamples, "/v1/_metrics/samples?since=2026-05-13T00:00:00Z&limit=-3", "", http.StatusBadRequest, "invalid_limit", "invalid limit: must be positive integer (1..1000)"},
 		{"samples store failure", broken.handleMetricsSamples, "/v1/_metrics/samples?since=2026-05-13T00:00:00Z", "", http.StatusInternalServerError, "metrics_query_failed", "failed to query samples"},
 		{"run missing id", enabled.handleMetricsRunSummary, "/v1/_metrics/runs/", "", http.StatusBadRequest, "missing_run_id", "missing run_id"},
-		{"run unknown", enabled.handleMetricsRunSummary, "/v1/_metrics/runs/r_nope", "r_nope", http.StatusNotFound, "run_not_found", "run not found"},
+		{"run unknown", enabled.handleMetricsRunSummary, "/v1/_metrics/runs/r_nope", "r_nope", http.StatusNotFound, "unknown_run", "run not found"},
 		{"run store failure", broken.handleMetricsRunSummary, "/v1/_metrics/runs/r_nope", "r_nope", http.StatusInternalServerError, "metrics_query_failed", "failed to compute run summary"},
 		{"summary bad period", enabled.handleMetricsSummary, "/v1/_metrics/summary?period=42h", "", http.StatusBadRequest, "invalid_period", "invalid period: must be 1h | 24h | 7d"},
 		{"summary store failure", broken.handleMetricsSummary, "/v1/_metrics/summary?period=1h", "", http.StatusInternalServerError, "metrics_query_failed", "failed to query samples"},

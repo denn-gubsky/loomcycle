@@ -107,7 +107,7 @@ func (s *Server) handleMetricsRunSummary(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			writeJSONError(w, http.StatusNotFound, "run_not_found", "run not found")
+			writeJSONError(w, http.StatusNotFound, "unknown_run", "run not found")
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "metrics_query_failed", "failed to compute run summary")
