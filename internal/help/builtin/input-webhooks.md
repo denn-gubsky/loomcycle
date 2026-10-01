@@ -142,12 +142,14 @@ A shared front-half runs for every request, then forks on `delivery`:
    a different webhook or to a same-named webhook in another tenant is a
    separate delivery with its own run. A tenant-prefixed URL that falls
    through to a static or shared webhook is the same webhook as the bare
-   URL, so a re-send through any prefix is deduped. When the signature
-   covers the body only (GitHub `sha256=` or bare hex), the
+   URL, so a re-send through any prefix is deduped. Under any HMAC
+   signature (GitHub `sha256=`, bare hex, or Stripe `t=,v1=`) the
    `delivery_id_header` is not signed, so the delivery dedups on its body
-   too: a repeat of either the id or the byte-identical body is a duplicate
-   (a Stripe-signed delivery, whose timestamp is signed, keys on the id
-   alone).
+   too: a repeat of either the id or the byte-identical body is a duplicate.
+   A Stripe retry re-signs with a new timestamp but carries the same event
+   body, so it still lands on the original run. A sender that must deliver
+   two separate events with byte-identical bodies should put a unique id in
+   the body. Bearer and `none` auth sign nothing and key on the id alone.
 5. **Project** the payload via the Def's `payload_mapping` (strict JSONPath
    subset: `$.a.b`, `$.a[0]` — no wildcards/filters/recursion). An absent
    path resolves to empty + a tracing note, never a failure.
