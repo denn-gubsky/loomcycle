@@ -3959,6 +3959,15 @@ type Env struct {
 	// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO.
 	MCPAllowDynamicStdio bool
 
+	// MCPRefuseUnattributedEnv — when true, the MCP pool refuses to dial a
+	// runtime MCP server def that holds a ${NAME} env reference but was not
+	// saved with operator authority (no operator_authored bit: a row stored
+	// before authoring refused one, a restored older snapshot, a hand edit).
+	// Default false for this release: such a def still dials, expanding as
+	// before, with a WARNING once per def per process. The default flips to
+	// true in the next release. Env: LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1.
+	MCPRefuseUnattributedEnv bool
+
 	// RedactSecrets — F32. When true (the DEFAULT), tool I/O is scanned for
 	// secret-shaped substrings and masked BEFORE it is persisted to the
 	// events.payload BLOB (and thus to snapshots + the /v1/_events audit API).
@@ -5384,6 +5393,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// v0.8.15 LoomCycle MCP: dynamic agent registration policy.
 	cfg.Env.MCPAllowPrivilegedTools = os.Getenv("LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS") == "1"
 	cfg.Env.MCPAllowDynamicStdio = os.Getenv("LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO") == "1"
+	cfg.Env.MCPRefuseUnattributedEnv = os.Getenv("LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV") == "1"
 	// F32: default-ON. Only an explicit "0" disables redaction; an unset var
 	// keeps the secure posture (secrets masked before persistence).
 	cfg.Env.RedactSecrets = os.Getenv("LOOMCYCLE_REDACT_SECRETS") != "0"
@@ -5818,6 +5828,12 @@ func expandEnv(s string) string {
 // `Bearer ${run.credentials.x:-${LOOMCYCLE_TOKEN}}` survives verbatim and the
 // request-time substituter truncates on the nested brace.
 func ExpandEnv(s string) string { return expandEnv(s) }
+
+// HasEnvRef reports whether s holds a ${NAME} token, the form ExpandEnv reads
+// from this process's environment. ${run.*} late-bound tokens and $cred:
+// references do not match (a "." or ":" is not a NAME character), and neither
+// does the POSIX-default form ${NAME:-x}, which ExpandEnv does not expand.
+func HasEnvRef(s string) bool { return envVarRe.MatchString(s) }
 
 // parseHeaderList parses a comma-separated `key=value,key2=value2` string
 // into a map. Whitespace around keys, values, and separators is trimmed.

@@ -43,6 +43,14 @@ type MCPServerSpec struct {
 	// Source — "static" or "dynamic". Useful for log lines + the
 	// /ui/library/mcp-servers page's badge.
 	Source string
+	// OperatorAuthored carries a dynamic def's operator_authored bit (see
+	// SubstrateMCPServer.OperatorAuthored). False for a static spec, which is
+	// the operator's by Source: the dial decides on Source == "static" || this.
+	OperatorAuthored bool
+	// DefID / Version identify a dynamic spec's stored version (log lines
+	// only); empty / 0 for a static spec.
+	DefID   string
+	Version int
 }
 
 // MCPServer resolves an MCP server NAME to its effective runtime spec
@@ -138,6 +146,12 @@ type SubstrateMCPServer struct {
 	Env             map[string]string        `json:"env,omitempty"`     // stdio (F31)
 	Description     string                   `json:"description,omitempty"`
 	DiscoveredTools []SubstrateMCPServerTool `json:"discovered_tools,omitempty"`
+	// OperatorAuthored is server-stamped on create and fork, never taken from
+	// an overlay: true when the version was saved with operator authority, or
+	// keeps an operator's connection fields unchanged. Only such a version may
+	// have its ${NAME} references expanded from the server's environment at
+	// dial. Authority, not content: excluded from content_sha256.
+	OperatorAuthored bool `json:"operator_authored,omitempty"`
 }
 
 // SubstrateMCPServerTool is the cached form of a single tool the

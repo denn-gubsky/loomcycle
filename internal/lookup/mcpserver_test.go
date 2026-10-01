@@ -138,14 +138,15 @@ func TestMCPServer_TenantResolutionPrecedence(t *testing.T) {
 // introduce an asymmetric intermediate.
 func TestMCPServer_DriftDetection(t *testing.T) {
 	want := map[string]bool{
-		"transport":        true,
-		"url":              true,
-		"headers":          true,
-		"command":          true, // stdio (F31)
-		"args":             true, // stdio (F31)
-		"env":              true, // stdio (F31)
-		"description":      true,
-		"discovered_tools": true,
+		"transport":         true,
+		"url":               true,
+		"headers":           true,
+		"command":           true, // stdio (F31)
+		"args":              true, // stdio (F31)
+		"env":               true, // stdio (F31)
+		"description":       true,
+		"discovered_tools":  true,
+		"operator_authored": true, // server-stamped authority, not content
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateMCPServer{}))
 	for tag := range want {

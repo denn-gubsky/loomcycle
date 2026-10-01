@@ -83,6 +83,39 @@ as a yaml `mcp_servers.*` entry is expanded at config load. The live
 credential never touches the DB / backups / snapshots. (Earlier revisions
 baked the resolved token into the stored def — that is fixed.)
 
+**Only an admin may store a `${NAME}` reference.** Because the pool
+expands every `${NAME}` in `url`, `headers` and a stdio server's
+`command` / `args` / `env` from the server's own environment, a
+`${NAME}` is a read of an operator secret — another tenant's
+`LOOMCYCLE_PEER_KEY_<tenant>`, `GITHUB_TOKEN`, and so on. So:
+
+- An **admin** (a `substrate:admin` token, or the operator on an
+  unauthenticated open-mode / stdio surface) may store any `${NAME}`.
+- **Anyone else** (a `substrate:tenant` token, an agent in a run) is
+  refused at `create` / `fork` for any `${NAME}`, including one nested
+  in a default such as `${run.credentials.x:-${LOOMCYCLE_Y}}`. Use
+  `${run.credentials.<name>}` (a credential the run supplies) or
+  `$cred:<name>` (a credential stored for your tenant) instead; both
+  resolve per request for the run's own tenant. `${run.user_bearer}`,
+  `${run.tenant_id}` and `${run.root_run_id}` stay allowed.
+- A non-admin may still keep the **operator's own connection**: a
+  definition whose transport, url, headers and command/args/env are
+  exactly the yaml entry for that name, or exactly an admin-saved fork
+  parent's (e.g. a fork that only changes `description`).
+
+Each version records who saved it (`operator_authored`, set by the
+server, never from the overlay, and not part of `content_sha256`). A
+stored version that holds a `${NAME}` without it is **unattributed**: it
+was written before this rule, restored from an older snapshot, or edited
+by hand. For now an unattributed version **still dials** and expands as
+before, but it is listed at boot in a `mcp_server_defs: WARNING:` line,
+and the first dial of each one logs a `mcp_servers: WARNING:` line. Both
+name the def, version, tenant and fields, never the value. Set
+`LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` to refuse to dial unattributed
+versions now. **A future release refuses them by default.** To keep one,
+an admin acting in that tenant re-saves it (`create` with the same
+overlay mints a new, attributed version); otherwise retire it.
+
 ## Ops
 
 The `MCPServerDef` tool dispatches eight ops:

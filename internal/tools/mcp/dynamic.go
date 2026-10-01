@@ -61,6 +61,15 @@ type DynamicMCPServerSpec struct {
 	// colliding. Set from the authoritative principal at the write site;
 	// never from the wire.
 	TenantID string
+	// OperatorAuthored is the def's server-stamped operator_authored bit: the
+	// version was saved by a caller with operator authority. Only then may the
+	// pool expand its ${NAME} references from this process's environment.
+	OperatorAuthored bool
+	// DefID / Version name the stored version this spec came from, for the
+	// pool's log lines. Empty / 0 for a spec registered before its row exists
+	// (create's discovery handshake).
+	DefID   string
+	Version int
 }
 
 // DynamicRegistry holds runtime-registered MCP server specs. One
