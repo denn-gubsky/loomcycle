@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -181,7 +182,10 @@ func narrowHTTP(orig *HTTP, callerAllowed []string) *HTTP {
 // already lifted for that host by the same env var (PrivateHostAllowlist).
 // This is what makes localhost callbacks (jobs-search-agent's Phase B
 // pattern) work without disabling the SSRF defenses for the rest
-// of the universe.
+// of the universe. A CIDR entry on `exempt` that covers an alias's
+// loopback address ("127.0.0.0/8", "::1/128") keeps the alias too: the
+// dial guard lets that address through, so stripping the alias would
+// hide a host the operator made reachable.
 //
 // What's stripped when not on exempt (case-insensitive, trailing dot ignored):
 //   - "localhost" and any host whose final label is "localhost"
@@ -207,20 +211,35 @@ func StripLocalhostAliases(in []string, exempt []string) []string {
 			hostPart = hp
 		}
 		n := strings.ToLower(strings.TrimSuffix(hostPart, "."))
-		if exemptSet[n] {
+		addrs := loopbackAliasAddrs(n)
+		if addrs == nil || exemptSet[n] || anyIPLiteralAllowed(addrs, exempt) {
 			out = append(out, h)
-			continue
 		}
-		if n == "localhost" || strings.HasSuffix(n, ".localhost") {
-			continue
-		}
-		switch n {
-		case "127.0.0.1", "0.0.0.0", "::1", "[::]", "[::1]":
-			continue
-		}
-		out = append(out, h)
 	}
 	return out
+}
+
+// loopbackAliasAddrs returns the addresses a loopback-aliasing allowlist entry
+// (already lower-cased, trailing dot removed) reaches, or nil when the entry is
+// not such an alias.
+func loopbackAliasAddrs(n string) []string {
+	if n == "localhost" || strings.HasSuffix(n, ".localhost") {
+		return []string{"127.0.0.1", "::1"}
+	}
+	switch n {
+	case "127.0.0.1", "0.0.0.0", "::1", "[::]", "[::1]":
+		return []string{n}
+	}
+	return nil
+}
+
+func anyIPLiteralAllowed(addrs, allowlist []string) bool {
+	for _, a := range addrs {
+		if netguard.IPLiteralAllowed(a, allowlist) {
+			return true
+		}
+	}
+	return false
 }
 
 // findHTTPPrivateAllowlist scans the run's tool slice for an HTTP tool
