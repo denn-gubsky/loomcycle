@@ -151,6 +151,12 @@ func IsThinkingModel(model string) bool {
 		// (#608). So "flash" is NOT a safe non-thinking sibling — classify the
 		// v4 family as thinking so the downgrader routes it to deepseek-chat.
 		"v4",
+		// deepseek-flash, which replaced deepseek-v4-flash in the catalog
+		// (2026-10-02), thinks by default too: with no effort hint it refused a
+		// forced tool_choice with "Thinking mode does not support this
+		// tool_choice", although a plain call streamed no reasoning. Only
+		// deepseek-chat, served by the same model, answers without thinking.
+		"flash",
 	}
 	for _, m := range thinkingMarkers {
 		if strings.Contains(lower, m) {
@@ -170,9 +176,13 @@ func IsThinkingModel(model string) bool {
 // *-flash is NOT a safe target — production (2026-07-02) proved deepseek-v4-flash
 // ALSO runs in thinking mode and 400s ("reasoning_content ... must be passed
 // back") on the reasoning-less, cross-provider-stripped history, even after the
-// effort hint is dropped (#608). deepseek-chat is the canonical, always-available
-// model that never requires reasoning_content. Returns ("", false) for a
-// non-thinking model (incl. deepseek-chat itself → no infinite downgrade).
+// effort hint is dropped (#608); so does deepseek-flash, its successor.
+// deepseek-chat is the model that never requires reasoning_content. It has not
+// been in the /v1/models listing since 2026-10-02, but a request for it still
+// succeeds and is answered without thinking (served by deepseek-flash), and
+// nothing gates the downgrade target on the listing: the loop swaps the model on
+// a call it already resolved. Returns ("", false) for a non-thinking model
+// (incl. deepseek-chat itself → no infinite downgrade).
 func (d *Driver) NonThinkingSibling(model string) (string, bool) {
 	if !IsThinkingModel(model) {
 		return "", false
@@ -234,9 +244,10 @@ func (d *Driver) EnforcesToolChoice(model, effort string, tc providers.ToolChoic
 // Probe delegates to the OpenAI driver, which hits GET /v1/models
 // against whatever base URL was configured. DeepSeek's /v1/models
 // response uses the OpenAI-compatible shape ({"data": [{"id": ...}]}),
-// so the inner driver's parser works unchanged. Listed wire aliases
-// observed in production: deepseek-chat (V3 chat), deepseek-reasoner
-// (R1), deepseek-v4-flash, deepseek-v4-pro.
+// so the inner driver's parser works unchanged. Listed on 2026-10-02:
+// deepseek-flash and deepseek-v4-pro only. deepseek-chat and
+// deepseek-v4-flash still answer (served as deepseek-flash) but are not
+// listed, and the resolver skips an unlisted tier candidate.
 func (d *Driver) Probe(ctx context.Context) error {
 	return d.inner.Probe(ctx)
 }

@@ -148,7 +148,7 @@ func TestDriver_CapabilitiesMostlyMatchOpenAI(t *testing.T) {
 // TestIsThinkingModel covers the per-model affordance the driver
 // uses internally for thinking-class decisions. Naming convention:
 //
-//	thinking-class: the v4 family (incl. -flash), *-pro, deepseek-reasoner, -r1
+//	thinking-class: the v4 family, deepseek-flash, *-pro, deepseek-reasoner, -r1
 //	non-thinking:   deepseek-chat, deepseek-v3.2, deepseek-coder
 func TestIsThinkingModel(t *testing.T) {
 	cases := []struct {
@@ -166,6 +166,7 @@ func TestIsThinkingModel(t *testing.T) {
 		{"deepseek-coder", false},
 		{"DeepSeek-V4-Pro", true},   // case-insensitive
 		{"DeepSeek-V4-Flash", true}, // case-insensitive v4
+		{"deepseek-flash", true},    // thinks by default (live 2026-10-02)
 		{"", false},
 		{"unknown-model", false},
 	}
@@ -191,6 +192,7 @@ func TestNonThinkingSibling(t *testing.T) {
 		// -flash is NOT safe (v4-flash is itself thinking-mode; prod 2026-07-02).
 		{"deepseek-v4-pro", "deepseek-chat", true},
 		{"deepseek-v4-flash", "deepseek-chat", true},
+		{"deepseek-flash", "deepseek-chat", true},
 		{"deepseek-v3-pro", "deepseek-chat", true},
 		{"deepseek-reasoner", "deepseek-chat", true},
 		{"deepseek-r1", "deepseek-chat", true},
@@ -282,7 +284,10 @@ func TestDriver_ThinkingModeNeverSendsAForcedToolChoice(t *testing.T) {
 		{"v4 model, required", "deepseek-v4-flash", "", required},
 		{"reasoner, named", "deepseek-reasoner", "", named},
 		{"chat model with an effort hint, named", "deepseek-chat", "high", named},
-		{"hybrid flash with an effort hint, required", "deepseek-flash", "high", required},
+		// deepseek-flash with NO effort hint: live 2026-10-02 a stateful run 400'd
+		// "Thinking mode does not support this tool_choice".
+		{"flash, no effort, required", "deepseek-flash", "", required},
+		{"flash, no effort, named", "deepseek-flash", "", named},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := sentToolChoice(t, c.model, c.effort, c.tc); got != "" {
@@ -298,11 +303,6 @@ func TestDriver_ToolChoiceIsKeptWhereDeepSeekAcceptsIt(t *testing.T) {
 	named := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"}
 	if got := sentToolChoice(t, "deepseek-chat", "", named); !strings.Contains(got, `"emit_state"`) {
 		t.Errorf("deepseek-chat without effort: tool_choice = %q, want the named tool", got)
-	}
-	// deepseek-flash answers without thinking when no effort hint is set
-	// (measured live 2026-10-02), so a forced choice is sent there.
-	if got := sentToolChoice(t, "deepseek-flash", "", named); !strings.Contains(got, `"emit_state"`) {
-		t.Errorf("deepseek-flash without effort: tool_choice = %q, want the named tool", got)
 	}
 	if got := sentToolChoice(t, "deepseek-v4-flash", "", providers.ToolChoice{Mode: providers.ToolChoiceNone}); got != `"none"` {
 		t.Errorf("v4 model, none: tool_choice = %q, want \"none\"", got)
