@@ -4,18 +4,26 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type FormEvent,
   type ReactNode,
 } from "react";
 import type {
   AssistantContext,
   BrowseScope,
-  PathEntry,
   PathScope,
   Principal,
 } from "./types";
 import { useExplorerData, type ExplorerDataLayer } from "./lib/dataLayer";
 import type { DocSummary } from "./lib/colorScheme";
+import {
+  LazyPathTree,
+  LS_PAGE_LIMIT,
+  ancestorsOf,
+  documentIdsOf,
+  listSubtree,
+  parentPathOf,
+} from "./lib/lazyPathTree";
 import {
   ExplorerRoot,
   useResolvedDataLayer,
@@ -23,12 +31,7 @@ import {
 } from "./components/ExplorerRoot";
 import Splitter from "./components/Splitter";
 import DocumentViewerBody from "./components/DocumentViewerBody";
-import PathTree, {
-  buildPathTree,
-  collectDocumentIds,
-  parentPathOf,
-  type PathNode,
-} from "./components/PathTree";
+import PathTree, { buildLazyTree, type PathNode } from "./components/PathTree";
 
 // PathExplorer is the embeddable Path VFS console (RFC AL): the unified dirent
 // tree with directory + document CRUD, and an inline DocumentViewer for document
@@ -140,11 +143,12 @@ function PathExplorerBody({
   const data: ExplorerDataLayer = useExplorerData();
 
   const [scope, setScope] = useState<PathScope>(defaultScope ?? "user");
-  const [entries, setEntries] = useState<PathEntry[]>([]);
   const [internalSelected, setInternalSelected] = useState<string | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const [modal, setModal] = useState<ModalState | null>(null);
+  // Directories the operator has opened. Collapsed by default: opening one is
+  // what lists it, so nothing below the root is fetched until it is wanted.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   // Effective selection: controlled `path` prop overrides the internal state.
   const selectedPath = pathProp !== undefined ? pathProp : internalSelected;
@@ -175,76 +179,169 @@ function PathExplorerBody({
     [browseProp?.scopeId, browseProp?.tenant],
   );
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const resp = await data.pathLs("/", scope, true, browse);
-      setEntries(resp.entries ?? []);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-      setEntries([]);
-      onErrorRef.current?.(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [data, scope, browse]);
+  // One listing cache per (scope, subject): a new instance on a switch is also
+  // what makes a previous subject's in-flight pages land nowhere.
+  const lazy = useMemo(() => new LazyPathTree(data, scope, browse), [data, scope, browse]);
+  const dirs = useSyncExternalStore(lazy.subscribe, lazy.getSnapshot);
 
-  // Reload whenever the scope/browse changes (and on mount). Clear the selection
-  // on a CHANGE (not on mount) so a stale path from the previous scope/subject
-  // doesn't drive the detail pane — but the first run must respect a controlled
-  // parent's initial `path` (clearing on mount would fire onPathChange(undefined)
-  // and clobber it).
+  // report hands a listing failure to the host. The tree already shows it
+  // inline (root: the banner; a directory: its own row), so this never throws.
+  const report = useCallback((e: unknown) => {
+    onErrorRef.current?.(e);
+  }, []);
+
+  // RFC BN: per-document type/status + color settings, so PathTree can color +
+  // badge document rows. Fetched per listed page (≤ one page of ids per call —
+  // the bound documents_summary is sized for) and merged, rather than once for a
+  // whole tree that is no longer loaded at once. Best-effort — a failure just
+  // leaves those rows neutral. `requested` keeps a page from being re-asked on
+  // every listing change; summaryGen drops answers from before a reset.
+  const [summaries, setSummaries] = useState<Map<string, DocSummary>>(() => new Map());
+  const requested = useRef<Set<string>>(new Set());
+  const summaryGen = useRef(0);
+  const resetSummaries = useCallback(() => {
+    summaryGen.current++;
+    requested.current = new Set();
+    setSummaries(new Map());
+  }, []);
+
+  // Start over whenever the scope/browse changes (and on mount). Clear the
+  // selection on a CHANGE (not on mount) so a stale path from the previous
+  // scope/subject doesn't drive the detail pane — but the first run must respect
+  // a controlled parent's initial `path` (clearing on mount would fire
+  // onPathChange(undefined) and clobber it).
   const firstLoad = useRef(true);
   useEffect(() => {
     if (firstLoad.current) {
       firstLoad.current = false;
     } else {
       setSelected(undefined);
+      setErr(null);
+      setExpanded(new Set());
+      resetSummaries();
     }
-    void refresh();
-  }, [refresh, setSelected]);
+    lazy.loadDir("").catch(report);
+  }, [lazy, setSelected, resetSummaries, report]);
 
-  const tree = useMemo(() => buildPathTree(entries), [entries]);
-
-  // RFC BN: fetch per-document type/status + color settings for every document
-  // dirent in the tree, in ONE documents_summary call, so PathTree can color +
-  // badge document rows. Best-effort — a failure just leaves rows neutral.
-  const [summaries, setSummaries] = useState<Map<string, DocSummary>>(() => new Map());
+  // An opened directory that has never been listed gets listed. Keyed on the
+  // listings too, so a directory whose cache was dropped (moved away and back)
+  // while it stayed open re-lists instead of sitting empty. A FAILED listing is
+  // left for its retry row, so an outage doesn't turn into a request loop.
   useEffect(() => {
-    if (scope === "tenant") {
-      setSummaries(new Map()); // documents are agent|user only
-      return;
+    for (const d of expanded) {
+      if (!dirs.has(d)) lazy.loadDir(d).catch(report);
     }
-    const ids = entries
-      .filter((e) => e.kind === "document")
-      .map((e) => (e.resource_ref as { document_id?: string } | undefined)?.document_id)
-      .filter((id): id is string => !!id);
-    if (ids.length === 0) {
-      setSummaries(new Map());
-      return;
+  }, [lazy, expanded, dirs, report]);
+
+  // Deep link / post-mutation selection: open the selection's ancestors and list
+  // them — paging a directory until the selected entry shows, since it may sit
+  // past the first page. Skipped on a scope/subject switch: that render still
+  // carries the previous selection, which the effect above is clearing.
+  const revealedIn = useRef<LazyPathTree | null>(null);
+  useEffect(() => {
+    const switched = revealedIn.current !== null && revealedIn.current !== lazy;
+    revealedIn.current = lazy;
+    if (!selectedPath || switched) return;
+    const ancestors = ancestorsOf(selectedPath).filter((d) => d !== "");
+    setExpanded((prev) => {
+      if (ancestors.every((d) => prev.has(d))) return prev;
+      const next = new Set(prev);
+      ancestors.forEach((d) => next.add(d));
+      return next;
+    });
+    lazy.reveal(selectedPath).catch(report);
+  }, [lazy, selectedPath, report]);
+
+  useEffect(() => {
+    if (scope === "tenant") return; // the tree view colors agent|user documents only
+    const fresh: string[] = [];
+    for (const listing of dirs.values()) {
+      for (const id of documentIdsOf(listing.entries)) {
+        if (!requested.current.has(id)) {
+          requested.current.add(id);
+          fresh.push(id);
+        }
+      }
     }
-    let cancelled = false;
-    data
-      .documentsSummary({ documentIds: ids }, scope, browse)
-      .then((resp) => {
-        if (cancelled) return;
-        const m = new Map<string, DocSummary>();
-        for (const d of resp.documents ?? []) m.set(d.document_id, d);
-        setSummaries(m);
-      })
-      .catch(() => {
-        if (!cancelled) setSummaries(new Map());
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [data, entries, scope, browse]);
+    const gen = summaryGen.current;
+    for (let i = 0; i < fresh.length; i += LS_PAGE_LIMIT) {
+      data
+        .documentsSummary({ documentIds: fresh.slice(i, i + LS_PAGE_LIMIT) }, scope, browse)
+        .then((resp) => {
+          if (summaryGen.current !== gen) return;
+          setSummaries((prev) => {
+            const m = new Map(prev);
+            for (const d of resp.documents ?? []) m.set(d.document_id, d);
+            return m;
+          });
+        })
+        .catch(() => {});
+    }
+  }, [data, dirs, scope, browse]);
+
+  const tree = useMemo(() => buildLazyTree(dirs), [dirs]);
+
+  // refresh re-lists the root and every open directory, then re-reveals the
+  // selection (it may have been on a page the reload folded away).
+  const refresh = useCallback(async () => {
+    setErr(null);
+    resetSummaries();
+    await lazy.refresh(expanded).catch(report);
+    if (selectedPath) await lazy.reveal(selectedPath).catch(report);
+  }, [lazy, expanded, selectedPath, resetSummaries, report]);
+
+  const toggle = useCallback((dir: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
+  }, []);
+
+  const loadMore = useCallback((dir: string) => lazy.loadMore(dir).catch(report), [lazy, report]);
+  const retry = useCallback(
+    (dir: string) => {
+      const listing = lazy.getSnapshot().get(dir);
+      (listing?.loaded ? lazy.loadMore(dir) : lazy.loadDir(dir)).catch(report);
+    },
+    [lazy, report],
+  );
 
   const selected = useMemo(
     () => (selectedPath ? findNode(tree, selectedPath) : undefined),
     [tree, selectedPath],
   );
+  const rootErr = dirs.get("")?.error;
+
+  // Whether the selected directory has its own dirent or exists only through its
+  // descendants. A one-level listing reports both as `directory`, so this asks
+  // per selection; a data layer without pathIsStored just omits the row.
+  const selectedDir = selected?.kind === "directory" ? selected.fullPath : undefined;
+  const [stored, setStored] = useState<{ path: string; explicit: boolean } | null>(null);
+  useEffect(() => {
+    if (!selectedDir || !data.pathIsStored) return;
+    let cancelled = false;
+    data.pathIsStored(selectedDir, scope, browse).then(
+      (explicit) => {
+        if (!cancelled) setStored({ path: selectedDir, explicit });
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [data, selectedDir, scope, browse]);
+  // Only a directory can be implicit; every other kind is a stored entry.
+  const storedLabel = !selected
+    ? undefined
+    : selected.kind !== "directory"
+      ? "yes"
+      : stored?.path === selected.fullPath
+        ? stored.explicit
+          ? "yes"
+          : "implicit (no entry)"
+        : undefined;
 
   // The directory new items are created under: the selected directory, the
   // parent of a selected leaf, or root.
@@ -266,11 +363,11 @@ function PathExplorerBody({
         if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
         const p = joinPath(currentDir, name);
         await data.pathMkdir(p, scope, browse);
-        await refresh();
+        await lazy.invalidate(p).catch(report);
         setSelected(p);
       },
     });
-  }, [data, currentDir, currentDirLabel, scope, browse, refresh, setSelected]);
+  }, [data, lazy, currentDir, currentDirLabel, scope, browse, report, setSelected]);
 
   const newDocument = useCallback(() => {
     setModal({
@@ -286,11 +383,11 @@ function PathExplorerBody({
         const title = v.title.trim() || name;
         const p = joinPath(currentDir, name);
         await data.documentCreate(title, p, scope, browse);
-        await refresh();
+        await lazy.invalidate(p).catch(report);
         setSelected(p);
       },
     });
-  }, [data, currentDir, currentDirLabel, scope, browse, refresh, setSelected]);
+  }, [data, lazy, currentDir, currentDirLabel, scope, browse, report, setSelected]);
 
   const renameSelected = useCallback(() => {
     if (!selected) return;
@@ -302,11 +399,14 @@ function PathExplorerBody({
         const to = v.to.trim();
         if (!to.startsWith("/")) throw new Error("path must start with /");
         await data.pathMv(selected.fullPath, to, scope, browse);
-        await refresh();
+        await Promise.all([
+          lazy.invalidate(selected.fullPath, { dropSubtree: true }),
+          lazy.invalidate(to),
+        ]).catch(report);
         setSelected(to);
       },
     });
-  }, [data, selected, scope, browse, refresh, setSelected]);
+  }, [data, lazy, selected, scope, browse, report, setSelected]);
 
   const deleteSelected = useCallback(() => {
     if (!selected) return;
@@ -323,7 +423,7 @@ function PathExplorerBody({
         onSubmit: async () => {
           if (!id) throw new Error("this document dirent has no document_id");
           await data.documentDelete(id, scope, browse);
-          await refresh();
+          await lazy.invalidate(selected.fullPath).catch(report);
           setSelected(undefined);
         },
       });
@@ -331,30 +431,43 @@ function PathExplorerBody({
     }
     // Directory: cascade-delete contained Documents (so no orphaned content),
     // then remove the dirent subtree. Documents only exist in agent|user scope.
-    const docIds = scope === "tenant" ? [] : collectDocumentIds(selected);
-    const childCount = selected.children.length;
-    setModal({
-      title: `Delete branch ${selected.fullPath}`,
-      message:
-        childCount === 0
-          ? "This removes the (empty) folder."
-          : `This removes the folder and everything under it` +
-            (docIds.length > 0
-              ? ` — including ${docIds.length} document(s), whose chunks are deleted.`
-              : "."),
-      fields: [],
-      submitLabel: "Delete",
-      danger: true,
-      onSubmit: async () => {
-        for (const id of docIds) {
-          await data.documentDelete(id, scope, browse);
-        }
-        await data.pathRm(selected.fullPath, scope, true, browse);
-        await refresh();
-        setSelected(undefined);
-      },
-    });
-  }, [data, selected, scope, browse, refresh, setSelected]);
+    // The tree holds only the directories that were opened, so the branch is
+    // listed in full here — the confirmation must count, and the delete must
+    // reach, every Document under it, not just the ones on screen.
+    const target = selected;
+    setErr(null);
+    void (async () => {
+      let subtree;
+      try {
+        subtree = await listSubtree(data, target.fullPath, scope, browse);
+      } catch (e) {
+        setErr(`could not list ${target.fullPath} for delete: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      const docIds = scope === "tenant" ? [] : documentIdsOf(subtree);
+      setModal({
+        title: `Delete branch ${target.fullPath}`,
+        message:
+          subtree.length === 0
+            ? "This removes the (empty) folder."
+            : `This removes the folder and everything under it` +
+              (docIds.length > 0
+                ? ` — including ${docIds.length} document(s), whose chunks are deleted.`
+                : "."),
+        fields: [],
+        submitLabel: "Delete",
+        danger: true,
+        onSubmit: async () => {
+          for (const id of docIds) {
+            await data.documentDelete(id, scope, browse);
+          }
+          await data.pathRm(target.fullPath, scope, true, browse);
+          await lazy.invalidate(target.fullPath, { dropSubtree: true }).catch(report);
+          setSelected(undefined);
+        },
+      });
+    })();
+  }, [data, lazy, selected, scope, browse, report, setSelected]);
 
   const mutable = selected && (selected.kind === "directory" || selected.kind === "document");
 
@@ -411,19 +524,18 @@ function PathExplorerBody({
               </>
             )}
           </p>
-          {err && <div className="paths-err">{err}</div>}
-          {loading && entries.length === 0 ? (
-            <div className="empty">
-              <p>Loading…</p>
-            </div>
-          ) : (
-            <PathTree
-              tree={tree}
-              selectedPath={selectedPath}
-              onSelect={(n) => setSelected(n.fullPath)}
-              summaries={summaries}
-            />
-          )}
+          {(err || rootErr) && <div className="paths-err">{err || rootErr}</div>}
+          <PathTree
+            tree={tree}
+            root={dirs.get("")}
+            expanded={expanded}
+            onToggle={toggle}
+            onLoadMore={loadMore}
+            onRetry={retry}
+            selectedPath={selectedPath}
+            onSelect={(n) => setSelected(n.fullPath)}
+            summaries={summaries}
+          />
         </div>
         <div className="right">
           {selected ? (
@@ -460,8 +572,12 @@ function PathExplorerBody({
                 <dl className="paths-detail-meta">
                   <dt>scope</dt>
                   <dd>{scope}</dd>
-                  <dt>stored</dt>
-                  <dd>{selected.explicit ? "yes" : "implicit (no entry)"}</dd>
+                  {storedLabel && (
+                    <>
+                      <dt>stored</dt>
+                      <dd>{storedLabel}</dd>
+                    </>
+                  )}
                 </dl>
                 {mutable ? (
                   <div className="paths-detail-actions">

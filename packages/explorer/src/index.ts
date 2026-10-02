@@ -36,7 +36,7 @@ export type { Connection, AssetFetch } from "./lib/createClient";
 // The data-layer seam: inject a custom implementation, or build one from a
 // @loomcycle/client instance.
 export { dataLayerFromClient } from "./lib/dataLayer";
-export type { ExplorerDataLayer, ChunkPatch } from "./lib/dataLayer";
+export type { ExplorerDataLayer, ChunkPatch, PathLsPage, PathLsResult } from "./lib/dataLayer";
 
 // RFC BN per-document color schemes: the metadata shapes the data layer produces
 // (documents_summary / get_document) + the palette resolvers, for a host that

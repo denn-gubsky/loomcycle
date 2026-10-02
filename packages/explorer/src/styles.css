@@ -427,6 +427,27 @@
   opacity: 0.7;
   font-style: italic;
 }
+/* A directory's trailing status / "load more" row (the tree lists lazily). */
+.loomcycle-explorer .path-status {
+  padding: 2px 8px;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .path-err {
+  color: var(--failed);
+}
+.loomcycle-explorer .path-more {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--fg-soft);
+  cursor: pointer;
+  padding: 2px 8px;
+  font: inherit;
+}
+.loomcycle-explorer .path-more:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 
 /* Detail (right) pane. */
 .loomcycle-explorer .paths-detail {

@@ -1200,8 +1200,10 @@ async function substratePost<T>(path: string, body: unknown, browse?: BrowseScop
   throw new Error(msg);
 }
 
-// pathLs lists a path. recursive returns the whole subtree (the tree view
-// fetches the subtree once and reconstructs intermediate dirs client-side).
+// pathLs lists a path (recursive: the subtree, flat). The runtime pages every
+// listing — a clipped one reports truncated + next_cursor — so this returns only
+// the FIRST page. The Path tree view does not use it: it lists per directory
+// through @loomcycle/explorer's data layer, which follows the cursor.
 export function pathLs(
   path: string,
   scope: PathScope,

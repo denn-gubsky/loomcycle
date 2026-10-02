@@ -25,6 +25,31 @@ describe("dataLayerFromClient — @loomcycle/client → wire mapping", () => {
     );
   });
 
+  it("pathLs passes a page's limit + cursor through, and only when set", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.pathLs("/facts", "user", false, BROWSE, { limit: 500, cursor: "Zjk" });
+    expect(s.path).toHaveBeenCalledWith(
+      { op: "ls", path: "/facts", scope: "user", recursive: false, limit: 500, cursor: "Zjk" },
+      BROWSE,
+    );
+  });
+
+  it("pathIsStored: a stat refusal means implicit, any other failure propagates", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    s.path.mockResolvedValueOnce({ kind: "directory" });
+    await expect(dl.pathIsStored!("/a", "user", BROWSE)).resolves.toBe(true);
+    expect(s.path).toHaveBeenLastCalledWith({ op: "stat", path: "/a", scope: "user" }, BROWSE);
+
+    const refused = Object.assign(new Error("no such path: /a"), { name: "SubstrateToolRefusedError" });
+    s.path.mockRejectedValueOnce(refused);
+    await expect(dl.pathIsStored!("/a", "user")).resolves.toBe(false);
+
+    s.path.mockRejectedValueOnce(new Error("network down"));
+    await expect(dl.pathIsStored!("/a", "user")).rejects.toThrow("network down");
+  });
+
   it("pathMkdir / pathMv / pathRm map args + carry browse", async () => {
     const s = stubClient();
     const dl = dataLayerFromClient(s.client);
