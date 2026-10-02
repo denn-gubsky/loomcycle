@@ -771,6 +771,30 @@ type chunk struct {
 	// Usage fields (only present on the final "done":true frame).
 	PromptEvalCount int `json:"prompt_eval_count"`
 	EvalCount       int `json:"eval_count"`
+
+	// Phase durations, in nanoseconds, on the same done frame: the whole
+	// request, loading the model (≈0 when it was already resident), evaluating
+	// the prompt, and generating the reply. They give exact prefill and decode
+	// speed and the cold-load cost, which the caller cannot see from outside.
+	TotalDuration      int64 `json:"total_duration"`
+	LoadDuration       int64 `json:"load_duration"`
+	PromptEvalDuration int64 `json:"prompt_eval_duration"`
+	EvalDuration       int64 `json:"eval_duration"`
+}
+
+// timing converts the done frame's phase durations to a CallTiming, or nil
+// when the frame reported none (an older server, or a non-done frame).
+func (c chunk) timing() *providers.CallTiming {
+	if c.TotalDuration <= 0 && c.LoadDuration <= 0 && c.PromptEvalDuration <= 0 && c.EvalDuration <= 0 {
+		return nil
+	}
+	ms := func(ns int64) int64 { return time.Duration(ns).Milliseconds() }
+	return &providers.CallTiming{
+		LoadMs:        ms(c.LoadDuration),
+		PrefillMs:     ms(c.PromptEvalDuration),
+		DecodeMs:      ms(c.EvalDuration),
+		ServerTotalMs: ms(c.TotalDuration),
+	}
 }
 
 type message struct {
@@ -927,6 +951,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 					InputTokens:  c.PromptEvalCount,
 					OutputTokens: c.EvalCount,
 					Model:        model,
+					Timing:       c.timing(),
 				}
 				usage.MaxContextTokens = maxCtx
 			}
