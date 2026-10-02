@@ -325,7 +325,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 					"name":          {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
 					"system_prompt": {"type": "string", "maxLength": 65536},
 					"tools": {"type": "array", "items": {"type": "string"}, "minItems": 1},
-					"tier":          {"type": "string"},
+					"tier":          {"type": "string", "description": "Model tier to route by. Set either tier or provider/model, not both; a request with both is refused."},
 					"provider":      {"type": "string"},
 					"model":         {"type": "string"},
 					"effort":        {"type": "string", "enum": ["minimal", "low", "medium", "high"]},
