@@ -186,11 +186,10 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 			if req.Agent != "" && evt.Agent != req.Agent {
 				continue
 			}
-			// A run with no parent context cannot belong to a walk, so an
-			// unstamped event is filtered out rather than passed through — a
-			// walk view that also showed unrelated runs would not be a walk
-			// view.
-			if !walkIDMatches(req.WalkID, evt.ParentContext) {
+			// The walk's own run and the runs it stamped belong to the walk;
+			// anything else is filtered out rather than passed through — a walk
+			// view that also showed unrelated runs would not be a walk view.
+			if !walkIDMatches(req.WalkID, evt.RunID, evt.ParentContext) {
 				continue
 			}
 			if len(statusSet) > 0 && !statusSet[evt.Status] {
@@ -209,14 +208,18 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 // walkIDMatches reports whether an event belongs to the filtered walk.
 //
 // An empty filter matches everything — the whole-user stream is unchanged for
-// every caller that does not ask for a walk. A run with NO parent context
-// cannot belong to any walk, so it is EXCLUDED rather than passed through: a
-// walk view that also showed unrelated runs would not be a walk view.
-func walkIDMatches(want string, pc *store.ParentContext) bool {
+// every caller that does not ask for a walk. A walk's id IS its own run's id,
+// and that run carries no parent context of its own, so it matches on runID:
+// without it the walk's start, its pauses and its end never reached a stream
+// filtered by the one handle a caller holds, though listing the walk shows
+// that run. Any other run with NO parent context cannot belong to a walk, so it
+// is EXCLUDED rather than passed through: a walk view that also showed
+// unrelated runs would not be a walk view.
+func walkIDMatches(want, runID string, pc *store.ParentContext) bool {
 	if want == "" {
 		return true
 	}
-	return pc != nil && pc.WalkID == want
+	return runID == want || (pc != nil && pc.WalkID == want)
 }
 
 func runStateEventToConnector(e runstate.RunStateEvent) connector.RunStateEvent {
