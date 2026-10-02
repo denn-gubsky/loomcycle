@@ -235,6 +235,9 @@ func Walk(ctx context.Context, d teamgraph.Definition, task *Task, r Runner, opt
 				// Fresh window; this tripping entry becomes iteration #1.
 				task.IterationCounts[st.ID] = 1
 			case CapReroute:
+				if err := refuseInputReentry(d, st.ID, dec.Reroute); err != nil {
+					return trace, err
+				}
 				// Unstick the capped state (fresh window on a future revisit) and
 				// jump. An unknown target is caught by StateByID next iteration.
 				task.IterationCounts[st.ID] = 0

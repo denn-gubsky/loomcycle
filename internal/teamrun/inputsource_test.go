@@ -234,3 +234,41 @@ func TestInputStarter_MaxAboveTheDeploymentCeilingIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want the deployment ceiling refusal", err)
 	}
 }
+
+// A cap reroute is the one target chosen at run time, so validation cannot
+// refuse it: the walk does. Rerouting into the input-sourced entry would
+// dispatch the capped state's input as if it were the walk's input.
+func TestWalk_CapRerouteIntoAnInputStarterRefused(t *testing.T) {
+	d := mustParse(t, `{
+  "entry":"research",
+  "max_iterations":1,
+  "states":[
+    {"state":"research","handler":{"kind":"starter","source":{"kind":"input"},
+      "fanout":{"agent":"researcher","per":"message","max":1}}},
+    {"state":"review","handler":{"kind":"agent","agent":"reviewer"}},
+    {"state":"done","handler":{"kind":"terminal"}}
+  ],
+  "transitions":[
+    {"from":"research","to":"review","on":"success"},
+    {"from":"review","to":"review","on":"pushback:redo"},
+    {"from":"review","to":"done","on":"success"}
+  ]}`)
+	r := &fakeRunner{outcomes: map[string]Outcome{"review": {Output: "again", Edge: "pushback:redo"}}}
+	asked := 0
+	_, err := Walk(context.Background(), d, &Task{Input: `{"chunk_id":"c"}`}, r,
+		OnCap(func(_ context.Context, _ *ErrIterationCap) (CapDecision, error) {
+			// Reroute once, then abort: without the refusal the walk would
+			// otherwise loop entry → review → cap forever.
+			if asked++; asked > 1 {
+				return CapDecision{Action: CapAbort}, nil
+			}
+			return CapDecision{Action: CapReroute, Reroute: "research"}, nil
+		}))
+	if err == nil || !strings.Contains(err.Error(), `reroute to "research" refused`) ||
+		!strings.Contains(err.Error(), "route a retry to a later state") {
+		t.Fatalf("err = %v, want the reroute into the input starter refused", err)
+	}
+	if got := strings.Join(r.calls, ","); got != "research,review" {
+		t.Errorf("ran %s, want research once then review once (the entry not re-run)", got)
+	}
+}

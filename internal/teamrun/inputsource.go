@@ -105,3 +105,17 @@ func textItem(input string) (json.RawMessage, error) {
 	}
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }
+
+// refuseInputReentry refuses a cap reroute into an input-sourced Starter. The
+// definition can name no edge into one (validation refuses it), but a reroute
+// target is chosen at run time — by a person answering a cap interruption —
+// and by then the walk's input slot holds the capped state's input, not the
+// input the walk was started with. Refused rather than degraded to abort so
+// the person sees why their answer was not followed.
+func refuseInputReentry(d teamgraph.Definition, from, target string) error {
+	if to, ok := teamgraph.StateByID(d, target); ok && teamgraph.IsInputStarter(to) {
+		return fmt.Errorf("teamrun: state %q: reroute to %q refused — it is a starter that reads the walk's input, "+
+			"and its items are the input the walk was started with; route a retry to a later state", from, target)
+	}
+	return nil
+}
