@@ -910,7 +910,8 @@ export async function streamWalkRunStates(
 export interface RunBreakpoints {
   run_id: string;
   // Canonical: phase-qualified ("<state>:before_dispatch", "<state>:review").
-  armed: string[];
+  // null when nothing is armed: the server encodes an empty set as null.
+  armed: string[] | null;
   // Deadline a member hold beginning now gets; 0 = none.
   review_ttl_seconds: number;
 }
@@ -1300,6 +1301,28 @@ export function documentQueryChunks(
     },
     browse,
   );
+}
+
+// DocumentRow is one query_documents row (metadata only).
+export interface DocumentRow {
+  document_id: string;
+  title: string;
+  root_chunk_id: string;
+  type?: string;
+  status?: string;
+}
+
+// documentQueryDocuments lists the documents in a scope, optionally only those
+// named at/under a Path prefix (under_path). Returns the first `limit` (the
+// server caps at 1000), ordered by title.
+export function documentQueryDocuments(
+  scope: DocScope,
+  underPath?: string,
+  limit = 1000,
+): Promise<{ documents: DocumentRow[] }> {
+  const body: Record<string, unknown> = { op: "query_documents", scope, limit };
+  if (underPath) body.under_path = underPath;
+  return substratePost("/v1/_document", body);
 }
 
 // RetentionReport is GET /v1/_retention — what the sweeper is configured to do, and
@@ -2081,6 +2104,14 @@ export function deleteTeam(name: string): Promise<{ name: string; deleted: boole
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ op: "delete", name }),
   });
+}
+
+// runTeam starts a walk of a team's active version (op=run, mode=detach): the
+// server checks `input` against the entry state's input form, then returns the
+// walk's run id at once while the walk continues in the background. A refused
+// input is a 422 whose message (surfaced by substratePost) names the field.
+export function runTeam(name: string, input: string): Promise<{ name: string; def_id: string; run_id: string; status: string }> {
+  return substratePost("/v1/_teamdef", { op: "run", name, input, mode: "detach" });
 }
 
 // previewTeamDiagram renders a DRY-RUN diagram from an unsaved graph overlay

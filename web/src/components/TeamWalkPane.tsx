@@ -595,7 +595,7 @@ function BreakpointsEditor({
   state: BreakpointsState;
   onSave: WalkActions["saveBreakpoints"];
 }) {
-  const armed = state.kind === "ready" ? state.data.armed.join(", ") : "";
+  const armed = state.kind === "ready" ? (state.data.armed ?? []).join(", ") : "";
   const ttl = state.kind === "ready" ? String(state.data.review_ttl_seconds) : "0";
   const [text, setText] = useState(armed);
   const [ttlText, setTTLText] = useState(ttl);

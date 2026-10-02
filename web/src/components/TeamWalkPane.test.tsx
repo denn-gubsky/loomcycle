@@ -143,6 +143,12 @@ describe("TeamWalkView", () => {
     expect(html).toContain('value="300"');
   });
 
+  it("renders a live walk with nothing armed, which the server reports as armed: null", () => {
+    const html = render({ breakpoints: { kind: "ready", data: { run_id: WALK, armed: null, review_ttl_seconds: 0 } } });
+    expect(html).toContain('placeholder="none armed"');
+    expect(html).toContain('aria-label="armed breakpoints" value=""');
+  });
+
   it("says why breakpoints are unavailable instead of failing", () => {
     const html = render({ breakpoints: { kind: "unavailable", reason: "not live on this one" } });
     expect(html).toContain("not live on this one");
