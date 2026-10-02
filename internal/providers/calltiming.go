@@ -24,14 +24,17 @@ type CallTiming struct {
 	LoadMs    int64 `json:"load_ms,omitempty"`
 	PrefillMs int64 `json:"prefill_ms,omitempty"`
 	DecodeMs  int64 `json:"decode_ms,omitempty"`
-	// QueueMs is wall time the server did not account for (DurationMs minus the
-	// server's total) — waiting behind other calls on a one-model box, plus the
-	// network. Recorded so contention is visible; a throughput estimate must not
-	// learn from it, because it measures load on the box, not the model's speed.
+	// QueueMs is wall time not spent on the call's own work: DurationMs minus
+	// the load, prefill and decode phases when the driver reported them, else
+	// minus the server's total — waiting behind other calls on a one-model box
+	// (inside the server or before it), plus the network. Recorded so contention
+	// is visible; a throughput estimate must not learn from it, because it
+	// measures load on the box, not the model's speed.
 	QueueMs int64 `json:"queue_ms,omitempty"`
 
 	// ServerTotalMs is the server's total for the call (Ollama total_duration).
-	// Only an input to QueueMs; not part of the wire shape.
+	// Only an input to QueueMs, used when no phase was reported; not part of the
+	// wire shape.
 	ServerTotalMs int64 `json:"-"`
 }
 
@@ -93,7 +96,18 @@ func (t *CallTimer) Stamp(u *Usage) {
 	if !t.first.IsZero() {
 		tm.TTFTMs = t.first.Sub(t.start).Milliseconds()
 	}
-	if tm.ServerTotalMs > 0 && tm.DurationMs > tm.ServerTotalMs {
+	// Queue time is wall time the server did not spend on THIS call's work.
+	// Measure it against the phases when the driver reported them, not against
+	// the server's total: Ollama's total_duration starts when the request
+	// reaches the server, so a call that waited there for a runner slot behind
+	// another call carries the whole wait inside its total — 150 s of it on a
+	// one-model box serving two calls — and the wait would read as slowness.
+	switch {
+	case tm.PrefillMs > 0 || tm.DecodeMs > 0:
+		if served := tm.LoadMs + tm.PrefillMs + tm.DecodeMs; tm.DurationMs > served {
+			tm.QueueMs = tm.DurationMs - served
+		}
+	case tm.ServerTotalMs > 0 && tm.DurationMs > tm.ServerTotalMs:
 		tm.QueueMs = tm.DurationMs - tm.ServerTotalMs
 	}
 	u.Timing = &tm
