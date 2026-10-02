@@ -345,16 +345,19 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 	callCtx, cancel := context.WithTimeout(ctx, describeCallTimeout)
 	defer cancel()
 
+	timer := providers.StartCallTimer(nil)
 	ch, err := prov.Call(callCtx, req)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	var callErr error
+	var usage *providers.Usage
 	stopReason := ""
 	// Drain to completion even after an error: abandoning the channel leaves the
 	// driver's goroutine blocked on a send.
 	for ev := range ch {
+		timer.Observe(ev)
 		switch ev.Type {
 		case providers.EventText:
 			b.WriteString(ev.Text)
@@ -362,11 +365,24 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 			if ev.StopReason != "" {
 				stopReason = ev.StopReason
 			}
+			usage = ev.Usage
 		case providers.EventError:
 			if callErr == nil {
 				callErr = errors.New(ev.Error)
 			}
 		}
+	}
+	// The vision model's speed, for the throughput estimate (not billed: unchanged).
+	if usage != nil {
+		u := *usage
+		if u.Provider == "" {
+			u.Provider = providerID
+		}
+		if u.Model == "" {
+			u.Model = model
+		}
+		timer.Stamp(&u)
+		s.ObserveCallTiming(&u)
 	}
 	if callErr != nil {
 		return "", callErr

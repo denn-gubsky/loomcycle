@@ -22,7 +22,11 @@ import (
 // at a tool call's depth — and the next loop call that crosses reports it.
 func (s *Server) RecordRunSideCallUsage(ctx context.Context, u *providers.Usage) {
 	runID := tools.RunID(ctx)
-	if runID == "" || u == nil {
+	if u == nil {
+		return
+	}
+	if runID == "" {
+		s.observeCall("", u) // nothing to charge, but the call still measured the model
 		return
 	}
 	rid := tools.RunIdentity(ctx)

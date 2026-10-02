@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
@@ -95,6 +96,11 @@ type Context struct {
 	// precedence, and this is a plain copy of its result. Zero value = a
 	// fixture that didn't wire it; `self` then omits the block.
 	Build BuildInfo
+
+	// Throughput is the per-(provider, model) speed estimate, reported by
+	// `self` for the model this run is on. Late-bound in main.go once the
+	// server exists; nil (timeout scaling off, or a fixture) = `self` omits it.
+	Throughput *throughput.Estimator
 }
 
 // BuildInfo is the non-secret identity of the running loomcycle binary.
@@ -315,6 +321,27 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// Omitted when unset (0) — the run defers to the provider/driver default.
 	if mct := tools.MaxContextTokens(ctx); mct > 0 {
 		out["max_context_tokens"] = mct
+	}
+	// timeouts: how fast the model this run is on actually is, measured against
+	// a reference machine — slowdown 4 means about four times slower — and the
+	// multiplier a timeout scaled to it would get. In "measure" mode the
+	// multiplier is reported only: no timeout uses it. Omitted when the estimate
+	// is off or the run has no resolved model.
+	if p, m := tools.ResolvedProvider(ctx), tools.ResolvedModel(ctx); c.Throughput != nil && p != "" && m != "" {
+		st := c.Throughput.Stat(p, m)
+		tm := map[string]any{
+			"mode":       c.Throughput.Mode(),
+			"multiplier": st.Multiplier,
+			"source":     st.Source,
+			"samples":    st.Samples,
+		}
+		if st.Slowdown > 0 {
+			tm["slowdown"] = st.Slowdown
+		}
+		if st.DecodeTPS > 0 {
+			tm["decode_tps"] = st.DecodeTPS
+		}
+		out["timeouts"] = tm
 	}
 	// compaction: the resolved context-compaction settings in effect for this run
 	// (inherited from the parent + per-run/per-spawn overrides). An agent can read

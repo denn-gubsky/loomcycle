@@ -34,6 +34,11 @@ type routingResponse struct {
 	// CredentialDef for it). Lets the UI show a "bring-your-own-key" note.
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 
+	// ThroughputMode is timeout_scaling.mode when the throughput estimate is on
+	// ("measure": each candidate's multiplier is reported, no timeout applies
+	// it). Omitted when off.
+	ThroughputMode string `json:"throughput_mode,omitempty"`
+
 	// Search is the RFC BB web-search provider cascade — a single flat list
 	// (search has no tier/model dimension), each with keyability + live
 	// availability. Omitted when no search providers are configured.
@@ -85,6 +90,42 @@ type routingCandidate struct {
 	Stalled     *bool `json:"stalled,omitempty"`
 	RateLimited *bool `json:"rate_limited,omitempty"`
 	Reachable   *bool `json:"reachable,omitempty"`
+	// Throughput is this (provider, model)'s measured speed against the
+	// reference machine (RFC DT). Omitted when timeout_scaling.mode is off.
+	Throughput *routingThroughput `json:"throughput,omitempty"`
+}
+
+// routingThroughput is the throughput estimate for one candidate. Multiplier is
+// what a scaled timeout WOULD be multiplied by — reported, not applied, under
+// throughput_mode "measure". Non-secret telemetry, shown to every principal
+// except the queue time, which describes the operator's box and is admin-only.
+type routingThroughput struct {
+	Slowdown   float64 `json:"slowdown,omitempty"`
+	Multiplier float64 `json:"multiplier"`
+	Samples    int     `json:"samples"`
+	Source     string  `json:"source"`
+	DecodeTPS  float64 `json:"decode_tps,omitempty"`
+	PrefillTPS float64 `json:"prefill_tps,omitempty"`
+	TTFTMs     float64 `json:"ttft_ms,omitempty"`
+	ColdLoadMs float64 `json:"cold_load_ms,omitempty"`
+	QueueMsP50 int64   `json:"queue_ms_p50,omitempty"` // admin-only
+}
+
+// candidateThroughput builds the block for one candidate, stripping the
+// admin-only queue time for anyone else. nil when the estimate is off.
+func (s *Server) candidateThroughput(provider, model string, admin bool) *routingThroughput {
+	if s.throughput == nil {
+		return nil
+	}
+	st := s.throughput.Stat(provider, model)
+	rt := &routingThroughput{
+		Slowdown: st.Slowdown, Multiplier: st.Multiplier, Samples: st.Samples, Source: st.Source,
+		DecodeTPS: st.DecodeTPS, PrefillTPS: st.PrefillTPS, TTFTMs: st.TTFTMs, ColdLoadMs: st.ColdLoadMs,
+	}
+	if admin {
+		rt.QueueMsP50 = st.QueueMsP50
+	}
+	return rt
 }
 
 // handleRouting serves GET /v1/_routing. Tenant-readable (see requiredScopeFor):
@@ -140,7 +181,8 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := routingResponse{GeneratedAt: time.Now().UTC(), Admin: admin, OperatorKeyRestricted: restricted}
+	resp := routingResponse{GeneratedAt: time.Now().UTC(), Admin: admin, OperatorKeyRestricted: restricted,
+		ThroughputMode: s.throughput.Mode()}
 	// When restricted, the active-providers header is filtered to the union of
 	// the tenant's keyable providers across all tiers (never advertise a provider
 	// it can't use). nil ⇒ unrestricted (the header lists every snapshot provider).
@@ -194,6 +236,7 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 				rc.Stalled = &stalled
 				rc.RateLimited = &rateLimited
 				rc.Reachable = &reachable
+				rc.Throughput = s.candidateThroughput(c.Provider, c.Model, admin)
 				rt.Cascade = append(rt.Cascade, rc)
 			}
 			rut.Tiers = append(rut.Tiers, rt)

@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
 // handleMetricsProm serves GET /metrics. Bearer-authed (middleware
@@ -121,6 +122,13 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 
+	// RFC DT per-(provider, model) throughput — only models this replica has
+	// measured (the estimate is per replica, like every gauge here). The
+	// multiplier is what a scaled timeout WOULD use; in measure mode none does.
+	if stats := s.throughput.All(); len(stats) > 0 {
+		writeModelGauges(w, replicaLabels, stats)
+	}
+
 	// Channel hooks — only when the worker runs.
 	if s.channelHookStats != nil {
 		st := s.channelHookStats()
@@ -147,6 +155,38 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# HELP loomcycle_build_info Loomcycle build identification (version, commit, go version) as labels; value is always 1.")
 	fmt.Fprintln(w, "# TYPE loomcycle_build_info gauge")
 	fmt.Fprintf(w, "loomcycle_build_info%s 1\n", buildLabels)
+}
+
+// writeModelGauges emits the throughput estimate as one series per measured
+// (provider, model). decode_tps is skipped for a model whose decode speed was
+// never measurable (no first-event time and no driver phase).
+func writeModelGauges(w io.Writer, replicaLabels string, stats []throughput.Stat) {
+	type gauge struct {
+		name, help string
+		value      func(throughput.Stat) (float64, bool)
+	}
+	for _, g := range []gauge{
+		{"loomcycle_model_slowdown", "Measured slowdown of a model against the reference machine (timeout_scaling.reference); 1 = reference speed.",
+			func(st throughput.Stat) (float64, bool) { return st.Slowdown, true }},
+		{"loomcycle_model_timeout_multiplier", "Timeout multiplier the throughput estimate implies for a model (reported; applied only when timeout scaling is on).",
+			func(st throughput.Stat) (float64, bool) { return st.Multiplier, true }},
+		{"loomcycle_model_decode_tps", "Smoothed output tokens per second a model generates.",
+			func(st throughput.Stat) (float64, bool) { return st.DecodeTPS, st.DecodeTPS > 0 }},
+		{"loomcycle_model_throughput_samples", "Calls the model's throughput estimate is built from on this replica.",
+			func(st throughput.Stat) (float64, bool) { return float64(st.Samples), true }},
+	} {
+		fmt.Fprintf(w, "# HELP %s %s\n", g.name, g.help)
+		fmt.Fprintf(w, "# TYPE %s gauge\n", g.name)
+		for _, st := range stats {
+			v, ok := g.value(st)
+			if !ok {
+				continue
+			}
+			labels := mergeLabels(replicaLabels, map[string]string{"provider": st.Provider, "model": st.Model})
+			fmt.Fprintf(w, "%s%s %s\n", g.name, labels, strconv.FormatFloat(v, 'g', -1, 64))
+		}
+		fmt.Fprintln(w)
+	}
 }
 
 // writeGauge emits one HELP + TYPE + sample triple. Trailing blank
