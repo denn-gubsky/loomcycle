@@ -44,10 +44,10 @@ func ChannelRefs(d Definition) []ChannelRef {
 	var out []ChannelRef
 	for _, s := range d.States {
 		h := s.Handler
-		// A document source reads no channel, so it needs no subscribe grant —
-		// and naming one here would have the preflight demand a grant for a
-		// channel the definition never reads.
-		if h.Source != nil && !h.Source.IsDocument() && h.Source.Channel != "" {
+		// A document or input source reads no channel, so it needs no
+		// subscribe grant — and naming one here would have the preflight
+		// demand a grant for a channel the definition never reads.
+		if h.Source != nil && !h.Source.IsDocument() && !h.Source.IsInput() && h.Source.Channel != "" {
 			out = append(out, ChannelRef{h.Source.Channel, SideSubscribe, s.ID, "source"})
 		}
 		if h.Sink != nil && h.Sink.Channel != "" {

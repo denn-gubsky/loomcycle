@@ -58,6 +58,7 @@ const (
 const (
 	SourceChannel  = "channel"  // the default: one channel, behind a cursor
 	SourceDocument = "document" // one document's top-level sections, read once
+	SourceInput    = "input"    // the walk's own input, read once; entry state only
 )
 
 // SelectChunks is the only document selection: the root's direct children
@@ -177,10 +178,11 @@ type Handler struct {
 	// A path that does not resolve binds nothing; it is not an error, mirroring
 	// the webhook projector's posture toward an external document.
 	Capture map[string]string `json:"capture,omitempty"`
-	// Schema — kind=input ONLY: the JSON Schema a client renders as the run
-	// form. The runtime does not interpret it; it is carried in the definition
-	// so a team is self-describing and a headless caller sees the same contract
-	// the canvas does.
+	// Schema — kind=input, or a starter whose source is the walk's input (the
+	// entry, so no input state can precede it): the JSON Schema a client
+	// renders as the run form. The runtime does not interpret it; it is carried
+	// in the definition so a team is self-describing and a headless caller sees
+	// the same contract the canvas does.
 	Schema json.RawMessage `json:"schema,omitempty"`
 	// Source — kind=starter ONLY: the ONE channel this node reads. A Starter is
 	// the dispatcher: it listens, spawns a wave, and routes the results onward.
@@ -256,7 +258,7 @@ type StarterSource struct {
 	WaitMS int `json:"wait_ms,omitempty"`
 	// Batch — how many messages to read at once. 0 means the store default.
 	Batch int `json:"batch,omitempty"`
-	// Kind — "channel" (the default when empty) or "document". Every field
+	// Kind — "channel" (the default when empty), "document" or "input". Every field
 	// below is omitempty so a channel source hashes byte-identically to one
 	// written before they existed.
 	Kind string `json:"kind,omitempty"`
@@ -276,6 +278,12 @@ type StarterSource struct {
 // channel. Nil-safe, so a caller holding a handler of any kind can ask.
 func (s *StarterSource) IsDocument() bool {
 	return s != nil && s.Kind == SourceDocument
+}
+
+// IsInput reports whether the source is the walk's own input rather than a
+// store. Nil-safe, like IsDocument.
+func (s *StarterSource) IsInput() bool {
+	return s != nil && s.Kind == SourceInput
 }
 
 // StarterFanout is the shape of one wave.

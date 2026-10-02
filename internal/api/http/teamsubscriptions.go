@@ -115,7 +115,9 @@ func (s *Server) listTeamSubscriptions(ctx context.Context) ([]teamSubscription,
 		// A Starter that reads a DOCUMENT cannot be armed: there is no
 		// channel to wake on and no cursor to say what is new, so driving it
 		// would re-walk the same document every tick. It runs when asked.
-		if entry.Handler.Source.IsDocument() {
+		// Nor can one that reads the walk's INPUT: there is no source to
+		// sweep at all — the input is whatever the caller runs it with.
+		if entry.Handler.Source.IsDocument() || entry.Handler.Source.IsInput() {
 			continue
 		}
 		out = append(out, teamSubscription{
