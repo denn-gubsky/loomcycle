@@ -339,8 +339,9 @@ type Run struct {
 	StopReason    string           `json:"stop_reason,omitempty"`
 	Usage         *providers.Usage `json:"usage,omitempty"`
 	Error         string           `json:"error,omitempty"`
-	// Result is the run's answer (RFC DI): {final_text, state}. Set by GetRun
-	// only; ListRuns leaves it empty so a listing stays small.
+	// Result is the run's answer (RFC DI): {final_text, state}. Set by GetRun,
+	// and by ListWalkRuns on the walk's own row only; ListRuns leaves it empty
+	// so a listing stays small.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Spec is the run's own configuration record (RFC DI) — the overrides it
 	// ran with, merged over its definition. Set by GetRun only, like Result.

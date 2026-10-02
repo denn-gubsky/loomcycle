@@ -414,6 +414,7 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 // The gate is GetRun's: the caller must be allowed to read the walk's own run,
 // so another tenant's walk — or, for an isolated member, another user's — is
 // the NotFound an unknown walk gets. Each member is held to the same row rule.
+// The walk's own row carries its result, as on HTTP.
 func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRunsRequest) (*loomcyclepb.ListWalkRunsResponse, error) {
 	walkID := req.GetWalkId()
 	if !validIdent(walkID) {
@@ -457,6 +458,9 @@ func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRuns
 		}
 		a := runToProto(r, s.runLive(r))
 		s.fillAwaitedState(ctx, a)
+		if r.ID == walkID {
+			a.Result = r.Result
+		}
 		out.Agents = append(out.Agents, a)
 	}
 	return out, nil

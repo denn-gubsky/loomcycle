@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -209,5 +210,46 @@ func TestRunResult_AgentRunHasNoTerminal(t *testing.T) {
 	}
 	if len(got.Result) == 0 || strings.Contains(string(got.Result), `"terminal"`) {
 		t.Errorf("agent run result = %s, want a result without terminal", got.Result)
+	}
+}
+
+// A walk listing is how a canvas reads a walk it holds the id of, so the
+// walk's own row carries the end it reached — over GET /v1/runs?walk_id= and
+// the connector read behind MCP list_runs. Member rows stay without a result,
+// as any listing's do.
+func TestListWalkRuns_WalksOwnRowCarriesTheEndStateReached(t *testing.T) {
+	h := newTerminalHarness(t, "not good enough\nsignal: pushback:stop")
+	walkID := h.postTeamDef(alicePrincipal, `{"op":"run","name":"two-ends","input":"draft"}`)
+	awaitWalkEnd(t, h.st, walkID)
+
+	code, page, body := listWalkRuns(t, h.srv.Mux(), alicePrincipal(context.Background()), url.Values{"walk_id": {walkID}})
+	if code != http.StatusOK {
+		t.Fatalf("GET /v1/runs?walk_id = %d: %s", code, body)
+	}
+	httpRows := map[string]json.RawMessage{}
+	for _, a := range page.Agents {
+		httpRows[a.RunID] = a.Result
+	}
+	conn, err := h.srv.ListWalkRuns(alicePrincipal(context.Background()), walkID, 0, "")
+	if err != nil {
+		t.Fatalf("connector ListWalkRuns: %v", err)
+	}
+	connRows := map[string]json.RawMessage{}
+	for _, r := range conn.Runs {
+		connRows[r.RunID] = r.Result
+	}
+	for surface, rows := range map[string]map[string]json.RawMessage{"HTTP": httpRows, "connector": connRows} {
+		if len(rows) < 2 {
+			t.Fatalf("%s listed %d runs, want the walk and its member", surface, len(rows))
+		}
+		for id, res := range rows {
+			if id == walkID {
+				if got := resultTerminal(t, res); got != "abandoned" {
+					t.Errorf("%s: the walk's own row terminal = %q, want abandoned (result %s)", surface, got, res)
+				}
+			} else if len(res) != 0 {
+				t.Errorf("%s: member row %s carries a result %s, want none", surface, id, res)
+			}
+		}
 	}
 }

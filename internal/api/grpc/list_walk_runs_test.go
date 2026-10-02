@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -107,5 +108,38 @@ func TestGrpcListWalkRuns_RefusesMalformedArguments(t *testing.T) {
 func TestRequiredScopeForRPC_ListWalkRunsIsARunsRead(t *testing.T) {
 	if got := requiredScopeForRPC(grpcMethodPrefix + "ListWalkRuns"); got != auth.ScopeRunsRead {
 		t.Errorf("ListWalkRuns scope = %q, want %q (an unlisted RPC defaults to admin)", got, auth.ScopeRunsRead)
+	}
+}
+
+// The walk's own row carries its result — the end state it reached — as on
+// HTTP; GetRun reads the same; member rows stay without one.
+func TestGrpcListWalkRuns_WalksOwnRowCarriesTheEndStateReached(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	walkID, _ := seedWalk(t, st, "acme", "alice", 1)
+	if err := st.FinishRun(context.Background(), walkID, store.RunCompleted, "",
+		store.Usage{Result: []byte(`{"final_text":"no","terminal":"abandoned"}`)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	op := scopedCtx("acme", "op", auth.ScopeTenant)
+
+	resp, err := adapter.ListWalkRuns(op, &loomcyclepb.ListWalkRunsRequest{WalkId: walkID})
+	if err != nil {
+		t.Fatalf("ListWalkRuns: %v", err)
+	}
+	if len(resp.GetAgents()) != 2 {
+		t.Fatalf("listed %d runs, want the walk and its member", len(resp.GetAgents()))
+	}
+	for _, a := range resp.GetAgents() {
+		if a.GetRunId() == walkID {
+			if !strings.Contains(string(a.GetResult()), `"terminal":"abandoned"`) {
+				t.Errorf("the walk's own row result = %s, want its terminal", a.GetResult())
+			}
+		} else if len(a.GetResult()) != 0 {
+			t.Errorf("member row %s carries a result %s, want none", a.GetRunId(), a.GetResult())
+		}
+	}
+	got, err := adapter.GetRun(op, &loomcyclepb.GetRunRequest{RunId: walkID})
+	if err != nil || !strings.Contains(string(got.GetResult()), `"terminal":"abandoned"`) {
+		t.Errorf("GetRun result = %s (%v), want its terminal", got.GetResult(), err)
 	}
 }

@@ -66,7 +66,10 @@ func (s *Server) walkRuns(ctx context.Context, walkID string, limit int, cursor 
 // walk's runs, oldest first, a page at a time. walk_id is required — there is
 // no unfiltered listing of a deployment's runs. Rows are the user listing's
 // (GET /v1/users/{user_id}/agents), with a running row's awaited state; the
-// page's next_cursor is "" on the last page.
+// page's next_cursor is "" on the last page. The walk's OWN row also carries
+// its result — final text and the end state reached — which is what a caller
+// listing a walk is asking; members' rows leave theirs out, as any listing
+// does.
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	walkID := q.Get("walk_id")
@@ -108,7 +111,11 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]agentResponse, 0, len(runs))
 	for _, run := range runs {
-		out = append(out, runToAgentResponse(run, s.RunLive(run.AgentID, run.ID)))
+		a := runToAgentResponse(run, s.RunLive(run.AgentID, run.ID))
+		if run.ID == walkID {
+			a.Result = run.Result
+		}
+		out = append(out, a)
 	}
 	fillAwaitedStateForRunning(r.Context(), s.store, out)
 	writeJSON(w, http.StatusOK, map[string]any{"agents": out, "next_cursor": next})
