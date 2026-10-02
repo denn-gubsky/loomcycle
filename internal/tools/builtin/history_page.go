@@ -189,3 +189,21 @@ func (p historyPage) fields() map[string]any {
 	}
 	return out
 }
+
+// cutToFit shortens *s until size() is within budget or *s is empty, and says
+// whether it cut. Each step removes half the overshoot (rounded up): a field
+// that appears twice in a result — a window turn's text is both in `turns` and
+// in `markdown` — then converges without being cut to nothing, and one that
+// appears once takes a few more steps.
+func cutToFit(s *string, budget int, size func() int) bool {
+	cut := false
+	for *s != "" {
+		over := size() - budget
+		if over <= 0 {
+			break
+		}
+		*s, _ = cutOnRune(*s, max(len(*s)-(over+1)/2, 0))
+		cut = true
+	}
+	return cut
+}

@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -96,16 +98,65 @@ func (h *History) window(ctx context.Context, scope string, in historyInput) (to
 	if hi >= len(turns) {
 		hi = len(turns) - 1
 	}
+	var note string
+	budget := 0
+	if tools.RunID(ctx) != "" {
+		budget = historyInRunBudget(ctx)
+		if nlo, nhi := fitWindow(turns, idx, lo, hi, budget); nlo != lo || nhi != hi {
+			lo, hi = nlo, nhi
+			note = fmt.Sprintf("Only turns %d to %d fit the %d characters that fit your context, so the window was "+
+				"narrowed. Pass a smaller context, or read on with op=get format=conversation and offset.", lo, hi, budget)
+		}
+	}
 	out := turns[lo : hi+1]
+	if budget > 0 && len(out) == 1 {
+		t := out[0]
+		if cutToFit(&t.Text, budget, func() int { return windowSize([]conversationTurn{t}) }) {
+			out = []conversationTurn{t}
+			note = fmt.Sprintf("The matched turn alone is larger than the %d characters that fit your context, "+
+				"so it was cut.", budget)
+		}
+	}
 	var md strings.Builder
 	for _, t := range out {
 		md.WriteString("### " + t.Speaker + "\n\n" + t.Text + "\n\n")
 	}
-	return okJSON(map[string]any{
+	res := map[string]any{
 		"scope": scope, "session_id": sess.ID,
 		"matched": true, "matched_turn": idx, "total_turns": len(turns),
 		"first_turn": lo, "turns": out, "markdown": md.String(),
-	})
+	}
+	if note != "" {
+		res["truncated"] = true
+		res["note"] = note
+	}
+	return okJSON(res)
+}
+
+// fitWindow narrows [lo, hi] around the matched turn idx until the window fits
+// budget, never dropping idx itself. The outermost turn farther from the match
+// goes first; on a tie the later one, because the turns BEFORE a quote are
+// usually the ones that resolve it.
+func fitWindow(turns []conversationTurn, idx, lo, hi, budget int) (int, int) {
+	for (lo < idx || hi > idx) && windowSize(turns[lo:hi+1]) > budget {
+		if idx-lo > hi-idx {
+			lo++
+		} else {
+			hi--
+		}
+	}
+	return lo, hi
+}
+
+// windowSize is what a window of turns puts into the result: the turns as
+// `turns`, and again as the sections of `markdown`.
+func windowSize(ts []conversationTurn) int {
+	b, _ := json.Marshal(ts)
+	n := len(b)
+	for _, t := range ts {
+		n += len("### ") + len(t.Speaker) + len("\n\n") + len(t.Text) + len("\n\n")
+	}
+	return n
 }
 
 // matchTurn finds the turn a span came from, or -1.
