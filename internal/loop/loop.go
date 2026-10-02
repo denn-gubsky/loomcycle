@@ -3529,7 +3529,13 @@ outerLoop:
 		// callers rendering live progress want "company 1 done" the
 		// moment company 1 is done, not after company 3 finishes too.
 		hookIdent := HookIdentity(ctx, opts.AgentName, iter)
-		toolResults := executePendingTools(turnCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
+		// The effective window is stamped HERE, not at the top of the iteration
+		// with the rest: lastWindow has just been refreshed from THIS turn's
+		// call, so the first tool of a run sees the window the driver reported
+		// (Ollama's actually-loaded context) rather than the static seed, and a
+		// mid-turn fallback's window rather than the replaced provider's.
+		toolCtx := tools.WithEffectiveContextWindow(turnCtx, lastWindow)
+		toolResults := executePendingTools(toolCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
 		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
 		if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
 			msg := "run stopped: " + why + " after being told it cannot succeed as sent"

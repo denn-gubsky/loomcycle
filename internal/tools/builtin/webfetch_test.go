@@ -247,6 +247,27 @@ func TestWebFetch_DefaultCapFollowsTheRunsContextWindow(t *testing.T) {
 	}
 }
 
+// The default follows the window the model actually has, not only a
+// configured cap: an agent with no max_context_tokens on a provider whose
+// window is 32768 gets a 32768-byte cut, not the 256 KiB ceiling. When both
+// are stamped the effective window wins — it is already the lower of the two.
+func TestWebFetch_DefaultCapFollowsTheEffectiveWindow(t *testing.T) {
+	f, url := webFetchServe(t, textPage(300<<10))
+
+	ctx := tools.WithEffectiveContextWindow(context.Background(), 32768)
+	if got := len(cutBody(t, webFetchRun(t, f, ctx, map[string]any{"url": url}))); got != 32768 {
+		t.Errorf("effective window 32768, none configured: returned %d bytes, want 32768", got)
+	}
+	ctx = tools.WithEffectiveContextWindow(tools.WithMaxContextTokens(context.Background(), 65536), 32768)
+	if got := len(cutBody(t, webFetchRun(t, f, ctx, map[string]any{"url": url}))); got != 32768 {
+		t.Errorf("configured 65536 on a 32768 model: returned %d bytes, want 32768", got)
+	}
+	ctx = tools.WithEffectiveContextWindow(context.Background(), 1_000_000)
+	if got := len(cutBody(t, webFetchRun(t, f, ctx, map[string]any{"url": url}))); got != 256<<10 {
+		t.Errorf("1M effective window: returned %d bytes, want the %d ceiling", got, 256<<10)
+	}
+}
+
 // An explicit max_chars overrides the window default in either direction but
 // is clamped to [1, ceiling]; the operator's MaxOutputBytes is the ceiling.
 func TestWebFetch_ExplicitMaxCharsIsClampedToTheCeiling(t *testing.T) {

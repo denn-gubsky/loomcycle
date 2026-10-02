@@ -1211,6 +1211,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 			actCtx = tools.WithResolvedSampling(actCtx, opts.Sampling)
 			actCtx = tools.WithMaxContextTokens(actCtx, opts.MaxContextTokens)
 			actCtx = tools.WithContextUsage(actCtx, lastIn, lastWindow)
+			actCtx = tools.WithEffectiveContextWindow(actCtx, lastWindow)
 			blocks := executePendingTools(actCtx, opts.Dispatcher, []providers.ToolUse{tu}, 1, opts.Hooks, hookIdent, emit)
 			// A failure is already the structured error object, isError and all.
 			obs = blocks[0].Text

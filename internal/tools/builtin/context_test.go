@@ -123,10 +123,12 @@ func TestContextTool_SelfReturnsIdentity(t *testing.T) {
 // TestContextTool_SelfReportsMaxContextTokens: the CONFIGURED per-agent context
 // window (RFC CJ, stamped from opts.MaxContextTokens) surfaces in op=self so an
 // agent can read its own cap even before the first turn completes. Decoded JSON
-// numbers are float64.
+// numbers are float64. The effective window tools size output by is a separate
+// value and must not replace the configured cap here.
 func TestContextTool_SelfReportsMaxContextTokens(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	ctx = tools.WithMaxContextTokens(ctx, 131072)
+	ctx = tools.WithEffectiveContextWindow(ctx, 32768)
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	if res.IsError {
 		t.Fatalf("self: %s", res.Text)
@@ -139,9 +141,11 @@ func TestContextTool_SelfReportsMaxContextTokens(t *testing.T) {
 
 // TestContextTool_SelfOmitsMaxContextTokensWhenUnset: with no configured cap
 // (the common case — the run defers to the provider/driver default), op=self
-// omits the key rather than reporting 0.
+// omits the key rather than reporting 0 — even though the model still has an
+// effective window, which is not a configured cap.
 func TestContextTool_SelfOmitsMaxContextTokensWhenUnset(t *testing.T) {
 	tool, ctx := contextFixture(t) // fixture stamps no max-context cap
+	ctx = tools.WithEffectiveContextWindow(ctx, 32768)
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	out := decodeResult(t, res.Text)
 	if _, ok := out["max_context_tokens"]; ok {
