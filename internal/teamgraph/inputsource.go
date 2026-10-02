@@ -1,6 +1,7 @@
 package teamgraph
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +11,34 @@ import (
 // walk was started with becomes the wave's items, so a team that dispatches
 // from a channel or a document can also be started from its own form, in one
 // call, and process exactly the input it was given.
+
+// InputValue is the walk's input as a JSON VALUE: valid JSON is that value,
+// compacted (an object stays an object, not a string holding one), and
+// anything else — including the empty string — is {"text": "<input>"}.
+//
+// It is the one rule for "the walk's input as a message". The Starter that
+// reads the walk's input, an input state's publish and a raw channel publish
+// all apply it, so what a downstream `binds` can reach does not depend on
+// which node put the value there.
+//
+// Compacted rather than passed verbatim so the same value is the same bytes
+// whichever node produced it. Neither form is HTML-escaped: the value is read
+// by a model or a client, never rendered as HTML, and `<`, `>` and `&`
+// arriving as \u003c… make it harder to read for no gain.
+func InputValue(input string) json.RawMessage {
+	// Compact refuses exactly what is not valid JSON, and does not escape HTML.
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(input)); err == nil {
+		return buf.Bytes()
+	}
+	// A failed Compact may have written a prefix.
+	buf.Reset()
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	// Encoding a map of one string cannot fail.
+	_ = enc.Encode(map[string]string{"text": input})
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
 
 // validateInputSource checks an input source. Like a document it has no cursor
 // and nothing to wait for, and it reads no store at all, so every field that
