@@ -92,6 +92,33 @@ type Entry struct {
 	// updates. Flipped by SetParked (driven by the run's awaiting_input /
 	// resume events); read by IsParked for the compaction boundary gate.
 	parked *atomic.Bool
+	// closed is set by CloseIfEmpty when the run has read its queue for the
+	// last time: every later push is refused as if the run had ended. Written
+	// and read only under the registry lock (see offer).
+	closed bool
+}
+
+// Closed reports whether the run has closed its queue: it is finishing, and
+// takes nothing more.
+func (e Entry) Closed() bool { return e.closed }
+
+// offer puts m on the run's queue. A message the run refuses gets
+// ErrRunNotFound, so a refusal reads exactly like a run that has ended.
+//
+// The caller must hold the registry lock (read is enough). Holding it across
+// the closed check AND the send is what makes CloseIfEmpty, which takes the
+// write lock, atomic with respect to a push: no message can land between its
+// emptiness check and the close.
+func (e Entry) offer(m Message) (bool, error) {
+	if e.closed || (e.VerdictsOnly && !m.IsVerdict()) {
+		return false, ErrRunNotFound
+	}
+	select {
+	case e.ch <- m:
+		return true, nil
+	default:
+		return false, ErrQueueFull
+	}
 }
 
 // ClusterSteerer is the cross-replica fallback (mirror of
@@ -157,53 +184,78 @@ func (r *Registry) Register(e Entry) (<-chan Message, func()) {
 //   - (true, nil)              delivered to the local buffer (or a remote replica)
 //   - (false, ErrQueueFull)    local buffer full
 //   - (false, ErrRunNotFound)  no local entry and no cluster route
+//
+// A run that has closed its queue (CloseIfEmpty) refuses with ErrRunNotFound,
+// locally, without asking the cluster: the run is here, and finishing.
 func (r *Registry) Push(ctx context.Context, runID string, m Message) (bool, error) {
 	r.mu.RLock()
 	e, ok := r.entries[runID]
 	cluster := r.cluster
-	r.mu.RUnlock()
-	if !ok {
-		if cluster == nil {
-			return false, ErrRunNotFound
-		}
-		// A verdict-only run on another replica refuses there (PushLocal).
-		delivered, found, err := cluster.PushRemote(ctx, runID, m)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return false, ErrRunNotFound
-		}
-		return delivered, nil
+	if ok {
+		delivered, err := e.offer(m)
+		r.mu.RUnlock()
+		return delivered, err
 	}
-	if e.VerdictsOnly && !m.IsVerdict() {
+	r.mu.RUnlock()
+	if cluster == nil {
 		return false, ErrRunNotFound
 	}
-	select {
-	case e.ch <- m:
-		return true, nil
-	default:
-		return false, ErrQueueFull
+	// A verdict-only run on another replica refuses there (PushLocal).
+	delivered, found, err := cluster.PushRemote(ctx, runID, m)
+	if err != nil {
+		return false, err
 	}
+	if !found {
+		return false, ErrRunNotFound
+	}
+	return delivered, nil
 }
 
 // PushLocal is Push without cluster delegation — for a cluster subscriber
 // dispatching an inbound backplane event to the local registry (mirror of
 // cancel.CancelLocal; using Push there would re-broadcast on a local miss).
 // found=false on a local miss; delivered=false (found=true) on a full buffer.
-func (r *Registry) PushLocal(runID string, m Message) (delivered, found bool) {
+// closed=true (found=true) when the run is here but has closed its queue: the
+// owner answers that, so the sender can refuse at once as it would for a run
+// that has ended, rather than wait out its ack timeout.
+func (r *Registry) PushLocal(runID string, m Message) (delivered, found, closed bool) {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	e, ok := r.entries[runID]
-	r.mu.RUnlock()
 	if !ok || (e.VerdictsOnly && !m.IsVerdict()) {
-		return false, false
+		return false, false, false
 	}
-	select {
-	case e.ch <- m:
-		return true, true
-	default:
-		return false, true
+	if e.closed {
+		return false, true, true
 	}
+	delivered, _ = e.offer(m)
+	return delivered, true, false
+}
+
+// CloseIfEmpty closes run_id's queue to new messages if nothing is waiting in
+// it, and reports whether it did. A run calls it at its last read of the
+// queue, as it finishes: from then on a push is refused as if the run had
+// ended, rather than accepted into a queue nobody will read again.
+//
+// false means a message is waiting. The caller reads it and answers it, then
+// tries again; the queue is never closed on an unread message. Done under the
+// write lock, so a push lands either before the check (and is seen) or after
+// the close (and is refused), never in between.
+//
+// An unregistered run_id reports true: nothing can be delivered to it here.
+func (r *Registry) CloseIfEmpty(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.entries[runID]
+	if !ok {
+		return true
+	}
+	if len(e.ch) > 0 {
+		return false
+	}
+	e.closed = true
+	r.entries[runID] = e
+	return true
 }
 
 // Clustered reports whether a push that misses locally is routed to the

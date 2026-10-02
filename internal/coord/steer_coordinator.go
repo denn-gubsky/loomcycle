@@ -117,6 +117,10 @@ type steerAckPayload struct {
 	RunID     string `json:"run_id"`
 	ByReplica string `json:"by_replica"`
 	Delivered bool   `json:"delivered"`
+	// Closed: the owner has the run, but it is finishing and has closed its
+	// queue, so the sender answers as it would for a run that has ended. An
+	// owner that predates the field never sets it, and its acks read as before.
+	Closed bool `json:"closed,omitempty"`
 }
 
 // PushRemote satisfies steer.ClusterSteerer. found=false ⇒ the handler serves
@@ -188,6 +192,9 @@ func (c *SteerCoordinator) PushRemote(ctx context.Context, runID string, m steer
 	defer waitCancel()
 	select {
 	case ack := <-ackCh:
+		if ack.Closed {
+			return false, false, nil
+		}
 		return ack.Delivered, true, nil
 	case <-waitCtx.Done():
 		// Owner didn't ack in time. The run row says running on a live remote
@@ -217,7 +224,7 @@ func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Re
 			log.Printf("coord: malformed steer event: %v", err)
 			continue
 		}
-		delivered, found := reg.PushLocal(p.RunID, steer.Message{
+		delivered, found, closed := reg.PushLocal(p.RunID, steer.Message{
 			Text: p.Text, Source: p.Source, Kind: p.Kind, KeepN: p.KeepN, KeepFirst: p.KeepFirst,
 			// The owner's clock: the loop compares it with when its park began.
 			EnqueuedAt: time.Now(),
@@ -225,7 +232,7 @@ func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Re
 		if !found {
 			continue // not our run; the owner's subscriber will ack
 		}
-		ack, _ := json.Marshal(steerAckPayload{RunID: p.RunID, ByReplica: c.replicaID, Delivered: delivered})
+		ack, _ := json.Marshal(steerAckPayload{RunID: p.RunID, ByReplica: c.replicaID, Delivered: delivered, Closed: closed})
 		if err := c.bp.Publish(ctx, topicSteerAck, ack); err != nil {
 			log.Printf("coord: publish steer ack for %s: %v", p.RunID, err)
 		}
