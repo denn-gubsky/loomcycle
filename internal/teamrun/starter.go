@@ -417,7 +417,9 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 	}
 	if sp.Status == MemberRejected {
 		// Rejected is not a success: it does not count toward the wave's wait.
+		// Its sink message still carries the answer the way a success's does.
 		res.Status, res.Output, res.Error = SinkRejected, sp.Output, "rejected by the reviewer"
+		res.answer, res.structured = sp.FinalText, sp.Structured
 		return res
 	}
 	res.Ok, res.Output = true, sp.Output
@@ -441,9 +443,9 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 	case res.Status == SinkRejected:
 		// The answer a person rejected is kept: the downstream decides what a
 		// rejection means, and it cannot decide without seeing what was
-		// rejected. Kept as it always was, header included: only a successful
-		// run's message carries the bare answer (answer is set only then).
-		msg.Status, msg.Output, msg.Error = SinkRejected, res.Output, res.Error
+		// rejected. Kept bare, with its structured form, as a success's is, so
+		// the same binds read it.
+		msg.Status, msg.Error = SinkRejected, res.Error
 	case !res.Ok:
 		msg.Status, msg.Output, msg.Error = SinkError, "", res.Error
 	}

@@ -115,9 +115,9 @@ func TestStarterReview_ARejectedMemberIsNotASuccess(t *testing.T) {
 	var n atomic.Int32
 	r := starterRunner(ch, func(context.Context, string, Prompt, string) (SpawnResult, error) {
 		if n.Add(1) == 1 {
-			return SpawnResult{Output: "the rejected plan", Status: MemberRejected, RunID: "r_1"}, nil
+			return SpawnResult{Output: "the rejected plan", FinalText: "the rejected plan", Status: MemberRejected, RunID: "r_1"}, nil
 		}
-		return SpawnResult{Output: "the approved plan", Status: "completed", RunID: "r_2"}, nil
+		return SpawnResult{Output: "the approved plan", FinalText: "the approved plan", Status: "completed", RunID: "r_2"}, nil
 	})
 	st := starterState()
 

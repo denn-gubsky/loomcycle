@@ -3,13 +3,17 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // structuredMemberServer is outputFormatServer with its agent held to an
@@ -97,5 +101,74 @@ func TestTeamWalk_StarterSinkCarriesTheMembersBareAnswerAndStructured(t *testing
 	}
 	if !strings.Contains(out.Output, `"output":"[sub-agent agent_id=`) {
 		t.Errorf("envelope = %s, want the member's headered output", out.Output)
+	}
+}
+
+// Through the real member runner and the real review verb: a member a person
+// rejected publishes the answer they turned down bare, as a successful one
+// does, so a downstream reader binds it with the same `$.output`.
+func TestTeamWalk_RejectedMemberSinkCarriesTheBareAnswer(t *testing.T) {
+	h := newReviewHarness(t)
+	ch := &sinkCapture{}
+	// The arming a walk's member_review would put on the member's ctx; the
+	// user is what lets the test find the held run.
+	spawn := func(ctx context.Context, name string, p teamrun.Prompt, defID string) (teamrun.SpawnResult, error) {
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u1"})
+		ctx = teamrun.WithReviewArming(ctx, func(context.Context) bool { return true })
+		return h.srv.runTeamMember(ctx, name, p, defID)
+	}
+	r := teamrun.NewAgentRunner(spawn, teamrun.WithChannels(ch))
+	st := teamgraph.State{ID: "wave", Handler: teamgraph.Handler{
+		Kind:   teamgraph.HandlerStarter,
+		Source: &teamgraph.StarterSource{Channel: "in"},
+		Fanout: &teamgraph.StarterFanout{Agent: "writer", Per: teamgraph.FanoutPerMessage, Max: 1},
+		Prompt: &teamgraph.StarterPrompt{Input: teamrun.StarterMessageSlot},
+		Sink:   &teamgraph.StarterSink{Channel: "out"},
+	}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.RunHandler(context.Background(), st, &teamrun.Task{Input: "go", WalkID: "wlk_reject"})
+		done <- err
+	}()
+
+	var runID string
+	for deadline := time.Now().Add(3 * time.Second); runID == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		runs, _ := h.st.ListActiveRunsByUser(context.Background(), "", "u1", store.RunRunning)
+		for _, run := range runs {
+			if heldForReview(context.Background(), h.st, run.ID) {
+				runID = run.ID
+			}
+		}
+	}
+	if runID == "" {
+		t.Fatal("the armed member was never held")
+	}
+	if code, body := h.review(runID, `{"decision":"reject"}`); code != http.StatusOK {
+		t.Fatalf("reject = %d %s", code, body)
+	}
+	select {
+	case err := <-done:
+		// A rejected member does not count toward wait=all.
+		if err == nil {
+			t.Error("a wave whose only member was rejected must fail the state")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the starter never returned")
+	}
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if len(ch.published) != 1 {
+		t.Fatalf("published %d sink messages, want 1", len(ch.published))
+	}
+	var msg teamrun.SinkMessage
+	if err := json.Unmarshal(ch.published[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Status != teamrun.SinkRejected || msg.RunID != runID || msg.Error != "rejected by the reviewer" {
+		t.Errorf("sink message = %s, want status rejected for run %s", ch.published[0], runID)
+	}
+	if msg.Output != "answer 1" {
+		t.Errorf("sink output = %q, want the rejected answer bare", msg.Output)
 	}
 }
