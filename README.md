@@ -182,7 +182,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.101.1) is a patch. It fixes a v1.101.0 regression
+The most recent line (v1.101.2) is a patch. The Web UI's Path tree now loads
+one directory at a time, so a user scope with a large `/facts` directory no
+longer hides every directory that sorts after it. It also starts measuring each
+model's speed (per-call timing on the usage ledger, a slowdown per model on
+`/v1/_routing` and `/metrics`, with no timeout changed yet), and lets a team start
+from its own input form, checked against the form before the walk runs.
+
+Before it, v1.101.1 was a patch that fixed a v1.101.0 regression
 in which a memory consolidation pass on a slow local model, cut by the new
 per-pass budget, re-read the same chats forever: a cut pass now gets the whole
 budget on its next turn, and the watermark advances after each chat. It also
