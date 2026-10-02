@@ -191,6 +191,9 @@ type Server struct {
 	// subUncaptured remembers which subscribed teams it has already warned
 	// about running fully confined for lack of a promoter capture.
 	subUncaptured warnOnce
+	// pinTierWarned remembers which stored definitions it has already warned
+	// about carrying both a pin and a tier, so a busy agent logs it once.
+	pinTierWarned warnOnce
 
 	// residentReg maps a resident interactive sub-agent's run_id → its live
 	// handle (RFC BK). In-process (P1 single-replica). Non-nil after New();
@@ -1560,10 +1563,19 @@ func (s *Server) lookupAgent(ctx context.Context, tenantID, name string) (config
 // pinning.
 func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool) (providerID, model, effort string, err error) {
 	hasPin := def.Provider != "" || def.Model != ""
-	hasTier := def.Tier != ""
+	hasTier := routesByTier(def)
+	if hasPin && def.Tier != "" {
+		// Yaml validation and AgentDef create/fork refuse a pin beside a
+		// tier, but a row stored before they did can still carry both. The
+		// pin wins: it is the more specific and the cheaper intent, and the
+		// tier's cascade would fall back to providers the pin meant to avoid.
+		if s.pinTierWarned.first(tenantID + "\x00" + agentName + "\x00" + def.DefID) {
+			log.Printf("agent %q (def_id %q): definition sets both a provider/model pin and tier %q; resolving to the pin — fork it with only one to silence this",
+				agentName, def.DefID, def.Tier)
+		}
+	}
 
-	// Tier path: agent declares tier (validation already rejected
-	// pin+tier together), resolver does the work.
+	// Tier path: agent declares a tier and no pin, resolver does the work.
 	if hasTier {
 		if s.resolver == nil {
 			// Tier requested but no resolver wired (test fixture or
@@ -1633,6 +1645,14 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 	// agent can declare effort and the driver will translate it
 	// where supported. Empty when not declared.
 	return providerID, model, def.Effort, nil
+}
+
+// routesByTier reports whether def resolves through its tier's cascade. A
+// provider/model pin wins over a tier, so a stored definition carrying both
+// (see resolveAgentDef) routes by its pin. Every path that asks "is this agent
+// tiered?" uses this, so none of them disagrees with where the run went.
+func routesByTier(def config.AgentDef) bool {
+	return def.Tier != "" && def.Provider == "" && def.Model == ""
 }
 
 // keyableProvidersFor builds the RFC AX Layer-1 credential-aware routing filter
@@ -2168,27 +2188,24 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		return base
 	}
 	out := base
-	if ov.Provider != "" {
-		out.Provider = ov.Provider
-	}
-	// Pin XOR Tier defensive resolution. AgentDef.create/fork rejects
-	// rows that set both, but a row written via direct SQL or migrated
-	// from a future schema variant could carry both. When both are set
-	// in the overlay, prefer Model (the more specific intent) and
-	// drop Tier — matches what the resolver does when given a pin.
+	// Pin XOR Tier, the same rule AgentDef create/fork and resolveAgentDef
+	// keep: a row that pins (provider OR model) clears the base's tier, and a
+	// row that only names a tier clears the base's whole pin — a provider left
+	// behind would read as a pin and win over the tier. A row stored before
+	// create/fork refused both can still carry both; the pin wins, matching
+	// resolveAgentDef.
 	switch {
-	case ov.Model != "" && ov.Tier != "":
-		out.Model = ov.Model
-		out.Tier = ""
-	case ov.Model != "":
-		out.Model = ov.Model
-		// Explicit model pin clears any static tier so the resolver
-		// takes the pin path, not the tier path.
+	case ov.Provider != "" || ov.Model != "":
+		if ov.Provider != "" {
+			out.Provider = ov.Provider
+		}
+		if ov.Model != "" {
+			out.Model = ov.Model
+		}
 		out.Tier = ""
 	case ov.Tier != "":
 		out.Tier = ov.Tier
-		// Mirror image: explicit tier clears any static model pin.
-		out.Model = ""
+		out.Provider, out.Model = "", ""
 	}
 	if ov.Effort != "" {
 		out.Effort = ov.Effort
