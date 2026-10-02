@@ -137,8 +137,16 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		// because its ctx was cancelled, or a cancelled walk would sit in the
 		// runs list as running forever.
 		// The walk's answer is its last state's output (RFC DI) — what a caller
-		// holding only the walk's run id wants to read once it is over.
-		usage := store.Usage{Result: runResultJSON(s.redactor, loop.RunResult{FinalText: end.FinalText})}
+		// holding only the walk's run id wants to read once it is over — and
+		// the end state it reached, which tells two endings apart. Only a
+		// completed walk reached one: a cancel that lands after the walk
+		// entered its terminal still records the walk as cancelled, and the
+		// result must not contradict the status.
+		terminal := ""
+		if status == store.RunCompleted {
+			terminal = end.Terminal
+		}
+		usage := store.Usage{Result: walkResultJSON(s.redactor, end.FinalText, terminal)}
 		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, usage, msg); ferr != nil {
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}

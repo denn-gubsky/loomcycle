@@ -309,6 +309,9 @@ type WalkEnd struct {
 	// FinalText is the walk's answer: the last output any of its states
 	// produced.
 	FinalText string
+	// Terminal is the id of the end state the walk reached; "" when it did
+	// not reach one (Err is set).
+	Terminal string
 	// Err is why the walk stopped short of an end state; nil when it reached
 	// one.
 	Err error
@@ -1246,7 +1249,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
 		trace, werr := teamrun.Walk(walkCtx, def, task, runner, opts...)
-		finishRun(WalkEnd{FinalText: walkFinalOutput(trace), Err: werr})
+		end := WalkEnd{FinalText: walkFinalOutput(trace), Err: werr}
+		if werr == nil {
+			end.Terminal = walkTerminal(def, task)
+		}
+		finishRun(end)
 		return trace, werr
 	}
 
@@ -1639,6 +1646,18 @@ func walkFinalOutput(trace []teamrun.StepRecord) string {
 		if trace[i].Output != "" {
 			return trace[i].Output
 		}
+	}
+	return ""
+}
+
+// walkTerminal names the end state a walk that returned without error stopped
+// at. Walk leaves task.State there, including for a walk that started at it
+// and so has no step to read it from. It is checked against the definition
+// rather than trusted, so a state that is not a terminal is never reported as
+// the walk's end.
+func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
+	if st, ok := teamgraph.StateByID(def, task.State); ok && st.Handler.Kind == teamgraph.HandlerTerminal {
+		return st.ID
 	}
 	return ""
 }

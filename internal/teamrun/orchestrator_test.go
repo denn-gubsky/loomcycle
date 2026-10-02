@@ -349,3 +349,44 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// twoEndsJSON has two terminals: success publishes, a pushback abandons.
+const twoEndsJSON = `{
+  "entry":"judge",
+  "states":[
+    {"state":"judge","handler":{"kind":"agent","agent":"j"}},
+    {"state":"published","handler":{"kind":"terminal"}},
+    {"state":"abandoned","handler":{"kind":"terminal"}}
+  ],
+  "transitions":[
+    {"from":"judge","to":"published","on":"success"},
+    {"from":"judge","to":"abandoned","on":"pushback:stop"}
+  ]}`
+
+// A caller reads the end a walk reached from the task: a nil error leaves
+// task.State at the terminal entered, whichever of several it was — including
+// a walk that starts at one and so has no step in its trace.
+func TestWalk_NilErrorLeavesTaskAtTheTerminalReached(t *testing.T) {
+	d := mustParse(t, twoEndsJSON)
+	for name, tc := range map[string]struct {
+		start string
+		edge  string
+		want  string
+		steps int
+	}{
+		"success":           {edge: "", want: "published", steps: 1},
+		"pushback":          {edge: "pushback:stop", want: "abandoned", steps: 1},
+		"starts at its end": {start: "abandoned", want: "abandoned", steps: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := &Task{State: tc.start}
+			trace, err := Walk(context.Background(), d, task, &fakeRunner{outcomes: map[string]Outcome{"judge": {Edge: tc.edge}}})
+			if err != nil {
+				t.Fatalf("Walk: %v", err)
+			}
+			if task.State != tc.want || len(trace) != tc.steps {
+				t.Errorf("task.State = %q after %d steps, want %q after %d", task.State, len(trace), tc.want, tc.steps)
+			}
+		})
+	}
+}

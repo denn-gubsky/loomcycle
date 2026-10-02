@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,8 +22,10 @@ type walkRunRecorder struct {
 	finished   int
 	lastErr    error
 	lastOutput string
-	detach     bool
-	spec       WalkRunSpec
+	// lastTerminal is the end state the last finished walk reported.
+	lastTerminal string
+	detach       bool
+	spec         WalkRunSpec
 }
 
 func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.Context, string, func(WalkEnd), error) {
@@ -42,6 +45,7 @@ func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.C
 		w.finished++
 		w.lastErr = end.Err
 		w.lastOutput = end.FinalText
+		w.lastTerminal = end.Terminal
 		w.mu.Unlock()
 	}, nil
 }
@@ -451,5 +455,88 @@ func TestTeamDefTool_Run_OpensTheRunWithTheResolvedVersionAndBoardResume(t *test
 	}
 	if spec.Board == nil || spec.Board.ChunkID != "chunk-1" || spec.Board.Scope != "user" || spec.Board.ResumedFrom != "b" {
 		t.Errorf("walk opened with board %+v, want chunk-1 in user, resumed from b", spec.Board)
+	}
+}
+
+// twoEndsTeam has two end states: the judge's success publishes, its
+// pushback:stop abandons.
+const twoEndsTeam = `{
+  "entry":"judge",
+  "states":[
+    {"state":"judge","handler":{"kind":"consolidator","agent":"judge"}},
+    {"state":"published","handler":{"kind":"terminal"}},
+    {"state":"abandoned","handler":{"kind":"terminal"}}
+  ],
+  "transitions":[
+    {"from":"judge","to":"published","on":"success"},
+    {"from":"judge","to":"abandoned","on":"pushback:stop"}
+  ]}`
+
+func (w *walkRunRecorder) ended() (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastTerminal, w.lastErr
+}
+
+// A walk with two end states tells its run which one it reached, on the
+// synchronous and the detached path alike; a walk that failed reached none.
+func TestTeamDefTool_Run_FinishNamesTheTerminalReached(t *testing.T) {
+	for name, tc := range map[string]struct {
+		answer string
+		fail   bool
+		mode   string
+		want   string
+	}{
+		"success":           {answer: "ship it", want: "published"},
+		"pushback":          {answer: "no good\nsignal: pushback:stop", want: "abandoned"},
+		"detached pushback": {answer: "no good\nsignal: pushback:stop", mode: `,"mode":"detach"`, want: "abandoned"},
+		"failed":            {fail: true, want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tool, ctx, done := teamDefFixture(t)
+			defer done()
+			createTeam(t, tool, ctx, "two-ends", twoEndsTeam)
+			tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
+				if tc.fail {
+					return "", errors.New("the judge broke")
+				}
+				return tc.answer, nil
+			})
+			rec := &walkRunRecorder{}
+			tool.WalkRun = rec.open
+
+			_, _ = tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"two-ends","input":"x"`+tc.mode+`}`))
+			waitFor(t, func() bool { _, f := rec.counts(); return f == 1 })
+			terminal, err := rec.ended()
+			if terminal != tc.want {
+				t.Errorf("finish terminal = %q, want %q", terminal, tc.want)
+			}
+			if tc.fail != (err != nil) {
+				t.Errorf("finish err = %v, want failed=%v", err, tc.fail)
+			}
+		})
+	}
+}
+
+// A board resumed at an end state enters it at once and runs no step, so the
+// trace has nothing to read the end from — the walk still names it.
+func TestTeamDefTool_Run_BoardResumedAtAnEndNamesIt(t *testing.T) {
+	tool, ctx, done := teamDefFixture(t)
+	defer done()
+	createTeam(t, tool, ctx, "board-walk", linearBoardTeam)
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) {
+		t.Error("a walk resumed at its end ran a member")
+		return "", nil
+	})
+	tool.Board = &fakeBoard{exists: true, status: "done"}
+	rec := &walkRunRecorder{}
+	tool.WalkRun = rec.open
+
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"run","name":"board-walk","input":"x","board_chunk_id":"chunk-1"}`))
+	if res.IsError {
+		t.Fatalf("run: %s", res.Text)
+	}
+	if terminal, err := rec.ended(); terminal != "done" || err != nil {
+		t.Errorf("finish = (%q, %v), want (done, nil)", terminal, err)
 	}
 }

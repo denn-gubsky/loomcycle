@@ -20,6 +20,9 @@ type runResultRecord struct {
 	// Structured is the answer parsed against the run's output_format; absent
 	// when the run had none or the answer was not a JSON object.
 	Structured map[string]any `json:"structured,omitempty"`
+	// Terminal is the end state a team walk reached. Absent when the walk
+	// failed or was cancelled, and on every agent run.
+	Terminal string `json:"terminal,omitempty"`
 }
 
 // runResultJSON renders a loop result for FinishRun. nil when the run produced
@@ -44,6 +47,20 @@ func runResultJSON(r *redact.Redactor, res loop.RunResult) json.RawMessage {
 		if err != nil {
 			return nil
 		}
+	}
+	return r.Bytes(b)
+}
+
+// walkResultJSON renders a team walk's answer for FinishRun: its final output
+// and the end state it reached. nil when there is neither, like runResultJSON.
+// Masked the same way: the final text is model output.
+func walkResultJSON(r *redact.Redactor, finalText, terminal string) json.RawMessage {
+	if finalText == "" && terminal == "" {
+		return nil
+	}
+	b, err := json.Marshal(runResultRecord{FinalText: finalText, Terminal: terminal})
+	if err != nil {
+		return nil
 	}
 	return r.Bytes(b)
 }
