@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -138,6 +140,44 @@ func TestFinishPaths_RedactTheRunResult(t *testing.T) {
 		}
 		if !json.Valid([]byte(got)) || got == "" {
 			t.Errorf("%s result = %q, want the masked answer kept", name, got)
+		}
+	}
+}
+
+// The TS RunResult is a hand-written mirror of runResultRecord. Every key the
+// Go record persists must be declared there, or a typed TS caller reading a
+// run's result cannot name it.
+func TestRunResult_TSMirrorDeclaresEveryRecordField(t *testing.T) {
+	goSrc, err := os.ReadFile("runresult.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)type runResultRecord struct \{(.*?)\n\}`).FindSubmatch(goSrc)
+	if m == nil {
+		t.Fatal("could not find runResultRecord — this test asserts nothing until it matches again")
+	}
+	var goFields []string
+	for _, f := range regexp.MustCompile("`json:\"([a-z0-9_]+)").FindAllSubmatch(m[1], -1) {
+		goFields = append(goFields, string(f[1]))
+	}
+	if len(goFields) < 4 {
+		t.Fatalf("only %d record fields parsed — the pattern has stopped matching", len(goFields))
+	}
+	tsSrc, err := os.ReadFile("../../../adapters/ts/src/types.ts")
+	if err != nil {
+		t.Skipf("TS adapter not present: %v", err)
+	}
+	tm := regexp.MustCompile(`(?s)export interface RunResult \{(.*?)\n\}`).FindSubmatch(tsSrc)
+	if tm == nil {
+		t.Fatal("could not find RunResult in types.ts")
+	}
+	declared := map[string]bool{}
+	for _, f := range regexp.MustCompile(`(?m)^\s*([a-z0-9_]+)\??:`).FindAllSubmatch(tm[1], -1) {
+		declared[string(f[1])] = true
+	}
+	for _, f := range goFields {
+		if !declared[f] {
+			t.Errorf("runResultRecord persists %q but TS RunResult does not declare it", f)
 		}
 	}
 }

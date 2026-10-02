@@ -932,9 +932,10 @@ export class LoomcycleClient {
   }
 
   /** One page of a team walk's runs — the walk's own run (its run id IS the
-   *  walk id) and every member it spawned, oldest first. Pass the page's
-   *  `next_cursor` back as `cursor` for the next one; it is "" on the last.
-   *  `limit` defaults to 100, at most 1000. Mirrors
+   *  walk id) and every member it spawned, oldest first. The walk's own row
+   *  carries its `result` (with the `terminal` it reached); member rows do
+   *  not. Pass the page's `next_cursor` back as `cursor` for the next one; it
+   *  is "" on the last. `limit` defaults to 100, at most 1000. Mirrors
    *  `GET /v1/runs?walk_id=`. Raises NotFoundError for an unknown walk, or
    *  one the caller may not see. */
   async listWalkRuns(
