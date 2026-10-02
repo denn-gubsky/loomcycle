@@ -182,7 +182,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.101.0) made a snapshot carry the whole deployment:
+The most recent line (v1.101.1) is a patch. It fixes a v1.101.0 regression
+in which a memory consolidation pass on a slow local model, cut by the new
+per-pass budget, re-read the same chats forever: a cut pass now gets the whole
+budget on its next turn, and the watermark advances after each chat. It also
+stops a non-admin MCP server definition from reading the operator's env vars,
+lets a remote memory peer key with its own tenant's `$cred:`, and adds a
+team-walk view to the Web UI, with each walk recording the team version it ran.
+
+Before it, v1.101.0 made a snapshot carry the whole deployment:
 users and budgets, schedules, webhooks, peers, memory backends, volumes, the
 Path tree and the consolidation queue. Literal trigger credentials are
 stripped, and every definition is re-checked against the target's own rules. A
