@@ -88,6 +88,11 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	if err != nil {
 		return ctx, "", func(string, error) {}, err
 	}
+	// A walk is a run, and its transitions reach the run-state stream like
+	// one's: without these a stream watching the walk saw its members come and
+	// go and never the walk itself.
+	meta := runStateMeta{RunID: runID, AgentID: agent, Agent: agent, UserID: ident.UserID, TenantID: ident.TenantID, ParentRunID: parentRunID}
+	s.publishRunState(meta, "running", "", "")
 
 	walkCtx := ctx
 	if detach {
@@ -138,8 +143,8 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}
 		// A walk is a run, and ends like one.
-		s.observeRunEnd(runStateMeta{RunID: runID, AgentID: agent, Agent: agent, UserID: ident.UserID, TenantID: ident.TenantID, ParentRunID: parentRunID},
-			status, stopReason, msg, finalText)
+		s.publishRunState(meta, string(status), stopReason, msg)
+		s.observeRunEnd(meta, status, stopReason, msg, finalText)
 		cancelWalk(nil) // release the ctx; a no-op after a cancel
 	}
 	return walkCtx, runID, finish, nil
