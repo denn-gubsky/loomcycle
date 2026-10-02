@@ -167,3 +167,55 @@ func TestHistory_GetPagesThroughTheTool(t *testing.T) {
 		t.Errorf("event page for the last turn = %v", tr)
 	}
 }
+
+// A page never exceeds a quarter of the model's window (at ~4 characters a
+// token, the window's token count in characters), and the quarter only ever
+// lowers the budget. Unfixed, a 16K window with nothing configured got the
+// fixed 24,000 characters — about 37% of it.
+func TestHistoryInRunBudget_NeverExceedsAQuarterOfTheWindow(t *testing.T) {
+	for _, c := range []struct {
+		name                  string
+		configured, effective int
+		want                  int
+	}{
+		{"small effective window, nothing configured", 0, 16384, 16384},
+		{"large effective window keeps the fixed cap", 0, 200_000, historyMarkdownInRunCap},
+		{"configured equals effective is unchanged", 8192, 8192, 8192 * 4 / 5},
+		{"configured only is unchanged", 8192, 0, 8192 * 4 / 5},
+		{"effective below configured lowers it", 32768, 16384, 16384},
+		{"no window keeps the fixed cap", 0, 0, historyMarkdownInRunCap},
+	} {
+		ctx := tools.WithEffectiveContextWindow(tools.WithMaxContextTokens(context.Background(), c.configured), c.effective)
+		if got := historyInRunBudget(ctx); got != c.want {
+			t.Errorf("%s: budget %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// The cap reaches what get actually returns: an in-run markdown export on a
+// 16K model with nothing configured is cut to a quarter of the window.
+func TestHistory_InRunGetFitsAQuarterOfTheEffectiveWindow(t *testing.T) {
+	h, s := historyFixture(t)
+	bg := context.Background()
+	id := seedChat(t, s, "t1", "agentA", "tok-user-1")
+	run, err := s.CreateRun(bg, id, store.RunIdentity{AgentID: "a_run", UserID: "tok-user-1", TenantID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("a long tool result line. ", 2000) // ~50K chars
+	payload, _ := json.Marshal(map[string]any{"type": "tool_result", "text": big})
+	if err := s.AppendEvent(bg, run.ID, "tool_result", payload); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithEffectiveContextWindow(
+		tools.WithRunID(histCtx([]string{"self"}, "agentA", "tok-user-1", "t1"), "r_reader"), 16384)
+	res, _ := h.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"op":"get","scope":"self","session_id":%q,"format":"markdown"}`, id)))
+	if res.IsError {
+		t.Fatalf("get: %s", res.Text)
+	}
+	var out map[string]any
+	_ = json.Unmarshal([]byte(res.Text), &out)
+	if n := len(out["markdown"].(string)); n > 16384 || out["truncated"] != true {
+		t.Errorf("in-run export on a 16K window: %d characters (truncated=%v), want at most 16384", n, out["truncated"])
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // The reach-through (RFC CV P1): a distilled fact is a sentence, and the turn it came
@@ -209,5 +210,62 @@ func TestHistoryWindow_SegmentsTurnsExactlyAsTheConversationRenderingDoes(t *tes
 	if md, _ := win["markdown"].(string); md != rendered {
 		t.Errorf("the window and the conversation rendering disagree about turn boundaries.\n"+
 			"window:\n%q\nrendering:\n%q", md, rendered)
+	}
+}
+
+// Inside a run the window is a page like any other: it never exceeds a quarter
+// of the model's window. A chat of long turns on a 16K model with nothing
+// configured is narrowed around the match, and a matched turn too big alone is
+// cut — both say so. Unfixed, the window returned every turn its context bound
+// asked for, whatever their size.
+func TestHistoryWindow_InRunFitsAQuarterOfTheEffectiveWindow(t *testing.T) {
+	h, s := historyFixture(t)
+	long := func(tag string, n int) string { return tag + " " + strings.Repeat("x", n) }
+	id := seedConversation(t, s,
+		long("t0", 3000), long("t1", 3000), long("t2", 3000), long("t3", 3000),
+		"the release moved to the 14th "+strings.Repeat("y", 3000),
+		long("t5", 3000), long("t6", 3000), long("t7", 3000),
+		"the budget doubled "+strings.Repeat("z", 50000),
+	)
+	ctx := tools.WithEffectiveContextWindow(
+		tools.WithRunID(histCtx([]string{"self"}, "agentA", "alice", "t1"), "r_reader"), 16384)
+	window := func(quote string) map[string]any {
+		t.Helper()
+		req := fmt.Sprintf(`{"op":"window","scope":"self","session_id":%q,"quote":%q,"context":2}`, id, quote)
+		res, _ := h.Execute(ctx, json.RawMessage(req))
+		if res.IsError {
+			t.Fatalf("window: %s", res.Text)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out
+	}
+	size := func(out map[string]any) int {
+		b, _ := json.Marshal(out["turns"])
+		return len(b) + len(out["markdown"].(string))
+	}
+
+	got := window("the release moved to the 14th")
+	if n := size(got); n > 16384 || got["truncated"] != true || !strings.Contains(got["markdown"].(string), "the 14th") {
+		t.Errorf("long turns: %d characters (truncated=%v, has match=%v), want the match within 16384",
+			n, got["truncated"], strings.Contains(got["markdown"].(string), "the 14th"))
+	}
+	if turns := got["turns"].([]any); len(turns) < 2 {
+		t.Errorf("narrowed to %d turns; the neighbours that fit should stay", len(turns))
+	}
+
+	got = window("the budget doubled")
+	if n := size(got); n > 16384 || got["truncated"] != true || !strings.Contains(got["markdown"].(string), "the budget doubled") {
+		t.Errorf("one huge turn: %d characters (truncated=%v), want it cut to 16384 with its start kept", n, got["truncated"])
+	}
+	if n, _ := got["total_turns"].(float64); int(n) != 9 {
+		t.Errorf("total_turns = %v after the cut, want 9", got["total_turns"])
+	}
+
+	off := windowResult(t, h, id, "the release moved to the 14th", 2)
+	if off["truncated"] != nil || len(off["turns"].([]any)) != 5 {
+		t.Errorf("off-run window was narrowed: truncated=%v turns=%d", off["truncated"], len(off["turns"].([]any)))
 	}
 }

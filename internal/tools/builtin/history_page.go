@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"time"
@@ -98,14 +99,25 @@ func selectHistoryPage(ctx context.Context, events []store.Event, in historyInpu
 }
 
 // historyInRunBudget is how many characters of transcript one in-run `get` may
-// return: a fifth of the run's context window at about 4 characters a token,
-// so a page leaves room for the prompt, the task, and the answer. Without a
-// known window it falls back to the fixed cap the markdown export used.
+// return: a fifth of the run's configured context window at about 4 characters
+// a token, so a page leaves room for the prompt, the task, and the answer.
+// Without a configured window it falls back to the fixed cap the markdown
+// export used.
+//
+// Either way a page never exceeds a quarter of the window the model is actually
+// running with. The configured cap alone missed an agent with nothing
+// configured on a small local model: a 16K window got the fixed 24,000
+// characters, about 37% of it. The quarter only lowers the budget, never
+// raises it.
 func historyInRunBudget(ctx context.Context) int {
+	budget := historyMarkdownInRunCap
 	if n := tools.MaxContextTokens(ctx); n > 0 {
-		return n * 4 / 5
+		budget = n * 4 / 5
 	}
-	return historyMarkdownInRunCap
+	if q := quarterWindowChars(ctx); q > 0 {
+		budget = min(budget, q)
+	}
+	return budget
 }
 
 // fitBudget returns the last turn (exclusive) that fits the budget, counting
@@ -177,4 +189,88 @@ func (p historyPage) fields() map[string]any {
 		out["next_offset"] = p.end - p.lo
 	}
 	return out
+}
+
+// cutToFit shortens *s until size() is within budget or *s is empty, and says
+// whether it cut. Each step removes half the overshoot (rounded up): a field
+// that appears twice in a result — a window turn's text is both in `turns` and
+// in `markdown` — then converges without being cut to nothing, and one that
+// appears once takes a few more steps.
+func cutToFit(s *string, budget int, size func() int) bool {
+	cut := false
+	for *s != "" {
+		over := size() - budget
+		if over <= 0 {
+			break
+		}
+		*s, _ = cutOnRune(*s, max(len(*s)-(over+1)/2, 0))
+		cut = true
+	}
+	return cut
+}
+
+// fitRowsToBudget is the in-run budget for a list of chats (list, search,
+// related): it returns how many leading rows fit budget characters, each row
+// measured by size(i), its encoded size. A row count alone does not bound a
+// page — a chat's description, summary, title and tags can be any length, and
+// a caller may ask for 500 rows. arrays is how many JSON arrays a row is spread
+// across (a content search returns a chat and its matched turn in two); each
+// costs its brackets and a comma per further row. A first row too big on its
+// own is handed to shrink with the budget it alone must fit, to cut its free
+// text, so a page is not empty while rows remain; the result says whether
+// anything was cut.
+func fitRowsToBudget(n, budget, arrays int, size func(i int) int, shrink func(i, rowBudget int) bool) (int, bool) {
+	used, cut := 2*arrays, false
+	for i := 0; i < n; i++ {
+		s := size(i)
+		if i == 0 && used+s > budget {
+			cut = shrink(0, budget-used)
+			s = size(0)
+		}
+		if i > 0 {
+			s += arrays
+			if used+s > budget {
+				return i, cut
+			}
+		}
+		used += s
+	}
+	return n, cut
+}
+
+// cutMetaToFit cuts a chat row's free text until size() fits budget: the
+// description, then the summary, then the title, and last the tags. Those are
+// the fields written at any length; the rest of a row is fixed-size.
+func cutMetaToFit(budget int, size func() int, title, description, summary *string, tags *[]string) bool {
+	cut := cutToFit(description, budget, size)
+	cut = cutToFit(summary, budget, size) || cut
+	cut = cutToFit(title, budget, size) || cut
+	if len(*tags) > 0 && size() > budget {
+		*tags = nil
+		cut = true
+	}
+	return cut
+}
+
+// historyRowsNote says why an in-run list of chats is shorter than asked, or
+// why a chat's text was cut; "" when neither happened. more tells the caller
+// how to read the chats that did not fit.
+func historyRowsNote(kept, of, budget int, cut bool, more string) string {
+	var msg string
+	if kept < of {
+		msg = fmt.Sprintf("Only %d of %d chats fit the %d characters that fit your context. %s", kept, of, budget, more)
+	}
+	if cut {
+		if msg != "" {
+			msg += " "
+		}
+		msg += "A chat's description, summary, title or tags were cut to fit."
+	}
+	return msg
+}
+
+// jsonLen is the encoded size of v — what it adds to a tool result.
+func jsonLen(v any) int {
+	b, _ := json.Marshal(v)
+	return len(b)
 }

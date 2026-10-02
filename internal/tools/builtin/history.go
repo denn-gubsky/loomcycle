@@ -385,6 +385,17 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 	if err != nil {
 		return errFrom("history: list: "+err.Error(), err), nil
 	}
+	var note string
+	if budget := historyInRunBudget(ctx); tools.RunID(ctx) != "" && budget > 0 {
+		n, cut := fitRowsToBudget(len(rows), budget, 1,
+			func(i int) int { return jsonLen(rows[i]) },
+			func(i, rowBudget int) bool {
+				r := &rows[i]
+				return cutMetaToFit(rowBudget, func() int { return jsonLen(*r) }, &r.Title, &r.Description, &r.Summary, &r.Tags)
+			})
+		note = historyRowsNote(n, len(rows), budget, cut, "Continue with offset=next_offset.")
+		rows = rows[:n]
+	}
 	out := map[string]any{
 		"scope":  scope,
 		"chats":  rows,
@@ -396,6 +407,10 @@ func (h *History) list(ctx context.Context, scope string, in historyInput, isSea
 	out["has_more"] = int64(next) < total
 	if int64(next) < total {
 		out["next_offset"] = next
+	}
+	if note != "" {
+		out["truncated"] = true
+		out["note"] = note
 	}
 	return okJSON(out)
 }
@@ -653,10 +668,25 @@ func (h *History) related(ctx context.Context, scope string, in historyInput) (t
 		}
 	}
 
+	var note string
+	if budget := historyInRunBudget(ctx); tools.RunID(ctx) != "" && budget > 0 {
+		n, cut := fitRowsToBudget(len(out), budget, 1,
+			func(i int) int { return jsonLen(out[i]) },
+			func(i, rowBudget int) bool {
+				r := &out[i]
+				return cutMetaToFit(rowBudget, func() int { return jsonLen(*r) }, &r.Title, &r.Description, &r.Summary, &r.Tags)
+			})
+		note = historyRowsNote(n, len(out), budget, cut, "The rest are less similar; narrow the query to see others.")
+		out = out[:n]
+	}
 	res := map[string]any{
 		"scope":   scope,
 		"related": out,
 		"count":   len(out),
+	}
+	if note != "" {
+		res["truncated"] = true
+		res["note"] = note
 	}
 	if excludeID != "" {
 		res["source_session_id"] = excludeID

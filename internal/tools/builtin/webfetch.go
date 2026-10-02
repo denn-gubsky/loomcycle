@@ -114,13 +114,22 @@ func (f *WebFetch) outputLimit(ctx context.Context, maxChars *int) int {
 	if maxChars != nil {
 		return min(max(*maxChars, 1), ceiling)
 	}
-	if n := tools.EffectiveContextWindow(ctx); n > 0 {
-		return min(n, ceiling)
-	}
-	if n := tools.MaxContextTokens(ctx); n > 0 {
+	if n := quarterWindowChars(ctx); n > 0 {
 		return min(n, ceiling)
 	}
 	return ceiling
+}
+
+// quarterWindowChars is a quarter of the model's context window in characters,
+// at ~4 characters a token — numerically, the window's token count. The window
+// is the effective one when the loop stamped it, else the configured
+// max_context_tokens; 0 when neither is known. Shared so every tool that sizes
+// in-run output by the window uses one ratio.
+func quarterWindowChars(ctx context.Context) int {
+	if n := tools.EffectiveContextWindow(ctx); n > 0 {
+		return n
+	}
+	return tools.MaxContextTokens(ctx)
 }
 
 // cutOnRune returns at most n bytes of s, backing off to a rune boundary so a

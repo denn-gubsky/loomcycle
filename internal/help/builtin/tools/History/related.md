@@ -26,6 +26,9 @@ that never were cannot match until one of those is done to them.
 a chat or `query` when it was text. Each related chat has the same fields as a
 `list` row plus `score`, highest first.
 
+Inside a run the list fits your context: fewer chats may come back, with
+`truncated: true` and a `note`.
+
 ## Errors
 
 - `history: related requires an embedder` — none is configured here. Not

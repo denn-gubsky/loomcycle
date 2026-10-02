@@ -33,6 +33,10 @@ when there are more chats: pass it as `offset` to read the next page. Each chat 
 `description`, `tags`, `pinned`, `archived`, `summary`. `total` counts every
 matching chat, not just this page; `limit` is the page size actually applied.
 
+Inside a run a page also fits your context: it can hold fewer chats than
+`limit`, and then has `truncated: true` and a `note` — read on with
+`next_offset`. A chat whose text alone is too big has it cut.
+
 ## Errors
 
 - `history: scope "self" not permitted (allowed: user)` — you left out `scope`
