@@ -92,6 +92,17 @@ type RunOptions struct {
 	// event + emit the EventSteer SSE event. Same "cheap, loop-goroutine,
 	// tolerate failures" contract as OnHeartbeat.
 	OnSteer func(steer.Message)
+	// CloseSteerIfEmpty, when non-nil, closes SteerQueue to new messages if
+	// nothing is waiting in it, atomically with respect to a push, and reports
+	// whether it did. A run that is finishing (not interactive, not held)
+	// calls it at its last read of the queue, so a message sent after that
+	// read is refused as if the run had ended rather than accepted and never
+	// read. false means a message is waiting: the run answers it first.
+	//
+	// nil keeps the queue open until the run deregisters: the finishing run
+	// still reads what is already waiting, once, but a message sent after
+	// that read is accepted and dropped, as it always was.
+	CloseSteerIfEmpty func() bool
 
 	// BankCompactedSpan, when non-nil, banks the span a compaction is about to
 	// DISCARD onto the consolidation queue, so the pass can extract durable facts
@@ -1811,6 +1822,90 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 	}
 }
 
+// settleSteerAtFinish is a finishing run's last read of its steer queue —
+// a run that would otherwise end here, neither interactive nor held. It
+// calls drain, which reads every waiting message the way the run's loop reads
+// its queue and reports whether one was an operator turn to answer. If one
+// was, the run takes another turn with it in view instead of finishing, and
+// the queue stays open. If none was, the queue is closed through
+// opts.CloseSteerIfEmpty; a message that slipped in before the close is
+// drained in turn, so the queue never closes on an unread message.
+//
+// It knows nothing of how a turn is appended, so the stateful loop can settle
+// its queue with its own drain.
+func settleSteerAtFinish(opts *RunOptions, drain func() (answer bool)) bool {
+	if opts.SteerQueue == nil {
+		return false
+	}
+	for {
+		if drain() {
+			return true
+		}
+		if opts.CloseSteerIfEmpty == nil || opts.CloseSteerIfEmpty() {
+			return false
+		}
+	}
+}
+
+// finishSteer settles the append loop's queue as the run finishes (see
+// settleSteerAtFinish). With an iteration left, a waiting operator message is
+// appended exactly as drainSteer appends it, and took reports the run must
+// answer it. With none left, it cannot be answered: drainSteerUnanswerable
+// names it in an error instead, and the run ends on the answer it has.
+func finishSteer(opts *RunOptions, messages []providers.Message, canAnswer bool, emit func(providers.Event)) (out []providers.Message, compacted, took bool) {
+	took = settleSteerAtFinish(opts, func() bool {
+		var c, answer bool
+		if canAnswer {
+			onSteer := func(m steer.Message) {
+				answer = true
+				if opts.OnSteer != nil {
+					opts.OnSteer(m)
+				}
+			}
+			messages, c = drainSteer(opts.SteerQueue, messages, onSteer, emit)
+		} else {
+			messages, c = drainSteerUnanswerable(opts.SteerQueue, messages, emit)
+		}
+		compacted = compacted || c
+		return answer
+	})
+	return messages, compacted, took
+}
+
+// drainSteerUnanswerable empties q for a run with no iteration left to answer
+// what is in it. A compaction is applied and a verdict dropped, as drainSteer
+// does. An operator message is NOT appended — a turn appended and never
+// answered would be read as the run's last word — but reported as an error
+// that names it, so it is not acknowledged and silently lost.
+func drainSteerUnanswerable(q <-chan steer.Message, messages []providers.Message, emit func(providers.Event)) ([]providers.Message, bool) {
+	compacted := false
+	for {
+		select {
+		case m := <-q:
+			switch {
+			case m.Kind == steer.KindCompact:
+				messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
+				compacted = true
+			case m.IsVerdict():
+			default:
+				emit(providers.Event{Type: providers.EventError,
+					Error: "an operator message arrived after the final answer and the run has no iteration left to answer it: " + clipRunes(m.Text, 200)})
+			}
+		default:
+			return messages, compacted
+		}
+	}
+}
+
+// clipRunes shortens s to at most n runes, marking the cut.
+func clipRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // maybeAutoCompact runs an INLINE summarization (the loop computes the summary
 // itself — the auto + self-compact path) and replaces `messages` with the
 // compacted form, emitting the marker. Returns the (possibly unchanged) slice +
@@ -2742,6 +2837,15 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 				var resumedWithInput bool
 				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, h.SinceTurn, lastCtxTokens, preambleTokens, emit)
 				parkAbandoned = !resumedWithInput
+			} else {
+				// Finishing on the approved answer, as the loop's own end of
+				// turn does: a message waiting is answered first.
+				var compacted, took bool
+				messages, compacted, took = finishSteer(&opts, messages, iterCap > 0, emit)
+				if compacted {
+					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+				}
+				parkAbandoned = !took
 			}
 		}
 	}
@@ -3510,6 +3614,22 @@ outerLoop:
 					break
 				}
 				continue outerLoop
+			}
+			// The run is finishing. A message sent while this answer was being
+			// written was acknowledged, so it is answered — one more turn,
+			// whose answer becomes the run's — and the queue closes only once
+			// a final answer ends with nothing waiting.
+			if opts.SteerQueue != nil {
+				var compacted, took bool
+				messages, compacted, took = finishSteer(&opts, messages, iter+1 < iterCap, emit)
+				if compacted {
+					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+				}
+				if took {
+					disarmTurn()
+					iterSpan.End()
+					continue outerLoop
+				}
 			}
 			iterSpan.End()
 			break
