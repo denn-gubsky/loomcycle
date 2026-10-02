@@ -38,6 +38,10 @@ Content match: `{scope, match: "content", chats, matched_turns, total, limit}`.
 `{session_id, text, speaker, score}`, the best-matching turn of that chat.
 Chats come back best match first.
 
+Inside a run either form fits your context: fewer chats may come back, and a
+matched turn too big on its own is cut; either way the result has
+`truncated: true` and a `note`.
+
 ## Errors
 
 - `history: search requires a non-empty query`.

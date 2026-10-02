@@ -27,6 +27,10 @@ total_turns, turns: [{speaker, text, seq, at}], markdown}`. `matched_turn` and
 `first_turn` are turn positions counted from 0; `at` is when the turn was said;
 `markdown` is the same turns as `### user` / `### assistant` sections.
 
+Inside a run the window fits your context: if the turns are long it is
+narrowed around the matched turn, and a matched turn too big on its own is
+cut. Either way the result has `truncated: true` and a `note`.
+
 Not found: `{scope, session_id, matched: false, turns: [], total_turns, note}`
 — the span is not in that chat (it was reworded before it was stored, or the
 turn was redacted). This is a result, not an error, and no turns are guessed.
