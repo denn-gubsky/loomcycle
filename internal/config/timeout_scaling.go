@@ -33,9 +33,10 @@ type TimeoutScaling struct {
 	// (Capabilities().Local) before it has MinSamples; every other provider's
 	// prior is 1.
 	LocalPrior float64 `yaml:"local_prior,omitempty"`
-	// Models are operator overrides used before a model has MinSamples, keyed
-	// "provider/model" or by a `models:` alias. Each sets exactly one of
-	// decode_tps (→ multiplier reference.decode_tps / decode_tps) or multiplier.
+	// Models are per-model settings, keyed "provider/model" or by a `models:`
+	// alias. An entry sets at most one of decode_tps (→ multiplier
+	// reference.decode_tps / decode_tps) or multiplier, the model's estimate
+	// before it has MinSamples; and/or max_multiplier, its own cap.
 	Models map[string]TimeoutScalingModel `yaml:"models,omitempty"`
 }
 
@@ -49,10 +50,25 @@ type TimeoutScalingReference struct {
 	TTFTMs     int     `yaml:"ttft_ms,omitempty"`
 }
 
-// TimeoutScalingModel is one operator override.
+// TimeoutScalingModel is one model's settings.
 type TimeoutScalingModel struct {
 	DecodeTPS  float64 `yaml:"decode_tps,omitempty"`
 	Multiplier float64 `yaml:"multiplier,omitempty"`
+	// MaxMultiplier replaces the block's max_multiplier for this model — both
+	// the clip on each of its samples and the clamp on its multiplier — for a
+	// model known to run slower than the global cap allows. Unlike decode_tps
+	// and multiplier it holds at every sample count: it is a bound, not a
+	// prior. 0 = the global cap.
+	MaxMultiplier float64 `yaml:"max_multiplier,omitempty"`
+}
+
+// CapFor is the multiplier cap for the model a timeout_scaling.models entry
+// describes: its own max_multiplier when set, else the block's.
+func (t TimeoutScaling) CapFor(m TimeoutScalingModel) float64 {
+	if m.MaxMultiplier > 0 {
+		return m.MaxMultiplier
+	}
+	return t.MaxMultiplier
 }
 
 // Timeout-scaling modes and defaults.
@@ -66,8 +82,10 @@ const (
 	defaultScalingMaxMultiplier = 8
 	defaultScalingMinSamples    = 5
 	defaultScalingLocalPrior    = 4
-	// maxScalingMultiplier bounds max_multiplier itself: whatever it is set to,
-	// a budget must stay bounded.
+	// maxScalingMultiplier bounds every max_multiplier, the block's and each
+	// model's: whatever they are set to, a scaled budget must stay bounded. One
+	// ceiling for both, so a per-model cap can never reach past what the global
+	// one could be set to.
 	maxScalingMultiplier = 100
 )
 
@@ -174,13 +192,18 @@ func validateTimeoutScaling(c *Config) error {
 		if _, _, ok := c.ResolveModelKey(k); !ok {
 			return fmt.Errorf("timeout_scaling.models.%s: want \"provider/model\" or a `models:` alias naming one model", k)
 		}
+		limit := ts.CapFor(m)
 		switch {
-		case m.DecodeTPS > 0 && m.Multiplier != 0, m.DecodeTPS == 0 && m.Multiplier == 0:
-			return fmt.Errorf("timeout_scaling.models.%s: set exactly one of decode_tps or multiplier", k)
+		case m.MaxMultiplier != 0 && (m.MaxMultiplier < 1 || m.MaxMultiplier > maxScalingMultiplier):
+			return fmt.Errorf("timeout_scaling.models.%s: max_multiplier %v out of range [1,%d]", k, m.MaxMultiplier, maxScalingMultiplier)
+		case m.DecodeTPS > 0 && m.Multiplier != 0:
+			return fmt.Errorf("timeout_scaling.models.%s: set at most one of decode_tps or multiplier", k)
+		case m.DecodeTPS == 0 && m.Multiplier == 0 && m.MaxMultiplier == 0:
+			return fmt.Errorf("timeout_scaling.models.%s: set decode_tps or multiplier, and/or max_multiplier", k)
 		case m.DecodeTPS < 0:
 			return fmt.Errorf("timeout_scaling.models.%s: decode_tps must be positive", k)
-		case m.Multiplier != 0 && (m.Multiplier < 1 || m.Multiplier > ts.MaxMultiplier):
-			return fmt.Errorf("timeout_scaling.models.%s: multiplier %v out of range [1, max_multiplier %v]", k, m.Multiplier, ts.MaxMultiplier)
+		case m.Multiplier != 0 && (m.Multiplier < 1 || m.Multiplier > limit):
+			return fmt.Errorf("timeout_scaling.models.%s: multiplier %v out of range [1, max_multiplier %v]", k, m.Multiplier, limit)
 		}
 	}
 	return nil
