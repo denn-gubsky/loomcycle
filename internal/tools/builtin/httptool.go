@@ -105,11 +105,15 @@ func (h *HTTP) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
 	}
-	return h.do(ctx, args.Method, args.URL, args.Headers, args.Body)
+	return h.do(ctx, args.Method, args.URL, args.Headers, args.Body, 0)
 }
 
 // do is split out so WebFetch can call it directly with GET defaults.
-func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string]string, body string) (tools.Result, error) {
+//
+// maxResp > 0 overrides the response-body cap for this one call; 0 keeps the
+// HTTP tool's own (MaxResponseBytes, else 256 KiB). WebFetch needs a larger raw
+// read than the text it returns, because it strips the page AFTER reading it.
+func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string]string, body string, maxResp int64) (tools.Result, error) {
 	// Refuse only when the operator floor is empty AND no permitted Pre-hook
 	// contributed a per-call host grant. A permitted host-widen grant
 	// (ExtraAllowedHosts — populated ONLY by operator-opted-in hooks via the
@@ -159,7 +163,9 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	if int64(len(body)) > maxReq {
 		return tools.Result{Text: fmt.Sprintf("request body exceeds %d bytes", maxReq), IsError: true}, nil
 	}
-	maxResp := h.MaxResponseBytes
+	if maxResp <= 0 {
+		maxResp = h.MaxResponseBytes
+	}
 	if maxResp == 0 {
 		maxResp = 256 * 1024
 	}
@@ -232,9 +238,15 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	b.WriteString("\n")
 	b.Write(respBody)
 	if truncated {
-		fmt.Fprintf(&b, "\n[truncated at %d bytes]", maxResp)
+		b.WriteString(responseTruncatedMarker(maxResp))
 	}
 	return tools.Result{Text: b.String()}, nil
+}
+
+// responseTruncatedMarker is the line do appends when it cut the response body.
+// One formatter so WebFetch can recognise its own raw cut.
+func responseTruncatedMarker(maxResp int64) string {
+	return fmt.Sprintf("\n[truncated at %d bytes]", maxResp)
 }
 
 // dialContext is the connection-level SSRF guard. By the time we reach
