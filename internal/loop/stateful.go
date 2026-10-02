@@ -509,8 +509,12 @@ type emitStateCall struct {
 // plus whatever else the model produced. NO OnEvent hook is set — the returned
 // channel is the event source (mirrors summarizeWith); the tool call is what
 // matters, but the text is no longer thrown away.
-func callForEmitState(ctx context.Context, provider providers.Provider, req providers.Request) (emitStateCall, error) {
+//
+// now is the clock the call's timing is taken with (nil = time.Now); the timing
+// rides the returned usage.
+func callForEmitState(ctx context.Context, provider providers.Provider, req providers.Request, now func() time.Time) (emitStateCall, error) {
 	var out emitStateCall
+	timer := providers.StartCallTimer(now)
 	ch, err := provider.Call(ctx, req)
 	if err != nil {
 		return out, err
@@ -518,6 +522,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 	var text, thinking strings.Builder
 	var streamErr string
 	for ev := range ch {
+		timer.Observe(ev)
 		switch ev.Type {
 		case providers.EventToolCall:
 			if ev.ToolUse != nil && ev.ToolUse.Name == emitStateToolName && out.input == nil {
@@ -535,6 +540,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 			streamErr = ev.Error
 		}
 	}
+	timer.Stamp(out.usage)
 	out.text = strings.TrimSpace(text.String())
 	out.thinking = strings.TrimSpace(thinking.String())
 	if streamErr != "" {
@@ -842,7 +848,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				promptSnapshotted = true
 				emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
 			}
-			call, err := callForEmitState(ctx, opts.Provider, req)
+			call, err := callForEmitState(ctx, opts.Provider, req, opts.Now)
 			input, usage := call.input, call.usage
 			addUsage(&total, usage)
 			if usage != nil {

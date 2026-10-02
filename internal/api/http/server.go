@@ -56,6 +56,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
@@ -257,6 +258,13 @@ type Server struct {
 	// yields a no-op tracker); its methods are nil-safe. Seeded from the ledger
 	// at boot via SeedLimits (main.go).
 	limits *limits.Tracker
+
+	// throughput is the RFC DT per-(provider, model) speed estimate, fed from
+	// every timed call recordCallUsage sees (plus the summarizer / unit-generator
+	// / describe calls that record no usage). nil when timeout_scaling.mode is
+	// off; its methods are nil-safe. Seeded from the ledger at boot via
+	// SeedThroughput (main.go). Reported only — no timeout reads it.
+	throughput *throughput.Estimator
 
 	// hookDispatcher fires a run's hooks — the Set withRunHooks resolved from
 	// the run's AgentDef and put on the run's ctx. Non-nil after New(). A run
@@ -589,6 +597,8 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// (Check always allows, Add no-ops), so a store-less server keeps today's
 	// unlimited behavior. Seeded from the ledger at boot via SeedLimits.
 	s.limits = limits.New(st)
+	// RFC DT: the throughput estimate (nil when timeout_scaling.mode is off).
+	s.throughput = throughput.New(cfg, s.isLocalProvider)
 	// F32: build the secret redactor from the process env (secret-classified
 	// names only). Default-ON; LOOMCYCLE_REDACT_SECRETS=0 leaves s.redactor nil
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
@@ -661,6 +671,8 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	for _, t := range s.tools {
 		if ct, ok := t.(*builtin.Context); ok {
 			ct.Tools = s.tools
+			// RFC DT: `self` reports the run's model speed from this estimate.
+			ct.Throughput = s.throughput
 		}
 		// The planes that call the Channel tool with no per-run catalog on the
 		// policy (the MCP `channel` tool) resolve channels through the same
@@ -3171,6 +3183,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		OnSteer:             onSteer,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
+		ObserveCall:         s.callObserver(runID),
 		MarkRateLimited:     s.markRateLimitedFn(in.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
 		ToolParallelism:     s.cfg().Env.ToolParallelism,
@@ -5042,6 +5055,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		OnSteer:             onSteer,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
+		ObserveCall:         s.callObserver(runID),
 		MarkRateLimited:     s.markRateLimitedFn(req.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
 		ToolParallelism:     s.cfg().Env.ToolParallelism,
@@ -5784,6 +5798,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		OnSteer:                 onSteer,
 		Effort:                  effort,
 		MarkStalled:             s.markStalledFn(providerID, model),
+		ObserveCall:             s.callObserver(run.ID),
 		MarkRateLimited:         s.markRateLimitedFn(body.UserTier),
 		ClearStall:              s.clearStallFn(providerID, model),
 		ToolParallelism:         s.cfg().Env.ToolParallelism,
@@ -6491,7 +6506,12 @@ func redactJSONMap(r *redact.Redactor, m map[string]any) map[string]any {
 // newly crossed, so makeRecordingEmit can emit a `limit` event. Nil tracker /
 // zero tokens → nil.
 func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, iteration int, u *providers.Usage) []providers.LimitInfo {
-	if s.store == nil || u == nil {
+	if u == nil {
+		return nil
+	}
+	// RFC DT: every recorded call is also a throughput sample (store or not).
+	s.observeCall(runID, u)
+	if s.store == nil {
 		return nil
 	}
 	source := u.CredentialSource
@@ -6524,6 +6544,10 @@ func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.Ru
 		Cost:                cost,
 		CostCurrency:        currency,
 		TS:                  time.Now(),
+	}
+	if tm := u.Timing; tm != nil {
+		row.DurationMs, row.TTFTMs, row.LoadMs = tm.DurationMs, tm.TTFTMs, tm.LoadMs
+		row.PrefillMs, row.DecodeMs, row.QueueMs = tm.PrefillMs, tm.DecodeMs, tm.QueueMs
 	}
 	if err := s.store.RecordCallUsage(ctx, row); err != nil {
 		log.Printf("store: RecordCallUsage failed (run=%s iter=%d): %v", runID, iteration, err)
@@ -7656,6 +7680,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name, systemExtra, pro
 		UnboundedIterations: def.UnboundedIterations,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
+		ObserveCall:         s.callObserver(subRunID),
 		MarkRateLimited:     s.markRateLimitedFn(parentTier),
 		ClearStall:          s.clearStallFn(providerID, model),
 		ToolParallelism:     s.cfg().Env.ToolParallelism,
@@ -8674,6 +8699,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !run.OperatorKeyRestricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
+	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
 		return connector.CompactResult{}, &compactErr{status: http.StatusBadGateway, msg: "summarize: " + serr.Error()}
@@ -8853,6 +8879,7 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
+	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
 	if err != nil {
 		return "", fmt.Errorf("summarize: %w", err)

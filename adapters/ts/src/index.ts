@@ -156,6 +156,7 @@ export type {
   ContextOptions,
   ToolUse,
   Usage,
+  CallTiming,
   // Agent metadata
   Agent,
   AgentStatus,

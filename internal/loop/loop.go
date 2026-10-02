@@ -540,6 +540,17 @@ type RunOptions struct {
 	// Sourced from cfg.UserTiers[req.user_tier].RetryAttempts on the
 	// HTTP layer. The HTTP layer caps at 5 before passing to the loop.
 	MaxSameProviderRetries int
+
+	// Now is the clock the per-call timing is taken with (start, first event,
+	// done — stamped onto each usage event). nil = time.Now; a test passes a fake
+	// clock so the durations are exact.
+	Now func() time.Time
+
+	// ObserveCall receives the usage, timing included, of the model calls this
+	// run makes that emit no usage event — the summaries behind compaction and
+	// recap. It feeds the throughput estimate only; nothing is billed. nil = not
+	// observed.
+	ObserveCall providers.CallObserver
 }
 
 // PauseGate is the loop's seam into the runtime pause/quiesce protocol
@@ -1566,19 +1577,38 @@ func summarizeWith(ctx context.Context, provider providers.Provider, model strin
 // Thinking is deliberately not accumulated — a reasoning trace is not a summary,
 // and folding one into the transcript would put the model's scratch work where
 // its conclusions belong.
+//
+// The call's usage, timing included, goes to the ctx's call observer: a summary
+// emits no usage event, but it is still a measured call on a real model.
 func runSummarizeCall(ctx context.Context, provider providers.Provider, req providers.Request) (string, error) {
+	timer := providers.StartCallTimer(nil)
 	ch, err := provider.Call(ctx, req)
 	if err != nil {
 		return "", err
 	}
 	var out strings.Builder
+	var usage *providers.Usage
 	for ev := range ch {
+		timer.Observe(ev)
 		switch ev.Type {
 		case providers.EventText:
 			out.WriteString(ev.Text)
+		case providers.EventDone:
+			usage = ev.Usage
 		case providers.EventError:
 			return "", errors.New(ev.Error)
 		}
+	}
+	if usage != nil {
+		u := *usage
+		if u.Provider == "" {
+			u.Provider = provider.ID()
+		}
+		if u.Model == "" {
+			u.Model = req.Model
+		}
+		timer.Stamp(&u)
+		providers.ObserveCall(ctx, &u)
 	}
 	return out.String(), nil
 }
@@ -2230,6 +2260,9 @@ func Run(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.Provider == nil {
 		return RunResult{}, fmt.Errorf("loop: provider is nil")
 	}
+	// The summarizer is deliberately RunOptions-free (see applyCompactSummary),
+	// so the observer for its calls rides the ctx instead.
+	ctx = providers.WithCallObserver(ctx, opts.ObserveCall)
 	// Every operator turn — a steer, a continue, review feedback, in either
 	// loop — reaches OnSteer, so hooking it here resets the repeat guard at all
 	// of them and at any park added later. Without it an operator asking
@@ -2954,6 +2987,7 @@ outerLoop:
 			promptSnapshotted = true
 			emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
 		}
+		callTimer := providers.StartCallTimer(opts.Now)
 		ch, err := opts.Provider.Call(turnCtx, req)
 		if err != nil {
 			// v0.12.9 same-provider retry: when the operator opted
@@ -3075,6 +3109,7 @@ outerLoop:
 		var iterReasoningSignature string
 
 		for ev := range ch {
+			callTimer.Observe(ev)
 			switch ev.Type {
 			case providers.EventText:
 				iterText += ev.Text
@@ -3279,6 +3314,8 @@ outerLoop:
 			// too (not just totalUsage) so the token_usage row records which
 			// provider actually served this call — exact across mid-run fallback.
 			iterUsage.Provider = opts.Provider.ID()
+			// How long the call took, for the throughput estimate and the ledger.
+			callTimer.Stamp(iterUsage)
 			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
 			// Retain this turn's CURRENT context footprint (input + cache, i.e.
 			// what the request actually sent — NOT cumulative totalUsage, which

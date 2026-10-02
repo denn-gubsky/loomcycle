@@ -591,6 +591,24 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_TIMEOUT_SCALING
+            label: LOOMCYCLE_TIMEOUT_SCALING
+            description: loomcycle times every model call and keeps, per (provider, model), how much slower than a reference machine the model runs (100 output tok/s, 2000 prompt tok/s, 1 s to first token). It reports that slowdown on GET /v1/_routing, /metrics and Context op=self, with the timeout multiplier it implies. `measure` (the default) records and reports only — NO timeout changes. `off` stops measuring. (`on`…
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS
+            label: LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS
+            description: '(example: 100)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER
+            label: LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER
+            description: '(example: 8)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS
             label: LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS
             description: 'Default OFF in v0.8.x; default-on planned for v0.9.x once production-validated. Recommended for any deployment running runs with thinking-mode providers (DeepSeek reasoner family, gemini-2.5-flash with effort hint). (example: 1)'

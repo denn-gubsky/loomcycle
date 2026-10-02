@@ -508,6 +508,8 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunPersistsProviderEmpty", testFinishRunPersistsProviderEmpty},
 		// RFC AV — per-call usage ledger + per-run cost/source summary.
 		{"TokenUsageLedger", testTokenUsageLedger},
+		// RFC DT — per-call timing columns + the boot-seed read.
+		{"TokenUsageCallTiming", testTokenUsageCallTiming},
 		{"FinishRunPersistsCostAndSource", testFinishRunPersistsCostAndSource},
 		{"RunCostSummary", testRunCostSummary},
 		{"UsageReport", testUsageReport},
@@ -912,6 +914,83 @@ func testTokenUsageLedger(t *testing.T, s store.Store) {
 	fin, _ := s.GetRunByAgentID(ctx, "a_usage_ledger")
 	if fin.InputTokens != inSum || fin.OutputTokens != outSum {
 		t.Errorf("rollup mismatch: runs=(%d,%d) Σledger=(%d,%d)", fin.InputTokens, fin.OutputTokens, inSum, outSum)
+	}
+}
+
+// testTokenUsageCallTiming: the timing columns round-trip (an unmeasured field
+// reads back 0, from NULL), and RecentCallTimings returns only TIMED rows since
+// the cutoff, the latest perModel of each (provider, model), oldest first —
+// the shape the throughput estimate's boot seed replays.
+func testTokenUsageCallTiming(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	rec := func(run, provider, model string, at time.Duration, durMs int64) {
+		t.Helper()
+		row := store.TokenUsageRow{RunID: run, TenantID: "t", Provider: provider, Model: model,
+			CredentialSource: "operator", InputTokens: 800, OutputTokens: 120, CacheReadTokens: 5,
+			TS: base.Add(at), DurationMs: durMs}
+		if durMs != 0 {
+			row.TTFTMs, row.LoadMs, row.PrefillMs, row.DecodeMs, row.QueueMs = 400, 2, 350, durMs-450, 50
+		}
+		if err := s.RecordCallUsage(ctx, row); err != nil {
+			t.Fatalf("RecordCallUsage: %v", err)
+		}
+	}
+	// One run: a timed call, then an untimed one (a pre-timing row's shape).
+	rec("rt-timed", "tp-local", "tm-slow", 0, 6000)
+	rec("rt-timed", "tp-local", "tm-slow", time.Second, 0)
+	got, err := s.TokenUsageForRun(ctx, "rt-timed")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("TokenUsageForRun = %d rows, %v", len(got), err)
+	}
+	if g := got[0]; g.DurationMs != 6000 || g.TTFTMs != 400 || g.LoadMs != 2 || g.PrefillMs != 350 || g.DecodeMs != 5550 || g.QueueMs != 50 {
+		t.Errorf("timed row = %+v", g)
+	}
+	if g := got[1]; g.DurationMs != 0 || g.TTFTMs != 0 || g.QueueMs != 0 {
+		t.Errorf("untimed row reads back timing %+v, want zeros", g)
+	}
+
+	// Four more timed calls for tm-slow, two for tm-fast, one tm-fast call
+	// before the cutoff.
+	for i := 2; i <= 5; i++ {
+		rec("rt-seed", "tp-local", "tm-slow", time.Duration(i)*time.Second, int64(1000*i))
+	}
+	rec("rt-seed", "tp-cloud", "tm-fast", -2*time.Hour, 900) // before since
+	rec("rt-seed", "tp-cloud", "tm-fast", 3*time.Second, 700)
+	rec("rt-seed", "tp-cloud", "tm-fast", 4*time.Second, 800)
+
+	rows, err := s.RecentCallTimings(ctx, base.Add(-time.Minute), 3)
+	if err != nil {
+		t.Fatalf("RecentCallTimings: %v", err)
+	}
+	var slow, fast []int64
+	var lastTS time.Time
+	for _, r := range rows {
+		if r.Provider != "tp-local" && r.Provider != "tp-cloud" {
+			continue // a row another contract test wrote
+		}
+		if r.TS.Before(lastTS) {
+			t.Errorf("rows not oldest first: %v after %v", r.TS, lastTS)
+		}
+		lastTS = r.TS
+		if r.DurationMs == 0 {
+			t.Errorf("an untimed row was returned: %+v", r)
+		}
+		switch r.Model {
+		case "tm-slow":
+			slow = append(slow, r.DurationMs)
+		case "tm-fast":
+			fast = append(fast, r.DurationMs)
+		}
+		if r.RunID != "rt-seed" && r.RunID != "rt-timed" || r.InputTokens != 800 || r.OutputTokens != 120 || r.CacheReadTokens != 5 {
+			t.Errorf("seed row missing fields: %+v", r)
+		}
+	}
+	if fmt.Sprint(slow) != "[3000 4000 5000]" {
+		t.Errorf("tm-slow durations = %v, want the latest three [3000 4000 5000]", slow)
+	}
+	if fmt.Sprint(fast) != "[700 800]" {
+		t.Errorf("tm-fast durations = %v, want [700 800] (the pre-cutoff call excluded)", fast)
 	}
 }
 

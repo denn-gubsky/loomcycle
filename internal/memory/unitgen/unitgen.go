@@ -60,11 +60,17 @@ var unitsSchema = json.RawMessage(`{"type":"object","properties":{"claims":{"typ
 // Generator is one configured unit generator. Safe for concurrent use.
 type Generator struct {
 	provider      providers.Provider
+	providerID    string
 	model         string
 	timeout       time.Duration
 	effort        string
 	contextTokens int
 	maxOutput     int
+
+	// ObserveCall receives each completed call's usage, timing included, for the
+	// throughput estimate. Set once at boot before any pass runs; nil = not
+	// observed. The calls are not billed here: that is unchanged.
+	ObserveCall providers.CallObserver
 }
 
 // Build constructs the generator declared in cfg.Memory.UnitGenerator, or returns
@@ -74,22 +80,25 @@ func Build(cfg *config.Config) (*Generator, error) {
 	if !gc.Configured() {
 		return nil, nil
 	}
-	p, _, model, err := providerbuild.ServiceProvider(cfg, "memory.unit_generator", providerbuild.ServiceEndpoint{
+	p, provider, model, err := providerbuild.ServiceProvider(cfg, "memory.unit_generator", providerbuild.ServiceEndpoint{
 		Provider: gc.Provider, Model: gc.Model, BaseURL: gc.BaseURL, APIKeyEnv: gc.APIKeyEnv,
 	}, keyEnvName)
 	if err != nil {
 		return nil, err
 	}
-	gc.Model = model
+	gc.Provider, gc.Model = provider, model
 	return New(p, gc), nil
 }
 
 // New wraps a constructed provider; Build is the production path.
 func New(p providers.Provider, gc config.UnitGeneratorConfig) *Generator {
 	g := &Generator{
-		provider: p, model: gc.Model, effort: gc.Effort,
+		provider: p, providerID: gc.Provider, model: gc.Model, effort: gc.Effort,
 		timeout:       time.Duration(gc.TimeoutMs) * time.Millisecond,
 		contextTokens: gc.ContextTokens, maxOutput: gc.MaxOutputTokens,
+	}
+	if g.providerID == "" && p != nil {
+		g.providerID = p.ID()
 	}
 	if g.timeout <= 0 {
 		g.timeout = defaultTimeout
@@ -185,6 +194,7 @@ func (g *Generator) complete(ctx context.Context, prompt string, format *provide
 func (g *Generator) call(ctx context.Context, prompt string, format *providers.OutputFormat, temp float64) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
+	timer := providers.StartCallTimer(nil)
 	ch, err := g.provider.Call(callCtx, providers.Request{
 		Model:            g.model,
 		MaxTokens:        g.maxOutput,
@@ -199,18 +209,32 @@ func (g *Generator) call(ctx context.Context, prompt string, format *providers.O
 	}
 	var b strings.Builder
 	var callErr error
+	var usage *providers.Usage
 	done := false
 	for ev := range ch { // drain to the end: an abandoned channel blocks the driver
+		timer.Observe(ev)
 		switch ev.Type {
 		case providers.EventText:
 			b.WriteString(ev.Text)
 		case providers.EventDone:
 			done = true
+			usage = ev.Usage
 		case providers.EventError:
 			if callErr == nil {
 				callErr = errors.New(ev.Error)
 			}
 		}
+	}
+	if usage != nil && g.ObserveCall != nil {
+		u := *usage
+		if u.Provider == "" {
+			u.Provider = g.providerID
+		}
+		if u.Model == "" {
+			u.Model = g.model
+		}
+		timer.Stamp(&u) // a call that failed or was cut off stays unstamped
+		g.ObserveCall(&u)
 	}
 	if callErr == nil && !done {
 		// A stream the timeout cut off closes with neither an error nor a done event;

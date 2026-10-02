@@ -210,6 +210,7 @@ func (s *Server) computeReplayCompaction(ctx context.Context, agentDef config.Ag
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: tenant, UserID: subject})
 	summCtx = tools.WithAgentName(summCtx, agentName)
+	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	sum, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
 	if serr != nil {
 		return "", 0, false, false, fmt.Errorf("summarize: %w", serr)

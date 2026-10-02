@@ -1674,6 +1674,8 @@ func main() {
 	}
 	if unitGenerator != nil {
 		log.Printf("unit generator: %s", unitGenerator.ModelID())
+		// RFC DT: its calls are the throughput samples of its model (not billed).
+		unitGenerator.ObserveCall = srv.ObserveCallTiming
 		srv.SetUnitGenerator(unitGenerator)
 	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
@@ -2591,6 +2593,12 @@ func main() {
 	// block the runtime from starting). No-op when the server has no store.
 	if err := srv.SeedLimits(bgCtx); err != nil {
 		log.Printf("limits: seed failed (budgets start empty until next write): %v", err)
+	}
+	// RFC DT: seed the per-model throughput estimate from the ledger's latest
+	// timed calls. Non-fatal — an empty estimate learns again from live calls,
+	// and nothing depends on it yet (measure-only).
+	if err := srv.SeedThroughput(bgCtx); err != nil {
+		log.Printf("throughput: seed failed (estimate starts empty): %v", err)
 	}
 
 	// Identity Documents for config-declared principals. They exist because an operator

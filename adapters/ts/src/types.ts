@@ -132,6 +132,24 @@ export interface Usage {
    *  this; the field stays optional so consumers can plumb it without a
    *  wire change. */
   cost_usd?: number;
+  /** How long this call took. Absent when not measured (an older server, or
+   *  a call that failed). Additive + optional. */
+  timing?: CallTiming;
+}
+
+/** Per-call timing, in milliseconds, on a usage event. A field that is absent
+ *  (or 0) was not measured — never "took no time". */
+export interface CallTiming {
+  /** Wall time from the request to the model's done event. */
+  duration_ms?: number;
+  /** Wall time to the first text, thinking or tool event. */
+  ttft_ms?: number;
+  /** Server-reported phases (Ollama): model load, prompt eval, generation. */
+  load_ms?: number;
+  prefill_ms?: number;
+  decode_ms?: number;
+  /** Wall time the server did not account for — waiting behind other calls. */
+  queue_ms?: number;
 }
 
 /** RetryInfo accompanies an `event: retry` frame (EventRetry in the Go

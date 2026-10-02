@@ -743,6 +743,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		OnSteer:             onSteer,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
+		ObserveCall:         s.callObserver(run.ID),
 		MarkRateLimited:     s.markRateLimitedFn(run.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
 		ToolParallelism:     s.cfg().Env.ToolParallelism,

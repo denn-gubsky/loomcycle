@@ -696,6 +696,17 @@ type TokenUsageRow struct {
 	CostCurrency string
 
 	TS time.Time
+
+	// How long the call took, in milliseconds (RFC DT): wall time, time to the
+	// first event, and the phases a driver reported (model load, prompt eval,
+	// generation, unaccounted queue time). 0 = not measured, stored NULL — a
+	// row from before timing existed reads back as all zeros.
+	DurationMs int64
+	TTFTMs     int64
+	LoadMs     int64
+	PrefillMs  int64
+	DecodeMs   int64
+	QueueMs    int64
 }
 
 // TokenLimitRow is one per-scope token budget (RFC AW). Scope is
@@ -1499,6 +1510,13 @@ type Store interface {
 	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
 	// Used by the rollup invariant test + (later) the archiver.
 	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
+
+	// RecentCallTimings returns the latest TIMED per-call rows (duration_ms set)
+	// recorded at or after since — at most perModel per (provider, model) —
+	// oldest first, for seeding the throughput estimate at boot (RFC DT). Only
+	// the fields the estimate reads are filled: run_id, provider, model, the
+	// token buckets, the timing and ts.
+	RecentCallTimings(ctx context.Context, since time.Time, perModel int) ([]TokenUsageRow, error)
 
 	// RunCostSummary sums a run's per-call token_usage ledger into its authoritative
 	// per-run cost (RFC AV): cost = SUM(token_usage.cost), currency = MAX(cost_currency)

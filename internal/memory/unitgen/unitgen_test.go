@@ -123,3 +123,41 @@ func TestBuild_ResolvesTheBlockLikeTheReranker(t *testing.T) {
 		t.Errorf("no block: %v, %v", none, err)
 	}
 }
+
+// withUsage answers like scripted but reports usage on its done event, as every
+// real driver does.
+type withUsage struct{ scripted }
+
+func (w *withUsage) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	in, err := w.scripted.Call(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan providers.Event, 2)
+	for ev := range in {
+		if ev.Type == providers.EventDone {
+			ev.Usage = &providers.Usage{InputTokens: 900, OutputTokens: 40}
+		}
+		out <- ev
+	}
+	close(out)
+	return out, nil
+}
+
+// TestGenerate_ReportsEachCallsTimingToTheObserver — the generator's model may be
+// used for nothing else, so its calls are the only samples of its speed there are.
+func TestGenerate_ReportsEachCallsTimingToTheObserver(t *testing.T) {
+	p := &withUsage{scripted{replies: []string{"States the carry-over limit."}}}
+	g := New(p, config.UnitGeneratorConfig{Model: "m"})
+	var seen []*providers.Usage
+	g.ObserveCall = func(u *providers.Usage) { seen = append(seen, u) }
+	if _, err := g.Generate(context.Background(), req("description")); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 1 || seen[0].Timing == nil {
+		t.Fatalf("observed %d calls (%+v), want one timed call", len(seen), seen)
+	}
+	if seen[0].Provider != "stub" || seen[0].Model != "m" {
+		t.Fatalf("call attributed to %q/%q, want stub/m", seen[0].Provider, seen[0].Model)
+	}
+}

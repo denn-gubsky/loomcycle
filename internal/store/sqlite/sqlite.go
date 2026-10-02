@@ -153,7 +153,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
 			cost                  REAL,
 			cost_currency         TEXT,
-			ts                    INTEGER NOT NULL
+			ts                    INTEGER NOT NULL,
+			-- RFC DT: how long the call took, in ms. NULL = not measured
+			-- (a row from before timing existed, or a phase the driver could
+			-- not see) — never "took no time".
+			duration_ms           INTEGER,
+			ttft_ms               INTEGER,
+			load_ms               INTEGER,
+			prefill_ms            INTEGER,
+			decode_ms             INTEGER,
+			queue_ms              INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)`,
@@ -1304,6 +1313,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// fresh DB gets it from the schema block above. NULL on rows enqueued
 		// before it existed — deliberately not backfilled to a guess.
 		`ALTER TABLE memory_pending ADD COLUMN origin TEXT`,
+		// RFC DT — per-call timing on the usage ledger. NULL on every row
+		// recorded before it existed; nothing is backfilled to a guess.
+		`ALTER TABLE token_usage ADD COLUMN duration_ms INTEGER`,
+		`ALTER TABLE token_usage ADD COLUMN ttft_ms INTEGER`,
+		`ALTER TABLE token_usage ADD COLUMN load_ms INTEGER`,
+		`ALTER TABLE token_usage ADD COLUMN prefill_ms INTEGER`,
+		`ALTER TABLE token_usage ADD COLUMN decode_ms INTEGER`,
+		`ALTER TABLE token_usage ADD COLUMN queue_ms INTEGER`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1384,6 +1401,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// ListRunsByWalk: a walk's members in (started_at, id) order. Here, after
 		// addColumns, so an upgraded DB has the column before its index.
 		`CREATE INDEX IF NOT EXISTS runs_by_walk            ON runs(walk_id, started_at, id) WHERE walk_id IS NOT NULL`,
+		// RFC DT: the boot seed reads the latest timed calls per (provider,
+		// model). Here, after addColumns, so an upgraded DB has duration_ms
+		// before an index names it; partial, so untimed history costs nothing.
+		`CREATE INDEX IF NOT EXISTS token_usage_timing      ON token_usage(provider, model, ts) WHERE duration_ms IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
 		// v0.8.5: facets cost retros + experiment audits by which
 		// agent_def_id the run actually ran against. Partial index
@@ -1820,15 +1841,63 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 			run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, ts
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			cost, cost_currency, ts,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.RunID, nilIfEmpty(row.SessionID), row.TenantID, nilIfEmpty(row.UserID),
 		nilIfEmpty(row.AgentID), nilIfEmpty(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
 		row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens,
 		costArg, nilIfEmpty(row.CostCurrency), ts.UnixNano(),
+		nilIfZeroMs(row.DurationMs), nilIfZeroMs(row.TTFTMs), nilIfZeroMs(row.LoadMs),
+		nilIfZeroMs(row.PrefillMs), nilIfZeroMs(row.DecodeMs), nilIfZeroMs(row.QueueMs),
 	)
 	return err
+}
+
+// nilIfZeroMs stores an unmeasured (0) call-timing field as NULL.
+func nilIfZeroMs(ms int64) any {
+	if ms == 0 {
+		return nil
+	}
+	return ms
+}
+
+// RecentCallTimings returns the latest timed per-call rows per (provider, model)
+// since the cutoff, oldest first (RFC DT boot seed). See the interface doc.
+func (s *Store) RecentCallTimings(ctx context.Context, since time.Time, perModel int) ([]store.TokenUsageRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT run_id, provider, model, input_tokens, output_tokens,
+			cache_creation_tokens, cache_read_tokens, ts,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
+		 FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, model ORDER BY ts DESC, id DESC) AS rn
+			  FROM token_usage
+			 WHERE duration_ms IS NOT NULL AND ts >= ?
+		 ) WHERE rn <= ?
+		 ORDER BY ts ASC, id ASC`,
+		since.UnixNano(), perModel,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.TokenUsageRow
+	for rows.Next() {
+		var r store.TokenUsageRow
+		var tsNano int64
+		var dur, ttft, load, prefill, decode, queue sql.NullInt64
+		if err := rows.Scan(&r.RunID, &r.Provider, &r.Model, &r.InputTokens, &r.OutputTokens,
+			&r.CacheCreationTokens, &r.CacheReadTokens, &tsNano,
+			&dur, &ttft, &load, &prefill, &decode, &queue); err != nil {
+			return nil, err
+		}
+		r.TS = time.Unix(0, tsNano)
+		r.DurationMs, r.TTFTMs, r.LoadMs = dur.Int64, ttft.Int64, load.Int64
+		r.PrefillMs, r.DecodeMs, r.QueueMs = prefill.Int64, decode.Int64, queue.Int64
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // TokenUsageForRun returns all per-call usage rows for a run, oldest first.
@@ -1837,7 +1906,8 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 		`SELECT run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, ts
+			cost, cost_currency, ts,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
 		 FROM token_usage WHERE run_id = ? ORDER BY iteration ASC, id ASC`,
 		runID,
 	)
@@ -1851,14 +1921,18 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 		var sessionID, userID, agentID, parentRunID, costCurrency sql.NullString
 		var cost sql.NullFloat64
 		var tsNano int64
+		var dur, ttft, load, prefill, decode, queue sql.NullInt64
 		if err := rows.Scan(
 			&r.RunID, &sessionID, &r.TenantID, &userID, &agentID, &parentRunID,
 			&r.Iteration, &r.Provider, &r.Model, &r.CredentialSource, &r.CredentialScopeID,
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &tsNano,
+			&dur, &ttft, &load, &prefill, &decode, &queue,
 		); err != nil {
 			return nil, err
 		}
+		r.DurationMs, r.TTFTMs, r.LoadMs = dur.Int64, ttft.Int64, load.Int64
+		r.PrefillMs, r.DecodeMs, r.QueueMs = prefill.Int64, decode.Int64, queue.Int64
 		r.SessionID = sessionID.String
 		r.UserID = userID.String
 		r.AgentID = agentID.String
