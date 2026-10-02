@@ -76,6 +76,11 @@ func TestModel_CallsTheConfiguredModelAndRecordsItsUsage(t *testing.T) {
 	if got == nil || got.InputTokens != 6000 || got.Provider != "ollama-local" || got.Model != "qwen3.6:latest" {
 		t.Errorf("usage = %+v", got)
 	}
+	// The rerank model's speed is sampled from these calls, so the usage it
+	// records must carry the call's timing.
+	if got != nil && got.Timing == nil {
+		t.Error("the recorded usage carries no call timing")
+	}
 }
 
 // TestModel_ATimeoutIsReportedAsATimeout — a model that never answers is cut off

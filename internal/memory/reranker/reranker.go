@@ -136,6 +136,7 @@ func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 			Content: []providers.ContentBlock{{Type: "text", Text: prompt}},
 		}},
 	}
+	timer := providers.StartCallTimer(nil)
 	ch, err := m.provider.Call(callCtx, req)
 	if err != nil {
 		return "", deadlineAware(callCtx, err)
@@ -147,6 +148,7 @@ func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 	// Drain to completion even after an error: abandoning the channel leaves the
 	// driver's goroutine blocked on a send.
 	for ev := range ch {
+		timer.Observe(ev)
 		if ev.Usage != nil {
 			usage = ev.Usage
 		}
@@ -182,6 +184,7 @@ func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 		if u.Model == "" {
 			u.Model = m.model
 		}
+		timer.Stamp(&u) // a call that failed or was cut off stays unstamped
 		m.OnUsage(ctx, &u)
 	}
 	if callErr != nil {
