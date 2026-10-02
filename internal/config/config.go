@@ -5747,6 +5747,23 @@ func ExpandModelAlias(models map[string]ModelRef, provider, model string) (rProv
 	return provider, model, rPattern
 }
 
+// ConcreteModel names the concrete model a (provider, model) pair refers to: a
+// `models:` alias for this provider becomes the model it names, anything else is
+// returned unchanged. A usage report can carry an alias where the routing view
+// carries the concrete model (a provider echoes its own name for what it served),
+// and a per-model statistic keyed on both would split one model in two.
+//
+// A pattern alias is left as it is — which model it names depends on the live
+// catalog, which config cannot see — and so is an alias pointing at ANOTHER
+// provider: a model this provider served under that name is not the alias's.
+func (c *Config) ConcreteModel(provider, model string) string {
+	aliasProvider, concrete, pattern := ExpandModelAlias(c.Models, "", model)
+	if pattern != "" || concrete == "" || (aliasProvider != "" && aliasProvider != provider) {
+		return model
+	}
+	return concrete
+}
+
 // ResolveAgentDefModel mirrors ResolveAgentModel but resolves against
 // a caller-supplied AgentDef instead of looking it up in c.Agents.
 // Used by the sub-agent path when an overlay has already produced an

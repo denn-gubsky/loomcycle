@@ -134,6 +134,26 @@ func TestRouting_ShowsEachCandidatesThroughput(t *testing.T) {
 	}
 }
 
+// TestRouting_ShowsAnAliasedModelsSamplesUnderItsConcreteCandidate — a usage
+// naming a `models:` alias (live lab: usage.model "deepseek-flash" for a run on
+// deepseek-v4-flash) is the cascade's concrete candidate, so the routing view
+// shows its samples there instead of the 0-sample prior.
+func TestRouting_ShowsAnAliasedModelsSamplesUnderItsConcreteCandidate(t *testing.T) {
+	srv := routingTestServer(t)
+	srv.cfg().Models = map[string]config.ModelRef{"deepseek-pro": {Provider: "deepseek", Model: "deepseek-v4-pro"}}
+	for i := 0; i < 6; i++ {
+		srv.observeCall("r"+string(rune('a'+i)), slowUsage("deepseek", "deepseek-pro", 0))
+	}
+	resp, _ := routingRaw(t, srv, []string{auth.ScopeAdmin})
+	c := middleTier(t, resp).Cascade[0]
+	if c.Model != "deepseek-v4-pro" {
+		t.Fatalf("cascade[0] = %s, want the concrete deepseek-v4-pro", c.Model)
+	}
+	if tp := c.Throughput; tp == nil || tp.Samples != 6 || tp.Source != "measured" || tp.MaxMultiplier != 8 {
+		t.Fatalf("throughput = %+v, want the alias's 6 measured samples and the cap 8", tp)
+	}
+}
+
 // TestMetricsProm_ExportsEachMeasuredModelsThroughput — one series per measured
 // (provider, model); a model never measured has no series.
 func TestMetricsProm_ExportsEachMeasuredModelsThroughput(t *testing.T) {

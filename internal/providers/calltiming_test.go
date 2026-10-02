@@ -28,9 +28,38 @@ func TestCallTimer_StampsDurationAndTimeToFirstEvent(t *testing.T) {
 	u := &Usage{Timing: &CallTiming{LoadMs: 40, PrefillMs: 100, DecodeMs: 1500, ServerTotalMs: 1700}}
 	tm.Stamp(u)
 	got := *u.Timing
-	want := CallTiming{DurationMs: 2000, TTFTMs: 250, LoadMs: 40, PrefillMs: 100, DecodeMs: 1500, QueueMs: 300, ServerTotalMs: 1700}
+	// Queue is the wall time outside the reported phases: 2000 − (40+100+1500).
+	want := CallTiming{DurationMs: 2000, TTFTMs: 250, LoadMs: 40, PrefillMs: 100, DecodeMs: 1500, QueueMs: 360, ServerTotalMs: 1700}
 	if got != want {
 		t.Fatalf("timing = %+v, want %+v", got, want)
+	}
+}
+
+// Two concurrent calls to one Ollama model are served one after the other, and
+// Ollama's total_duration for the second INCLUDES its wait for the runner. These
+// are the second call's numbers from a live lab run: the ~150 s it waited must
+// be queue time, not hidden inside the server total as work.
+func TestCallTimer_CountsAWaitInsideTheServerAsQueue(t *testing.T) {
+	clk := stepClock(time.Unix(0, 0), 153_777*time.Millisecond, (271_459-153_777)*time.Millisecond)
+	tm := StartCallTimer(clk)
+	tm.Observe(Event{Type: EventText})
+	tm.Observe(Event{Type: EventDone})
+	u := &Usage{Timing: &CallTiming{LoadMs: 1, PrefillMs: 3291, DecodeMs: 117_677, ServerTotalMs: 271_454}}
+	tm.Stamp(u)
+	if got, want := u.Timing.QueueMs, int64(271_459-(1+3291+117_677)); got != want {
+		t.Fatalf("queue_ms = %d, want %d (wall − load − prefill − decode); the server total hid the wait", got, want)
+	}
+}
+
+// A server that reports only its total (no phases) still gets the wall time it
+// did not account for as queue.
+func TestCallTimer_QueueFromTheServerTotalWhenNoPhaseIsReported(t *testing.T) {
+	tm := StartCallTimer(stepClock(time.Unix(0, 0), 2*time.Second))
+	tm.Observe(Event{Type: EventDone})
+	u := &Usage{Timing: &CallTiming{ServerTotalMs: 1500}}
+	tm.Stamp(u)
+	if u.Timing.QueueMs != 500 {
+		t.Fatalf("queue_ms = %d, want 500", u.Timing.QueueMs)
 	}
 }
 

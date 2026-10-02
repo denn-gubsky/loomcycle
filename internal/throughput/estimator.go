@@ -24,12 +24,16 @@
 //
 // Per (provider, model), as RFC 6298 smooths a round-trip time, but in log space
 // (a slowdown is a ratio): a smoothed mean μ and mean deviation σ of ln s, with
-// each sample clipped to ±ln(max_multiplier). The multiplier is
-// clamp(exp(μ + σ), 1, max_multiplier), so a model at or above the reference
-// gets exactly 1.
+// each sample clipped to ±ln(cap). The multiplier is clamp(exp(μ + σ), 1, cap),
+// so a model at or above the reference gets exactly 1. The cap is the model's
+// own timeout_scaling.models max_multiplier when set, else the block's.
 //
 // Keyed globally by the provider id and model that actually SERVED the call
 // (post-fallback), in memory, per replica; seeded from the usage ledger at boot.
+// The model is always the CONCRETE one: a usage or ledger row that names a
+// `models:` alias is filed under the model the alias names, and a lookup by
+// alias finds it there, so the routing view (which shows concrete models) and
+// every other reader see one model, not two.
 package throughput
 
 import (
@@ -101,6 +105,8 @@ type Key struct {
 type Sample struct {
 	RunID string
 	At    time.Time
+	// Key is what the usage or ledger row names, alias or not; Observe files
+	// it under the concrete model.
 	Key
 	// UncachedInput is the prompt the model had to process: input plus cache
 	// creation. Drivers disagree on whether InputTokens includes cache reads
@@ -153,6 +159,9 @@ type Stat struct {
 	// where it came from. Reported only: no timeout uses it in this version.
 	Multiplier float64 `json:"multiplier"`
 	Source     string  `json:"source"`
+	// MaxMultiplier is the cap on this model's multiplier and on each of its
+	// samples: its own timeout_scaling.models max_multiplier, else the global.
+	MaxMultiplier float64 `json:"max_multiplier,omitempty"`
 	// Smoothed raw speeds, where measurable. 0 = not measured.
 	DecodeTPS  float64 `json:"decode_tps,omitempty"`
 	PrefillTPS float64 `json:"prefill_tps,omitempty"`
@@ -198,7 +207,11 @@ type Estimator struct {
 	cfg     config.TimeoutScaling
 	ref     reference
 	isLocal func(provider string) bool
+	// concrete names the concrete model behind a (provider, model) pair, so an
+	// alias and the model it names share one key.
+	concrete func(provider, model string) string
 	// overrides are timeout_scaling.models resolved to the keys they name.
+	// Read-only after New, so read without the lock.
 	overrides map[Key]config.TimeoutScalingModel
 
 	mu     sync.Mutex
@@ -212,8 +225,10 @@ type reference struct {
 
 // New builds the estimator for cfg's timeout_scaling block, or nil when the mode
 // is off. isLocal says whether a provider id is a local-inference backend (its
-// prior is local_prior); nil = none is.
-func New(cfg *config.Config, isLocal func(provider string) bool) *Estimator {
+// prior is local_prior); nil = none is. concrete names the concrete model behind
+// a (provider, model) pair; nil = cfg.ConcreteModel on this cfg. A server whose
+// `models:` map reloads passes one that reads the live config.
+func New(cfg *config.Config, isLocal func(provider string) bool, concrete func(provider, model string) string) *Estimator {
 	ts := cfg.TimeoutScaling.WithDefaults()
 	if ts.Mode == config.TimeoutScalingOff {
 		return nil
@@ -221,20 +236,37 @@ func New(cfg *config.Config, isLocal func(provider string) bool) *Estimator {
 	if isLocal == nil {
 		isLocal = func(string) bool { return false }
 	}
+	if concrete == nil {
+		concrete = cfg.ConcreteModel
+	}
 	e := &Estimator{
 		cfg:       ts,
 		ref:       reference{ts.Reference.DecodeTPS, ts.Reference.PrefillTPS, float64(ts.Reference.TTFTMs) / 1000},
 		isLocal:   isLocal,
+		concrete:  concrete,
 		overrides: map[Key]config.TimeoutScalingModel{},
 		models:    map[Key]*modelState{},
 		runs:      map[string]*runWindowState{},
 	}
 	for k, o := range ts.Models {
 		if p, m, ok := cfg.ResolveModelKey(k); ok {
-			e.overrides[Key{p, m}] = o
+			e.overrides[e.key(p, m)] = o
 		}
 	}
 	return e
+}
+
+// key is the one place a (provider, model) becomes a key — for a sample being
+// learned, a ledger row being seeded, an override, and every lookup — so an
+// alias and its model can never land on different keys.
+func (e *Estimator) key(provider, model string) Key {
+	return Key{provider, e.concrete(provider, model)}
+}
+
+// capFor is the model's multiplier cap. overrides and cfg are read-only after
+// New, so this needs no lock.
+func (e *Estimator) capFor(k Key) float64 {
+	return e.cfg.CapFor(e.overrides[k])
 }
 
 // Mode reports the configured mode ("" for a nil estimator, i.e. off).
@@ -257,12 +289,13 @@ func (e *Estimator) Observe(s Sample) bool {
 	if work <= 0 || tRef <= 0 {
 		return false
 	}
-	limit := math.Log(e.cfg.MaxMultiplier)
+	k := e.key(s.Provider, s.Model)
+	limit := math.Log(e.capFor(k))
 	x := math.Max(-limit, math.Min(limit, math.Log(work/tRef)))
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	st := e.models[s.Key]
+	st := e.models[k]
 	if st == nil && len(e.models) >= maxKeys {
 		return false
 	}
@@ -271,7 +304,7 @@ func (e *Estimator) Observe(s Sample) bool {
 	}
 	if st == nil {
 		st = &modelState{}
-		e.models[s.Key] = st
+		e.models[k] = st
 	}
 	// RFC 6298 order: the deviation is updated against the OLD mean.
 	if st.n == 0 {
@@ -289,15 +322,21 @@ func (e *Estimator) Observe(s Sample) bool {
 	if decodeMs >= minPhaseMs {
 		st.decodeTPS.add(float64(s.Output) / (float64(decodeMs) / 1000))
 	}
+	// A call queued behind another waits before its first token, so the wait
+	// is part of the wall-clock TTFT; it is the box's load, not the model's.
+	var ttftMs int64
+	if s.TTFTMs > 0 {
+		ttftMs = s.TTFTMs - s.QueueMs
+	}
 	prefillMs := s.PrefillMs
 	if prefillMs <= 0 {
-		prefillMs = s.TTFTMs
+		prefillMs = ttftMs
 	}
 	if prefillMs >= minPhaseMs && s.UncachedInput > 0 {
 		st.prefillTPS.add(float64(s.UncachedInput) / (float64(prefillMs) / 1000))
 	}
-	if s.TTFTMs > 0 {
-		st.ttftMs.add(float64(s.TTFTMs))
+	if ttftMs > 0 {
+		st.ttftMs.add(float64(ttftMs))
 	}
 	if s.LoadMs > coldLoadMs {
 		st.coldLoadMs.add(float64(s.LoadMs))
@@ -339,14 +378,16 @@ func (e *Estimator) admitLocked(runID string, at time.Time) bool {
 }
 
 // Stat reports the estimate for one model, including one it has never seen
-// (its multiplier then comes from the fallback chain).
+// (its multiplier then comes from the fallback chain). A `models:` alias finds
+// the model it names; the Stat names the concrete model.
 func (e *Estimator) Stat(provider, model string) Stat {
 	if e == nil {
 		return Stat{}
 	}
+	k := e.key(provider, model)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.statLocked(Key{provider, model})
+	return e.statLocked(k)
 }
 
 // All reports every model with at least one sample, sorted by provider, model.
@@ -379,21 +420,25 @@ func (e *Estimator) statLocked(k Key) Stat {
 		s.QueueMsP50 = median(st.queue)
 	}
 	s.Multiplier, s.Source = e.multiplierLocked(k)
+	s.MaxMultiplier = e.capFor(k)
 	return s
 }
 
 // multiplierLocked is the fallback chain: the model's own estimate once it has
 // min_samples; else an operator override; else the provider's other measured
-// models; else the prior.
+// models; else the prior. Whatever the source, the model's own cap bounds it.
 func (e *Estimator) multiplierLocked(k Key) (float64, string) {
+	clamp := func(m float64) float64 { return math.Max(1, math.Min(e.capFor(k), m)) }
 	if st := e.models[k]; st != nil && st.n >= e.cfg.MinSamples {
-		return e.clamp(math.Exp(st.mu + sigmaK*st.sigma)), SourceMeasured
+		return clamp(math.Exp(st.mu + sigmaK*st.sigma)), SourceMeasured
 	}
-	if o, ok := e.overrides[k]; ok {
+	// An entry that sets only max_multiplier bounds the model but says nothing
+	// about its speed, so it is no prior: fall through.
+	if o, ok := e.overrides[k]; ok && (o.Multiplier > 0 || o.DecodeTPS > 0) {
 		if o.Multiplier > 0 {
-			return e.clamp(o.Multiplier), SourceOverride
+			return clamp(o.Multiplier), SourceOverride
 		}
-		return e.clamp(e.ref.decodeTPS / o.DecodeTPS), SourceOverride
+		return clamp(e.ref.decodeTPS / o.DecodeTPS), SourceOverride
 	}
 	var wMu, wSigma, n float64
 	for other, st := range e.models {
@@ -405,16 +450,12 @@ func (e *Estimator) multiplierLocked(k Key) (float64, string) {
 		}
 	}
 	if n > 0 {
-		return e.clamp(math.Exp((wMu + sigmaK*wSigma) / n)), SourceProvider
+		return clamp(math.Exp((wMu + sigmaK*wSigma) / n)), SourceProvider
 	}
 	if e.isLocal(k.Provider) {
-		return e.clamp(e.cfg.LocalPrior), SourcePrior
+		return clamp(e.cfg.LocalPrior), SourcePrior
 	}
 	return 1, SourcePrior
-}
-
-func (e *Estimator) clamp(m float64) float64 {
-	return math.Max(1, math.Min(e.cfg.MaxMultiplier, m))
 }
 
 func median(xs []int64) int64 {

@@ -53,6 +53,16 @@ func (s *Server) observeCall(runID string, u *providers.Usage) {
 	}
 }
 
+// concreteModel names the concrete model behind a (provider, model) pair through
+// the LIVE `models:` map, which a config reload can change: a sample that arrives
+// after an alias is repointed is filed under the model it now names.
+func (s *Server) concreteModel(provider, model string) string {
+	if c := s.cfg(); c != nil {
+		return c.ConcreteModel(provider, model)
+	}
+	return model
+}
+
 // isLocalProvider reports whether a provider id is a local-inference backend
 // (Capabilities().Local), whose unmeasured models start from local_prior.
 func (s *Server) isLocalProvider(id string) bool {

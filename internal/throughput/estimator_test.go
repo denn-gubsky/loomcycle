@@ -27,7 +27,7 @@ func newEst(t *testing.T, ts config.TimeoutScaling, local ...string) *Estimator 
 		}
 		return false
 	}
-	e := New(cfg, isLocal)
+	e := New(cfg, isLocal, nil)
 	if e == nil {
 		t.Fatal("New returned nil for a measuring config")
 	}
@@ -264,7 +264,7 @@ func TestEstimator_IgnoresWhatIsNotASample(t *testing.T) {
 }
 
 func TestEstimator_OffModeIsNilAndNilIsSafe(t *testing.T) {
-	var e *Estimator = New(&config.Config{TimeoutScaling: config.TimeoutScaling{Mode: "off"}}, nil)
+	var e *Estimator = New(&config.Config{TimeoutScaling: config.TimeoutScaling{Mode: "off"}}, nil, nil)
 	if e != nil {
 		t.Fatal("mode off built an estimator")
 	}
@@ -319,5 +319,118 @@ func TestEstimator_SeedRestoresTheEstimateFromTheLedger(t *testing.T) {
 	}
 	if want, got := live.Stat("ollama-local", "qwen3.6"), seeded.Stat("ollama-local", "qwen3.6"); got != want {
 		t.Fatalf("seeded estimate %+v, want the live one %+v", got, want)
+	}
+}
+
+// A usage or ledger row can name a `models:` alias where the routing view and
+// the run's resolved model name the concrete model. Both must be one model: the
+// alias's samples are found by the concrete name (and by the alias), and a
+// model reached under no alias is unchanged.
+func TestEstimator_FilesAnAliasedSampleUnderTheConcreteModel(t *testing.T) {
+	cfg := &config.Config{Models: map[string]config.ModelRef{
+		"deepseek-flash": {Provider: "deepseek", Model: "deepseek-v4-flash"},
+	}}
+	e := New(cfg, nil, nil)
+	feed(e, 6, "deepseek", "deepseek-flash", 3)
+	feed(e, 6, "deepseek", "deepseek-v4-pro", 2)
+
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-flash"} {
+		st := e.Stat("deepseek", model)
+		if st.Model != "deepseek-v4-flash" || st.Samples != 6 || st.Source != SourceMeasured || !near(st.Slowdown, 3, 1e-9) {
+			t.Errorf("Stat(deepseek, %s) = %+v, want 6 measured samples at 3× under deepseek-v4-flash", model, st)
+		}
+	}
+	if st := e.Stat("deepseek", "deepseek-v4-pro"); st.Samples != 6 || !near(st.Slowdown, 2, 1e-9) {
+		t.Errorf("a model under no alias = %+v, want its own 6 samples at 2×", st)
+	}
+	for _, st := range e.All() {
+		if st.Model == "deepseek-flash" {
+			t.Errorf("All lists the alias as a model of its own: %+v", e.All())
+		}
+	}
+}
+
+// The ledger records what the usage named, so a restart replays alias rows; the
+// seed must land them on the concrete model too.
+func TestEstimator_SeedFilesAliasedLedgerRowsUnderTheConcreteModel(t *testing.T) {
+	cfg := &config.Config{Models: map[string]config.ModelRef{
+		"deepseek-flash": {Provider: "deepseek", Model: "deepseek-v4-flash"},
+	}}
+	var rows []store.TokenUsageRow
+	for i := 0; i < 6; i++ {
+		rows = append(rows, store.TokenUsageRow{RunID: fmt.Sprintf("r%d", i), TS: t0.Add(time.Duration(i) * time.Minute),
+			Provider: "deepseek", Model: "deepseek-flash", OutputTokens: 100, DurationMs: 6000})
+	}
+	e := New(cfg, nil, nil)
+	if n, err := e.Seed(context.Background(), &fakeLedger{rows: rows}, t0.Add(time.Hour)); err != nil || n != 6 {
+		t.Fatalf("seeded %d, %v; want 6", n, err)
+	}
+	if st := e.Stat("deepseek", "deepseek-v4-flash"); st.Samples != 6 || !near(st.Slowdown, 3, 1e-9) {
+		t.Fatalf("seeded estimate for the concrete model = %+v, want 6 samples at 3×", st)
+	}
+}
+
+// A model known to be slower than the global cap gets its own: its samples are
+// clipped at, and its multiplier clamped to, that cap — while every other model
+// stays capped at the global 8. Keyed by alias or provider/model alike.
+func TestEstimator_AModelsOwnCapLetsItReachItsMeasuredSlowdown(t *testing.T) {
+	e := newEst(t, config.TimeoutScaling{Models: map[string]config.TimeoutScalingModel{
+		"local-medium":                {MaxMultiplier: 24}, // alias → ollama-local/qwen3.6
+		"ollama-local/qwen3.8:latest": {MaxMultiplier: 24},
+	}}, "ollama-local")
+	feed(e, 60, "ollama-local", "qwen3.6", 20)
+	feed(e, 60, "ollama-local", "qwen3.8:latest", 20)
+	feed(e, 60, "ollama-local", "other", 20)
+
+	for _, model := range []string{"qwen3.6", "qwen3.8:latest"} {
+		st := e.Stat("ollama-local", model)
+		if !near(st.Slowdown, 20, 1e-6) || !near(st.Multiplier, 20, 0.01) || st.MaxMultiplier != 24 {
+			t.Errorf("%s = %+v, want slowdown ≈ multiplier ≈ 20 under its own cap 24", model, st)
+		}
+	}
+	if st := e.Stat("ollama-local", "other"); !near(st.Slowdown, 8, 1e-9) || st.Multiplier != 8 || st.MaxMultiplier != 8 {
+		t.Errorf("a model with no cap of its own = %+v, want clipped and clamped at the global 8", st)
+	}
+	// A cap alone is a bound, not a prior: unmeasured, the model falls through
+	// to the prior, and reports its own cap.
+	fresh := newEst(t, config.TimeoutScaling{Models: map[string]config.TimeoutScalingModel{
+		"local-medium": {MaxMultiplier: 24},
+	}}, "ollama-local")
+	if st := fresh.Stat("ollama-local", "qwen3.6"); st.Source != SourcePrior || st.Multiplier != 4 || st.MaxMultiplier != 24 {
+		t.Errorf("unmeasured model with only a cap = %+v, want the local prior 4 and cap 24", st)
+	}
+}
+
+// The lab numbers end to end: the second of two concurrent calls to one Ollama
+// model waited ~150 s for the runner. Stamped and learned, its sample must be
+// the ~121 s of work (load + prefill + decode), not the 271 s of wall time.
+func TestEstimator_AnOllamaCallQueuedBehindAnotherMeasuresItsWorkOnly(t *testing.T) {
+	e := newEst(t, config.TimeoutScaling{Models: map[string]config.TimeoutScalingModel{
+		"ollama-local/qwen3.8:latest": {MaxMultiplier: 100}, // so neither answer is clipped
+	}})
+	clock := t0
+	steps := []time.Duration{0, 153_777 * time.Millisecond, (271_459 - 153_777) * time.Millisecond}
+	i := 0
+	timer := providers.StartCallTimer(func() time.Time { clock = clock.Add(steps[i]); i++; return clock })
+	timer.Observe(providers.Event{Type: providers.EventText})
+	timer.Observe(providers.Event{Type: providers.EventDone})
+	u := &providers.Usage{Provider: "ollama-local", Model: "qwen3.8:latest", InputTokens: 230, OutputTokens: 500,
+		Timing: &providers.CallTiming{LoadMs: 1, PrefillMs: 3291, DecodeMs: 117_677, ServerTotalMs: 271_454}}
+	timer.Stamp(u)
+	s, ok := SampleFromUsage("r", t0, u)
+	if !ok || !e.Observe(s) {
+		t.Fatal("the call did not become a sample")
+	}
+	st := e.Stat("ollama-local", "qwen3.8:latest")
+	tRef := 1 + 230.0/2000 + 500.0/100
+	// wall − load − queue = 271459 − 1 − 150490 = 120968 ms of work.
+	if want := 120.968 / tRef; !near(st.Slowdown, want, 1e-6) {
+		t.Errorf("slowdown = %v, want %v (≈121 s of work over T_ref %v s), not the 271 s wall", st.Slowdown, want, tRef)
+	}
+	if st.QueueMsP50 != 150_490 {
+		t.Errorf("queue p50 = %d, want 150490", st.QueueMsP50)
+	}
+	if st.TTFTMs > 4000 {
+		t.Errorf("ttft = %v ms, want the ≈3.3 s the model took, not the wait before it", st.TTFTMs)
 	}
 }

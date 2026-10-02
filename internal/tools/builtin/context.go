@@ -330,10 +330,11 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if p, m := tools.ResolvedProvider(ctx), tools.ResolvedModel(ctx); c.Throughput != nil && p != "" && m != "" {
 		st := c.Throughput.Stat(p, m)
 		tm := map[string]any{
-			"mode":       c.Throughput.Mode(),
-			"multiplier": st.Multiplier,
-			"source":     st.Source,
-			"samples":    st.Samples,
+			"mode":           c.Throughput.Mode(),
+			"multiplier":     st.Multiplier,
+			"max_multiplier": st.MaxMultiplier,
+			"source":         st.Source,
+			"samples":        st.Samples,
 		}
 		if st.Slowdown > 0 {
 			tm["slowdown"] = st.Slowdown

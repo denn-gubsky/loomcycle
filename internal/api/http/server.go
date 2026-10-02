@@ -601,7 +601,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// unlimited behavior. Seeded from the ledger at boot via SeedLimits.
 	s.limits = limits.New(st)
 	// RFC DT: the throughput estimate (nil when timeout_scaling.mode is off).
-	s.throughput = throughput.New(cfg, s.isLocalProvider)
+	s.throughput = throughput.New(cfg, s.isLocalProvider, s.concreteModel)
 	// F32: build the secret redactor from the process env (secret-classified
 	// names only). Default-ON; LOOMCYCLE_REDACT_SECRETS=0 leaves s.redactor nil
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
