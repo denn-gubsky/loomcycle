@@ -14,7 +14,7 @@ provider_priority:
 tiers:
   low:
     - { provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001 }
-    - { provider: deepseek,            model: deepseek-v4-flash }
+    - { provider: deepseek,            model: deepseek-flash }
   middle:
     - { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 }
     - { provider: deepseek,            model: deepseek-v4-pro }
