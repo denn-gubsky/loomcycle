@@ -38,8 +38,31 @@ func TestStreamFilter_WalkIDMatchesOnParentContext(t *testing.T) {
 		{"an UNSTAMPED run is excluded", "r_a", nil, false},
 		{"a stamped-but-empty run is excluded", "r_a", &store.ParentContext{}, false},
 	} {
-		got := walkIDMatches(tc.filter, tc.pc)
+		got := walkIDMatches(tc.filter, "r_member", tc.pc)
 		if got != tc.want {
+			t.Errorf("%s: match = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestStreamFilter_WalkIDMatchesTheWalksOwnRun: a walk's id is its own run's
+// id, and that run carries no parent context, so the filter matches it by run
+// id — the walk's start, pauses and end belong on the walk's own stream, as the
+// walk's own run belongs in its listing. Another walk's run is still excluded.
+func TestStreamFilter_WalkIDMatchesTheWalksOwnRun(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		filter string
+		runID  string
+		pc     *store.ParentContext
+		want   bool
+	}{
+		{"the walk's own run passes", "r_a", "r_a", nil, true},
+		{"the walk's own run passes with an empty context", "r_a", "r_a", &store.ParentContext{}, true},
+		{"another walk's own run is excluded", "r_a", "r_b", nil, false},
+		{"a run stamped by another walk is excluded", "r_a", "r_c", &store.ParentContext{WalkID: "r_b"}, false},
+	} {
+		if got := walkIDMatches(tc.filter, tc.runID, tc.pc); got != tc.want {
 			t.Errorf("%s: match = %v, want %v", tc.name, got, tc.want)
 		}
 	}

@@ -1513,9 +1513,18 @@ handle answers "which walk is this" everywhere:
 curl -XPOST …/v1/_teamdef -d '{"op":"run","name":"triage","mode":"detach"}'
 # → {"run_id":"r_4325…","status":"running"}
 
-# watch that walk's agents appear and finish, live
+# watch that walk, and its agents appear and finish, live
 curl -N "…/v1/users/{user_id}/agents/stream?walk_id=r_4325…"
 ```
+
+The filtered stream carries the walk's own run as well as its members: it is
+`running` when the walk starts and ends `completed`, `failed` or `cancelled`.
+While the walk is paused at a breakpoint — or on an iteration cap it escalated
+to a person — its run is `running` with `awaited_state: "interrupted"`
+(`awaited_on: "question"`), and a frame without `awaited_state` follows when
+the pause ends, however it ends. `GET /v1/runs/{run_id}` reports the same
+`awaited_state` while the walk is paused, and the walk's transcript records the
+pause as an `Interruption` `ask` call and its result.
 
 The same filter is on the `stream_user_run_states` MCP tool (`walk_id`). The
 `stream_open` event echoes `filter_walk_id`, so a mistyped id shows up as a

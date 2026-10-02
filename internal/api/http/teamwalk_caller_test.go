@@ -216,7 +216,7 @@ func TestTeamDefRun_HTTPWalkRunsAsTheCaller(t *testing.T) {
 	for {
 		select {
 		case evt := <-events:
-			if walkIDMatches(walkID, evt.ParentContext) && evt.RunID == member.ID {
+			if walkIDMatches(walkID, evt.RunID, evt.ParentContext) && evt.RunID == member.ID {
 				return
 			}
 		case <-deadline:

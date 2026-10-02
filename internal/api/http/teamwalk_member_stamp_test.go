@@ -212,7 +212,7 @@ func TestTeamDefRun_WalkWithoutAStarterShowsOnTheWalkStream(t *testing.T) {
 	for {
 		select {
 		case evt := <-events:
-			if evt.RunID != walkID && walkIDMatches(walkID, evt.ParentContext) {
+			if evt.RunID != walkID && walkIDMatches(walkID, evt.RunID, evt.ParentContext) {
 				if evt.ParentContext.State != "a" || evt.ParentContext.StateVisit != 1 {
 					t.Errorf("member event carries state %q visit %d, want a / 1",
 						evt.ParentContext.State, evt.ParentContext.StateVisit)

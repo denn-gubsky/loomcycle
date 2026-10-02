@@ -9007,8 +9007,9 @@ type StreamUserRunStatesRequest struct {
 	Statuses []string `protobuf:"bytes,2,rep,name=statuses,proto3" json:"statuses,omitempty"`
 	// Optional filter — empty means any agent matches.
 	Agent string `protobuf:"bytes,3,opt,name=agent,proto3" json:"agent,omitempty"`
-	// Optional filter — only the runs ONE team walk spawned, matched against
-	// each event's parent_context.walk_id. Empty means every walk.
+	// Optional filter — only ONE team walk: the walk's own run (the event's
+	// run_id) and the runs it spawned (each event's parent_context.walk_id).
+	// Empty means every walk.
 	//
 	// A team walk's own run id IS its walk id, so a caller that started a team
 	// with mode=detach filters by exactly the handle it already holds — no

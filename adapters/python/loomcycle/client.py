@@ -1864,17 +1864,17 @@ class LoomcycleClient:
         parent_agent_id, status, stop_reason, error, ts, parent_context}``
         dicts as transitions arrive.
 
-        ``walk_id`` narrows the stream to the runs ONE team walk spawned,
-        matched server-side against each event's
-        ``parent_context["walk_id"]``. A team walk's own run id IS its walk
-        id, so a caller that started a team detached passes back exactly the
-        handle it already holds::
+        ``walk_id`` narrows the stream, server-side, to ONE team walk: the
+        walk's own run (the event's ``run_id``) and the runs it spawned (each
+        event's ``parent_context["walk_id"]``). A team walk's own run id IS
+        its walk id, so a caller that started a team detached passes back
+        exactly the handle it already holds::
 
             async for evt in client.stream_user_run_states(
                 user_id, walk_id=run_id
             ):
                 pc = evt["parent_context"]
-                # pc is None for a run outside any walk. Inside one,
+                # pc is None for the walk's own run. On its members,
                 # wave_id groups a fan-out and wave_index is the position
                 # within it — index 0 is a real first position.
                 place(evt["agent"], evt["status"], pc and pc["wave_id"])

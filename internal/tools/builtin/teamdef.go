@@ -1138,19 +1138,26 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			needsAsk = true
 		}
 	}
+	// The walk's run is already open, so a refusal from here on closes it: a
+	// refused walk otherwise stayed running, its heartbeat beating, until the
+	// stale sweeper failed it.
+	refuse := func(msg string) (tools.Result, error) {
+		finishRun("", errors.New(msg))
+		return errResult(msg), nil
+	}
 	if len(seed) > 0 {
 		if err := teamrun.ValidateBreakpoints(seed); err != nil {
-			return errResult(fmt.Sprintf("run: %s", err)), nil
+			return refuse(fmt.Sprintf("run: %s", err))
 		}
 		if err := teamrun.CheckBreakpointTargets(def, row.Name, seed); err != nil {
-			return errResult(fmt.Sprintf("run: %s", err)), nil
+			return refuse(fmt.Sprintf("run: %s", err))
 		}
 		// REFUSED rather than degraded. interrupt_on_cap may silently fall back
 		// to aborting because the fallback is still safe; a breakpoint's whole
 		// job is to hold work back, so running at full speed because nobody can
 		// be asked is the opposite of what the caller requested.
 		if needsAsk && t.AskHuman == nil {
-			return errResult("run: breakpoints require the Interruption machinery, which is not wired on this server"), nil
+			return refuse("run: breakpoints require the Interruption machinery, which is not wired on this server")
 		}
 	}
 	// The armed set is opened for EVERY run that could be asked, not only one
@@ -1175,7 +1182,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		reviewTTL := time.Duration(in.ReviewTTL) * time.Second
 		src, release, serr := t.openBreakpoints(walkCtx, seed, reviewTTL, targets)
 		if serr != nil {
-			return errResult(fmt.Sprintf("run: %s", serr)), nil
+			return refuse(fmt.Sprintf("run: %s", serr))
 		}
 		armedSet = src
 		// NOT a defer: a detached walk outlives this function, and releasing
