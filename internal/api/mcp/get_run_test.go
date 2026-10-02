@@ -80,3 +80,27 @@ func TestServer_GetRun_BothOrNeitherIsAToolError(t *testing.T) {
 		}
 	}
 }
+
+// A walk's result travels as the connector returns it, so the end state it
+// reached reaches an MCP client unchanged.
+func TestServer_GetRun_CarriesAWalksTerminal(t *testing.T) {
+	mc := &mockConnector{
+		getRunByRunIDResult: connector.Run{RunID: "r_walk_1", AgentID: "team:triage", Status: "completed",
+			Result: json.RawMessage(`{"final_text":"no","terminal":"abandoned"}`)},
+	}
+	res := callGetRun(t, mc, `{"run_id":"r_walk_1"}`)
+	if res.IsError {
+		t.Fatalf("get_run errored: %v", res.Content)
+	}
+	var got struct {
+		Result struct {
+			Terminal string `json:"terminal"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Result.Terminal != "abandoned" {
+		t.Errorf("get_run result.terminal = %q, want abandoned (%s)", got.Result.Terminal, res.Content[0].Text)
+	}
+}

@@ -7817,7 +7817,8 @@ type agentResponse struct {
 	// Result is the run's answer (RFC DI): {final_text, state}. Only on the
 	// SINGLE-run read (GET /v1/agents/{agent_id}); list responses omit it,
 	// since a final text per row would make a runs list as large as every
-	// transcript's last turn.
+	// transcript's last turn. The one exception is a walk's OWN row in its
+	// walk listing (GET /v1/runs?walk_id=): one row, and the walk's outcome.
 	Result json.RawMessage `json:"result,omitempty"`
 	// Spec is the run's own configuration record (RFC DI): the overrides it
 	// ran with after merging over its definition — the persisted run_config.

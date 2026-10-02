@@ -137,8 +137,8 @@ type TeamDef struct {
 	// WalkRun, if set, gives an op=run walk its OWN run: a session, a `runs`
 	// row, a run id on ctx, and the Interruption policy the pause machinery
 	// needs. It returns the walk's ctx, the run id, and the finish to call when
-	// the walk ends — with the walk's final output, which becomes the walk
-	// run's result, and its error.
+	// the walk ends — with how it ended (WalkEnd), which becomes the walk run's
+	// result and status.
 	//
 	// WHY A WALK IS A RUN. Everything that makes a walk observable or
 	// controllable from outside is addressed by run id — the breakpoint set,
@@ -156,7 +156,7 @@ type TeamDef struct {
 	// nil = the walk runs under the caller's own ctx (an in-band agent run
 	// already has a run id; a direct API call gets none, and its breakpoints
 	// are unaddressable — the behaviour before this existed).
-	WalkRun func(ctx context.Context, spec WalkRunSpec) (walkCtx context.Context, runID string, finish func(finalText string, err error), err error)
+	WalkRun func(ctx context.Context, spec WalkRunSpec) (walkCtx context.Context, runID string, finish func(WalkEnd), err error)
 
 	// LiveBreakpoints, if set, opens the MUTABLE armed set for this run's walk,
 	// seeded with the run argument, and returns it plus the release to call when
@@ -302,6 +302,19 @@ type WalkRunSpec struct {
 	Review           []string
 	ReviewTTLSeconds int
 	InterruptOnCap   bool
+}
+
+// WalkEnd is how one op=run walk ended, as its run records it.
+type WalkEnd struct {
+	// FinalText is the walk's answer: the last output any of its states
+	// produced.
+	FinalText string
+	// Terminal is the id of the end state the walk reached; "" when it did
+	// not reach one (Err is set).
+	Terminal string
+	// Err is why the walk stopped short of an end state; nil when it reached
+	// one.
+	Err error
 }
 
 // WalkBoard is a walk's board binding as it started. ResumedFrom is the state
@@ -1015,7 +1028,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// the walk addressable: breakpoints, the Interruption ask a pause is
 	// answered through, and cancel all key on it.
 	runID := ""
-	finishRun := func(string, error) {}
+	finishRun := func(WalkEnd) {}
 	if t.WalkRun != nil {
 		var werr error
 		// The walk's own hooks go to whatever opens its run; an operator's
@@ -1142,7 +1155,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// refused walk otherwise stayed running, its heartbeat beating, until the
 	// stale sweeper failed it.
 	refuse := func(msg string) (tools.Result, error) {
-		finishRun("", errors.New(msg))
+		finishRun(WalkEnd{Err: errors.New(msg)})
 		return errResult(msg), nil
 	}
 	if len(seed) > 0 {
@@ -1236,7 +1249,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
 		trace, werr := teamrun.Walk(walkCtx, def, task, runner, opts...)
-		finishRun(walkFinalOutput(trace), werr)
+		end := WalkEnd{FinalText: walkFinalOutput(trace), Err: werr}
+		if werr == nil {
+			end.Terminal = walkTerminal(def, task)
+		}
+		finishRun(end)
 		return trace, werr
 	}
 
@@ -1629,6 +1646,18 @@ func walkFinalOutput(trace []teamrun.StepRecord) string {
 		if trace[i].Output != "" {
 			return trace[i].Output
 		}
+	}
+	return ""
+}
+
+// walkTerminal names the end state a walk that returned without error stopped
+// at. Walk leaves task.State there, including for a walk that started at it
+// and so has no step to read it from. It is checked against the definition
+// rather than trusted, so a state that is not a terminal is never reported as
+// the walk's end.
+func walkTerminal(def teamgraph.Definition, task *teamrun.Task) string {
+	if st, ok := teamgraph.StateByID(def, task.State); ok && st.Handler.Kind == teamgraph.HandlerTerminal {
+		return st.ID
 	}
 	return ""
 }

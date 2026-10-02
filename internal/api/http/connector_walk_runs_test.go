@@ -7,6 +7,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // connector.ListWalkRuns is what MCP list_runs answers a walk_id from. It goes
@@ -14,7 +15,7 @@ import (
 func TestConnectorListWalkRuns_GatesLikeHTTPAndCarriesAwaitedState(t *testing.T) {
 	srv, _ := runReadServer(t)
 	walkID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 	var member string
 	for id := range addWalkMembers(t, srv.store, "acme", "alice", walkID, 1) {
 		member = id

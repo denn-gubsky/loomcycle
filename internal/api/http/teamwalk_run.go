@@ -49,9 +49,9 @@ const teamWalkAgentPrefix = "team:"
 //
 // spec is recorded on the row as its run_config `team` by the same CreateRun
 // that makes it, so there is no moment at which a live walk lacks it.
-func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) (context.Context, string, func(string, error), error) {
+func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) (context.Context, string, func(builtin.WalkEnd), error) {
 	if s.store == nil {
-		return ctx, "", func(string, error) {}, fmt.Errorf("run tracking requires a store")
+		return ctx, "", func(builtin.WalkEnd) {}, fmt.Errorf("run tracking requires a store")
 	}
 	ident := tools.RunIdentity(ctx)
 	agent := teamWalkAgentPrefix + spec.Name
@@ -64,7 +64,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		walkSet = hooks.NewSet()
 		src := hooks.Source{Owner: agent, Tenant: wh.Tenant, OperatorAuthored: wh.OperatorAuthored}
 		if err := hooks.Resolve(ctx, src, wh.Hooks, nil, builtin.HookDefLookup(s.store), s.hookPermits, walkSet); err != nil {
-			return ctx, "", func(string, error) {}, fmt.Errorf("the team's hooks: %w", err)
+			return ctx, "", func(builtin.WalkEnd) {}, fmt.Errorf("the team's hooks: %w", err)
 		}
 	}
 	// The walk's parent is the run whose TeamDef call started it — none when
@@ -86,7 +86,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		RunConfig:             runConfigRecord{Team: teamWalkRecordOf(s.redactor, spec)}.marshal(),
 	})
 	if err != nil {
-		return ctx, "", func(string, error) {}, err
+		return ctx, "", func(builtin.WalkEnd) {}, err
 	}
 	// A walk is a run, and its transitions reach the run-state stream like
 	// one's: without these a stream watching the walk saw its members come and
@@ -119,7 +119,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		Kinds:   []string{"question"},
 	})
 
-	finish := func(finalText string, walkErr error) {
+	finish := func(end builtin.WalkEnd) {
 		s.walks.remove(runID)
 		stopHeartbeat()
 		status, stopReason, msg := store.RunCompleted, "", ""
@@ -130,21 +130,29 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 			if stopReason == "" {
 				stopReason = "cancelled by api"
 			}
-		} else if walkErr != nil {
-			status, msg = store.RunFailed, walkErr.Error()
+		} else if end.Err != nil {
+			status, msg = store.RunFailed, end.Err.Error()
 		}
 		// A survival ctx: the run row must be closed even when the walk failed
 		// because its ctx was cancelled, or a cancelled walk would sit in the
 		// runs list as running forever.
 		// The walk's answer is its last state's output (RFC DI) — what a caller
-		// holding only the walk's run id wants to read once it is over.
-		usage := store.Usage{Result: runResultJSON(s.redactor, loop.RunResult{FinalText: finalText})}
+		// holding only the walk's run id wants to read once it is over — and
+		// the end state it reached, which tells two endings apart. Only a
+		// completed walk reached one: a cancel that lands after the walk
+		// entered its terminal still records the walk as cancelled, and the
+		// result must not contradict the status.
+		terminal := ""
+		if status == store.RunCompleted {
+			terminal = end.Terminal
+		}
+		usage := store.Usage{Result: walkResultJSON(s.redactor, end.FinalText, terminal)}
 		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, usage, msg); ferr != nil {
 			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
 		}
 		// A walk is a run, and ends like one.
 		s.publishRunState(meta, string(status), stopReason, msg)
-		s.observeRunEnd(meta, status, stopReason, msg, finalText)
+		s.observeRunEnd(meta, status, stopReason, msg, end.FinalText)
 		cancelWalk(nil) // release the ctx; a no-op after a cancel
 	}
 	return walkCtx, runID, finish, nil

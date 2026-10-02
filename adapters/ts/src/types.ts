@@ -1344,8 +1344,9 @@ export interface Agent {
   parent_context?: ParentContext;
   /** The run's answer (RFC DI) — what the row had no field for; `stop_reason`,
    *  `error` and `usage` are above. Present on {@link LoomcycleClient.getAgent}
-   *  and {@link LoomcycleClient.getRun} only (listings omit it), and only once the run has finished with
-   *  something to report. */
+   *  and {@link LoomcycleClient.getRun} only (listings omit it, except a walk's
+   *  own row in {@link LoomcycleClient.listWalkRuns}), and only once the run has
+   *  finished with something to report. */
   result?: RunResult;
   /** The run's own configuration (RFC DI): the overrides it ran with, merged
    *  over its definition. {@link LoomcycleClient.getAgent} / getRun only, like
@@ -1485,6 +1486,10 @@ export interface RunResult {
   /** The final answer parsed against the run's `outputFormat`; absent when
    *  the run had none or the answer was not a JSON object. */
   structured?: Record<string, unknown>;
+  /** A team walk's run only: the id of the end (terminal) state the walk
+   *  reached, which tells two endings of one team apart. Absent when the walk
+   *  failed or was cancelled, and on every agent run. */
+  terminal?: string;
 }
 
 export interface ListAgentsResponse {

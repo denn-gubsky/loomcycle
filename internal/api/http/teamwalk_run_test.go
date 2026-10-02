@@ -72,7 +72,7 @@ func TestOpenTeamWalkRun_GrantsWhatThePauseMachineryNeeds(t *testing.T) {
 
 	// And finishing records the outcome, so a failed walk is never left looking
 	// like one still going.
-	finish("", context.DeadlineExceeded)
+	finish(builtin.WalkEnd{Err: context.DeadlineExceeded})
 	run, err = srv.store.GetRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("GetRun after finish: %v", err)
@@ -154,7 +154,7 @@ func TestCancelTurn_StopsALiveTeamWalk(t *testing.T) {
 		t.Error("a run the walk spawned kept running after the walk was cancelled")
 	}
 
-	finish("", walkCtx.Err()) // the walk returns with its ctx error
+	finish(builtin.WalkEnd{Err: walkCtx.Err()}) // the walk returns with its ctx error
 	run, err := srv.store.GetRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
@@ -184,7 +184,7 @@ func TestCancelTurn_AnotherTenantCannotStopAWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 
 	stopped, _, err := srv.CancelTurn(tenantOperatorCtx("other"), runID, "")
 	if stopped || !errors.Is(err, connector.ErrRunNotInFlight) {
@@ -207,7 +207,7 @@ func TestHandleCancelTurn_StopsATeamWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 
 	req := httptest.NewRequest("POST", "/v1/runs/"+runID+"/cancel", strings.NewReader(`{"reason":"stop"}`))
 	req.SetPathValue("run_id", runID)
@@ -250,7 +250,7 @@ func TestOpenTeamWalkRun_HeartbeatsTheWalkRunUntilItFinishes(t *testing.T) {
 	waitFor(t, "the walk run to be heartbeated", func() bool { first = heartbeat(); return !first.IsZero() })
 	waitFor(t, "the heartbeat to advance", func() bool { return heartbeat().After(first) })
 
-	finish("", nil)
+	finish(builtin.WalkEnd{})
 	stopped := heartbeat()
 	time.Sleep(60 * time.Millisecond)
 	if got := heartbeat(); !got.Equal(stopped) {

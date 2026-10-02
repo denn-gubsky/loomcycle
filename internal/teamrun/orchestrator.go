@@ -171,6 +171,11 @@ func OnCap(f func(ctx context.Context, cap *ErrIterationCap) (CapDecision, error
 // state, and its output becomes the next input. It returns the ordered trace of
 // executed states.
 //
+// A nil error means the walk entered a terminal state, and task.State is that
+// state's id — the end the walk reached. It is read from the task, not the
+// trace: a walk that starts AT a terminal (a board resumed at its end state)
+// returns an empty trace.
+//
 // Termination is guaranteed: every non-terminal state increments its own entry
 // count, and exceeding the per-state cap returns *ErrIterationCap — unless an
 // OnCap observer rules CapContinue/CapReroute, in which case the loop is bounded

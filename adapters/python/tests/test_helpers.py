@@ -133,6 +133,9 @@ def test_agent_to_dict_decodes_the_run_result():
     out = _agent_to_dict(a)
     assert out["result"] == {"final_text": "done", "state": {"k": 1}}
     assert _agent_to_dict(pb.Agent(agent_id="ag-2", status="running"))["result"] is None
+    # A team walk's result names the end state it reached.
+    walk = pb.Agent(agent_id="team:triage", status="completed", result=b'{"final_text": "no", "terminal": "abandoned"}')
+    assert _agent_to_dict(walk)["result"]["terminal"] == "abandoned"
 
 
 def test_agent_to_dict_decodes_the_run_spec():

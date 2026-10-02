@@ -245,9 +245,10 @@ class LoomcycleClient:
         """One page of a team walk's runs — the walk's own run (its run id
         IS the walk id) and every member it spawned, oldest first. Returns
         ``{"agents": [...], "next_cursor": str}``; each agent is
-        ``get_agent``'s dict. Pass ``next_cursor`` back as ``cursor`` for the
-        next page; it is ``""`` on the last. ``limit`` defaults to 100, at
-        most 1000. A walk the caller may not see raises
+        ``get_agent``'s dict; the walk's own row carries its ``result``, with
+        the ``terminal`` state it reached. Pass ``next_cursor`` back as
+        ``cursor`` for the next page; it is ``""`` on the last. ``limit``
+        defaults to 100, at most 1000. A walk the caller may not see raises
         ``AgentNotFoundError``, as an unknown one does."""
         try:
             resp = await self._stub.ListWalkRuns(
@@ -2066,9 +2067,11 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         # The run's lineage, or None when it carried none (see
         # _parent_context_to_dict for why None rather than an empty dict).
         "parent_context": _parent_context_to_dict(a),
-        # The run's answer (RFC DI): {"final_text", "state"}. get_agent only;
-        # list_user_agents leaves it empty. None while running and when the run
-        # finished with nothing to report.
+        # The run's answer (RFC DI): {"final_text", "state"}, and for a team
+        # walk "terminal" — the end state it reached, absent when it failed or
+        # was cancelled. get_agent / get_run, and the walk's own row in
+        # list_walk_runs; other listings leave it empty. None while running and
+        # when the run finished with nothing to report.
         "result": json.loads(a.result) if a.result else None,
         # The run's own configuration record (RFC DI): the overrides it ran
         # with, merged over its definition. get_agent only; None when the run

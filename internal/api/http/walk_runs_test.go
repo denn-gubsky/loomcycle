@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // GET /v1/runs?walk_id= lists one team walk's runs. Before it, a canvas could
@@ -67,7 +68,7 @@ func addWalkMembers(t *testing.T, st store.Store, tenant, user, walkID string, n
 func TestListRuns_PagesEveryWalkMemberOnceWithTheWalkItself(t *testing.T) {
 	srv, mux := runReadServer(t)
 	walkID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 	want := addWalkMembers(t, srv.store, "acme", "alice", walkID, 250)
 	want[walkID] = true
 	op := principalCtx("acme", "op", auth.ScopeTenant)
@@ -115,7 +116,7 @@ func TestListRuns_PagesEveryWalkMemberOnceWithTheWalkItself(t *testing.T) {
 func TestListRuns_RunningMemberCarriesItsAwaitedState(t *testing.T) {
 	srv, mux := runReadServer(t)
 	walkID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 	var member string
 	for id := range addWalkMembers(t, srv.store, "acme", "alice", walkID, 1) {
 		member = id
@@ -139,7 +140,7 @@ func TestListRuns_RunningMemberCarriesItsAwaitedState(t *testing.T) {
 func TestListRuns_AnotherTenantGetsTheOpaque404(t *testing.T) {
 	srv, mux := runReadServer(t)
 	walkID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 	addWalkMembers(t, srv.store, "acme", "alice", walkID, 2)
 	other := principalCtx("other", "op", auth.ScopeTenant)
 
@@ -164,7 +165,7 @@ func TestListRuns_AnotherTenantGetsTheOpaque404(t *testing.T) {
 func TestListRuns_IsolatedMemberListsOnlyAWalkItOwns(t *testing.T) {
 	srv, mux := runReadServer(t)
 	walkID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 	addWalkMembers(t, srv.store, "acme", "alice", walkID, 2)
 
 	if code, _, _ := listWalkRuns(t, mux, principalCtx("acme", "bob", auth.ScopeUser), url.Values{"walk_id": {walkID}}); code != http.StatusNotFound {

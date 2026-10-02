@@ -309,7 +309,7 @@ func TestTeamHooks_TheWalksRunEndHookFires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finish("the report", nil)
+	finish(builtin.WalkEnd{FinalText: "the report"})
 	got := end.waitBody(t, `"run_id":"`+runID+`"`)
 	if !strings.Contains(got, `"owner":"team:triage"`) || !strings.Contains(got, `"status":"completed"`) {
 		t.Fatalf("payload = %s", got)
@@ -328,7 +328,7 @@ func TestTeamHooks_TheWalksRunEndHookNamesTheCallingRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finish("the report", nil)
+	finish(builtin.WalkEnd{FinalText: "the report"})
 	if got := end.waitBody(t, `"run_id":"`+runID+`"`); !strings.Contains(got, `"parent_run_id":"r_caller"`) {
 		t.Fatalf("payload = %s, want parent_run_id r_caller", got)
 	}
@@ -383,7 +383,7 @@ func TestTeamHooks_TheWalksHooksResolveInTheTeamsTenant(t *testing.T) {
 	if err != nil || run.TenantID != "globex" {
 		t.Fatalf("the walk's run is in tenant %q (%v), want the caller's", run.TenantID, err)
 	}
-	finish("done", nil)
+	finish(builtin.WalkEnd{FinalText: "done"})
 	owners.waitBody(t, `"run_id":"`+runID+`"`)
 	callers.mu.Lock()
 	defer callers.mu.Unlock()
