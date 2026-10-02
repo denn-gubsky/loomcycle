@@ -33,6 +33,12 @@ research, …).
   - Time a run spends held for a review verdict does not count. A starter run's
     clock stops while it is held; a handler-wide clock stops while every run in
     flight is held.
+- **Messages to a running member.** A walk's runs take operator messages
+  (`POST /v1/runs/{run_id}/input`) while they run. A message that arrives while
+  a run is writing its final answer is answered: the run takes one more turn
+  with it, and that answer is the one the walk reads and a Starter's sink
+  publishes. Once the run has finished, a message is refused as not in flight
+  (404) — it is never acknowledged and then dropped.
 - **Transitions** are the edges between states, gated by an `on` label:
   `success` (advance), `pushback:<reason>` (loop back for rework), or
   `conditional:<expr>`. A state's outbound labels are unique, and every cycle is
