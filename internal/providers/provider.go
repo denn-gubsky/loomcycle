@@ -82,12 +82,10 @@ type KeyedProvider interface {
 // Gemini, OpenAI o-series) simply don't implement this interface.
 type ThinkingDowngrader interface {
 	// NonThinkingSibling returns the non-thinking model to use in place of a
-	// model that would run in thinking mode and so cannot consume a
-	// foreign/reasoning-stripped history, and true; or ("", false) when the
-	// call would not think. effort is the hint the call would carry: on a
-	// hybrid model it is what turns thinking on, so the model name alone does
-	// not decide. The loop drops the effort hint whenever it downgrades.
-	NonThinkingSibling(model, effort string) (string, bool)
+	// thinking-class model that cannot consume a foreign/reasoning-stripped
+	// history, and true; or ("", false) when model is not a thinking-class
+	// model needing a downgrade.
+	NonThinkingSibling(model string) (string, bool)
 }
 
 // Capabilities tells the loop what the provider can and can't do, so the loop

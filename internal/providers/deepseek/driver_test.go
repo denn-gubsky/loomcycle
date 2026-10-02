@@ -166,9 +166,6 @@ func TestIsThinkingModel(t *testing.T) {
 		{"deepseek-coder", false},
 		{"DeepSeek-V4-Pro", true},   // case-insensitive
 		{"DeepSeek-V4-Flash", true}, // case-insensitive v4
-		// Hybrid: thinks only with an effort hint (live 2026-10-02), so not
-		// thinking-class — thinkingMode adds the effort half.
-		{"deepseek-flash", false},
 		{"", false},
 		{"unknown-model", false},
 	}
@@ -180,42 +177,36 @@ func TestIsThinkingModel(t *testing.T) {
 	}
 }
 
-// TestNonThinkingSibling pins the exp7 R2 downgrade mapping: EVERY call that
-// would run in thinking mode maps to deepseek-chat (the -flash sibling of the v4
-// line was itself thinking-mode, so it is never a safe target); a call that
-// would not think yields ("", false). The hybrid deepseek-flash thinks only with
-// an effort hint, so the effort decides whether it is downgraded.
+// TestNonThinkingSibling pins the exp7 R2 downgrade mapping: EVERY thinking-class
+// model maps to deepseek-chat (the -flash sibling is itself thinking-mode, so it
+// is never a safe target); a non-thinking model yields ("", false).
 func TestNonThinkingSibling(t *testing.T) {
 	d := &Driver{}
 	cases := []struct {
-		model, effort string
+		model         string
 		wantSibling   string
 		wantDowngrade bool
 	}{
 		// ALL thinking models downgrade to deepseek-chat — the same-generation
 		// -flash is NOT safe (v4-flash is itself thinking-mode; prod 2026-07-02).
-		{"deepseek-v4-pro", "", "deepseek-chat", true},
-		{"deepseek-v4-flash", "", "deepseek-chat", true},
-		{"deepseek-v3-pro", "", "deepseek-chat", true},
-		{"deepseek-reasoner", "", "deepseek-chat", true},
-		{"deepseek-r1", "", "deepseek-chat", true},
-		{"deepseek-r1-distill", "", "deepseek-chat", true},
-		// The hybrid: an effort hint turns thinking on, so it must downgrade;
-		// without one it already answers without thinking.
-		{"deepseek-flash", "high", "deepseek-chat", true},
-		{"deepseek-flash", "", "", false},
-		// Non-thinking models need no downgrade without an effort hint (incl.
-		// deepseek-chat itself).
-		{"deepseek-chat", "", "", false},
-		{"deepseek-v3.2", "", "", false},
-		{"", "", "", false},
-		{"unknown-model", "", "", false},
+		{"deepseek-v4-pro", "deepseek-chat", true},
+		{"deepseek-v4-flash", "deepseek-chat", true},
+		{"deepseek-v3-pro", "deepseek-chat", true},
+		{"deepseek-reasoner", "deepseek-chat", true},
+		{"deepseek-r1", "deepseek-chat", true},
+		{"deepseek-r1-distill", "deepseek-chat", true},
+		// Non-thinking models need no downgrade (incl. deepseek-chat itself →
+		// no infinite downgrade).
+		{"deepseek-chat", "", false},
+		{"deepseek-v3.2", "", false},
+		{"", "", false},
+		{"unknown-model", "", false},
 	}
 	for _, tc := range cases {
-		sib, dg := d.NonThinkingSibling(tc.model, tc.effort)
+		sib, dg := d.NonThinkingSibling(tc.model)
 		if dg != tc.wantDowngrade || sib != tc.wantSibling {
-			t.Errorf("NonThinkingSibling(%q, effort %q) = (%q, %v), want (%q, %v)",
-				tc.model, tc.effort, sib, dg, tc.wantSibling, tc.wantDowngrade)
+			t.Errorf("NonThinkingSibling(%q) = (%q, %v), want (%q, %v)",
+				tc.model, sib, dg, tc.wantSibling, tc.wantDowngrade)
 		}
 	}
 }
