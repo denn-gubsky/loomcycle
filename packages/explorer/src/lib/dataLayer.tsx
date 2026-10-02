@@ -31,6 +31,20 @@ export interface ChunkPatch {
   tags?: string[];
 }
 
+// PathLsPage selects one page of an `ls`: `limit` bounds it (the runtime clamps
+// it to 5000), `cursor` is a previous page's next_cursor, passed back verbatim.
+export interface PathLsPage {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface PathLsResult {
+  path: string;
+  entries: PathEntry[];
+  truncated?: boolean;
+  next_cursor?: string;
+}
+
 // ExplorerDataLayer is the narrow data contract the Path / Document components
 // need — the ten off-run reads/writes the browser makes. Decoupling behind this
 // interface lets a host inject the default client-backed implementation
@@ -38,12 +52,22 @@ export interface ChunkPatch {
 // fetcher) without the components importing any global api module. Every method
 // takes an optional `browse` (RFC AS browse-by-subject) threaded to the runtime.
 export interface ExplorerDataLayer {
+  // pathLs lists one directory (or, recursive, a whole subtree, flat). The
+  // runtime pages every listing (default 500 entries, max 5000): a clipped page
+  // reports truncated + next_cursor, and passing that back as `page.cursor`
+  // continues it. A custom data layer that returns neither reads as complete.
   pathLs(
     path: string,
     scope: PathScope,
     recursive: boolean,
     browse?: BrowseScope,
-  ): Promise<{ path: string; entries: PathEntry[] }>;
+    page?: PathLsPage,
+  ): Promise<PathLsResult>;
+  // pathIsStored reports whether a path has its own dirent (false: an implicit
+  // directory, one that exists only through its descendants). A one-level ls
+  // reports both as plain `directory` entries, so this is the only way to tell
+  // them apart. Optional: without it the detail pane omits its "stored" row.
+  pathIsStored?(path: string, scope: PathScope, browse?: BrowseScope): Promise<boolean>;
   pathMkdir(
     path: string,
     scope: PathScope,
@@ -240,11 +264,30 @@ export interface ExplorerDataLayer {
 // op-varying `unknown`, cast to the kept shapes the components consume.
 export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetFetch): ExplorerDataLayer {
   return {
-    pathLs: (path, scope, recursive, browse) =>
+    pathLs: (path, scope, recursive, browse, page) =>
       client.path(
-        { op: "ls", path, scope, recursive },
+        {
+          op: "ls",
+          path,
+          scope,
+          recursive,
+          ...(page?.limit ? { limit: page.limit } : {}),
+          ...(page?.cursor ? { cursor: page.cursor } : {}),
+        },
         browse,
-      ) as Promise<{ path: string; entries: PathEntry[] }>,
+      ) as Promise<PathLsResult>,
+    // stat refuses a path with no dirent; that refusal IS the answer "implicit"
+    // here (the path came from a listing, so it exists). Any other failure —
+    // network, auth — is not an answer and propagates. Matched by name, not
+    // instanceof: the host's client may be a different copy of the package.
+    pathIsStored: (path, scope, browse) =>
+      client.path({ op: "stat", path, scope }, browse).then(
+        () => true,
+        (e: unknown) => {
+          if ((e as { name?: string } | null)?.name === "SubstrateToolRefusedError") return false;
+          throw e;
+        },
+      ),
     pathMkdir: (path, scope, browse) =>
       client.path({ op: "mkdir", path, scope }, browse),
     pathMv: (from, to, scope, browse) =>

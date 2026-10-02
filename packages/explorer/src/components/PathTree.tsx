@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import type { PathEntry } from "../types";
+import type { ReactNode } from "react";
+import type { DirListing, DirMap } from "../lib/lazyPathTree";
 import {
   docColor,
   effectiveScheme,
@@ -7,90 +7,50 @@ import {
   type DocSummary,
 } from "../lib/colorScheme";
 
-// PathTree renders the RFC AL dirent tree. The Path tool's `ls recursive`
-// returns a FLAT list of dirents; buildPathTree reconstructs the hierarchy,
-// synthesizing intermediate `directory` nodes for path segments that have no
-// explicit dirent row (implicit dirs, S3-style). A single expand Map owned by
-// the tree, default-expanded, click-to-select.
+// PathTree renders the RFC AL dirent tree from per-directory listings (see
+// lib/lazyPathTree): a directory's children exist only once it has been opened
+// and listed. The expand set, the loading and the paging are owned by the
+// caller; this component only draws them — a caret per directory, a status row
+// while a directory loads / is empty / failed, and a "load more" row while a
+// directory has pages left.
 
 export interface PathNode {
   name: string;
   fullPath: string;
   kind: string; // directory | document | volume_mount | memory_entry
   resourceRef?: unknown;
-  explicit: boolean; // false = synthesized intermediate dir (no dirent row)
+  // listing is this directory's load state; undefined = never listed (and
+  // always undefined for a non-directory).
+  listing?: DirListing;
   children: PathNode[];
 }
 
-// buildPathTree turns a flat dirent list into a hierarchy. Each entry's
-// full_path is split into segments; ancestors with no explicit row are created
-// as implicit `directory` nodes (an explicit dirent later upgrades them).
-export function buildPathTree(entries: PathEntry[]): PathNode[] {
-  const root: PathNode = {
-    name: "",
-    fullPath: "",
-    kind: "directory",
-    explicit: true,
-    children: [],
-  };
-  const byPath = new Map<string, PathNode>([["", root]]);
-  const ensure = (fullPath: string): PathNode => {
-    const hit = byPath.get(fullPath);
-    if (hit) return hit;
-    const idx = fullPath.lastIndexOf("/");
-    const parentPath = idx <= 0 ? "" : fullPath.slice(0, idx);
-    const name = fullPath.slice(idx + 1);
-    const parent = ensure(parentPath);
-    const node: PathNode = {
-      name,
-      fullPath,
-      kind: "directory",
-      explicit: false,
-      children: [],
+// buildLazyTree turns the listings into a hierarchy rooted at `dir` ("" =
+// root). A one-level listing already includes implicit directories (the runtime
+// synthesizes them from deeper descendants), so nothing is synthesized here.
+export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
+  const listing = dirs.get(dir);
+  if (!listing) return [];
+  const nodes = listing.entries.map((e): PathNode => {
+    // The prefix check keeps a malformed entry (a child spelled like its own
+    // directory) from recursing forever.
+    const isDir = e.kind === "directory" && e.full_path.startsWith(`${dir}/`);
+    return {
+      name: e.name,
+      fullPath: e.full_path,
+      kind: e.kind,
+      resourceRef: e.resource_ref,
+      listing: isDir ? dirs.get(e.full_path) : undefined,
+      children: isDir ? buildLazyTree(dirs, e.full_path) : [],
     };
-    parent.children.push(node);
-    byPath.set(fullPath, node);
-    return node;
-  };
-  for (const e of entries) {
-    const node = ensure(e.full_path);
-    node.kind = e.kind;
-    node.explicit = true;
-    node.resourceRef = e.resource_ref;
-  }
-  const sortRec = (nodes: PathNode[]) => {
-    nodes.sort((a, b) => {
-      const ad = a.kind === "directory";
-      const bd = b.kind === "directory";
-      if (ad !== bd) return ad ? -1 : 1; // directories first
-      return a.name.localeCompare(b.name);
-    });
-    nodes.forEach((n) => sortRec(n.children));
-  };
-  sortRec(root.children);
-  return root.children;
-}
-
-// parentPathOf returns the canonical parent of a node path ("" = root).
-export function parentPathOf(fullPath: string): string {
-  const idx = fullPath.lastIndexOf("/");
-  return idx <= 0 ? "" : fullPath.slice(0, idx);
-}
-
-// collectDocumentIds walks a subtree and returns the document_id of every
-// `document` node under it (used to cascade-delete Documents before rm'ing a
-// branch, so a branch delete leaves no orphaned Document content).
-export function collectDocumentIds(node: PathNode): string[] {
-  const ids: string[] = [];
-  const walk = (n: PathNode) => {
-    if (n.kind === "document") {
-      const ref = n.resourceRef as { document_id?: string } | undefined;
-      if (ref?.document_id) ids.push(ref.document_id);
-    }
-    n.children.forEach(walk);
-  };
-  walk(node);
-  return ids;
+  });
+  nodes.sort((a, b) => {
+    const ad = a.kind === "directory";
+    const bd = b.kind === "directory";
+    if (ad !== bd) return ad ? -1 : 1; // directories first
+    return a.name.localeCompare(b.name);
+  });
+  return nodes;
 }
 
 const KIND_ICON: Record<string, string> = {
@@ -102,6 +62,14 @@ const KIND_ICON: Record<string, string> = {
 
 export interface PathTreeProps {
   tree: PathNode[];
+  // root is the root directory's listing (its status/paging rows).
+  root?: DirListing;
+  expanded: ReadonlySet<string>;
+  onToggle: (dir: string) => void;
+  // onLoadMore fetches a directory's next page ("" = root); onRetry re-tries a
+  // directory whose listing failed.
+  onLoadMore: (dir: string) => void;
+  onRetry: (dir: string) => void;
   selectedPath?: string;
   onSelect: (node: PathNode) => void;
   // RFC BN: per-document display metadata keyed by document_id, used to color a
@@ -109,36 +77,16 @@ export interface PathTreeProps {
   summaries?: Map<string, DocSummary>;
 }
 
-export default function PathTree({ tree, selectedPath, onSelect, summaries }: PathTreeProps) {
-  const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
-  const toggle = useCallback((p: string) => {
-    setExpanded((prev) => {
-      const next = new Map(prev);
-      next.set(p, prev.get(p) === false ? true : false);
-      return next;
-    });
-  }, []);
-
-  // Auto-expand the ancestors of the selection so a post-refresh / deep
-  // selection isn't buried under a collapsed parent.
-  useEffect(() => {
-    if (!selectedPath) return;
-    setExpanded((prev) => {
-      let mutated = false;
-      const next = new Map(prev);
-      let p = parentPathOf(selectedPath);
-      while (p !== "") {
-        if (next.get(p) === false) {
-          next.set(p, true);
-          mutated = true;
-        }
-        p = parentPathOf(p);
-      }
-      return mutated ? next : prev;
-    });
-  }, [selectedPath]);
-
-  if (tree.length === 0) {
+export default function PathTree(props: PathTreeProps) {
+  const { tree, root } = props;
+  if (!root || (!root.loaded && root.loading)) {
+    return (
+      <div className="empty">
+        <p>Loading…</p>
+      </div>
+    );
+  }
+  if (root.loaded && tree.length === 0 && !root.nextCursor) {
     return (
       <div className="empty">
         <p>This tree is empty. Create a folder or document to begin.</p>
@@ -148,27 +96,63 @@ export default function PathTree({ tree, selectedPath, onSelect, summaries }: Pa
   return (
     <ul className="tree path-tree">
       {tree.map((n) => (
-        <PathTreeNode
-          key={n.fullPath}
-          node={n}
-          expanded={expanded}
-          toggle={toggle}
-          selectedPath={selectedPath}
-          onSelect={onSelect}
-          summaries={summaries}
-        />
+        <PathTreeNode key={n.fullPath} node={n} {...props} />
       ))}
+      <ListingRows dir="" listing={root} {...props} />
     </ul>
   );
 }
 
-interface NodeProps {
-  node: PathNode;
-  expanded: Map<string, boolean>;
-  toggle: (p: string) => void;
-  selectedPath?: string;
-  onSelect: (node: PathNode) => void;
-  summaries?: Map<string, DocSummary>;
+// ListingRows draws the trailing rows of a directory's children: its status
+// (loading / empty / failed) and, while pages remain, a "load more" button.
+// Entries are never dropped silently — a clipped directory always ends in one.
+function ListingRows({
+  dir,
+  listing,
+  onLoadMore,
+  onRetry,
+}: { dir: string; listing?: DirListing } & PathTreeProps) {
+  const rows: ReactNode[] = [];
+  if (!listing || (listing.loading && listing.entries.length === 0)) {
+    rows.push(
+      <li key="status" className="node path-status">
+        <span className="path-implicit">loading…</span>
+      </li>,
+    );
+  } else if (listing.error) {
+    rows.push(
+      <li key="status" className="node path-status">
+        {/* The root's failure is already the banner above the tree. */}
+        {dir !== "" && <span className="path-err">failed to load: {listing.error}</span>}{" "}
+        <button type="button" className="path-more" onClick={() => onRetry(dir)}>
+          retry
+        </button>
+      </li>,
+    );
+  } else if (listing.loaded && listing.entries.length === 0 && dir !== "") {
+    rows.push(
+      <li key="status" className="node path-status">
+        <span className="path-implicit">empty</span>
+      </li>,
+    );
+  }
+  if (listing?.nextCursor && !listing.error) {
+    rows.push(
+      <li key="more" className="node path-status">
+        <button
+          type="button"
+          className="path-more"
+          disabled={listing.loading}
+          onClick={() => onLoadMore(dir)}
+        >
+          {listing.loading
+            ? "loading…"
+            : `Load more (${listing.entries.length} shown)`}
+        </button>
+      </li>,
+    );
+  }
+  return <>{rows}</>;
 }
 
 // documentSummaryOf returns the summary for a `document` node (by its dirent's
@@ -179,9 +163,12 @@ function documentSummaryOf(node: PathNode, summaries?: Map<string, DocSummary>):
   return ref?.document_id ? summaries.get(ref.document_id) : undefined;
 }
 
-function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect, summaries }: NodeProps) {
-  const hasChildren = node.children.length > 0;
-  const isOpen = expanded.get(node.fullPath) !== false; // default-expanded
+function PathTreeNode(props: { node: PathNode } & PathTreeProps) {
+  const { node, expanded, onToggle, selectedPath, onSelect, summaries } = props;
+  // Only a directory can be opened: its children are unknown until it is
+  // listed, so its caret is live even before then.
+  const isDir = node.kind === "directory";
+  const isOpen = isDir && expanded.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const summary = documentSummaryOf(node, summaries);
   const rowStyle =
@@ -195,13 +182,14 @@ function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect, summarie
           type="button"
           className="tree-caret"
           aria-label={isOpen ? "collapse" : "expand"}
-          disabled={!hasChildren}
+          aria-expanded={isDir ? isOpen : undefined}
+          disabled={!isDir}
           onClick={(e) => {
             e.stopPropagation();
-            if (hasChildren) toggle(node.fullPath);
+            if (isDir) onToggle(node.fullPath);
           }}
         >
-          {hasChildren ? (isOpen ? "▼" : "▶") : "·"}
+          {isDir ? (isOpen ? "▼" : "▶") : "·"}
         </button>
         <button
           type="button"
@@ -215,26 +203,14 @@ function PathTreeNode({ node, expanded, toggle, selectedPath, onSelect, summarie
           <span className="path-name">{node.name}</span>
           {summary?.type && <span className="chunk-badge">{summary.type}</span>}
           {summary?.status && <span className="chunk-badge chunk-status">{summary.status}</span>}
-          {!node.explicit && (
-            <span className="path-implicit" title="Implicit directory (no stored entry)">
-              implicit
-            </span>
-          )}
         </button>
       </div>
-      {hasChildren && isOpen && (
+      {isOpen && (
         <ul className="children path-children">
           {node.children.map((c) => (
-            <PathTreeNode
-              key={c.fullPath}
-              node={c}
-              expanded={expanded}
-              toggle={toggle}
-              selectedPath={selectedPath}
-              onSelect={onSelect}
-              summaries={summaries}
-            />
+            <PathTreeNode key={c.fullPath} {...props} node={c} />
           ))}
+          <ListingRows {...props} dir={node.fullPath} listing={node.listing} />
         </ul>
       )}
     </li>

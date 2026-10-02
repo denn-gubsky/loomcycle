@@ -4,8 +4,8 @@ import { chunkColor, effectiveScheme, tintStyle, type ColorScheme } from "../lib
 import IdCopy from "./IdCopy";
 
 // DocumentChunkTree renders a document's chunk hierarchy (RFC AK), built from
-// the flat query_chunks list by parent_id + position. Mirrors PathTree: a single
-// expand Map owned by the tree, default-expanded, click-to-select.
+// the flat query_chunks list by parent_id + position. A single expand Map owned
+// by the tree, default-expanded, click-to-select.
 
 export interface ChunkNode {
   row: ChunkRow;
