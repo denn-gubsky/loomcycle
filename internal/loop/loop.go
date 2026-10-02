@@ -3107,6 +3107,10 @@ outerLoop:
 		// included, on the tool-use continuation (else Anthropic 400s). Empty
 		// for non-Anthropic / non-thinking turns.
 		var iterReasoningSignature string
+		// sawDone: the stream ended with the driver's EventDone. Every error
+		// branch below leaves the iteration, so reaching the end of the range
+		// without it means the stream just closed — see the check after it.
+		var sawDone bool
 
 		for ev := range ch {
 			callTimer.Observe(ev)
@@ -3145,6 +3149,7 @@ outerLoop:
 				})
 				emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
 			case providers.EventDone:
+				sawDone = true
 				iterStop = ev.StopReason
 				iterUsage = ev.Usage
 				iterReasoning = ev.Reasoning
@@ -3239,6 +3244,23 @@ outerLoop:
 				turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
 			}
+		}
+
+		// A stream that closed with neither EventDone nor EventError is a call
+		// that never finished: the server hung up, or the driver's own terminal
+		// error was lost when its stream context was cancelled (an idle timeout
+		// races the error send against ctx.Done). Read as a turn it is an empty
+		// end_turn, and the run used to COMPLETE with no text, no stop reason and
+		// zero usage — invisible as a failure to every caller. A cancelled turn
+		// or run closes the stream the same way; that is not a provider fault,
+		// and turnCtx (a child of the run ctx) tells the two apart.
+		if !sawDone && turnCtx.Err() == nil {
+			msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", opts.Provider.ID())
+			emit(providers.Event{Type: providers.EventError, Error: msg})
+			lcotel.SetSpanErrorMessage(iterSpan, msg)
+			iterSpan.End()
+			turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+			return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg)
 		}
 
 		// RFC BH: did the operator cancel THIS turn while the model was generating
