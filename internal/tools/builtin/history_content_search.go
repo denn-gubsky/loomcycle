@@ -108,7 +108,7 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 	sort.SliceStable(order, func(i, j int) bool { return best[order[i]].Score > best[order[j]].Score })
 
 	limit := effectiveListLimit(ctx, in.Limit)
-	chats := make([]any, 0, limit)
+	chats := make([]chatMeta, 0, limit)
 	matches := make([]chatContentMatch, 0, limit)
 	for _, sid := range order {
 		if len(chats) >= limit {
@@ -130,7 +130,20 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 		matches = append(matches, best[sid])
 	}
 
-	return okJSONCount(map[string]any{
+	// A matched turn is a whole turn, so inside a run the list is fitted to the
+	// page budget like the others; its turn text is cut before the chat's own.
+	var note string
+	if budget := historyInRunBudget(ctx); tools.RunID(ctx) != "" && budget > 0 {
+		size := func(i int) int { return jsonLen(chats[i]) + jsonLen(matches[i]) }
+		n, cut := fitRowsToBudget(len(chats), budget, 2, size, func(i, rowBudget int) bool {
+			c := &chats[i]
+			turnCut := cutToFit(&matches[i].Text, rowBudget, func() int { return size(i) })
+			return cutMetaToFit(rowBudget, func() int { return size(i) }, &c.Title, &c.Description, &c.Summary, &c.Tags) || turnCut
+		})
+		note = historyRowsNote(n, len(chats), budget, cut, "The rest matched less well; narrow the query to see others.")
+		chats, matches = chats[:n], matches[:n]
+	}
+	res := map[string]any{
 		"scope": scope,
 		"match": contentMatchMode,
 		"chats": chats,
@@ -139,7 +152,12 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 		"matched_turns": matches,
 		"total":         len(chats),
 		"limit":         limit,
-	}, len(chats))
+	}
+	if note != "" {
+		res["truncated"] = true
+		res["note"] = note
+	}
+	return okJSONCount(res, len(chats))
 }
 
 // traceTurnRow reads back what the indexer stored. Kept here rather than shared with
