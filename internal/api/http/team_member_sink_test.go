@@ -109,6 +109,69 @@ func TestTeamWalk_StarterSinkCarriesTheMembersBareAnswerAndStructured(t *testing
 // does, so a downstream reader binds it with the same `$.output`.
 func TestTeamWalk_RejectedMemberSinkCarriesTheBareAnswer(t *testing.T) {
 	h := newReviewHarness(t)
+	runID, msg := rejectHeldMember(t, h)
+	if msg.Status != teamrun.SinkRejected || msg.RunID != runID || msg.Error != "rejected by the reviewer" {
+		t.Errorf("sink message = %+v, want status rejected for run %s", msg, runID)
+	}
+	if msg.Output != "answer 1" {
+		t.Errorf("sink output = %q, want the rejected answer bare", msg.Output)
+	}
+}
+
+// holdWriterToFormat gives the review harness's writer an output_format.
+func holdWriterToFormat(h *reviewHarness) {
+	cfg := h.srv.cfg()
+	ag := cfg.Agents["writer"]
+	ag.OutputFormat = &config.OutputFormat{Type: config.OutputFormatJSONSchema, Name: "verdict",
+		Schema: map[string]any{"type": "object", "properties": map[string]any{"verdict": map[string]any{"type": "string"}}}}
+	cfg.Agents["writer"] = ag
+}
+
+// A rejected member held to an output_format carries its structured result
+// on the sink message and on its run row, as a successful one does.
+func TestTeamWalk_RejectedMemberSinkCarriesItsStructuredResult(t *testing.T) {
+	h := newReviewHarness(t)
+	holdWriterToFormat(h)
+	h.prov.answer = `{"verdict":"no"}`
+	runID, msg := rejectHeldMember(t, h)
+	if msg.Status != teamrun.SinkRejected || msg.Output != `{"verdict":"no"}` {
+		t.Errorf("sink message = %+v, want status rejected and the bare answer", msg)
+	}
+	if msg.Structured["verdict"] != "no" {
+		t.Errorf("sink structured = %v, want verdict=no", msg.Structured)
+	}
+	run, err := h.st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec runResultRecord
+	if err := json.Unmarshal(run.Result, &rec); err != nil {
+		t.Fatalf("run result %s: %v", run.Result, err)
+	}
+	if run.Status != store.RunRejected || rec.Structured["verdict"] != "no" {
+		t.Errorf("run row = %s with result %s, want rejected with verdict=no", run.Status, run.Result)
+	}
+}
+
+// A rejected member whose answer does not parse against its output_format
+// stays rejected, with no structured result.
+func TestTeamWalk_AnUnparseableRejectedMemberStaysRejected(t *testing.T) {
+	h := newReviewHarness(t)
+	holdWriterToFormat(h)
+	runID, msg := rejectHeldMember(t, h)
+	if msg.Status != teamrun.SinkRejected || msg.Output != "answer 1" || msg.Structured != nil {
+		t.Errorf("sink message = %+v, want status rejected, the bare answer, no structured", msg)
+	}
+	if run, _ := h.st.GetRun(context.Background(), runID); run.Status != store.RunRejected {
+		t.Errorf("run status = %s, want rejected", run.Status)
+	}
+}
+
+// rejectHeldMember runs a one-member Starter whose member is armed for review,
+// rejects the held member through the real review verb, and returns its run id
+// and the one sink message the Starter published.
+func rejectHeldMember(t *testing.T, h *reviewHarness) (string, teamrun.SinkMessage) {
+	t.Helper()
 	ch := &sinkCapture{}
 	// The arming a walk's member_review would put on the member's ctx; the
 	// user is what lets the test find the held run.
@@ -165,10 +228,5 @@ func TestTeamWalk_RejectedMemberSinkCarriesTheBareAnswer(t *testing.T) {
 	if err := json.Unmarshal(ch.published[0], &msg); err != nil {
 		t.Fatal(err)
 	}
-	if msg.Status != teamrun.SinkRejected || msg.RunID != runID || msg.Error != "rejected by the reviewer" {
-		t.Errorf("sink message = %s, want status rejected for run %s", ch.published[0], runID)
-	}
-	if msg.Output != "answer 1" {
-		t.Errorf("sink output = %q, want the rejected answer bare", msg.Output)
-	}
+	return runID, msg
 }

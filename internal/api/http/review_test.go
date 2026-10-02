@@ -30,10 +30,11 @@ import (
 
 // numberedProvider answers "answer N" and records the last user text of each
 // request, so a test can tell which answer a run ended on and whether feedback
-// reached the model.
+// reached the model. A set answer is given on every call instead.
 type numberedProvider struct {
 	mu        sync.Mutex
 	lastUsers []string
+	answer    string
 }
 
 func (p *numberedProvider) ID() string                  { return "stub" }
@@ -54,9 +55,13 @@ func (p *numberedProvider) Call(_ context.Context, req providers.Request) (<-cha
 	p.mu.Lock()
 	p.lastUsers = append(p.lastUsers, last)
 	n := len(p.lastUsers)
+	text := p.answer
 	p.mu.Unlock()
+	if text == "" {
+		text = fmt.Sprintf("answer %d", n)
+	}
 	ch := make(chan providers.Event, 2)
-	ch <- providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d", n)}
+	ch <- providers.Event{Type: providers.EventText, Text: text}
 	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}}
 	close(ch)
 	return ch, nil
