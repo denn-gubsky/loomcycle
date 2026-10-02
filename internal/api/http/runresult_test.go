@@ -65,7 +65,7 @@ func TestTeamWalkRun_ResultIsTheWalksFinalOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	finish("triaged: 3 issues", nil)
+	finish(builtin.WalkEnd{FinalText: "triaged: 3 issues"})
 	if got := readResult(t, srv.store, runID); got.FinalText != "triaged: 3 issues" {
 		t.Errorf("walk result = %+v, want its final output", got)
 	}
@@ -129,7 +129,7 @@ func TestFinishPaths_RedactTheRunResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	finish("walk says "+secret, nil)
+	finish(builtin.WalkEnd{FinalText: "walk says " + secret})
 
 	for name, id := range map[string]string{"finishRun": done.ID, "finishRunCancelled": cancelled.ID, "team walk": walkID} {
 		got := stored(id)

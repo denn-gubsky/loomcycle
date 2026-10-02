@@ -46,7 +46,7 @@ func runReadServer(t *testing.T) (*Server, http.Handler) {
 
 // walkAs opens a team walk filed under (tenant, user), the identity a caller's
 // run ctx carries.
-func walkAs(t *testing.T, srv *Server, tenant, user, team string) (string, func(string, error)) {
+func walkAs(t *testing.T, srv *Server, tenant, user, team string) (string, func(builtin.WalkEnd)) {
 	t.Helper()
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
 		UserID: user, TenantID: tenant, AgentID: "caller",
@@ -100,7 +100,7 @@ func TestGetRun_ReadsAWalkByItsOwnRunID(t *testing.T) {
 			got.Status, got.Live)
 	}
 
-	finish("the walk's answer", nil)
+	finish(builtin.WalkEnd{FinalText: "the walk's answer"})
 	_, got = getRun(t, mux, op, runID)
 	if got.Status != store.RunCompleted || got.Live {
 		t.Errorf("a finished walk read as (status %q, live %v), want (completed, false)", got.Status, got.Live)
@@ -119,8 +119,8 @@ func TestGetRun_TwoWalksOfOneTeamEachReadByTheirOwnRunID(t *testing.T) {
 	srv, mux := runReadServer(t)
 	first, finishFirst := walkAs(t, srv, "acme", "alice", "triage")
 	second, finishSecond := walkAs(t, srv, "acme", "alice", "triage")
-	defer finishSecond("", nil)
-	finishFirst("first answer", nil)
+	defer finishSecond(builtin.WalkEnd{})
+	finishFirst(builtin.WalkEnd{FinalText: "first answer"})
 
 	_, a := getRun(t, mux, nil, first)
 	_, b := getRun(t, mux, nil, second)
@@ -142,7 +142,7 @@ func TestGetRun_TwoWalksOfOneTeamEachReadByTheirOwnRunID(t *testing.T) {
 func TestGetRun_AnotherTenantGetsTheOpaque404(t *testing.T) {
 	srv, mux := runReadServer(t)
 	runID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 
 	missing, _ := getRun(t, mux, principalCtx("other", "op", auth.ScopeTenant), "r_does_not_exist")
 	if code, _ := getRun(t, mux, principalCtx("other", "op", auth.ScopeTenant), runID); code != http.StatusNotFound || code != missing {
@@ -158,7 +158,7 @@ func TestGetRun_AnotherTenantGetsTheOpaque404(t *testing.T) {
 func TestGetRun_IsolatedMemberCannotReadAnotherUsersRun(t *testing.T) {
 	srv, mux := runReadServer(t)
 	runID, finish := walkAs(t, srv, "acme", "alice", "triage")
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 
 	if code, _ := getRun(t, mux, principalCtx("acme", "bob", auth.ScopeUser), runID); code != http.StatusNotFound {
 		t.Errorf("isolated member reading another user's run = %d, want 404", code)

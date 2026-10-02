@@ -25,7 +25,7 @@ type walkRunRecorder struct {
 	spec       WalkRunSpec
 }
 
-func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.Context, string, func(string, error), error) {
+func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.Context, string, func(WalkEnd), error) {
 	detach := spec.Detach
 	w.mu.Lock()
 	w.opened++
@@ -37,11 +37,11 @@ func (w *walkRunRecorder) open(ctx context.Context, spec WalkRunSpec) (context.C
 	if detach {
 		ctx = context.WithoutCancel(ctx)
 	}
-	return ctx, "r_walk1", func(finalText string, err error) {
+	return ctx, "r_walk1", func(end WalkEnd) {
 		w.mu.Lock()
 		w.finished++
-		w.lastErr = err
-		w.lastOutput = finalText
+		w.lastErr = end.Err
+		w.lastOutput = end.FinalText
 		w.mu.Unlock()
 	}, nil
 }
@@ -369,7 +369,7 @@ func TestTeamDefTool_Run_HandsTheWalkItsHooks(t *testing.T) {
 			tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
 			var got teamrun.WalkHooks
 			rec := &walkRunRecorder{}
-			tool.WalkRun = func(c context.Context, spec WalkRunSpec) (context.Context, string, func(string, error), error) {
+			tool.WalkRun = func(c context.Context, spec WalkRunSpec) (context.Context, string, func(WalkEnd), error) {
 				got = teamrun.WalkHooksFrom(c)
 				return rec.open(c, spec)
 			}
@@ -407,7 +407,7 @@ func TestTeamDefTool_Run_HandsTheWalkTheTeamsTenant(t *testing.T) {
 	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
 	var got teamrun.WalkHooks
 	rec := &walkRunRecorder{}
-	tool.WalkRun = func(c context.Context, spec WalkRunSpec) (context.Context, string, func(string, error), error) {
+	tool.WalkRun = func(c context.Context, spec WalkRunSpec) (context.Context, string, func(WalkEnd), error) {
 		got = teamrun.WalkHooksFrom(c)
 		return rec.open(c, spec)
 	}

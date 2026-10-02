@@ -191,7 +191,7 @@ func TestOpenTeamWalkRun_RecordsTheCallingRunAsParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openTeamWalkRun: %v", err)
 	}
-	defer finish("", nil)
+	defer finish(builtin.WalkEnd{})
 	run, err := srv.store.GetRun(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
