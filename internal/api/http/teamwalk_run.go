@@ -103,7 +103,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	// of a breakpoint's `abort` answer — the run-id cancel route refused it as
 	// not interactive, and the agents route cannot address `team:<name>`.
 	walkCtx, cancelWalk := context.WithCancelCause(walkCtx)
-	s.walks.add(runID, sessionID, cancelWalk)
+	s.walks.add(runID, sessionID, meta, cancelWalk)
 	stopHeartbeat := s.heartbeatWalk(walkCtx, runID)
 	walkCtx = tools.WithRunID(walkCtx, runID)
 	if walkSet != nil {
@@ -194,16 +194,19 @@ type walkCancels struct {
 
 type walkCancel struct {
 	sessionID string
-	cancel    context.CancelCauseFunc
+	// meta is the walk run's identity on the run-state stream, for the frames
+	// its pauses publish (walkAwareAsk).
+	meta   runStateMeta
+	cancel context.CancelCauseFunc
 }
 
-func (w *walkCancels) add(runID, sessionID string, fn context.CancelCauseFunc) {
+func (w *walkCancels) add(runID, sessionID string, meta runStateMeta, fn context.CancelCauseFunc) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.m == nil {
 		w.m = map[string]walkCancel{}
 	}
-	w.m[runID] = walkCancel{sessionID: sessionID, cancel: fn}
+	w.m[runID] = walkCancel{sessionID: sessionID, meta: meta, cancel: fn}
 }
 
 func (w *walkCancels) remove(runID string) {
