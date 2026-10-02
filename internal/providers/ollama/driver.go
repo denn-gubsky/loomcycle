@@ -848,6 +848,9 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 	// frame with an empty tool_calls array. We must remember the earlier
 	// emission so the loop iterates instead of breaking on "end_turn".
 	var hadToolCalls bool
+	// sawDone: the done:true frame arrived. Ollama ends every finished
+	// generation with one; see the check after the scan loop.
+	var sawDone bool
 	// textBuf accumulates message.content across the stream. Used only by
 	// the post-stream qwen3 tool-call-as-text recovery path (gated on
 	// wantTools && !hadToolCalls). Non-tool flows still stream text live;
@@ -944,6 +947,7 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		}
 
 		if c.Done {
+			sawDone = true
 			rawDoneReason = c.DoneReason
 			stopReason = mapStopReason(c.DoneReason, hadToolCalls)
 			if c.PromptEvalCount > 0 || c.EvalCount > 0 {
@@ -963,6 +967,15 @@ func streamEvents(ctx context.Context, body io.ReadCloser, out chan<- providers.
 		// failure. Mirrors the openai driver's same-position flush.
 		_ = flushText()
 		send(providers.Event{Type: providers.EventError, Error: "stream read: " + err.Error()})
+		return
+	}
+	// A clean EOF with no done:true frame: the server closed the body before
+	// the generation finished — a 200 with no frames at all came back from a
+	// crashed runner on a live deployment. Reported as EventDone it read as an
+	// empty end_turn and the run completed with no text and no error.
+	if !sawDone {
+		_ = flushText()
+		send(providers.Event{Type: providers.EventError, Error: "ollama: the response stream ended without a done frame (the model did not finish)"})
 		return
 	}
 
