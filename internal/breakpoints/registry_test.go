@@ -85,6 +85,23 @@ func TestSet_ReplaceIsAtomicAndValidatesFirst(t *testing.T) {
 	}
 }
 
+// TestSet_ListOfNothingArmedIsEmptyNotNil: the list is what the breakpoints
+// endpoint encodes, and a nil slice encodes as null.
+func TestSet_ListOfNothingArmedIsEmptyNotNil(t *testing.T) {
+	s, _ := NewSet(nil)
+	if got := s.List(); got == nil || len(got) != 0 {
+		t.Errorf("a fresh set listed %#v, want an empty non-nil slice", got)
+	}
+	// Disarmed after being armed — the canvas's off switch.
+	s, _ = NewSet([]string{"wave"})
+	if err := s.Replace(nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.List(); got == nil || len(got) != 0 {
+		t.Errorf("a disarmed set listed %#v, want an empty non-nil slice", got)
+	}
+}
+
 // TestSet_ListIsCanonical: a caller reading back its own arming should see what
 // the walk will do, not an echo of its shorthand.
 func TestSet_ListIsCanonical(t *testing.T) {
