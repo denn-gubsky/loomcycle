@@ -1547,6 +1547,12 @@ no client-side filtering. You may list a walk if you may read the walk's own run
 same listing is `list_runs` with `walk_id` over MCP, the `ListWalkRuns` RPC over
 gRPC, `listWalkRuns` in the TypeScript client and `list_walk_runs` in Python.
 
+The walk's own row carries its `result`, as `GET /v1/runs/{run_id}` does:
+`final_text` is the last state's output, and `terminal` names the end state the
+walk reached — absent when it failed or was cancelled — so a team with two ends
+(say `published` and `abandoned`) tells you which one it took. Member rows leave
+`result` out, like every listing.
+
 Every run a walk state starts — an agent and its consolidator, each parallel
 member, a standalone consolidator, a starter's wave — carries `walk_id` plus
 `state` (the state id it ran in) and `state_visit` on its `parent_context`.

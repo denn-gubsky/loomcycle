@@ -235,7 +235,9 @@ by moving `status` from one state to the next per the transitions. (See the
   `signal: <edge>` (e.g. `signal: success` or `signal: pushback:redo`): the
   `<edge>` must match one of the state's outbound transition labels, the last such
   line wins, and no signal defaults to `success`. Every cycle is bounded by the
-  per-state `max_iterations` cap.
+  per-state `max_iterations` cap. The walk is a run: its result holds
+  `final_text` (the last state's output) and `terminal`, the end state the walk
+  reached — absent when it failed or was cancelled.
 - **The `team/orchestrator` agent** — an LLM **team lead** and the human's
   contact point. Run it interactively: it reads the TeamDef as its map, drives
   the Document board (moving `status`, spawning each state's handler), decides
