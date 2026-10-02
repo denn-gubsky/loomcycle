@@ -58,8 +58,10 @@ rather than a feature toggle, so it lives in env-only.
 
 ## Wire surface
 
-Nine RPCs on the `loomcycle.v1.Loomcycle` service. Each maps 1:1 to
-an HTTP route — wire-shape parity is a stability guarantee, so an
+The core run and agent RPCs of the `loomcycle.v1.Loomcycle` service are
+below. The service also carries the substrate definitions, channels, memory,
+documents, paths and the rest; `proto/loomcycle.proto` is the full list. Each
+maps 1:1 to an HTTP route — wire-shape parity is a stability guarantee, so an
 adapter can be trivially ported between the two.
 
 | RPC | HTTP equivalent | Streaming | Notes |
