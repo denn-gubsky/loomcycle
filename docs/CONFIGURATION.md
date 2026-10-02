@@ -597,6 +597,36 @@ A big prefill can take a long time before the first token. Two budgets (defaults
 
 A slow-but-alive call no longer trips the stale-run sweeper: the loop pulses the run heartbeat throughout a model call, so a long prefill won't be reaped as `heartbeat_timeout`. The HTTP timeouts above remain the authority on a genuinely stuck call.
 
+### Measured model speed (`timeout_scaling`)
+
+How slow is a local model, really? Every wall-clock budget that wraps model work is sized for a fast hosted model, and guessing a local model's speed is how those budgets end up cutting healthy work. So loomcycle measures it: every model call is timed (wall time, time to first token, and — on Ollama — the server's own load / prompt-eval / generation durations), and per **(provider, model)** it keeps a **slowdown** against a reference machine:
+
+```
+T_ref    = ttft_ms/1000 + uncached_input / prefill_tps + output / decode_tps
+slowdown = (wall − model load − queue wait) / T_ref        # 1 = reference speed
+```
+
+On a decode-heavy call the slowdown is just `decode_tps / your model's tok/s`; on a prefill-heavy one (an extractor reading a long transcript) it carries the prefill cost too. Samples are smoothed like a TCP round-trip time, in log space, and clipped to `max_multiplier`; a cold model load and time spent queued behind other calls are recorded but not counted as slowness. The **multiplier** it implies is `clamp(exp(mean + deviation), 1, max_multiplier)` — exactly 1 for a model at or above the reference. Until a model has `min_samples` calls, the multiplier comes from your override for it, else the provider's other measured models, else `local_prior` for a local provider (1 for a hosted one).
+
+**This version only measures.** The slowdown and the would-be multiplier show on `GET /v1/_routing` (a `throughput` block per candidate; the queue-time median is admin-only), on `/metrics` (`loomcycle_model_slowdown`, `loomcycle_model_timeout_multiplier`, `loomcycle_model_decode_tps`, `loomcycle_model_throughput_samples`), and in `Context op=self` (`timeouts`). **No timeout changes.** The estimate lives in memory per replica and is re-seeded at boot from the per-call timing now recorded on the usage ledger (`token_usage.duration_ms` and friends; the latest 200 calls per model from the last 7 days).
+
+```yaml
+timeout_scaling:
+  mode: measure            # measure (default) | off. `on` is refused: scaling is not available yet.
+  reference:
+    decode_tps: 100        # output tokens/s that count as slowdown 1
+    prefill_tps: 2000      # prompt tokens/s
+    ttft_ms: 1000          # fixed first-token cost
+  max_multiplier: 8        # ceiling; also clips each sample
+  min_samples: 5           # a model's own estimate is used from this many calls
+  local_prior: 4           # assumed multiplier for a local provider before that
+  models:                  # overrides, used until a model has min_samples
+    ollama-local/qwen3.6:latest: { decode_tps: 20 }   # → ×5
+    local-medium: { multiplier: 6 }                   # a `models:` alias works too
+```
+
+Env overrides (they win over the yaml): `LOOMCYCLE_TIMEOUT_SCALING` (mode), `LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS` (`reference.decode_tps`), `LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER`. A change to the block needs a restart (a reload reports it `restart_required`).
+
 ### Compaction — tune it for the prefill cost
 
 On a slow model, the prefill cost of a near-full window is what times you out — so compact **early** and keep a **small** verbatim tail. In a per-agent `compaction:` block:
