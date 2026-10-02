@@ -195,3 +195,67 @@ func TestChannelRefs_InputSourceNamesNoChannel(t *testing.T) {
 		}
 	}
 }
+
+// No edge may lead back into an input-sourced entry, whatever its `on` form: by
+// the time an edge fires, the walk's input slot holds the previous state's
+// output, so the Starter would dispatch that as if it were the walk's input.
+func TestValidate_TransitionIntoAnInputStarterRefusedNamingTheEdge(t *testing.T) {
+	retry := Handler{Kind: HandlerAgent, Agent: "fixer"}
+	cases := []struct {
+		name string
+		from string
+		on   string
+	}{
+		{"pushback from a later state", "fix", "pushback:redo"},
+		{"conditional from a later state", "fix", "conditional:needs_more"},
+		{"success self-loop", "research", OnSuccess},
+		{"pushback self-loop", "research", "pushback:again"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := Definition{
+				Entry: "research",
+				States: []State{
+					{ID: "research", Handler: okInputStarter()},
+					{ID: "fix", Handler: retry},
+					{ID: "done", Handler: Handler{Kind: HandlerTerminal}},
+				},
+				Transitions: []Transition{
+					{From: "research", To: "fix", On: "conditional:fix"},
+					{From: "fix", To: "done", On: OnSuccess},
+					{From: c.from, To: "research", On: c.on},
+				},
+			}
+			err := Validate(d)
+			if err == nil {
+				t.Fatalf("an edge %s --%s--> research (an input starter) was accepted", c.from, c.on)
+			}
+			for _, want := range []string{"transition[2]", `from "` + c.from + `"`, `on "` + c.on + `"`, `state "research"`, "route a retry to a later state"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %q, want it to mention %s", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A retry routed to a LATER state is what the refusal tells the author to do,
+// so it must validate.
+func TestValidate_RetryToALaterStateAfterAnInputStarterAccepted(t *testing.T) {
+	d := Definition{
+		Entry: "research",
+		States: []State{
+			{ID: "research", Handler: okInputStarter()},
+			{ID: "review", Handler: Handler{Kind: HandlerAgent, Agent: "reviewer"}},
+			{ID: "done", Handler: Handler{Kind: HandlerTerminal}},
+		},
+		Transitions: []Transition{
+			{From: "research", To: "review", On: OnSuccess},
+			{From: "review", To: "review", On: "pushback:redo"},
+			{From: "review", To: "done", On: OnSuccess},
+		},
+	}
+	if err := Validate(d); err != nil {
+		t.Fatalf("a retry loop on a later state must validate: %v", err)
+	}
+}
