@@ -90,6 +90,22 @@ document item is `{document_id, chunk_id, index, title, markdown}`, where
 `{{…}}` written inside it is never expanded. `binds` project fields of the item
 into variables, e.g. `binds: {title: "$.title"}` → `${var.title}`.
 
+Each sink message is `{wave, wave_size, index, agent, run_id, status, output,
+structured, error}`, with absent fields left out:
+
+- `output` is the run's final answer exactly as the agent wrote it;
+- `structured` is that answer parsed as JSON, present when the agent has an
+  `output_format` and its answer was a JSON object;
+- a `status: "error"` or `"timeout"` message has `error` and no `output`; a
+  `"rejected"` one keeps the answer the reviewer turned down, prefixed with the
+  `[sub-agent agent_id=…]` line.
+
+So a second Starter reading the sink binds the answer directly:
+`binds: {answer: "$.output", verdict: "$.structured.verdict"}`. The Starter's
+own output — the `{"results": […]}` envelope a consolidator or the next state
+reads — is different: each result's `output` there starts with a
+`[sub-agent agent_id=…]` line, so a model reading it can tell whose answer it is.
+
 ## When to use a Starter — and when an agent state is enough
 
 A Starter is not the default first state. Use one when at least one of these
