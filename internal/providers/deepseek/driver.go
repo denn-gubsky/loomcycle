@@ -134,6 +134,11 @@ func (d *Driver) Capabilities() providers.Capabilities {
 //   - non-thinking: deepseek-chat, deepseek-v4-flash,
 //     deepseek-v3.2, deepseek-coder
 //
+// deepseek-flash (listed from 2026-10, replacing deepseek-v4-flash in the
+// catalog) is hybrid: measured live, it answers without thinking when no effort
+// hint is set and streams reasoning with one. It is NOT thinking-class here;
+// thinkingMode adds the effort half, and that is what decides each call.
+//
 // Conservative default for unknown model names: false. This
 // reflects the assumption that new releases default to chat-class;
 // thinking variants tend to be explicit.
@@ -160,21 +165,26 @@ func IsThinkingModel(model string) bool {
 	return false
 }
 
-// NonThinkingSibling implements providers.ThinkingDowngrader. A DeepSeek
-// thinking model (deepseek-reasoner / *-pro / *-r1 / the v4 family) requires
-// reasoning_content echoed on every assistant turn and 400s on a turn lacking
-// it. When a cross-provider fallback lands on such a model with a reasoning-less
-// history, the loop swaps it for the non-thinking model returned here.
+// NonThinkingSibling implements providers.ThinkingDowngrader. A DeepSeek call
+// in thinking mode requires reasoning_content echoed on every assistant turn and
+// 400s on a turn lacking it. When a cross-provider fallback lands on a model
+// that would think — a thinking-class model, or any model given an effort hint
+// (thinkingMode) — with a reasoning-less history, the loop swaps it for the
+// model returned here and drops the effort hint.
 //
-// Target: ALWAYS deepseek-chat (the V3 non-thinking model). The same-generation
-// *-flash is NOT a safe target — production (2026-07-02) proved deepseek-v4-flash
-// ALSO runs in thinking mode and 400s ("reasoning_content ... must be passed
-// back") on the reasoning-less, cross-provider-stripped history, even after the
-// effort hint is dropped (#608). deepseek-chat is the canonical, always-available
-// model that never requires reasoning_content. Returns ("", false) for a
-// non-thinking model (incl. deepseek-chat itself → no infinite downgrade).
-func (d *Driver) NonThinkingSibling(model string) (string, bool) {
-	if !IsThinkingModel(model) {
+// Target: ALWAYS deepseek-chat. The same-generation *-flash is NOT a safe
+// target — production (2026-07-02) proved deepseek-v4-flash ALSO ran in thinking
+// mode and 400'd ("reasoning_content ... must be passed back") on the
+// reasoning-less, cross-provider-stripped history, even after the effort hint was
+// dropped (#608). deepseek-chat is DeepSeek's documented non-thinking name: it is
+// no longer in the /v1/models listing (2026-10-02), but a request for it still
+// succeeds and is answered without thinking (served by deepseek-flash). Nothing
+// gates the downgrade target on the listing — the loop swaps the model on the
+// call it already resolved — so the unlisted name is safe here. Returns
+// ("", false) when the call would not think, incl. deepseek-chat or
+// deepseek-flash without an effort hint.
+func (d *Driver) NonThinkingSibling(model, effort string) (string, bool) {
+	if !thinkingMode(model, effort) {
 		return "", false
 	}
 	return "deepseek-chat", true
@@ -234,9 +244,10 @@ func (d *Driver) EnforcesToolChoice(model, effort string, tc providers.ToolChoic
 // Probe delegates to the OpenAI driver, which hits GET /v1/models
 // against whatever base URL was configured. DeepSeek's /v1/models
 // response uses the OpenAI-compatible shape ({"data": [{"id": ...}]}),
-// so the inner driver's parser works unchanged. Listed wire aliases
-// observed in production: deepseek-chat (V3 chat), deepseek-reasoner
-// (R1), deepseek-v4-flash, deepseek-v4-pro.
+// so the inner driver's parser works unchanged. Listed on 2026-10-02:
+// deepseek-flash and deepseek-v4-pro only. deepseek-chat and
+// deepseek-v4-flash still answer (served as deepseek-flash) but are not
+// listed, and the resolver skips an unlisted tier candidate.
 func (d *Driver) Probe(ctx context.Context) error {
 	return d.inner.Probe(ctx)
 }

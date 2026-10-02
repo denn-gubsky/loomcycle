@@ -869,9 +869,10 @@ func tryProviderFallback(
 	// The strip can't fix this (it removes reasoning, can't synthesise it), so
 	// downgrade to the non-thinking sibling for the remaining iterations rather
 	// than let the request 400. No assistant turn yet ⇒ nothing to satisfy ⇒ no
-	// downgrade (a fresh history is fine for a thinking model).
+	// downgrade (a fresh history is fine for a thinking model). The effort hint
+	// goes along: a hybrid model (deepseek-flash) thinks only when it is set.
 	if dg, ok := newProvider.(providers.ThinkingDowngrader); ok && hasReasoningLessAssistantTurn(messages) {
-		if sibling, downgraded := dg.NonThinkingSibling(newModel); downgraded {
+		if sibling, downgraded := dg.NonThinkingSibling(newModel, newEffort); downgraded {
 			emit(providers.Event{
 				Type: providers.EventModelDowngraded,
 				Text: fmt.Sprintf("downgraded %s to non-thinking %s on switch to %s (dropped the effort hint): the fallback history carries assistant turns without reasoning_content, which the thinking model would reject", newModel, sibling, newProvider.ID()),

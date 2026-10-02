@@ -87,7 +87,7 @@ func TestNewDriver_DeepSeek_PreservesThinkingDowngrader(t *testing.T) {
 	if !ok {
 		t.Fatal("factory-built deepseek driver must still satisfy providers.ThinkingDowngrader")
 	}
-	if sib, down := td.NonThinkingSibling("deepseek-reasoner"); !down || sib != "deepseek-chat" {
+	if sib, down := td.NonThinkingSibling("deepseek-reasoner", ""); !down || sib != "deepseek-chat" {
 		t.Errorf("NonThinkingSibling(deepseek-reasoner) = (%q,%v), want (deepseek-chat,true)", sib, down)
 	}
 	// deepseek must also stay a KeyedProvider (its key env is DEEPSEEK_API_KEY).

@@ -898,12 +898,18 @@ type downgradingRecorder struct {
 	*recordingProvider
 }
 
-func (d *downgradingRecorder) NonThinkingSibling(model string) (string, bool) {
+func (d *downgradingRecorder) NonThinkingSibling(model, effort string) (string, bool) {
 	switch model {
 	case "deepseek-reasoner":
 		return "deepseek-chat", true
 	case "deepseek-v4-pro":
 		return "deepseek-v4-flash", true
+	case "deepseek-flash":
+		// Hybrid: thinks only when an effort hint is set.
+		if effort != "" {
+			return "deepseek-chat", true
+		}
+		return "", false
 	default:
 		return "", false
 	}
@@ -1141,6 +1147,63 @@ func TestFallback_DowngradeDropsEffortHint(t *testing.T) {
 	// thinking mode. Fails on the pre-fix code, where Effort == "high" survives.
 	if reqs[0].Effort != "" {
 		t.Errorf("downgraded request carried Effort %q, want \"\" (effort must be dropped so reasoning_effort doesn't re-enable thinking)", reqs[0].Effort)
+	}
+}
+
+// TestFallback_HybridTargetDowngradesOnlyWhenEffortWouldThink: deepseek-flash
+// is hybrid — it thinks only when the call carries an effort hint. A fallback
+// that lands on it with the run's effort still set would run in thinking mode
+// on a reasoning-less history, which DeepSeek rejects, so the loop must hand the
+// re-resolved effort to the downgrader. Without an effort hint the model stays.
+func TestFallback_HybridTargetDowngradesOnlyWhenEffortWouldThink(t *testing.T) {
+	for _, c := range []struct {
+		effort, wantModel string
+	}{
+		{"high", "deepseek-chat"},
+		{"", "deepseek-flash"},
+	} {
+		t.Run("effort="+c.effort, func(t *testing.T) {
+			failing := &tieredProvider{
+				id:     "ollama-local",
+				errors: []error{fmt.Errorf("ollama-local 500: llama-server process no longer running")},
+			}
+			healthy := &downgradingRecorder{
+				recordingProvider: &recordingProvider{
+					tieredProvider: &tieredProvider{
+						id:        "deepseek",
+						responses: [][]providers.Event{successResponse()},
+					},
+				},
+			}
+			prior := []providers.Message{
+				{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "first"}}},
+				{Role: "assistant", Content: []providers.ContentBlock{{Type: "text", Text: "ok"}}},
+			}
+			opts := RunOptions{
+				Provider:       failing,
+				Model:          "gemma4:latest",
+				Effort:         c.effort,
+				MaxIterations:  5,
+				Segments:       []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "second"}}}},
+				PriorMessages:  prior,
+				OnEvent:        func(providers.Event) {},
+				FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3, UserTierName: "default"},
+				ReResolve: func(_ context.Context, _, _ string, _ error) (providers.Provider, string, string, error) {
+					return healthy, "deepseek-flash", c.effort, nil
+				},
+			}
+			if _, err := Run(context.Background(), opts); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			reqs := healthy.snapshotRequests()
+			if len(reqs) != 1 {
+				t.Fatalf("fallback target got %d Calls, want 1", len(reqs))
+			}
+			// Effort is "" in both cases: dropped by the downgrade, or never set.
+			if reqs[0].Model != c.wantModel || reqs[0].Effort != "" {
+				t.Errorf("fallback leg ran on (%q, effort %q), want (%q, \"\")", reqs[0].Model, reqs[0].Effort, c.wantModel)
+			}
+		})
 	}
 }
 
