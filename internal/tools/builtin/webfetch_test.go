@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 func TestWebFetchRefusesWhenHTTPMissing(t *testing.T) {
@@ -188,6 +191,96 @@ func TestStripHTML_DropsUnterminatedScriptOrStyle(t *testing.T) {
 				t.Errorf("stripHTML(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+// textPage is an HTML page carrying n bytes of plain ASCII text.
+func textPage(n int) string {
+	return "<html><body><p>" + strings.Repeat("word ", n/5) + "</p></body></html>"
+}
+
+// cutBody returns the text before the [truncated] marker, failing if absent.
+func cutBody(t *testing.T, out string) string {
+	t.Helper()
+	body, ok := strings.CutSuffix(out, "\n[truncated]")
+	if !ok {
+		t.Fatalf("result not marked [truncated]; %d bytes, tail %q", len(out), out[max(0, len(out)-40):])
+	}
+	return body
+}
+
+// Regression: the output cut was out[:max], which can split a multi-byte
+// character and hand the model invalid UTF-8.
+func TestWebFetch_CutsOnARuneBoundary(t *testing.T) {
+	f, url := webFetchServe(t, "<p>"+strings.Repeat("é", 1000)+"</p>")
+	f.MaxOutputBytes = 101 // é is 2 bytes: 101 falls inside one
+	body := cutBody(t, webFetchRun(t, f, context.Background(), map[string]any{"url": url}))
+	if !utf8.ValidString(body) || len(body) != 100 {
+		t.Errorf("want 100 bytes of valid UTF-8, got %d bytes (valid=%v)", len(body), utf8.ValidString(body))
+	}
+
+	f.MaxOutputBytes = 0
+	body = cutBody(t, webFetchRun(t, f, context.Background(), map[string]any{"url": url, "max_chars": 51}))
+	if !utf8.ValidString(body) || len(body) != 50 {
+		t.Errorf("max_chars=51: want 50 bytes of valid UTF-8, got %d bytes (valid=%v)", len(body), utf8.ValidString(body))
+	}
+}
+
+// A fixed 256 KiB (~64k tokens) overflowed a 32k-token local window on its own.
+// With a window known, the default is a quarter of it in tokens at ~4
+// characters a token — i.e. the window in characters; without one it stays at
+// 256 KiB.
+func TestWebFetch_DefaultCapFollowsTheRunsContextWindow(t *testing.T) {
+	f, url := webFetchServe(t, textPage(300<<10))
+
+	ctx := tools.WithMaxContextTokens(context.Background(), 32768)
+	if got := len(cutBody(t, webFetchRun(t, f, ctx, map[string]any{"url": url}))); got != 32768 {
+		t.Errorf("32k window: returned %d bytes, want 32768", got)
+	}
+	if got := len(cutBody(t, webFetchRun(t, f, context.Background(), map[string]any{"url": url}))); got != 256<<10 {
+		t.Errorf("no window: returned %d bytes, want %d", got, 256<<10)
+	}
+	// A window whose quarter is past the ceiling is held to the ceiling.
+	ctx = tools.WithMaxContextTokens(context.Background(), 1_000_000)
+	if got := len(cutBody(t, webFetchRun(t, f, ctx, map[string]any{"url": url}))); got != 256<<10 {
+		t.Errorf("1M window: returned %d bytes, want the %d ceiling", got, 256<<10)
+	}
+}
+
+// An explicit max_chars overrides the window default in either direction but
+// is clamped to [1, ceiling]; the operator's MaxOutputBytes is the ceiling.
+func TestWebFetch_ExplicitMaxCharsIsClampedToTheCeiling(t *testing.T) {
+	f, url := webFetchServe(t, textPage(300<<10))
+	ctx := tools.WithMaxContextTokens(context.Background(), 32768)
+	cases := []struct {
+		name     string
+		maxChars int
+		ceiling  int64
+		want     int
+	}{
+		{"asks for more than the window", 100_000, 0, 100_000},
+		{"asks for less than the window", 1000, 0, 1000},
+		{"asks past the ceiling", 10_000_000, 0, 256 << 10},
+		{"zero is raised to one", 0, 0, 1},
+		{"operator ceiling wins", 5000, 2000, 2000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f.MaxOutputBytes = tc.ceiling
+			out := webFetchRun(t, f, ctx, map[string]any{"url": url, "max_chars": tc.maxChars})
+			if got := len(cutBody(t, out)); got != tc.want {
+				t.Errorf("max_chars=%d: returned %d bytes, want %d", tc.maxChars, got, tc.want)
+			}
+		})
+	}
+}
+
+// Text that fits is returned whole, with no marker.
+func TestWebFetch_ShortPageIsNotMarkedTruncated(t *testing.T) {
+	f, url := webFetchServe(t, "<p>short page</p>")
+	out := webFetchRun(t, f, tools.WithMaxContextTokens(context.Background(), 32768), map[string]any{"url": url})
+	if out != "short page" {
+		t.Errorf("got %q, want %q", out, "short page")
 	}
 }
 
