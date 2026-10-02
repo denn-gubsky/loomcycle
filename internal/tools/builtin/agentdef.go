@@ -827,6 +827,12 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := ov.MemoryRerank.Validate(); err != nil {
 			return mergedDef{}, err
 		}
+		// Only the overlay is judged: on a fork, applyOverlay lets a pin
+		// replace the parent's tier and a tier replace the parent's pin, so
+		// the one ambiguous request is naming both at once.
+		if err := config.ValidateRoutingMode(ov.Provider, ov.Model, ov.Tier); err != nil {
+			return mergedDef{}, err
+		}
 		base.applyOverlay(ov)
 	}
 	return base, nil
@@ -1151,6 +1157,19 @@ type mergedDef struct {
 }
 
 func (d *mergedDef) applyOverlay(ov mergedDef) {
+	// Routing is ONE choice — a provider/model pin or a tier — so setting one
+	// mode clears the parent's other. Without this a fork could never leave a
+	// tier: the pin was added beside it, the tier still won at resolution, and
+	// its cascade kept falling back to providers the author meant to leave.
+	// `providers` / `models` are not cleared: they qualify the tier path only
+	// (inert under a pin, as in yaml), and a later fork back to a tier finds
+	// them where the author left them.
+	if ov.Provider != "" || ov.Model != "" {
+		d.Tier = ""
+	}
+	if ov.Tier != "" {
+		d.Provider, d.Model = "", ""
+	}
 	if ov.Provider != "" {
 		d.Provider = ov.Provider
 	}

@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -6689,6 +6690,21 @@ var validHistoryScopes = map[string]bool{
 	"any":    true, // legacy alias for "global"
 }
 
+// ValidateRoutingMode refuses a definition that names both a provider/model
+// pin and a tier. Pinning a model and asking for a tier is ambiguous, and
+// silently picking one would surprise the next reader of the definition.
+//
+// Exported because the substrate write path (AgentDef create and fork) has to
+// refuse the same thing operator yaml does, with the same words: a row stored
+// with both used to keep the tier's paid fallback armed behind a pin the
+// author believed was in force.
+func ValidateRoutingMode(provider, model, tier string) error {
+	if (provider != "" || model != "") && tier != "" {
+		return errors.New("cannot set both explicit provider/model pin and tier (pick one)")
+	}
+	return nil
+}
+
 // ValidateNamedScopePattern checks the pattern half of a `named:<pattern>`
 // capability grant — the segment-glob matcher lives in the AgentDef tool
 // (matchNamedScope), and this is the shape it will accept.
@@ -7440,8 +7456,8 @@ func validate(c *Config) error {
 		// next reader of the yaml.
 		hasPin := agent.Provider != "" || agent.Model != ""
 		hasTier := agent.Tier != ""
-		if hasPin && hasTier {
-			return fmt.Errorf("agent %q: cannot set both explicit provider/model pin and tier (pick one)", name)
+		if err := ValidateRoutingMode(agent.Provider, agent.Model, agent.Tier); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if !hasPin && !hasTier {
 			// Back-compat path: agents without either fall back
