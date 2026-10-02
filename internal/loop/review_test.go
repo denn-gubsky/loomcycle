@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,10 +17,11 @@ import (
 
 // reviewProvider answers every call with "answer N" and records what it was
 // sent, so a test can tell which answer a run completed on and whether
-// feedback reached the model.
+// feedback reached the model. A set answer is given on every call instead.
 type reviewProvider struct {
 	mu       sync.Mutex
 	requests [][]providers.Message
+	answer   string
 }
 
 func (p *reviewProvider) ID() string                                   { return "answer-test" }
@@ -33,9 +35,13 @@ func (p *reviewProvider) Call(_ context.Context, req providers.Request) (<-chan 
 	p.mu.Lock()
 	p.requests = append(p.requests, append([]providers.Message(nil), req.Messages...))
 	n := len(p.requests)
+	text := p.answer
 	p.mu.Unlock()
+	if text == "" {
+		text = fmt.Sprintf("answer %d", n)
+	}
 	ch := make(chan providers.Event, 2)
-	ch <- providers.Event{Type: providers.EventText, Text: fmt.Sprintf("answer %d", n)}
+	ch <- providers.Event{Type: providers.EventText, Text: text}
 	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
 	close(ch)
 	return ch, nil
@@ -202,6 +208,55 @@ func TestRun_Review_RejectWithoutFeedbackEndsRejected(t *testing.T) {
 	done := r.waitFor(t, providers.EventDone)
 	if done.StopReason != StopReasonRejected {
 		t.Errorf("done event stop reason = %q", done.StopReason)
+	}
+}
+
+// A rejected answer is still parsed against the run's output_format: what
+// reads a rejected run — a team's sink message, the run row — gets its
+// structured form, whether a reviewer turned it down or nobody ruled in time.
+func TestRun_Review_ARejectedAnswerKeepsItsStructuredResult(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ttl  time.Duration
+		want string
+	}{
+		{"rejected", 0, StopReasonRejected},
+		{"review expired", 60 * time.Millisecond, StopReasonReviewExpired},
+	} {
+		r := startReviewRun(t, context.Background(), func(o *RunOptions) {
+			o.OutputFormat, o.ReviewTTL = answerFormat, tc.ttl
+			o.Provider.(*reviewProvider).answer = `{"ok":false}`
+		})
+		r.waitFor(t, providers.EventAwaitingReview)
+		if tc.ttl == 0 {
+			r.q <- verdict(steer.KindReject, "  ")
+		}
+		res := r.result(t)
+		if res.StopReason != tc.want || res.Structured["ok"] != false {
+			t.Errorf("%s: result = %q with structured %v, want %q with ok=false", tc.name, res.StopReason, res.Structured, tc.want)
+		}
+	}
+}
+
+// A rejected answer that does not parse is reported the way a completed one
+// is, and leaves Structured empty; the run stays rejected.
+func TestRun_Review_AnUnparseableRejectedAnswerStaysRejected(t *testing.T) {
+	r := startReviewRun(t, context.Background(), func(o *RunOptions) { o.OutputFormat = answerFormat })
+	r.waitFor(t, providers.EventAwaitingReview)
+	r.q <- verdict(steer.KindReject, "  ")
+	res := r.result(t)
+	if res.StopReason != StopReasonRejected || res.Structured != nil || res.FinalText != "answer 1" {
+		t.Errorf("result = %q %q with structured %v, want rejected on the answer with none", res.StopReason, res.FinalText, res.Structured)
+	}
+	reported := false
+	for len(r.events) > 0 {
+		ev := <-r.events
+		if ev.Type == providers.EventCapabilityInert && strings.Contains(ev.Text, "not a JSON object") {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Error("the unparseable rejected answer was not reported")
 	}
 }
 

@@ -937,7 +937,8 @@ type RunResult struct {
 	// CR `context.mode: stateful`); nil for append/recap runs.
 	State map[string]any
 	// Structured is the final answer parsed as a JSON object when the run had an
-	// output_format (RFC DI); nil otherwise, or when the answer did not parse.
+	// output_format (RFC DI) and ended on an answer — completed, or rejected by
+	// review; nil otherwise, or when the answer did not parse.
 	Structured map[string]any
 	// ProposedSchema is the LAST state_schema the model proposed during a stateful
 	// run (RFC CR model-proposed→operator-adopted), when it differs from the run's
@@ -3596,8 +3597,12 @@ outerLoop:
 	}
 
 	// Parsed before EventDone so an unparseable answer's report precedes it.
+	// A rejected answer is parsed too: it is still the answer, and what reads
+	// it — a team's sink message, the run row — decides what the rejection
+	// means. An answer that does not parse only leaves Structured empty; the
+	// run stays rejected.
 	var structured map[string]any
-	if stopReason == "end_turn" {
+	if stopReason == "end_turn" || EndsRejected(stopReason) {
 		structured = outputFormat.structured(finalText, emit)
 	}
 	emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})
