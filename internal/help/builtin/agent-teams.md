@@ -97,8 +97,9 @@ structured, error}`, with absent fields left out:
 - `structured` is that answer parsed as JSON, present when the agent has an
   `output_format` and its answer was a JSON object;
 - a `status: "error"` or `"timeout"` message has `error` and no `output`; a
-  `"rejected"` one has `error` and keeps the answer the reviewer turned down,
-  in `output` just as an `ok` one carries it.
+  `"rejected"` one has `error` and keeps the answer that was turned down (or
+  never ruled on in time) in `output`, and in `structured` when it parsed,
+  just as an `ok` one carries them.
 
 So a second Starter reading the sink binds the answer directly:
 `binds: {answer: "$.output", verdict: "$.structured.verdict"}`. The Starter's
