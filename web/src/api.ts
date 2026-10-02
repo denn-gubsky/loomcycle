@@ -910,7 +910,8 @@ export async function streamWalkRunStates(
 export interface RunBreakpoints {
   run_id: string;
   // Canonical: phase-qualified ("<state>:before_dispatch", "<state>:review").
-  armed: string[];
+  // null when nothing is armed: the server encodes an empty set as null.
+  armed: string[] | null;
   // Deadline a member hold beginning now gets; 0 = none.
   review_ttl_seconds: number;
 }
