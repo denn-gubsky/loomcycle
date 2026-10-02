@@ -1663,4 +1663,9 @@ type Usage struct {
 	// is authoritative (never re-priced). ProviderCostCurrency pairs with it.
 	ProviderReportedCost float64 `json:"provider_reported_cost,omitempty"`
 	ProviderCostCurrency string  `json:"provider_cost_currency,omitempty"`
+
+	// Timing is how long this call took (see CallTiming). A driver may set the
+	// phase durations it is told; the caller stamps the wall-clock fields with a
+	// CallTimer. nil = not measured (the run-final total never carries one).
+	Timing *CallTiming `json:"timing,omitempty"`
 }
