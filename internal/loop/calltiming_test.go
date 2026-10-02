@@ -63,6 +63,27 @@ func TestRun_UsageEventCarriesTheCallTiming(t *testing.T) {
 	}
 }
 
+// The stateful loop makes its own provider call (the forced emit_state), and the
+// usage it returns is what its per-call usage event carries.
+func TestCallForEmitState_UsageCarriesTheCallTiming(t *testing.T) {
+	p := &fakeProvider{responses: [][]providers.Event{{
+		{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t1", Name: emitStateToolName, Input: []byte(`{"patch":{}}`)}},
+		{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 50, OutputTokens: 20}},
+	}}}
+	// Reads: call start, the tool call (+2s), done (+500ms).
+	clk := &fakeClock{now: time.Unix(1_700_000_000, 0), steps: []time.Duration{2 * time.Second, 500 * time.Millisecond}}
+	call, err := callForEmitState(context.Background(), p, providers.Request{Model: "fake-model"}, clk.Now)
+	if err != nil {
+		t.Fatalf("callForEmitState: %v", err)
+	}
+	if call.usage == nil || call.usage.Timing == nil {
+		t.Fatalf("usage carries no timing: %+v", call.usage)
+	}
+	if got := *call.usage.Timing; got.DurationMs != 2500 || got.TTFTMs != 2000 {
+		t.Fatalf("timing = %+v, want duration 2500ms and ttft 2000ms", got)
+	}
+}
+
 // A summary emits no usage event, so its timing reaches the throughput estimate
 // only through the ctx observer — named with the provider and model that served
 // it, or it could not be attributed.
