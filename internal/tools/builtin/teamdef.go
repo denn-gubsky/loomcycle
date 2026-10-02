@@ -997,6 +997,17 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			}
 		}
 	}
+	// The input is checked against the entry's form HERE, the one point every
+	// transport's op=run passes through, and before the walk's run row exists:
+	// a form missing a field is the caller's to fix, so it must cost neither a
+	// row nor a model call. A walk resumed past the entry hands the input to a
+	// later state, which the entry's form does not describe.
+	if resumedFrom == "" || resumedFrom == def.Entry {
+		if err := teamgraph.CheckInput(def, in.Input); err != nil {
+			return errValidation(fmt.Sprintf("run: %s", err),
+				"send an input that matches the team's input form (the `schema` on its entry state) and run again"), nil
+		}
+	}
 	// The walk becomes a RUN — after admission, so a refused request never
 	// mints a row. From here on walkCtx carries the run id, which is what makes
 	// the walk addressable: breakpoints, the Interruption ask a pause is

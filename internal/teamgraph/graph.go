@@ -180,9 +180,10 @@ type Handler struct {
 	Capture map[string]string `json:"capture,omitempty"`
 	// Schema — kind=input, or a starter whose source is the walk's input (the
 	// entry, so no input state can precede it): the JSON Schema a client
-	// renders as the run form. The runtime does not interpret it; it is carried
-	// in the definition so a team is self-describing and a headless caller sees
-	// the same contract the canvas does.
+	// renders as the run form. The runtime interprets it only to check a walk's
+	// input at start (CheckInput: top-level type, required, property types);
+	// it is carried in the definition so a team is self-describing and a
+	// headless caller sees the same contract the canvas does.
 	Schema json.RawMessage `json:"schema,omitempty"`
 	// Source — kind=starter ONLY: the ONE channel this node reads. A Starter is
 	// the dispatcher: it listens, spawns a wave, and routes the results onward.
