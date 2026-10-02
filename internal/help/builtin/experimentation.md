@@ -32,6 +32,12 @@ GA tournament, RLHF reward model, whatever fits the experiment).
 not the active one. Operator-blessed `cfg.Agents[name]` stays the
 ceiling for AllowedTools (forks may NARROW; never widen).
 
+A fork can also move a variant between routing modes. An overlay with
+`provider` or `model` pins it to that model and clears the parent's
+`tier`; an overlay with `tier` clears the parent's `provider` and
+`model`. An overlay that sets a pin and a `tier` together is refused.
+`effort` is kept either way.
+
 ## Spawning the variant
 
 Use `Agent` with `def_id` pinning so the sub-run uses the fork

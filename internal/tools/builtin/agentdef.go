@@ -87,7 +87,7 @@ const agentDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork — when absent, forks the active def of the name)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts, max_context_tokens (the INPUT window — on a local model it becomes that agent's own num_ctx; distinct from max_tokens, which caps OUTPUT), internal (marks the agent as maintenance plumbing and keeps its sessions out of the chat surfaces; ONE-WAY — a fork can set it true and cannot clear it). Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
+      "description": "Mutable subset of AgentDef for create/fork (snake_case keys). Common fields: provider, model, tier, effort, system_prompt, code_body, tools, skills, providers, models, max_tokens, max_iterations, max_concurrent_children, run_timeout_seconds, memory_scopes, memory_quota_bytes, memory_backend, retry_attempts, max_context_tokens (the INPUT window — on a local model it becomes that agent's own num_ctx; distinct from max_tokens, which caps OUTPUT), internal (marks the agent as maintenance plumbing and keeps its sessions out of the chat surfaces; ONE-WAY — a fork can set it true and cannot clear it). Routing is ONE choice: provider/model pin the agent to a model, tier lets the runtime pick one; in a fork, setting provider or model clears the parent's tier and setting tier clears its provider and model, and an overlay that sets both a pin and a tier is refused. Interactive / multi-agent config also round-trips and is content-identifying: channels ({publish:[...],subscribe:[...]}), evaluation_scopes ([...]), interruption ({enabled,kinds:[...],max_pending}). Immutable / server-set fields (def_id, version, parent_def_id, created_*, bootstrapped_from_static) are silently ignored if supplied.",
       "additionalProperties": true
     },
     "description":   {"type": "string", "description": "Free-text rationale for create/fork."},
@@ -1161,9 +1161,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// mode clears the parent's other. Without this a fork could never leave a
 	// tier: the pin was added beside it, the tier still won at resolution, and
 	// its cascade kept falling back to providers the author meant to leave.
-	// `providers` / `models` are not cleared: they qualify the tier path only
-	// (inert under a pin, as in yaml), and a later fork back to a tier finds
-	// them where the author left them.
+	// `providers` / `models` are not cleared: as in yaml they are not a
+	// routing mode — they shape the tier's cascade and bound what a per-run
+	// override may name — so a later fork back to a tier finds them where the
+	// author left them.
 	if ov.Provider != "" || ov.Model != "" {
 		d.Tier = ""
 	}
