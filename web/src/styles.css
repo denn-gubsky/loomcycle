@@ -1780,6 +1780,10 @@ textarea::placeholder {
   color: var(--fg-muted, #888);
   font-style: italic;
 }
+/* Team run form (TeamRunModal): the required-field marker. */
+.team-run-required {
+  color: var(--failed);
+}
 .library-prompt-textarea {
   width: 100%;
   padding: 8px;

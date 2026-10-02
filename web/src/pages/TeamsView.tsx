@@ -16,6 +16,7 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useMermaidSvg } from "../hooks/useMermaidSvg";
 import Splitter from "../components/Splitter";
+import TeamRunModal from "../components/TeamRunModal";
 import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 
 // TeamsView — the agent-team board.
@@ -111,6 +112,8 @@ export default function TeamsView() {
   const [loadingDef, setLoadingDef] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // The Run dialog (start a walk from the team's input form).
+  const [runOpen, setRunOpen] = useState(false);
 
   // Diagram.
   const [highlight, setHighlight] = useState<string>("");
@@ -323,6 +326,7 @@ export default function TeamsView() {
   }
 
   const active = selected || creating;
+  const selectedTeam = creating ? undefined : teams.find((t) => t.name === selected);
 
   // ---- Editor pane (Splitter left) ----
   const editorPane = (
@@ -344,14 +348,24 @@ export default function TeamsView() {
             Cancel
           </button>
         ) : (
-          <button
-            onClick={() => void onDelete()}
-            disabled={saving || deleting || loadingDef}
-            title="Delete this team (all versions)"
-            style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--error, #e03131)" }}
-          >
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
+          <div style={{ display: "flex", gap: "0.4rem" }}>
+            <button
+              onClick={() => setRunOpen(true)}
+              disabled={saving || deleting || !selectedTeam?.active_def_id}
+              title="Start a walk of this team's active version from its input form"
+              style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", fontWeight: 600 }}
+            >
+              Run
+            </button>
+            <button
+              onClick={() => void onDelete()}
+              disabled={saving || deleting || loadingDef}
+              title="Delete this team (all versions)"
+              style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--error, #e03131)" }}
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -515,7 +529,7 @@ export default function TeamsView() {
           <p style={{ opacity: 0.7, margin: "0.25rem 0" }}>
             Agent-team workflows. Select a team to edit its graph and preview the
             state-machine diagram; Refresh renders your unsaved edits, Save forks a
-            new version.
+            new version, Run starts a walk from the team's input form.
           </p>
         </div>
         <button onClick={startCreate} disabled={creating} style={{ padding: "0.4rem 0.8rem", fontWeight: 600 }}>
@@ -595,6 +609,7 @@ export default function TeamsView() {
           )}
         </div>
       </div>
+      {runOpen && selectedTeam && <TeamRunModal team={selectedTeam} onClose={() => setRunOpen(false)} />}
     </div>
   );
 }
