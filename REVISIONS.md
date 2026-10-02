@@ -8,6 +8,50 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.101.2
+
+*The Web UI's Path tree loads one directory at a time, so a large directory (subject-homed facts) no longer hides every directory that sorts after it. Also: loomcycle now measures each model's speed (measure only, no timeout changes), and a team can be started from its own input form, with the input checked against the form before the walk starts.*
+
+A patch on the v1.101 line: #1579 to #1582.
+- #1581 is the Path tree fix;
+- #1582 is throughput measurement;
+- #1579 and #1580 are team input forms. #1577 (publish a walk's input as a JSON value) shipped in v1.101.1's binaries but was missing from its notes, so it is listed here.
+
+### The Path tree no longer hides directories behind a large sibling (#1581)
+
+The explorer loaded the whole tree with one recursive `Path ls /`. Since `ls` became paged (500 entries by default), that request returned only the first page, in path order. A user scope whose `/facts` directory holds more than about 500 subject-homed fact documents filled the page before the listing reached any directory sorting after `facts`. `/loomboard`, `/loomcycle` and `/memory` disappeared from the tree. The documents were intact and reachable by path or search. Only the tree was truncated.
+
+- **Each directory is listed when it is first opened,** with a non-recursive `ls`. The root is listed the same way, so every top-level directory shows.
+- **A large directory ends with "Load more (N shown)"** while the server reports more, fetching the next page by cursor. Nothing is dropped silently.
+- **A deep link or a new item loads its ancestors on demand,** paging until the target appears.
+- **mkdir, new document, move and delete** re-list only the affected loaded directories. Refresh reloads the root and every open directory, keeping as many entries as were shown.
+- **Deleting a branch** lists its whole subtree, following cursors, before the confirmation, so the count and the cascade cover every document under it, not only those on screen.
+
+**Behaviour changes:** the tree starts collapsed. Tree rows no longer carry the "implicit" badge; the detail pane still shows whether a directory is stored or implicit (the check is a `Path stat`, so an implicit directory logs an expected 422 in the browser console). `@loomcycle/explorer` is 0.8.0, with an optional page argument on `ExplorerDataLayer.pathLs` and an optional `pathIsStored`.
+
+### Every model call is timed, and each model's speed is measured (#1582)
+
+Wall-clock budgets that wrap model work are sized for a fast hosted model, and a slow local model is cut by them. This release measures how slow each model is. **It changes no timeout.** A later release will use the measurement to scale budgets.
+
+- **Per-call timing.** Each usage event carries an optional `timing` block: `duration_ms`, `ttft_ms`, and on Ollama the server's own `load_ms`, `prefill_ms` and `decode_ms`, plus `queue_ms`. The loop, stateful runs, the summarizer, the reranker, Document unit generation and image description all stamp it. A failed or cut call is not stamped. The ledger stores it in six new nullable `token_usage` columns.
+- **A slowdown per (provider, model)** against a reference of 100 output tok/s, 2000 prompt tok/s and a 1 s first token. It is smoothed in log space and clipped, and model load and queue wait are not counted as slowness. Below 5 samples it falls back to a per-model override, then the provider's other models, then a prior of 4× for a local provider. It lives in memory per replica and is re-seeded at boot from the last 7 days of timed calls.
+- **Where to see it:** a `throughput` block per candidate on `GET /v1/_routing` (the queue-time median is admin-only), four gauges on `/metrics` (`loomcycle_model_slowdown`, `loomcycle_model_timeout_multiplier`, `loomcycle_model_decode_tps`, `loomcycle_model_throughput_samples`), and a `timeouts` block in `Context op=self`.
+- **Config:** a new `timeout_scaling:` block (`mode: measure` by default, or `off`; `on` is refused at load), with env overrides `LOOMCYCLE_TIMEOUT_SCALING`, `LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS` and `LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER`. A change needs a restart. See `docs/CONFIGURATION.md`, "Measured model speed".
+- The TS client's `Usage` type gains `timing`. The gRPC proto is unchanged.
+
+### A team can be started from its input form (#1577, #1579, #1580)
+
+- **A Starter can read the walk's own input (#1579).** `source: {"kind": "input"}` on the entry Starter fans out over the walk's input instead of a channel or document, so a channel team starts in one call and processes the input it was given, not the oldest message on a backlog. It is allowed only on the entry, takes no channel, path, wait, batch or ack, and may carry a `schema`.
+- **The input is checked against the entry's form before the walk starts (#1580).** When the entry (an `input` state or an input-sourced Starter) has a `schema`, `TeamDef op=run` checks the top-level `type`, `required` fields and each present field's declared `type`, one level deep. Other keywords are ignored, never refused. A bad input is refused before the walk's run row is opened and before any model call: HTTP 422 `tool_refused` with category `validation`, the gRPC/MCP equivalents, and a message naming the field. `agent-teams` documents the form and the `x-loomcycle-picker` hints.
+- **A walk's input, or any output, can be published as a JSON value (#1577).** `publish: {"channel": …}` on an `input` state publishes the input itself, and `payload: "raw"` on a publish node publishes its input unwrapped. Valid JSON is published compacted; other text as `{"text": …}`, without HTML escaping.
+
+### Upgrade notes
+
+- **Migration:** Postgres runs migration 0091 (six nullable timing columns on `token_usage`); SQLite adds them at boot. Both are additive.
+- **No config change is required.** Measurement is on by default and changes no budget; set `LOOMCYCLE_TIMEOUT_SCALING=off` to disable it.
+- **Teams with an entry `schema`** now refuse an input that does not match it. A team that was started with a non-matching input will fail at start instead of running.
+- **Adapters:** `@loomcycle/client` 1.101.2 adds the usage `timing` type. The Python package is version-aligned with no API change.
+
 ## What's in v1.101.1
 
 *Fixes a v1.101.0 regression: memory consolidation passes on slow local models were cut by the new per-pass budget, then re-read the same chats forever. Also: non-admin MCP server definitions can no longer reference the operator's env vars, the consolidation sweep reports operator-key refusals and runs isolated members isolated, a remote memory peer can key with its own tenant's `$cred:`, and the Web UI gains a team-walk view.*
