@@ -245,10 +245,14 @@ func (s *Set) addCheck(fn Validator) func() {
 // phase-qualified. Canonical rather than echoing what was sent: a caller
 // reading back its own arming should see exactly what the walk will do, not its
 // own shorthand.
+//
+// Nothing armed is an empty slice, never nil: the endpoint encodes this as
+// "armed", and a nil slice there reads null, which a client indexing or
+// joining the list crashes on.
 func (s *Set) List() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []string
+	out := []string{}
 	for state, phases := range s.at {
 		for phase, on := range phases {
 			if on {

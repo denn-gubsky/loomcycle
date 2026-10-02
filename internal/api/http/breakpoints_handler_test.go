@@ -111,6 +111,61 @@ func TestHandleBreakpoints_EmptyListTurnsDebugOff(t *testing.T) {
 	}
 }
 
+// assertArmedIsEmptyList checks the raw body, not a decode: json.Unmarshal
+// reads null and [] into the same empty slice, and null is what crashed the
+// walk pane.
+func assertArmedIsEmptyList(t *testing.T, what, body string) {
+	t.Helper()
+	if !strings.Contains(body, `"armed":[]`) {
+		t.Errorf("%s: body = %s, want \"armed\":[]", what, body)
+	}
+}
+
+// TestHandleBreakpoints_NothingArmedReadsAsEmptyList: the ordinary walk —
+// started with no breakpoints — reports an empty list, not null.
+func TestHandleBreakpoints_NothingArmedReadsAsEmptyList(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	_, release, err := srv.breakpointReg.Open(runID, nil, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	rec := doJSON(t, srv, "GET", "/v1/runs/"+runID+"/breakpoints", "")
+	if rec.Code != 200 {
+		t.Fatalf("GET = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	assertArmedIsEmptyList(t, "GET", rec.Body.String())
+
+	// A PUT carrying only the deadline leaves the arming — still nothing.
+	rec = doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"review_ttl_seconds":60}`)
+	if rec.Code != 200 {
+		t.Fatalf("PUT deadline = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	assertArmedIsEmptyList(t, "PUT deadline only", rec.Body.String())
+}
+
+// TestHandleBreakpoints_DisarmingEverythingRespondsEmptyList: the off switch
+// answers with the set it left, which is empty, not null.
+func TestHandleBreakpoints_DisarmingEverythingRespondsEmptyList(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	runID := seedRun(t, srv)
+	_, release, err := srv.breakpointReg.Open(runID, []string{"wave", "wave:review"}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	rec := doJSON(t, srv, "PUT", "/v1/runs/"+runID+"/breakpoints", `{"breakpoints":[]}`)
+	if rec.Code != 200 {
+		t.Fatalf("PUT = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	assertArmedIsEmptyList(t, "PUT []", rec.Body.String())
+}
+
 // TestHandleBreakpoints_RejectedPutKeepsThePreviousArming: an operator fixing a
 // typo must not discover they have also disarmed what was working.
 func TestHandleBreakpoints_RejectedPutKeepsThePreviousArming(t *testing.T) {
