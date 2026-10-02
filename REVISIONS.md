@@ -8,6 +8,76 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.101.1
+
+*Fixes a v1.101.0 regression: memory consolidation passes on slow local models were cut by the new per-pass budget, then re-read the same chats forever. Also: non-admin MCP server definitions can no longer reference the operator's env vars, the consolidation sweep reports operator-key refusals and runs isolated members isolated, a remote memory peer can key with its own tenant's `$cred:`, and the Web UI gains a team-walk view.*
+
+A patch on the v1.101 line: #1568 to #1576 (every number in that range).
+- #1576 is the consolidation regression fix; #1569 is the consolidation sweep;
+- #1568 and #1570 are credentials for MCP server definitions and remote peers;
+- #1572, #1573 and #1574 are team walks; #1575 is a help article;
+- #1571 is bench-only.
+
+### A cut consolidation pass no longer retries the same chats forever (#1576)
+
+v1.101.0's per-pass budget (#1565) gives each consolidation target a slice of the fire budget, `FireTimeout / min(targets, 4)`. With two users and the default 600-second budget, each pass gets 5 minutes. A local-model extractor that takes 40–100 s per window does not fit.
+
+The bundled consolidator advanced its watermark only at the end of a pass, and only if every chat on the page succeeded. A pass cut by its slice kept nothing it had finished, so the next pass started from the same watermark and was cut at the same point. In production every pass failed at exactly 5:00, re-sending the same transcript windows for hours and consolidating nothing. v1.100.0 had no slice, which is why it worked.
+
+- **A pass cut by its own slice gets the whole budget on its next turn.** It is dispatched first on the next tick, ahead of the rotation and the cap, with no deadline of its own. A completed pass clears the escalation. An escalated pass that the batch budget cuts drops back to normal budgeting, so a wedged target holds at most every other tick and cannot starve the others. A pass cut only because the batch was already spent is not escalated. The scheduler tells the two cuts apart by the deadline's cause, never by `RunOnce`'s error.
+- **The watermark advances after each chat.** A cut pass keeps the chats it finished, and the next pass resumes at the first one it did not finish. Once one chat fails, no later chat advances, so the watermark never skips a hole.
+- **Trade-off, accepted by the owner:** retiring duplicates stays at the end of the pass and no longer holds the watermark. A cut or failed `supersede` leaves the duplicate rows it found in place, and never loses a fact: the chat's own facts have landed, and the duplicates were already stored. A queued-batch failure likewise no longer holds the chats' watermark; its items stay unacked.
+
+**Still on v1.101.0?** Set `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS=1800` until you upgrade, so each slice is long enough for a local-model pass.
+
+### Consolidation sweep (#1569)
+
+- **An operator-key refusal inside a pass is visible.** With `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` on, the code-js consolidator's `memory/extractor` spawn can be refused the operator's key. The pass used to read `completed`. It now reads `skipped` (deferred), counts toward `max_fires`, and is logged once per tenant per tick. The match is on the structured error classification, not on error text.
+- **An isolated member's pass runs isolated.** A target whose `users.access_mode` is not `tenant` runs with `Isolated` set, so its memory reads and writes stay in that user's scopes. The member's mode only ever narrows the def's own bit. A failed member lookup records the tick `failed` and dispatches nothing.
+
+### Credentials (#1568, #1570)
+
+- **Only an admin may put `${NAME}` env refs in an MCP server definition (#1568).** A `substrate:tenant` author, or a caller in a run, could write a dynamic MCP server def whose url, headers or stdio command/args/env read `${LOOMCYCLE_…}`. The pool expanded it from the process environment at dial, sending the operator's secret, or another tenant's, to a host the author chose.
+  - Such a `${NAME}` is now refused at create and fork, including one nested in a `${run.x:-…}` default. `${run.credentials.<name>}`, `${run.user_bearer}`, `${run.tenant_id}`, `${run.root_run_id}` and `$cred:<name>` stay allowed.
+  - An admin, the open-mode or stdio operator, and a def that keeps the operator's connection fields unchanged keep working.
+  - The server stamps an `operator_authored` bit on the body. It is never read from the overlay and is excluded from `content_sha256`. A boot audit lists each stored version that lacks it but holds a `${NAME}`, by field location, never by value.
+- **Remote memory backends and document sources accept `api_key_env: "$cred:<name>"` (#1570).** It sends the tenant-level `CredentialDef` of the tenant that owns the definition: never the caller's tenant, and never a user or agent scope.
+  - A non-admin may name only a tenant-level credential that already exists in its own tenant.
+  - A shared (operator-layer) def sends the operator layer's credential for every tenant's runs.
+  - A missing credential fails the call before anything is sent.
+  - Yaml peers are unchanged and still refuse `$cred:`.
+
+### Team walks (#1572, #1573, #1574)
+
+- **The runs page no longer returns a 400 for a team walk (#1572).** A walk's run is filed under `agent_id = "team:<name>"`, which the agent-id routes reject. Cancel now goes through `POST /v1/runs/{run_id}/cancel`, a `?agent=team:…` link opens the newest listed walk, the memory and channels tabs are hidden for a walk, and switching runs clears the pane at once.
+- **A team-walk view (#1573).** Selecting a walk opens a walk pane: the header and result, the team's Mermaid graph with the current state outlined, and members grouped by visit. While the walk is live it also offers review Approve / Reject, breakpoint continue / release / abort, a breakpoints editor and cancel. It is built only on existing endpoints, with no server change.
+- **A walk's run records the team version and input it ran (#1574).** The walk's `run_config` carries `team`: name, `def_id`, `version`, `content_sha256`, `resolved_by`, the start arguments, and the input, masked by the redactor and cut at 16 KiB. It appears as `spec.team` on `GET /v1/runs/{id}`, `GET /v1/agents/{id}`, gRPC `GetRun` and MCP `get_run`, so a viewer can draw the version a walk ran even after a fork and promote. Walks started before this release have no `spec.team`.
+
+### Other
+
+- **Docs:** the `agent-teams` help topic now says when a team needs a Starter and when an agent state is enough (#1575). The `memory-consolidation`, `dynamic-mcp` and credential help articles describe the changes above. Repo `docs/CONFIGURATION.md`, `docs/MEMORY-BACKENDS.md` and `docs/EXTERNAL_API.md` changed (#1568, #1570); their doc-store copies need a sync.
+- **Bench (no runtime change):** reranking memory recall on LoCoMo (1,535 questions) lifts recall@5 from 0.588 to 0.741 with the shipped listwise rerank; a one-call decision-model rerank is non-inferior and about 3× faster (#1571).
+
+### Behaviour changes / upgrade notes
+
+- **Consolidation:** a pass cut by its share of the fire budget is dispatched first on the next tick and may use the whole remaining budget. New log lines: `pass cut by its … share …`, `completed on its whole-budget turn`, `dropping it back to normal budgeting`. Escalation state is per replica and in memory; losing it costs one more cut pass, never progress (#1576).
+- **The bundled consolidator advances its watermark per chat.** A pass report can read `watermark advanced to X, then held: …`. A cut or failed duplicate retirement, or a queued-batch failure, no longer forces the chats to be re-read; the duplicates stay until a later pass retires them (#1576).
+- **With `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` on, a sweep pass whose sub-agent is refused the operator's key reads `skipped`, not `completed`,** and counts toward `max_fires`. One log line per tenant per tick replaces the per-target lines (#1569).
+- **A consolidation pass for an isolated member runs isolated:** a fact the tenant ontology would share stays with the user. The sweep reads `UserList` once per tick that has targets; if that read fails, the tick records `failed` (#1569).
+- **Non-admin MCP server defs cannot reference operator env vars** (`${NAME}` in url, headers, or stdio command/args/env). Use `${run.credentials.<name>}` or `$cred:<name>` (#1568).
+- **Existing unattributed MCP server defs keep dialing this release, with a warning.** These are every runtime row holding a `${NAME}` written before this release, **including rows an admin wrote**, because the authority was never recorded, and rows restored from an older snapshot.
+  - Each is listed in a boot `mcp_server_defs: WARNING:` line and gets one dial `mcp_servers: WARNING:` line per version per process.
+  - To fix one, have an admin acting in that tenant re-save it with `create` and the same overlay, or retire it.
+  - **`LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=1` refuses them now. The next release turns that on by default** (#1568).
+- **Remote memory backends and document sources may use `api_key_env: "$cred:<name>"`.** Existing env-var and `key_per_tenant` keys behave as before (#1570).
+- **A board-bound team walk whose board cannot be read is refused before its run row is created;** before, it left a row behind (#1574).
+- **Web UI:** selecting a team walk opens the walk view, and cancel on a walk stops it instead of failing with 400 (#1572, #1573).
+- No schema migrations and no proto change.
+
+**Adapters:** `@loomcycle/client` 1.101.1 adds `RunSpec.team` (`RunSpecTeam`), the walk's team record on run reads (#1574). The Python adapter's version is 1.101.1, with no surface change. `python-v*` tags are still held, so no `python-v1.101.1` tag is pushed.
+
+Tagged as a patch but released with `force_full`, because the fixes are in the Go runtime: the patch tier alone builds only `loomcycle-browser`.
+
 ## What's in v1.101.0
 
 *A snapshot now carries the whole deployment (users and budgets, schedules, webhooks, peers, memory backends, document sources, volumes, the Path tree and the consolidation queue), strips literal trigger credentials, and re-checks every definition it restores against the target's own rules. A paused run resumes as the run that paused: on the agent version it started on, in its own tenant, and no wider than its parent allowed. A security review closed cross-tenant and isolated-member gaps in webhooks, triggers, remote peers, the private-address guard and volume paths. Also: team walks hold agent and parallel members for review, enforce `timeout_ms` and can fan out over a document's sections, and a run can be read by its run id on every transport.*
