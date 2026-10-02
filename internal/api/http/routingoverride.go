@@ -86,7 +86,7 @@ func (s *Server) applyRoutingOverride(ctx context.Context, def config.AgentDef, 
 		if err := s.checkProviderAllowed(def, ov.Provider); err != nil {
 			return def, err
 		}
-		if def.Tier != "" {
+		if routesByTier(def) {
 			// Narrow the cascade to this vendor; the tier still chooses the
 			// model within it and still falls back within it.
 			def.Providers = []string{ov.Provider}
@@ -157,7 +157,7 @@ func (s *Server) checkModelAllowed(ctx context.Context, def config.AgentDef, mod
 			runner.ErrInvalidArgument, model)
 	}
 
-	if def.Tier != "" {
+	if routesByTier(def) {
 		if provider, ok := s.providerForModel(ctx, def, "", "", "", "", false, model); ok {
 			if wantProvider != "" {
 				return wantProvider, nil

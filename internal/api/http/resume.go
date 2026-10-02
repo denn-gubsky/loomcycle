@@ -1569,9 +1569,10 @@ func (s *Server) childFinalText(ctx context.Context, child store.Run) string {
 //
 // Returns false for a PINNED agent (no tier ⇒ no cascade): a pin means the
 // definition names the model outright, so the re-derived value already is the
-// definition's answer and there is nothing to restore.
+// definition's answer and there is nothing to restore. A definition carrying a
+// pin beside a tier is pinned too (routesByTier), as resolveAgentDef routes it.
 func (s *Server) providerForModel(ctx context.Context, def config.AgentDef, tenantID, userID, agentName, userTier string, restricted bool, want string) (string, bool) {
-	if s.resolver == nil || def.Tier == "" || want == "" {
+	if s.resolver == nil || !routesByTier(def) || want == "" {
 		return "", false
 	}
 	req := resolve.AgentRequest{

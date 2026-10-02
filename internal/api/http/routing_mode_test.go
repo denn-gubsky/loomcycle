@@ -167,3 +167,45 @@ func TestApplyAgentDefOverlay_ProviderRowClearsStaticTier(t *testing.T) {
 		t.Errorf("provider row over tier base = (provider %q, tier %q), want (ollama-local, \"\")", got.Provider, got.Tier)
 	}
 }
+
+// The other places that ask "is this agent tiered?" must answer the way
+// resolveAgentDef routes, or they disagree with where the run went.
+
+// A resume restores "the model it started with" only from a tier's cascade. A
+// pin-and-tier row ran on its pin, so a cascade model must not be restored.
+func TestProviderForModel_PinAndTierDefRestoresNothingFromTheTier(t *testing.T) {
+	s := pinTierServer(t)
+	def := config.AgentDef{Provider: "ollama-local", Model: "qwen3:32b", Tier: "middle"}
+	if prov, ok := s.providerForModel(context.Background(), def, "", "", "walker", "", false, "claude-sonnet-4-6"); ok {
+		t.Fatalf("restored the tier's (%q, claude-sonnet-4-6) onto a pinned definition", prov)
+	}
+}
+
+// A per-run model override on a pinned definition is a plain re-pin; it must
+// not be checked against a tier cascade the run never uses.
+func TestApplyRoutingOverride_ModelOnPinAndTierDefIsARepin(t *testing.T) {
+	s := pinTierServer(t)
+	def := config.AgentDef{Provider: "ollama-local", Model: "qwen3:32b", Tier: "middle"}
+	got, err := s.applyRoutingOverride(context.Background(), def, &routingOverride{Model: "qwen3:14b"})
+	if err != nil {
+		t.Fatalf("model override on a pinned definition refused: %v", err)
+	}
+	if got.Model != "qwen3:14b" || got.Tier != "" {
+		t.Errorf("override result (model %q, tier %q), want (qwen3:14b, \"\")", got.Model, got.Tier)
+	}
+}
+
+// A per-run provider override on a pinned definition replaces the pin's
+// provider. Narrowing the (unused) tier cascade instead would leave the stored
+// pin in force and silently ignore the caller's choice.
+func TestApplyRoutingOverride_ProviderOnPinAndTierDefReplacesThePinProvider(t *testing.T) {
+	s := pinTierServer(t)
+	def := config.AgentDef{Provider: "ollama-local", Model: "qwen3:32b", Tier: "middle"}
+	got, err := s.applyRoutingOverride(context.Background(), def, &routingOverride{Provider: "anthropic"})
+	if err != nil {
+		t.Fatalf("applyRoutingOverride: %v", err)
+	}
+	if got.Provider != "anthropic" {
+		t.Errorf("provider override left the pin on %q (providers narrowed to %v)", got.Provider, got.Providers)
+	}
+}
