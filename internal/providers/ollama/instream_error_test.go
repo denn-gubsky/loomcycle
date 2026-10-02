@@ -56,3 +56,49 @@ func TestStream_InStreamErrorEmitsEventError(t *testing.T) {
 		t.Errorf("pre-error text = %q, want the delivered bytes flushed (%q)", text.String(), "partial ans")
 	}
 }
+
+// TestStream_EndWithoutDoneFrameEmitsEventError: Ollama always ends a finished
+// /api/chat stream with a done:true frame. A 200 whose body closes without one
+// — mid-answer, or with no frames at all — is a call that did not finish. The
+// driver used to send EventDone{StopReason:""} with no usage, and the run
+// completed empty with no error.
+func TestStream_EndWithoutDoneFrameEmitsEventError(t *testing.T) {
+	cases := map[string][]string{
+		"no frames at all": nil,
+		"cut off mid-answer": {
+			`{"model":"gpt-oss:latest","message":{"role":"assistant","content":"partial ans"},"done":false}` + "\n",
+		},
+	}
+	for name, frames := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := fakeStream(t, frames)
+			defer srv.Close()
+
+			d := New("ollama-local", "", srv.URL, streamhttp.Options{}, nil)
+			ch, err := d.Call(context.Background(), providers.Request{
+				Model:    "gpt-oss:latest",
+				Messages: []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}}},
+			})
+			if err != nil {
+				t.Fatalf("Call: %v", err)
+			}
+			var gotError, gotDone bool
+			var errText string
+			for ev := range ch {
+				switch ev.Type {
+				case providers.EventError:
+					gotError = true
+					errText = ev.Error
+				case providers.EventDone:
+					gotDone = true
+				}
+			}
+			if gotDone {
+				t.Error("a stream with no done:true frame must not end in EventDone")
+			}
+			if !gotError || !strings.Contains(errText, "done frame") {
+				t.Errorf("EventError = (%v, %q), want an error saying the done frame never arrived", gotError, errText)
+			}
+		})
+	}
+}
