@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,4 +215,47 @@ func getRunAwaited(t *testing.T, h *walkHarness, runID string) string {
 		t.Fatalf("GET /v1/runs/%s status = %q, want running", runID, out.Status)
 	}
 	return out.AwaitedState + "/" + out.AwaitedOn
+}
+
+// TestTeamDefRun_RefusedWalkClosesItsRun: a walk refused after its run opened
+// — a breakpoint naming no state is caught only once the run exists — ends
+// that run as failed, on the row and on the stream. It returned the refusal
+// and left the run open: running on the row and the stream until the stale
+// sweeper failed it, its heartbeat beating all the while.
+func TestTeamDefRun_RefusedWalkClosesItsRun(t *testing.T) {
+	h := newStampHarness(t)
+	seedTenantTeam(t, h.st, "acme", "solo", agentOnlyTeam)
+	events := streamRunStates(t, h.srv, connector.StreamUserRunStatesRequest{UserID: "alice", TenantID: "acme", TenantScoped: true})
+	waitForSubscribers(t, h.bus, 1)
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/_teamdef",
+		strings.NewReader(`{"op":"run","name":"solo","input":"go","breakpoints":["nosuch"]}`))
+	r.Header.Set("Content-Type", "application/json")
+	r = r.WithContext(alicePrincipal(r.Context()))
+	rr := httptest.NewRecorder()
+	h.srv.handleSubstrateTeamDef(rr, r)
+	if !strings.Contains(rr.Body.String(), "has no state") {
+		t.Fatalf("POST /v1/_teamdef = %d %s, want the breakpoint refused", rr.Code, rr.Body.String())
+	}
+
+	var walkID string
+	deadline := time.After(5 * time.Second)
+	for walkID == "" {
+		select {
+		case evt := <-events:
+			if evt.Agent == "team:solo" && evt.Status == "running" {
+				walkID = evt.RunID
+			}
+		case <-deadline:
+			t.Fatal("the refused walk's run never opened")
+		}
+	}
+	got := walkFrames(t, events, walkID, func(evt connector.RunStateEvent) bool { return evt.Status != "running" })
+	if last := got[len(got)-1]; last.Status != "failed" {
+		t.Errorf("refused walk's run ended %+v, want failed", last)
+	}
+	run, err := h.st.GetRun(context.Background(), walkID)
+	if err != nil || run.Status != store.RunFailed {
+		t.Errorf("refused walk's run row = %+v (%v), want failed", run.Status, err)
+	}
 }
