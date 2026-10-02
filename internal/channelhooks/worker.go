@@ -777,11 +777,13 @@ func (j *job) drop(ctx context.Context, def *Def, reason, by string) {
 }
 
 // sinkError turns a Starter's sink message into the error result a dropped
-// one is delivered as: its envelope, status error, no output.
+// one is delivered as: its envelope, status error, no output. The structured
+// result goes with the output: it is the same answer, parsed.
 func sinkError(payload json.RawMessage, reason string) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	_ = json.Unmarshal(payload, &m)
 	delete(m, "output")
+	delete(m, "structured")
 	m["status"], _ = json.Marshal("error")
 	m["error"], _ = json.Marshal("dropped by a channel hook: " + reason)
 	out, _ := json.Marshal(m)
