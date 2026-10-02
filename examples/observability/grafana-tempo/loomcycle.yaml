@@ -24,7 +24,7 @@ user_tiers:
         - {provider: openai, model: gpt-5.4-mini}
       middle:
         - {provider: anthropic, model: claude-sonnet-4-6}
-        - {provider: deepseek, model: deepseek-v4-flash}
+        - {provider: deepseek, model: deepseek-flash}
       high:
         - {provider: anthropic, model: claude-opus-4-7}
     fallback_on_error: true

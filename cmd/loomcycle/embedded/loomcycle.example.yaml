@@ -36,7 +36,7 @@ models:
   gpt:      { provider: openai, model: gpt-5.4 }
   gpt-max:  { provider: openai, model: gpt-5.5 }
   # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
-  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
+  deepseek-flash: { provider: deepseek, model: deepseek-flash }
   deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
   cloud-kimi: { provider: ollama, model: kimi-k2.6 }
@@ -52,8 +52,8 @@ models:
 # Agents can declare `tier: low | middle | high` instead of pinning a
 # specific model. The resolver walks `provider_priority` below and picks
 # the first available candidate from `tiers.<level>`. Candidates are
-# written as bare ALIASES (defined above) — `- deepseek-flash` is the same
-# as `- { provider: deepseek, model: deepseek-v4-flash }`, just shorter and
+# written as bare ALIASES (defined above) — `- deepseek-pro` is the same
+# as `- { provider: deepseek, model: deepseek-v4-pro }`, just shorter and
 # single-sourced. Cost-floor-first by default — try DeepSeek, fall through
 # to local Ollama, then OpenAI, then Anthropic.
 #

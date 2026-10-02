@@ -19,7 +19,7 @@ models:
   gpt:      { provider: openai, model: gpt-5.4 }
   gpt-max:  { provider: openai, model: gpt-5.5 }
   # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
-  deepseek-flash: { provider: deepseek, model: deepseek-v4-flash }
+  deepseek-flash: { provider: deepseek, model: deepseek-flash }
   deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
   cloud-kimi: { provider: ollama, model: kimi-k2.6 }
