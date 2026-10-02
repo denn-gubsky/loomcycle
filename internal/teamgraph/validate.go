@@ -223,6 +223,9 @@ func validateHandler(stateID string, h Handler) error {
 		return fmt.Errorf("team definition: state %q sets `schema` but is kind %q "+
 			"(an input state, or a starter whose source is the walk's input)", stateID, h.Kind)
 	}
+	if err := validatePublishing(stateID, h); err != nil {
+		return err
+	}
 	if err := validateCapture(stateID, h.Capture); err != nil {
 		return err
 	}

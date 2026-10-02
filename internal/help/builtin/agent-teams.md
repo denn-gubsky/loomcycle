@@ -133,6 +133,25 @@ Without a Starter you also give up:
 - **the `before_dispatch` breakpoint**, which only a Starter has (a
   `<state>:review` hold works on `agent` and `parallel` states too).
 
+## Publishing to a channel
+
+- A `channel` state publishes its input to `channel` and passes it on
+  unchanged. The message is `{"state": "<id>", "output": "<input as text>"}`
+  unless it sets `payload: "raw"`, which publishes the input itself as a JSON
+  value: JSON input as it is (an object stays an object), any other text as
+  `{"text": "<input>"}`. A Starter's `binds` can read the fields of a raw
+  message; inside the envelope they are only text.
+- An `input` state may set `publish: {channel: "<name>"}`. It publishes the
+  walk's input by the same rule, then applies its `capture`, and passes the
+  input on unchanged.
+- Both need the channel in the TeamDef's `channels.publish`. A publish that
+  fails fails the state.
+- A Starter that reads a channel takes its **oldest unacknowledged** message,
+  which on a channel with a backlog may not be the one this walk just
+  published. When a walk must process its own input, start the team with a
+  Starter whose source is the walk's input rather than publishing to a channel
+  and reading it back.
+
 ## The task board
 
 Live work rides on a **Document** used as a task board: one chunk per work-item,

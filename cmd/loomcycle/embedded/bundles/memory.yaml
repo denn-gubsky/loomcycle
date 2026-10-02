@@ -5,7 +5,8 @@
 #
 #   memory/consolidator  — a DETERMINISTIC code-js agent. It owns the whole
 #                          pipeline: lease → scan → drain → read → extract →
-#                          band → write → ack → advance → release.
+#                          band → write → advance (after each chat) → ack →
+#                          release.
 #   memory/extractor     — a tool-less LLM agent. Its entire job is "given one
 #                          transcript, return the durable facts as JSON".
 #
@@ -254,9 +255,13 @@ agents:
       //     previous pass into a livelock.
       //   * each scanned chat is read AT MOST ONCE (the `seen` set below). The
       //     previous pass re-read one chat six times and ran out of budget.
-      //   * cursor_advance is unreachable unless every read, extraction and
-      //     write succeeded. A blocked advance is safe: the next pass re-reads
+      //   * cursor_advance is unreachable for a chat unless every read,
+      //     extraction and write for it — and for every chat before it on the
+      //     page — succeeded. A blocked advance is safe: the next pass re-reads
       //     those chats and the keys are deterministic, so the retry is a no-op.
+      //   * the watermark moves after EACH chat that finishes, not once at the
+      //     end, so a pass cut off midway keeps the chats it completed and the
+      //     next pass resumes at the first one it did not (see commitChat).
       //   * at most MAX_SUPERSEDES rows are retired per pass — `.slice(0, N)`,
       //     so a steered "everything you know about X is obsolete" cannot drive
       //     an unbounded retirement sweep.
@@ -710,7 +715,7 @@ agents:
           type_absent: 0,           // subjects filed under the fallback because no type was given
           entity_type_refused: 0,   // typed facts whose type was a statement class
           watermark: null,          // the LAST scan row actually consolidated, by reference
-          advanced: null,
+          advanced: null,           // the last row cursor_advance recorded this pass
           advance_blocked: false,
           block_reasons: [],
           skipped: 0,               // chats passed over: NO part of them was readable
@@ -803,17 +808,14 @@ agents:
             // so carry the watermark PAST this chat — otherwise a bad row at the
             // end of the page pins the mark and the next pass re-reads it, which
             // is the sticking this change exists to end. Every other extraction
-            // failure has already blocked, and the advance below is gated on that
-            // flag, so leaving the mark behind is the right answer for those.
-            if (st.skipped > skippedBefore) { st.watermark = row; }
+            // failure has already blocked, and commitChat's advance is gated on
+            // that flag, so leaving the mark behind is the right answer for those.
+            if (st.skipped > skippedBefore) { commitChat(st, row); }
             continue;
           }
           applyFacts(st, facts, sid);
 
-          // The watermark candidate is carried BY REFERENCE from the scan row —
-          // never re-derived from a clock or from the chat's last activity. The
-          // advance is gated separately on st.advance_blocked below.
-          st.watermark = row;
+          commitChat(st, row);
         }
 
         var ackIDs = consolidatePending(st, pending);
@@ -829,18 +831,6 @@ agents:
           }
         }
 
-        // THE watermark invariant, as an `if` rather than a sentence. If
-        // anything at all failed we simply do not advance; the next pass
-        // re-reads those chats and the deterministic keys make that harmless.
-        if (!st.advance_blocked && st.watermark) {
-          Memory.cursor_advance({
-            scope: CONFIG.scope,
-            completed_at: st.watermark.completed_at,
-            session_id: st.watermark.session_id
-          });
-          st.advanced = st.watermark;
-        }
-
         // The judge runs LAST, after the watermark, and that position is the whole
         // safety argument. Verification is an annotation on facts that have already
         // landed: nothing it does can cost a fact, block an advance, or make a pass
@@ -851,6 +841,55 @@ agents:
         // Beside the judge, last, and for the same reason. Detection reports only, so
         // this cannot alter a single stored row.
         conflictPass(st);
+      }
+
+      // commitChat moves the watermark to ONE finished chat, right away rather
+      // than once at the end of the pass.
+      //
+      // WHY PER CHAT. The pass is often stopped from OUTSIDE — the scheduler's
+      // fire budget, or a slow local extractor running a long page past it — and
+      // a killed pass runs nothing after the call it was in. With one advance at
+      // the end, every chat such a pass had finished was re-read by the next
+      // pass, which was stopped at the same point, forever: the same windows sent
+      // to the same model on every tick and nothing ever consolidated. Now the
+      // chats a pass finishes stay finished, and the next pass resumes at the
+      // first one it did not.
+      //
+      // THE INVARIANT IS UNCHANGED, only finer-grained: the mark never moves past
+      // a chat whose read, extraction or writes failed. block() is sticky for the
+      // whole pass, so once one chat blocks, no later chat on the page advances
+      // either — the mark is a single position and cannot skip a hole. The
+      // chats after the hole are still read and written, as before, and the
+      // next pass re-reads them; the keys are deterministic, so that is a no-op.
+      //
+      // RETIREMENTS DO NOT GATE IT any more, and that is the one thing given up.
+      // They stay at the end of the pass (see retire() for why they cannot move
+      // per chat), so a pass stopped before the end, or a supersede that fails,
+      // leaves the duplicate rows it found in place instead of re-reading the
+      // chat to find them again. Nothing is lost: retirement tidies rows that
+      // were already stored, the chat's own facts have landed, and recall
+      // returns the same duplicates to the next fact on that topic. The same goes
+      // for the queued batch, read after the chats: a failure there leaves its
+      // items unacked for the next pass and no longer holds the chats' mark.
+      //
+      // The candidate is carried BY REFERENCE from the scan row — never
+      // re-derived from a clock or from the chat's last activity.
+      function commitChat(st, row) {
+        st.watermark = row;
+        if (st.advance_blocked) { return; }
+        try {
+          Memory.cursor_advance({
+            scope: CONFIG.scope,
+            completed_at: row.completed_at,
+            session_id: row.session_id
+          });
+          st.advanced = row;
+        } catch (e) {
+          // A refused advance (most often a lease this pass no longer holds)
+          // holds every later chat too. It used to throw out of the whole pass,
+          // which was harmless when it was the last thing a pass did.
+          block(st, "cursor_advance failed: " + errText(e));
+        }
       }
 
       // readTranscript returns the chat's CONVERSATION, or null when the read
@@ -3270,6 +3309,13 @@ agents:
       // Memory.delete is never called anywhere in this file: supersede is a soft
       // archive, so a re-derived fact revives its row and the audit trail
       // survives. The cap bounds the COUNT, which nothing else does.
+      //
+      // ONCE PER PASS, AT THE END, and deliberately not per chat. "Never retire
+      // a row this pass just wrote" needs every write of the pass to be known,
+      // and a retirement is final: an upsert does not clear a retired chunk's
+      // expiry, so a key retired after chat 1 and written by chat 3 would hide
+      // chat 3's fact. That is why commitChat advances the watermark without
+      // waiting for these.
       function retire(st) {
         var keys = [];
         for (var i = 0; i < st.supersede_queue.length; i++) {
@@ -3618,7 +3664,12 @@ agents:
           }
         }
 
-        if (st.advanced) {
+        if (st.advanced && st.advance_blocked) {
+          // Both: the chats before the failure were kept, and something after
+          // them was not. Saying only the first would hide the failure.
+          parts.push("watermark advanced to " + st.advanced.session_id + " @ " + st.advanced.completed_at +
+            ", then held: " + st.block_reasons.join("; ") + " — the next pass resumes after it");
+        } else if (st.advanced) {
           parts.push("watermark advanced to " + st.advanced.session_id + " @ " + st.advanced.completed_at);
         } else if (st.advance_blocked) {
           parts.push("watermark NOT advanced: " + st.block_reasons.join("; ") + " — the next pass re-reads these chats");

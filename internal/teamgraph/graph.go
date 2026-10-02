@@ -227,6 +227,14 @@ type Handler struct {
 	// is at-least-once: a crash mid-wave redelivers the batch. "after_read"
 	// acks on read, which is at-most-once and loses a batch to a crash.
 	Ack string `json:"ack,omitempty"`
+	// Publish — kind=input ONLY: also publish the walk's input to a channel,
+	// as the message value itself rather than the channel kind's envelope.
+	// See publish.go. omitempty, like every field added after the first
+	// hashes were recorded, so a definition without it hashes as before.
+	Publish *InputPublish `json:"publish,omitempty"`
+	// Payload — kind=channel ONLY: "envelope" (the default when empty) or
+	// "raw". See publish.go.
+	Payload string `json:"payload,omitempty"`
 }
 
 // StarterSource is what a Starter reads: a channel (the default), reusing
