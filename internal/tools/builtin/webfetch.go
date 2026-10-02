@@ -100,9 +100,12 @@ func (f *WebFetch) Execute(ctx context.Context, input json.RawMessage) (tools.Re
 // outputLimit is how many bytes of stripped text this call returns. A fixed
 // 256 KiB is ~64k tokens — twice a 32k local window on its own — so the
 // default follows the run's window: a quarter of max_context_tokens at ~4
-// characters a token, i.e. max_context_tokens characters. The window read is
-// the run's CONFIGURED cap (per-run > per-agent), the one value the loop stamps
-// for tools; with none configured the default stays at the ceiling.
+// characters a token, i.e. the window's token count in characters. The window
+// is the one the model is actually running with — what its driver reports,
+// already lowered by any configured max_context_tokens — so an agent with no
+// cap configured on a small local model is still sized to it. The configured
+// cap alone is the fallback where no effective window was stamped; with
+// neither, the default stays at the ceiling.
 func (f *WebFetch) outputLimit(ctx context.Context, maxChars *int) int {
 	ceiling := webFetchMaxChars
 	if f.MaxOutputBytes > 0 {
@@ -110,6 +113,9 @@ func (f *WebFetch) outputLimit(ctx context.Context, maxChars *int) int {
 	}
 	if maxChars != nil {
 		return min(max(*maxChars, 1), ceiling)
+	}
+	if n := tools.EffectiveContextWindow(ctx); n > 0 {
+		return min(n, ceiling)
 	}
 	if n := tools.MaxContextTokens(ctx); n > 0 {
 		return min(n, ceiling)
