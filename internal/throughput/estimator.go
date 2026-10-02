@@ -58,6 +58,12 @@ const (
 	// coldLoadMs: a load longer than this was a cold load, not resident-model
 	// noise, and is tracked as the model's cold-load cost.
 	coldLoadMs = 1000
+	// minPhaseMs: a raw tokens-per-second figure is taken only from a phase at
+	// least this long. A reply delivered in one burst (a non-streaming backend,
+	// or a short coalesced stream) has a decode window of a millisecond or two,
+	// and dividing by it reports tens of thousands of tok/s. The slowdown, which
+	// uses the whole call, is unaffected.
+	minPhaseMs = 100
 
 	// runCap samples per run per runWindow, so one long chat cannot dominate
 	// the estimate.
@@ -280,14 +286,14 @@ func (e *Estimator) Observe(s Sample) bool {
 	if decodeMs <= 0 && s.TTFTMs > 0 {
 		decodeMs = s.DurationMs - s.TTFTMs
 	}
-	if decodeMs > 0 {
+	if decodeMs >= minPhaseMs {
 		st.decodeTPS.add(float64(s.Output) / (float64(decodeMs) / 1000))
 	}
 	prefillMs := s.PrefillMs
 	if prefillMs <= 0 {
 		prefillMs = s.TTFTMs
 	}
-	if prefillMs > 0 && s.UncachedInput > 0 {
+	if prefillMs >= minPhaseMs && s.UncachedInput > 0 {
 		st.prefillTPS.add(float64(s.UncachedInput) / (float64(prefillMs) / 1000))
 	}
 	if s.TTFTMs > 0 {

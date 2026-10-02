@@ -231,6 +231,18 @@ func TestEstimator_PrefillHeavySampleCountsThePrefill(t *testing.T) {
 	}
 }
 
+// A reply that arrives in one burst has a decode window of a millisecond; its
+// slowdown still counts, but no tokens-per-second figure is read from it.
+func TestEstimator_ABurstReplyGivesNoDecodeSpeed(t *testing.T) {
+	e := newEst(t, config.TimeoutScaling{})
+	e.Observe(Sample{Key: Key{"p", "m"}, UncachedInput: 80, Output: 32,
+		CallTiming: providers.CallTiming{DurationMs: 1503, TTFTMs: 1502}})
+	st := e.Stat("p", "m")
+	if st.Samples != 1 || st.DecodeTPS != 0 {
+		t.Fatalf("stat = %+v, want one sample and no decode_tps (a 1 ms window would read as 32,000 tok/s)", st)
+	}
+}
+
 func TestEstimator_IgnoresWhatIsNotASample(t *testing.T) {
 	e := newEst(t, config.TimeoutScaling{})
 	for name, s := range map[string]Sample{
