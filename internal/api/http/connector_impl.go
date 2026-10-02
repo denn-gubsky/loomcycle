@@ -535,6 +535,11 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if len(req.Tools) == 0 {
 		return connector.AgentDescriptor{}, fmt.Errorf("tools required (default-deny model)")
 	}
+	// The same rule operator yaml and AgentDef create/fork apply: a stored
+	// row with both resolves to the pin, so the tier would be silently dead.
+	if err := config.ValidateRoutingMode(req.Provider, req.Model, req.Tier); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	if _, collides := s.cfg().Agents[req.Name]; collides {
 		return connector.AgentDescriptor{}, fmt.Errorf("agent %q is statically defined in yaml; cannot register over it", req.Name)
 	}
