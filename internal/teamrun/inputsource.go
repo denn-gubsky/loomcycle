@@ -1,7 +1,6 @@
 package teamrun
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,46 +63,26 @@ func (r *agentRunner) runInputStarter(ctx context.Context, st teamgraph.State, t
 }
 
 // inputItems is the walk's input as wave items: a JSON array is one item per
-// element, in order; any other JSON value is one item, the value itself; text
-// that is not JSON (including the empty string) is one item {"text": input},
-// so a member always receives a JSON value in its data slot.
+// element, in order; anything else is one item, teamgraph.InputValue — the
+// value itself, or {"text": input} for text that is not JSON (including the
+// empty string), so a member always receives a JSON value in its data slot.
 //
 // An empty array is an error, the same posture as an empty channel or
 // document: a walk that proceeded on an empty wave would hand the next state
 // an answer nobody produced.
 func inputItems(input string) ([]json.RawMessage, error) {
-	raw := bytes.TrimSpace([]byte(input))
-	if len(raw) == 0 || !json.Valid(raw) {
-		item, err := textItem(input)
-		if err != nil {
-			return nil, err
-		}
-		return []json.RawMessage{item}, nil
-	}
-	if raw[0] != '[' {
-		return []json.RawMessage{json.RawMessage(raw)}, nil
+	v := teamgraph.InputValue(input)
+	if v[0] != '[' {
+		return []json.RawMessage{v}, nil
 	}
 	var elems []json.RawMessage
-	if err := json.Unmarshal(raw, &elems); err != nil {
+	if err := json.Unmarshal(v, &elems); err != nil {
 		return nil, fmt.Errorf("the walk's input array: %w", err)
 	}
 	if len(elems) == 0 {
 		return nil, fmt.Errorf("the walk's input is an empty array — its items are the array's elements, so there is nothing to dispatch")
 	}
 	return elems, nil
-}
-
-// textItem wraps non-JSON input without HTML escaping: the text is read by a
-// model, and `<`, `>` and `&` arriving escaped make it harder to read for no
-// gain — the payload lands in a data slot, not in HTML.
-func textItem(input string) (json.RawMessage, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(map[string]string{"text": input}); err != nil {
-		return nil, err
-	}
-	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }
 
 // refuseInputReentry refuses a cap reroute into an input-sourced Starter. The

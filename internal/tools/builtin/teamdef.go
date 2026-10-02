@@ -226,7 +226,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`not JSON the item {"text": <input>}; per:"message" (max required; more items than max fails the walk) or per:"once". ` +
 	`It takes no channel, path, scope, select, ack, wait, n, wait_ms or batch, may carry the run form's schema, is ` +
 	`never started automatically, and nothing may lead back into it (no transition, no cap reroute): route a retry to ` +
-	`a later state. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
+	`a later state. When the entry (an input state, or that starter) carries a schema, run checks the input against ` +
+	`it before anything runs — its top-level type, its required fields, and each present property's type — and ` +
+	`refuses a bad input naming the field. run may also set breakpoints on starter states to step a fan-out wave: the walk pauses ` +
 	`before dispatching (showing each composed prompt) and asks a human to release all, release n, or abort. ` +
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
@@ -995,6 +997,17 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			if _, known := teamgraph.StateByID(def, status); known {
 				resumedFrom = status
 			}
+		}
+	}
+	// The input is checked against the entry's form HERE, the one point every
+	// transport's op=run passes through, and before the walk's run row exists:
+	// a form missing a field is the caller's to fix, so it must cost neither a
+	// row nor a model call. A walk resumed past the entry hands the input to a
+	// later state, which the entry's form does not describe.
+	if resumedFrom == "" || resumedFrom == def.Entry {
+		if err := teamgraph.CheckInput(def, in.Input); err != nil {
+			return errValidation(fmt.Sprintf("run: %s", err),
+				"send an input that matches the team's input form (the `schema` on its entry state) and run again"), nil
 		}
 	}
 	// The walk becomes a RUN — after admission, so a refused request never
