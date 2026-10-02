@@ -6932,8 +6932,10 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
 	}
 	// Formatted as the Agent tool's sub-agent output is, so a walk threads the
-	// same text it always did.
+	// same text it always did. The bare answer and its structured form ride
+	// beside it for a Starter's sink message, which a program reads.
 	out.Output = formatSubAgentOutput(prep.AgentID, res.FinalText)
+	out.FinalText, out.Structured = res.FinalText, res.Structured
 	return out, nil
 }
 

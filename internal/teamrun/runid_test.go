@@ -19,9 +19,9 @@ func TestStarter_SinkMessagesNameTheMemberRun(t *testing.T) {
 		case strings.Contains(msg, `"pr":2`):
 			return SpawnResult{RunID: "r_pr2"}, errors.New("reviewer crashed")
 		case strings.Contains(msg, `"pr":1`):
-			return SpawnResult{Output: "ok 1", RunID: "r_pr1"}, nil
+			return SpawnResult{Output: "ok 1", FinalText: "ok 1", RunID: "r_pr1"}, nil
 		default:
-			return SpawnResult{Output: "ok 3", RunID: "r_pr3"}, nil
+			return SpawnResult{Output: "ok 3", FinalText: "ok 3", RunID: "r_pr3"}, nil
 		}
 	})
 	// wait=all fails the state when a member fails — and still publishes every

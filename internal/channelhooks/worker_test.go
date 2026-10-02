@@ -377,6 +377,23 @@ func TestWorker_SinkDropDeliversStatusError(t *testing.T) {
 	}
 }
 
+// A dropped Starter result carries nothing of the answer the hook refused —
+// neither its text nor its structured form, which is the same answer parsed.
+func TestSinkError_DropsTheStructuredResultWithTheOutput(t *testing.T) {
+	in := json.RawMessage(`{"wave":"w1","wave_size":1,"index":0,"agent":"a","run_id":"r1","status":"ok",` +
+		`"output":"{\"secret\":\"s3\"}","structured":{"secret":"s3"}}`)
+	var got map[string]any
+	if err := json.Unmarshal(sinkError(in, "leaks a secret"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["structured"]; ok {
+		t.Errorf("error result kept the structured answer: %v", got)
+	}
+	if _, ok := got["output"]; ok || got["status"] != "error" || got["run_id"] != "r1" {
+		t.Errorf("error result = %v, want status error, the envelope, no output", got)
+	}
+}
+
 // A rewrite of a Starter's result keeps its envelope: a hook may change what
 // a run produced, never which run it was.
 func TestWorker_SinkRewriteKeepsTheEnvelope(t *testing.T) {

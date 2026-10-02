@@ -75,8 +75,14 @@ type SinkMessage struct {
 	// downstream reader uses to open that run's result, prompt and transcript.
 	RunID  string `json:"run_id,omitempty"`
 	Status string `json:"status"`
+	// Output is the member's final answer as it wrote it — no attribution
+	// header, which run_id and agent already provide — so a downstream
+	// Starter's binds can read it with `$.output`.
 	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	// Structured is the member's answer parsed against its output_format, when
+	// it had one and the answer was a JSON object: `$.structured.<field>`.
+	Structured map[string]any `json:"structured,omitempty"`
+	Error      string         `json:"error,omitempty"`
 }
 
 // Sink statuses.
@@ -415,6 +421,7 @@ func (r *agentRunner) dispatchOne(ctx context.Context, st teamgraph.State, env E
 		return res
 	}
 	res.Ok, res.Output = true, sp.Output
+	res.answer, res.structured = sp.FinalText, sp.Structured
 	return res
 }
 
@@ -426,7 +433,7 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 	}
 	msg := SinkMessage{
 		Wave: waveID, WaveSize: waveSize, Index: res.Index, Agent: res.Agent, RunID: res.RunID,
-		Status: SinkOK, Output: res.Output,
+		Status: SinkOK, Output: res.answer, Structured: res.structured,
 	}
 	switch {
 	case res.Status == SinkTimeout:
@@ -434,8 +441,9 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 	case res.Status == SinkRejected:
 		// The answer a person rejected is kept: the downstream decides what a
 		// rejection means, and it cannot decide without seeing what was
-		// rejected.
-		msg.Status, msg.Error = SinkRejected, res.Error
+		// rejected. Kept as it always was, header included: only a successful
+		// run's message carries the bare answer (answer is set only then).
+		msg.Status, msg.Output, msg.Error = SinkRejected, res.Output, res.Error
 	case !res.Ok:
 		msg.Status, msg.Output, msg.Error = SinkError, "", res.Error
 	}
