@@ -170,6 +170,16 @@ type fakeToolset struct {
 	// failScan makes cursor_scan refuse — an unrecoverable mid-pipeline throw,
 	// used to prove the lease still comes back.
 	failScan bool
+	// trackWatermark makes cursor_scan honour cursor_advance the way the store
+	// does — a scan returns only the sessions after the last one advanced to —
+	// so a SECOND pass over the same toolset starts where the first one left
+	// off. watermarkSID is that position ("" = never advanced).
+	trackWatermark bool
+	watermarkSID   string
+	// onSpawn sees each Agent.spawn prompt before it is answered. Returning true
+	// fails that spawn the way a child cut by its deadline fails; a scenario
+	// uses it to stop a pass from outside, mid-page.
+	onSpawn func(prompt string) (cut bool)
 }
 
 func newFakeToolset() *fakeToolset {
@@ -244,7 +254,16 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 		if m.f.failScan {
 			return tools.Result{IsError: true, Text: "cursor_scan: store unavailable"}, nil
 		}
-		return okResult(map[string]any{"sessions": m.f.sessions, "truncated": false})
+		sessions := m.f.sessions
+		if m.f.trackWatermark && m.f.watermarkSID != "" {
+			for i, row := range sessions {
+				if row["session_id"] == m.f.watermarkSID {
+					sessions = sessions[i+1:]
+					break
+				}
+			}
+		}
+		return okResult(map[string]any{"sessions": sessions, "truncated": false})
 	case "pending_drain":
 		return okResult(map[string]any{"pending": m.f.pending})
 	case "recall":
@@ -297,7 +316,12 @@ func (m *fakeMemory) Execute(_ context.Context, raw json.RawMessage) (tools.Resu
 			rows = append(rows, row)
 		}
 		return okResult(map[string]any{"placements": rows, "moved": moved, "caller_scope": caller})
-	case "supersede", "pending_ack", "cursor_advance", "cursor_release":
+	case "cursor_advance":
+		if m.f.trackWatermark {
+			m.f.watermarkSID, _ = in["session_id"].(string)
+		}
+		return okResult(map[string]any{"ok": true})
+	case "supersede", "pending_ack", "cursor_release":
 		return okResult(map[string]any{"ok": true})
 	}
 	return tools.Result{IsError: true, Text: fmt.Sprintf("unexpected Memory op %v", in["op"])}, nil
@@ -594,6 +618,11 @@ func (a *fakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Resul
 	if a.f.failAgent {
 		return tools.Result{IsError: true, Text: "sub-agent failed"}, nil
 	}
+	if a.f.onSpawn != nil {
+		if prompt, _ := in["prompt"].(string); a.f.onSpawn(prompt) {
+			return tools.Result{IsError: true, Text: "sub-agent failed: stream read: context deadline exceeded"}, nil
+		}
+	}
 	if n := a.f.failAgentNeedle; n != "" {
 		if prompt, _ := in["prompt"].(string); strings.Contains(prompt, n) {
 			return tools.Result{IsError: true, Text: "sub-agent failed"}, nil
@@ -715,11 +744,21 @@ func runConsolidatorWindow(t *testing.T, f *fakeToolset, windowTurns int) loop.R
 // can vary one CONFIG literal without restating the whole harness.
 func runConsolidatorBody(t *testing.T, f *fakeToolset, agent config.AgentDef) loop.RunResult {
 	t.Helper()
+	res, err := execConsolidator(context.Background(), t.TempDir(), f, agent)
+	if err != nil {
+		t.Fatalf("loop.Run: %v\ncalls so far: %v", err, f.ops())
+	}
+	return res
+}
 
+// execConsolidator is the harness itself, under the caller's ctx and with the
+// run's error returned rather than fatal — for a scenario that stops a pass
+// from outside and then looks at what it kept.
+func execConsolidator(ctx context.Context, codeRoot string, f *fakeToolset, agent config.AgentDef) (loop.RunResult, error) {
 	set := []tools.Tool{&fakeMemory{f: f}, &fakeHistory{f: f}, &fakeAgent{f: f}, &fakeContext{f: f}, &fakeDocument{f: f}}
-	prov := codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: 30 * time.Second})
+	prov := codejs.New(codejs.Config{CodeRoot: codeRoot, RunTimeout: 30 * time.Second})
 
-	res, err := loop.Run(context.Background(), loop.RunOptions{
+	return loop.Run(ctx, loop.RunOptions{
 		Provider:   prov,
 		Model:      "code-js",
 		AgentName:  "memory/consolidator",
@@ -731,10 +770,6 @@ func runConsolidatorBody(t *testing.T, f *fakeToolset, agent config.AgentDef) lo
 			Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "Run one consolidation pass."}},
 		}},
 	})
-	if err != nil {
-		t.Fatalf("loop.Run: %v\ncalls so far: %v", err, f.ops())
-	}
-	return res
 }
 
 func scanRow(id, ts string) map[string]any {

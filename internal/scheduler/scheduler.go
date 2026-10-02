@@ -147,6 +147,15 @@ type Scheduler struct {
 	fanoutRotationMu sync.Mutex
 	fanoutRotation   map[string]int
 
+	// fanoutEscalated is, per fan-out def, the targets whose last pass was cut
+	// by its SHARE of the fire budget (see targetBudget) rather than finishing.
+	// Each goes first next tick with the whole remaining budget (see
+	// notePassBudget). In memory and per replica for the same reason as
+	// fanoutRotation: losing it costs one more cut pass, never correctness.
+	// Bounded by the targets ever cut; an entry goes on a completed pass.
+	fanoutEscalatedMu sync.Mutex
+	fanoutEscalated   map[string]map[consolidationTarget]bool
+
 	wg     sync.WaitGroup
 	stopCh chan struct{}
 	once   sync.Once
