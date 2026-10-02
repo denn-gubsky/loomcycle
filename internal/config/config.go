@@ -89,6 +89,10 @@ type Config struct {
 	// with LOOMCYCLE_NO_DEFAULT_PROVIDERS). See ProviderConfig.
 	Providers map[string]ProviderConfig `yaml:"providers"`
 
+	// TimeoutScaling measures each (provider, model)'s throughput against a
+	// reference machine (RFC DT). Defaults applied at load; see TimeoutScaling.
+	TimeoutScaling TimeoutScaling `yaml:"timeout_scaling,omitempty"`
+
 	// SearchPriority is the global default fallback order the WebSearch tool
 	// walks when an agent declares no per-agent `search_providers:` list.
 	// Every entry must be an enabled SearchProviders key. Empty = the enabled
@@ -5544,6 +5548,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
+	// RFC DT: the throughput-measurement block's env overrides + defaults.
+	applyTimeoutScaling(cfg)
+
 	// RFC BA: skills are on-demand (loaded via the Skill tool), not bundled
 	// into the prompt. Auto-add the Skill tool to every agent that may use a
 	// skill so on-demand access is the default. No skills-root/prompt work
@@ -7116,6 +7123,9 @@ func validateTierCandidate(cand TierCandidate, models map[string]ModelRef, known
 func validate(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
+	}
+	if err := validateTimeoutScaling(c); err != nil {
+		return err
 	}
 	// Runtime-wide context-transform plugin chain (RFC Z). Validate names
 	// loudly at load — a typo'd plugin name must fail startup, not silently
