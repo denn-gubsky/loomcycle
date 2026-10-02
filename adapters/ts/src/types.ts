@@ -3381,8 +3381,9 @@ export interface StreamUserRunStatesOptions {
   statuses?: string[];
   /** Filter to one agent name. Empty means any. */
   agent?: string;
-  /** v1.78.0 — SERVER-side filter: only the runs one team walk spawned,
-   *  matched against each event's `parent_context.walk_id`.
+  /** v1.78.0 — SERVER-side filter: only one team walk — the walk's own run
+   *  (the event's `run_id`) and the runs it spawned (each event's
+   *  `parent_context.walk_id`).
    *
    *  A team walk's own run_id IS its walk id, so a caller that started a team
    *  with `detach: true` passes back exactly the handle it already holds —
