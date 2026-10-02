@@ -109,6 +109,10 @@ type routingThroughput struct {
 	TTFTMs     float64 `json:"ttft_ms,omitempty"`
 	ColdLoadMs float64 `json:"cold_load_ms,omitempty"`
 	QueueMsP50 int64   `json:"queue_ms_p50,omitempty"` // admin-only
+
+	// MaxMultiplier is the cap on this model's multiplier: its own
+	// timeout_scaling.models max_multiplier, else the global one.
+	MaxMultiplier float64 `json:"max_multiplier,omitempty"`
 }
 
 // candidateThroughput builds the block for one candidate, stripping the
@@ -121,6 +125,7 @@ func (s *Server) candidateThroughput(provider, model string, admin bool) *routin
 	rt := &routingThroughput{
 		Slowdown: st.Slowdown, Multiplier: st.Multiplier, Samples: st.Samples, Source: st.Source,
 		DecodeTPS: st.DecodeTPS, PrefillTPS: st.PrefillTPS, TTFTMs: st.TTFTMs, ColdLoadMs: st.ColdLoadMs,
+		MaxMultiplier: st.MaxMultiplier,
 	}
 	if admin {
 		rt.QueueMsP50 = st.QueueMsP50

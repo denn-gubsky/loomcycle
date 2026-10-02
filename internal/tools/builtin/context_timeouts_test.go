@@ -17,7 +17,7 @@ import (
 // estimate is off.
 func TestContextTool_SelfReportsTheCurrentModelsMeasuredSlowdown(t *testing.T) {
 	tool, ctx := contextFixture(t) // resolved anthropic / claude-opus-4-test
-	est := throughput.New(&config.Config{}, nil)
+	est := throughput.New(&config.Config{}, nil, nil)
 	for i := 0; i < 6; i++ {
 		// 100 output tokens in 6 s: 3× the reference's 2 s.
 		u := &providers.Usage{Provider: "anthropic", Model: "claude-opus-4-test", OutputTokens: 100,
@@ -35,6 +35,9 @@ func TestContextTool_SelfReportsTheCurrentModelsMeasuredSlowdown(t *testing.T) {
 	}
 	if tm["mode"] != "measure" || tm["source"] != "measured" || tm["samples"] != float64(6) {
 		t.Errorf("timeouts = %v, want mode measure, 6 measured samples", tm)
+	}
+	if tm["max_multiplier"] != float64(8) {
+		t.Errorf("max_multiplier = %v, want the global cap 8", tm["max_multiplier"])
 	}
 	if s, _ := tm["slowdown"].(float64); s < 2.99 || s > 3.01 {
 		t.Errorf("slowdown = %v, want 3", tm["slowdown"])
