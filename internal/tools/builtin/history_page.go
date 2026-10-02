@@ -98,14 +98,25 @@ func selectHistoryPage(ctx context.Context, events []store.Event, in historyInpu
 }
 
 // historyInRunBudget is how many characters of transcript one in-run `get` may
-// return: a fifth of the run's context window at about 4 characters a token,
-// so a page leaves room for the prompt, the task, and the answer. Without a
-// known window it falls back to the fixed cap the markdown export used.
+// return: a fifth of the run's configured context window at about 4 characters
+// a token, so a page leaves room for the prompt, the task, and the answer.
+// Without a configured window it falls back to the fixed cap the markdown
+// export used.
+//
+// Either way a page never exceeds a quarter of the window the model is actually
+// running with. The configured cap alone missed an agent with nothing
+// configured on a small local model: a 16K window got the fixed 24,000
+// characters, about 37% of it. The quarter only lowers the budget, never
+// raises it.
 func historyInRunBudget(ctx context.Context) int {
+	budget := historyMarkdownInRunCap
 	if n := tools.MaxContextTokens(ctx); n > 0 {
-		return n * 4 / 5
+		budget = n * 4 / 5
 	}
-	return historyMarkdownInRunCap
+	if q := quarterWindowChars(ctx); q > 0 {
+		budget = min(budget, q)
+	}
+	return budget
 }
 
 // fitBudget returns the last turn (exclusive) that fits the budget, counting
