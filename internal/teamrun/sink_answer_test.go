@@ -139,23 +139,28 @@ func TestStarter_ErrorSinkMessageCarriesNoAnswer(t *testing.T) {
 	}
 }
 
-// A rejected member's message keeps the answer the reviewer turned down as it
-// always did; only a successful run's message carries the bare answer.
-func TestStarter_RejectedSinkMessageIsUnchanged(t *testing.T) {
+// A rejected member's message carries the answer the reviewer turned down the
+// way a successful one does — bare, with its structured form — so the binds
+// that read an ok message read a rejected one too. Status and error still say
+// it was rejected.
+func TestStarter_RejectedSinkMessageCarriesTheBareAnswerAndStructured(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pr":1}`)}}}
 	r := starterRunner(ch, func(context.Context, string, Prompt, string) (SpawnResult, error) {
-		return SpawnResult{Output: "[sub-agent agent_id=ag]\nno", FinalText: "no",
+		return SpawnResult{Output: "[sub-agent agent_id=ag]\n" + `{"x":"y"}`, FinalText: `{"x":"y"}`,
 			Structured: map[string]any{"x": "y"}, RunID: "r1", Status: MemberRejected}, nil
 	})
 	// A rejected member does not count toward wait=all, so the state fails;
 	// its message is published either way.
 	_, _ = r.RunHandler(context.Background(), starterState(), &Task{})
 	sinks := ch.sinks(t)
-	if len(sinks) != 1 || sinks[0].Status != SinkRejected {
+	if len(sinks) != 1 || sinks[0].Status != SinkRejected || sinks[0].Error != "rejected by the reviewer" {
 		t.Fatalf("sinks = %+v, want one rejected message", sinks)
 	}
-	if sinks[0].Output != "[sub-agent agent_id=ag]\nno" || sinks[0].Structured != nil {
-		t.Errorf("rejected message = %+v, want the rejected output as before and no structured", sinks[0])
+	if sinks[0].Output != `{"x":"y"}` {
+		t.Errorf("rejected output = %q, want the bare answer", sinks[0].Output)
+	}
+	if sinks[0].Structured["x"] != "y" {
+		t.Errorf("rejected structured = %v, want x=y", sinks[0].Structured)
 	}
 }
 
