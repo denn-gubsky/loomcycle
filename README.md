@@ -182,7 +182,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.101.2) is a patch. The Web UI's Path tree now loads
+The most recent line (v1.102.0) restores DeepSeek's cheapest model, which
+DeepSeek renamed to `deepseek-flash` (every default config named the old,
+now unlisted id, so it was skipped as a tier candidate), and makes a run
+whose model stream ends unfinished fail instead of completing empty. Model
+speed measurement now keys aliased models correctly, ignores Ollama's own
+queue and takes a per-model cap. Team walks report the end state they reached
+and appear on their own run-state stream, the Web UI starts a team from its
+input form, and WebFetch no longer overflows a small model's window.
+
+Before it, v1.101.2 was a patch. The Web UI's Path tree now loads
 one directory at a time, so a user scope with a large `/facts` directory no
 longer hides every directory that sorts after it. It also starts measuring each
 model's speed (per-call timing on the usage ledger, a slowdown per model on
