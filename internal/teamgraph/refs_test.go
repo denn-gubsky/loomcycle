@@ -50,13 +50,14 @@ func TestChannelRefs_CoversEveryChannelBearingField(t *testing.T) {
 			Source: &StarterSource{Channel: "ch-source"},
 			Sink:   &StarterSink{Channel: "ch-sink"}}},
 		{ID: "pub", Handler: Handler{Kind: HandlerChannel, Channel: "ch-channel"}},
+		{ID: "form", Handler: Handler{Kind: HandlerInput, Publish: &InputPublish{Channel: "ch-publish"}}},
 	}}
 	got := map[string]bool{}
 	for _, r := range ChannelRefs(def) {
 		got[r.Channel] = true
 	}
 	for name, want := range map[string]string{
-		"Source": "ch-source", "Sink": "ch-sink", "Channel": "ch-channel",
+		"Source": "ch-source", "Sink": "ch-sink", "Channel": "ch-channel", "Publish": "ch-publish",
 	} {
 		if !got[want] {
 			t.Errorf("Handler.%s names a channel that ChannelRefs does not report (%q) — "+
@@ -64,7 +65,7 @@ func TestChannelRefs_CoversEveryChannelBearingField(t *testing.T) {
 		}
 	}
 	for _, f := range bearing {
-		if _, covered := map[string]bool{"Source": true, "Sink": true, "Channel": true}[f]; !covered {
+		if _, covered := map[string]bool{"Source": true, "Sink": true, "Channel": true, "Publish": true}[f]; !covered {
 			t.Errorf("Handler.%s is a NEW channel-bearing field with no case in ChannelRefs "+
 				"(and no coverage in this test) — every channel a definition names must be enumerated", f)
 		}

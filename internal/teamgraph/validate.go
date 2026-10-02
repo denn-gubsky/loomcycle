@@ -219,6 +219,9 @@ func validateHandler(stateID string, h Handler) error {
 	if h.Kind != HandlerInput && len(h.Schema) > 0 {
 		return fmt.Errorf("team definition: state %q sets `schema` but is kind %q (input only)", stateID, h.Kind)
 	}
+	if err := validatePublishing(stateID, h); err != nil {
+		return err
+	}
 	if err := validateCapture(stateID, h.Capture); err != nil {
 		return err
 	}

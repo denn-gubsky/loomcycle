@@ -421,7 +421,7 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		if r.channels == nil {
 			return Outcome{}, fmt.Errorf("state %q publishes to a channel but no channel executor is wired", st.ID)
 		}
-		payload, err := json.Marshal(map[string]any{"state": st.ID, "output": input})
+		payload, err := channelPayload(st, input)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("state %q channel payload: %w", st.ID, err)
 		}
@@ -434,6 +434,10 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		// The start form. Its schema is a contract for the CLIENT (and for a
 		// headless caller reading the definition); the runtime does not
 		// interpret it, so the state threads the caller's input through.
+		// A `publish` goes out first; one that fails fails the state.
+		if err := r.publishInput(ctx, st, input); err != nil {
+			return Outcome{}, err
+		}
 		return r.captured(st, task, Outcome{Output: input})
 
 	case teamgraph.HandlerAgent:
