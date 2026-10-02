@@ -76,7 +76,8 @@ says where the items come from:
     cap `reroute`: its items are the input the walk was started with, so
     route a retry to a later state;
   - it may carry `schema`, the run form a client renders, as an `input`
-    state does (no `input` state can come before the entry);
+    state does (no `input` state can come before the entry) — see The input
+    form;
   - `source.channel`, `path`, `scope`, `select`, `wait`, `n`, `wait_ms`,
     `batch`, `ack` and `per: "chunk"` are refused — it reads no store and
     has no cursor;
@@ -151,6 +152,54 @@ Without a Starter you also give up:
   published. When a walk must process its own input, start the team with a
   Starter whose source is the walk's input rather than publishing to a channel
   and reading it back.
+
+## The input form
+
+A team's front door is its **input form**: `schema`, a JSON Schema a client
+renders as the run form. It goes on an `input` state, or on a Starter whose
+source is the walk's input (which must be the entry); only the **entry's**
+form describes what a caller sends.
+
+The runtime does not interpret the form except for one check: when `op=run`
+starts a walk at its entry, the input is checked before any run starts or any
+model is called. The input is read as a JSON value by the rule above (text
+that is not JSON is `{"text": "<input>"}`), then:
+
+1. a top-level `type` — one name or a list — must match: `object`, `array`,
+   `string`, `number`, `integer` (no fractional part), `boolean`, `null`;
+2. if the value is an object, every field in `required` must be present;
+3. if the value is an object, a present field whose `properties.<field>.type`
+   is declared must match it. One level only.
+
+Nothing else is checked: not nested schemas, `enum`, `format`, `$ref` or
+`x-` keywords. A bad input is refused naming the field and the rule, e.g.
+`input field "chunk_id" is required` or `input field "document_id" must be a
+string, got a number`; nothing has run, so fix the input and run again. A walk
+resumed from a board at a later state is not checked.
+
+**Pickers.** A field may carry `x-loomcycle-picker` to tell a client how a
+person chooses its value:
+
+- `kind` — `document` or `chunk` (`memory`, `channel` and `agent` are
+  reserved);
+- `scope` — the store to browse: `user` (default) or `tenant`;
+- `under_path` — optional: narrows a document list to a Path subtree;
+- `document` — chunk pickers only: the sibling field holding the document id,
+  so the chunk list follows the chosen document;
+- `depth` — optional: `1` lists top-level sections only.
+
+The value stays the plain id string, so a headless caller just sends ids. The
+runtime never validates picker values (an unknown document or chunk is not
+refused at start); clients such as the canvas render them.
+
+```json
+{"type": "object", "required": ["document_id", "chunk_id"],
+ "properties": {
+   "document_id": {"type": "string", "title": "Document",
+                   "x-loomcycle-picker": {"kind": "document", "scope": "user", "under_path": "/parts"}},
+   "chunk_id":    {"type": "string", "title": "Part",
+                   "x-loomcycle-picker": {"kind": "chunk", "document": "document_id", "depth": 1}}}}
+```
 
 ## The task board
 
