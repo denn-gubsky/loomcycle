@@ -8,6 +8,64 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.102.0
+
+*DeepSeek's cheapest model works again: DeepSeek renamed it, and every default config was naming a model it no longer lists. A run whose model stream ends unfinished now fails instead of completing empty. Model speed measurement keys aliased models correctly, stops counting Ollama's own queue as slowness, and takes a per-model cap. Also: team walks report the end state they reached and appear on their own run-state stream, a Starter's sink messages carry bindable answers, the Web UI can start a team from its input form, and WebFetch no longer overflows a small model's window.*
+
+A minor release: #1584 to #1597 (every number in that range).
+- #1596 is the DeepSeek model ids; #1591 is the unfinished stream; #1592 is model speed;
+- #1585 to #1590, #1594 and #1597 are teams and agent definitions;
+- #1584 and #1595 are WebFetch; #1593 is docs.
+
+### DeepSeek: `deepseek-flash` replaces `deepseek-v4-flash` (#1596)
+
+DeepSeek's model list now has only `deepseek-flash` and `deepseek-v4-pro`. `deepseek-v4-flash` and `deepseek-chat` are still accepted, and DeepSeek serves both on `deepseek-flash`, but neither is listed. A tier candidate the provider does not list is skipped, so the base preset's DeepSeek cost floor was dead on every deployment using the defaults: `/v1/_routing` showed it `available: false`, and runs moved on to the next, dearer candidate.
+
+- **Every shipped config names `deepseek-flash`:** the base preset, `loomcycle.example.yaml`, the document-agent oauth bundle and the examples. Alias names are unchanged. A new test checks that every shipped `provider: deepseek` entry names a model DeepSeek lists.
+- **`deepseek-flash` is a thinking model at any effort.** A live probe sent it a forced `tool_choice` with no effort hint and DeepSeek refused: "Thinking mode does not support this tool_choice". So a forced tool choice is no longer sent to it (a stateful run on it failed every step before this), and a fallback onto it with a history that has no reasoning is downgraded to `deepseek-chat`, which DeepSeek serves without thinking.
+
+**If your own config names `deepseek-v4-flash`, change it to `deepseek-flash`;** the old id still answers but is skipped as a tier candidate.
+
+### A run whose model stream ends unfinished fails (#1591)
+
+A provider stream that closed without a final `done` message was read as a normal, empty end of turn. The run was recorded `completed`, with no text, no stop reason and no usage, on every transport. Found on the lab when an Ollama runner crashed mid-call.
+
+- **The loop:** a stream that ends with neither a done nor an error event, while the turn is still live, now fails the turn: "the response stream ended before the model finished its turn". A cancelled turn or run is not affected.
+- **The Ollama driver:** a 200 response that closes without its `done:true` frame now reports an error, not a finish.
+
+Every caller takes its status from the loop, so HTTP, gRPC, MCP `spawn_run`/`spawn_runs`, sub-agents, the scheduler and team walks all report `failed` now. The new error is not retried and does not trigger provider fallback. The Anthropic, OpenAI-compatible and Gemini drivers have the same "no final frame is a finish" shape; the loop check covers them, and their driver-level fix is a follow-up.
+
+### Model speed measurement (#1592)
+
+v1.101.2 started timing every model call and keeping a slowdown per model (measure only; no timeout changes). The first lab data found two faults and one gap:
+
+- **Aliased models are measured under their concrete name.** Samples were filed under the alias a run used and looked up under the concrete model, so a model reached through a `models:` alias never showed its samples on `/v1/_routing`. Live samples, the boot reload from the usage ledger and every lookup now resolve the alias first.
+- **Ollama's own queue no longer counts as slowness.** Queue time was wall time minus Ollama's `total_duration`, but that total includes the time a request waits inside Ollama for the runner. A call queued 150 s behind another scored about 10× slow. On Ollama the queue is now the wall time outside load, prompt evaluation and generation, and the time-to-first-token figure excludes it too.
+- **A per-model cap.** `timeout_scaling.models.<model>.max_multiplier` replaces the global cap for that model, both for clipping each sample and for the multiplier, at every sample count. It must be between 1 and 100. On the lab, `qwen3.8:latest` measured about 20× slower than the reference and saturated the global 8×; `ollama-local/qwen3.8:latest: { max_multiplier: 24 }` lets it measure as it is. The routing view and `Context op=self` report the cap in effect as `max_multiplier`.
+
+### Teams and agent definitions (#1585 to #1590, #1594, #1597)
+
+- **A walk records the end state it reached (#1588).** A walk's run result is now `{final_text, terminal}`, where `terminal` is the id of the end state, so two endings of one team can be told apart. It is absent when the walk failed or was cancelled.
+- **A walk appears on its own run-state stream (#1587).** Filtering the stream by `walk_id` now includes the walk's own run as well as its members: it is published when it starts, when it pauses at a breakpoint (with what it is waiting on) and when it ends.
+- **A Starter's sink message is bindable (#1585, #1589, #1594).** `output` is the member's bare answer, without the `[sub-agent agent_id=…]` line meant for models, and `structured` carries the member's `output_format` result. A rejected or review-expired member now publishes the same shape, and its answer is parsed against `output_format` too, so `$.output` and `$.structured.<field>` bind the same way for every status.
+- **A pin always wins over a tier (#1586, #1590).** A fork could not clear its parent's `tier`, so an agent forked onto a local pin kept the parent's tier and fell back to a paid provider. A fork now switches cleanly between a pin and a tier; AgentDef create/fork and `register_agent` refuse a pin and a tier together with the same rule as yaml; and a stored row that has both resolves to its pin.
+- **The Web UI starts a team from its input form (#1597).** The Teams page has a Run button. It builds the form from the entry state's `schema`, with document and chunk pickers from the `x-loomcycle-picker` hints, and starts the team's active version.
+
+### WebFetch (#1584, #1595)
+
+A local-model run with a 32K window made three WebFetch calls, and its next request was 61K tokens; Ollama refused it.
+
+- **A page is stripped before it is cut.** The raw body used to be capped at 256 KiB first. On a modern page that cut lands inside an inline `<style>` block, so the CSS came back as the page's text and the article after it was never read.
+- **The cut fits the model's real window.** The default output cut now follows the window the model is actually running with (what the provider reports, lowered by any configured cap), not only a configured `max_context_tokens`.
+
+### Upgrade notes
+
+- **No migration.**
+- **DeepSeek:** change any `deepseek-v4-flash` in your own config to `deepseek-flash`.
+- **Run status:** a run whose model stream ended unfinished is now `failed` with an error, where it was an empty `completed`. A client that treated an empty completed run as "nothing to say" will see the failure.
+- **Agent definitions:** creating or forking an agent with both a pin and a tier is refused; pick one.
+- **Adapters:** `@loomcycle/client` 1.102.0 adds `RunResult.terminal`. The Python package is version-aligned with no API change.
+
 ## What's in v1.101.2
 
 *The Web UI's Path tree loads one directory at a time, so a large directory (subject-homed facts) no longer hides every directory that sorts after it. Also: loomcycle now measures each model's speed (measure only, no timeout changes), and a team can be started from its own input form, with the input checked against the form before the walk starts.*
