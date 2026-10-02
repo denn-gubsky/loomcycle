@@ -417,6 +417,32 @@ func TestHTTPTruncatesLargeResponse(t *testing.T) {
 	}
 }
 
+// WebFetch reads far more than 256 KiB per call; the HTTP tool must not inherit
+// that. Its own default cap still applies when it is called directly.
+func TestHTTPDefaultCap_StaysAt256KiB(t *testing.T) {
+	big := strings.Repeat("x", 300<<10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, big)
+	}))
+	defer srv.Close()
+
+	h := &HTTP{HostAllowlist: []string{mustHost(t, srv.URL)}, AllowPrivateIPs: true}
+	body, _ := json.Marshal(map[string]string{"method": "GET", "url": srv.URL})
+	res, err := h.Execute(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Text)
+	}
+	if !strings.Contains(res.Text, "[truncated at 262144 bytes]") {
+		t.Errorf("HTTP default cap is not 256 KiB; tail = %q", res.Text[len(res.Text)-80:])
+	}
+	if n := strings.Count(res.Text, strings.Repeat("x", 1024)); n != 256 {
+		t.Errorf("HTTP returned %d KiB of body, want 256", n)
+	}
+}
+
 // Redirect chain: if an allowed host 302s to a non-allowlisted host,
 // the redirect must be refused. This is the second SSRF surface — a
 // model could be tricked into following a redirect to an internal URL.
