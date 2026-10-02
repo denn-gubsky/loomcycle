@@ -548,18 +548,69 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 			run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, ts
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+			cost, cost_currency, ts,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 		row.RunID, nullableText(row.SessionID), row.TenantID, nullableText(row.UserID),
 		nullableText(row.AgentID), nullableText(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
 		row.InputTokens, row.OutputTokens, row.CacheCreationTokens, row.CacheReadTokens,
 		costArg, nullableText(row.CostCurrency), ts,
+		nullableMs(row.DurationMs), nullableMs(row.TTFTMs), nullableMs(row.LoadMs),
+		nullableMs(row.PrefillMs), nullableMs(row.DecodeMs), nullableMs(row.QueueMs),
 	)
 	if err != nil {
 		return fmt.Errorf("record call usage: %w", err)
 	}
 	return nil
+}
+
+// nullableMs stores an unmeasured (0) call-timing field as NULL.
+func nullableMs(ms int64) any {
+	if ms == 0 {
+		return nil
+	}
+	return ms
+}
+
+// RecentCallTimings returns the latest timed per-call rows per (provider, model)
+// since the cutoff, oldest first (RFC DT boot seed). See the interface doc.
+func (s *Store) RecentCallTimings(ctx context.Context, since time.Time, perModel int) ([]store.TokenUsageRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT run_id, provider, model, input_tokens, output_tokens,
+			cache_creation_tokens, cache_read_tokens, ts,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
+		 FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, model ORDER BY ts DESC, id DESC) AS rn
+			  FROM token_usage
+			 WHERE duration_ms IS NOT NULL AND ts >= $1
+		 ) t WHERE rn <= $2
+		 ORDER BY ts ASC, id ASC`, since, perModel)
+	if err != nil {
+		return nil, fmt.Errorf("recent call timings: %w", err)
+	}
+	defer rows.Close()
+	var out []store.TokenUsageRow
+	for rows.Next() {
+		var r store.TokenUsageRow
+		var dur, ttft, load, prefill, decode, queue *int64
+		if err := rows.Scan(&r.RunID, &r.Provider, &r.Model, &r.InputTokens, &r.OutputTokens,
+			&r.CacheCreationTokens, &r.CacheReadTokens, &r.TS,
+			&dur, &ttft, &load, &prefill, &decode, &queue); err != nil {
+			return nil, fmt.Errorf("scan call timing: %w", err)
+		}
+		r.DurationMs, r.TTFTMs, r.LoadMs = derefMs(dur), derefMs(ttft), derefMs(load)
+		r.PrefillMs, r.DecodeMs, r.QueueMs = derefMs(prefill), derefMs(decode), derefMs(queue)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func derefMs(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // TokenUsageForRun returns all per-call usage rows for a run, oldest first.
@@ -568,7 +619,8 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 		`SELECT run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, ts
+			cost, cost_currency, ts,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
 		 FROM token_usage WHERE run_id = $1 ORDER BY iteration ASC, id ASC`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("token usage for run: %w", err)
@@ -579,14 +631,18 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 		var r store.TokenUsageRow
 		var sessionID, userID, agentID, parentRunID, costCurrency *string
 		var cost *float64
+		var dur, ttft, load, prefill, decode, queue *int64
 		if err := rows.Scan(
 			&r.RunID, &sessionID, &r.TenantID, &userID, &agentID, &parentRunID,
 			&r.Iteration, &r.Provider, &r.Model, &r.CredentialSource, &r.CredentialScopeID,
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &r.TS,
+			&dur, &ttft, &load, &prefill, &decode, &queue,
 		); err != nil {
 			return nil, fmt.Errorf("scan token usage: %w", err)
 		}
+		r.DurationMs, r.TTFTMs, r.LoadMs = derefMs(dur), derefMs(ttft), derefMs(load)
+		r.PrefillMs, r.DecodeMs, r.QueueMs = derefMs(prefill), derefMs(decode), derefMs(queue)
 		if sessionID != nil {
 			r.SessionID = *sessionID
 		}
