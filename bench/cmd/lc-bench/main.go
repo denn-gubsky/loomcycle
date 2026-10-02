@@ -526,13 +526,14 @@ func registerForTier(ctx context.Context, cli *runner.Client,
 	}
 	regCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// Pin only, no tier: the server refuses a pin and a tier together, and
+	// the bench tier is a case bucket (prompt + max_tokens), not routing.
 	err := cli.RegisterAgent(regCtx, runner.RegisterAgentArgs{
 		Name:         name,
 		SystemPrompt: sysPrompt,
 		Tools:        allowedTools,
 		Provider:     provider,
 		Model:        model,
-		Tier:         tier,
 		MaxTokens:    maxTokensForTier(tier),
 		Description:  "bench: " + tier + " tier eval candidate " + provider + "/" + model,
 		TTLSeconds:   7200,
