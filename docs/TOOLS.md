@@ -93,6 +93,10 @@ SSRF semantics (network tools):
 - After DNS resolution, **private IPs are hard-blocked regardless of allowlist** — RFC1918, loopback, link-local (including the AWS/GCP metadata service at `169.254.169.254`), multicast, and IPv6 ULAs. This defeats DNS rebinding.
 - Redirects re-validate the destination against the same allowlist on every hop.
 
+Response size (network tools):
+- `HTTP` returns at most **256 KiB** of response body, marked `[truncated at N bytes]` when cut.
+- `WebFetch` goes through the same guarded request path but reads up to **2 MiB** of raw page before stripping HTML, so a page whose first few hundred KiB are inline CSS still yields its text; a `<script>`/`<style>` block cut off by that read is dropped rather than returned as text. The stripped text is then cut — on a character boundary, marked `[truncated]` — to the run's configured `max_context_tokens` in characters (about a quarter of the window at ~4 characters a token), never above 256 KiB; with no window configured it is 256 KiB. The optional `max_chars` input asks for less or more, clamped to 1–256 KiB.
+
 ### MCP servers
 
 MCP servers are declared in YAML under `mcp_servers`. Each server's tools are registered as `mcp__{server}__{tool}` after the server's `tools/list` discovery completes.
