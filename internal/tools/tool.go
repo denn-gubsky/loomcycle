@@ -1571,6 +1571,31 @@ func MaxContextTokens(ctx context.Context) int {
 	return v
 }
 
+// ctxKeyEffectiveContextWindow carries the window the model is actually
+// running with, in tokens: the per-call window a driver last reported, else
+// the provider's static capability, lowered by the configured cap when one is
+// set. Separate from ctxKeyMaxContextTokens because that one is the CONFIGURED
+// cap and op=self reports it as such; an agent with nothing configured has no
+// cap but still has a window, and a tool sizing its output needs the window.
+// Stamped by the loop on the ctx tools are dispatched with.
+type ctxKeyEffectiveContextWindow struct{}
+
+// WithEffectiveContextWindow attaches the effective context window to ctx. A
+// non-positive value is a no-op (window unknown).
+func WithEffectiveContextWindow(ctx context.Context, n int) context.Context {
+	if n <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyEffectiveContextWindow{}, n)
+}
+
+// EffectiveContextWindow returns the effective context window from ctx, or 0
+// when unknown.
+func EffectiveContextWindow(ctx context.Context) int {
+	v, _ := ctx.Value(ctxKeyEffectiveContextWindow{}).(int)
+	return v
+}
+
 // ctxKeyContextUsage carries the run's CURRENT context footprint (tokens used as
 // of the last completed turn + the model's window ceiling) so Context op=self
 // can report it. An agent reads this alongside its compaction settings to decide
