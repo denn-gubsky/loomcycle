@@ -595,7 +595,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// child verdicts-only, though its live entry was full — the side a gate may
 	// err on. No sub-run row is interactive, so none is parked on a queue that
 	// would refuse its next turn.
-	steerQ, onSteer, deregSteer := s.makeSteerEntry(runCtx, steer.Entry{
+	steerQ, onSteer, closeSteer, deregSteer := s.makeSteerEntry(runCtx, steer.Entry{
 		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID, UserID: run.UserID,
 		VerdictsOnly: takesOnlyVerdicts(run),
 	}, emit)
@@ -741,6 +741,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
+		CloseSteerIfEmpty:   closeSteer,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(run.ID),

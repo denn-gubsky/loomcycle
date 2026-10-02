@@ -137,6 +137,11 @@ func (s *Server) runForSteer(ctx context.Context, runID string) (store.Run, erro
 		// A sub-agent its parent drives: it takes a verdict, nothing else.
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
+	if entry.Closed() {
+		// Finishing: its queue is closed, so a steer is refused as for an
+		// ended run, and a retune it would never read is refused with it.
+		return store.Run{}, connector.ErrRunNotInFlight
+	}
 	if !s.liveRunOwnershipOK(ctx, entry) {
 		return store.Run{}, connector.ErrRunNotInFlight
 	}
