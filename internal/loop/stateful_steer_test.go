@@ -260,3 +260,51 @@ func TestRun_Stateful_AnInteractiveRunStillParksAndTakesTheMessageThere(t *testi
 		t.Errorf("an interactive run closed its queue %d time(s) while parked", closes)
 	}
 }
+
+// A message sent to an autonomous stateful run while it works is read at the
+// next step — not only at `done` — and costs nothing: the step still gets the
+// result of the action that just ran as its observation, with the message
+// added to the task it is shown on every step.
+func TestRun_Stateful_AMessageSentBetweenStepsIsSeenByTheNextStep(t *testing.T) {
+	r := newSteeredStatefulRun(t, 1, "Use metric units.",
+		`{"patch":{"n":1},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{"n":2},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{"n":3},"done":true,"final":"answer one"}`)
+	res := r.run(t)
+	if n := r.prov.calls(); n != 3 || res.FinalText != "answer one" {
+		t.Fatalf("result %q after %d call(s), want answer one after 3 — the message cost an extra step, or ended the run", res.FinalText, n)
+	}
+	prompts := r.prov.prompts()
+	const added = "Your task (keep working on it until it is done):\nTask: count to 2\n\n" +
+		"Added by the operator while you were working:\nUse metric units.\n\n"
+	for step, p := range prompts[1:] {
+		if !strings.HasPrefix(p, added) {
+			t.Errorf("step %d was not shown the message with its task: %q", step+2, p)
+		}
+		if !strings.HasSuffix(p, "Latest observation:\nobserved") {
+			t.Errorf("step %d lost the result of the action that ran before it: %q", step+2, p)
+		}
+	}
+	if len(r.steers) != 1 || r.steers[0] != "Use metric units." {
+		t.Errorf("OnSteer saw %v, want the message recorded once as an operator turn", r.steers)
+	}
+	if err := r.pushAfterFinish(); !errors.Is(err, steer.ErrRunNotFound) {
+		t.Errorf("a push after the run finished = %v, want ErrRunNotFound", err)
+	}
+}
+
+// A message already waiting when the run starts is part of the first step's
+// task, shown once rather than as a task and an observation that repeat it.
+func TestRun_Stateful_AMessageWaitingAtTheStartJoinsTheFirstStepsTask(t *testing.T) {
+	r := newSteeredStatefulRun(t, 0, "", `{"patch":{"n":1},"done":true,"final":"answer one"}`)
+	if _, err := r.reg.Push(context.Background(), "run-stateful", steer.Message{Text: "Use metric units."}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	r.run(t)
+	prompts := r.prov.prompts()
+	want := "Current state:\n{}\n\nLatest observation:\nTask: count to 2\n\n" +
+		"Added by the operator while you were working:\nUse metric units."
+	if len(prompts) != 1 || prompts[0] != want {
+		t.Errorf("first step's prompt = %q, want %q", prompts, want)
+	}
+}

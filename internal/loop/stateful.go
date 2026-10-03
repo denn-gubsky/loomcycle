@@ -186,6 +186,13 @@ func statefulOperatorTurn(said []string, documented bool) string {
 	return prefix + strings.Join(said, "\n")
 }
 
+// statefulTaskAddendum heads an operator message that reached a run between
+// two steps. It is added to the task rather than made the observation: the
+// observation slot holds the result of the action that just ran, which the
+// model has not read yet, and the task is the one thing shown on every step —
+// so the message is neither bought with that result nor gone a step later.
+const statefulTaskAddendum = "Added by the operator while you were working:\n"
+
 const emitStateToolName = "emit_state"
 
 // emitStateToolSpec is the ONLY tool a stateful step offers: the model must call
@@ -860,6 +867,23 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		if opts.PauseGate != nil && opts.PauseGate.PauseRequested() {
 			if err := opts.PauseGate.Park(ctx); err != nil {
 				return RunResult{StopReason: "cancelled", Iterations: iter, Usage: total, State: sigma}, ctx.Err()
+			}
+		}
+		// The append loop reads its queue at the top of every iteration; this
+		// loop read it only while parked, so a message sent to an autonomous
+		// stateful run was acknowledged and never seen. An interactive run is
+		// left alone: its message waits for the park, which hands it over as
+		// the operator's turn.
+		if opts.SteerQueue != nil && !opts.interactiveAtBoundary(ctx) {
+			for _, text := range takeStatefulSteer(&opts, true, emit) {
+				first := obs == task // nothing has run yet: the observation IS the task
+				if task != "" {
+					task += "\n\n"
+				}
+				task += statefulTaskAddendum + text
+				if first {
+					obs = task
+				}
 			}
 		}
 		msgs := []providers.Message{statefulUserMessage(sigma, task, memo.render(helpTool, obs), obs)}
