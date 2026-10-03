@@ -3059,7 +3059,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	emitInertInterruption(holdsInterruptionTool(allowedTools), in.Interruption, emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
-	steerQ, onSteer, deregSteer := s.makeSteer(runParent, runID, agentID, sessionID, effectiveUserID, emit)
+	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(runParent, runID, agentID, sessionID, effectiveUserID, emit)
 	defer func() {
 		if !handOff {
 			deregSteer()
@@ -3203,6 +3203,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
+		CloseSteerIfEmpty:   closeSteer,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(runID),
@@ -4968,7 +4969,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	emitInertInterruption(holdsInterruptionTool(allowedTools), req.Interruption, emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
-	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
+	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(runCtx, runID, agentID, sessionID, req.UserID, emit)
 	deferDeregSteer := func() {
 		if !handOff {
 			deregSteer()
@@ -5075,6 +5076,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		UnboundedIterations: agentDef.UnboundedIterations,
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
+		CloseSteerIfEmpty:   closeSteer,
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(runID),
@@ -5724,7 +5726,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	emitInertInterruption(holdsInterruptionTool(allowedTools), body.Interruption, emit)
 
 	// PR 2: operator steering queue for this continuation run.
-	steerQ, onSteer, deregSteer := s.makeSteer(runCtx, run.ID, agentID, id, sess.UserID, emit)
+	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(runCtx, run.ID, agentID, id, sess.UserID, emit)
 	defer deregSteer()
 	heartbeat := s.makeHeartbeat(run.ID)
 
@@ -5818,6 +5820,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		UnboundedIterations:     agentDef.UnboundedIterations,
 		SteerQueue:              steerQ,
 		OnSteer:                 onSteer,
+		CloseSteerIfEmpty:       closeSteer,
 		Effort:                  effort,
 		MarkStalled:             s.markStalledFn(providerID, model),
 		ObserveCall:             s.callObserver(run.ID),
@@ -6270,22 +6273,29 @@ func (s *Server) armTurnCancelIf(interactive bool, runID string) func(context.Ca
 
 // makeSteer wires a run's operator steering queue (PR 2 / interactive
 // terminal). It registers the run in the steer registry and returns the
-// loop's SteerQueue, the OnSteer callback, and a deregister func (defer it so
-// even a panic cleans up). OnSteer persists each drained instruction as a
-// "user_input" transcript event (so a continuation replay rebuilds the
-// conversation) and emits the live EventSteer via the run's emit. Returns
-// (nil, nil, noop) when steering isn't wired (registry nil / no run_id) so
-// callers pass nil into RunOptions and the loop's steering path stays off.
-func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userID string, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func()) {
+// loop's SteerQueue, the OnSteer callback, the loop's CloseSteerIfEmpty, and a
+// deregister func (defer it so even a panic cleans up). OnSteer persists each
+// drained instruction as a "user_input" transcript event (so a continuation
+// replay rebuilds the conversation) and emits the live EventSteer via the
+// run's emit. CloseSteerIfEmpty lets a finishing run refuse a message sent
+// after its last read of the queue, so POST /v1/runs/{id}/input answers 404
+// instead of acknowledging a message nobody will read. Returns
+// (nil, nil, nil, noop) when steering isn't wired (registry nil / no run_id)
+// so callers pass nil into RunOptions and the loop's steering path stays off.
+func (s *Server) makeSteer(ctx context.Context, runID, agentID, sessionID, userID string, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func() bool, func()) {
 	return s.makeSteerEntry(ctx, steer.Entry{RunID: runID, AgentID: agentID, SessionID: sessionID, UserID: userID}, emit)
 }
 
 // makeSteerEntry is makeSteer for a registry entry the caller shapes (a
 // verdict-only one, for a child the Agent tool started).
-func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func()) {
+//
+// A verdict-only entry gets no close func: it takes nothing an operator types,
+// so nothing sent to it can be lost at its finish, and a verdict that arrives
+// late keeps the answer it always had.
+func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit func(providers.Event)) (<-chan steer.Message, func(steer.Message), func() bool, func()) {
 	runID, sessionID, userID := entry.RunID, entry.SessionID, entry.UserID
 	if s.steerReg == nil || runID == "" {
-		return nil, nil, func() {}
+		return nil, nil, nil, func() {}
 	}
 	q, dereg := s.steerReg.Register(entry)
 	onSteer := func(m steer.Message) {
@@ -6302,7 +6312,11 @@ func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit fun
 			Text: m.Text, Source: m.Source, SeenAt: time.Now().UTC().Format(time.RFC3339Nano),
 		}})
 	}
-	return q, onSteer, dereg
+	var closeIfEmpty func() bool
+	if !entry.VerdictsOnly {
+		closeIfEmpty = func() bool { return s.steerReg.CloseIfEmpty(runID) }
+	}
+	return q, onSteer, closeIfEmpty, dereg
 }
 
 // meta is the run's run-state identity: the emit sees every event that starts
@@ -6836,7 +6850,8 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 	defer prep.cleanup()             // registered second → runs first
 	if hold != nil {
 		hold.runID = prep.RunID
-		q, onSteer, dereg := s.makeSteerEntry(prep.SteerCtx, steer.Entry{
+		// Verdict-only: makeSteerEntry gives it no close func.
+		q, onSteer, _, dereg := s.makeSteerEntry(prep.SteerCtx, steer.Entry{
 			RunID: prep.RunID, AgentID: prep.AgentID, SessionID: prep.SessionID, UserID: prep.UserID, VerdictsOnly: true,
 		}, prep.Emit)
 		defer dereg()
@@ -6931,9 +6946,9 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 	}
 	defer prep.Slot.releaseCurrent()
 	defer prep.cleanup()
-	steerQ, onSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
+	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
 	defer deregSteer()
-	prep.Opts.SteerQueue, prep.Opts.OnSteer = steerQ, onSteer
+	prep.Opts.SteerQueue, prep.Opts.OnSteer, prep.Opts.CloseSteerIfEmpty = steerQ, onSteer, closeSteer
 	if armed := teamrun.ReviewArming(ctx); armed != nil {
 		prep.Opts.ReviewNow = s.recordReviewArming(prep.RunID, armed, teamrun.ReviewTTL(ctx))
 		// ctx still carries the walk's run id here — the key its breakpoint set

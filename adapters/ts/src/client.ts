@@ -398,6 +398,12 @@ export class LoomcycleClient {
    *  (the open `runStreaming` iterator, or a `streamRunByID` re-attach).
    *  Returns `{ run_id, delivered }`.
    *
+   *  A message that reaches a run before it finishes is answered: one sent
+   *  while a non-interactive run writes its final answer makes the run take
+   *  one more turn, and that turn's answer is the run's result. Once the run
+   *  has finished, a message is refused as not in flight
+   *  ({@link NotFoundError}, 404) rather than accepted and never read.
+   *
    *  Raises {@link UnavailableError} (503, steering off / no run),
    *  {@link AuthError} (401). A full steer queue surfaces as a 429. */
   async sendRunInput(

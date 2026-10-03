@@ -1261,7 +1261,12 @@ class LoomcycleClient:
         """Push an operator steering message into a LIVE interactive run
         (RFC AI; mirror of ``POST /v1/runs/{run_id}/input``). The run must
         be in-flight — parked at end_turn awaiting input, or mid-turn (the
-        message is drained at the next iteration boundary). Returns
+        message is drained at the next iteration boundary). A message that
+        reaches a run before it finishes is answered: one sent while a
+        non-interactive run writes its final answer makes the run take one
+        more turn, and that answer is the run's result. Once the run has
+        finished, a message is refused as not in flight (NotFound) rather
+        than accepted and never read. Returns
         ``{run_id, delivered}``. An unknown / cross-tenant run_id maps to
         :class:`AgentNotFoundError` (NotFound); a full steer queue to
         :class:`BackpressureError` (ResourceExhausted). The injected source

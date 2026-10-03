@@ -200,3 +200,40 @@ func TestSteerCoordinator_CarriesTheMessageKind(t *testing.T) {
 		t.Fatal("owner registry never received the message")
 	}
 }
+
+// A run that is finishing on its owner has closed its queue. The owner says so
+// in its ack, and the sender answers not-in-flight at once — what it answers
+// for a run that has ended — instead of waiting out the ack timeout and
+// reporting the message reached but not delivered.
+func TestSteerCoordinator_AClosedQueueOnTheOwnerReadsAsNotFound(t *testing.T) {
+	bp := newMemBackplane()
+	const owner = "replica-B"
+	runs := map[string]store.Run{"run-1": {ID: "run-1", Status: store.RunRunning, ReplicaID: owner}}
+	a := newSteerCoord(t, bp, "replica-A", runs, true)
+	b := newSteerCoord(t, bp, owner, runs, true)
+
+	ownerReg := steer.NewRegistry(4)
+	q, dereg := ownerReg.Register(steer.Entry{RunID: "run-1"})
+	defer dereg()
+	if !ownerReg.CloseIfEmpty("run-1") {
+		t.Fatal("CloseIfEmpty = false on an empty queue")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.RunSteerSubscriber(ctx, ownerReg)
+	go a.RunSteerAckSubscriber(ctx)
+	time.Sleep(30 * time.Millisecond) // let both Subscribe calls register
+
+	start := time.Now()
+	delivered, found, err := a.PushRemote(context.Background(), "run-1", steer.Message{Text: "late"})
+	if err != nil || delivered || found {
+		t.Errorf("PushRemote to a closed queue = (delivered=%v, found=%v, %v), want (false, false, nil)", delivered, found, err)
+	}
+	if waited := time.Since(start); waited >= time.Second {
+		t.Errorf("PushRemote took %v — it waited for an ack the owner never sent", waited)
+	}
+	if len(q) != 0 {
+		t.Errorf("the closed queue holds %d message(s), want none", len(q))
+	}
+}

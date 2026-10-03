@@ -274,10 +274,11 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	rc.userID = prep.UserID
 	rc.cancel = prep.CancelFn
 
-	steerQ, onSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
+	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
 	prep.Opts.Interactive = true
 	prep.Opts.SteerQueue = steerQ
 	prep.Opts.OnSteer = onSteer
+	prep.Opts.CloseSteerIfEmpty = closeSteer
 	prep.Opts.ArmTurnCancel = s.armTurnCancel(prep.RunID)
 
 	turnDone := rc.beginTurn(time.Now())
