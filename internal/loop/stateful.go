@@ -131,6 +131,61 @@ func parkForStatefulTurn(ctx context.Context, opts *RunOptions, sinceTurn int, e
 	}
 }
 
+// takeStatefulSteer is the stateful loop's non-blocking read of its steer
+// queue, for a run that is not parked on it. It returns the operator messages
+// taken, each already reported through OnSteer.
+//
+// A compaction control and a review verdict are dropped, exactly as
+// parkForStatefulTurn drops them: a stateful run has no history to replace and
+// is never held for review. Neither carries text an operator typed.
+//
+// canAnswer false is a run with no step left: a message is not taken — a turn
+// taken and never answered would read as the run's last word — but named in
+// the append loop's own error, so it is not acknowledged and silently lost.
+func takeStatefulSteer(opts *RunOptions, canAnswer bool, emit func(providers.Event)) []string {
+	var said []string
+	for {
+		select {
+		case m, ok := <-opts.SteerQueue:
+			if !ok {
+				return said
+			}
+			if m.Kind == steer.KindCompact || m.IsVerdict() {
+				continue
+			}
+			if !canAnswer {
+				// Through the append loop's drain so the wording cannot drift.
+				// It is handed this one message, never the queue itself: it
+				// would apply a compaction to a history this loop does not have.
+				one := make(chan steer.Message, 1)
+				one <- m
+				drainSteerUnanswerable(one, nil, emit)
+				continue
+			}
+			if opts.OnSteer != nil {
+				opts.OnSteer(m)
+			}
+			said = append(said, m.Text)
+		default:
+			return said
+		}
+	}
+}
+
+// statefulOperatorTurn frames the messages a finishing run took as its next
+// observation and task. documented is whether the run's prompt explains the
+// `operator: ` prefix (see buildStatefulSystem): a run that was built
+// autonomous was never told what it means, so its message is framed as what
+// that run does know — a task — which is also how a resume or continuation
+// frames a person's message for an autonomous run.
+func statefulOperatorTurn(said []string, documented bool) string {
+	prefix := "Task: "
+	if documented {
+		prefix = statefulOperatorPrefix
+	}
+	return prefix + strings.Join(said, "\n")
+}
+
 const emitStateToolName = "emit_state"
 
 // emitStateToolSpec is the ONLY tool a stateful step offers: the model must call
@@ -1150,6 +1205,21 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				}
 				// Cancelled while parked, or the queue closed: the run ends on
 				// the turn it had already completed.
+			} else {
+				// A run that ends here reads its queue once more first: a
+				// message sent while this answer was being produced was
+				// acknowledged, so it is answered — as the next operator turn,
+				// the way the park applies one — and that answer is the run's.
+				var said []string
+				if settleSteerAtFinish(&opts, func() bool {
+					said = takeStatefulSteer(&opts, iter+1 < maxIter, emit)
+					return len(said) > 0
+				}) {
+					next := statefulOperatorTurn(said, interactive)
+					obs, task = next, next
+					memo.clearWork()
+					continue
+				}
 			}
 			finish("end_turn")
 			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
