@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import {
-  canSee,
-  hasTenantScope as principalHasTenantScope,
-  type Visibility,
-} from "../lib/visibility";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { hasTenantScope as principalHasTenantScope } from "../lib/visibility";
+import { resolveSection, settingsHref, visibleSections } from "../lib/settingsSections";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import { erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
@@ -54,59 +51,6 @@ import TokenManager from "../components/TokenManager";
 //     (pause/resume), health.
 // The backend gates every surface too (defence in depth). Surfaces with their
 // own pages (snapshots, audit) are linked, not duplicated.
-type Section =
-  | "credentials"
-  | "limits"
-  | "routing"
-  | "ontology"
-  | "retention"
-  | "erasure"
-  | "tokens"
-  | "presets"
-  | "runtime"
-  | "maintenance"
-  | "health";
-
-interface SectionDef {
-  id: Section;
-  label: string;
-  // Which roles may reach this tab, using the same three-tier class the left nav
-  // uses. It replaces a binary `admin` boolean, which could not express the middle
-  // tier: a substrate:tenant operator is not an admin, but is not a delegated user
-  // either, and every tab below is at least tenant-gated on the server.
-  //
-  // ⚠️ ASSIGNED FROM THE ROUTE GATE, never from taste. A tab is "tenant" only where
-  // requiredScopeFor on its backing endpoint returns ScopeTenant. Mislabelling one
-  // grants nothing — the server still refuses — but it produces a control that
-  // 403s, which is exactly the defect this replaces.
-  vis: Visibility;
-}
-
-const SECTIONS: SectionDef[] = [
-  // Every tab here is at least tenant-gated: there is no "all" settings surface,
-  // because a delegated user administers nothing. The nav's gear is already gated on
-  // (admin || tenant), so this list is what protects the direct-URL path.
-  //
-  // ScopeTenant on the server: /v1/_credentialdef (isTenantConfinedDefPath),
-  // /v1/_limits, /v1/_routing and /v1/_ontology. (Memory has its own console at
-  // /memory — the shared @loomcycle/memory-view package — rather than a tab here.)
-  { id: "credentials", label: "Credentials", vis: "tenant" },
-  { id: "limits", label: "Limits", vis: "tenant" },
-  { id: "routing", label: "Routing", vis: "tenant" },
-  { id: "ontology", label: "Ontology", vis: "tenant" },
-  { id: "retention", label: "Retention", vis: "tenant" },
-  { id: "erasure", label: "Erasure", vis: "tenant" },
-  // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
-  // the tenant-confined def set; presets/runtime/health fall through to the /v1/_*
-  // catch-all; and repair-tenant is explicitly admin because it rewrites rows across
-  // every scope in one statement.
-  { id: "tokens", label: "Tokens", vis: "admin" },
-  { id: "presets", label: "Presets", vis: "admin" },
-  { id: "runtime", label: "Runtime", vis: "admin" },
-  { id: "maintenance", label: "Maintenance", vis: "admin" },
-  { id: "health", label: "Health", vis: "admin" },
-];
-
 export default function SettingsView() {
   const principal = usePrincipal();
   // A null principal = open mode / pre-resolution → admin-equivalent (matches
@@ -114,20 +58,19 @@ export default function SettingsView() {
   // once the principal has resolved, so this reflects the real role.
   const isAdmin = !principal || principal.is_admin;
   const hasTenantScope = principalHasTenantScope(principal?.scopes);
-  const visible = SECTIONS.filter((s) => canSee(s.vis, isAdmin, hasTenantScope));
-  // Default to the first tab the principal can actually see, rather than to a
-  // hardcoded one. The old default was "credentials" for anyone non-admin, which a
-  // delegated user could reach by typing /settings — rendering a panel whose every
-  // call 403s.
-  const [section, setSection] = useState<Section>(visible[0]?.id ?? "credentials");
-  // And re-derive on every render rather than trusting the stored value: the role
-  // resolves asynchronously, and a section selected before it lands (or left over
-  // from a previous principal) must not render just because state remembers it.
-  // Selection is a preference; visibility is a rule.
-  const active = visible.some((s) => s.id === section) ? section : visible[0]?.id;
+  const visible = visibleSections(isAdmin, hasTenantScope);
+  // The tab lives in the URL (/settings/<section>) so the top bar's settings menu
+  // can deep-link one and the back button walks tabs. It is re-resolved against
+  // what the principal can see on every render: an absent, unknown or
+  // not-permitted section falls back to the first visible tab rather than
+  // rendering a panel whose every call 403s. Selection is a preference;
+  // visibility is a rule.
+  const { section } = useParams<{ section?: string }>();
+  const navigate = useNavigate();
+  const active = resolveSection(section, visible);
 
   if (visible.length === 0) {
-    // Reachable by direct URL only — the nav's gear is gated on (admin || tenant) —
+    // Reachable by direct URL only — the top bar's menu lists no section for this viewer —
     // but "no tabs at all" renders as a blank page, which reads as broken rather
     // than as forbidden. Say which it is.
     return (
@@ -151,7 +94,7 @@ export default function SettingsView() {
             key={s.id}
             type="button"
             className={"settings-tab" + (active === s.id ? " active" : "")}
-            onClick={() => setSection(s.id)}
+            onClick={() => navigate(settingsHref(s.id))}
           >
             {s.label}
           </button>

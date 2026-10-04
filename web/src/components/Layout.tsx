@@ -17,7 +17,6 @@ import {
   KeyRound,
   Library,
   ListTree,
-  LogOut,
   type LucideIcon,
   Moon,
   PanelLeftClose,
@@ -26,7 +25,6 @@ import {
   Plug,
   Radio,
   ScrollText,
-  Settings,
   Sun,
   Users,
   Workflow,
@@ -34,6 +32,7 @@ import {
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
+import SettingsMenu from "./SettingsMenu";
 import TenantCombobox from "./TenantCombobox";
 
 const USER_ID_KEY = "loomcycle.userId";
@@ -407,24 +406,12 @@ export default function Layout() {
               </form>
             )}
           </div>
-          {/* Settings hub — rightmost gear. Web-reaches the critical CLI surfaces
-              for no-shell deployments (the TrueNAS RFC AR prerequisite). Visible to
-              admins AND substrate:tenant operators: a tenant needs Settings to enter
-              its own provider API keys (Credentials tab) and to see the tenant-scoped
-              limits/routing tabs. SettingsView filters the SECTIONS by scope, and the
-              backend gates each surface server-side (defence in depth). */}
-          {(isAdmin || hasTenantScope) && (
-            <NavLink to="/settings" className="settings-gear" title="Settings" aria-label="Settings">
-              <Settings size={16} />
-            </NavLink>
-          )}
-          {/* Sign out — clears the HttpOnly session cookie via the server's
-              /ui/logout route (JS can't clear it) and bounces to /login. A
-              full-page anchor (not a router push) so the Go handler runs.
-              Available to every authenticated role, not just admin. */}
-          <a href="/ui/logout" className="logout-btn" title="Sign out" aria-label="Sign out">
-            <LogOut size={16} />
-          </a>
+          {/* Settings menu — rightmost. The gear opens the viewer's Settings
+              sections (filtered by role, exactly as the hub's tabs are) and ends
+              in Log out. Rendered for EVERY role: Log out lives only here, so a
+              delegated user with no section still gets the menu. The backend
+              gates each surface server-side (defence in depth). */}
+          <SettingsMenu isAdmin={isAdmin} hasTenantScope={hasTenantScope} />
         </header>
         <main className="content">
           <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />

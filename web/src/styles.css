@@ -5789,7 +5789,7 @@ button.primary:disabled {
 }
 
 /* ======================================================
- * Settings hub — the top-bar gear → /settings.
+ * Settings hub — the top-bar gear's menu → /settings/<section>.
  * Tokens / presets / runtime / health, web-reaching the
  * critical CLI surfaces for no-shell deployments (TrueNAS).
  * ====================================================== */
@@ -5812,22 +5812,61 @@ button.primary:disabled {
   border-color: var(--lc-accent);
 }
 
-.logout-btn {
+/* Settings menu (SettingsMenu): the gear's drop-down — one row per Settings
+   section, a rule, then Log out. Anchored to the gear's right edge because the
+   gear is the bar's last item. */
+.settings-menu {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 28px;
-  background: transparent;
-  color: var(--lc-text-muted);
+}
+.settings-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--lc-surface);
   border: 1px solid var(--lc-rule);
   border-radius: var(--lc-radius-sm);
-  cursor: pointer;
-  padding: 0;
+  box-shadow: var(--lc-shadow);
 }
-.logout-btn:hover {
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  color: var(--lc-text);
+  font-size: var(--lc-text-sm);
+  white-space: nowrap;
+}
+.settings-menu-item svg {
+  flex-shrink: 0;
+  color: var(--lc-text-muted);
+}
+.settings-menu-item:hover,
+.settings-menu-item:focus {
+  background: var(--lc-accent-soft);
+  text-decoration: none;
+  outline: none;
+}
+.settings-menu-item[aria-current="page"] {
+  font-weight: 600;
+}
+.settings-menu-item[aria-current="page"] svg {
+  color: var(--lc-accent);
+}
+.settings-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--lc-rule);
+}
+.settings-menu-logout:hover,
+.settings-menu-logout:focus,
+.settings-menu-logout:hover svg,
+.settings-menu-logout:focus svg {
   color: var(--lc-failed);
-  border-color: var(--lc-failed);
 }
 
 .settings-view {
