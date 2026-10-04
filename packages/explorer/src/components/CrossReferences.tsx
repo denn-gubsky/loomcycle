@@ -1,14 +1,16 @@
 import { useState } from "react";
 import type { DocEdge } from "../types";
+import ChunkTarget from "./ChunkTarget";
 import MermaidDiagram from "./Mermaid";
 
 // CrossReferences renders the RFC BN P4 cross-reference surface for a document:
 //   - a References list for the SELECTED chunk (its outgoing + incoming edges),
-//     each same-document target clickable to navigate; a cross-document target is
-//     labeled (↗) but not navigable from this single-document viewer.
+//     each target clickable: a same-document one selects in place, a
+//     cross-document one (↗) opens that document at the chunk.
 //   - a collapsible whole-document relationship GRAPH (a Mermaid flowchart of the
 //     document's edges), capped to the first N with a "show all" expand so a
-//     heavily cross-linked document doesn't render an unreadable diagram.
+//     heavily cross-linked document doesn't render an unreadable diagram. Its
+//     nodes follow the same rule as the list.
 // Fed by one get_edges call (all edges touching the document); renders nothing
 // when the document has no edges.
 export interface CrossReferencesProps {
@@ -16,6 +18,9 @@ export interface CrossReferencesProps {
   documentId: string;
   selectedId?: string;
   onSelectChunk: (id: string) => void;
+  // Opens ANOTHER document at a chunk. Omitted → cross-document targets are
+  // labels only.
+  onOpenDocument?: (documentId: string, chunkId: string, title?: string) => void;
 }
 
 // GRAPH_CAP is the default number of edges the relationship graph draws before
@@ -27,6 +32,7 @@ export default function CrossReferences({
   documentId,
   selectedId,
   onSelectChunk,
+  onOpenDocument,
 }: CrossReferencesProps) {
   const [showGraph, setShowGraph] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -38,6 +44,12 @@ export default function CrossReferences({
     : [];
   const graphEdges = showAll ? edges : edges.slice(0, GRAPH_CAP);
   const graphDef = buildGraph(graphEdges);
+  const followNode = (node: string) => {
+    const hit = graphEndpoint(graphEdges, node);
+    if (!hit) return;
+    if (!hit.documentId || hit.documentId === documentId) onSelectChunk(hit.id);
+    else onOpenDocument?.(hit.documentId, hit.id, hit.title);
+  };
 
   return (
     <div className="doc-refs">
@@ -55,6 +67,7 @@ export default function CrossReferences({
                   selectedId={selectedId}
                   documentId={documentId}
                   onSelectChunk={onSelectChunk}
+                  onOpenDocument={onOpenDocument}
                 />
               ))}
             </ul>
@@ -68,7 +81,7 @@ export default function CrossReferences({
         </button>
         {showGraph && (
           <>
-            <MermaidDiagram code={graphDef} />
+            <MermaidDiagram code={graphDef} onNodeClick={followNode} />
             {edges.length > GRAPH_CAP && (
               <button type="button" className="doc-graph-more" onClick={() => setShowAll((s) => !s)}>
                 {showAll ? `show top ${GRAPH_CAP}` : `show all ${edges.length}`}
@@ -81,39 +94,37 @@ export default function CrossReferences({
   );
 }
 
-function RefRow({
+export function RefRow({
   edge,
   selectedId,
   documentId,
   onSelectChunk,
+  onOpenDocument,
 }: {
   edge: DocEdge;
   selectedId: string;
   documentId: string;
   onSelectChunk: (id: string) => void;
+  onOpenDocument?: (documentId: string, chunkId: string, title?: string) => void;
 }) {
   const outgoing = edge.from_id === selectedId;
   const otherId = outgoing ? edge.to_id : edge.from_id;
-  const otherTitle = (outgoing ? edge.to_title : edge.from_title) || otherId.slice(0, 8);
+  const otherTitle = outgoing ? edge.to_title : edge.from_title;
   const otherDoc = outgoing ? edge.to_document_id : edge.from_document_id;
-  // An edge whose far endpoint carries no document_id (defensively) is treated as
-  // same-document; a different document_id is a cross-document link.
-  const sameDoc = !otherDoc || otherDoc === documentId;
   return (
     <li className="doc-ref">
       <span className="doc-ref-kind">{edge.kind}</span>
       <span className="doc-ref-arrow" aria-hidden>
         {outgoing ? "→" : "←"}
       </span>
-      {sameDoc ? (
-        <button type="button" className="doc-ref-target" onClick={() => onSelectChunk(otherId)}>
-          {otherTitle}
-        </button>
-      ) : (
-        <span className="doc-ref-target external" title="In another document">
-          {otherTitle} ↗
-        </span>
-      )}
+      <ChunkTarget
+        id={otherId}
+        title={otherTitle}
+        targetDocumentId={otherDoc}
+        documentId={documentId}
+        onSelectChunk={onSelectChunk}
+        onOpenDocument={onOpenDocument}
+      />
     </li>
   );
 }
@@ -133,7 +144,24 @@ function buildGraph(edges: DocEdge[]): string {
   return lines.join("\n");
 }
 
-function nodeId(id: string): string {
+// graphEndpoint maps a drawn node back to the chunk it stands for, with the
+// document that chunk lives in — what a click on the node needs to follow it.
+export function graphEndpoint(
+  edges: DocEdge[],
+  node: string,
+): { id: string; documentId?: string; title?: string } | undefined {
+  for (const e of edges) {
+    if (nodeId(e.from_id) === node) {
+      return { id: e.from_id, documentId: e.from_document_id, title: e.from_title };
+    }
+    if (nodeId(e.to_id) === node) {
+      return { id: e.to_id, documentId: e.to_document_id, title: e.to_title };
+    }
+  }
+  return undefined;
+}
+
+export function nodeId(id: string): string {
   return "n" + id.replace(/[^a-zA-Z0-9]/g, "");
 }
 

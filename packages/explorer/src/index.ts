@@ -29,6 +29,10 @@ export type {
   AssistantContext,
 } from "./types";
 
+// A stop on the document trail — the argument shape of DocumentViewer's
+// onOpenDocument (a followed cross-document reference).
+export type { DocLocation } from "./lib/docTrail";
+
 // Connection → client factory (the default data-source path).
 export { createLoomcycleClient, assetFetchFromConnection } from "./lib/createClient";
 export type { Connection, AssetFetch } from "./lib/createClient";

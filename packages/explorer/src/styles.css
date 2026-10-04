@@ -1092,6 +1092,116 @@
   color: var(--fg-soft);
   cursor: default;
 }
+/* A cross-document target is a button once the host can open that document
+   (it keeps the ↗); the muted, inert look is only for a host that cannot. */
+.loomcycle-explorer button.doc-ref-target.external {
+  color: var(--accent);
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-ref-target:focus-visible,
+.loomcycle-explorer .doc-trail button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+/* The relationship graph's nodes follow the same links as the list. */
+.loomcycle-explorer .md-mermaid-nav g.node {
+  cursor: pointer;
+}
+
+/* ---- document trail: the breadcrumb back through followed references ---- */
+.loomcycle-explorer .doc-trail {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--lc-text-sm);
+  min-width: 0;
+}
+.loomcycle-explorer .doc-trail-back {
+  flex: none;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-trail-back:hover {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-trail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.loomcycle-explorer .doc-trail-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.loomcycle-explorer .doc-trail-item + .doc-trail-item::before {
+  content: "›";
+  flex: none;
+  margin: 0 6px;
+  color: var(--fg-muted);
+}
+/* Long titles are cut here; the full title is the element's tooltip. */
+.loomcycle-explorer .doc-trail-crumb,
+.loomcycle-explorer .doc-trail-current {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loomcycle-explorer .doc-trail-crumb,
+.loomcycle-explorer .doc-trail-gap {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-trail-crumb:hover,
+.loomcycle-explorer .doc-trail-gap:hover {
+  text-decoration: underline;
+}
+.loomcycle-explorer .doc-trail-current {
+  color: var(--fg);
+  font-weight: 600;
+}
+/* A document open by id, with no Path-tree entry to show in the header. */
+.loomcycle-explorer .paths-doc-unfiled {
+  font-family: inherit;
+  word-break: normal;
+}
+.loomcycle-explorer .paths-doc-unfiled em {
+  font-style: normal;
+  color: var(--fg-soft);
+}
+/* A document that could not be read (deleted / other scope / no access). */
+.loomcycle-explorer .doc-unavailable {
+  padding: 24px 16px;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .doc-unavailable p {
+  margin: 0 0 8px 0;
+}
+.loomcycle-explorer .doc-unavailable-lead {
+  color: var(--fg);
+  font-weight: 600;
+}
+.loomcycle-explorer .doc-unavailable-detail {
+  word-break: break-all;
+}
 .loomcycle-explorer .doc-graph {
   margin-top: 12px;
 }
