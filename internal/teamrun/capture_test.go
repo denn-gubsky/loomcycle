@@ -71,20 +71,29 @@ func TestCapture_SpawnerWithoutFinalTextReadsItsOutput(t *testing.T) {
 // The root of a JSON answer binds what it always has: a string without its
 // quotes, a number or bool in its natural form, an object or array as compact
 // JSON with sorted keys, null as empty. Only a non-JSON answer is bound as text.
+// The text spawner is the case that already parsed; the member runner's header
+// is what kept an agent state's JSON answer from parsing at all.
 func TestCapture_RootOfAJSONAnswerBindsItsStringifiedValue(t *testing.T) {
-	for answer, want := range map[string]string{
-		`{"b": 1, "a": "x"}`: `{"a":"x","b":1}`,
-		`[1, "two"]`:         `[1,"two"]`,
-		`"quoted"`:           `quoted`,
-		`42`:                 `42`,
-		`true`:               `true`,
-		`null`:               ``,
-	} {
-		vars := captureOf(t, agentState("writer"), memberSpawn(answer), map[string]string{"root": "$"})
-		got, bound := vars["root"]
-		if !bound || got != want {
-			t.Errorf("answer %s: root = %q (bound %v), want %q", answer, got, bound, want)
-		}
+	text := func(answer string) SpawnFunc {
+		return textSpawn(func(context.Context, string, Prompt, string) (string, error) { return answer, nil })
+	}
+	for spawner, spawn := range map[string]func(string) SpawnFunc{"text spawner": text, "member runner": memberSpawn} {
+		t.Run(spawner, func(t *testing.T) {
+			for answer, want := range map[string]string{
+				`{"b": 1, "a": "x"}`: `{"a":"x","b":1}`,
+				`[1, "two"]`:         `[1,"two"]`,
+				`"quoted"`:           `quoted`,
+				`42`:                 `42`,
+				`true`:               `true`,
+				`null`:               ``,
+			} {
+				vars := captureOf(t, agentState("writer"), spawn(answer), map[string]string{"root": "$"})
+				got, bound := vars["root"]
+				if !bound || got != want {
+					t.Errorf("answer %s: root = %q (bound %v), want %q", answer, got, bound, want)
+				}
+			}
+		})
 	}
 }
 
