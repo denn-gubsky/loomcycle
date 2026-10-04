@@ -8,6 +8,52 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.103.0
+
+*A message sent to a run while it writes its final answer is now answered instead of acknowledged and dropped; one sent after the run finished is refused. Team states can put the previous state's output inside a template and capture a plain-text answer into a variable, and a walk passes answers on without the sub-agent header. The Web UI follows a document reference into another document with a breadcrumb back, draws another tenant's team diagram for an admin, and has a reworked top bar. Also: a History result in a run never exceeds a quarter of the model's window.*
+
+A minor release: #1600 to #1609 (every number in that range).
+- #1601 and #1602 are operator messages to a running agent;
+- #1607 to #1609 are team definitions;
+- #1603 to #1606 are the Web UI; #1600 is History.
+
+### An operator message sent during the final answer is answered (#1601, #1602)
+
+`POST /v1/runs/{run_id}/input` answered `delivered: true` as soon as the message was queued, but a run that was not interactive read its queue only at the top of a turn. A message that arrived while the model wrote its final answer was discarded when the run ended, and nothing told the sender. A stateful run that was not interactive never read its queue at all.
+
+- **Read before finishing:** as such a run finishes, it reads its queue once more. A waiting message becomes a user turn, the run answers again, and that answer is the run's result (and so a team walk's, when the run is a member). The same read applies after an approved review.
+- **No false acknowledgement:** that last read closes the queue in one step, so a message arrives either before it and is answered, or after it and is refused with `404 run_not_in_flight`, the answer an ended run gives. Across replicas the owner's reply carries the closed state, so the sender gets the 404 at once rather than waiting out the acknowledgement timeout.
+- **No turn left:** if a message is waiting but the run has reached its iteration cap, the run completes on its current answer and emits an error naming the unread message.
+- **Stateful runs:** a stateful run that is not interactive now reads operator messages between its steps (the message is added to its task, so the result of the action it just ran is not lost) and once more before it finishes.
+
+Interactive runs, runs held for review and sub-agents that take only a verdict behave as before.
+
+### Team definitions (#1607 to #1609)
+
+- **A template can include the hand-off (#1608).** A state's `input_template` used to replace what the previous state handed over. `{{thread.output}}` inside `input_template` is now replaced by that hand-off (the walk's input on the entry state) after the template is expanded, so the hand-off itself is never expanded. A template that does not name it replaces the hand-off, as before. The marker is refused in `system_prompt`, and a run no longer fills it into the system segment: before this, a state with the marker in its `system_prompt` had the previous agent's output written into its system prompt.
+- **`capture` reads plain text (#1607).** `capture: {"draft": "$"}` binds an agent's whole answer when it is not JSON; any other path still binds nothing. Capture on agent and consolidator states reads the bare answer, so a JSON answer can be captured by field (`$.title`), which the header in front of it used to prevent. `$` on an `input` state binds a plain-text walk input.
+- **A walk passes answers on without the header (#1609).** The hand-off to the next state, each entry's `output` in a parallel or Starter results envelope and the walk's own `final_text` are the agent's answer as it wrote it, without the `[sub-agent agent_id=…]` line. Each envelope entry already names its `agent` and `run_id`. The `Agent` tool's own sub-agent results keep the line.
+
+### Web UI (#1603 to #1606)
+
+- **Follow a reference into another document (#1604).** In the document view, a reference, backlink, related chunk or graph node that points into another document is now clickable: it opens that document at the referenced chunk, the tree and path follow, and a breadcrumb with a Back button returns to the document and chunk you came from. A target that cannot be read shows a message instead of an empty pane. This ships in `@loomcycle/explorer` 0.9.0.
+- **Team diagrams for an admin (#1603).** The Teams page and the team-walk view asked for a diagram by team name, which the server resolves in the caller's own tenant, so an admin saw "team not found" for another tenant's team. Both now ask by version id, and the walk view draws the version the walk ran. Run, Save and Delete are disabled, with the reason shown, on a team outside your own tenant.
+- **The top bar (#1605, #1606).** Every item sits on one centre line (the status chip was pushed up by a stylesheet rule meant for the Settings page). The tenant and user fields are comboboxes: a list of known tenants or users that filters as you type, with any id still typeable; the separate edit button is gone. The gear opens a menu of the settings sections, Users and Log out; each settings section has its own URL (`/settings/limits`), and Users is no longer in the left navigation.
+
+### History (#1600)
+
+In a run, a History result now fits a quarter of the window the model is actually running with. The page budget was sized from a configured `max_context_tokens` only, and `window`, `list`, `search` and `related` were bounded by row or turn counts, not size. All of them now fit the budget and mark a shortened result `truncated` with a note. The budget is only ever lowered. Results outside a run are unchanged.
+
+### Upgrade notes
+
+- **No migration.**
+- **Operator messages:** a message sent to a finished run now gets `404 run_not_in_flight` where it got `delivered: true`. A message sent in time makes the run take one more turn, which is one more model call.
+- **Team walks:** a hand-off, an envelope entry's `output` and a walk's `final_text` no longer start with `[sub-agent agent_id=…]`. A consolidator prompt or a client that stripped or parsed that line now receives the bare answer.
+- **Team definitions:** `{{thread.output}}` in a `system_prompt` is refused at create and fork. A stored definition that has it there now sends the marker as written.
+- **`capture`:** an answer that is exactly a JSON value (`"quoted"`, `42`, `true`, `null`) is read as JSON, so `$` binds `quoted` without its quotes.
+- **History:** in-run pages are smaller on a small window, and a list, search or window result can now be `truncated`.
+- **Adapters:** `@loomcycle/client` and the Python package are version-aligned at 1.103.0 with no API change. `@loomcycle/explorer` 0.9.0 publishes from its own `explorer-v0.9.0` tag.
+
 ## What's in v1.102.0
 
 *DeepSeek's cheapest model works again: DeepSeek renamed it, and every default config was naming a model it no longer lists. A run whose model stream ends unfinished now fails instead of completing empty. Model speed measurement keys aliased models correctly, stops counting Ollama's own queue as slowness, and takes a per-model cap. Also: team walks report the end state they reached and appear on their own run-state stream, a Starter's sink messages carry bindable answers, the Web UI can start a team from its input form, and WebFetch no longer overflows a small model's window.*

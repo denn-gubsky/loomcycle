@@ -182,11 +182,20 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.102.0) restores DeepSeek's cheapest model, which
+The most recent line (v1.103.0) answers an operator message sent to a run
+while it writes its final answer, where it used to be acknowledged and dropped;
+a message sent after the run finished is refused. Team states can put the
+previous state's output inside a template and capture a plain-text answer into
+a variable, and a walk passes answers on without the sub-agent header. The Web
+UI follows a document reference into another document with a breadcrumb back,
+draws another tenant's team diagram for an admin, and has a reworked top bar. A
+History result in a run never exceeds a quarter of the model's window.
+
+Before it, v1.102.0 restored DeepSeek's cheapest model, which
 DeepSeek renamed to `deepseek-flash` (every default config named the old,
-now unlisted id, so it was skipped as a tier candidate), and makes a run
+now unlisted id, so it was skipped as a tier candidate), and made a run
 whose model stream ends unfinished fail instead of completing empty. Model
-speed measurement now keys aliased models correctly, ignores Ollama's own
+speed measurement keys aliased models correctly, ignores Ollama's own
 queue and takes a per-model cap. Team walks report the end state they reached
 and appear on their own run-state stream, the Web UI starts a team from its
 input form, and WebFetch no longer overflows a small model's window.
