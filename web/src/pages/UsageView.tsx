@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { UsageAggregate, UsageReportResponse, getUsage } from "../api";
+import { usePrincipal } from "../components/Layout";
+import TenantCombobox from "../components/TenantCombobox";
 
 // UsageView — GET /v1/_usage (RFC AV).
 //
@@ -66,6 +68,10 @@ export default function UsageView() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [tenant, setTenant] = useState("");
+  // The tenant drop-down is admin-only (listing tenants is); a null principal is
+  // open mode, which is admin-equivalent.
+  const principal = usePrincipal();
+  const isAdmin = !principal || principal.is_admin;
   const [resp, setResp] = useState<UsageReportResponse | null>(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -184,11 +190,12 @@ export default function UsageView() {
           </label>
           <label>
             tenant
-            <input
-              type="text"
-              placeholder="(admin focus)"
+            <TenantCombobox
               value={tenant}
-              onChange={(e) => setTenant(e.target.value)}
+              onChange={setTenant}
+              onPick={setTenant}
+              enabled={isAdmin}
+              placeholder="(admin focus)"
             />
           </label>
           <button

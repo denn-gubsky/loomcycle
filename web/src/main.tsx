@@ -96,7 +96,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="limits" element={<LimitsView />} />
           <Route path="users" element={<UsersView />} />
           <Route path="activity" element={<ActivityMonitor />} />
-          <Route path="settings" element={<SettingsView />} />
+          {/* :section deep-links a hub tab (the top bar's settings menu). */}
+          <Route path="settings/:section?" element={<SettingsView />} />
           <Route path="*" element={<Navigate to="/agents" replace />} />
         </Route>
       </Routes>

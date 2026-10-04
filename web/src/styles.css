@@ -109,12 +109,44 @@ textarea::placeholder {
   flex-direction: column;
 }
 .topbar {
+  /* Two heights for everything in the bar: controls (buttons, inputs, selects,
+     icon buttons) and pills (the status chip, the role badge). Each rule below
+     reads these instead of deriving a height from its own padding + font size,
+     which is how the bar ended up with 24/26/28px neighbours. */
+  --topbar-control-h: 28px;
+  --topbar-pill-h: 22px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  /* Wrap rather than overflow: the bar has no collapsed form, so in a narrow
+     window the right-hand groups drop to a second row. */
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: 10px 16px;
   background: var(--bg-soft);
   border-bottom: 1px solid var(--border);
+}
+.topbar button,
+.topbar select,
+.topbar input {
+  height: var(--topbar-control-h);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.topbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.topbar .runtime-state,
+.topbar .role-badge {
+  display: inline-flex;
+  align-items: center;
+  height: var(--topbar-pill-h);
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
 }
 .brand {
   display: flex;
@@ -4342,6 +4374,79 @@ button.primary:disabled {
   border-color: var(--accent);
 }
 
+/* Tenant combobox (TenantCombobox): the focus input plus a drop-down of known
+   tenants. Used in the topbar and on the Limits / Usage pages, so the list is
+   themed from tokens and positioned against its own wrapper. */
+.tenant-combo {
+  position: relative;
+  display: inline-flex;
+}
+.tenant-combo input {
+  width: 100%;
+}
+.tenant-combo.has-list input {
+  padding-right: 24px;
+}
+.tenant-combo-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 24px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--lc-text-muted);
+  cursor: pointer;
+}
+.tenant-combo-toggle:hover {
+  color: var(--lc-text);
+}
+.tenant-combo-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--lc-surface);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  box-shadow: var(--lc-shadow);
+}
+.tenant-combo-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tenant-combo-option[aria-selected="true"] {
+  background: var(--lc-accent-soft);
+}
+.tenant-combo-all {
+  font-family: var(--lc-font-body);
+  color: var(--lc-text-muted);
+}
+.tenant-combo-count {
+  font-family: var(--lc-font-body);
+  font-size: 11px;
+  color: var(--lc-text-faint);
+}
+
 /* ---- Run view (v0.24.0 manual run launcher) ---- */
 .run-view {
   padding: 16px;
@@ -5684,7 +5789,7 @@ button.primary:disabled {
 }
 
 /* ======================================================
- * Settings hub — the top-bar gear → /settings.
+ * Settings hub — the top-bar gear's menu → /settings/<section>.
  * Tokens / presets / runtime / health, web-reaching the
  * critical CLI surfaces for no-shell deployments (TrueNAS).
  * ====================================================== */
@@ -5707,22 +5812,61 @@ button.primary:disabled {
   border-color: var(--lc-accent);
 }
 
-.logout-btn {
+/* Settings menu (SettingsMenu): the gear's drop-down — one row per Settings
+   section, a rule, then Log out. Anchored to the gear's right edge because the
+   gear is the bar's last item. */
+.settings-menu {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 28px;
-  background: transparent;
-  color: var(--lc-text-muted);
+}
+.settings-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 190px;
+  padding: 4px;
+  background: var(--lc-surface);
   border: 1px solid var(--lc-rule);
   border-radius: var(--lc-radius-sm);
-  cursor: pointer;
-  padding: 0;
+  box-shadow: var(--lc-shadow);
 }
-.logout-btn:hover {
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  color: var(--lc-text);
+  font-size: var(--lc-text-sm);
+  white-space: nowrap;
+}
+.settings-menu-item svg {
+  flex-shrink: 0;
+  color: var(--lc-text-muted);
+}
+.settings-menu-item:hover,
+.settings-menu-item:focus {
+  background: var(--lc-accent-soft);
+  text-decoration: none;
+  outline: none;
+}
+.settings-menu-item[aria-current="page"] {
+  font-weight: 600;
+}
+.settings-menu-item[aria-current="page"] svg {
+  color: var(--lc-accent);
+}
+.settings-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--lc-rule);
+}
+.settings-menu-logout:hover,
+.settings-menu-logout:focus,
+.settings-menu-logout:hover svg,
+.settings-menu-logout:focus svg {
   color: var(--lc-failed);
-  border-color: var(--lc-failed);
 }
 
 .settings-view {
@@ -6342,7 +6486,10 @@ button.primary:disabled {
   max-height: 60vh;
   white-space: pre;
 }
-.runtime-state {
+/* Scoped to the Settings panel: the topbar's status chip is ALSO .runtime-state,
+   and unscoped this rule gave the chip a 16px bottom margin — the bar centres
+   the margin box, so the chip sat 8px above its neighbours. */
+.settings-panel .runtime-state {
   font-size: var(--lc-text-sm);
   margin-bottom: var(--lc-space-2);
 }

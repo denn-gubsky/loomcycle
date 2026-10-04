@@ -7,6 +7,8 @@ import {
   putLimit,
 } from "../api";
 import { amountHint, fmtTokens, parseTokenAmount } from "../lib/tokenAmount";
+import { usePrincipal } from "../components/Layout";
+import TenantCombobox from "../components/TenantCombobox";
 
 // LimitsView — GET/PUT/DELETE /v1/_limits (RFC AW Phase 1).
 //
@@ -71,6 +73,11 @@ export default function LimitsView() {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [tenant, setTenant] = useState("");
+  // Only an admin can list tenants (and only an admin's ?tenant= is honoured), so
+  // only an admin gets the drop-down; anyone else keeps the plain input. A null
+  // principal is open mode, which is admin-equivalent.
+  const principal = usePrincipal();
+  const isAdmin = !principal || principal.is_admin;
 
   const fetchLimits = useCallback(async () => {
     setLoading(true);
@@ -108,11 +115,12 @@ export default function LimitsView() {
         <div className="limits-actions">
           <label className="limits-tenant">
             tenant
-            <input
-              type="text"
-              placeholder="(admin focus)"
+            <TenantCombobox
               value={tenant}
-              onChange={(e) => setTenant(e.target.value)}
+              onChange={setTenant}
+              onPick={setTenant}
+              enabled={isAdmin}
+              placeholder="(admin focus)"
             />
           </label>
           <button
