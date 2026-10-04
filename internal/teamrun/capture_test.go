@@ -8,9 +8,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
-// memberSpawn is a spawner shaped like the real member runner: the answer as
+// headeredSpawn is a spawner that sets both forms of an answer: the answer as
 // the agent wrote it in FinalText, and under an attribution header in Output.
-func memberSpawn(answer string) SpawnFunc {
+func headeredSpawn(answer string) SpawnFunc {
 	return func(context.Context, string, Prompt, string) (SpawnResult, error) {
 		return SpawnResult{Output: "[sub-agent agent_id=a1]\n" + answer, FinalText: answer}, nil
 	}
@@ -31,7 +31,7 @@ func captureOf(t *testing.T, st teamgraph.State, spawn SpawnFunc, capture map[st
 // The root path binds an agent's whole plain-text answer, as it wrote it: the
 // header the walk threads above it is not part of the answer.
 func TestCapture_RootBindsAPlainTextAnswerWithoutTheHeader(t *testing.T) {
-	vars := captureOf(t, agentState("writer"), memberSpawn("Hello world"), map[string]string{"draft": "$"})
+	vars := captureOf(t, agentState("writer"), headeredSpawn("Hello world"), map[string]string{"draft": "$"})
 	if vars["draft"] != "Hello world" {
 		t.Errorf("draft = %q, want the answer and nothing else", vars["draft"])
 	}
@@ -40,7 +40,7 @@ func TestCapture_RootBindsAPlainTextAnswerWithoutTheHeader(t *testing.T) {
 // A field path reads the agent's answer, not the headered string wrapping it,
 // so a JSON answer from an agent state is addressable by field.
 func TestCapture_FieldPathReadsAnAgentsBareJSONAnswer(t *testing.T) {
-	vars := captureOf(t, agentState("writer"), memberSpawn(`{"title":"T"}`), map[string]string{"t": "$.title"})
+	vars := captureOf(t, agentState("writer"), headeredSpawn(`{"title":"T"}`), map[string]string{"t": "$.title"})
 	if vars["t"] != "T" {
 		t.Errorf("t = %q, want the field of the agent's JSON answer", vars["t"])
 	}
@@ -49,7 +49,7 @@ func TestCapture_FieldPathReadsAnAgentsBareJSONAnswer(t *testing.T) {
 // Text has one addressable value, itself. A field path into it binds nothing,
 // and the walk goes on.
 func TestCapture_FieldPathOnAPlainTextAnswerBindsNothing(t *testing.T) {
-	vars := captureOf(t, agentState("writer"), memberSpawn("Hello world"),
+	vars := captureOf(t, agentState("writer"), headeredSpawn("Hello world"),
 		map[string]string{"x": "$.title", "y": "$[0]"})
 	if len(vars) != 0 {
 		t.Errorf("vars = %v, want nothing bound", vars)
@@ -77,7 +77,7 @@ func TestCapture_RootOfAJSONAnswerBindsItsStringifiedValue(t *testing.T) {
 	text := func(answer string) SpawnFunc {
 		return textSpawn(func(context.Context, string, Prompt, string) (string, error) { return answer, nil })
 	}
-	for spawner, spawn := range map[string]func(string) SpawnFunc{"text spawner": text, "member runner": memberSpawn} {
+	for spawner, spawn := range map[string]func(string) SpawnFunc{"text spawner": text, "member runner": headeredSpawn} {
 		t.Run(spawner, func(t *testing.T) {
 			for answer, want := range map[string]string{
 				`{"b": 1, "a": "x"}`: `{"a":"x","b":1}`,
@@ -110,7 +110,7 @@ func TestCapture_APlaceholderInACapturedValueIsRefusedAtExpansion(t *testing.T) 
 			st := agentState("writer")
 			st.Handler.Capture = map[string]string{"x": tc.path}
 			task := &Task{Input: "start"}
-			r := varsRunner(memberSpawn(tc.answer))
+			r := varsRunner(headeredSpawn(tc.answer))
 			if _, err := r.RunHandler(context.Background(), st, task); err != nil {
 				t.Fatalf("agent: %v", err)
 			}
@@ -167,7 +167,7 @@ func TestCapture_StarterStillCapturesOverItsResultsEnvelope(t *testing.T) {
 	st := starterState()
 	st.Handler.Capture = map[string]string{"first": "$.results[0].output", "all": "$"}
 	task := &Task{Input: "start", WalkID: "wlk_test"}
-	out, err := starterRunner(ch, memberSpawn("looks fine")).RunHandler(context.Background(), st, task)
+	out, err := starterRunner(ch, headeredSpawn("looks fine")).RunHandler(context.Background(), st, task)
 	if err != nil {
 		t.Fatalf("starter: %v", err)
 	}
