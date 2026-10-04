@@ -2032,11 +2032,23 @@ export interface TeamDiagram {
   diagram: string;
 }
 
-// renderTeamDiagram resolves a team's active version and returns its Mermaid
-// stateDiagram-v2 source (with the colour scheme baked in). highlightState
-// (optional) marks one state with a bold outline — e.g. a chunk's current state.
-export function renderTeamDiagram(name: string, highlightState?: string): Promise<TeamDiagram> {
-  const body: Record<string, unknown> = { op: "render_diagram", name };
+// TeamRef names the team a diagram is drawn for. With defId the server draws
+// THAT version, whichever tenant owns it (an administrator may read any
+// tenant's; anyone else only their own). Without it the server resolves the
+// name's active version in the CALLER's tenant, so another tenant's team is
+// "not found" even to an administrator: pass defId whenever one is known.
+export interface TeamRef {
+  name: string;
+  defId?: string;
+}
+
+// renderTeamDiagram returns a stored team version's Mermaid stateDiagram-v2
+// source (with the colour scheme baked in). highlightState (optional) marks one
+// state with a bold outline — e.g. a chunk's current state.
+export function renderTeamDiagram(team: TeamRef, highlightState?: string): Promise<TeamDiagram> {
+  const body: Record<string, unknown> = team.defId
+    ? { op: "render_diagram", def_id: team.defId }
+    : { op: "render_diagram", name: team.name };
   if (highlightState) body.highlight_state = highlightState;
   return jsonFetch<TeamDiagram>("/v1/_teamdef", {
     method: "POST",

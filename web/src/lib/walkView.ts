@@ -18,6 +18,39 @@ export function teamNameOf(agentId: string): string {
   return isTeamWalkAgentId(agentId) ? agentId.slice("team:".length) : agentId;
 }
 
+/** The team a walk ran, as its run recorded it when it started. `defId` and
+ *  `version` are absent on a walk that started before walks recorded them: only
+ *  the name is known then, and it resolves to whatever is active NOW. */
+export interface WalkTeam {
+  name: string;
+  defId?: string;
+  version?: number;
+}
+
+/** walkTeamOf reads the team out of a walk's run: the `team` record in its
+ *  spec when there is one, else just the name its agent id carries. */
+export function walkTeamOf(walk: Pick<Agent, "agent_id" | "spec">): WalkTeam {
+  const name = teamNameOf(walk.agent_id);
+  const rec = walk.spec?.team;
+  if (!rec || typeof rec !== "object") return { name };
+  const { def_id, version } = rec as { def_id?: unknown; version?: unknown };
+  if (typeof def_id !== "string" || def_id === "") return { name };
+  return { name, defId: def_id, version: typeof version === "number" && version > 0 ? version : undefined };
+}
+
+/** graphCaption says which definition the walk's graph is drawn from: the
+ *  version the walk recorded, or — for a walk that recorded none — whatever
+ *  is active now. */
+export function graphCaption(team: WalkTeam | undefined): string {
+  if (!team) return "";
+  if (team.defId) {
+    return team.version
+      ? `Drawn from version ${team.version} of the team's definition, the version this walk ran.`
+      : "Drawn from the version of the team's definition this walk ran.";
+  }
+  return "Drawn from the team's current definition. This walk started before walks recorded the version they ran, so a team changed since it started can show states the walk did not have.";
+}
+
 /** One run as the walk view needs it. */
 export interface WalkRunRow {
   runId: string;
