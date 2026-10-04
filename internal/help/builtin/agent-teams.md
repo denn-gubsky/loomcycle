@@ -157,6 +157,29 @@ Without a Starter you also give up:
 - **the `before_dispatch` breakpoint**, which only a Starter has (a
   `<state>:review` hold works on `agent` and `parallel` states too).
 
+## Capturing an answer into a variable
+
+`capture` on a state binds variables from what the state produced: variable
+name → a path. A later state reads them as `${var.<name>}` in its
+`system_prompt` and `input_template`.
+
+- `capture: {"draft": "$"}` binds an agent's **whole answer**, as text.
+- A field path — `capture: {"title": "$.title", "first": "$.items[0]"}` — needs
+  a **JSON answer**. Paths are `$`, `.key` and `[N]` only.
+- A path that does not resolve binds nothing and is not an error: the variable
+  stays unset and expands to empty (or to its fallback, `${var.title:-none}`).
+  A field path into a plain-text answer never resolves.
+- When the answer is JSON, `$` binds the JSON value: a string without its
+  quotes, a number or boolean as written, an object or array as compact JSON.
+
+What is read: on an `agent` or `consolidator` state, the agent's answer as it
+wrote it; on a state with a `consolidator` (`parallel`, or `agent` plus one),
+the consolidator's answer without its `signal:` line; on a Starter, its results
+envelope (`$.results[0].output`); on an `input` state, the walk's input.
+
+A captured value containing `{{` or `}}` is dropped where it is used, so an
+answer cannot write a placeholder into a later prompt.
+
 ## Publishing to a channel
 
 - A `channel` state publishes its input to `channel` and passes it on
