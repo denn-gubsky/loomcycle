@@ -7066,11 +7066,34 @@ type subRunPrep struct {
 // primitive handed to anyone who can publish. Filling them AFTER makes the
 // payload data that happens to contain braces.
 //
-// Both arguments are empty for every non-starter spawn, so an ordinary
+// The same holds for a team state's hand-off, which is another agent's output.
+//
+// Both arguments are empty for every spawn outside a team walk, so an ordinary
 // assembly is byte-identical to before data slots existed.
 func (s *Server) composeCallerText(ctx context.Context, mi memInject, values, dataSlots map[string]string, system, user string, systemAuthored, inputAuthored bool) (string, string) {
 	system, user = s.expandCallerSegments(ctx, mi, values, system, user, systemAuthored, inputAuthored)
-	return applyDataSlots(system, dataSlots), applyDataSlots(user, dataSlots)
+	return applyDataSlots(system, systemDataSlots(dataSlots)), applyDataSlots(user, dataSlots)
+}
+
+// systemDataSlots is the slots the SYSTEM segment may be filled from: all of
+// them except a team state's hand-off, which is another agent's output and
+// belongs in the user segment only.
+//
+// Validation refuses the marker in a `system_prompt`, but that reads the text
+// as written. This holds for what validation cannot see — a definition stored
+// before the refusal existed, or a marker that arrives inside a document the
+// system prompt inlines — where the marker stays as literal text instead.
+func systemDataSlots(slots map[string]string) map[string]string {
+	if _, ok := slots[teamrun.ThreadedOutputSlot]; !ok {
+		return slots
+	}
+	out := make(map[string]string, len(slots))
+	for marker, content := range slots {
+		if marker != teamrun.ThreadedOutputSlot {
+			out[marker] = content
+		}
+	}
+	return out
 }
 
 // applyDataSlots substitutes literal slot markers with their content, once,
