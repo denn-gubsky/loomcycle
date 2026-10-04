@@ -15,9 +15,15 @@ import {
   Settings,
   Split,
   Ticket,
+  Users,
   Wrench,
 } from "lucide-react";
-import { type Section, settingsMenuItems } from "../lib/settingsSections";
+import {
+  type MenuLinkId,
+  type Section,
+  isMenuItemCurrent,
+  settingsMenuItems,
+} from "../lib/settingsSections";
 
 // A Record over Section, not a lookup with a fallback: adding a section without
 // an icon is then a type error here rather than a blank row in the menu.
@@ -35,8 +41,13 @@ const SECTION_ICONS: Record<Section, LucideIcon> = {
   health: HeartPulse,
 };
 
+const LINK_ICONS: Record<MenuLinkId, LucideIcon> = {
+  users: Users,
+};
+
 // SettingsMenu is the top bar's rightmost control: a button that opens a vertical
-// menu of the viewer's Settings sections, ending in Log out.
+// menu of the viewer's Settings sections, then the pages reached from here
+// rather than the left nav (Users), ending in Log out.
 //
 // Rendered for EVERY role. The sections are filtered by role (the same list the
 // hub's tabs use), but Log out is not — it replaced a standalone sign-out button —
@@ -54,7 +65,9 @@ export default function SettingsMenu({
   hasTenantScope: boolean;
 }) {
   const items = settingsMenuItems(isAdmin, hasTenantScope);
-  const hasSections = items.some((i) => i.kind === "section");
+  // Anything besides Log out makes this a settings menu; Log out alone makes it
+  // an account menu.
+  const hasSections = items.some((i) => i.kind !== "logout");
   // null = closed; otherwise the index to focus on opening.
   const [openAt, setOpenAt] = useState<number | null>(null);
   const open = openAt !== null;
@@ -125,7 +138,17 @@ export default function SettingsMenu({
       <button
         ref={buttonRef}
         type="button"
-        className={"settings-gear" + (open || pathname.startsWith("/settings") ? " active" : "")}
+        className={
+          "settings-gear" +
+          // Lit while open, anywhere in the hub (a bare /settings has no row of
+          // its own), and on a page the menu links to — the left nav used to
+          // mark that page, and now nothing else does.
+          (open ||
+          pathname.startsWith("/settings") ||
+          items.some((i) => isMenuItemCurrent(i, pathname))
+            ? " active"
+            : "")
+        }
         title={label}
         aria-label={label}
         aria-haspopup="menu"
@@ -150,12 +173,15 @@ export default function SettingsMenu({
             const setRef = (el: HTMLAnchorElement | null) => {
               itemRefs.current[i] = el;
             };
+            // A rule wherever the group changes: sections | linked pages | Log out.
+            const startsGroup = i > 0 && items[i - 1].kind !== item.kind;
+            const sep = startsGroup && <div className="settings-menu-sep" role="separator" />;
             if (item.kind === "logout") {
               // A full-page anchor, not a router link: the session cookie is
               // HttpOnly, so only the server's /ui/logout handler can clear it.
               return (
                 <div key="logout" role="none">
-                  {hasSections && <div className="settings-menu-sep" role="separator" />}
+                  {sep}
                   <a
                     ref={setRef}
                     href={item.href}
@@ -170,24 +196,26 @@ export default function SettingsMenu({
                 </div>
               );
             }
-            const Icon = SECTION_ICONS[item.id];
+            const Icon = item.kind === "section" ? SECTION_ICONS[item.id] : LINK_ICONS[item.id];
             return (
-              <Link
-                key={item.id}
-                ref={setRef}
-                to={item.href}
-                role="menuitem"
-                tabIndex={-1}
-                className="settings-menu-item"
-                aria-current={pathname === item.href ? "page" : undefined}
-                // Selecting the section already open changes no path, so the
-                // navigation effect above would not close the menu.
-                onClick={() => setOpenAt(null)}
-                onKeyDown={(e) => onItemKeyDown(e, i)}
-              >
-                <Icon size={15} />
-                {item.label}
-              </Link>
+              <div key={item.kind + ":" + item.id} role="none">
+                {sep}
+                <Link
+                  ref={setRef}
+                  to={item.href}
+                  role="menuitem"
+                  tabIndex={-1}
+                  className="settings-menu-item"
+                  aria-current={isMenuItemCurrent(item, pathname) ? "page" : undefined}
+                  // Selecting the page already open changes no path, so the
+                  // navigation effect above would not close the menu.
+                  onClick={() => setOpenAt(null)}
+                  onKeyDown={(e) => onItemKeyDown(e, i)}
+                >
+                  <Icon size={15} />
+                  {item.label}
+                </Link>
+              </div>
             );
           })}
         </div>

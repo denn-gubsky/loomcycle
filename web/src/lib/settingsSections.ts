@@ -84,17 +84,45 @@ export function resolveSection(
 
 export const LOGOUT_HREF = "/ui/logout";
 
+// A page of its own that is reached from the settings menu rather than the left
+// nav. NOT a hub section: it has no tab in SettingsView and no /settings/<id>
+// address — the menu simply links to it.
+export type MenuLinkId = "users";
+
+export interface MenuLinkDef {
+  id: MenuLinkId;
+  label: string;
+  href: string;
+  // Same three-tier class, assigned from the route gate like the sections above.
+  vis: Visibility;
+}
+
+export const MENU_LINKS: MenuLinkDef[] = [
+  // The tenant-operator users console (manage first-class users + mint/revoke
+  // their bearer tokens). "tenant": the /v1/_users(/…) routes are ScopeTenant and
+  // the handlers confine to the caller's own tenant (a tenant operator sees only
+  // its own users; admin sees all + ?tenant= focus).
+  { id: "users", label: "Users", href: "/users", vis: "tenant" },
+];
+
 // One row of the top bar's settings menu.
 export type SettingsMenuItem =
   | { kind: "section"; id: Section; label: string; href: string }
+  | { kind: "link"; id: MenuLinkId; label: string; href: string }
   | { kind: "logout"; label: string; href: string };
 
-// settingsMenuItems is the menu for a viewer: their settings sections, then Log
-// out.
+// settingsMenuItems is the menu for a viewer, in three groups: their settings
+// sections (the hub's tabs), then the linked pages, then Log out. The menu draws
+// a rule wherever `kind` changes, so the groups read as groups.
+//
+// Linked pages sit in their own group, after the sections: the sections are tabs
+// of one page and a link leaves it, and mixing them would suggest a "Users" tab
+// the hub does not have.
 //
 // LOG OUT IS UNCONDITIONAL. The menu replaced a standalone sign-out button that
 // every role had, so the menu is now the only way out of a session: a delegated
-// user, who has no settings section, must still get a menu, holding that one row.
+// user, who has no settings section and no linked page, must still get a menu,
+// holding that one row.
 export function settingsMenuItems(isAdmin: boolean, hasTenantScope: boolean): SettingsMenuItem[] {
   return [
     ...visibleSections(isAdmin, hasTenantScope).map(
@@ -105,6 +133,23 @@ export function settingsMenuItems(isAdmin: boolean, hasTenantScope: boolean): Se
         href: settingsHref(s.id),
       }),
     ),
+    ...MENU_LINKS.filter((l) => canSee(l.vis, isAdmin, hasTenantScope)).map(
+      (l): SettingsMenuItem => ({ kind: "link", id: l.id, label: l.label, href: l.href }),
+    ),
     { kind: "logout", label: "Log out", href: LOGOUT_HREF },
   ];
+}
+
+// isMenuItemCurrent says whether a menu row is the page being shown — what the
+// menu marks, and what lights the gear. A section matches its exact address; a
+// linked page also matches anything beneath it.
+export function isMenuItemCurrent(item: SettingsMenuItem, pathname: string): boolean {
+  switch (item.kind) {
+    case "section":
+      return pathname === item.href;
+    case "link":
+      return pathname === item.href || pathname.startsWith(item.href + "/");
+    case "logout":
+      return false;
+  }
 }
