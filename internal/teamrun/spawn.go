@@ -106,15 +106,15 @@ type SpawnFunc func(ctx context.Context, agent string, p Prompt, defID string) (
 // exists, because a failed member is exactly the one worth opening. Empty when
 // the implementor has no run behind the call.
 type SpawnResult struct {
-	// Output is what the walk threads onward and what a consolidator reads in
-	// a results envelope: the member's answer under the attribution header a
-	// model reading it relies on.
+	// Output is what the walk threads onward, what a consolidator reads in a
+	// results envelope and what the walk answers with when this member is its
+	// last: the member's answer as it wrote it. No attribution header — an
+	// envelope entry and a sink message name the member by agent and run id.
 	Output string
-	// FinalText is the member's answer as it wrote it, without that header,
-	// and Structured is the answer parsed against the member's output_format
-	// (nil without one, or when the answer was not a JSON object). A Starter's
-	// sink message carries these two, so a downstream reader's JSONPath binds
-	// can address the answer itself rather than a string wrapping it.
+	// FinalText is that same answer, and Structured is it parsed against the
+	// member's output_format (nil without one, or when the answer was not a
+	// JSON object). A Starter's sink message carries these two. FinalText
+	// predates Output being bare and now duplicates it for a completed member.
 	FinalText  string
 	Structured map[string]any
 	RunID      string
@@ -830,7 +830,7 @@ type agentResult struct {
 	Status string `json:"status,omitempty"`
 	// answer and structured are the member's bare final text and its
 	// structured result, for the sink message only. Unexported so the
-	// envelope, which a consolidator model reads header and all, is unchanged.
+	// envelope carries no second copy of the answer.
 	answer     string
 	structured map[string]any
 }

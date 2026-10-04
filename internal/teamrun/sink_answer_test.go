@@ -10,13 +10,13 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
-// headerSpawn answers the way the server's member runner does: Output under
-// the attribution header a consolidator model reads, the bare answer and its
-// structured form beside it.
-func headerSpawn(answer string, structured map[string]any) SpawnFunc {
+// memberSpawn answers the way the server's member runner does: Output is the
+// answer as the member wrote it, with the same text and its structured form
+// beside it.
+func memberSpawn(answer string, structured map[string]any) SpawnFunc {
 	return func(_ context.Context, agent string, _ Prompt, _ string) (SpawnResult, error) {
 		return SpawnResult{
-			Output:     "[sub-agent agent_id=ag_" + agent + "]\n" + answer,
+			Output:     answer,
 			FinalText:  answer,
 			Structured: structured,
 			RunID:      "run_" + agent,
@@ -29,7 +29,7 @@ func headerSpawn(answer string, structured map[string]any) SpawnFunc {
 // member's answer as written, with no header for a JSONPath bind to trip on.
 func TestStarter_SinkOutputIsTheMembersBareAnswer(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pr":1}`)}}}
-	r := starterRunner(ch, headerSpawn("abc", nil))
+	r := starterRunner(ch, memberSpawn("abc", nil))
 
 	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go"}); err != nil {
 		t.Fatalf("starter: %v", err)
@@ -52,7 +52,7 @@ func TestStarter_SinkOutputIsTheMembersBareAnswer(t *testing.T) {
 // A member that had an output_format publishes its parsed answer too.
 func TestStarter_SinkCarriesTheMembersStructuredResult(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pr":1}`)}}}
-	r := starterRunner(ch, headerSpawn(`{"verdict":"ok"}`, map[string]any{"verdict": "ok"}))
+	r := starterRunner(ch, memberSpawn(`{"verdict":"ok"}`, map[string]any{"verdict": "ok"}))
 
 	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go"}); err != nil {
 		t.Fatalf("starter: %v", err)
@@ -66,25 +66,25 @@ func TestStarter_SinkCarriesTheMembersStructuredResult(t *testing.T) {
 	}
 }
 
-// The header stays where a model reads it: the Starter's own output — the
-// results envelope its consolidator reads — is byte-for-byte what it was.
-func TestStarter_ResultsEnvelopeKeepsTheAttributionHeader(t *testing.T) {
+// The Starter's own output — the results envelope a consolidator or the next
+// state reads — carries each member's answer as written too: an entry's
+// `agent` and `run_id` say whose it is.
+func TestStarter_ResultsEnvelopeCarriesTheBareAnswer(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pr":1}`)}}}
-	r := starterRunner(ch, headerSpawn("abc", map[string]any{"x": "y"}))
+	r := starterRunner(ch, memberSpawn("abc", map[string]any{"x": "y"}))
 
 	out, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "go"})
 	if err != nil {
 		t.Fatalf("starter: %v", err)
 	}
-	want := `{"results":[{"index":0,"agent":"reviewer","run_id":"run_reviewer","ok":true,"output":"[sub-agent agent_id=ag_reviewer]\nabc"}]}`
+	want := `{"results":[{"index":0,"agent":"reviewer","run_id":"run_reviewer","ok":true,"output":"abc"}]}`
 	if out.Output != want {
 		t.Errorf("envelope =\n  %s\nwant\n  %s", out.Output, want)
 	}
 }
 
-// An agent state threads the member's Output — header included — to the next
-// state, exactly as before.
-func TestAgentState_ThreadsTheHeaderedOutputOnward(t *testing.T) {
+// An agent state hands the next state the member's answer and nothing else.
+func TestAgentState_ThreadsTheBareAnswerOnward(t *testing.T) {
 	d := teamgraph.Definition{
 		Entry: "first",
 		States: []teamgraph.State{
@@ -99,7 +99,7 @@ func TestAgentState_ThreadsTheHeaderedOutputOnward(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var editorInput string
-	answer := headerSpawn("abc", map[string]any{"x": "y"})
+	answer := memberSpawn("abc", map[string]any{"x": "y"})
 	spawn := func(ctx context.Context, agent string, p Prompt, defID string) (SpawnResult, error) {
 		if agent == "editor" {
 			mu.Lock()
@@ -113,8 +113,8 @@ func TestAgentState_ThreadsTheHeaderedOutputOnward(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if editorInput != "[sub-agent agent_id=ag_writer]\nabc" {
-		t.Errorf("editor input = %q, want the writer's headered output", editorInput)
+	if editorInput != "abc" {
+		t.Errorf("editor input = %q, want the writer's answer %q", editorInput, "abc")
 	}
 }
 
@@ -146,7 +146,7 @@ func TestStarter_ErrorSinkMessageCarriesNoAnswer(t *testing.T) {
 func TestStarter_RejectedSinkMessageCarriesTheBareAnswerAndStructured(t *testing.T) {
 	ch := &fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{"pr":1}`)}}}
 	r := starterRunner(ch, func(context.Context, string, Prompt, string) (SpawnResult, error) {
-		return SpawnResult{Output: "[sub-agent agent_id=ag]\n" + `{"x":"y"}`, FinalText: `{"x":"y"}`,
+		return SpawnResult{Output: `{"x":"y"}`, FinalText: `{"x":"y"}`,
 			Structured: map[string]any{"x": "y"}, RunID: "r1", Status: MemberRejected}, nil
 	})
 	// A rejected member does not count toward wait=all, so the state fails;
@@ -195,7 +195,7 @@ func TestWalk_DownstreamStarterBindsTheAnswerAndItsStructuredField(t *testing.T)
 	}
 	var mu sync.Mutex
 	var got Prompt
-	writer := headerSpawn("abc", map[string]any{"x": "field"})
+	writer := memberSpawn("abc", map[string]any{"x": "field"})
 	spawn := func(ctx context.Context, agent string, p Prompt, defID string) (SpawnResult, error) {
 		if agent == "reader" {
 			mu.Lock()

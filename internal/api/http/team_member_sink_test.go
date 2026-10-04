@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,8 +28,9 @@ func structuredMemberServer(t *testing.T) *Server {
 	return srv
 }
 
-// A team member reports its bare answer and its structured result beside the
-// headered Output the walk threads, which is unchanged.
+// A team member reports its answer as written — in Output, which the walk
+// threads, and in FinalText — and its structured result. No attribution
+// header: that line is the Agent tool's, for a parent model's transcript.
 func TestTeamMember_ReportsItsBareAnswerAndStructuredResult(t *testing.T) {
 	srv := structuredMemberServer(t)
 	res, err := srv.runTeamMember(context.Background(), "agent", teamrun.Prompt{Input: "go"}, "")
@@ -43,8 +43,8 @@ func TestTeamMember_ReportsItsBareAnswerAndStructuredResult(t *testing.T) {
 	if res.Structured["verdict"] != "ok" {
 		t.Errorf("Structured = %v, want verdict=ok", res.Structured)
 	}
-	if !strings.HasPrefix(res.Output, "[sub-agent agent_id=") || !strings.HasSuffix(res.Output, "]\n"+`{"verdict":"ok"}`) {
-		t.Errorf("Output = %q, want the answer under the attribution header", res.Output)
+	if res.Output != `{"verdict":"ok"}` {
+		t.Errorf("Output = %q, want the bare answer", res.Output)
 	}
 }
 
@@ -67,8 +67,9 @@ func (c *sinkCapture) Publish(_ context.Context, _ string, payload json.RawMessa
 }
 
 // Through the real member runner: a Starter's sink message carries the
-// member's bare answer and its structured result, while the Starter's own
-// output — the envelope a consolidator reads — keeps the header.
+// member's bare answer and its structured result, and the Starter's own
+// output — the envelope a consolidator reads — carries the same bare answer
+// in an entry that names the member's agent and run.
 func TestTeamWalk_StarterSinkCarriesTheMembersBareAnswerAndStructured(t *testing.T) {
 	srv := structuredMemberServer(t)
 	ch := &sinkCapture{}
@@ -99,8 +100,18 @@ func TestTeamWalk_StarterSinkCarriesTheMembersBareAnswerAndStructured(t *testing
 	if msg.Structured["verdict"] != "ok" {
 		t.Errorf("sink structured = %v, want verdict=ok", msg.Structured)
 	}
-	if !strings.Contains(out.Output, `"output":"[sub-agent agent_id=`) {
-		t.Errorf("envelope = %s, want the member's headered output", out.Output)
+	var env struct {
+		Results []struct {
+			Agent  string `json:"agent"`
+			RunID  string `json:"run_id"`
+			Output string `json:"output"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out.Output), &env); err != nil || len(env.Results) != 1 {
+		t.Fatalf("envelope = %s (%v), want one result", out.Output, err)
+	}
+	if got := env.Results[0]; got.Output != `{"verdict":"ok"}` || got.Agent != "agent" || got.RunID == "" || got.RunID != msg.RunID {
+		t.Errorf("envelope entry = %+v, want the bare answer under agent and run_id %q", got, msg.RunID)
 	}
 }
 
