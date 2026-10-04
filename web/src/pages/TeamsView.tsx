@@ -13,10 +13,12 @@ import {
   previewTeamDiagram,
   renderTeamDiagram,
 } from "../api";
+import { usePrincipal } from "../components/Layout";
 import { useTheme } from "../hooks/useTheme";
 import { useMermaidSvg } from "../hooks/useMermaidSvg";
 import Splitter from "../components/Splitter";
 import TeamRunModal from "../components/TeamRunModal";
+import { ownTenantOf, sameTeam, teamReach, teamTenantOf } from "../lib/teamTenant";
 import { WALK, hookTargets, keepWalkHookRemoval, readTeamHooks, writeTeamHooks } from "../lib/teamHooks";
 
 // TeamsView — the agent-team board.
@@ -88,16 +90,23 @@ const BLANK_OVERLAY = {
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const pretty = (v: unknown) => JSON.stringify(v, null, 2);
 
-// The diagram is rendered from one of two sources: the team's stored active
-// version, or an unsaved preview overlay. Highlight re-renders whichever.
+// The diagram is rendered from one of two sources: a stored version (the one
+// loaded in the editor), or an unsaved preview overlay. Highlight re-renders
+// whichever. The stored one is addressed by its version id, never by name: the
+// server resolves a name in the caller's own tenant, so an administrator
+// looking at another tenant's team would get "team not found".
 type DiagramSource =
-  | { kind: "stored"; name: string }
+  | { kind: "stored"; name: string; defId: string }
   | { kind: "preview"; name: string; overlay: unknown }
   | null;
 
 export default function TeamsView() {
   const [teams, setTeams] = useState<TeamNameSummary[]>([]);
   const [selected, setSelected] = useState<string>("");
+  // The selected team's tenant: a name alone does not identify a row in an
+  // administrator's list, where two tenants may each have a team of that name.
+  const [selectedTenant, setSelectedTenant] = useState<string>("");
+  const ownTenant = ownTenantOf(usePrincipal());
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState<string>("");
   const [loading, setLoading] = useState(false);
@@ -168,13 +177,16 @@ export default function TeamsView() {
     (t: TeamNameSummary) => {
       setCreating(false);
       setSelected(t.name);
+      setSelectedTenant(teamTenantOf(t));
       setEditorErr("");
       setDiagErr("");
       setHighlight("");
-      setDiagramSource({ kind: "stored", name: t.name });
       if (t.active_def_id) {
+        setDiagramSource({ kind: "stored", name: t.name, defId: t.active_def_id });
         void loadDefIntoEditor(t.active_def_id);
       } else {
+        setDiagramSource(null);
+        setDiagram(null);
         setEditorText("");
         setEditorErr("This team has no active version to edit.");
       }
@@ -197,7 +209,7 @@ export default function TeamsView() {
         const hl = highlight || undefined;
         const d =
           diagramSource.kind === "stored"
-            ? await renderTeamDiagram(diagramSource.name, hl)
+            ? await renderTeamDiagram(diagramSource, hl)
             : await previewTeamDiagram(diagramSource.name, diagramSource.overlay, hl);
         if (!cancelled) setDiagram(d);
       } catch (e) {
@@ -271,7 +283,10 @@ export default function TeamsView() {
       const res = await forkTeam(selected, keepWalkHookRemoval(loadedDef, parsed));
       await fetchTeams();
       await loadDefIntoEditor(res.def_id);
-      setDiagramSource({ kind: "stored", name: selected });
+      // The new version is stamped with the caller's tenant (a shared team's
+      // saves land there as a copy), so that is the row now being edited.
+      setSelectedTenant(ownTenant);
+      setDiagramSource({ kind: "stored", name: selected, defId: res.def_id });
     } catch (e) {
       // The server 422s an invalid graph with the reason.
       setEditorErr(msg(e));
@@ -316,8 +331,9 @@ export default function TeamsView() {
       await fetchTeams();
       setCreating(false);
       setSelected(res.name);
+      setSelectedTenant(ownTenant);
       await loadDefIntoEditor(res.def_id);
-      setDiagramSource({ kind: "stored", name: res.name });
+      setDiagramSource({ kind: "stored", name: res.name, defId: res.def_id });
     } catch (e) {
       setEditorErr(msg(e));
     } finally {
@@ -326,7 +342,10 @@ export default function TeamsView() {
   }
 
   const active = selected || creating;
-  const selectedTeam = creating ? undefined : teams.find((t) => t.name === selected);
+  const selectedTeam = creating ? undefined : teams.find((t) => sameTeam(t, selected, selectedTenant));
+  // What the by-name ops can do to the selected team. A team being created is
+  // the caller's own.
+  const reach = teamReach(creating ? ownTenant : selectedTenant, ownTenant);
 
   // ---- Editor pane (Splitter left) ----
   const editorPane = (
@@ -351,16 +370,16 @@ export default function TeamsView() {
           <div style={{ display: "flex", gap: "0.4rem" }}>
             <button
               onClick={() => setRunOpen(true)}
-              disabled={saving || deleting || !selectedTeam?.active_def_id}
-              title="Start a walk of this team's active version from its input form"
+              disabled={saving || deleting || !selectedTeam?.active_def_id || !reach.byName}
+              title={reach.byName ? "Start a walk of this team's active version from its input form" : reach.notice}
               style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", fontWeight: 600 }}
             >
               Run
             </button>
             <button
               onClick={() => void onDelete()}
-              disabled={saving || deleting || loadingDef}
-              title="Delete this team (all versions)"
+              disabled={saving || deleting || loadingDef || !reach.byName}
+              title={reach.byName ? "Delete this team (all versions)" : reach.notice}
               style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--error, #e03131)" }}
             >
               {deleting ? "Deleting…" : "Delete"}
@@ -368,6 +387,10 @@ export default function TeamsView() {
           </div>
         )}
       </div>
+
+      {reach.notice && (
+        <div style={{ flex: "0 0 auto", fontSize: "0.85em", opacity: 0.85 }}>{reach.notice}</div>
+      )}
 
       {creating && (
         <div style={{ display: "flex", gap: "0.5rem", flex: "0 0 auto", flexWrap: "wrap" }}>
@@ -426,7 +449,12 @@ export default function TeamsView() {
             {saving ? "Creating…" : "Create"}
           </button>
         ) : (
-          <button onClick={() => void onSave()} disabled={saving || loadingDef} style={{ fontWeight: 600 }}>
+          <button
+            onClick={() => void onSave()}
+            disabled={saving || loadingDef || !reach.save}
+            title={reach.save ? undefined : reach.notice}
+            style={{ fontWeight: 600 }}
+          >
             {saving ? "Saving…" : "Save new version"}
           </button>
         )}
@@ -557,7 +585,7 @@ export default function TeamsView() {
           <ul style={{ listStyle: "none", padding: 0, margin: "0.5rem 0", flex: 1, minHeight: 0, overflowY: "auto" }}>
             {teams.map((t) => {
               const key = t.tenant_id ? `${t.tenant_id}/${t.name}` : t.name;
-              const isSel = !creating && selected === t.name;
+              const isSel = !creating && sameTeam(t, selected, selectedTenant);
               return (
                 <li key={key}>
                   <button

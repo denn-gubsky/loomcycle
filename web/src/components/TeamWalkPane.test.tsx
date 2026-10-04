@@ -122,11 +122,18 @@ describe("TeamWalkView", () => {
     expect(html).toContain('href="/agents?run=m1"');
   });
 
-  it("draws the graph with the current state and the definition caveat", () => {
+  it("draws the graph with the current state, saying it is the current definition for a walk that recorded no version", () => {
     const html = render({ highlight: "draft" });
     expect(html).toContain('<svg id="g"></svg>');
     expect(html).toContain("<code>draft</code>");
     expect(html).toContain("current definition");
+    expect(html).not.toContain("the version this walk ran");
+  });
+
+  it("says the graph is the version the walk ran when its run recorded one", () => {
+    const html = render({ walk: walkRun({ spec: { team: { name: "triage", def_id: "tdf_ran", version: 4 } } }) });
+    expect(html).toContain("Drawn from version 4 of the team&#x27;s definition, the version this walk ran.");
+    expect(html).not.toContain("current definition");
   });
 
   it("offers continue, release and abort for a pending breakpoint pause", () => {

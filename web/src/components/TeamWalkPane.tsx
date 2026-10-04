@@ -20,6 +20,7 @@ import { useMermaidSvg } from "../hooks/useMermaidSvg";
 import { runRowHref } from "../lib/runLineage";
 import {
   type WalkRunRow,
+  type WalkTeam,
   type WalkView,
   boardDocuments,
   countdownLabel,
@@ -27,6 +28,7 @@ import {
   durationLabel,
   emptyWalk,
   foldWalk,
+  graphCaption,
   holdSecondsLeft,
   httpStatusOf,
   isTerminal,
@@ -35,6 +37,7 @@ import {
   parseReviewTTL,
   teamNameOf,
   visitGroups,
+  walkTeamOf,
   watchWalk,
 } from "../lib/walkView";
 
@@ -159,7 +162,12 @@ export default function TeamWalkPane({ runId }: { runId: string }) {
     };
   }, [runId, live, refresh]);
 
-  const teamName = walk ? teamNameOf(walk.agent_id) : "";
+  // The walk's own record of what it ran. The version id draws the version
+  // the walk ran, and reaches a team in another tenant, which the name cannot:
+  // the server resolves a name in the caller's tenant only.
+  const team = walk ? walkTeamOf(walk) : undefined;
+  const teamName = team?.name ?? "";
+  const teamDefId = team?.defId;
   const highlight = useMemo(() => currentState(view, interrupts), [view, interrupts]);
 
   // Once refused, the principal cannot read TeamDefs: stop asking on every
@@ -168,7 +176,7 @@ export default function TeamWalkPane({ runId }: { runId: string }) {
   useEffect(() => {
     if (!teamName || graphRefused) return;
     let cancelled = false;
-    renderTeamDiagram(teamName, highlight)
+    renderTeamDiagram({ name: teamName, defId: teamDefId }, highlight)
       .then((d) => {
         if (!cancelled) setDiagram({ kind: "ready", source: d.diagram });
       })
@@ -179,7 +187,7 @@ export default function TeamWalkPane({ runId }: { runId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [teamName, highlight, graphRefused]);
+  }, [teamName, teamDefId, highlight, graphRefused]);
 
   const { svg, renderErr } = useMermaidSvg(diagram.kind === "ready" ? diagram.source : undefined, theme, "walk-mmd");
   const graph: GraphState = diagram.kind === "ready" ? { kind: "ready", source: diagram.source, svg, renderErr } : diagram;
@@ -271,7 +279,7 @@ export function TeamWalkView(p: TeamWalkViewProps) {
         <div className="empty">loading…</div>
       )}
       {live && <PausePanel interrupts={p.interrupts} onResolve={p.actions.resolvePause} />}
-      <WalkGraph graph={p.graph} highlight={p.highlight} />
+      <WalkGraph graph={p.graph} highlight={p.highlight} team={walk ? walkTeamOf(walk) : undefined} />
       {live && <BreakpointsEditor state={p.breakpoints} onSave={p.actions.saveBreakpoints} />}
       <VisitTimeline groups={groups} live={live} now={p.now} onReview={p.actions.review} />
     </div>
@@ -332,9 +340,10 @@ function WalkHeader({
   );
 }
 
-function WalkGraph({ graph, highlight }: { graph: GraphState; highlight?: string }) {
+function WalkGraph({ graph, highlight, team }: { graph: GraphState; highlight?: string; team?: WalkTeam }) {
   const [showSource, setShowSource] = useState(false);
   if (graph.kind === "hidden") return null;
+  const caption = graphCaption(team);
   return (
     <section className="team-walk-section team-walk-graph">
       <h3>
@@ -345,10 +354,7 @@ function WalkGraph({ graph, highlight }: { graph: GraphState; highlight?: string
           </>
         ) : null}
       </h3>
-      <p className="team-walk-muted">
-        Drawn from the team&apos;s current definition. The version this walk ran is not recorded, so a team changed since
-        it started can show states the walk did not have.
-      </p>
+      {caption && <p className="team-walk-muted">{caption}</p>}
       {graph.kind === "loading" && <p className="team-walk-muted">loading diagram…</p>}
       {graph.kind === "error" && <div className="err">Diagram unavailable: {graph.message}</div>}
       {graph.kind === "ready" && (
