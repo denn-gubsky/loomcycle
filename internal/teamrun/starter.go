@@ -495,8 +495,8 @@ func waveSlots(h teamgraph.Handler, msgs []ChannelMessage, i int) map[string]str
 // Naming them separately means a template says which shape it expects, instead
 // of a singular name quietly holding a list.
 const (
-	StarterMessageSlot  = "{{starter.message}}"
-	StarterMessagesSlot = "{{starter.messages}}"
+	StarterMessageSlot  = teamgraph.StarterMessageSlot
+	StarterMessagesSlot = teamgraph.StarterMessagesSlot
 )
 
 // logf reports what a Starter could not do but must not fail for.

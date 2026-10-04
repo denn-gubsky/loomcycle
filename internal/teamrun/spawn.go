@@ -36,7 +36,8 @@ type Prompt struct {
 	// resolved at prompt assembly, in ONE pass, from Values below.
 	System string
 	// Input is the user segment: the node's InputTemplate when it has one, else
-	// the output threaded from the previous state. RAW, like System.
+	// the marker of the slot the previous state's output rides in. RAW, like
+	// System.
 	Input string
 	// DataSlots are literal → replacement pairs the assembler substitutes AFTER
 	// placeholder expansion has finished, and whose content it never scans.
@@ -48,7 +49,8 @@ type Prompt struct {
 	// therefore synthesise a placeholder and get it executed. Substituted after,
 	// it is data that happens to contain braces.
 	//
-	// Empty for every non-starter state, so an ordinary node's assembly is
+	// A state's threaded input rides one for the same reason (see nodePrompt).
+	// Empty when a node's template states its whole task, so that assembly is
 	// byte-identical to before this existed.
 	DataSlots map[string]string
 	// SystemAuthored and InputAuthored say, PER SEGMENT, whether that text is
@@ -512,44 +514,53 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 }
 
 // nodePrompt composes what a state hands its agent: the node's system prompt,
-// and its InputTemplate when set — otherwise the input threaded from the
-// previous state.
+// and as its input either the node's InputTemplate or, when it declares none,
+// what the previous state handed over.
 //
-// A template REPLACES the threaded input rather than being prepended to it. That
-// is the RFC AP field's declared meaning, and it keeps the rule simple: a state
-// either works on what it was handed, or it states its own task. Referring to
-// the threaded input from inside a template needs the variable expander, which
-// is the next phase; until then a template is used verbatim.
-// nodePrompt composes what a state hands its agent. It does NOT substitute:
-// the templates travel raw and the values travel beside them, so prompt
-// assembly can resolve variables and placeholders in one pass. Substituting
-// here would be the pre-pass this design exists to remove (see Prompt.Values).
+// A template REPLACES the hand-off rather than being prepended to it: a state
+// either works on what it was handed, or it states its own task. A template
+// that wants both says where the hand-off goes by naming {{thread.output}}; one
+// that does not name it gets none of it.
+//
+// It does NOT substitute: the templates travel raw and the values travel beside
+// them, so prompt assembly can resolve variables and placeholders in one pass.
+// Substituting here would be the pre-pass this design exists to remove (see
+// Prompt.Values).
 //
 // A METHOD rather than a free function so it can stamp the definition's
 // authorship: every prompt a walk hands out carries the flag its own templates
 // are expanded under, and no call site can construct one that forgot to.
 //
-// THREADED OUTPUT TRAVELS IN A DATA SLOT, NOT IN Input. A node that declares no
-// input_template works on what the previous state handed it — that agent's
-// OUTPUT, which may carry whatever a tool result, a fetched page or a channel
-// message put into it. Passing it as Input hands it to the placeholder
+// THE HAND-OFF TRAVELS IN A DATA SLOT, NEVER IN Input. It is the previous
+// agent's OUTPUT, which may carry whatever a tool result, a fetched page or a
+// channel message put into it. Passing it as Input hands it to the placeholder
 // expander, so a `{{document:/…}}` an agent emitted would be resolved under the
 // RUNTIME's authority and inlined into the NEXT agent's prompt: one agent
 // choosing what another one reads.
 //
 // A data slot is substituted AFTER expansion and its content is never scanned,
-// which is the same reason a Starter's source message travels in one. The
-// InputAuthored flag stays false here too, but it is now the BACKSTOP rather
-// than the protection — it gates only the widened families, while the slot
-// keeps every family off this text.
+// which is the same reason a Starter's source message travels in one. That
+// holds with a template too: Input is then the team's own words, expanded and
+// authored, and the hand-off is data dropped into the place they name. With no
+// template the InputAuthored flag stays false, but as the BACKSTOP rather than
+// the protection — it gates only the widened families, while the slot keeps
+// every family off this text.
 func (r *agentRunner) nodePrompt(h teamgraph.Handler, threaded string, env Env) Prompt {
 	if h.InputTemplate != "" {
 		// The team's own words: expanded, and authored by whoever wrote the team.
-		return Prompt{
+		p := Prompt{
 			System: h.SystemPrompt, Input: h.InputTemplate, Values: env.Values(),
 			SystemAuthored: r.operatorAuthored,
 			InputAuthored:  r.operatorAuthored,
 		}
+		// Registered only when the template names the marker, so a template
+		// without it stays slot-free and assembles exactly as it always did.
+		// An EMPTY hand-off is still registered: the marker must not reach the
+		// agent as literal braces.
+		if strings.Contains(h.InputTemplate, ThreadedOutputSlot) {
+			p.DataSlots = map[string]string{ThreadedOutputSlot: threaded}
+		}
+		return p
 	}
 	return Prompt{
 		System: h.SystemPrompt, Input: ThreadedOutputSlot, Values: env.Values(),
@@ -558,15 +569,17 @@ func (r *agentRunner) nodePrompt(h teamgraph.Handler, threaded string, env Env) 
 	}
 }
 
-// ThreadedOutputSlot is where a node's threaded input is carried when the node
-// declares no input_template: the Input the agent receives is this marker, and
-// the previous state's output is substituted into it after expansion has
-// finished.
+// ThreadedOutputSlot is where a node's threaded input is carried: the whole
+// Input when the node declares no input_template, and wherever the template
+// names it when it does. The previous state's output is substituted into it
+// after expansion has finished.
 //
 // Reserved, like the Starter's slots. It never co-occurs with those — a Starter
-// node reads from a channel and threads nothing — so no slot's content can
-// contain another slot's marker and be substituted a second time.
-const ThreadedOutputSlot = "{{thread.output}}"
+// node reads from a channel and threads nothing, and validation refuses each
+// marker in the other's prompts — so no slot's content can contain another
+// slot's marker and be substituted a second time. Its own content may contain
+// its own marker: substitution is one pass and does not rescan what it wrote.
+const ThreadedOutputSlot = teamgraph.ThreadedOutputSlot
 
 // envFor snapshots what the expander may read for one state's turn. Now is read
 // ONCE per state so every ${now.*} in a state's prompts and assignments agrees
