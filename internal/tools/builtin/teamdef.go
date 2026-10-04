@@ -207,7 +207,9 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`scheme applied) for a stored team, or — when given an inline overlay — a dry-run preview of an unsaved ` +
 	`graph (syntax-checked, not persisted). run walks a team's graph for a given input via the sub-agent ` +
 	`machinery — a single agent, or a parallel fan-out whose consolidator agent selects the next edge ` +
-	`(success to advance, pushback to loop back for rework) — output threads to the next state, until a ` +
+	`(success to advance, pushback to loop back for rework) — output threads to the next state ` +
+	`(a state's input_template replaces it, unless it contains {{thread.output}}, which is filled with it as data ` +
+	`that is never expanded; not allowed in system_prompt), until a ` +
 	`terminal state. run may OPTIONALLY bind to a Document chunk board (board_chunk_id) so progress persists ` +
 	`as chunk.status and resumes across runs, and may escalate an iteration cap to a human (interrupt_on_cap) ` +
 	`instead of aborting. A run is a first-class unit of work: it gets its own run_id (returned either way), so it can be ` +

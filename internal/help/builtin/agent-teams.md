@@ -33,6 +33,17 @@ research, …).
   - Time a run spends held for a review verdict does not count. A starter run's
     clock stops while it is held; a handler-wide clock stops while every run in
     flight is held.
+- **A state's prompts.** On `agent`, `parallel` and `consolidator` states,
+  `system_prompt` adds this state's role to the agent's own system prompt and
+  `input_template` is the user prompt. With no `input_template` the agent
+  receives what the previous state handed over (the walk's input, on the entry
+  state). An `input_template` replaces that hand-off — unless it contains
+  `{{thread.output}}`, which is replaced by the hand-off, exactly as written
+  and never expanded:
+  `"input_template": "Tone: ${var.tone}\n\n{{thread.output}}"`.
+  `{{thread.output}}` is not allowed in `system_prompt`, nor in a starter's
+  `prompt` (a starter's runs get `{{starter.message}}`); `{{starter.message}}`
+  is not allowed outside a starter.
 - **Messages to a running member.** A walk's runs take operator messages
   (`POST /v1/runs/{run_id}/input`) while they run. A message that arrives while
   a run is writing its final answer is answered: the run takes one more turn
