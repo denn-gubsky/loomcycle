@@ -173,8 +173,11 @@ type Handler struct {
 	// namespace — variables are non-secret BY CONSTRUCTION. See validateSet.
 	Set map[string]string `json:"set,omitempty"`
 	// Capture — any handler that produces output: variable name → a
-	// strict-subset JSONPath applied to that output when it is JSON. The
-	// consolidator envelope is already JSON, so this works on day one.
+	// strict-subset JSONPath applied to that output. For a state an agent
+	// answers, that is the agent's answer as it wrote it (a consolidator's,
+	// where the state has one); for a Starter, its results envelope; for an
+	// input state, the walk's input. Output that is not JSON has one path, the
+	// root `$`, which binds it whole as text.
 	// A path that does not resolve binds nothing; it is not an error, mirroring
 	// the webhook projector's posture toward an external document.
 	Capture map[string]string `json:"capture,omitempty"`

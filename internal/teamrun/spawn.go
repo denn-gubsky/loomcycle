@@ -460,7 +460,7 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		}
 		if st.Handler.Consolidator == "" {
 			// No consolidator → a single-agent state advances on success.
-			return r.captured(st, task, Outcome{Output: out})
+			return r.capturedFrom(st, task, Outcome{Output: out}, bareAnswer(sp))
 		}
 		// A consolidator re-evaluates the single agent's output and selects the
 		// edge (success to advance, pushback to loop back for rework). It reads
@@ -470,11 +470,11 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		if err != nil {
 			return Outcome{}, err
 		}
-		oc, err := r.runConsolidator(ctx, st.Handler.Consolidator, envelope)
+		oc, answer, err := r.runConsolidator(ctx, st.Handler.Consolidator, envelope)
 		if err != nil {
 			return Outcome{}, err
 		}
-		return r.captured(st, task, oc)
+		return r.capturedFrom(st, task, oc, answer)
 
 	case teamgraph.HandlerParallel:
 		results, err := r.runParallel(ctx, st, input, env)
@@ -487,11 +487,11 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		if err != nil {
 			return Outcome{}, err
 		}
-		oc, err := r.runConsolidator(ctx, st.Handler.Consolidator, envelope)
+		oc, answer, err := r.runConsolidator(ctx, st.Handler.Consolidator, envelope)
 		if err != nil {
 			return Outcome{}, err
 		}
-		return r.captured(st, task, oc)
+		return r.capturedFrom(st, task, oc, answer)
 
 	case teamgraph.HandlerConsolidator:
 		// A standalone judging state: run the agent on the threaded input; its
@@ -503,7 +503,7 @@ func (r *agentRunner) runHandler(ctx context.Context, st teamgraph.State, task *
 		if err != nil {
 			return Outcome{}, err
 		}
-		return r.captured(st, task, parseConsolidatorOutcome(sp.Output))
+		return r.capturedFrom(st, task, parseConsolidatorOutcome(sp.Output), parseConsolidatorOutcome(bareAnswer(sp)).Output)
 
 	default:
 		// terminal is handled by the walk; anything else is a validation gap.
@@ -587,28 +587,59 @@ func (r *agentRunner) envFor(st teamgraph.State, task *Task) Env {
 }
 
 // captured applies a handler's `capture` paths to its output and records the
-// results on the task.
+// results on the task. It is for a state whose output IS what a capture reads:
+// an envelope the runtime built, or the walk's input.
+func (r *agentRunner) captured(st teamgraph.State, task *Task, oc Outcome) (Outcome, error) {
+	return r.capturedFrom(st, task, oc, oc.Output)
+}
+
+// bareAnswer is what a `capture` reads of a member: its answer as it wrote it.
+// Output may carry an attribution header above the answer, which makes a JSON
+// answer unparseable and puts a line the agent never wrote into a text one.
+// A spawner that reports no FinalText has no header to drop, so its Output is
+// the answer.
+func bareAnswer(sp SpawnResult) string {
+	if sp.FinalText != "" {
+		return sp.FinalText
+	}
+	return sp.Output
+}
+
+// capturedFrom applies a handler's `capture` paths to source and records the
+// results on the task; oc is returned as it came. The two differ for a state an
+// agent answers: the walk threads oc.Output, a capture reads the bare answer.
 //
 // A path that does not resolve binds NOTHING and is not an error — the same
 // posture the webhook projector takes toward an external document, and for the
 // same reason: an agent's output is not a schema, so a workflow that hard-failed
 // whenever a model phrased its JSON differently would be unusable. The variable
 // simply stays unset, and an unset variable expands to empty.
-func (r *agentRunner) captured(st teamgraph.State, task *Task, oc Outcome) (Outcome, error) {
+//
+// A source that is not JSON has exactly one addressable value, itself: the root
+// path binds the whole text and every other path binds nothing. Without it a
+// state answering prose could bind no variable at all.
+//
+// Binding is unchecked on purpose. A value carrying {{ or }} is refused where
+// it is USED (Expand, and prompt assembly), which is the one place every
+// binder's values pass through.
+func (r *agentRunner) capturedFrom(st teamgraph.State, task *Task, oc Outcome, source string) (Outcome, error) {
 	if len(st.Handler.Capture) == 0 {
 		return oc, nil
 	}
 	var doc interface{}
-	if err := json.Unmarshal([]byte(oc.Output), &doc); err != nil {
-		// Not JSON — nothing to project. Deliberately not an error.
-		return oc, nil
-	}
+	isJSON := json.Unmarshal([]byte(source), &doc) == nil
 	for name, path := range st.Handler.Capture {
 		segs, err := jsonpath.Parse(path)
 		if err != nil {
 			// Validate already rejected malformed paths at create/fork; a def
 			// that got here with one is data the store accepted, so honour it
 			// by skipping rather than aborting a walk mid-flight.
+			continue
+		}
+		if !isJSON {
+			if len(segs) == 0 {
+				task.SetVar(name, source)
+			}
 			continue
 		}
 		v, ok := jsonpath.Eval(doc, segs)
@@ -724,7 +755,10 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 // The consolidator is a DIFFERENT agent from the state's own, so the node's
 // system prompt (which describes that agent's role) is deliberately not applied
 // to it; it receives only the envelope.
-func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelope string) (Outcome, error) {
+//
+// answer is what the state's `capture` reads: the consolidator's bare answer,
+// less its signal line, where the Outcome carries what the walk threads.
+func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelope string) (oc Outcome, answer string, err error) {
 	// The envelope is built from the agents' OWN OUTPUTS — the most obviously
 	// model-written text in a walk, and the one a consolidator is definitionally
 	// handed. It rides a data slot for the same reason threaded output does.
@@ -734,9 +768,9 @@ func (r *agentRunner) runConsolidator(ctx context.Context, consolidator, envelop
 		SystemAuthored: r.operatorAuthored,
 	})
 	if err != nil {
-		return Outcome{}, err
+		return Outcome{}, "", err
 	}
-	return parseConsolidatorOutcome(sp.Output), nil
+	return parseConsolidatorOutcome(sp.Output), parseConsolidatorOutcome(bareAnswer(sp)).Output, nil
 }
 
 // parseConsolidatorOutcome extracts the selected edge from a consolidator's

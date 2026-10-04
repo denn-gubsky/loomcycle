@@ -102,6 +102,21 @@ func TestValidate_CapturePathsUseTheStrictSubset(t *testing.T) {
 	}
 }
 
+// The bare root is a path: on a capture it binds a state's whole output, on a
+// Starter's binds the whole source message.
+func TestValidate_RootPathIsAcceptedForCaptureAndBinds(t *testing.T) {
+	d := defWith(
+		State{ID: "a", Handler: Handler{Kind: HandlerAgent, Agent: "x", Capture: map[string]string{"draft": "$"}}},
+		terminal("done"),
+	)
+	if err := Validate(d); err != nil {
+		t.Errorf("capture path $ was rejected: %v", err)
+	}
+	if err := validateCapture("s", map[string]string{"msg": "$"}); err != nil {
+		t.Errorf("binds path $ was rejected: %v", err)
+	}
+}
+
 // A name that validates must be a name the expander can resolve — the charset
 // is shared with the expander's regex, so a def cannot store a variable that is
 // permanently unreadable.
