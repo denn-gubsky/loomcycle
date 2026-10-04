@@ -181,7 +181,6 @@ textarea::placeholder {
   color: var(--fg-soft);
   font-size: 12px;
 }
-.user-picker select,
 .user-picker input {
   background: var(--bg);
   color: var(--fg);
@@ -191,30 +190,6 @@ textarea::placeholder {
   font-family: var(--mono);
   font-size: 13px;
   min-width: 280px;
-}
-.user-picker form {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.user-picker button {
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 5px 12px;
-  cursor: pointer;
-}
-.user-picker button.manual-btn {
-  background: transparent;
-  color: var(--fg-soft);
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  font-size: 12px;
-}
-.user-picker button.manual-btn:hover {
-  color: var(--fg);
-  border-color: var(--accent);
 }
 .picker-err {
   color: var(--failed);
@@ -1971,7 +1946,7 @@ textarea::placeholder {
   margin-left: auto;
 }
 
-/* Top-level `.primary` — same convention as .user-picker button (accent
+/* Top-level `.primary` (accent
  * background + white text + rounded corners). The class is also used
  * inside .modal-buttons scope where it's overridden to use --running
  * (matches the InterruptInbox submit-answer convention). Outside that
@@ -4374,20 +4349,20 @@ button.primary:disabled {
   border-color: var(--accent);
 }
 
-/* Tenant combobox (TenantCombobox): the focus input plus a drop-down of known
-   tenants. Used in the topbar and on the Limits / Usage pages, so the list is
-   themed from tokens and positioned against its own wrapper. */
-.tenant-combo {
+/* Combobox (components/Combobox): a text input plus a drop-down of suggestions
+   — the topbar's tenant and user fields, and the tenant focus on the Limits /
+   Usage pages. Themed from tokens and positioned against its own wrapper. */
+.combo {
   position: relative;
   display: inline-flex;
 }
-.tenant-combo input {
+.combo input {
   width: 100%;
 }
-.tenant-combo.has-list input {
+.combo.has-list input {
   padding-right: 24px;
 }
-.tenant-combo-toggle {
+.combo-toggle {
   position: absolute;
   top: 0;
   right: 0;
@@ -4402,10 +4377,10 @@ button.primary:disabled {
   color: var(--lc-text-muted);
   cursor: pointer;
 }
-.tenant-combo-toggle:hover {
+.combo-toggle:hover {
   color: var(--lc-text);
 }
-.tenant-combo-list {
+.combo-list {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -4421,7 +4396,7 @@ button.primary:disabled {
   border-radius: var(--lc-radius-sm);
   box-shadow: var(--lc-shadow);
 }
-.tenant-combo-option {
+.combo-option {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -4434,14 +4409,14 @@ button.primary:disabled {
   white-space: nowrap;
   cursor: pointer;
 }
-.tenant-combo-option[aria-selected="true"] {
+.combo-option[aria-selected="true"] {
   background: var(--lc-accent-soft);
 }
-.tenant-combo-all {
+.combo-quiet {
   font-family: var(--lc-font-body);
   color: var(--lc-text-muted);
 }
-.tenant-combo-count {
+.combo-count {
   font-family: var(--lc-font-body);
   font-size: 11px;
   color: var(--lc-text-faint);

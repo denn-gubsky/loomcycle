@@ -1,107 +1,23 @@
-import {
-  canSee,
-  hasTenantScope as principalHasTenantScope,
-  type Visibility,
-} from "../lib/visibility";
+import { canSee, hasTenantScope as principalHasTenantScope } from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
-import {
-  Activity,
-  Bell,
-  Brain,
-  CalendarClock,
-  Camera,
-  Coins,
-  FolderTree,
-  HardDrive,
-  KeyRound,
-  Library,
-  ListTree,
-  type LucideIcon,
-  Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Play,
-  Plug,
-  Radio,
-  ScrollText,
-  Sun,
-  Users,
-  Workflow,
-} from "lucide-react";
+import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
+import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
+import { NAV_ITEMS } from "./navItems";
+import Combobox, { type ComboRow } from "./Combobox";
 import SettingsMenu from "./SettingsMenu";
 import TenantCombobox from "./TenantCombobox";
 
 const USER_ID_KEY = "loomcycle.userId";
 const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
 
-// Left-sidebar navigation model (RFC AS §4 — per-surface visibility class,
-// replacing the old binary `adminOnly`):
-//   "all"    — every authenticated role (run/runs: the principal-scoped workspace).
-//   "tenant" — admin OR a substrate:tenant operator. The surface's reads are
-//              tenant-scoped server-side (the operator sees only its own tenant)
-//              and its writes are already reachable by substrate:tenant (RFC AF),
-//              so the item lights up once it's visible.
-//   "admin"  — super-admin only (operator plane / no per-tenant axis).
-//
-// A "tenant" item is ONLY assigned where the backing route gate actually admits
-// substrate:tenant (requiredScopeFor → ScopeTenant or a tenantImplied scope):
-// library (#575/#577), integrations + schedules (the *def/names + scheduledef
-// def plane, #576 / isTenantConfinedDefPath), volumes (/v1/_volumes), paths
-// (/v1/_path), interrupts (/v1/users/{id}/interrupts — runs:read, tenantImplied).
-// memory (/v1/_memory/*) is "tenant": RFC BL gave memory rows a tenant_id, every
-// handler sources the tenant from the principal (a tenant operator sees only its
-// own tenant's memory), and RFC BV re-gated the routes to ScopeTenant — so the
-// item lights up for a tenant operator. channels (/v1/_channels) is now "tenant"
-// too: migration 0066 gave channel_messages/_cursors/channels a tenant_id, the
-// handlers source the tenant from the principal (list filters by tenant; the
-// cross-tenant `global` scope stays admin-only to create), and the routes were
-// re-gated to ScopeTenant — closing the earlier admin-only carve-out.
-// The type and the predicate live in ../lib/visibility — the Settings tabs use the
-// same two, and a second copy is how the two surfaces drifted apart in the first place.
-interface NavItem {
-  to: string;
-  label: string;
-  Icon: LucideIcon;
-  vis: Visibility;
+function userRow(u: UserOption): ComboRow {
+  if (u.id === "") return { id: "", label: "no user", quiet: true };
+  return { id: u.id, label: u.id, hint: u.hint };
 }
-const NAV_ITEMS: NavItem[] = [
-  { to: "/run", label: "run", Icon: Play, vis: "all" },
-  { to: "/agents", label: "runs", Icon: ListTree, vis: "all" },
-  // RFC CN — every login (incl. an isolated substrate:user user) can self-serve
-  // its OWN scope=user API tokens here; the operator Settings → Credentials tab
-  // (tenant authoring) stays separate.
-  { to: "/my-credentials", label: "credentials", Icon: KeyRound, vis: "all" },
-  { to: "/library/agents", label: "library", Icon: Library, vis: "tenant" },
-  { to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant" },
-  { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant" },
-  { to: "/paths", label: "paths", Icon: FolderTree, vis: "tenant" },
-  { to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },
-  { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
-  { to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
-  // users: the RFC BX P2c tenant-operator console — manage first-class users +
-  // mint/revoke their bearer tokens. "tenant": the /v1/_users(/…) routes are
-  // ScopeTenant and the handlers confine to the caller's own tenant (a tenant
-  // operator sees only its own users; admin sees all + ?tenant= focus).
-  { to: "/users", label: "users", Icon: Users, vis: "tenant" },
-  { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
-  { to: "/memory", label: "memory", Icon: Brain, vis: "tenant" },
-  { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
-  // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
-  // via the event's owning session, so a tenant sees only its own events.
-  { to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
-  // usage: token/cost report. Tenant-visible (RFC AV): GET /v1/_usage is
-  // ScopeTenant-gated and the handler tenant-scopes the aggregation (a tenant
-  // operator sees only its own tenant's spend; admin sees all + ?tenant=).
-  { to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
-  { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
-  // NOTE: routing + limits moved OUT of the main nav INTO Settings tabs (the
-  // /routing + /limits routes still exist for deep links, but SettingsView is
-  // now the primary surface — see SettingsView's routing/limits tabs).
-];
 
 // Refresh the user picker every 30 s. Activity stats (running counts)
 // drift fast on busy deployments; the dropdown is rendered with the
@@ -116,8 +32,9 @@ export default function Layout() {
   const [userId, setUserId] = useState<string>(() => localStorage.getItem(USER_ID_KEY) ?? "");
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [usersErr, setUsersErr] = useState<string | null>(null);
-  const [showManual, setShowManual] = useState(false);
-  const [draft, setDraft] = useState(userId);
+  // What the user field shows: the applied userId, or text being typed that has
+  // not been applied yet.
+  const [draftUser, setDraftUser] = useState(userId);
   const [version, setVersion] = useState<string | null>(null);
   const { theme, toggle: toggleTheme } = useTheme();
 
@@ -150,6 +67,9 @@ export default function Layout() {
 
   useEffect(() => {
     localStorage.setItem(USER_ID_KEY, userId);
+    // userId also changes from outside the field (a tenant-focus switch resets
+    // it; a tenant's own subject is defaulted on boot) — keep the field in step.
+    setDraftUser(userId);
   }, [userId]);
 
   useEffect(() => {
@@ -240,7 +160,7 @@ export default function Layout() {
     );
   }
 
-  const knownUser = users.find((u) => u.user_id === userId);
+  const knownUsers = userOptions(users);
 
   return (
     <div className="layout">
@@ -348,64 +268,41 @@ export default function Layout() {
               )}
             </form>
           )}
-          <div className="user-picker">
+          {/* User field: a combobox over the users this tenant scope has seen
+              (GET /v1/_users, already narrowed by the tenant focus). Picking a
+              row applies it; so does typing ANY id and pressing Enter — the list
+              is derived from runs, so a subject with no runs yet (or one whose
+              documents the operator needs to reach) can only be typed. The
+              "no user" row, or Enter on a blank field, clears it. */}
+          <form
+            className="user-picker"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setUserId(appliedUserId(draftUser));
+            }}
+          >
             {usersErr && (
               <span className="picker-err" title={usersErr}>
                 users unavailable
               </span>
             )}
-            {!showManual && (
-              <>
-                <label htmlFor="user_select">user</label>
-                <select
-                  id="user_select"
-                  value={knownUser ? userId : ""}
-                  onChange={(e) => setUserId(e.target.value)}
-                >
-                  <option value="">— pick a user —</option>
-                  {users.map((u) => (
-                    <option key={u.user_id} value={u.user_id}>
-                      {u.user_id} · {u.running_count > 0 ? `${u.running_count} running` : `${u.total_count} runs`}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-            {!showManual && (
-              <button
-                type="button"
-                className="manual-btn"
-                title="Type a user_id manually"
-                onClick={() => {
-                  setDraft(userId);
-                  setShowManual(true);
-                }}
-              >
-                ✎
-              </button>
-            )}
-            {showManual && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setUserId(draft.trim());
-                  setShowManual(false);
-                }}
-              >
-                <input
-                  type="text"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="paste a user_id…"
-                  autoFocus
-                />
-                <button type="submit">apply</button>
-                <button type="button" onClick={() => setShowManual(false)}>
-                  cancel
-                </button>
-              </form>
-            )}
-          </div>
+            <label htmlFor="user_select">user</label>
+            <Combobox
+              id="user_select"
+              value={draftUser}
+              onChange={setDraftUser}
+              onPick={setUserId}
+              rows={(q) => filterUsers(knownUsers, q).map(userRow)}
+              // Unapplied text is discarded on leaving the field, so what it
+              // shows at rest is always the user the views are actually scoped
+              // to — never a half-typed id that was not applied.
+              onBlur={() => setDraftUser(userId)}
+              placeholder="pick or type a user id"
+              title="Pick a known user, or type any user id and press Enter"
+              listLabel="Known users"
+              toggleLabel="Show known users"
+            />
+          </form>
           {/* Settings menu — rightmost. The gear opens the viewer's Settings
               sections (filtered by role, exactly as the hub's tabs are) and ends
               in Log out. Rendered for EVERY role: Log out lives only here, so a
