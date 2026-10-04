@@ -6968,10 +6968,13 @@ func (s *Server) runTeamMember(ctx context.Context, name string, p teamrun.Promp
 		return out, fmt.Errorf("sub-agent %q failed (agent=%s session=%s run=%s): %w",
 			name, prep.AgentID, prep.SessionID, prep.RunID, runErr)
 	}
-	// Formatted as the Agent tool's sub-agent output is, so a walk threads the
-	// same text it always did. The bare answer and its structured form ride
-	// beside it for a Starter's sink message, which a program reads.
-	out.Output = formatSubAgentOutput(prep.AgentID, res.FinalText)
+	// The answer as the member wrote it, WITHOUT the Agent tool's
+	// "[sub-agent agent_id=…]" line. That line tells a parent model which of
+	// its tool results came from which child; a walk has no such reader — its
+	// envelope entries and sink messages name the member by agent and run id —
+	// and the line would otherwise ride into the next state's prompt and into
+	// the walk's own result.
+	out.Output = res.FinalText
 	out.FinalText, out.Structured = res.FinalText, res.Structured
 	return out, nil
 }

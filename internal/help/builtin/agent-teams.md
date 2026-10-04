@@ -121,8 +121,14 @@ structured, error}`, with absent fields left out:
 So a second Starter reading the sink binds the answer directly:
 `binds: {answer: "$.output", verdict: "$.structured.verdict"}`. The Starter's
 own output — the `{"results": […]}` envelope a consolidator or the next state
-reads — is different: each result's `output` there starts with a
-`[sub-agent agent_id=…]` line, so a model reading it can tell whose answer it is.
+reads — carries the same bare answer in each result's `output`; the result's
+`agent` and `run_id` say whose answer it is.
+
+That holds across a walk: what one state hands the next, each result in a
+`parallel` state's envelope, and the walk's own `final_text` are the agent's
+answer exactly as written, with nothing added in front. (The `Agent` tool is
+different: a sub-agent's result there starts with a `[sub-agent agent_id=…]`
+line.)
 
 ## When to use a Starter — and when an agent state is enough
 
