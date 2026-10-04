@@ -32,6 +32,8 @@ import {
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
+import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
+import Combobox, { type ComboRow } from "./Combobox";
 import SettingsMenu from "./SettingsMenu";
 import TenantCombobox from "./TenantCombobox";
 
@@ -103,6 +105,11 @@ const NAV_ITEMS: NavItem[] = [
   // now the primary surface — see SettingsView's routing/limits tabs).
 ];
 
+function userRow(u: UserOption): ComboRow {
+  if (u.id === "") return { id: "", label: "no user", quiet: true };
+  return { id: u.id, label: u.id, hint: u.hint };
+}
+
 // Refresh the user picker every 30 s. Activity stats (running counts)
 // drift fast on busy deployments; the dropdown is rendered with the
 // most recent counts each time it opens.
@@ -116,8 +123,9 @@ export default function Layout() {
   const [userId, setUserId] = useState<string>(() => localStorage.getItem(USER_ID_KEY) ?? "");
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [usersErr, setUsersErr] = useState<string | null>(null);
-  const [showManual, setShowManual] = useState(false);
-  const [draft, setDraft] = useState(userId);
+  // What the user field shows: the applied userId, or text being typed that has
+  // not been applied yet.
+  const [draftUser, setDraftUser] = useState(userId);
   const [version, setVersion] = useState<string | null>(null);
   const { theme, toggle: toggleTheme } = useTheme();
 
@@ -150,6 +158,9 @@ export default function Layout() {
 
   useEffect(() => {
     localStorage.setItem(USER_ID_KEY, userId);
+    // userId also changes from outside the field (a tenant-focus switch resets
+    // it; a tenant's own subject is defaulted on boot) — keep the field in step.
+    setDraftUser(userId);
   }, [userId]);
 
   useEffect(() => {
@@ -240,7 +251,7 @@ export default function Layout() {
     );
   }
 
-  const knownUser = users.find((u) => u.user_id === userId);
+  const knownUsers = userOptions(users);
 
   return (
     <div className="layout">
@@ -348,64 +359,41 @@ export default function Layout() {
               )}
             </form>
           )}
-          <div className="user-picker">
+          {/* User field: a combobox over the users this tenant scope has seen
+              (GET /v1/_users, already narrowed by the tenant focus). Picking a
+              row applies it; so does typing ANY id and pressing Enter — the list
+              is derived from runs, so a subject with no runs yet (or one whose
+              documents the operator needs to reach) can only be typed. The
+              "no user" row, or Enter on a blank field, clears it. */}
+          <form
+            className="user-picker"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setUserId(appliedUserId(draftUser));
+            }}
+          >
             {usersErr && (
               <span className="picker-err" title={usersErr}>
                 users unavailable
               </span>
             )}
-            {!showManual && (
-              <>
-                <label htmlFor="user_select">user</label>
-                <select
-                  id="user_select"
-                  value={knownUser ? userId : ""}
-                  onChange={(e) => setUserId(e.target.value)}
-                >
-                  <option value="">— pick a user —</option>
-                  {users.map((u) => (
-                    <option key={u.user_id} value={u.user_id}>
-                      {u.user_id} · {u.running_count > 0 ? `${u.running_count} running` : `${u.total_count} runs`}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-            {!showManual && (
-              <button
-                type="button"
-                className="manual-btn"
-                title="Type a user_id manually"
-                onClick={() => {
-                  setDraft(userId);
-                  setShowManual(true);
-                }}
-              >
-                ✎
-              </button>
-            )}
-            {showManual && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setUserId(draft.trim());
-                  setShowManual(false);
-                }}
-              >
-                <input
-                  type="text"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="paste a user_id…"
-                  autoFocus
-                />
-                <button type="submit">apply</button>
-                <button type="button" onClick={() => setShowManual(false)}>
-                  cancel
-                </button>
-              </form>
-            )}
-          </div>
+            <label htmlFor="user_select">user</label>
+            <Combobox
+              id="user_select"
+              value={draftUser}
+              onChange={setDraftUser}
+              onPick={setUserId}
+              rows={(q) => filterUsers(knownUsers, q).map(userRow)}
+              // Unapplied text is discarded on leaving the field, so what it
+              // shows at rest is always the user the views are actually scoped
+              // to — never a half-typed id that was not applied.
+              onBlur={() => setDraftUser(userId)}
+              placeholder="pick or type a user id"
+              title="Pick a known user, or type any user id and press Enter"
+              listLabel="Known users"
+              toggleLabel="Show known users"
+            />
+          </form>
           {/* Settings menu — rightmost. The gear opens the viewer's Settings
               sections (filtered by role, exactly as the hub's tabs are) and ends
               in Log out. Rendered for EVERY role: Log out lives only here, so a
