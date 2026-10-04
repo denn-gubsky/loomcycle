@@ -30,6 +30,25 @@ export function listUsers(tenant?: string): Promise<ListUsersResponse> {
   return jsonFetch<ListUsersResponse>(`/v1/_users${q}`);
 }
 
+// TenantSummary is one row of GET /v1/_tenants: a tenant with activity, and how
+// much. Derived from runs server-side, so a tenant that has never started a run
+// is absent — the list is "tenants seen", not "tenants that exist".
+export interface TenantSummary {
+  tenant: string;
+  users: number;
+  runs: number;
+}
+
+export interface ListTenantsResponse {
+  tenants: TenantSummary[] | null;
+}
+
+// ADMIN ONLY: the list of tenants is itself cross-tenant information, so a
+// tenant-confined principal gets a 403 here rather than a filtered list.
+export function listTenants(): Promise<ListTenantsResponse> {
+  return jsonFetch<ListTenantsResponse>("/v1/_tenants");
+}
+
 // --- RFC BX Phase 2: tenant-owned users + delegated per-user token minting ---
 
 // UserRecord is one first-class users-table row (POST/PATCH /v1/_users).

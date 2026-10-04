@@ -34,6 +34,7 @@ import {
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
+import TenantCombobox from "./TenantCombobox";
 
 const USER_ID_KEY = "loomcycle.userId";
 const SIDEBAR_KEY = "loomcycle.sidebar.collapsed";
@@ -317,11 +318,18 @@ export default function Layout() {
               }}
             >
               <label htmlFor="tenant_focus">tenant</label>
-              <input
+              <TenantCombobox
                 id="tenant_focus"
-                type="text"
                 value={draftTenant}
-                onChange={(e) => setDraftTenant(e.target.value)}
+                onChange={setDraftTenant}
+                onPick={(t) => {
+                  // Picking a row is a complete answer — apply it without a
+                  // second Enter. "" (the "all tenants" row) clears the focus.
+                  setDraftTenant(t);
+                  setFocusTenant(t);
+                  setUserId("");
+                }}
+                enabled={isAdmin}
                 placeholder="all tenants"
                 title="Focus one tenant's workspace; blank = all"
               />
